@@ -14,7 +14,7 @@
         # lua
         ''
           -- autocommand to set keybindings only in fugitive buffers
-          local augroup = vim.api.nvim_create_augroup("lucidph3nx_fugitive", {})
+          local augroup = vim.api.nvim_create_augroup("prismatic-koi_fugitive", {})
           vim.api.nvim_create_autocmd("FileType", {
           	group = augroup,
           	pattern = "*",

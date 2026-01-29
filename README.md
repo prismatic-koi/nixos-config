@@ -16,4 +16,4 @@ Does anybody even read the readme for nix repos? the code speaks for itself.
 - A dynamic wallpaper based on theme, created from a svg with theme colours inserted at build time.
 - Due to the above, I am able to do remote installs using [nixos-anywhere](https://github.com/nix-community/nixos-anywhere)
 
-My [nix-darwin](https://github.com/LnL7/nix-darwin) configuration has moved to [nixdarwin-config](https://github.com/lucidph3nx/nixdarwin-config)
+My [nix-darwin](https://github.com/LnL7/nix-darwin) configuration has moved to [nixdarwin-config](https://github.com/prismatic-koi/nixdarwin-config)

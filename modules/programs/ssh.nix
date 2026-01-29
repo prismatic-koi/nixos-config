@@ -10,7 +10,7 @@ let
     proxyCommand = "${pkgs.cloudflared}/bin/cloudflared access ssh --hostname %h.$CLOUDFLARED_DOMAIN";
     user = "ben";
     port = 22;
-    identityFile = "${homeDir}/.ssh/lucidph3nx-ed25519";
+    identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
   };
 in
 {
@@ -44,7 +44,7 @@ in
             hostname = "10.87.42.200";
             port = 220;
             user = "ben";
-            identityFile = "${homeDir}/.ssh/lucidph3nx-ed25519";
+            identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
           };
         };
       };
@@ -73,28 +73,28 @@ in
         sopsFile = ./secrets/ssh.sops.yaml;
       in
       {
-        "ssh/lucidph3nx-ed25519" = {
+        "ssh/prismatic-koi-ed25519" = {
           owner = "ben";
           mode = "0600";
-          path = "/home/ben/.ssh/lucidph3nx-ed25519";
+          path = "/home/ben/.ssh/prismatic-koi-ed25519";
           sopsFile = sopsFile;
         };
-        "ssh/lucidph3nx-ed25519.pub" = {
+        "ssh/prismatic-koi-ed25519.pub" = {
           owner = "ben";
           mode = "0600";
-          path = "/home/ben/.ssh/lucidph3nx-ed25519.pub";
+          path = "/home/ben/.ssh/prismatic-koi-ed25519.pub";
           sopsFile = sopsFile;
         };
-        "ssh/lucidph3nx-rsa" = {
+        "ssh/prismatic-koi-rsa" = {
           owner = "ben";
           mode = "0600";
-          path = "/home/ben/.ssh/lucidph3nx-rsa";
+          path = "/home/ben/.ssh/prismatic-koi-rsa";
           sopsFile = sopsFile;
         };
-        "ssh/lucidph3nx-rsa.pub" = {
+        "ssh/prismatic-koi-rsa.pub" = {
           owner = "ben";
           mode = "0600";
-          path = "/home/ben/.ssh/lucidph3nx-rsa.pub";
+          path = "/home/ben/.ssh/prismatic-koi-rsa.pub";
           sopsFile = sopsFile;
         };
         "config/cloudflared_domain" = {

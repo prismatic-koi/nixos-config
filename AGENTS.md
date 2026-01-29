@@ -4,7 +4,7 @@ This document provides guidance for AI agents on how to interact with this NixOS
 
 ## Project Overview
 
-- **Primary Goal:** This repository manages the personal NixOS configurations for multiple machines, all intended for a single user ("lucidph3nx").
+- **Primary Goal:** This repository manages the personal NixOS configurations for multiple machines, all intended for a single user (`prismatic-koi`).
 - **Design Philosophy:**
     - Configurations are managed with Nix Flakes.
     - Home Manager and NixOS options are often configured together within the same module for simplicity.

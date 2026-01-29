@@ -6,7 +6,7 @@
       # lua
       ''
         local function augroup(name)
-        	return vim.api.nvim_create_augroup("lucidph3nx_" .. name, { clear = true })
+        	return vim.api.nvim_create_augroup("prismatic-koi_" .. name, { clear = true })
         end
 
         -- highlight on yank

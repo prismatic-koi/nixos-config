@@ -22,7 +22,7 @@ in
             user = "git";
             hostname = "github.com";
             port = 22;
-            identityFile = "${homeDir}/.ssh/lucidph3nx-ed25519";
+            identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
           };
         };
       };
@@ -32,9 +32,9 @@ in
           {
             contents = {
               user = {
-                name = "lucidph3nx";
+                name = "prismatic-koi";
                 email = "ben@tinfoilforest.nz";
-                signingKey = "${homeDir}/.ssh/lucidph3nx-ed25519-signingkey.pub";
+                signingKey = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
               };
               push = {
                 autoSetupRemote = true;
@@ -57,16 +57,16 @@ in
       ];
     };
     # ssh signing keys
-    sops.secrets."ssh/lucidph3nx-ed25519-signingkey" = {
+    sops.secrets."ssh/prismatic-koi-ed25519-signingkey" = {
       owner = "ben";
       mode = "0600";
-      path = "/home/ben/.ssh/lucidph3nx-ed25519-signingkey";
+      path = "/home/ben/.ssh/prismatic-koi-ed25519-signingkey";
       sopsFile = ./secrets/ssh.sops.yaml;
     };
-    sops.secrets."ssh/lucidph3nx-ed25519-signingkey.pub" = {
+    sops.secrets."ssh/prismatic-koi-ed25519-signingkey.pub" = {
       owner = "ben";
       mode = "0600";
-      path = "/home/ben/.ssh/lucidph3nx-ed25519-signingkey.pub";
+      path = "/home/ben/.ssh/prismatic-koi-ed25519-signingkey.pub";
       sopsFile = ./secrets/ssh.sops.yaml;
     };
     system.activationScripts.signingKeysFolderPermissions = ''
