@@ -50,6 +50,7 @@
       self,
       nixpkgs,
       home-manager,
+      darwin,
       ...
     }@inputs:
     let
@@ -88,6 +89,41 @@
             ]
             ++ extraModules;
         };
+
+      # Reusable function for creating Darwin system configurations
+      mkDarwinSystem =
+        {
+          system,
+          configFile,
+          extraModules ? [ ],
+          extraConfig ? { },
+        }:
+        let
+          lib = nixpkgs.lib; # Inherit lib from nixpkgs
+        in
+        darwin.lib.darwinSystem {
+          inherit system;
+          pkgs = import nixpkgs {
+            inherit system;
+            config = lib.mkMerge [
+              { allowUnfree = true; }
+              extraConfig # Merge any extra configuration
+            ];
+            overlays = [ self.overlays.modifications ];
+          };
+          specialArgs = { inherit inputs outputs; };
+          modules =
+            let
+              defaults = { pkgs, ... }: { };
+            in
+            [
+              defaults
+              ./machines/${configFile}/configuration.nix
+              home-manager.darwinModules.home-manager
+              ./modules/darwin/impermanence-stub.nix
+            ]
+            ++ extraModules;
+        };
     in
     {
       overlays = import ./overlays { inherit inputs outputs; };
@@ -102,6 +138,13 @@
         tui = mkSystem {
           system = "x86_64-linux";
           configFile = "tui";
+        };
+      };
+
+      darwinConfigurations = {
+        m1mac = mkDarwinSystem {
+          system = "aarch64-darwin";
+          configFile = "m1mac";
         };
       };
     };
