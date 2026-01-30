@@ -10,10 +10,9 @@
       let
         hostname = config.networking.hostName;
         hosts = [
-          "default"
           "navi"
-          "surface"
           "tui"
+          "m1mac"
         ];
         files = [
           "cert.pem"

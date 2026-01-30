@@ -14,6 +14,8 @@
     home = "/Users/ben";
   };
 
+  networking.hostName = "m1mac";
+
   # Module configuration using nx namespace (matching NixOS pattern)
   nx = {
     desktop = {
@@ -157,10 +159,6 @@
         username = "ben";
         homeDirectory = "/Users/ben";
         stateVersion = "23.11";
-
-        sessionVariables = {
-          OBSIDIAN_VAULT_PATH = "/Users/ben/Documents/obsidian";
-        };
 
         sessionPath = [
           "/opt/homebrew/bin"
