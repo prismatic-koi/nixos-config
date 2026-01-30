@@ -407,6 +407,8 @@
           source = ./opencode/mcp-atlassian-slim-proxy.mjs;
           executable = true;
         };
+        # Copy command workflow guides
+        xdg.configFile."opencode/command".source = ./opencode/command;
         home.persistence."/persist" = {
           directories = [
             ".config/opencode"
