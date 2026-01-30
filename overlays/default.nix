@@ -35,6 +35,12 @@ rec {
       # use master for discord, they block older versions
       discord = masterPkgs.discord;
 
+      # use master for playwright-mcp, not in stable yet
+      playwright-mcp = masterPkgs.playwright-mcp;
+
+      # use master for beads, need the bleeding edge
+      beads = masterPkgs.beads;
+
       vimPlugins = prev.vimPlugins // {
         obsidian-nvim = prev.vimUtils.buildVimPlugin {
           pname = "obsidian-nvim";
