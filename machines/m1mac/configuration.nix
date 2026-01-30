@@ -22,56 +22,21 @@
     };
   };
 
-  # Darwin-specific system configuration
-  programs.zsh = {
-    enable = true;
-    shellInit = ''
-      export ZDOTDIR=$HOME/.local/share/zsh
-    '';
-  };
-
-  environment = {
-    shells = [
-      pkgs.bash
-      pkgs.zsh
-    ];
-    systemPackages = with pkgs; [
-      age
-      arping
-      auth0-cli
-      azure-cli
-      cloudflared
-      direnv
-      eza
-      fzf
-      fzy
-      gh
-      gnupg
-      gnutar
-      go
-      htop
-      imagemagick
-      jankyborders
-      jq
-      openssh
-      p7zip
-      podman
-      ripgrep
-      rustup
-      sops
-      ssm-session-manager-plugin
-      tree
-      tridactyl-native
-      utm
-      yq-go
-      zsh
-    ];
-  };
-
-  nix.enable = true;
-  nix.extraOptions = ''
-    experimental-features = nix-command flakes
-  '';
+  # Darwin-specific packages not in shared modules
+  environment.systemPackages = with pkgs; [
+    arping
+    auth0-cli
+    azure-cli
+    gnutar
+    go
+    jankyborders
+    podman # darwin doesn't use virtualisation.podman
+    rustup
+    ssm-session-manager-plugin
+    tree
+    tridactyl-native
+    utm
+  ];
 
   fonts.packages = with pkgs; [
     nerd-fonts.jetbrains-mono
@@ -184,8 +149,6 @@
         stateVersion = "23.11";
 
         sessionVariables = {
-          EDITOR = "nvim";
-          PAGER = "less";
           OBSIDIAN_VAULT_PATH = "/Users/ben/Documents/obsidian";
         };
 
