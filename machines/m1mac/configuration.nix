@@ -16,9 +16,19 @@
 
   # Module configuration using nx namespace (matching NixOS pattern)
   nx = {
+    desktop = {
+      theme = "everforest";
+    };
     programs = {
+      gcalcli.enable = true;
       homeAutomation.enable = true;
       qutebrowser.enable = true;
+    };
+    services = {
+      syncthing = {
+        enable = true;
+        obsidian.enable = true;
+      };
     };
   };
 
