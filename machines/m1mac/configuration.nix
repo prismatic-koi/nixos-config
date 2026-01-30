@@ -7,7 +7,8 @@
 }:
 {
   imports = [
-    ../../modules
+    # TODO Phase 3: Re-enable after modules are made cross-platform safe
+    # ../../modules
   ];
 
   users.users.ben = {
@@ -16,23 +17,24 @@
 
   networking.hostName = "m1mac";
 
+  # TODO Phase 3: Re-enable after modules are made cross-platform safe
   # Module configuration using nx namespace (matching NixOS pattern)
-  nx = {
-    desktop = {
-      theme = "everforest";
-    };
-    programs = {
-      gcalcli.enable = true;
-      homeAutomation.enable = true;
-      qutebrowser.enable = true;
-    };
-    services = {
-      syncthing = {
-        enable = true;
-        obsidian.enable = true;
-      };
-    };
-  };
+  # nx = {
+  #   desktop = {
+  #     theme = "everforest";
+  #   };
+  #   programs = {
+  #     gcalcli.enable = true;
+  #     homeAutomation.enable = true;
+  #     qutebrowser.enable = true;
+  #   };
+  #   services = {
+  #     syncthing = {
+  #       enable = true;
+  #       obsidian.enable = true;
+  #     };
+  #   };
+  # };
 
   # Darwin-specific packages not in shared modules
   environment.systemPackages = with pkgs; [
