@@ -3,13 +3,12 @@
   pkgs,
   lib,
   ...
-}: {
+}:
+{
   options = {
-    nx.programs.prism.opencode.enable =
-      lib.mkEnableOption "enables opencode"
-      // {
-        default = true;
-      };
+    nx.programs.prism.opencode.enable = lib.mkEnableOption "enables opencode" // {
+      default = true;
+    };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
@@ -211,47 +210,42 @@
         The hooks automatically sync beads when your session ends.
       '';
 
-      agentInstructions =
-        /*
-        markdown
-        */
-        ''
-          # Global Agent Instructions
+      agentInstructions = /* markdown */ ''
+        # Global Agent Instructions
 
-          ## Skills
-          When working in environments with domain-specific skills available (via the `skill` tool), err on the side of loading them. If a conversation touches a domain that has a skill, load it – even if you think you know the conventions from other context sources.
-          Skills exist to prevent context drift and ensure consistency, not just for when you're uncertain. Loading a skill is cheap; missing domain-specific conventions or creating inconsistency is expensive.
+        ## Skills
+        When working in environments with domain-specific skills available (via the `skill` tool), err on the side of loading them. If a conversation touches a domain that has a skill, load it – even if you think you know the conventions from other context sources.
+        Skills exist to prevent context drift and ensure consistency, not just for when you're uncertain. Loading a skill is cheap; missing domain-specific conventions or creating inconsistency is expensive.
 
-          ## Web Fetching
+        ## Web Fetching
 
-          When the `webfetch` tool fails with a 403 Forbidden error or similar access restrictions, use a subagent with Playwright to fetch the content with a real browser instead.
+        When the `webfetch` tool fails with a 403 Forbidden error or similar access restrictions, use a subagent with Playwright to fetch the content with a real browser instead.
 
-          ### Usage
+        ### Usage
 
-          If webfetch returns a 403 error:
-          ```
-          Error: HTTP 403 Forbidden
-          ```
+        If webfetch returns a 403 error:
+        ```
+        Error: HTTP 403 Forbidden
+        ```
 
-          Do NOT use the playwright_* tools directly in the main conversation, as they generate very large outputs that quickly fill the context window.
+        Do NOT use the playwright_* tools directly in the main conversation, as they generate very large outputs that quickly fill the context window.
 
-          Instead, use the Task tool to launch a subagent that will use Playwright to extract the content and return only the relevant information:
-          ```
-          Launch a general subagent with a prompt like:
-          "Use the Playwright MCP server to navigate to [URL], extract [specific content needed], and return only the extracted information as markdown. Do not include full page snapshots or accessibility trees in your response to me."
-          ```
+        Instead, use the Task tool to launch a subagent that will use Playwright to extract the content and return only the relevant information:
+        ```
+        Launch a general subagent with a prompt like:
+        "Use the Playwright MCP server to navigate to [URL], extract [specific content needed], and return only the extracted information as markdown. Do not include full page snapshots or accessibility trees in your response to me."
+        ```
 
-          The subagent will handle all the verbose Playwright interactions in its own context, and only return the clean, extracted content back to you.
+        The subagent will handle all the verbose Playwright interactions in its own context, and only return the clean, extracted content back to you.
 
-          ## Local Environment Instructions
+        ## Local Environment Instructions
 
-          Avoid excessive use of `cd` commands at the start of your commands, if you are already in the right working directory, there is no need to `cd` into it before your command.
+        Avoid excessive use of `cd` commands at the start of your commands, if you are already in the right working directory, there is no need to `cd` into it before your command.
 
-          Use podman, not docker.${
-            lib.optionalString pkgs.stdenv.isDarwin " Before use, always run `podman machine start`"
-          }
-        '';
-    in {
+        Use podman, not docker.${lib.optionalString pkgs.stdenv.isDarwin " Before use, always run `podman machine start`"}
+      '';
+    in
+    {
       home-manager.users.ben = {
         home.packages = with pkgs; [
           # need npx on path for memory mcp
@@ -275,17 +269,17 @@
           '';
         programs.neovim.extraLuaConfig =
           lib.mkAfter
-          # lua
-          ''
-            -- open current project in new kitty window with opencode
-            -- disabled in favor of tmux shortcut (leader a)
-            -- vim.keymap.set(
-            --   "n",
-            --   "<leader>oa",
-            --   ":!kitty -d $(pwd) env ${envPrefix} opencode . &<CR><CR>",
-            --   { silent = true, desc = "[O]pen project with [A]I agent" }
-            -- )
-          '';
+            # lua
+            ''
+              -- open current project in new kitty window with opencode
+              -- disabled in favor of tmux shortcut (leader a)
+              -- vim.keymap.set(
+              --   "n",
+              --   "<leader>oa",
+              --   ":!kitty -d $(pwd) env ${envPrefix} opencode . &<CR><CR>",
+              --   { silent = true, desc = "[O]pen project with [A]I agent" }
+              -- )
+            '';
         programs.opencode = {
           enable = true;
           settings = {
@@ -305,12 +299,12 @@
                 description = "Default build agent with full tool access";
                 mode = "primary";
                 permission = {
-                  bash =
-                    {
-                      # default for any command not listed is ask (MUST be first - last match wins)
-                      "*" = "ask";
-                    }
-                    // readOnlyBashCommands // writeBashCommands;
+                  bash = {
+                    # default for any command not listed is ask (MUST be first - last match wins)
+                    "*" = "ask";
+                  }
+                  // readOnlyBashCommands
+                  // writeBashCommands;
                 };
               };
               plan = {
@@ -328,30 +322,28 @@
                   edit = false;
                 };
                 permission = {
-                  bash =
-                    {
-                      # Default deny everything else for plan agent (MUST be first - last match wins)
-                      "*" = "deny";
-                    }
-                    // readOnlyBashCommands;
+                  bash = {
+                    # Default deny everything else for plan agent (MUST be first - last match wins)
+                    "*" = "deny";
+                  }
+                  // readOnlyBashCommands;
                 };
               };
             };
             mcp = {
               playwright = {
                 type = "local";
-                command =
-                  [
-                    "${pkgs.playwright-mcp}/bin/mcp-server-playwright"
-                    "--executable-path"
-                    (
-                      if pkgs.stdenv.isDarwin then
-                        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-                      else
-                        "${pkgs.chromium}/bin/chromium"
-                    )
-                    "--headless"
-                  ];
+                command = [
+                  "${pkgs.playwright-mcp}/bin/mcp-server-playwright"
+                  "--executable-path"
+                  (
+                    if pkgs.stdenv.isDarwin then
+                      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                    else
+                      "${pkgs.chromium}/bin/chromium"
+                  )
+                  "--headless"
+                ];
                 enabled = true;
               };
               atlasian = {
@@ -385,13 +377,12 @@
               "atlasian_add*" = "ask";
               "atlasian_transition*" = "ask";
               # Bash permissions are now defined per-agent
-              bash =
-                {
-                  # default for any command not listed is ask (MUST be first - last match wins)
-                  "*" = "ask";
-                }
-                // readOnlyBashCommands
-                // writeBashCommands;
+              bash = {
+                # default for any command not listed is ask (MUST be first - last match wins)
+                "*" = "ask";
+              }
+              // readOnlyBashCommands
+              // writeBashCommands;
             };
             plugin = [
               # a plugin to use Gemini auth for LLM access
