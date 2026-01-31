@@ -346,7 +346,7 @@
                 ];
                 enabled = true;
               };
-              atlasian = {
+              atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                 type = "local";
                 enabled = true;
                 command = [
