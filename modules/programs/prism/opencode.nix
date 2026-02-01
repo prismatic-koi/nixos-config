@@ -83,6 +83,7 @@
         "gh repo view *" = "allow";
         "gh release list *" = "allow";
         "gh release view *" = "allow";
+        "gh run view *" = "allow";
         # Kubernetes read operations
         "kubectl get*" = "allow";
         "kubectl describe*" = "allow";
