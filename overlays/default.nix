@@ -27,8 +27,7 @@ rec {
       firefox = stablePkgs.firefox;
 
       # use master for opencode, need the bleeding edge
-      # temp use unstable due to https://github.com/anomalyco/opencode/issues/10500
-      # opencode = masterPkgs.opencode;
+      opencode = masterPkgs.opencode;
 
       # use master for claude-code, need the bleeding edge
       claude-code = masterPkgs.claude-code;
