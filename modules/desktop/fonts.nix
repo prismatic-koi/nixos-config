@@ -5,7 +5,7 @@
   ...
 }:
 {
-  config = {
+  config = lib.mkIf pkgs.stdenv.isLinux {
     fonts = {
       fontDir.enable = true;
       packages = [

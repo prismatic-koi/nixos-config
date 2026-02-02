@@ -34,7 +34,7 @@ in
       };
     };
   };
-  config =
+  config = lib.mkIf pkgs.stdenv.isLinux (
     let
       layout = config.nx.desktop.hyprland.layout;
     in
@@ -371,5 +371,6 @@ in
         wl-clipboard
         (lib.mkIf config.nx.isLaptop brightnessctl)
       ];
-    };
+    }
+  );
 }

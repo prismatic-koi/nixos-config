@@ -25,7 +25,7 @@ in
       default = false;
     };
   };
-  config = lib.mkIf config.nx.desktop.sway.enable {
+  config = lib.mkIf (config.nx.desktop.sway.enable && pkgs.stdenv.isLinux) {
     # enable for system
     programs.sway = {
       enable = true;

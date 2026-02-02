@@ -23,6 +23,9 @@ in
   config = lib.mkIf config.nx.programs.firefox.enable {
     home-manager.users.ben = {
       programs.firefox = {
+        # NOTE: On macOS, programs.firefox works but may have limitations.
+        # If issues arise, Firefox can be installed via Homebrew while
+        # keeping this module enabled for configuration management.
         enable = true;
         nativeMessagingHosts = [
           pkgs.tridactyl-native

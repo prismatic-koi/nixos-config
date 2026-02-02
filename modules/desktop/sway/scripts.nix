@@ -1,10 +1,11 @@
 {
   config,
+  pkgs,
   lib,
   ...
 }:
 {
-  config = lib.mkIf config.nx.desktop.sway.enable {
+  config = lib.mkIf (config.nx.desktop.sway.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home = {
       # my scripts relevant to sway
       sessionPath = [ "$HOME/.local/scripts" ];

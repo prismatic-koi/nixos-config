@@ -10,7 +10,7 @@
       default = false;
     };
   };
-  config = lib.mkIf config.nx.desktop.offline-focus-mode.enable {
+  config = lib.mkIf (config.nx.desktop.offline-focus-mode.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben = {
       home.sessionPath = [ "$HOME/.local/scripts" ];
       # I'm going to call this thing 'system mode'

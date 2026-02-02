@@ -29,7 +29,7 @@ in
       description = "variant of the wallpaper";
     };
   };
-  config = lib.mkIf config.nx.desktop.wallpaper.enable {
+  config = lib.mkIf (config.nx.desktop.wallpaper.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben =
       {
         config,

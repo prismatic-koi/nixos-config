@@ -1,5 +1,6 @@
 {
   config,
+  pkgs,
   lib,
   ...
 }:
@@ -11,7 +12,7 @@ with config.theme;
       default = config.nx.desktop.sway.enable;
     };
   };
-  config = lib.mkIf config.nx.desktop.swaylock.enable {
+  config = lib.mkIf (config.nx.desktop.swaylock.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.programs.swaylock = {
       enable = true;
       settings = {

@@ -10,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf config.nx.services.powerProfilesDaemon.enable {
+  config = lib.mkIf (config.nx.services.powerProfilesDaemon.enable && pkgs.stdenv.isLinux) {
     environment.persistence."/persist/system" = {
       hideMounts = true;
       directories = [

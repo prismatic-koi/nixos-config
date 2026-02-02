@@ -1,10 +1,11 @@
 {
   config,
+  pkgs,
   lib,
   ...
 }:
 {
-  config = lib.mkIf config.nx.desktop.waybar.enable {
+  config = lib.mkIf (config.nx.desktop.waybar.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home = {
       file.".local/scripts/cli.mpd.nowPlaying" = {
         executable = true;

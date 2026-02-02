@@ -12,7 +12,7 @@
         default = false;
       };
   };
-  config = lib.mkIf config.nx.services.blocky.enable {
+  config = lib.mkIf (config.nx.services.blocky.enable && pkgs.stdenv.isLinux) {
     environment.systemPackages = with pkgs; [
       blocky # nice to also have the cli tool
     ];

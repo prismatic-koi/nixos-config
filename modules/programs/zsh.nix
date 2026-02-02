@@ -5,7 +5,15 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  cfg = config.nx.programs.zsh;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+
+  # For NixOS, we use home-manager.users.ben
+  # For darwin, we're already in home-manager context
+  hmConfig = if isLinux then config.home-manager.users.ben else config;
+
+  homeDir = hmConfig.home.homeDirectory;
 in
 {
   options = {
@@ -13,119 +21,156 @@ in
       default = true;
     };
   };
-  config = lib.mkIf config.nx.programs.zsh.enable {
-    # zsh bootstrap
-    programs.zsh = {
-      enable = true;
-      shellInit = ''
-        export ZDOTDIR=$HOME/.local/share/zsh
-      '';
-    };
-    home-manager.users.ben = {
-      # We set ZDOTDIR at system level, so we don't need
-      # to bootstrap the the zsh environment like this.
-      home.file.".zshenv".enable = false;
 
-      programs.zsh = {
-        enable = true;
-        dotDir = "${config.home-manager.users.ben.xdg.dataHome}/zsh";
-        # source the zcompdump from persist if it exists
-        # this is to speed up zsh startup in an impermanent environment
-        completionInit =
-          let
-            dumpFile = "/persist/${homeDir}/.local/share/zsh/.zcompdump";
-          in
-          ''
-            autoload -U compinit
-            if [[ -f ${dumpFile} ]]; then
-              compinit -d ${dumpFile}
-            else
-              compinit
-            fi
-          '';
-        history = {
-          size = 10000;
-          expireDuplicatesFirst = true;
-          path = "${homeDir}/.local/state/zsh/history";
-        };
-        autosuggestion = {
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      # NixOS-specific: System-level zsh bootstrap
+      # for darwin we do it in the machine currently
+      (lib.mkIf isLinux {
+        programs.zsh = {
           enable = true;
-          highlight = "fg=${config.theme.grey1}";
+          shellInit = ''
+            export ZDOTDIR=$HOME/.local/share/zsh
+          '';
         };
-        syntaxHighlighting.enable = true;
-        # zprof.enable = true; # for troubleshooting startup
-        plugins = [
-          {
-            name = "powerlevel10k";
-            src = pkgs.zsh-powerlevel10k;
-            file = "share/zsh-powerlevel10k/powerlevel10k.zsh-theme";
-          }
-          {
-            name = "powerlevel10k-config";
-            src = lib.cleanSource ./files;
-            file = "p10k.zsh";
-          }
-          {
-            name = "vi-mode";
-            src = pkgs.zsh-vi-mode;
-            file = "share/zsh-vi-mode/zsh-vi-mode.plugin.zsh";
-          }
-          {
-            name = "zsh-history-substring-search";
-            src = pkgs.zsh-history-substring-search;
-            file = "share/zsh-history-substring-search/zsh-history-substring-search.zsh";
-          }
-        ];
-        shellAliases = {
-          # preserve env when using sudo
-          # sudo = "sudo -E -s";
-          # color terminals for ssh targets that don't know kitty
-          ssh = "TERM=xterm-color ssh";
-          # eza instead of ls
-          ls = "eza";
-          l = "eza -la";
-          tree = "eza --tree -la";
-          # ripgrep instead of grep
-          grep = "rg";
-          # nvim
-          v = "nvim";
-          # youtube music download script
-          ytm-download = "yt-dlp  --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
-          # git aliases
-          gP = "git pull";
-          gcb = "git checkout -b";
-          # history search
-          hs = "history | grep";
-        };
-        sessionVariables = {
-          # these interfere with my keybindings below
-          ZVM_INIT_MODE = "sourcing";
-        };
-        initContent =
-          let
-            initExtra = lib.mkOrder 1000 ''
-              # zsh-history-substring-search configuration
-              bindkey '^[[A' history-substring-search-up # or '\eOA'
-              bindkey '^[[B' history-substring-search-down # or '\eOB'
-              HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
+      })
 
-              # Custom keybindings
-              bindkey -s ^v "nvim\n"
-              bindkey -s ^p "python\n"
-              bindkey -s ^o "cli.tmux.projectSessioniser ~/documents/obsidian\n"
-              bindkey -s ^f "cli.tmux.projectSessioniser\n"
-              # utils
-              eval "$(direnv hook zsh)"
-            '';
-          in
-          lib.mkMerge [ initExtra ];
-      };
-      home.persistence."/persist" = {
-        directories = [
-          ".local/share/zsh"
-          ".local/state/zsh"
-        ];
-      };
-    };
-  };
+      # Common home-manager config
+      {
+        home-manager.users.ben = {
+          # We set ZDOTDIR at system level on NixOS, so we don't need
+          # to bootstrap the the zsh environment like this.
+          home.file.".zshenv".enable = false;
+
+          programs.zsh = {
+            enable = true;
+            dotDir = "${hmConfig.xdg.dataHome}/zsh";
+
+            # Completion initialization
+            # On NixOS with impermanence, use /persist path
+            # On darwin, use regular xdg path
+            completionInit =
+              let
+                dumpFile =
+                  if isLinux then
+                    "/persist/${homeDir}/.local/share/zsh/.zcompdump"
+                  else
+                    "${hmConfig.xdg.dataHome}/zsh/.zcompdump";
+              in
+              ''
+                autoload -U compinit
+                if [[ -f ${dumpFile} ]]; then
+                  compinit -d ${dumpFile}
+                else
+                  compinit
+                fi
+              '';
+
+            history = {
+              size = 10000;
+              expireDuplicatesFirst = true;
+              path = "${homeDir}/.local/state/zsh/history";
+            };
+
+            autosuggestion = {
+              enable = true;
+              # Use theme color on NixOS, default on darwin
+              highlight = lib.mkIf (isLinux && config ? theme) "fg=${config.theme.grey1}";
+            };
+
+            syntaxHighlighting.enable = true;
+            # zprof.enable = true; # for troubleshooting startup
+            plugins = [
+              {
+                name = "powerlevel10k";
+                src = pkgs.zsh-powerlevel10k;
+                file = "share/zsh-powerlevel10k/powerlevel10k.zsh-theme";
+              }
+              {
+                name = "powerlevel10k-config";
+                src = lib.cleanSource ./files;
+                file = "p10k.zsh";
+              }
+              # Use zsh-vi-mode on all platforms for consistent vi-mode experience
+              {
+                name = "vi-mode";
+                src = pkgs.zsh-vi-mode;
+                file = "share/zsh-vi-mode/zsh-vi-mode.plugin.zsh";
+              }
+              {
+                name = "zsh-history-substring-search";
+                src = pkgs.zsh-history-substring-search;
+                file = "share/zsh-history-substring-search/zsh-history-substring-search.zsh";
+              }
+            ];
+
+            # Darwin still uses oh-my-zsh for git plugins
+            oh-my-zsh = lib.mkIf isDarwin {
+              enable = true;
+              plugins = [
+                "git"
+                "git-auto-fetch"
+                "history"
+              ];
+            };
+
+            shellAliases = {
+              # preserve env when using sudo
+              # sudo = "sudo -E -s";
+              # color terminals for ssh targets that don't know kitty
+              ssh = "TERM=xterm-color ssh";
+              # eza instead of ls
+              ls = "eza";
+              l = "eza -la";
+              tree = "eza --tree -la";
+              # ripgrep instead of grep
+              grep = "rg";
+              # nvim
+              v = "nvim";
+              # youtube music download script
+              ytm-download = "yt-dlp  --add-metadata --format m4a -i -o '~/music/%(artist)s/%(album)s/%(title)s.%(ext)s' --sponsorblock-remove 'music_offtopic' --";
+              # git aliases
+              gP = "git pull";
+              gcb = "git checkout -b";
+              # history search
+              hs = "history | grep";
+            };
+
+            # Set ZVM_INIT_MODE for zsh-vi-mode plugin to not break custom keybindings
+            sessionVariables = {
+              ZVM_INIT_MODE = "sourcing";
+            };
+
+            initContent =
+              let
+                # Common init
+                commonInit = ''
+                  # zsh-history-substring-search configuration
+                  bindkey '^[[A' history-substring-search-up # or '\eOA'
+                  bindkey '^[[B' history-substring-search-down # or '\eOB'
+                  HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
+
+                  # Custom keybindings
+                  bindkey -s ^v "nvim\n"
+                  bindkey -s ^p "python\n"
+                  bindkey -s ^o "cli.tmux.projectSessioniser ~/documents/obsidian\n"
+                  bindkey -s ^f "cli.tmux.projectSessioniser\n"
+                  # utils
+                  eval "$(direnv hook zsh)"
+                '';
+              in
+              lib.mkOrder 1000 commonInit;
+          };
+
+          # NixOS-specific: Impermanence support
+          home.persistence."/persist" = {
+            directories = [
+              ".local/share/zsh"
+              ".local/state/zsh"
+            ];
+          };
+        };
+      }
+    ]
+  );
 }

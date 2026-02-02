@@ -113,6 +113,7 @@
           jnv
           jq
           killall
+          nixfmt
           openssl
           p7zip
           pdftk

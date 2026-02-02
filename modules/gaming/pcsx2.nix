@@ -16,6 +16,7 @@
         config.nx.gaming.pscx2.enable
         # only enable if gaming is enabled
         && config.nx.gaming.enable
+        && pkgs.stdenv.isLinux
       )
       {
         home-manager.users.ben = {

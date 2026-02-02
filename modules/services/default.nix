@@ -1,4 +1,4 @@
-{ ... }:
+{ pkgs, lib, ... }:
 {
   imports = [
     ./battery-notifier.nix
@@ -12,7 +12,7 @@
     ./syncthing
     ./udiskie.nix
   ];
-  config = {
+  config = lib.mkIf pkgs.stdenv.isLinux {
     # default service configuration, things that don't need their own module
 
     # Enable the OpenSSH daemon.

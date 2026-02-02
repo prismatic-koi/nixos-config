@@ -13,7 +13,7 @@ in
       default = true;
     };
   };
-  config = lib.mkIf config.nx.desktop.screenshot.enable {
+  config = lib.mkIf (config.nx.desktop.screenshot.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home = {
       file.".local/scripts/application.grim.screenshotToClipboard" = {
         executable = true;

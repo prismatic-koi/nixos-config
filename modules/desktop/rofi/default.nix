@@ -23,7 +23,7 @@ with config.theme;
       default = true;
     };
   };
-  config = lib.mkIf config.nx.desktop.rofi.enable {
+  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben = {
       programs.rofi = {
         enable = true;

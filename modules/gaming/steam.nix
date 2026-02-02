@@ -19,6 +19,7 @@
         config.nx.gaming.steam.enable
         # only enable if gaming is enabled
         && config.nx.gaming.enable
+        && pkgs.stdenv.isLinux
       )
       {
         programs.steam = {

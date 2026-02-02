@@ -1,11 +1,12 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 with config.theme;
 {
-  config = lib.mkIf config.nx.desktop.rofi.enable {
+  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home.file.".local/scripts/application.rofi.calculator" = {
       executable = true;
       text =

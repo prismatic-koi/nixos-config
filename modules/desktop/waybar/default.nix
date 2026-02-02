@@ -26,7 +26,7 @@ with config.theme;
   imports = [
     ./scripts.nix
   ];
-  config = lib.mkIf config.nx.desktop.waybar.enable {
+  config = lib.mkIf (config.nx.desktop.waybar.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.programs.waybar = {
       enable = true;
       package = pkgs.waybar;

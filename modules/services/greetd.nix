@@ -15,7 +15,7 @@
       description = "Command to run as default session in greetd";
     };
   };
-  config = lib.mkIf config.nx.services.greetd.enable {
+  config = lib.mkIf (config.nx.services.greetd.enable && pkgs.stdenv.isLinux) {
     environment.persistence."/persist/system" = {
       hideMounts = true;
       directories = [

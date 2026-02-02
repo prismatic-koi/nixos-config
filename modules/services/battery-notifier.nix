@@ -276,7 +276,7 @@ in
     };
   };
 
-  config = {
+  config = lib.mkIf pkgs.stdenv.isLinux {
     # UDEV rule to trigger the script on power supply changes.
     services.udev.extraRules =
       let

@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 {
@@ -41,7 +42,7 @@
       };
     };
   };
-  config = lib.mkIf config.nx.desktop.hyprland.enable {
+  config = lib.mkIf (config.nx.desktop.hyprland.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben = {
       services.hypridle =
         let

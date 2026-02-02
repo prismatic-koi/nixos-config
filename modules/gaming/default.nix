@@ -1,6 +1,7 @@
 {
   lib,
   config,
+  pkgs,
   ...
 }:
 {
@@ -17,7 +18,7 @@
       default = false;
     };
   };
-  config = lib.mkIf config.nx.gaming.enable {
+  config = lib.mkIf (config.nx.gaming.enable && pkgs.stdenv.isLinux) {
     hardware.graphics = {
       enable = true;
       enable32Bit = true;

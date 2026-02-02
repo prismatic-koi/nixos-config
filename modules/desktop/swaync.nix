@@ -11,7 +11,7 @@ with config.theme;
       default = true;
     };
   };
-  config = lib.mkIf config.nx.desktop.swaync.enable {
+  config = lib.mkIf (config.nx.desktop.swaync.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home = {
       packages = [
         pkgs.libnotify

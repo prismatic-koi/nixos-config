@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 {
@@ -9,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf config.nx.udiskie.enable {
+  config = lib.mkIf (config.nx.udiskie.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.services.udiskie = {
       enable = true;
       automount = true;

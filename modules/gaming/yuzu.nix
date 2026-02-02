@@ -28,7 +28,7 @@ in
       default = false;
     };
   };
-  config = lib.mkIf config.nx.gaming.yuzu.enable {
+  config = lib.mkIf (config.nx.gaming.yuzu.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben = {
       home.packages = [
         yuzu-appimage

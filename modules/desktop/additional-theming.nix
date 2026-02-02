@@ -5,7 +5,7 @@
   ...
 }:
 {
-  config = {
+  config = lib.mkIf pkgs.stdenv.isLinux {
     home-manager.users.ben = {
       # set up the cusors and icon themes the way I like it
       home.pointerCursor = {

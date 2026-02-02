@@ -5,7 +5,7 @@
   ...
 }:
 {
-  config = lib.mkIf config.nx.desktop.sway.enable {
+  config = lib.mkIf (config.nx.desktop.sway.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.wayland.windowManager.sway.config = {
       startup = [
         {

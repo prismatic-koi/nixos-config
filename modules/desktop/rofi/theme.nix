@@ -1,11 +1,12 @@
 {
   config,
+  pkgs,
   lib,
   ...
 }:
 with config.theme;
 {
-  config = lib.mkIf config.nx.desktop.rofi.enable {
+  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
     home-manager.users.ben.home.file.".config/rofi/theme.rasi".text = ''
       * {
         background-color: transparent;

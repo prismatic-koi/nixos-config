@@ -23,6 +23,7 @@
   #     theme = "everforest";
   #   };
   #   programs = {
+  #     firefox.enable = false; # Keep using Homebrew cask for now
   #     gcalcli.enable = true;
   #     homeAutomation.enable = true;
   #     qutebrowser.enable = true;
