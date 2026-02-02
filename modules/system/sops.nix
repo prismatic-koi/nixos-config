@@ -4,21 +4,23 @@
   pkgs,
   inputs,
   ...
-}:
-let
+}: let
   homeDir = config.home-manager.users.ben.home.homeDirectory;
-in
-{
+in {
   # Import sops modules - NixOS module for system, home-manager module for user config
-  imports = [ inputs.sops-nix.nixosModules.sops ];
+  imports = [inputs.sops-nix.nixosModules.sops];
 
   options = {
-    nx.system.sops.enable = lib.mkEnableOption "Enable sops module" // {
-      default = true;
-    };
-    nx.system.sops.ageKeys.enable = lib.mkEnableOption "Add Age encryption keys to machine" // {
-      default = false;
-    };
+    nx.system.sops.enable =
+      lib.mkEnableOption "Enable sops module"
+      // {
+        default = true;
+      };
+    nx.system.sops.ageKeys.enable =
+      lib.mkEnableOption "Add Age encryption keys to machine"
+      // {
+        default = false;
+      };
   };
 
   config = lib.mkIf config.nx.system.sops.enable (
@@ -31,20 +33,18 @@ in
           generateKey = true;
           # this needs to be the /persist path,
           # or else it wont be available when needed to create user passwords etc
-          sshKeyPaths = [ "/persist/system/etc/ssh/nix-ed25519" ];
+          sshKeyPaths = ["/persist/system/etc/ssh/nix-ed25519"];
         };
-        sops.secrets =
-          let
-            sopsFile = ./secrets/age.sops.yaml;
-          in
-          {
-            "age/personal" = {
-              owner = "ben";
-              mode = "0600";
-              path = "${homeDir}/.config/sops/age/keys.txt";
-              sopsFile = sopsFile;
-            };
+        sops.secrets = let
+          sopsFile = ./secrets/age.sops.yaml;
+        in {
+          "age/personal" = {
+            owner = "ben";
+            mode = "0600";
+            path = "${homeDir}/.config/sops/age/keys.txt";
+            sopsFile = sopsFile;
           };
+        };
         system.activationScripts.homeAgeKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.config/sops/age
           chown ben:users ${homeDir}/.config/sops/age
@@ -61,10 +61,9 @@ in
             inputs.sops-nix.homeManagerModules.sops
           ];
 
-          sops = {
-            age.keyFile = "${homeDir}/.config/sops/age/keys.txt";
-            # Note: The age key must be manually placed at this location
-            # It should contain the personal age key that can decrypt secrets
+          sops.age = {
+            keyFile = "${homeDir}/.config/sops/age/keys.txt";
+            sshKeyPaths = ["${homeDir}/.ssh/nix-ed25519"];
           };
         };
       })
