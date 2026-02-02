@@ -66,7 +66,12 @@
             # Use a wrapper script to properly pass the password from the secret file
             ExecStart = pkgs.writeShellScript "bitwarden-prefetch-wrapper" ''
               export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
-              export BITWARDEN_PASSWORD="$(cat ${config.sops.secrets.bitwarden_password.path})"
+              export BITWARDEN_PASSWORD="$(cat ${
+                if pkgs.stdenv.isLinux then
+                  config.sops.secrets.bitwarden_password.path
+                else
+                  config.home-manager.users.ben.sops.secrets.bitwarden_password.path
+              })"
               exec ${bitwarden-prefetch}/bin/bitwarden-prefetch
             '';
             # Allow the service to exit successfully even when no session exists

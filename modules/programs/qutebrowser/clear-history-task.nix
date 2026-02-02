@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  homeDir = config.home-manager.users.ben.home.homeDirectory;
+in
 {
   options = {
     nx.services.qutebrowser.clearHistoryTask =
@@ -14,27 +17,29 @@
       };
   };
   config =
-    lib.mkIf (config.nx.programs.qutebrowser.enable && config.nx.services.qutebrowser.clearHistoryTask)
+    lib.mkIf
+      (
+        config.nx.programs.qutebrowser.enable
+        && config.nx.services.qutebrowser.clearHistoryTask
+        && pkgs.stdenv.isLinux
+      )
       {
         home-manager.users.ben = {
           # a systemd service clear qutebrowser history older than 7 days
           systemd.user.services.clear-qutebrowser-history =
             let
-              clear-qutebrowser-history =
-                pkgs.writeShellScript "clear-qutebrowser-history"
-                  # bash
-                  ''
-                    #!/bin/bash
+              clear-qutebrowser-history = pkgs.writeShellScript "clear-qutebrowser-history" ''
+                #!/bin/bash
 
-                    # Path to your SQLite database
-                    DB_PATH="/home/ben/.local/share/qutebrowser/history.sqlite"
+                # Path to your SQLite database
+                DB_PATH="${homeDir}/.local/share/qutebrowser/history.sqlite"
 
-                    # Delete entries older than 7 days
-                    ${pkgs.sqlite}/bin/sqlite3 "$DB_PATH" <<EOF
-                    DELETE FROM History WHERE atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
-                    DELETE FROM CompletionHistory WHERE last_atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
-                    EOF
-                  '';
+                # Delete entries older than 7 days
+                ${pkgs.sqlite}/bin/sqlite3 "$DB_PATH" <<EOF
+                DELETE FROM History WHERE atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
+                DELETE FROM CompletionHistory WHERE last_atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
+                EOF
+              '';
             in
             {
               Unit = {

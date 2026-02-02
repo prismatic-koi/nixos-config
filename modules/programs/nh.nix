@@ -3,6 +3,9 @@
   lib,
   ...
 }:
+let
+  homeDir = config.home-manager.users.ben.home.homeDirectory;
+in
 {
   options = {
     nx.programs.nh.enable = lib.mkEnableOption "enables nix helper tool" // {
@@ -12,7 +15,7 @@
   config = lib.mkIf config.nx.programs.nh.enable {
     programs.nh = {
       enable = true;
-      flake = "/home/ben/code/nixos-config";
+      flake = "${homeDir}/code/nixos-config";
     };
   };
 }

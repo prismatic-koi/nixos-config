@@ -4,23 +4,21 @@
   pkgs,
   inputs,
   ...
-}: let
+}:
+let
   homeDir = config.home-manager.users.ben.home.homeDirectory;
-in {
+in
+{
   # Import sops modules - NixOS module for system, home-manager module for user config
-  imports = [inputs.sops-nix.nixosModules.sops];
+  imports = [ inputs.sops-nix.nixosModules.sops ];
 
   options = {
-    nx.system.sops.enable =
-      lib.mkEnableOption "Enable sops module"
-      // {
-        default = true;
-      };
-    nx.system.sops.ageKeys.enable =
-      lib.mkEnableOption "Add Age encryption keys to machine"
-      // {
-        default = false;
-      };
+    nx.system.sops.enable = lib.mkEnableOption "Enable sops module" // {
+      default = true;
+    };
+    nx.system.sops.ageKeys.enable = lib.mkEnableOption "Add Age encryption keys to machine" // {
+      default = false;
+    };
   };
 
   config = lib.mkIf config.nx.system.sops.enable (
@@ -33,18 +31,20 @@ in {
           generateKey = true;
           # this needs to be the /persist path,
           # or else it wont be available when needed to create user passwords etc
-          sshKeyPaths = ["/persist/system/etc/ssh/nix-ed25519"];
+          sshKeyPaths = [ "/persist/system/etc/ssh/nix-ed25519" ];
         };
-        sops.secrets = let
-          sopsFile = ./secrets/age.sops.yaml;
-        in {
-          "age/personal" = {
-            owner = "ben";
-            mode = "0600";
-            path = "${homeDir}/.config/sops/age/keys.txt";
-            sopsFile = sopsFile;
+        sops.secrets =
+          let
+            sopsFile = ./secrets/age.sops.yaml;
+          in
+          {
+            "age/personal" = {
+              owner = "ben";
+              mode = "0600";
+              path = "${homeDir}/.config/sops/age/keys.txt";
+              sopsFile = sopsFile;
+            };
           };
-        };
         system.activationScripts.homeAgeKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.config/sops/age
           chown ben:users ${homeDir}/.config/sops/age
@@ -63,7 +63,21 @@ in {
 
           sops.age = {
             keyFile = "${homeDir}/.config/sops/age/keys.txt";
-            sshKeyPaths = ["${homeDir}/.ssh/nix-ed25519"];
+            sshKeyPaths = [ "${homeDir}/.ssh/nix-ed25519" ];
+          };
+
+          # TODO: Temporary workaround for https://github.com/Mic92/sops-nix/issues/890
+          # The LaunchAgent on macOS has an empty PATH when no age plugins are configured,
+          # causing sops-install-secrets to fail finding 'getconf' at /usr/bin/getconf.
+          # This can be removed once https://github.com/Mic92/sops-nix/pull/891 is merged
+          # and we update sops-nix. Check if this is still needed and remove if possible.
+          launchd.agents.sops-nix = {
+            enable = true;
+            config = {
+              EnvironmentVariables = {
+                PATH = lib.mkForce "/usr/bin:/bin:/usr/sbin:/sbin";
+              };
+            };
           };
         };
       })
