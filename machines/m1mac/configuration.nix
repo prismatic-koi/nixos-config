@@ -17,7 +17,6 @@
 
   networking.hostName = "m1mac";
 
-  # TODO Phase 3: Re-enable after modules are made cross-platform safe
   # Module configuration using nx namespace (matching NixOS pattern)
   # nx = {
   #   desktop = {
@@ -27,6 +26,7 @@
   #     gcalcli.enable = true;
   #     homeAutomation.enable = true;
   #     qutebrowser.enable = true;
+  #     ssh.enableWorkKeys = true;
   #   };
   #   services = {
   #     syncthing = {
