@@ -69,8 +69,10 @@
         "type*" = "allow";
         "which *" = "allow";
         "which*" = "allow";
-        # git operations (generic pattern handles all git commands via writeBashCommands)
+        # git operations (permissive with push gated)
         "git *" = "allow";
+        "git push *" = "ask";
+        "git push" = "ask";
         # GitHub CLI read operations
         "gh issue view *" = "allow";
         "gh issue list *" = "allow";
