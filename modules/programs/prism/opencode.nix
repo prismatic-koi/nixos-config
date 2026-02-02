@@ -116,6 +116,10 @@
         # other dev tools
         "npm *" = "allow";
         "podman machine start" = "allow";
+        "source *" = "allow";
+        "pytest *" = "allow";
+        "python3 *" = "allow";
+        "pyhton *" = "allow";
         # Kubernetes write operations
         "flux *" = "allow";
         "helm *" = "allow";
