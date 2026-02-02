@@ -168,3 +168,13 @@ alt-shift-l = ['join-with right', 'mode main']
 [[on-window-detected]]
     check-further-callbacks = true
     run = 'layout tiles'
+
+# qutebrowser file picker - float and center
+[[on-window-detected]]
+    if.app-name-regex-substring = 'qute-filepicker'
+    run = ['layout floating', 'move-node-to-workspace focused']
+
+# qutebrowser editor - float and center
+[[on-window-detected]]
+    if.app-name-regex-substring = 'qute-editor'
+    run = ['layout floating', 'move-node-to-workspace focused']
