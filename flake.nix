@@ -127,6 +127,13 @@
     in
     {
       overlays = import ./overlays { inherit inputs outputs; };
+
+      # Formatter for nix fmt
+      formatter = {
+        x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt;
+        aarch64-darwin = nixpkgs.legacyPackages.aarch64-darwin.nixfmt;
+      };
+
       nixosConfigurations = {
         navi = mkSystem {
           system = "x86_64-linux";
