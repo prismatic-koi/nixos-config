@@ -69,12 +69,8 @@
         "type*" = "allow";
         "which *" = "allow";
         "which*" = "allow";
-        # git read operations
-        "git diff *" = "allow";
-        "git status*" = "allow";
-        "git log*" = "allow";
-        "git show*" = "allow";
-        "git branch*" = "allow";
+        # git operations (generic pattern handles all git commands via writeBashCommands)
+        "git *" = "allow";
         # GitHub CLI read operations
         "gh issue view *" = "allow";
         "gh issue list *" = "allow";
@@ -88,7 +84,6 @@
         "kubectl get*" = "allow";
         "kubectl describe*" = "allow";
         "kubectl logs*" = "allow";
-        "flux *" = "allow";
         "helm template *" = "allow";
         # Nix read operations
         "nix flake show*" = "allow";
