@@ -57,16 +57,35 @@ in
             bind-key X kill-window
             # close pane without confirmation
             bind-key x kill-pane
-            # unset <c-space> to avoid conflicts with vim
-            unbind C-Space
             # easy config reload
             bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
-            # toggle terminal - jump to term window, remembering where you came from
-            # If in term window, jump back to previous window
-            # If in any other window, jump to term (creating it if needed)
-            bind -n C-Space if-shell '[ "$(tmux display-message -p "#{window_name}")" = "term" ]' \
-              'last-window' \
-              'run-shell "tmux select-window -t :term 2>/dev/null || (tmux new-window -d -t :2 -n term && tmux select-window -t :term)"'
+            
+            # --- Prism-specific keybindings ---
+            
+            # context switcher popup (C-f)
+            bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
+            
+            # toggle to/from term window (C-Space)
+            unbind C-Space
+            bind -n C-Space if-shell 'tmux list-windows -F "##I:##W" | grep -q ":term$"' \
+              'if-shell "[ #{window_name} = term ]" "last-window" "select-window -t term"' \
+              'new-window -n term'
+            
+            # new window with opencode agent (prefix + a)
+            bind a new-window -n agent "opencode"
+            
+            # opencode scrolling keybinds (only active when opencode is running)
+            # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
+            bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
+            bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
+            bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
+            bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
+            
+            # toggle a split pane with edit and agent
+            bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p '#{window_panes}') -gt 1 ]" \
+                "break-pane -s 'edit.1' -n 'agent'" \
+                "join-pane -h -s 'agent.0' -t 'edit'"
+            
             # vim style copy
             set -g mode-keys vi
             bind-key -T copy-mode-vi 'v' send -X begin-selection
@@ -74,15 +93,6 @@ in
             bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
             bind-key -T copy-mode-vi 'q' send -X cancel
             bind-key -T copy-mode-vi Escape send -X cancel
-            # unbind p
-            # bind-key -T copy-mode-vi y send-keys -X copy-pipe-and-cancel "xsel -i -p && xsel -o -p | xsel -i -b"
-            # bind-key p run "xsel -o | tmux load-buffer - ; tmux paste-buffer"
-            # context switcher - open in popup with Ctrl-f
-            bind -n C-f display-popup -E -w 80% -h 80% -S "fg=${primary}" "cli.tmux.contextSwitcher"
-            # toggle a split pane with edit and agent
-            bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p '#{window_panes}') -gt 1 ]" \
-                "break-pane -s 'edit.1' -n 'agent'" \
-                "join-pane -h -s 'agent.0' -t 'edit'"
           '';
       };
     };
