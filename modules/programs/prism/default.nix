@@ -91,6 +91,11 @@
     nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
     nx.programs.prism.scripts.enable = lib.mkDefault true;
 
+    # Auto-enable choose on Darwin when sessioniser is enabled
+    nx.programs.choose.enable = lib.mkDefault (
+      pkgs.stdenv.isDarwin && config.nx.programs.prism.sessioniser.enable
+    );
+
     # Computed values that submodules can reference
     nx.programs.prism._internal = {
       agentEnvPrefix = lib.concatStringsSep " " (

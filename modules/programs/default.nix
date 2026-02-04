@@ -9,6 +9,7 @@
     ./anki.nix
     ./bitwarden.nix
     ./calibre.nix
+    ./choose.nix
     ./chromium.nix
     ./claude-code.nix
     ./cura-appimage.nix
