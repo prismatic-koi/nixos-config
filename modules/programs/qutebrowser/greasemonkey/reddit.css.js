@@ -121,4 +121,4 @@ GM_addStyle(`
 `);
 
 // add cookie to force old reddit
-document.cookie = 'redesign_optout=true;';
+document.cookie = 'redesign_optout=true; path=/; max-age=31536000';
