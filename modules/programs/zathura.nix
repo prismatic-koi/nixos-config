@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 with config.theme;
@@ -14,13 +15,14 @@ with config.theme;
     home-manager.users.ben = {
       programs.zathura = {
         enable = true;
-        options = {
+        options = lib.mkIf pkgs.stdenv.isLinux {
           selection-clipboard = "clipboard";
           default-bg = bg_dim;
           default-fg = foreground;
         };
       };
-      xdg.mimeApps.defaultApplications = {
+      # XDG MIME associations are Linux-only
+      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.isLinux {
         "application/pdf" = [ "org.pwmt.zathura.desktop" ];
       };
     };

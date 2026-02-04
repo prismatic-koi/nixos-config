@@ -50,12 +50,13 @@
             cmd q :quit
             %mkdir -p ~/.trash
             cmd trash %set -f; mv $fx ~/.trash
-            map D :delete
+            map D :trash
             # open
             map <enter> :open
           '';
       };
-      xdg.desktopEntries = {
+      # XDG desktop entries and MIME associations are Linux-only
+      xdg.desktopEntries = lib.mkIf pkgs.stdenv.isLinux {
         lf = {
           name = "lf";
           genericName = "file manager";
@@ -70,7 +71,7 @@
           mimeType = [ "inode/directory" ];
         };
       };
-      xdg.mimeApps.defaultApplications = {
+      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.isLinux {
         "inode/directory" = [ "lf.desktop" ];
         "inode/mount-point" = [ "lf.desktop" ];
       };

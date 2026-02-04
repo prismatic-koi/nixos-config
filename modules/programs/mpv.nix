@@ -17,11 +17,13 @@
         config = {
           osc = "no";
         };
-        scripts = with pkgs.mpvScripts; [
-          (lib.mkIf pkgs.stdenv.isLinux mpris)
-          thumbnail
-          sponsorblock
-        ];
+        scripts =
+          with pkgs.mpvScripts;
+          [
+            thumbnail
+            sponsorblock
+          ]
+          ++ lib.optionals pkgs.stdenv.isLinux [ mpris ];
       };
     };
   };
