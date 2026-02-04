@@ -1,8 +1,14 @@
 # Testing Configuration Changes
 
-## Verifying No Unintended Changes
+## Core Principle: Verify No Functional Changes
 
-When making changes that should only affect specific platforms or configurations, you can verify that other configurations remain unchanged by comparing derivation paths before and after.
+When making changes that should only affect specific platforms or configurations, the **core principle** is to verify that other configurations have no **functional changes** - meaning the actual output behavior remains identical, even if the derivation path changes due to structural refactoring.
+
+**Two types of testing:**
+1. **Derivation path comparison** - Quick signal that something changed (or didn't)
+2. **Functional output comparison** - Verifies the actual configuration output is identical
+
+Both are valuable, but **functional verification is the authoritative test** when derivation paths differ.
 
 ### Example: Testing that NixOS config is unchanged
 
@@ -111,3 +117,143 @@ For **structural refactoring** (like migrating to cross-platform), derivation ch
 3. Functional testing confirms behavior is unchanged
 
 In these cases, the derivation comparison serves as a **signal** that something changed, but doesn't indicate a problem.
+
+## Functional Testing: Verifying Actual Output
+
+When derivation paths differ but you need to verify there are no functional changes, test the actual configuration output that matters.
+
+### Why Functional Testing?
+
+Derivation paths change with structural refactoring (using `lib.mkMerge`, reordering options, etc.), but this doesn't mean the actual configuration changed. **Functional testing verifies what the system will actually do**, which is the real concern.
+
+### Testing Strategy by Module Type
+
+Different modules require different testing approaches:
+
+#### Application Configuration Files
+
+For programs that generate config files (kitty, tmux, neovim, etc.), compare the actual config output:
+
+```bash
+# Example: Testing kitty configuration
+git checkout HEAD~1
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.extraConfig 2>&1 | grep -v "^warning" > /tmp/kitty-before.txt
+
+git checkout -
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.extraConfig 2>&1 | grep -v "^warning" > /tmp/kitty-after.txt
+
+echo "=== DIFF ==="
+diff /tmp/kitty-before.txt /tmp/kitty-after.txt && echo "✓ No functional changes!" || echo "✗ Config differs"
+```
+
+**What to test:**
+- `programs.<app>.extraConfig` - The actual config file content
+- `programs.<app>.settings` - Settings that get written to config
+- `programs.<app>.enable` - Whether the program is enabled
+
+#### Package Lists
+
+For package installations, compare the installed package list:
+
+```bash
+# Compare system packages
+nix eval .#nixosConfigurations.navi.config.environment.systemPackages --apply 'map (p: p.name)' --json
+
+# Compare home-manager packages
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.home.packages --apply 'map (p: p.name)' --json
+```
+
+#### Service Configurations
+
+For services, check that services are enabled/disabled correctly:
+
+```bash
+# System services
+nix eval .#nixosConfigurations.navi.config.systemd.services --apply builtins.attrNames --json
+
+# User services
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.systemd.user.services --apply builtins.attrNames --json
+```
+
+#### Environment Variables
+
+For shell configurations:
+
+```bash
+# Check environment variables
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.home.sessionVariables --json
+
+# Check shell aliases
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.zsh.shellAliases --json
+```
+
+### Comprehensive Functional Testing Workflow
+
+When making cross-platform or structural changes:
+
+```bash
+# 1. Test derivation paths (quick signal)
+git checkout HEAD~1 && \
+  nix eval .#nixosConfigurations.navi.config.system.build.toplevel.drvPath 2>&1 | grep '^"' > /tmp/navi-before.txt && \
+  git checkout - && \
+  nix eval .#nixosConfigurations.navi.config.system.build.toplevel.drvPath 2>&1 | grep '^"' > /tmp/navi-after.txt && \
+  diff /tmp/navi-before.txt /tmp/navi-after.txt && echo "✓ Derivations match!" || echo "⚠ Derivations differ - proceed to functional testing"
+
+# 2. If derivations differ, test specific module outputs
+# Example for a program module change:
+git checkout HEAD~1
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.PROGRAM.extraConfig 2>&1 | grep -v "^warning" > /tmp/program-before.txt
+
+git checkout -
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.PROGRAM.extraConfig 2>&1 | grep -v "^warning" > /tmp/program-after.txt
+
+diff /tmp/program-before.txt /tmp/program-after.txt && echo "✓ Config unchanged!" || echo "✗ Config changed - review differences"
+
+# 3. Test other related settings
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.PROGRAM.font.name 2>&1 | grep -v "^warning"
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.PROGRAM.font.size 2>&1 | grep -v "^warning"
+```
+
+### Real-World Example: Kitty Cross-Platform Migration
+
+When migrating kitty module to support cross-platform with `lib.mkMerge`:
+
+**Step 1: Check derivations** (they differed - `/etc` and `activate` changed)
+
+**Step 2: Verify functional output:**
+```bash
+# Compare actual kitty config
+git checkout HEAD~1
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.extraConfig 2>&1 | head -50 > /tmp/kitty-before.txt
+
+git checkout -
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.extraConfig 2>&1 | head -50 > /tmp/kitty-after.txt
+
+diff /tmp/kitty-before.txt /tmp/kitty-after.txt
+# Result: ✓ Identical!
+
+# Verify font settings (platform-specific)
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.font.name 2>&1 | grep -v "^warning"
+# Result: "JetBrainsMono Nerd Font" (correct for Linux)
+
+nix eval .#nixosConfigurations.navi.config.home-manager.users.ben.programs.kitty.font.size 2>&1 | grep -v "^warning"
+# Result: 12 (correct for Linux)
+```
+
+**Outcome:** Derivation paths differed due to `lib.mkMerge` restructuring, but all functional outputs were identical. ✅ Safe to proceed.
+
+### When to Use Each Testing Method
+
+| Scenario | Primary Test | Secondary Test |
+|----------|-------------|----------------|
+| Simple refactoring (no restructuring) | Derivation path | N/A |
+| Structural refactoring with `lib.mkMerge` | Functional output | Derivation (informational) |
+| Adding platform-specific code | Both (should match) | N/A |
+| Adding new options/features | Functional output | Verify new behavior |
+| Bug fixes | Functional output | Verify fix works |
+
+### Key Principle
+
+**When derivation paths differ but functional outputs are identical, the change is structurally different but functionally equivalent** - this is acceptable for refactoring work, especially when migrating to cross-platform support.
+
+The goal is not to prevent all derivation changes, but to ensure **no unintended functional changes** affect existing configurations.
