@@ -300,6 +300,7 @@
               build = {
                 description = "Default build agent with full tool access";
                 mode = "primary";
+                color = config.theme.red;
                 permission = {
                   bash = {
                     # default for any command not listed is ask (MUST be first - last match wins)
@@ -312,6 +313,7 @@
               plan = {
                 description = "Planning and analysis agent with read-only access";
                 mode = "primary";
+                color = config.theme.blue;
                 tools = {
                   read = true;
                   grep = true;
