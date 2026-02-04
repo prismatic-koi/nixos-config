@@ -60,11 +60,11 @@ in
       (lib.mkIf isDarwin {
         home-manager.users.ben.sops.secrets = {
           workkube = {
-            path = "${kubeDir}/config-work";
+            path = "${kubeDir}/config";
             sopsFile = ./secrets/kubeconfig.sops.yaml;
           };
           workreadonlykube = {
-            path = "${kubeDir}/config-work-readonly";
+            path = "${kubeDir}/agents-config";
             sopsFile = ./secrets/kubeconfig.sops.yaml;
           };
         };
