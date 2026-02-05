@@ -40,19 +40,21 @@ in
 
       # Darwin: home-manager sops
       (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets = {
-          "bookmarks.sops" = {
-            # using binary format to preserve multiline strings
-            format = "binary";
-            sopsFile = ./secrets/bookmarks.sops;
-            path = "${homeDir}/.config/qutebrowser/bookmarks/urls";
+        home-manager.users.ben = {
+          sops.secrets = {
+            "bookmarks.sops" = {
+              # using binary format to preserve multiline strings
+              format = "binary";
+              sopsFile = ./secrets/bookmarks.sops;
+              path = "${homeDir}/.config/qutebrowser/bookmarks/urls";
+            };
+            bitwarden_password = {
+              sopsFile = ./secrets/bitwarden.sops.yaml;
+            };
           };
-          bitwarden_password = {
-            sopsFile = ./secrets/bitwarden.sops.yaml;
+          home.sessionVariables = {
+            BITWARDEN_PASSWORD = "$(cat ${config.home-manager.users.ben.sops.secrets.bitwarden_password.path})";
           };
-        };
-        environment.sessionVariables = {
-          BITWARDEN_PASSWORD = "$(cat ${config.home-manager.users.ben.sops.secrets.bitwarden_password.path})";
         };
       })
     ]

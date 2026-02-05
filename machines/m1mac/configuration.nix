@@ -7,8 +7,10 @@
 }:
 {
   imports = [
-    # TODO Phase 3: Re-enable after modules are made cross-platform safe
-    # ../../modules
+    ../../modules/colour-scheme
+    ../../modules/programs
+    ../../modules/services
+    ../../modules/system
   ];
 
   users.users.ben = {
@@ -18,24 +20,20 @@
   networking.hostName = "m1mac";
 
   # Module configuration using nx namespace (matching NixOS pattern)
-  # nx = {
-  #   desktop = {
-  #     theme = "everforest";
-  #   };
-  #   programs = {
-  #     firefox.enable = false; # Keep using Homebrew cask for now
-  #     gcalcli.enable = true;
-  #     homeAutomation.enable = true;
-  #     qutebrowser.enable = true;
-  #     ssh.enableWorkKeys = true;
-  #   };
-  #   services = {
-  #     syncthing = {
-  #       enable = true;
-  #       obsidian.enable = true;
-  #     };
-  #   };
-  # };
+  nx = {
+    programs = {
+      # Disable programs that default to enabled but aren't needed/available on Darwin
+      qutebrowser.enable = false;
+      podman.enable = false;
+      dragon-drop.enable = false;
+      nh.enable = false;
+      chromium.enable = false; # Not available on Darwin
+      bitwarden.enable = false; # Use Homebrew cask instead
+      discord.enable = false; # Not commonly used on Darwin
+      gimp.enable = false; # Not commonly used on Darwin
+      signal.enable = false; # Not available on Darwin
+    };
+  };
 
   # Darwin-specific packages not in shared modules
   environment.systemPackages = with pkgs; [

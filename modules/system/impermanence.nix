@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 {
@@ -9,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf config.nx.system.impermanence.enable {
+  config = lib.mkIf (config.nx.system.impermanence.enable && pkgs.stdenv.isLinux) {
     # Wipe the disk on each boot
     boot.initrd.postDeviceCommands =
       lib.mkAfter

@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  isLinux = pkgs.stdenv.isLinux;
+in
 {
   options = {
     nx.programs.obsidian.enable = lib.mkEnableOption "enables obsidian" // {
@@ -22,8 +25,8 @@
           ];
         };
       };
-      # force wayland
-      xdg.desktopEntries.obsidian = {
+      # force wayland (Linux only)
+      xdg.desktopEntries.obsidian = lib.mkIf isLinux {
         name = "Obsidian";
         comment = "Knowledge base";
         icon = "obsidian";

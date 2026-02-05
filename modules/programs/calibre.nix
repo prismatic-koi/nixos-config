@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  isLinux = pkgs.stdenv.isLinux;
+in
 {
   options = {
     nx.programs.calibre.enable = lib.mkEnableOption "enables calibre" // {
@@ -20,7 +23,7 @@
           ".config/calibre"
         ];
       };
-      xdg.mimeApps.defaultApplications = {
+      xdg.mimeApps.defaultApplications = lib.mkIf isLinux {
         "application/epub+zip" = "calibre-ebook-viewer.desktop";
       };
     };

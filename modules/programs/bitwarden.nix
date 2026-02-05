@@ -22,7 +22,7 @@
           ".config/Bitwarden CLI"
         ];
       };
-      xdg.desktopEntries.bitwarden = {
+      xdg.desktopEntries.bitwarden = lib.mkIf pkgs.stdenv.isLinux {
         name = "Bitwarden";
         comment = "Secure and free password manager for all of your devices";
         icon = "bitwarden";

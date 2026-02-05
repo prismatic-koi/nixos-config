@@ -93,8 +93,8 @@
         lib.attrByPath [ config.nx.programs.defaultWebBrowser ] { } browserSettings
       );
       home-manager.users.ben = {
-        # not sure of a better place to put this
-        xdg.mimeApps.enable = true;
+        # xdg.mimeApps is Linux-only
+        xdg.mimeApps.enable = pkgs.stdenv.isLinux;
         # some default programs that require no configuration
         home.packages = with pkgs; [
           age

@@ -20,7 +20,7 @@
           "--ozone-platform=wayland"
         ];
       };
-      xdg.desktopEntries.chromium-browser = {
+      xdg.desktopEntries.chromium-browser = lib.mkIf pkgs.stdenv.isLinux {
         name = "Chromium";
         genericName = "Web Browser";
         exec = "chromium-browser %U";

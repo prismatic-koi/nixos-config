@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  isLinux = pkgs.stdenv.isLinux;
+in
 {
   options = {
     nx.programs.libreoffice.enable = lib.mkEnableOption "enables libreoffice" // {
@@ -18,7 +21,7 @@
         hunspell
         hunspellDicts.en_GB-large
       ];
-      xdg.mimeApps.defaultApplications = {
+      xdg.mimeApps.defaultApplications = lib.mkIf isLinux {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" = [ "writer.desktop" ];
       };
       home.persistence."/persist" = {

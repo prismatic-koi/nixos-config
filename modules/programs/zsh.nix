@@ -10,8 +10,8 @@ let
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
 
   # For NixOS, we use home-manager.users.ben
-  # For darwin, we're already in home-manager context
-  hmConfig = if isLinux then config.home-manager.users.ben else config;
+  # For darwin with home-manager via nix-darwin, we also use home-manager.users.ben
+  hmConfig = config.home-manager.users.ben;
 
   homeDir = hmConfig.home.homeDirectory;
 in

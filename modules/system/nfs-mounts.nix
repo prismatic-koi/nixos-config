@@ -1,6 +1,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
@@ -14,7 +15,7 @@ in
         default = false;
       };
   };
-  config = lib.mkIf config.nx.system.nfs-mounts.enable {
+  config = lib.mkIf (config.nx.system.nfs-mounts.enable && pkgs.stdenv.isLinux) {
     fileSystems."/nfs/3d" = {
       device = "${nasServerIP}:/volume1/3d";
       fsType = "nfs";
