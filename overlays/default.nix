@@ -23,6 +23,10 @@ rec {
       };
     in
     {
+      # Custom package: chunkhound
+      chunkhound = final.callPackage ./pkgs/chunkhound {
+        inherit (inputs) pyproject-nix uv2nix pyproject-build-systems;
+      };
       # use stable for firefox, unstable is currently failing to build
       firefox = stablePkgs.firefox;
 

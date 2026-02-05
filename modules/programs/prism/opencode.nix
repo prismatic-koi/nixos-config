@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  homeDir = config.home-manager.users.ben.home.homeDirectory;
+in
 {
   options = {
     nx.programs.prism.opencode.enable = lib.mkEnableOption "enables opencode" // {
@@ -12,6 +15,8 @@
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
+      isLinux = pkgs.stdenv.isLinux;
+      isDarwin = pkgs.stdenv.isDarwin;
       # Use shared environment variables from prism config
       envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
       # Define read-only bash commands that can be shared across agents
@@ -247,171 +252,219 @@
         Use podman, not docker.${lib.optionalString pkgs.stdenv.isDarwin " Before use, always run `podman machine start`"}
       '';
     in
-    {
-      home-manager.users.ben = {
-        home.packages = with pkgs; [
-          # need npx on path for memory mcp
-          nodejs_24
-          beads
-        ];
-        programs.zsh.shellAliases = {
-          # set environment variables for opencode
-          opencode = "${envPrefix} opencode";
-        };
-        programs.tmux.extraConfig =
-          # tmux
-          ''
-            # new window with opencode
-            bind a new-window "${envPrefix} opencode"
-            # opencode scrolling keybinds (only active when opencode is running)
-            bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
-            bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
-            bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
-            bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
-          '';
-        programs.neovim.initLua =
-          lib.mkAfter
-            # lua
+    lib.mkMerge [
+      # Common configuration for both platforms
+      {
+        home-manager.users.ben = {
+          home.packages = with pkgs; [
+            # need npx on path for memory mcp
+            nodejs_24
+            beads
+            chunkhound
+          ];
+          programs.zsh.shellAliases = {
+            # set environment variables for opencode
+            opencode = "${envPrefix} opencode";
+          };
+          programs.tmux.extraConfig =
+            # tmux
             ''
-              -- open current project in new kitty window with opencode
-              -- disabled in favor of tmux shortcut (leader a)
-              -- vim.keymap.set(
-              --   "n",
-              --   "<leader>oa",
-              --   ":!kitty -d $(pwd) env ${envPrefix} opencode . &<CR><CR>",
-              --   { silent = true, desc = "[O]pen project with [A]I agent" }
-              -- )
+              # new window with opencode
+              bind a new-window "${envPrefix} opencode"
+              # opencode scrolling keybinds (only active when opencode is running)
+              bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
+              bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
+              bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
+              bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
             '';
-        programs.opencode = {
-          enable = true;
-          settings = {
-            theme = config.theme.opencodename;
-            agent = {
-              soku = {
-                description = "Beads workflow agent with automated context loading";
-                mode = "primary";
-                prompt = sokuPrompt;
-                color = config.theme.orange;
-                model = "github-copilot/claude-haiku-4.5";
-                permission = {
-                  bash = "allow";
+          programs.neovim.initLua =
+            lib.mkAfter
+              # lua
+              ''
+                -- open current project in new kitty window with opencode
+                -- disabled in favor of tmux shortcut (leader a)
+                -- vim.keymap.set(
+                --   "n",
+                --   "<leader>oa",
+                --   ":!kitty -d $(pwd) env ${envPrefix} opencode . &<CR><CR>",
+                --   { silent = true, desc = "[O]pen project with [A]I agent" }
+                -- )
+              '';
+          programs.opencode = {
+            enable = true;
+            settings = {
+              theme = config.theme.opencodename;
+              agent = {
+                soku = {
+                  description = "Beads workflow agent with automated context loading";
+                  mode = "primary";
+                  prompt = sokuPrompt;
+                  color = config.theme.orange;
+                  model = "github-copilot/claude-haiku-4.5";
+                  permission = {
+                    bash = "allow";
+                  };
+                };
+                build = {
+                  description = "Default build agent with full tool access";
+                  mode = "primary";
+                  color = config.theme.red;
+                  permission = {
+                    bash = {
+                      # default for any command not listed is ask (MUST be first - last match wins)
+                      "*" = "ask";
+                    }
+                    // readOnlyBashCommands
+                    // writeBashCommands;
+                  };
+                };
+                plan = {
+                  description = "Planning and analysis agent with read-only access";
+                  mode = "primary";
+                  color = config.theme.blue;
+                  tools = {
+                    read = true;
+                    grep = true;
+                    glob = true;
+                    list = true;
+                    webfetch = true;
+                    bash = true;
+                    # Disable write operations
+                    write = false;
+                    edit = false;
+                  };
+                  permission = {
+                    bash = {
+                      # Default deny everything else for plan agent (MUST be first - last match wins)
+                      "*" = "deny";
+                    }
+                    // readOnlyBashCommands;
+                  };
                 };
               };
-              build = {
-                description = "Default build agent with full tool access";
-                mode = "primary";
-                color = config.theme.red;
-                permission = {
-                  bash = {
-                    # default for any command not listed is ask (MUST be first - last match wins)
-                    "*" = "ask";
-                  }
-                  // readOnlyBashCommands
-                  // writeBashCommands;
+              mcp = {
+                playwright = {
+                  type = "local";
+                  command = [
+                    "${pkgs.playwright-mcp}/bin/mcp-server-playwright"
+                    "--executable-path"
+                    (
+                      if pkgs.stdenv.isDarwin then
+                        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                      else
+                        "${pkgs.chromium}/bin/chromium"
+                    )
+                    "--headless"
+                  ];
+                  enabled = true;
+                };
+                chunkhound = {
+                  type = "local";
+                  command = [
+                    "${pkgs.chunkhound}/bin/chunkhound"
+                    "mcp"
+                    "--db"
+                    "${config.home-manager.users.ben.xdg.cacheHome}/chunkhound/chunks.duckdb"
+                  ];
+                  enabled = true;
+                  environment = {
+                    # API key should be set via shell env or sops
+                    # CHUNKHOUND_EMBEDDING_API_KEY = "...";
+                  };
+                };
+                atlasian = lib.mkIf pkgs.stdenv.isDarwin {
+                  type = "local";
+                  enabled = true;
+                  command = [
+                    "${config.home-manager.users.ben.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs"
+                  ];
+                  environment = {
+                    ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+                    # MCP_SLIM_DISABLE can be set in shell to disable slimming (defaults to false/enabled)
+                  };
                 };
               };
-              plan = {
-                description = "Planning and analysis agent with read-only access";
-                mode = "primary";
-                color = config.theme.blue;
-                tools = {
-                  read = true;
-                  grep = true;
-                  glob = true;
-                  list = true;
-                  webfetch = true;
-                  bash = true;
-                  # Disable write operations
-                  write = false;
-                  edit = false;
-                };
-                permission = {
-                  bash = {
-                    # Default deny everything else for plan agent (MUST be first - last match wins)
-                    "*" = "deny";
-                  }
-                  // readOnlyBashCommands;
-                };
+              permission = {
+                edit = "allow";
+                webfetch = "allow";
+                # Atlassian MCP permissions
+                # fallback to ask
+                "atlasian_*" = "ask";
+                # Read operations (allow)
+                "atlasian_atlassianUserInfo" = "allow";
+                "atlasian_get*" = "allow";
+                "atlasian_lookup*" = "allow";
+                "atlasian_search*" = "allow";
+                "atlasian_fetch" = "allow";
+                # Write operations (ask)
+                "atlasian_create*" = "ask";
+                "atlasian_edit*" = "ask";
+                "atlasian_update*" = "ask";
+                "atlasian_add*" = "ask";
+                "atlasian_transition*" = "ask";
+                # Bash permissions are now defined per-agent
+                bash = {
+                  # default for any command not listed is ask (MUST be first - last match wins)
+                  "*" = "ask";
+                }
+                // readOnlyBashCommands
+                // writeBashCommands;
               };
+              plugin = [
+                # a plugin to use Gemini auth for LLM access
+                "opencode-gemini-auth@latest"
+              ];
             };
-            mcp = {
-              playwright = {
-                type = "local";
-                command = [
-                  "${pkgs.playwright-mcp}/bin/mcp-server-playwright"
-                  "--executable-path"
-                  (
-                    if pkgs.stdenv.isDarwin then
-                      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-                    else
-                      "${pkgs.chromium}/bin/chromium"
-                  )
-                  "--headless"
-                ];
-                enabled = true;
-              };
-              atlasian = lib.mkIf pkgs.stdenv.isDarwin {
-                type = "local";
-                enabled = true;
-                command = [
-                  "${config.home-manager.users.ben.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs"
-                ];
-                environment = {
-                  ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
-                  # MCP_SLIM_DISABLE can be set in shell to disable slimming (defaults to false/enabled)
-                };
-              };
-            };
-            permission = {
-              edit = "allow";
-              webfetch = "allow";
-              # Atlassian MCP permissions
-              # fallback to ask
-              "atlasian_*" = "ask";
-              # Read operations (allow)
-              "atlasian_atlassianUserInfo" = "allow";
-              "atlasian_get*" = "allow";
-              "atlasian_lookup*" = "allow";
-              "atlasian_search*" = "allow";
-              "atlasian_fetch" = "allow";
-              # Write operations (ask)
-              "atlasian_create*" = "ask";
-              "atlasian_edit*" = "ask";
-              "atlasian_update*" = "ask";
-              "atlasian_add*" = "ask";
-              "atlasian_transition*" = "ask";
-              # Bash permissions are now defined per-agent
-              bash = {
-                # default for any command not listed is ask (MUST be first - last match wins)
-                "*" = "ask";
-              }
-              // readOnlyBashCommands
-              // writeBashCommands;
-            };
-            plugin = [
-              # a plugin to use Gemini auth for LLM access
-              "opencode-gemini-auth@latest"
+            rules = agentInstructions;
+          };
+          # Copy the plugin directory for local plugins
+          xdg.configFile."opencode/plugins".source = ./opencode/plugin;
+          # Copy the MCP proxy script
+          xdg.configFile."opencode/mcp-atlassian-slim-proxy.mjs" = {
+            source = ./opencode/mcp-atlassian-slim-proxy.mjs;
+            executable = true;
+          };
+          # Copy command workflow guides
+          xdg.configFile."opencode/command".source = ./opencode/command;
+          home.persistence."/persist" = {
+            directories = [
+              ".config/opencode"
+              ".local/share/opencode"
+              ".local/state/opencode"
             ];
           };
-          rules = agentInstructions;
         };
-        # Copy the plugin directory for local plugins
-        xdg.configFile."opencode/plugins".source = ./opencode/plugin;
-        # Copy the MCP proxy script
-        xdg.configFile."opencode/mcp-atlassian-slim-proxy.mjs" = {
-          source = ./opencode/mcp-atlassian-slim-proxy.mjs;
-          executable = true;
+      }
+
+      # Linux: sops secrets via system config
+      (lib.mkIf isLinux {
+        sops.secrets = {
+          "openai_api_key" = {
+            owner = "ben";
+            mode = "0600";
+            sopsFile = ./openai.sops.yaml;
+          };
         };
-        # Copy command workflow guides
-        xdg.configFile."opencode/command".source = ./opencode/command;
-        home.persistence."/persist" = {
-          directories = [
-            ".config/opencode"
-            ".local/share/opencode"
-            ".local/state/opencode"
-          ];
+
+        # Environment variables for OpenAI API key
+        environment.sessionVariables = {
+          CHUNKHOUND_EMBEDDING_API_KEY = "$(cat ${config.sops.secrets.openai_api_key.path})";
         };
-      };
-    }
+      })
+
+      # Darwin: sops secrets via home-manager
+      (lib.mkIf isDarwin {
+        home-manager.users.ben.sops.secrets = {
+          "openai_api_key" = {
+            sopsFile = ./openai.sops.yaml;
+          };
+        };
+
+        # Environment variables for OpenAI API key
+        environment.sessionVariables = {
+          CHUNKHOUND_EMBEDDING_API_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.openai_api_key.path})";
+        };
+      })
+    ]
   );
 }
