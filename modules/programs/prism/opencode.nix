@@ -269,7 +269,7 @@
             bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
             bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
           '';
-        programs.neovim.extraLuaConfig =
+        programs.neovim.initLua =
           lib.mkAfter
             # lua
             ''

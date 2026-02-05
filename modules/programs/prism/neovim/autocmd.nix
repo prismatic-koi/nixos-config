@@ -2,7 +2,7 @@
 {
   # Setting some helpful autocommands
   home-manager.users.ben.programs.neovim = {
-    extraLuaConfig =
+    initLua =
       # lua
       ''
         local function augroup(name)

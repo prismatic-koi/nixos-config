@@ -2,7 +2,7 @@
 {
   # Setting various vim options
   home-manager.users.ben.programs.neovim = {
-    extraLuaConfig =
+    initLua =
       # lua
       ''
         -- helper
