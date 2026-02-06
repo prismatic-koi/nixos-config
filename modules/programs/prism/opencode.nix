@@ -260,7 +260,6 @@ in
             # need npx on path for memory mcp
             nodejs_24
             beads
-            chunkhound
           ];
           programs.zsh.shellAliases = {
             # set environment variables for opencode
@@ -358,8 +357,6 @@ in
                   ];
                   enabled = true;
                 };
-                # chunkhound MCP server is configured per-repo via opencode.jsonc
-                # in each repository that wants chunkhound integration
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                   type = "local";
                   enabled = true;
@@ -418,42 +415,11 @@ in
             directories = [
               ".config/opencode"
               ".local/share/opencode"
-              ".local/share/chunkhound"
               ".local/state/opencode"
             ];
           };
         };
       }
-
-      # Linux: sops secrets via system config
-      (lib.mkIf isLinux {
-        sops.secrets = {
-          "openai_api_key" = {
-            owner = "ben";
-            mode = "0600";
-            sopsFile = ./openai.sops.yaml;
-          };
-        };
-
-        # Environment variables for OpenAI API key
-        environment.sessionVariables = {
-          CHUNKHOUND_EMBEDDING_API_KEY = "$(cat ${config.sops.secrets.openai_api_key.path})";
-        };
-      })
-
-      # Darwin: sops secrets via home-manager
-      (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets = {
-          "openai_api_key" = {
-            sopsFile = ./openai.sops.yaml;
-          };
-        };
-
-        # Environment variables for OpenAI API key
-        environment.sessionVariables = {
-          CHUNKHOUND_EMBEDDING_API_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.openai_api_key.path})";
-        };
-      })
     ]
   );
 }
