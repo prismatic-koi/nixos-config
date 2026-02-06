@@ -358,20 +358,8 @@ in
                   ];
                   enabled = true;
                 };
-                chunkhound = {
-                  type = "local";
-                  command = [
-                    "${pkgs.chunkhound}/bin/chunkhound"
-                    "mcp"
-                    "--db"
-                    "${config.home-manager.users.ben.xdg.cacheHome}/chunkhound/chunks.duckdb"
-                  ];
-                  enabled = true;
-                  environment = {
-                    # API key should be set via shell env or sops
-                    # CHUNKHOUND_EMBEDDING_API_KEY = "...";
-                  };
-                };
+                # chunkhound MCP server is configured per-repo via opencode.jsonc
+                # in each repository that wants chunkhound integration
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                   type = "local";
                   enabled = true;
@@ -430,6 +418,7 @@ in
             directories = [
               ".config/opencode"
               ".local/share/opencode"
+              ".local/share/chunkhound"
               ".local/state/opencode"
             ];
           };
