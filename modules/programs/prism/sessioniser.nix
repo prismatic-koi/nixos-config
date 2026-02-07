@@ -124,7 +124,7 @@
                         ${tmux} send-keys -t $selected_name:0 "nvim" C-m
                     fi
                     ${tmux} new-window -t $selected_name:1 -n "agent" -c $selected
-                    ${tmux} send-keys -t $selected_name:1 "${agentEnvPrefix} opencode" C-m
+                    ${tmux} send-keys -t $selected_name:1 "opencode" C-m
                     ${tmux} new-window -t $selected_name:2 -n "term" -c $selected
                     ${tmux} select-window -t $selected_name:0
                     # Check if we have a proper terminal before attempting to attach
