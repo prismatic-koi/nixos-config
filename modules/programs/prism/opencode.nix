@@ -4,9 +4,6 @@
   lib,
   ...
 }:
-let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
-in
 {
   options = {
     nx.programs.prism.opencode.enable = lib.mkEnableOption "enables opencode" // {
@@ -15,8 +12,6 @@ in
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
-      isLinux = pkgs.stdenv.isLinux;
-      isDarwin = pkgs.stdenv.isDarwin;
       # Use shared environment variables from prism config
       envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
       # Define read-only bash commands that can be shared across agents
