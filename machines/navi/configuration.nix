@@ -37,7 +37,7 @@
       };
       gcalcli.enable = true;
       homeAutomation.enable = true;
-      libreoffice.enable = false; # build broken as of 2025-10-09
+      libreoffice.enable = true;
       obsidian.enable = true;
       picard.enable = true;
       plexamp.enable = true;
