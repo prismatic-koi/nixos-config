@@ -42,7 +42,10 @@
 
           	-- Look for the first H1 heading in the note content and add it as an alias
           	-- This restores the pre-v3.15.0 behavior where the title was automatically added
-          	if note.contents then
+          	-- Guard: note.contents triggers io.lines() via __index, which fails if the file
+          	-- doesn't exist on disk yet (e.g. first save of a new note in BufWritePre).
+          	local file_exists = note.path and vim.fn.filereadable(tostring(note.path)) == 1
+          	if file_exists and note.contents then
           		for _, line in ipairs(note.contents) do
           			local h1_match = line:match("^#%s+(.+)$")
           			if h1_match then
