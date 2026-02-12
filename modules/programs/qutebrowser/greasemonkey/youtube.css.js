@@ -18,6 +18,7 @@ GM_addStyle(`
   html[darker-dark], [darker-dark]
   html[darker-dark-theme-deprecate], [darker-dark-theme-deprecate] {
     --yt-spec-base-background: var(--system-theme-bg_dim) !important;
+    --yt-spec-frosted-glass-desktop: var(--system-theme-bg_dim) !important;
     --yt-frosted-glass-desktop: var(--system-theme-bg_dim) !important;
     --yt-spec-raised-background: var(--system-theme-bg0) !important;
     --yt-spec-menu-background: var(--system-theme-bg0) !important;
