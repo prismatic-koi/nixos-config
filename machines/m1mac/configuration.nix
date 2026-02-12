@@ -23,7 +23,6 @@
   nx = {
     programs = {
       # Disable programs that default to enabled but aren't needed/available on Darwin
-      qutebrowser.enable = false;
       podman.enable = false;
       dragon-drop.enable = false;
       nh.enable = false;
@@ -136,7 +135,6 @@
       "firefox"
       "karabiner-elements"
       "nikitabobko/tap/aerospace"
-      "qutebrowser"
       "raycast"
       "scroll-reverser"
     ];
