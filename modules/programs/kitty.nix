@@ -96,36 +96,20 @@ let
 in
 {
   options = {
-    nx.programs.kitty = {
-      enable = lib.mkEnableOption "enables kitty" // {
-        default = true;
-      };
-      configOnly = lib.mkEnableOption "only place config file, do not install kitty (for macOS 15.1+ Homebrew workaround)";
+    nx.programs.kitty.enable = lib.mkEnableOption "enables kitty" // {
+      default = true;
     };
   };
   config = lib.mkIf config.nx.programs.kitty.enable {
-    home-manager.users.ben = lib.mkMerge [
-      # Config-only mode: write config file directly (for macOS 15.1 Homebrew workaround)
-      (lib.mkIf config.nx.programs.kitty.configOnly {
-        home.file.".config/kitty/kitty.conf".text = ''
-          font_family ${if isDarwin then "JetBrainsMono Nerd Font Mono Medium" else "JetBrainsMono Nerd Font"}
-          font_size ${if isDarwin then "14.000000" else "12.0"}
-          ${lib.optionalString isDarwin "shell_integration no-rc"}
-          ${kittyconf}
-        '';
-      })
-
-      # Normal mode: use home-manager's programs.kitty
-      (lib.mkIf (!config.nx.programs.kitty.configOnly) {
-        programs.kitty = {
-          enable = true;
-          font = {
-            name = if isDarwin then "JetBrainsMono Nerd Font Mono Medium" else "JetBrainsMono Nerd Font";
-            size = if isDarwin then 14.0 else 12.0;
-          };
-          extraConfig = kittyconf;
+    home-manager.users.ben = {
+      programs.kitty = {
+        enable = true;
+        font = {
+          name = if isDarwin then "JetBrainsMono Nerd Font Mono Medium" else "JetBrainsMono Nerd Font";
+          size = if isDarwin then 14.0 else 12.0;
         };
-      })
-    ];
+        extraConfig = kittyconf;
+      };
+    };
   };
 }

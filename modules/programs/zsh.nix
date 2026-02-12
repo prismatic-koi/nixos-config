@@ -38,9 +38,15 @@ in
       # Common home-manager config
       {
         home-manager.users.ben = {
-          # We set ZDOTDIR at system level on NixOS, so we don't need
-          # to bootstrap the the zsh environment like this.
-          home.file.".zshenv".enable = false;
+          # On NixOS we set ZDOTDIR at system level, so we don't need .zshenv
+          # On Darwin we need .zshenv to bootstrap ZDOTDIR
+          home.file.".zshenv".enable = isDarwin;
+
+          programs.direnv = {
+            enable = true;
+            enableZshIntegration = true;
+            nix-direnv.enable = true;
+          };
 
           programs.zsh = {
             enable = true;
@@ -155,8 +161,6 @@ in
                   bindkey -s ^p "python\n"
                   bindkey -s ^o "cli.tmux.projectSessioniser ~/documents/obsidian\n"
                   bindkey -s ^f "cli.tmux.projectSessioniser\n"
-                  # utils
-                  eval "$(direnv hook zsh)"
                 '';
               in
               lib.mkOrder 1000 commonInit;
