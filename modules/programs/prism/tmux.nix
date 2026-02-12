@@ -1,11 +1,13 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 with config.theme;
 let
   background = if type == "dark" then bg0 else bg_dim;
+  isDarwin = pkgs.stdenv.isDarwin;
 in
 {
   options = {
@@ -21,7 +23,7 @@ in
         aggressiveResize = true;
         escapeTime = 10; # no delay for escape key, vim style
         prefix = "C-a";
-        terminal = "kitty";
+        terminal = if isDarwin then "xterm-kitty" else "kitty";
         extraConfig =
           # tmux
           ''
@@ -59,33 +61,33 @@ in
             bind-key x kill-pane
             # easy config reload
             bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
-            
+
             # --- Prism-specific keybindings ---
-            
+
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
-            
+
             # toggle to/from term window (C-Space)
             unbind C-Space
             bind -n C-Space if-shell 'tmux list-windows -F "##I:##W" | grep -q ":term$"' \
               'if-shell "[ #{window_name} = term ]" "last-window" "select-window -t term"' \
               'new-window -n term'
-            
+
             # new window with opencode agent (prefix + a)
             bind a new-window -n agent "opencode"
-            
+
             # opencode scrolling keybinds (only active when opencode is running)
             # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
             bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
             bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
             bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
             bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
-            
+
             # toggle a split pane with edit and agent
             bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p '#{window_panes}') -gt 1 ]" \
                 "break-pane -s 'edit.1' -n 'agent'" \
                 "join-pane -h -s 'agent.0' -t 'edit'"
-            
+
             # vim style copy
             set -g mode-keys vi
             bind-key -T copy-mode-vi 'v' send -X begin-selection
