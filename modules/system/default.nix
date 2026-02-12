@@ -19,19 +19,9 @@
     # Cross-platform: home-manager XDG configuration
     {
       home-manager.users.ben = {
-        xdg = {
-          dataHome = "${config.home-manager.users.ben.home.homeDirectory}/.local/share";
-          stateHome = "${config.home-manager.users.ben.home.homeDirectory}/.local/state";
-          configHome = "${config.home-manager.users.ben.home.homeDirectory}/.config";
-          cacheHome = "${config.home-manager.users.ben.home.homeDirectory}/.cache";
-        };
-        # XDG env vars in home-manager (works on both platforms)
-        home.sessionVariables = {
-          XDG_CONFIG_HOME = "$HOME/.config";
-          XDG_DATA_HOME = "$HOME/.local/share";
-          XDG_STATE_HOME = "$HOME/.local/state";
-          XDG_CACHE_HOME = "$HOME/.cache";
-        };
+        # Enable XDG base directory support
+        # This sets the directories and environment variables automatically
+        xdg.enable = true;
       };
     }
     # Linux-only: system-level environment variables
