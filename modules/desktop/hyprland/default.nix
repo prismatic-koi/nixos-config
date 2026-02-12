@@ -324,7 +324,7 @@ in
               "XDG_SESSION_TYPE,wayland"
               "XDG_SESSION_DESKTOP,Hyprland"
               "GDK_BACKEND,wayland,x11"
-              "SDL_VIDEODRIVER,wayland"
+              # "SDL_VIDEODRIVER,wayland" # removed: causes stutter in Proton games, let Steam/Proton pick the backend
               "_JAVA_AWT_WM_NONREPARENTING,1"
               "QT_QPA_PLATFORM,wayland"
             ];
