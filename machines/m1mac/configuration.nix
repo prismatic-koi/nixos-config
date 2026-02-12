@@ -32,6 +32,7 @@
       discord.enable = false; # Not commonly used on Darwin
       gimp.enable = false; # Not commonly used on Darwin
       signal.enable = false; # Not available on Darwin
+      ssh.enableWorkKeys = true;
     };
   };
 
