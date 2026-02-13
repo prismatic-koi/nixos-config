@@ -113,7 +113,7 @@ in
               )
               CHOOSE_OPTIONS = "-f 'JetbrainsMono Nerd Font' -c '${
                 builtins.substring 1 6 config.theme.green
-              }' -b '${builtins.substring 1 6 config.theme.bg2}' -s 20"
+              }' -b '${builtins.substring 1 6 config.theme.bg2}' -s 24 -m -n 0 -p 'Add Item to Shopping List'"
 
 
               def add_item(item):
@@ -146,7 +146,7 @@ in
 
               # Use choose instead of rofi with placeholder prompt
               selected_item = subprocess.run(
-                  ["bash", "-c", f'echo "" | ${pkgs.choose-gui}/bin/choose {CHOOSE_OPTIONS}'], capture_output=True, text=True
+                  ["bash", "-c", f'echo | ${pkgs.choose-gui}/bin/choose {CHOOSE_OPTIONS}'], capture_output=True, text=True
               ).stdout.strip()
               if selected_item:
                   add_item(selected_item)
