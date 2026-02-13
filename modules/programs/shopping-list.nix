@@ -8,7 +8,6 @@ with config.theme;
 let
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
-  pythonWithPackages = pkgs.python3.withPackages (ps: [ ps.requests ]);
 in
 {
   options = {
@@ -98,59 +97,46 @@ in
         };
         home.file.".local/scripts/home.shoppinglist.addItem" = {
           executable = true;
-          text =
-            # python
-            ''
-              #!${pythonWithPackages}/bin/python3
-              import os
-              import json
-              import subprocess
-              import requests
+          text = ''
+            #!/bin/zsh
 
-              NOTION_KEY = os.getenv("NOTION_SHOPPING_LIST_KEY")
-              NOTION_URL = (
-                  "https://api.notion.com/v1/blocks/92d98ac3dc86460285a399c0b1176fc5/children"
-              )
-              CHOOSE_OPTIONS = "-f 'JetbrainsMono Nerd Font' -c '${
-                builtins.substring 1 6 config.theme.green
-              }' -b '${builtins.substring 1 6 config.theme.bg2}' -s 24 -m -n 0 -p 'Add Item to Shopping List'"
+            # Function to add item via Notion API
+            add_item_to_shopping_list() {
+              ITEM_TO_ADD="$*"
+              if [ ! -z "$ITEM_TO_ADD" ]; then
+                response=$(${pkgs.curl}/bin/curl -s -o /dev/null -w "%{http_code}" \
+                  -X PATCH 'https://api.notion.com/v1/blocks/92d98ac3dc86460285a399c0b1176fc5/children' \
+                  -H "Authorization: Bearer $NOTION_SHOPPING_LIST_KEY" \
+                  -H "Content-Type: application/json" \
+                  -H "Notion-Version: 2022-02-22" \
+                  --data "{
+                  \"children\": [
+                    {
+                      \"object\": \"block\",
+                      \"type\": \"to_do\",
+                      \"to_do\": {
+                        \"rich_text\": [
+                        { \"type\": \"text\", \"text\": { \"content\": \"$ITEM_TO_ADD\" } }
+                        ],
+                        \"checked\": false
+                      }
+                    }
+                  ]
+                }")
+                if [ "$response" -eq 200 ]; then
+                  /usr/bin/osascript -e 'display notification "Item added successfully." with title "Notion"'
+                else
+                  /usr/bin/osascript -e 'display notification "Failed. HTTP: '"$response"'" with title "Notion"'
+                fi
+              fi
+            }
 
-
-              def add_item(item):
-                  headers = {
-                      "Authorization": f"Bearer {NOTION_KEY}",
-                      "Content-Type": "application/json",
-                      "Notion-Version": "2022-02-22",
-                  }
-                  data = {
-                      "children": [
-                          {
-                              "object": "block",
-                              "type": "to_do",
-                              "to_do": {
-                                  "rich_text": [{"type": "text", "text": {"content": item}}],
-                                  "checked": False,
-                              },
-                          }
-                      ]
-                  }
-                  response = requests.patch(NOTION_URL, headers=headers, json=data)
-                  status = (
-                      "Item added successfully."
-                      if response.status_code == 200
-                      else f"Failed. HTTP: {response.status_code}"
-                  )
-                  # Use macOS notification instead of notify-send
-                  subprocess.run(["osascript", "-e", f'display notification "{status}" with title "Notion"'])
-
-
-              # Use choose instead of rofi with placeholder prompt
-              selected_item = subprocess.run(
-                  ["bash", "-c", f'echo | ${pkgs.choose-gui}/bin/choose {CHOOSE_OPTIONS}'], capture_output=True, text=True
-              ).stdout.strip()
-              if selected_item:
-                  add_item(selected_item)
-            '';
+            # Spawn choose menu and get list item
+            selected_item=$(echo \n | ${pkgs.choose-gui}/bin/choose -f "JetbrainsMono Nerd Font" -c "${
+              builtins.substring 1 6 config.theme.green
+            }" -b "${builtins.substring 1 6 config.theme.bg2}" -s 24 -m -n 0 -p "Add Item to Shopping List")
+            add_item_to_shopping_list "$selected_item"
+          '';
         };
       };
     })
