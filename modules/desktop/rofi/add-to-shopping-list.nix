@@ -61,7 +61,7 @@ in
 
             # Spawn rofi menu and get list item
             ROFI_STYLE='listview { enabled: false;} inputbar { children: [entry]; border-color: ${purple};} entry { placeholder: "Add Item to Shopping List"; }'
-            selected_item=$(${pkgs.rofi-wayland}/bin/rofi -dmenu -i -theme-str "$ROFI_STYLE")
+            selected_item=$(${pkgs.rofi}/bin/rofi -dmenu -i -theme-str "$ROFI_STYLE")
             add_item_to_shopping_list "$selected_item"
           '';
         };
