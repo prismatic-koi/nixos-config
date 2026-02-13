@@ -80,16 +80,16 @@ in
 
     # Darwin: choose with home-manager sops
     (lib.mkIf isDarwin {
-      home-manager.users.ben.sops.secrets = {
-        notion_shopping_list_key = {
-          sopsFile = ./secrets/notion.sops.yaml;
+      home-manager.users.ben = {
+        sops.secrets = {
+          notion_shopping_list_key = {
+            sopsFile = ./secrets/notion.sops.yaml;
+          };
         };
-      };
-      environment.sessionVariables = {
-        NOTION_SHOPPING_LIST_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.notion_shopping_list_key.path})";
-      };
-      home-manager.users.ben.home = {
-        file.".local/scripts/home.shoppinglist.addItem" = {
+        home.sessionVariables = {
+          NOTION_SHOPPING_LIST_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.notion_shopping_list_key.path})";
+        };
+        home.file.".local/scripts/home.shoppinglist.addItem" = {
           executable = true;
           text =
             # python

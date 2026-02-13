@@ -102,24 +102,26 @@ in
 
       # Darwin: sops secrets via home-manager
       (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets = {
-          "ssh/prismatic-koi-ed25519-signingkey" = {
-            path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey";
-            sopsFile = ./secrets/ssh.sops.yaml;
+        home-manager.users.ben = {
+          sops.secrets = {
+            "ssh/prismatic-koi-ed25519-signingkey" = {
+              path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey";
+              sopsFile = ./secrets/ssh.sops.yaml;
+            };
+            "ssh/prismatic-koi-ed25519-signingkey.pub" = {
+              path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
+              sopsFile = ./secrets/ssh.sops.yaml;
+            };
+            "github_token" = {
+              sopsFile = ./secrets/github.sops.yaml;
+            };
           };
-          "ssh/prismatic-koi-ed25519-signingkey.pub" = {
-            path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
-            sopsFile = ./secrets/ssh.sops.yaml;
-          };
-          "github_token" = {
-            sopsFile = ./secrets/github.sops.yaml;
-          };
-        };
 
-        # Environment variables for GitHub token
-        environment.sessionVariables = {
-          GITHUB_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
-          GITHUB_PACKAGES_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
+          # Environment variables for GitHub token
+          home.sessionVariables = {
+            GITHUB_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
+            GITHUB_PACKAGES_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
+          };
         };
       })
     ]

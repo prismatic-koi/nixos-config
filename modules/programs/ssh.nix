@@ -139,43 +139,45 @@ in
 
       # Darwin-specific (sops via home-manager, no activation scripts)
       (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets =
-          let
-            sopsFile = ./secrets/ssh.sops.yaml;
-            mkSecret = name: {
-              path = "${homeDir}/.ssh/${name}";
-              sopsFile = sopsFile;
+        home-manager.users.ben = {
+          sops.secrets =
+            let
+              sopsFile = ./secrets/ssh.sops.yaml;
+              mkSecret = name: {
+                path = "${homeDir}/.ssh/${name}";
+                sopsFile = sopsFile;
+              };
+            in
+            {
+              # Personal SSH keys (always included)
+              "ssh/prismatic-koi-ed25519" = mkSecret "prismatic-koi-ed25519";
+              "ssh/prismatic-koi-ed25519.pub" = mkSecret "prismatic-koi-ed25519.pub";
+              "ssh/prismatic-koi-rsa" = mkSecret "prismatic-koi-rsa";
+              "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
+              "config/cloudflared_domain" = {
+                sopsFile = sopsFile;
+              };
+            }
+            // lib.optionalAttrs config.nx.programs.ssh.enableWorkKeys {
+              # Work SSH keys (opt-in)
+              "ssh/work-prismatic-koi-ed25519" = mkSecret "work-prismatic-koi-ed25519";
+              "ssh/work-prismatic-koi-ed25519.pub" = mkSecret "work-prismatic-koi-ed25519.pub";
+              "ssh/work-rsa" = mkSecret "work-rsa";
+              "ssh/work-rsa.pub" = mkSecret "work-rsa.pub";
+              "ssh/work-ed25519" = mkSecret "work-ed25519";
+              "ssh/work-ed25519.pub" = mkSecret "work-ed25519.pub";
+              "ssh/workconfig" = {
+                path = "${homeDir}/.ssh/workconfig";
+                format = "binary";
+                sopsFile = ./secrets/worksshconfig;
+              };
             };
-          in
-          {
-            # Personal SSH keys (always included)
-            "ssh/prismatic-koi-ed25519" = mkSecret "prismatic-koi-ed25519";
-            "ssh/prismatic-koi-ed25519.pub" = mkSecret "prismatic-koi-ed25519.pub";
-            "ssh/prismatic-koi-rsa" = mkSecret "prismatic-koi-rsa";
-            "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
-            "config/cloudflared_domain" = {
-              sopsFile = sopsFile;
-            };
-          }
-          // lib.optionalAttrs config.nx.programs.ssh.enableWorkKeys {
-            # Work SSH keys (opt-in)
-            "ssh/work-prismatic-koi-ed25519" = mkSecret "work-prismatic-koi-ed25519";
-            "ssh/work-prismatic-koi-ed25519.pub" = mkSecret "work-prismatic-koi-ed25519.pub";
-            "ssh/work-rsa" = mkSecret "work-rsa";
-            "ssh/work-rsa.pub" = mkSecret "work-rsa.pub";
-            "ssh/work-ed25519" = mkSecret "work-ed25519";
-            "ssh/work-ed25519.pub" = mkSecret "work-ed25519.pub";
-            "ssh/workconfig" = {
-              path = "${homeDir}/.ssh/workconfig";
-              format = "binary";
-              sopsFile = ./secrets/worksshconfig;
-            };
-          };
 
-        environment.sessionVariables = {
-          CLOUDFLARED_DOMAIN = "$(cat ${
-            config.home-manager.users.ben.sops.secrets."config/cloudflared_domain".path
-          })";
+          home.sessionVariables = {
+            CLOUDFLARED_DOMAIN = "$(cat ${
+              config.home-manager.users.ben.sops.secrets."config/cloudflared_domain".path
+            })";
+          };
         };
       })
     ]

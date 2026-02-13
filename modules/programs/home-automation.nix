@@ -39,18 +39,20 @@ in
 
       # Darwin: home-manager sops
       (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets = {
-          hass_api_key = {
-            sopsFile = ./secrets/home-assistant.sops.yaml;
+        home-manager.users.ben = {
+          sops.secrets = {
+            hass_api_key = {
+              sopsFile = ./secrets/home-assistant.sops.yaml;
+            };
+            hass_domain = {
+              sopsFile = ./secrets/home-assistant.sops.yaml;
+            };
           };
-          hass_domain = {
-            sopsFile = ./secrets/home-assistant.sops.yaml;
+          # add api key to environment
+          home.sessionVariables = {
+            HASS_API_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_api_key.path})";
+            HASS_DOMAIN = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_domain.path})";
           };
-        };
-        # add api key to environment
-        environment.sessionVariables = {
-          HASS_API_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_api_key.path})";
-          HASS_DOMAIN = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_domain.path})";
         };
       })
 
