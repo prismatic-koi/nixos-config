@@ -33,6 +33,12 @@
       signal.enable = false; # Not available on Darwin
       ssh.enableWorkKeys = true;
     };
+    services = {
+      syncthing = {
+        enable = true;
+        obsidian.enable = true;
+      };
+    };
   };
 
   # Darwin-specific packages not in shared modules

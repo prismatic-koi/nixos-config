@@ -24,6 +24,11 @@
         xdg.enable = true;
       };
     }
+    # Darwin-specific: ensure services.openssh.enable is false by default
+    # This is needed by sops-nix which checks for openssh.enable
+    (lib.mkIf pkgs.stdenv.isDarwin {
+      services.openssh.enable = lib.mkDefault false;
+    })
     # Linux-only: system-level environment variables
     (lib.mkIf pkgs.stdenv.isLinux {
       environment.sessionVariables = {

@@ -1,33 +1,35 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
+let
+  hostname = config.networking.hostName;
+  configDir = config.nx.services.syncthing.configDir;
+  hosts = [
+    "navi"
+    "tui"
+    "m1mac"
+  ];
+  files = [
+    "cert.pem"
+    "key.pem"
+  ];
+  mkSecret =
+    host:
+    lib.mkIf (hostname == host) {
+      owner = "ben";
+      mode = "0600";
+      sopsFile = ./secret.sops.yaml;
+    };
+in
 {
-  config = lib.mkIf config.nx.services.syncthing.enable {
-    # certs and keys from sops secret file
-    sops =
-      let
-        hostname = config.networking.hostName;
-        hosts = [
-          "navi"
-          "tui"
-          "m1mac"
-        ];
-        files = [
-          "cert.pem"
-          "key.pem"
-        ];
-        mkSecret =
-          host:
-          lib.mkIf (hostname == host) {
-            owner = "ben";
-            mode = "0600";
-            sopsFile = ./secret.sops.yaml;
-          };
-      in
+  config = lib.mkIf config.nx.services.syncthing.enable (
+    lib.mkMerge [
+      # Common: sops secrets configuration
       {
-        secrets = builtins.listToAttrs (
+        sops.secrets = builtins.listToAttrs (
           lib.concatMap (
             host:
             map (file: {
@@ -36,15 +38,31 @@
             }) files
           ) hosts
         );
-      };
-    # apply relevant secret to syncthing service
-    services.syncthing =
-      let
-        host = config.networking.hostName;
-      in
-      {
-        cert = config.sops.secrets."${host}/cert.pem".path;
-        key = config.sops.secrets."${host}/key.pem".path;
-      };
-  };
+        services.syncthing = {
+          cert = config.sops.secrets."${hostname}/cert.pem".path;
+          key = config.sops.secrets."${hostname}/key.pem".path;
+        };
+      }
+
+      # Darwin: home-manager sops with certs placed directly in syncthing config directory
+      (lib.mkIf pkgs.stdenv.isDarwin {
+        home-manager.users.ben = {
+          sops.secrets = {
+            "${hostname}-syncthing-cert" = {
+              sopsFile = ./secret.sops.yaml;
+              key = "${hostname}/cert.pem";
+            };
+            "${hostname}-syncthing-key" = {
+              sopsFile = ./secret.sops.yaml;
+              key = "${hostname}/key.pem";
+            };
+          };
+          services.syncthing = {
+            cert = config.home-manager.users.ben.sops.secrets."${hostname}-syncthing-cert".path;
+            key = config.home-manager.users.ben.sops.secrets."${hostname}-syncthing-key".path;
+          };
+        };
+      })
+    ]
+  );
 }
