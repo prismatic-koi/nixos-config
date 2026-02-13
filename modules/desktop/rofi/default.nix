@@ -23,36 +23,44 @@ with config.theme;
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben = {
-      programs.rofi = {
-        enable = true;
-        package = pkgs.rofi;
-        font = "Noto Sans 14";
-        plugins = with pkgs; [
-          rofi-calc
-          rofi-emoji
-        ];
-        extraConfig = {
-          steal-focus = true;
-          show-icons = true;
-          icon-theme = "Papirus-Dark";
-          application-fallback-icon = "run-build";
-          drun-display-format = "{icon} {name}";
-          matching = "fuzzy";
-          scroll-method = 0;
-          disable-history = false;
-          display-drun = "";
-          display-windows = "Windows:";
-          display-run = " ";
-          sort = true;
-          sorting-method = "fzf";
+  config = lib.mkMerge [
+    # Linux: rofi configuration
+    (lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
+      home-manager.users.ben = {
+        programs.rofi = {
+          enable = true;
+          package = pkgs.rofi;
+          font = "Noto Sans 14";
+          plugins = with pkgs; [
+            rofi-calc
+            rofi-emoji
+          ];
+          extraConfig = {
+            steal-focus = true;
+            show-icons = true;
+            icon-theme = "Papirus-Dark";
+            application-fallback-icon = "run-build";
+            drun-display-format = "{icon} {name}";
+            matching = "fuzzy";
+            scroll-method = 0;
+            disable-history = false;
+            display-drun = "";
+            display-windows = "Windows:";
+            display-run = " ";
+            sort = true;
+            sorting-method = "fzf";
+          };
+          theme = "~/.config/rofi/theme.rasi";
         };
-        theme = "~/.config/rofi/theme.rasi";
-      };
 
-      # my scripts relevant to rofi
-      home.sessionPath = [ "$HOME/.local/scripts" ];
-    };
-  };
+        # my scripts relevant to rofi
+        home.sessionPath = [ "$HOME/.local/scripts" ];
+      };
+    })
+
+    # Common: sessionPath for scripts (needed on Darwin too)
+    (lib.mkIf config.nx.desktop.rofi.enable {
+      home-manager.users.ben.home.sessionPath = [ "$HOME/.local/scripts" ];
+    })
+  ];
 }

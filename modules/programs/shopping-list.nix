@@ -8,11 +8,18 @@ with config.theme;
 let
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
+  pythonWithPackages = pkgs.python3.withPackages (ps: [ ps.requests ]);
 in
 {
+  options = {
+    nx.programs.shoppingList.enable = lib.mkEnableOption "enables Notion shopping list integration" // {
+      default = true;
+    };
+  };
+
   config = lib.mkMerge [
     # Linux: rofi with system-level sops
-    (lib.mkIf (config.nx.desktop.rofi.enable && isLinux) {
+    (lib.mkIf (config.nx.programs.shoppingList.enable && isLinux) {
       # notion API key
       sops.secrets.notion_shopping_list_key = {
         owner = "ben";
@@ -28,7 +35,7 @@ in
           text =
             # python
             ''
-              #!/usr/bin/env python3
+              #!${pythonWithPackages}/bin/python3
               import os
               import json
               import subprocess
@@ -79,7 +86,7 @@ in
     })
 
     # Darwin: choose with home-manager sops
-    (lib.mkIf (config.nx.desktop.rofi.enable && isDarwin) {
+    (lib.mkIf (config.nx.programs.shoppingList.enable && isDarwin) {
       home-manager.users.ben = {
         sops.secrets = {
           notion_shopping_list_key = {
@@ -94,7 +101,7 @@ in
           text =
             # python
             ''
-              #!/usr/bin/env python3
+              #!${pythonWithPackages}/bin/python3
               import os
               import json
               import subprocess

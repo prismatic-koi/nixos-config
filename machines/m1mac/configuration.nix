@@ -32,6 +32,7 @@
       gimp.enable = false; # Not commonly used on Darwin
       signal.enable = false; # Not available on Darwin
       ssh.enableWorkKeys = true;
+      homeAutomation.enable = true;
     };
     services = {
       syncthing = {
