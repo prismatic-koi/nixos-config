@@ -38,7 +38,6 @@
     ./qutebrowser
     ./rclone.nix
     ./rmpc.nix
-    ./shopping-list.nix
     ./signal.nix
     ./ssh.nix
     ./vimiv.nix

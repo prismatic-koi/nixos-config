@@ -11,6 +11,7 @@
     ../../modules/programs
     ../../modules/services
     ../../modules/system
+    ../../modules/desktop/rofi
   ];
 
   users.users.ben = {
@@ -34,6 +35,7 @@
       ssh.enableWorkKeys = true;
       homeAutomation.enable = true;
     };
+    desktop.rofi.enable = true; # For shopping list script (uses choose on Darwin)
     services = {
       syncthing = {
         enable = true;
