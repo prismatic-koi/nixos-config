@@ -175,9 +175,9 @@ in
             animations = {
               enabled = true;
               animation = [
-                "windows, 1, 2, myBezier"
-                "windowsOut, 1, 1, myBezier, popin 90%"
-                "windowsIn, 1, 1, myBezier, popin 90%"
+                "windows, 1, 3, myBezier"
+                "windowsOut, 1, 2, myBezier, popin 90%"
+                "windowsIn, 1, 2, myBezier, popin 90%"
                 "border, 1, 2, default"
                 "borderangle, 1, 50, linear, loop"
                 "fade, 1, 2, default"
