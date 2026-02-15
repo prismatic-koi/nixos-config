@@ -104,6 +104,11 @@
           name = "reddit_custom_footernix-pr-tracker.js";
           text = builtins.readFile ./greasemonkey/nix-pr-tracker.js;
         })
+        # universal URL rewriter for fixing broken CDNs and timeouts
+        (pkgs.writeTextFile {
+          name = "url_rewriter.js";
+          text = builtins.readFile ./greasemonkey/url_rewriter.js;
+        })
         # restore background-color for sites broken by userstyle
         # (pkgs.writeTextFile {
         #   name = "background_restore.css.js";
