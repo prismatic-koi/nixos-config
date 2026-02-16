@@ -141,7 +141,7 @@
     usbutils
     v4l-utils
     wev
-    wineWowPackages.waylandFull
+    wineWow64Packages.waylandFull
   ];
   # key remapping
   services.keyd = {

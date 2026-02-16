@@ -133,7 +133,7 @@
     solvespace
     usbutils
     v4l-utils
-    wineWowPackages.waylandFull
+    wineWow64Packages.waylandFull
   ];
 
   # key remapping
