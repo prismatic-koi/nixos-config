@@ -5,9 +5,21 @@ import QtQuick.Layouts
 
 // Submap overlay widget
 //
-// Displays a floating pill at the top of the screen when a Hyprland submap
-// is active, showing available keybinds. Slides down from above with a
-// rotating rainbow gradient border.
+// Displays a floating pill at the centre of the screen when a Hyprland submap
+// is active, showing available keybinds. Expands from centre with a
+// rainbow gradient border that shimmers on invocation.
+//
+// Design language compliance:
+//   - Position: centre of screen, expands from centre
+//   - Typography: three-level hierarchy
+//       Mode label: Noto Sans bold, text/primary or semantic colour
+//       Action labels: JetBrains Mono DemiBold, semantic colours
+//       Shortcut hints: JetBrains Mono regular, muted
+//   - Opacity: 1.0 (fully opaque invoked surface)
+//   - Background: bg0 (background role)
+//   - Border: rainbow gradient with brief shimmer on invocation
+//   - Animation: spring physics (overshoot and settle)
+//   - Dimming: per-submap scrim for high-stakes submaps (exit)
 //
 // Usage from shell.qml:
 //   SubMapOverlay { id: submapOverlay }
@@ -21,30 +33,44 @@ PanelWindow {
 
     // -- submap definitions --
     // Add new submaps here as entries in this object.
-    // Each entry is an array of { key, label } objects.
+    // Each entry is an array of { key, label, color? } objects.
+    // If color is omitted, Theme.foreground is used.
     property string currentSubmap: ""
     property var submapData: ({
         "exit": [
-            { key: "l", label: "Lock" },
-            { key: "s", label: "Shutdown" },
-            { key: "r", label: "Reboot" },
-            { key: "⇧L", label: "Logout" },
+            { key: "l", label: "Lock", color: Theme.grey2 },
+            { key: "s", label: "Shutdown", color: Theme.orange },
+            { key: "r", label: "Reboot", color: Theme.yellow },
+            { key: "⇧L", label: "Logout", color: Theme.foreground },
         ],
         "resize": [
-            { key: "h", label: "←" },
-            { key: "j", label: "↓" },
-            { key: "k", label: "↑" },
-            { key: "l", label: "→" },
+            { key: "h", label: "\u2190" },
+            { key: "j", label: "\u2193" },
+            { key: "k", label: "\u2191" },
+            { key: "l", label: "\u2192" },
         ],
+    })
+
+    // semantic title colours per submap (default: Theme.foreground)
+    property var submapTitleColors: ({
+        "exit": Theme.red,
+    })
+
+    // submaps that dim the background (high-stakes / pause interaction)
+    property var submapDims: ({
+        "exit": true,
     })
 
     // -- animation state --
     property bool showing: false
+    property bool shouldDim: false
 
     function showOverlay(submapName) {
         currentSubmap = submapName;
+        shouldDim = submapDims[submapName] ?? false;
         visible = true;
         showing = true;
+        shimmerAnim.restart();
     }
     function hideOverlay() {
         showing = false;
@@ -56,28 +82,22 @@ PanelWindow {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.namespace: "quickshell-submap"
     anchors.top: true
+    anchors.bottom: true
     anchors.left: true
     anchors.right: true
     exclusiveZone: 0
     focusable: false
-    implicitHeight: 90
 
     // -- content --
     Item {
         anchors.fill: parent
-        anchors.topMargin: 10
 
-        // gradient border (outer rectangle)
+        // scrim — dims the background for high-stakes submaps
         Rectangle {
-            id: borderRect
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: contentRow.implicitWidth + 56
-            height: 60
-            radius: 14
-
-            // slide + fade animation
-            opacity: overlay.showing ? 0.95 : 0
-            y: overlay.showing ? 0 : -70
+            id: scrim
+            anchors.fill: parent
+            color: Theme.bgDim
+            opacity: (overlay.showing && overlay.shouldDim) ? 0.45 : 0
 
             Behavior on opacity {
                 NumberAnimation {
@@ -85,27 +105,54 @@ PanelWindow {
                     easing.type: Easing.OutCubic
                 }
             }
-            Behavior on y {
+        }
+
+        // gradient border (outer rectangle)
+        Rectangle {
+            id: borderRect
+            anchors.centerIn: parent
+            width: contentRow.implicitWidth + 56
+            height: 60
+            radius: 14
+
+            // expand from centre + fade
+            opacity: overlay.showing ? 1.0 : 0
+            scale: overlay.showing ? 1.0 : 0.8
+
+            Behavior on opacity {
                 NumberAnimation {
-                    id: slideAnim
                     duration: 200
-                    easing.type: Easing.OutCubic
+                    easing.type: Easing.OutBack
+                    easing.overshoot: 1.2
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    id: scaleAnim
+                    duration: 200
+                    easing.type: Easing.OutBack
+                    easing.overshoot: 1.4
                     onRunningChanged: {
                         if (!running && !overlay.showing) {
                             overlay.visible = false;
                             overlay.currentSubmap = "";
+                            overlay.shouldDim = false;
                         }
                     }
                 }
             }
 
-            // rotating rainbow gradient
+            // rainbow gradient with invocation shimmer
             property real gradientOffset: 0
-            NumberAnimation on gradientOffset {
+
+            // brief shimmer on invocation — sweeps once then stops
+            NumberAnimation {
+                id: shimmerAnim
+                target: borderRect
+                property: "gradientOffset"
                 from: 0; to: 1
-                duration: 3000
-                loops: Animation.Infinite
-                running: overlay.showing
+                duration: 800
+                easing.type: Easing.InOutQuad
             }
 
             function lerpColor(c1, c2, t) {
@@ -150,7 +197,7 @@ PanelWindow {
                 anchors.fill: parent
                 anchors.margins: 2
                 radius: 12
-                color: Theme.bgDim
+                color: Theme.bg0
             }
 
             // text content
@@ -159,11 +206,11 @@ PanelWindow {
                 anchors.centerIn: parent
                 spacing: 8
 
-                // submap title
+                // mode label — Noto Sans bold (sans names contexts)
                 Text {
                     text: overlay.currentSubmap.toUpperCase()
-                    color: Theme.foreground
-                    font.family: "JetBrains Mono"
+                    color: overlay.submapTitleColors[overlay.currentSubmap] ?? Theme.foreground
+                    font.family: "Noto Sans"
                     font.pixelSize: 22
                     font.weight: Font.Bold
                     Layout.rightMargin: 10
@@ -186,13 +233,15 @@ PanelWindow {
                         spacing: 4
                         Layout.leftMargin: 8
 
+                        // action label — JetBrains Mono DemiBold, semantic colour
                         Text {
                             text: modelData.label
-                            color: Theme.foreground
+                            color: modelData.color ?? Theme.foreground
                             font.family: "JetBrains Mono"
                             font.pixelSize: 20
                             font.weight: Font.DemiBold
                         }
+                        // shortcut hint — JetBrains Mono regular, muted
                         Text {
                             text: "[" + modelData.key + "]"
                             color: Theme.grey1
