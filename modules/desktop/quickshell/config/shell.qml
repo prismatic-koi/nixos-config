@@ -21,6 +21,10 @@ ShellRoot {
         id: submapOverlay
     }
 
+    WorkspaceArc {
+        id: workspaceArc
+    }
+
     // Hyprland IPC event handler
     // Add event routing for new widgets here
     Connections {
@@ -33,6 +37,16 @@ ShellRoot {
                     submapOverlay.hideOverlay();
                 } else {
                     submapOverlay.showOverlay(submapName);
+                }
+            }
+
+            // custom events for quickshell widget visibility
+            if (event.name === "custom") {
+                var data = event.parse(1)[0] ?? "";
+                if (data === "quickshell:show") {
+                    workspaceArc.showArc();
+                } else if (data === "quickshell:hide") {
+                    workspaceArc.hideArc();
                 }
             }
         }

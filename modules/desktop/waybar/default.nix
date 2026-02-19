@@ -40,13 +40,13 @@ with config.theme;
           mode = "overlay";
           start_hidden = true;
           margin = "30"; # margin for the whole bar
-          modules-left = [
-            (lib.mkIf enableSway "sway/workspaces")
-            (lib.mkIf enableSway "sway/scratchpad")
-            (lib.mkIf enableSway "sway/mode")
-            (lib.mkIf enableHyprland "hyprland/workspaces")
-            (lib.mkIf enableHyprland "hyprland/submap")
-          ];
+          # modules-left = [
+          #   (lib.mkIf enableSway "sway/workspaces")
+          #   (lib.mkIf enableSway "sway/scratchpad")
+          #   (lib.mkIf enableSway "sway/mode")
+          #   (lib.mkIf enableHyprland "hyprland/workspaces")
+          #   (lib.mkIf enableHyprland "hyprland/submap")
+          # ];
           modules-center = [
             "hyprland/window"
           ];

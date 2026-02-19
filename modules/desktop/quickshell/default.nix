@@ -73,12 +73,15 @@ let
         # copy static QML files from the repo
         cp ${./config/shell.qml} $out/shell.qml
         cp ${./config/SubMapOverlay.qml} $out/SubMapOverlay.qml
+        cp ${./config/WorkspaceArc.qml} $out/WorkspaceArc.qml
+        cp ${./config/brushstroke-mask.svg} $out/brushstroke-mask.svg
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
         cat > $out/qmldir <<'EOF'
     singleton Theme Theme.qml
     SubMapOverlay 1.0 SubMapOverlay.qml
+    WorkspaceArc 1.0 WorkspaceArc.qml
     EOF
   '';
 in

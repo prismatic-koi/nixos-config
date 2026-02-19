@@ -217,16 +217,16 @@ in
               ",preferred,auto,auto"
             ];
             bindrt = [
-              # hide waybar on SUPER_L keyup (actually resets which loads it as hidden)
-              "SUPER, SUPER_L, exec, pkill -SIGUSR2 waybar"
+              # hide waybar + quickshell widgets on SUPER_L keyup
+              "SUPER, SUPER_L, exec, pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide"
             ];
             bindl = [
               # suspend (works even when locked)
               "SUPER, s, exec, ${scriptsDir}/cli.system.suspend"
             ];
             bind = [
-              # show waybar on SUPER_L keydown
-              ", SUPER_L, exec, pkill -SIGUSR1 waybar"
+              # show waybar + quickshell widgets on SUPER_L keydown
+              ", SUPER_L, exec, pkill -SIGUSR1 waybar; hyprctl dispatch event quickshell:show"
               # Motions
               # focus window
               "SUPER, h, movefocus, l"
@@ -247,10 +247,6 @@ in
               "SUPER, 3, workspace, 3"
               "SUPER, 4, workspace, 4"
               "SUPER, 5, workspace, 5"
-              "SUPER, 6, workspace, 6"
-              "SUPER, 7, workspace, 7"
-              "SUPER, 8, workspace, 8"
-              "SUPER, 9, workspace, 9"
               "SUPER, TAB, workspace, previous"
               # move active window to workspace
               "SUPER SHIFT, 1, movetoworkspacesilent, 1"
@@ -258,10 +254,6 @@ in
               "SUPER SHIFT, 3, movetoworkspacesilent, 3"
               "SUPER SHIFT, 4, movetoworkspacesilent, 4"
               "SUPER SHIFT, 5, movetoworkspacesilent, 5"
-              "SUPER SHIFT, 6, movetoworkspacesilent, 6"
-              "SUPER SHIFT, 7, movetoworkspacesilent, 7"
-              "SUPER SHIFT, 8, movetoworkspacesilent, 8"
-              "SUPER SHIFT, 9, movetoworkspacesilent, 9"
               # floating
               "SUPER SHIFT, space, togglefloating"
               # example special workspace TODO more
