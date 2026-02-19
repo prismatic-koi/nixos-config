@@ -11,6 +11,7 @@
     ./calibre.nix
     ./choose.nix
     ./chromium.nix
+    ./corectrl.nix
     ./claude-code.nix
     ./cura-appimage.nix
     ./darktable.nix
