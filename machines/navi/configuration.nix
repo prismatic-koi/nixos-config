@@ -122,7 +122,6 @@
     gamescope
     gphoto2
     inkscape
-    mangohud
     ntfs3g
     openscad
     parted

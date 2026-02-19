@@ -130,7 +130,6 @@
     gphoto2
     inkscape
     lm_sensors
-    mangohud
     ntfs3g
     openscad
     parted

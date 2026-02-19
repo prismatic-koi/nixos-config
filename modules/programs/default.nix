@@ -26,6 +26,7 @@
     ./kubetools.nix
     ./lf.nix
     ./libreoffice.nix
+    ./mangohud.nix
     ./mpv.nix
     ./ncmpcpp.nix
     ./nh.nix
