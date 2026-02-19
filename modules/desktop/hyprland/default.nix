@@ -95,6 +95,7 @@ in
                 (lib.mkIf config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0")
                 "${scriptsDir}/cli.hyprland.switchWorkspaceOnWindowClose"
                 "waybar"
+                (lib.mkIf config.nx.desktop.quickshell.enable "${pkgs.quickshell}/bin/quickshell -c shell")
               ];
             debug = {
               disable_logs = false;
