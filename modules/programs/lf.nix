@@ -49,7 +49,12 @@
             # quit
             cmd q :quit
             %mkdir -p ~/.trash
-            cmd trash %set -f; mv $fx ~/.trash
+            cmd trash ''${{
+                          set -f
+                          printf '%s\n' "$fx" | while IFS= read -r file; do
+                            mv -- "$file" ~/.trash
+                          done
+                        }}
             map D :trash
             # open
             map <enter> :open
