@@ -138,9 +138,6 @@
         navi = mkSystem {
           system = "x86_64-linux";
           configFile = "navi";
-          extraConfig = {
-            rocmSupport = true;
-          };
         };
         tui = mkSystem {
           system = "x86_64-linux";
