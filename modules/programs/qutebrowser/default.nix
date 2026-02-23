@@ -419,6 +419,8 @@
             Service = {
               Type = "oneshot";
               ExecStart = qutebrowser-setup;
+              Restart = "on-failure";
+              RestartSec = "30s";
             };
             Install = {
               WantedBy = [ "default.target" ];
