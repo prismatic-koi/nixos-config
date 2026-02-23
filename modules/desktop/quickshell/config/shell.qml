@@ -21,8 +21,8 @@ ShellRoot {
         id: submapOverlay
     }
 
-    WorkspaceArc {
-        id: workspaceArc
+    WorkspaceBar {
+        id: workspaceBar
     }
 
     // Hyprland IPC event handler
@@ -44,9 +44,9 @@ ShellRoot {
             if (event.name === "custom") {
                 var data = event.parse(1)[0] ?? "";
                 if (data === "quickshell:show") {
-                    workspaceArc.showArc();
+                    workspaceBar.showBar();
                 } else if (data === "quickshell:hide") {
-                    workspaceArc.hideArc();
+                    workspaceBar.hideBar();
                 }
             }
         }

@@ -73,15 +73,14 @@ let
         # copy static QML files from the repo
         cp ${./config/shell.qml} $out/shell.qml
         cp ${./config/SubMapOverlay.qml} $out/SubMapOverlay.qml
-        cp ${./config/WorkspaceArc.qml} $out/WorkspaceArc.qml
-        cp ${./config/brushstroke-mask.svg} $out/brushstroke-mask.svg
+        cp ${./config/WorkspaceBar.qml} $out/WorkspaceBar.qml
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
         cat > $out/qmldir <<'EOF'
     singleton Theme Theme.qml
     SubMapOverlay 1.0 SubMapOverlay.qml
-    WorkspaceArc 1.0 WorkspaceArc.qml
+    WorkspaceBar 1.0 WorkspaceBar.qml
     EOF
   '';
 in
@@ -92,13 +91,30 @@ in
     };
   };
   config = lib.mkIf (config.nx.desktop.quickshell.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home = {
-      packages = [
-        pkgs.quickshell
-      ];
-      # Deploy the entire config directory as a single symlink.
-      # This preserves QML type resolution between sibling files.
-      file.".config/quickshell/shell".source = quickshellConfig;
-    };
+    home-manager.users.ben =
+      {
+        lib,
+        ...
+      }:
+      {
+        home = {
+          packages = [
+            pkgs.quickshell
+          ];
+          # Deploy quickshell config as real files (not symlinks into the nix store).
+          # Quickshell watches config files with inotify including IN_ATTRIB.
+          # When auto-optimise-store deduplicates files during `nix build`, the
+          # hard-link count changes on store inodes, triggering spurious reloads.
+          # Copying to a mutable directory avoids this.
+          activation.quickshellConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+            config_dir="$HOME/.config/quickshell/shell"
+            run mkdir -p "$config_dir"
+            run rm -f "$config_dir"/*.qml "$config_dir"/qmldir
+            for f in ${quickshellConfig}/*; do
+              run cp "$f" "$config_dir/$(basename "$f")"
+            done
+          '';
+        };
+      };
   };
 }

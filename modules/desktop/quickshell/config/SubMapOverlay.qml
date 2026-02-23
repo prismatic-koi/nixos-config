@@ -237,7 +237,7 @@ PanelWindow {
                         Text {
                             text: modelData.label
                             color: modelData.color ?? Theme.foreground
-                            font.family: "JetBrains Mono"
+                            font.family: "JetBrainsMono Nerd Font"
                             font.pixelSize: 20
                             font.weight: Font.DemiBold
                         }
@@ -245,7 +245,7 @@ PanelWindow {
                         Text {
                             text: "[" + modelData.key + "]"
                             color: Theme.grey1
-                            font.family: "JetBrains Mono"
+                            font.family: "JetBrainsMono Nerd Font"
                             font.pixelSize: 17
                         }
                     }
