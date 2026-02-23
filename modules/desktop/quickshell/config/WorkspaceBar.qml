@@ -5,9 +5,9 @@ import QtQuick
 
 // Workspace bar indicator — minimal square-cell bar
 //
-// A horizontal row of square workspace cells matching the waybar style.
-// The active workspace gets a gradient background that
-// slides between cells with animation. Inactive cells use bg3.
+// A vertical column of square workspace cells. Workspace 1 is at the top,
+// workspace 9 at the bottom. The active workspace gets a gradient background
+// that slides between cells with animation. Inactive cells use bg3.
 // Slides in from the top-left corner on show.
 //
 // Visibility: hidden at rest, shown on Super hold via custom Hyprland
@@ -25,8 +25,8 @@ PanelWindow {
     readonly property int workspaceCount: 9
     readonly property int cellWidth: 40
     readonly property int cellHeight: 40
-    readonly property int barWidth: cellWidth * workspaceCount
-    readonly property int barHeight: cellHeight
+    readonly property int barWidth: cellWidth
+    readonly property int barHeight: cellHeight * workspaceCount
     readonly property int marginTop: 30
     readonly property int marginLeft: 30
     // rainbow cycles twice across the 9 workspaces
@@ -36,6 +36,19 @@ PanelWindow {
     property bool showing: false
     // shimmer offset — sweeps through the gradient on invocation
     property real gradientOffset: 0
+    // single progress value (0 = hidden, 1 = shown) drives both slide axes
+    property real slideProgress: 0
+    Behavior on slideProgress {
+        NumberAnimation {
+            duration: 250
+            easing.type: Easing.OutCubic
+            onRunningChanged: {
+                if (!running && !barWindow.showing) {
+                    barWindow.visible = false;
+                }
+            }
+        }
+    }
     property int activeWs: {
         var fw = Hyprland.focusedWorkspace;
         if (fw && fw.id >= 1 && fw.id <= workspaceCount) return fw.id;
@@ -56,9 +69,11 @@ PanelWindow {
     function showBar() {
         visible = true;
         showing = true;
+        slideProgress = 1;
     }
     function hideBar() {
         showing = false;
+        slideProgress = 0;
     }
 
     // -- rainbow color helpers --
@@ -66,7 +81,7 @@ PanelWindow {
     NumberAnimation on gradientOffset {
         id: shimmerAnim
         from: 0; to: 1
-        duration: 2000
+        duration: 4000
         loops: Animation.Infinite
         running: barWindow.showing
     }
@@ -99,121 +114,117 @@ PanelWindow {
     WlrLayershell.namespace: "quickshell-workspace-bar"
     anchors.top: true
     anchors.left: true
-    // window covers the full travel area so the bar can slide across
-    // the gap between the screen corner and its resting position
-    width: marginLeft + barWidth
-    height: marginTop + barHeight
+    // window must be large enough that the bar enters the clip region
+    // at a diagonal — use the larger travel distance for both axes
+    readonly property int travelSize: Math.max(marginLeft + barWidth, marginTop + barHeight)
+    width: travelSize + barWidth
+    height: travelSize + barHeight
     exclusiveZone: 0
     focusable: false
 
     // -- content --
+    // clip so the bar is invisible while translated outside the window bounds
     Item {
-        id: contentRoot
-        width: barWindow.barWidth
-        height: barWindow.barHeight
+        id: clipRoot
+        anchors.fill: parent
+        clip: true
 
-        // resting position is at the margin offset inside the window;
-        // hidden position is off the top-left corner of the screen
-        x: barWindow.showing ? barWindow.marginLeft : -barWindow.barWidth
-        y: barWindow.showing ? barWindow.marginTop : -barWindow.barHeight
+        Item {
+            id: contentRoot
+            width: barWindow.barWidth
+            height: barWindow.barHeight
 
-        Behavior on x {
-            NumberAnimation {
-                id: slideXAnim
-                duration: 250
-                easing.type: Easing.OutCubic
+            // resting position: at the margin offset
+            // hidden position: translated diagonally so the bar sits just outside
+            // the top-left corner, equidistant on both axes
+            x: barWindow.marginLeft
+            y: barWindow.marginTop
+
+            transform: Translate {
+                id: slideTranslate
+                x: (1 - barWindow.slideProgress) * -barWindow.travelSize
+                y: (1 - barWindow.slideProgress) * -barWindow.travelSize
             }
-        }
-        Behavior on y {
-            NumberAnimation {
-                id: slideYAnim
-                duration: 250
-                easing.type: Easing.OutCubic
-                onRunningChanged: {
-                    if (!running && !barWindow.showing) {
-                        barWindow.visible = false;
-                    }
-                }
+
+            // background bar
+            Rectangle {
+                anchors.fill: parent
+                color: Theme.bg3
             }
-        }
 
-        // background bar
-        Rectangle {
-            anchors.fill: parent
-            color: Theme.bg3
-        }
-
-        // sliding rainbow highlight
-        Rectangle {
-            id: highlight
-            width: barWindow.cellWidth
-            height: barWindow.cellHeight
-            x: barWindow.highlightPos * barWindow.cellWidth
-            y: 0
-
-            // rainbow gradient with multiple stops for richer colour
-            gradient: Gradient {
-                orientation: Gradient.Horizontal
-                GradientStop {
-                    position: 0.0
-                    color: barWindow.rainbowAt(barWindow.highlightPos / barWindow.workspaceCount * barWindow.rainbowCycles)
-                }
-                GradientStop {
-                    position: 0.25
-                    color: barWindow.rainbowAt((barWindow.highlightPos + 0.25) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                }
-                GradientStop {
-                    position: 0.5
-                    color: barWindow.rainbowAt((barWindow.highlightPos + 0.5) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                }
-                GradientStop {
-                    position: 0.75
-                    color: barWindow.rainbowAt((barWindow.highlightPos + 0.75) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                }
-                GradientStop {
-                    position: 1.0
-                    color: barWindow.rainbowAt((barWindow.highlightPos + 1) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                }
-            }
-        }
-
-        // workspace numbers
-        Repeater {
-            model: barWindow.workspaceCount
-
-            Text {
-                required property int index
-                property bool isActive: (barWindow.activeWs - 1) === index
-                // find our workspace object from Hyprland so QML tracks changes
-                property var wsObject: {
-                    var wsList = Hyprland.workspaces.values;
-                    for (var i = 0; i < wsList.length; i++) {
-                        if (wsList[i].id === index + 1) return wsList[i];
-                    }
-                    return null;
-                }
-                property bool occupied: wsObject ? wsObject.toplevels.values.length > 0 : false
-
-                // pre-compute the target color as a property so QML tracks
-                // all dependencies (activeWs, occupied, gradientOffset)
-                property color activeColor: Theme.bg0
-                property color occupiedColor: barWindow.rainbowAt(index / barWindow.workspaceCount * barWindow.rainbowCycles)
-                property color emptyColor: Theme.grey0
-                property color targetColor: isActive ? activeColor
-                                          : occupied ? occupiedColor
-                                          : emptyColor
-
-                x: index * barWindow.cellWidth
+            // sliding rainbow highlight
+            Rectangle {
+                id: highlight
                 width: barWindow.cellWidth
                 height: barWindow.cellHeight
+                x: 0
+                y: barWindow.highlightPos * barWindow.cellHeight
 
-                text: (index + 1).toString()
-                color: targetColor
-                font.family: "JetBrainsMono Nerd Font"
-                font.pixelSize: 18
-                font.weight: isActive ? Font.Bold : occupied ? Font.DemiBold : Font.Normal
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
+                // rainbow gradient with multiple stops for richer colour
+                gradient: Gradient {
+                    orientation: Gradient.Vertical
+                    GradientStop {
+                        position: 0.0
+                        color: barWindow.rainbowAt(barWindow.highlightPos / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    }
+                    GradientStop {
+                        position: 0.25
+                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.25) / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    }
+                    GradientStop {
+                        position: 0.5
+                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.5) / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    }
+                    GradientStop {
+                        position: 0.75
+                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.75) / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    }
+                    GradientStop {
+                        position: 1.0
+                        color: barWindow.rainbowAt((barWindow.highlightPos + 1) / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    }
+                }
+            }
+
+            // workspace numbers
+            Repeater {
+                model: barWindow.workspaceCount
+
+                Text {
+                    required property int index
+                    property bool isActive: (barWindow.activeWs - 1) === index
+                    // find our workspace object from Hyprland so QML tracks changes
+                    property var wsObject: {
+                        var wsList = Hyprland.workspaces.values;
+                        for (var i = 0; i < wsList.length; i++) {
+                            if (wsList[i].id === index + 1) return wsList[i];
+                        }
+                        return null;
+                    }
+                    property bool occupied: wsObject ? wsObject.toplevels.values.length > 0 : false
+
+                    // pre-compute the target color as a property so QML tracks
+                    // all dependencies (activeWs, occupied, gradientOffset)
+                    property color activeColor: Theme.bg0
+                    property color occupiedColor: barWindow.rainbowAt(index / barWindow.workspaceCount * barWindow.rainbowCycles)
+                    property color emptyColor: Theme.grey0
+                    property color targetColor: isActive ? activeColor
+                                              : occupied ? occupiedColor
+                                              : emptyColor
+
+                    x: 0
+                    y: index * barWindow.cellHeight
+                    width: barWindow.cellWidth
+                    height: barWindow.cellHeight
+
+                    text: (index + 1).toString()
+                    color: targetColor
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 18
+                    font.weight: isActive ? Font.Bold : occupied ? Font.DemiBold : Font.Normal
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
             }
         }
     }

@@ -27,11 +27,6 @@ in
         default = "dwindle";
         description = "sets the default layout for Hyprland";
       };
-      disableWorkspaceAnimations = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = "disables workspace animations";
-      };
     };
   };
   config = lib.mkIf pkgs.stdenv.isLinux (
@@ -182,10 +177,7 @@ in
                 "border, 1, 2, default"
                 "borderangle, 1, 50, linear, loop"
                 "fade, 1, 2, default"
-                (lib.mkIf (
-                  config.nx.desktop.hyprland.disableWorkspaceAnimations != true
-                ) "workspaces,1,1, myBezier")
-                (lib.mkIf (config.nx.desktop.hyprland.disableWorkspaceAnimations == true) "workspaces,0")
+                "workspaces,1,1, myBezier, slidevert"
               ];
             };
             dwindle = {
