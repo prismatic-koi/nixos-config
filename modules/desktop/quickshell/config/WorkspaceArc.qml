@@ -131,7 +131,13 @@ PanelWindow {
             // preload the brushstroke mask image
             property bool maskLoaded: false
             Component.onCompleted: {
-                loadImage("brushstroke-mask.svg");
+                if (isImageLoaded("brushstroke-mask.svg")) {
+                    // already in Qt's image cache (e.g. after quickshell reload)
+                    maskLoaded = true;
+                    requestPaint();
+                } else {
+                    loadImage("brushstroke-mask.svg");
+                }
             }
             onImageLoaded: {
                 maskLoaded = true;
