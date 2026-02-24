@@ -491,7 +491,7 @@ PanelWindow {
                     x: root.cardPadding
                     y: root.cardPadding + root.waveformAreaHeight + 4
                     text: root.hasPlayer ? root.formatTime(root.trackPosition) : ""
-                    color: Theme.grey1
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 14
                 }
@@ -499,7 +499,7 @@ PanelWindow {
                     x: parent.width - root.cardPadding - width
                     y: root.cardPadding + root.waveformAreaHeight + 4
                     text: root.hasPlayer ? root.formatTime(root.trackLength) : ""
-                    color: Theme.grey1
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 14
                 }
