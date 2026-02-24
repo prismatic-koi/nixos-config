@@ -117,8 +117,8 @@ PanelWindow {
     // window must be large enough that the bar enters the clip region
     // at a diagonal — use the larger travel distance for both axes
     readonly property int travelSize: Math.max(marginLeft + barWidth, marginTop + barHeight)
-    width: travelSize + barWidth
-    height: travelSize + barHeight
+    implicitWidth: travelSize + barWidth
+    implicitHeight: travelSize + barHeight
     exclusiveZone: 0
     focusable: false
     mask: Region { item: contentRoot }  // only the bar intercepts input; rest is click-through

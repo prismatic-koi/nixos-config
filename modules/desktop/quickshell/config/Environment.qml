@@ -358,8 +358,8 @@ PanelWindow {
     anchors.top: true
     anchors.right: true
     readonly property int travelSize: Math.max(cardMargin + cardWidth, cardMargin + cardHeight)
-    width: travelSize + cardWidth
-    height: travelSize + cardHeight
+    implicitWidth: travelSize + cardWidth
+    implicitHeight: travelSize + cardHeight
     exclusiveZone: 0
     focusable: false
     mask: Region {

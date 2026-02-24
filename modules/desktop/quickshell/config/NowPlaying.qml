@@ -335,8 +335,8 @@ PanelWindow {
     anchors.bottom: true
     anchors.left: true
     readonly property int travelSize: Math.max(cardMargin + cardWidth, cardMargin + cardHeight)
-    width: travelSize + cardWidth
-    height: travelSize + cardHeight
+    implicitWidth: travelSize + cardWidth
+    implicitHeight: travelSize + cardHeight
     exclusiveZone: 0
     focusable: false
     mask: Region { item: contentRoot }  // only the card intercepts input; rest is click-through

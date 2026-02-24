@@ -93,8 +93,8 @@ PanelWindow {
     anchors.top: true
     anchors.left: true
     anchors.right: true
-    width: 1 // overridden by Wayland when left+right anchors are both set
-    height: travelSize + pillHeight
+    implicitWidth: 1 // overridden by Wayland when left+right anchors are both set
+    implicitHeight: travelSize + pillHeight
     exclusiveZone: 0
     focusable: false
     mask: Region {
