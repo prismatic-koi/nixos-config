@@ -41,6 +41,16 @@ rec {
       # use master for beads, need the bleeding edge
       beads = masterPkgs.beads;
 
+      # ncmpcpp and openscad fail to build against boost 1.89 because their old
+      # build systems try to link boost_system as a shared library, but it has
+      # been header-only since boost 1.69. Pin to boost187 until upstream is fixed.
+      ncmpcpp = prev.ncmpcpp.override { boost = prev.boost187; };
+      openscad = prev.openscad.override { boost = prev.boost187; };
+
+      # calibre 8.16 fails to build due to a missing qmake in qtbase6-setup-hook.
+      # Use stable until upstream is fixed.
+      calibre = stablePkgs.calibre;
+
       vimPlugins = prev.vimPlugins // {
         obsidian-nvim = prev.vimUtils.buildVimPlugin {
           pname = "obsidian-nvim";
