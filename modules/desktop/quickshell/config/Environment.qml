@@ -32,7 +32,6 @@ import QtQuick
 //
 // Visibility:
 //   - Shown on Super hold (showBar / hideBar, same as NowPlaying)
-//   - Briefly flashes for 5 s when data changes
 //   - Hidden when no data is available
 //
 // Usage from shell.qml:
@@ -62,10 +61,6 @@ PanelWindow {
     property real outsideTemp: 0
     property string outsideCondition: ""
     property bool hasData: false
-
-    // -- previous state for flash detection --
-    property real _prevOutsideTemp: -999
-    property bool _initialised: false  // true after first successful data load
 
     // -- temperature colour helper --
     // Maps temperature bands to theme colours (solid blocks, no gradient).
@@ -171,7 +166,6 @@ PanelWindow {
                 if (!isNaN(val)) {
                     root.outsideTemp = val;
                     root._checkData();
-                    root._checkFlash();
                 }
             }
         }
@@ -196,19 +190,6 @@ PanelWindow {
 
     function _checkData() {
         root.hasData = (root.officeTemp !== 0 || root.officeHumidity !== 0 || root.outsideTemp !== 0);
-        if (root.hasData && !root._initialised) {
-            // seed prev values so the next *change* fires correctly
-            root._prevOutsideTemp = root.outsideTemp;
-            root._initialised = true;
-        }
-    }
-
-    function _checkFlash() {
-        if (!root._initialised) return;  // don't flash on first data load
-        if (root.outsideTemp !== root._prevOutsideTemp && root.hasData) {
-            root._prevOutsideTemp = root.outsideTemp;
-            root.flashBriefly();
-        }
     }
 
     // -- poll timer (60 s refresh) --
@@ -263,30 +244,8 @@ PanelWindow {
     }
     function hideBar() {
         holdingSuper = false;
-        if (flashTimer.running && hasData) return;
         showing = false;
         slideProgress = 0;
-    }
-
-    // -- flash on data change --
-    Timer {
-        id: flashTimer
-        interval: 5000
-        repeat: false
-        onTriggered: {
-            if (!root.holdingSuper) {
-                root.showing = false;
-                root.slideProgress = 0;
-            }
-        }
-    }
-
-    function flashBriefly() {
-        if (!hasData) return;
-        visible = true;
-        showing = true;
-        slideProgress = 1;
-        flashTimer.restart();
     }
 
     // -- window configuration --
