@@ -47,15 +47,13 @@ with config.theme;
           #   (lib.mkIf enableHyprland "hyprland/workspaces")
           #   (lib.mkIf enableHyprland "hyprland/submap")
           # ];
-          modules-center = [
-            "hyprland/window"
-          ];
+          # modules-center = [
+          #   "hyprland/window"
+          # ];
           modules-right = [
             "tray"
             (lib.mkIf (externalAudio == false) "pulseaudio")
             (lib.mkIf externalAudio "custom/audio-enabled")
-            (lib.mkIf (enableHomeAutomation && location == "office") "custom/office-temp")
-            (lib.mkIf (enableHomeAutomation && location == "office") "custom/office-humidity")
             "custom/notification"
             "custom/inhibitidle"
             "custom/clock"
@@ -305,11 +303,7 @@ with config.theme;
             color: ${bg0};
             background-color: ${primary};
           }
-          window#waybar.topBar .modules-center {
-            padding: 0 12px;
-            color: ${foreground};
-            background-color: ${bg3};
-          }
+
           @keyframes blink {
             to {
               color: ${green};

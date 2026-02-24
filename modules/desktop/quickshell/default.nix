@@ -75,6 +75,8 @@ let
         cp ${./config/SubMapOverlay.qml} $out/SubMapOverlay.qml
         cp ${./config/WorkspaceBar.qml} $out/WorkspaceBar.qml
         cp ${./config/NowPlaying.qml} $out/NowPlaying.qml
+        cp ${./config/WindowTitle.qml} $out/WindowTitle.qml
+        cp ${./config/Environment.qml} $out/Environment.qml
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
@@ -83,6 +85,8 @@ let
     SubMapOverlay 1.0 SubMapOverlay.qml
     WorkspaceBar 1.0 WorkspaceBar.qml
     NowPlaying 1.0 NowPlaying.qml
+    WindowTitle 1.0 WindowTitle.qml
+    Environment 1.0 Environment.qml
     EOF
   '';
 in
@@ -99,6 +103,17 @@ in
         configs.shell = quickshellConfig;
         activeConfig = "shell";
         systemd.enable = true;
+      };
+
+      # The HM quickshell module generates: quickshell --config shell
+      # which resolves ~/.config/quickshell/shell at runtime — a symlink
+      # that HM activation updates to the new store path on every switch.
+      # We only need to ensure the service is restarted after activation so
+      # it picks up the new config. X-Restart-Triggers causes systemd to
+      # restart the unit whenever the trigger value changes, which here is
+      # the quickshellConfig store path (changes on every rebuild).
+      systemd.user.services.quickshell = {
+        Unit.X-Restart-Triggers = [ "${quickshellConfig}" ];
       };
     };
   };
