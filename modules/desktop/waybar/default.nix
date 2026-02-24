@@ -149,9 +149,9 @@ with config.theme;
           mode = "overlay";
           start_hidden = true;
           margin = "30"; # margin for the whole bar
-          modules-left = [
-            (lib.mkIf enableMpd "custom/mpd")
-          ];
+          # modules-left = [
+          #   (lib.mkIf enableMpd "custom/mpd")
+          # ];
           modules-center = [
             (lib.mkIf config.nx.desktop.offline-focus-mode.enable "custom/system-mode")
           ];
