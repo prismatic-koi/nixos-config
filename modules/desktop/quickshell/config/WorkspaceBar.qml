@@ -121,6 +121,7 @@ PanelWindow {
     height: travelSize + barHeight
     exclusiveZone: 0
     focusable: false
+    mask: Region { item: contentRoot }  // only the bar intercepts input; rest is click-through
 
     // -- content --
     // clip so the bar is invisible while translated outside the window bounds
@@ -146,47 +147,68 @@ PanelWindow {
                 y: (1 - barWindow.slideProgress) * -barWindow.travelSize
             }
 
-            // background bar
-            Rectangle {
+            // bar background + highlight drawn via Canvas for proper
+            // rounded-corner clipping without QtGraphicalEffects
+            Canvas {
+                id: barCanvas
                 anchors.fill: parent
-                color: Theme.bg3
-            }
 
-            // sliding rainbow highlight
-            Rectangle {
-                id: highlight
-                width: barWindow.cellWidth
-                height: barWindow.cellHeight
-                x: 0
-                y: barWindow.highlightPos * barWindow.cellHeight
+                // repaint whenever highlight position, gradient, or colors change
+                property real hlPos: barWindow.highlightPos
+                property real gOff: barWindow.gradientOffset
+                onHlPosChanged: requestPaint()
+                onGOffChanged: requestPaint()
 
-                // rainbow gradient with multiple stops for richer colour
-                gradient: Gradient {
-                    orientation: Gradient.Vertical
-                    GradientStop {
-                        position: 0.0
-                        color: barWindow.rainbowAt(barWindow.highlightPos / barWindow.workspaceCount * barWindow.rainbowCycles)
+                onPaint: {
+                    var ctx = getContext("2d");
+                    var w = width;
+                    var h = height;
+                    var r = 5;
+                    ctx.clearRect(0, 0, w, h);
+
+                    // helper: draw a rounded rectangle path
+                    function roundedRect(x, y, rw, rh, rad) {
+                        ctx.beginPath();
+                        ctx.moveTo(x + rad, y);
+                        ctx.lineTo(x + rw - rad, y);
+                        ctx.arcTo(x + rw, y, x + rw, y + rad, rad);
+                        ctx.lineTo(x + rw, y + rh - rad);
+                        ctx.arcTo(x + rw, y + rh, x + rw - rad, y + rh, rad);
+                        ctx.lineTo(x + rad, y + rh);
+                        ctx.arcTo(x, y + rh, x, y + rh - rad, rad);
+                        ctx.lineTo(x, y + rad);
+                        ctx.arcTo(x, y, x + rad, y, rad);
+                        ctx.closePath();
                     }
-                    GradientStop {
-                        position: 0.25
-                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.25) / barWindow.workspaceCount * barWindow.rainbowCycles)
+
+                    // 1. fill entire bar with bg3 (rounded)
+                    roundedRect(0, 0, w, h, r);
+                    ctx.fillStyle = Theme.bg3;
+                    ctx.fill();
+
+                    // 2. clip to the same rounded rect and paint highlight
+                    ctx.save();
+                    roundedRect(0, 0, w, h, r);
+                    ctx.clip();
+
+                    var hlY = barCanvas.hlPos * barWindow.cellHeight;
+                    var hlH = barWindow.cellHeight;
+
+                    // build rainbow gradient for highlight
+                    var grad = ctx.createLinearGradient(0, hlY, 0, hlY + hlH);
+                    var basePos = barCanvas.hlPos / barWindow.workspaceCount * barWindow.rainbowCycles;
+                    for (var s = 0; s <= 4; s++) {
+                        var frac = s / 4.0;
+                        grad.addColorStop(frac, barWindow.rainbowAt(basePos + frac / barWindow.workspaceCount * barWindow.rainbowCycles));
                     }
-                    GradientStop {
-                        position: 0.5
-                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.5) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                    }
-                    GradientStop {
-                        position: 0.75
-                        color: barWindow.rainbowAt((barWindow.highlightPos + 0.75) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                    }
-                    GradientStop {
-                        position: 1.0
-                        color: barWindow.rainbowAt((barWindow.highlightPos + 1) / barWindow.workspaceCount * barWindow.rainbowCycles)
-                    }
+                    ctx.fillStyle = grad;
+                    ctx.fillRect(0, hlY, w, hlH);
+
+                    ctx.restore();
                 }
             }
 
-            // workspace numbers
+            // workspace numbers (on top of Canvas)
             Repeater {
                 model: barWindow.workspaceCount
 

@@ -74,6 +74,7 @@ let
         cp ${./config/shell.qml} $out/shell.qml
         cp ${./config/SubMapOverlay.qml} $out/SubMapOverlay.qml
         cp ${./config/WorkspaceBar.qml} $out/WorkspaceBar.qml
+        cp ${./config/NowPlaying.qml} $out/NowPlaying.qml
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
@@ -81,6 +82,7 @@ let
     singleton Theme Theme.qml
     SubMapOverlay 1.0 SubMapOverlay.qml
     WorkspaceBar 1.0 WorkspaceBar.qml
+    NowPlaying 1.0 NowPlaying.qml
     EOF
   '';
 in

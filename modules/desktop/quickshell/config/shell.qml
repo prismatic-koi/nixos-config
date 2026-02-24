@@ -25,6 +25,10 @@ ShellRoot {
         id: workspaceBar
     }
 
+    NowPlaying {
+        id: nowPlaying
+    }
+
     // Hyprland IPC event handler
     // Add event routing for new widgets here
     Connections {
@@ -45,8 +49,10 @@ ShellRoot {
                 var data = event.parse(1)[0] ?? "";
                 if (data === "quickshell:show") {
                     workspaceBar.showBar();
+                    nowPlaying.showBar();
                 } else if (data === "quickshell:hide") {
                     workspaceBar.hideBar();
+                    nowPlaying.hideBar();
                 }
             }
         }
