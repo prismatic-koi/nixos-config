@@ -50,6 +50,10 @@ PanelWindow {
     readonly property int cardMargin: 30
     readonly property int cardPadding: 15
     readonly property int dividerX: cardWidth / 2
+    // showOffice: true only when this machine is physically in the office
+    readonly property bool showOffice: Theme.deviceLocation === "office"
+    // right panel starts at divider when office is shown, or at 0 for full-width
+    readonly property int rightPanelX: showOffice ? dividerX : 0
 
     // -- data --
     property real officeTemp: 0
@@ -318,68 +322,73 @@ PanelWindow {
                 color: Theme.bg3
                 radius: root.cardRadius
 
-                // ── LEFT PANEL: Office ─────────────────────────────────────
+                // ── LEFT PANEL: Office (only shown when deviceLocation == "office") ──
 
-                // OFFICE label
-                Text {
-                    x: root.cardPadding
-                    y: root.cardPadding - 1
-                    text: "OFFICE"
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.weight: Font.Medium
-                    font.letterSpacing: 1
+                Item {
+                    visible: root.showOffice
+
+                    // OFFICE label
+                    Text {
+                        x: root.cardPadding
+                        y: root.cardPadding - 1
+                        text: "OFFICE"
+                        color: Theme.foreground
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 11
+                        font.weight: Font.Medium
+                        font.letterSpacing: 1
+                    }
+
+                    // office temperature value
+                    Text {
+                        id: officeTempText
+                        x: root.cardPadding
+                        y: root.cardPadding + 20
+                        text: root.officeTemp > 0 ? root.officeTemp.toFixed(1) + "°" : "—"
+                        color: root.tempColor(root.officeTemp)
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 30
+                        font.weight: Font.DemiBold
+                    }
+
+                    // office humidity value (sits to the right of temp)
+                    Text {
+                        id: officeHumidText
+                        x: officeTempText.x + officeTempText.width + 10
+                        y: officeTempText.y
+                        text: root.officeHumidity > 0 ? root.officeHumidity.toFixed(1) + "%" : "—"
+                        color: root.humidColor(root.officeHumidity)
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 30
+                        font.weight: Font.DemiBold
+                    }
+
+                    // TEMP label under office temp
+                    Text {
+                        x: officeTempText.x
+                        y: officeTempText.y + officeTempText.height - 2
+                        text: "TEMP"
+                        color: Theme.foreground
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 11
+                        font.letterSpacing: 1
+                    }
+
+                    // HUMID label under humidity
+                    Text {
+                        x: officeHumidText.x
+                        y: officeHumidText.y + officeHumidText.height - 2
+                        text: "HUMID"
+                        color: Theme.foreground
+                        font.family: "JetBrainsMono Nerd Font"
+                        font.pixelSize: 11
+                        font.letterSpacing: 1
+                    }
                 }
 
-                // office temperature value
-                Text {
-                    id: officeTempText
-                    x: root.cardPadding
-                    y: root.cardPadding + 20
-                    text: root.officeTemp > 0 ? root.officeTemp.toFixed(1) + "°" : "—"
-                    color: root.tempColor(root.officeTemp)
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 30
-                    font.weight: Font.DemiBold
-                }
-
-                // office humidity value (sits to the right of temp)
-                Text {
-                    id: officeHumidText
-                    x: officeTempText.x + officeTempText.width + 10
-                    y: officeTempText.y
-                    text: root.officeHumidity > 0 ? root.officeHumidity.toFixed(1) + "%" : "—"
-                    color: root.humidColor(root.officeHumidity)
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 30
-                    font.weight: Font.DemiBold
-                }
-
-                // TEMP label under office temp
-                Text {
-                    x: officeTempText.x
-                    y: officeTempText.y + officeTempText.height - 2
-                    text: "TEMP"
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.letterSpacing: 1
-                }
-
-                // HUMID label under humidity
-                Text {
-                    x: officeHumidText.x
-                    y: officeHumidText.y + officeHumidText.height - 2
-                    text: "HUMID"
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.letterSpacing: 1
-                }
-
-                // ── vertical divider ───────────────────────────────────────
+                // ── vertical divider (only when office panel is shown) ─────────
                 Rectangle {
+                    visible: root.showOffice
                     x: root.dividerX - 1
                     y: root.cardPadding
                     width: 3
@@ -388,11 +397,11 @@ PanelWindow {
                     opacity: 0.6
                 }
 
-                // ── RIGHT PANEL: Outside ───────────────────────────────────
+                // ── RIGHT PANEL: Outside ───────────────────────────────────────
 
                 // OUTSIDE label
                 Text {
-                    x: root.dividerX + root.cardPadding
+                    x: root.rightPanelX + root.cardPadding
                     y: root.cardPadding - 1
                     text: "OUTSIDE"
                     color: Theme.foreground
@@ -405,7 +414,7 @@ PanelWindow {
                 // outside temperature value
                 Text {
                     id: outsideTempText
-                    x: root.dividerX + root.cardPadding
+                    x: root.rightPanelX + root.cardPadding
                     y: root.cardPadding + 20
                     text: root.outsideTemp !== 0 ? root.outsideTemp.toFixed(1) + "°" : "—"
                     color: root.tempColor(root.outsideTemp)

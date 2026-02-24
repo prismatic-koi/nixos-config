@@ -62,6 +62,7 @@ let
         // metadata
         readonly property string themeName: "${theme.name}"
         readonly property string themeType: "${theme.type}"
+        readonly property string deviceLocation: "${config.nx.deviceLocation}"
     }
   '';
 
