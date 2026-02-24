@@ -5,13 +5,16 @@ import QtQuick
 
 // Environment widget — top-right card showing office + outside conditions
 //
-// Layout (mirrors the NowPlaying card size, anchored top-right):
+// Layout:
 //
-//   ┌────────────────────────────────────────────────┐
-//   │  OFFICE            │  OUTSIDE                  │
-//   │  23.7°    66.6%    │  23.5°    ☁               │
-//   │  TEMP     HUMID    │  TEMP     light rain       │
-//   └────────────────────┴──────────────────────────┘
+//   ┌──────────────────────┬──────────────────────┐
+//   │  OFFICE              │  OUTSIDE             │
+//   │  23.7°    66.6%      │  23.5°    ☁          │
+//   │  TEMP     HUMID      │  TEMP     partly cloudy│
+//   └──────────────────────┴──────────────────────┘
+//
+// Card width is content-driven: each panel sizes to its content and the
+// card expands to fit, so longer condition strings never get truncated.
 //
 // Temperature colour scale (both office and outside):
 //   ≤ 8°C    → blue+purple midpoint  (cold winter morning)
@@ -47,13 +50,12 @@ PanelWindow {
     readonly property int cardRadius: 10
     readonly property int cardMargin: 30
     readonly property int cardPadding: 15
+    readonly property int panelSpacing: 10  // gap between temp and humidity/icon columns
     // showOffice: true only when this machine is physically in the office
     readonly property bool showOffice: Theme.deviceLocation === "office"
-    // card is full-width (two panels) when office is shown, half-width otherwise
-    readonly property int cardWidth: showOffice ? 450 : 225
-    readonly property int dividerX: 225
-    // right panel starts at divider when office is shown, or at 0 for full-width
-    readonly property int rightPanelX: showOffice ? dividerX : 0
+    // cardWidth is derived from the content row's implicitWidth once rendered;
+    // seed with a minimum so the window has a valid size before data loads.
+    readonly property int cardWidth: Math.max(contentRow.implicitWidth + cardPadding * 2, 180)
 
     // -- data --
     property real officeTemp: 0
@@ -63,75 +65,126 @@ PanelWindow {
     property bool hasData: false
 
     // -- temperature colour helper --
-    // Maps temperature bands to theme colours (solid blocks, no gradient).
     function tempColor(temp) {
-        if (temp <= 8)  return Qt.rgba(
-                            (Theme.blue.r  + Theme.purple.r) / 2,
-                            (Theme.blue.g  + Theme.purple.g) / 2,
-                            (Theme.blue.b  + Theme.purple.b) / 2,
-                            1);
-        if (temp <= 15) return Theme.aqua;
-        if (temp <= 22) return Theme.green;
-        if (temp <= 25) return Theme.yellow;
+        if (temp <= 8)
+            return Qt.rgba((Theme.blue.r + Theme.purple.r) / 2, (Theme.blue.g + Theme.purple.g) / 2, (Theme.blue.b + Theme.purple.b) / 2, 1);
+        if (temp <= 15)
+            return Theme.aqua;
+        if (temp <= 22)
+            return Theme.green;
+        if (temp <= 25)
+            return Theme.yellow;
         return Theme.orange;
     }
 
     // -- humidity colour helper --
-    // Maps humidity bands to theme colours (solid blocks, no gradient).
     function humidColor(humid) {
-        if (humid <= 0)  return Qt.rgba(
-                             (Theme.blue.r  + Theme.purple.r) / 2,
-                             (Theme.blue.g  + Theme.purple.g) / 2,
-                             (Theme.blue.b  + Theme.purple.b) / 2,
-                             1);
-        if (humid <= 35) return Theme.aqua;
-        if (humid <= 60) return Theme.green;
-        if (humid <= 75) return Theme.yellow;
-        if (humid <= 90) return Theme.orange;
+        if (humid <= 0)
+            return Qt.rgba((Theme.blue.r + Theme.purple.r) / 2, (Theme.blue.g + Theme.purple.g) / 2, (Theme.blue.b + Theme.purple.b) / 2, 1);
+        if (humid <= 35)
+            return Theme.aqua;
+        if (humid <= 60)
+            return Theme.green;
+        if (humid <= 75)
+            return Theme.yellow;
+        if (humid <= 90)
+            return Theme.orange;
         return Theme.red;
+    }
+
+    // -- HA state → human-friendly label --
+    function friendlyCondition(cond) {
+        var c = cond.toLowerCase();
+        if (c === "partlycloudy")
+            return "partly cloudy";
+        if (c === "mostlycloudy")
+            return "mostly cloudy";
+        if (c === "mostlysunny")
+            return "mostly sunny";
+        if (c === "partlysunny")
+            return "partly sunny";
+        if (c === "lightrain")
+            return "light rain";
+        if (c === "heavyrain")
+            return "heavy rain";
+        if (c === "lightsnow")
+            return "light snow";
+        if (c === "heavysnow")
+            return "heavy snow";
+        if (c === "freezingrain")
+            return "freezing rain";
+        if (c === "lightshowers")
+            return "light showers";
+        if (c === "heavyshowers")
+            return "heavy showers";
+        if (c === "lightsleet")
+            return "light sleet";
+        if (c === "heavysleet")
+            return "heavy sleet";
+        return cond.replace(/[_-]/g, " ");
     }
 
     // -- weather condition → Nerd Font icon --
     function conditionIcon(cond) {
         var c = cond.toLowerCase();
-        if (c.indexOf("thunderstorm") >= 0) return "󰙾";
-        if (c.indexOf("thunder")      >= 0) return "󰙾";
-        if (c.indexOf("lightning")    >= 0) return "󰙾";
-        if (c.indexOf("hail")         >= 0) return "󰖒";
-        if (c.indexOf("snow")         >= 0) return "󰖘";
-        if (c.indexOf("sleet")        >= 0) return "󰖘";
-        if (c.indexOf("freezing")     >= 0) return "󰖘";
-        if (c.indexOf("drizzle")      >= 0) return "󰖦";
-        if (c.indexOf("shower")       >= 0) return "󰖦";
-        if (c.indexOf("rain")         >= 0) return "󰖦";
-        if (c.indexOf("mist")         >= 0) return "󰖌";
-        if (c.indexOf("fog")          >= 0) return "󰖌";
-        if (c.indexOf("haze")         >= 0) return "󰖌";
-        if (c.indexOf("smoke")        >= 0) return "󰖌";
-        if (c.indexOf("dust")         >= 0) return "󰖌";
-        if (c.indexOf("overcast")     >= 0) return "󰖐";
-        if (c.indexOf("cloudy")       >= 0) return "󰖐";
-        if (c.indexOf("partly")       >= 0) return "󰖕";
-        if (c.indexOf("mostly cloudy")>= 0) return "󰖐";
-        if (c.indexOf("cloud")        >= 0) return "󰖕";
-        if (c.indexOf("sunny")        >= 0) return "󰖙";
-        if (c.indexOf("clear")        >= 0) return "󰖙";
-        if (c.indexOf("wind")         >= 0) return "󰖝";
-        return "󰖙";  // default: sun
+        if (c.indexOf("thunderstorm") >= 0)
+            return "󰙾";
+        if (c.indexOf("thunder") >= 0)
+            return "󰙾";
+        if (c.indexOf("lightning") >= 0)
+            return "󰙾";
+        if (c.indexOf("hail") >= 0)
+            return "󰖒";
+        if (c.indexOf("snow") >= 0)
+            return "󰖘";
+        if (c.indexOf("sleet") >= 0)
+            return "󰖘";
+        if (c.indexOf("freezing") >= 0)
+            return "󰖘";
+        if (c.indexOf("drizzle") >= 0)
+            return "󰖦";
+        if (c.indexOf("shower") >= 0)
+            return "󰖦";
+        if (c.indexOf("rain") >= 0)
+            return "󰖦";
+        if (c.indexOf("mist") >= 0)
+            return "󰖌";
+        if (c.indexOf("fog") >= 0)
+            return "󰖌";
+        if (c.indexOf("haze") >= 0)
+            return "󰖌";
+        if (c.indexOf("smoke") >= 0)
+            return "󰖌";
+        if (c.indexOf("dust") >= 0)
+            return "󰖌";
+        if (c.indexOf("overcast") >= 0)
+            return "󰖐";
+        if (c.indexOf("mostly cloudy") >= 0)
+            return "󰖐";
+        if (c.indexOf("cloudy") >= 0)
+            return "󰖐";
+        if (c.indexOf("partly") >= 0)
+            return "󰖕";
+        if (c.indexOf("cloud") >= 0)
+            return "󰖕";
+        if (c.indexOf("sunny") >= 0)
+            return "󰖙";
+        if (c.indexOf("clear") >= 0)
+            return "󰖙";
+        if (c.indexOf("wind") >= 0)
+            return "󰖝";
+        return "󰖙";
     }
 
     // -- HA polling: office temperature --
-    // Reads secrets directly from /run/secrets/ to avoid systemd env var issues.
     Process {
         id: officeTempProc
-        command: [
-            "sh", "-c",
-            "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.office_sensor_temperature\" | jq -r '.state'"
-        ]
+        command: ["sh", "-c", "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.office_sensor_temperature\" | jq -r '.state'"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var val = parseFloat(this.text.trim());
-                if (!isNaN(val)) root.officeTemp = val;
+                if (!isNaN(val))
+                    root.officeTemp = val;
                 root._checkData();
             }
         }
@@ -140,26 +193,21 @@ PanelWindow {
     // -- HA polling: office humidity --
     Process {
         id: officeHumidityProc
-        command: [
-            "sh", "-c",
-            "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.office_sensor_humidity\" | jq -r '.state'"
-        ]
+        command: ["sh", "-c", "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.office_sensor_humidity\" | jq -r '.state'"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var val = parseFloat(this.text.trim());
-                if (!isNaN(val)) root.officeHumidity = val;
+                if (!isNaN(val))
+                    root.officeHumidity = val;
                 root._checkData();
             }
         }
     }
 
-    // -- HA polling: outside temperature (sensor.outside_temperature) --
+    // -- HA polling: outside temperature --
     Process {
         id: outsideTempProc
-        command: [
-            "sh", "-c",
-            "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.outside_temperature\" | jq -r '.state'"
-        ]
+        command: ["sh", "-c", "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/sensor.outside_temperature\" | jq -r '.state'"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var val = parseFloat(this.text.trim());
@@ -172,17 +220,14 @@ PanelWindow {
     }
 
     // -- HA polling: weather condition from weather.home entity --
-    // Uses the current condition from the weather entity state directly
     Process {
         id: outsideConditionProc
-        command: [
-            "sh", "-c",
-            "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/weather.home\" | jq -r '.state'"
-        ]
+        command: ["sh", "-c", "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/weather.home\" | jq -r '.state'"]
         stdout: StdioCollector {
             onStreamFinished: {
                 var s = this.text.trim();
-                if (s.length > 0 && s !== "null" && s !== "unknown") root.outsideCondition = s;
+                if (s.length > 0 && s !== "null" && s !== "unknown")
+                    root.outsideCondition = s;
                 root._checkData();
             }
         }
@@ -225,9 +270,8 @@ PanelWindow {
             duration: 250
             easing.type: Easing.OutCubic
             onRunningChanged: {
-                if (!running && !root.showing && !root.holdingSuper) {
+                if (!running && !root.showing && !root.holdingSuper)
                     root.visible = false;
-                }
             }
         }
     }
@@ -236,7 +280,8 @@ PanelWindow {
     property bool holdingSuper: false
 
     function showBar() {
-        if (!hasData) return;
+        if (!hasData)
+            return;
         holdingSuper = true;
         visible = true;
         showing = true;
@@ -260,7 +305,9 @@ PanelWindow {
     height: travelSize + cardHeight
     exclusiveZone: 0
     focusable: false
-    mask: Region { item: contentRoot }
+    mask: Region {
+        item: contentRoot
+    }
 
     // -- content --
     Item {
@@ -289,141 +336,157 @@ PanelWindow {
                 color: Theme.bg3
                 radius: root.cardRadius
 
-                // ── LEFT PANEL: Office (only shown when deviceLocation == "office") ──
+                // ── panels laid out in a Row; each panel Column sizes to its content ──
+                Row {
+                    id: contentRow
+                    anchors.centerIn: parent
+                    spacing: 0
 
-                Item {
-                    visible: root.showOffice
+                    // ── LEFT PANEL: Office ────────────────────────────────────────
+                    Item {
+                        id: officePanel
+                        visible: root.showOffice
+                        // size to content when visible, zero when hidden so Row ignores it
+                        implicitWidth: visible ? officePanelColumn.implicitWidth + root.cardPadding * 2 : 0
+                        implicitHeight: root.cardHeight
 
-                    // OFFICE label
-                    Text {
-                        x: root.cardPadding
-                        y: root.cardPadding - 1
-                        text: "OFFICE"
-                        color: Theme.foreground
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: 11
-                        font.weight: Font.Medium
-                        font.letterSpacing: 1
+                        Column {
+                            id: officePanelColumn
+                            x: root.cardPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Text {
+                                text: "OFFICE"
+                                color: Theme.foreground
+                                font.family: "JetBrainsMono Nerd Font"
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                font.letterSpacing: 1
+                            }
+
+                            Row {
+                                spacing: root.panelSpacing
+
+                                Column {
+                                    spacing: 2
+
+                                    Text {
+                                        id: officeTempText
+                                        text: root.officeTemp > 0 ? root.officeTemp.toFixed(1) + "°" : "—"
+                                        color: root.tempColor(root.officeTemp)
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 30
+                                        font.weight: Font.DemiBold
+                                    }
+
+                                    Text {
+                                        text: "TEMP"
+                                        color: Theme.foreground
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 11
+                                        font.letterSpacing: 1
+                                    }
+                                }
+
+                                Column {
+                                    spacing: 2
+
+                                    Text {
+                                        text: root.officeHumidity > 0 ? root.officeHumidity.toFixed(1) + "%" : "—"
+                                        color: root.humidColor(root.officeHumidity)
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 30
+                                        font.weight: Font.DemiBold
+                                    }
+
+                                    Text {
+                                        text: "HUMID"
+                                        color: Theme.foreground
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 11
+                                        font.letterSpacing: 1
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    // office temperature value
-                    Text {
-                        id: officeTempText
-                        x: root.cardPadding
-                        y: root.cardPadding + 20
-                        text: root.officeTemp > 0 ? root.officeTemp.toFixed(1) + "°" : "—"
-                        color: root.tempColor(root.officeTemp)
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: 30
-                        font.weight: Font.DemiBold
+                    // ── vertical divider ──────────────────────────────────────────
+                    Rectangle {
+                        visible: root.showOffice
+                        width: visible ? 3 : 0
+                        height: root.cardHeight - root.cardPadding * 2
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: Theme.grey0
+                        opacity: 0.6
                     }
 
-                    // office humidity value (sits to the right of temp)
-                    Text {
-                        id: officeHumidText
-                        x: officeTempText.x + officeTempText.width + 10
-                        y: officeTempText.y
-                        text: root.officeHumidity > 0 ? root.officeHumidity.toFixed(1) + "%" : "—"
-                        color: root.humidColor(root.officeHumidity)
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: 30
-                        font.weight: Font.DemiBold
+                    // ── RIGHT PANEL: Outside ──────────────────────────────────────
+                    Item {
+                        id: outsidePanel
+                        implicitWidth: outsidePanelColumn.implicitWidth + root.cardPadding * 2
+                        implicitHeight: root.cardHeight
+
+                        Column {
+                            id: outsidePanelColumn
+                            x: root.cardPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Text {
+                                text: "OUTSIDE"
+                                color: Theme.foreground
+                                font.family: "JetBrainsMono Nerd Font"
+                                font.pixelSize: 11
+                                font.weight: Font.Medium
+                                font.letterSpacing: 1
+                            }
+
+                            Row {
+                                spacing: root.panelSpacing
+
+                                Column {
+                                    spacing: 2
+
+                                    Text {
+                                        text: root.outsideTemp !== 0 ? root.outsideTemp.toFixed(1) + "°" : "—"
+                                        color: root.tempColor(root.outsideTemp)
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 30
+                                        font.weight: Font.DemiBold
+                                    }
+
+                                    Text {
+                                        text: "TEMP"
+                                        color: Theme.foreground
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 11
+                                        font.letterSpacing: 1
+                                    }
+                                }
+
+                                Column {
+                                    spacing: 2
+
+                                    Text {
+                                        text: root.outsideCondition.length > 0 ? root.conditionIcon(root.outsideCondition) : ""
+                                        color: root.tempColor(root.outsideTemp)
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 30
+                                    }
+
+                                    Text {
+                                        text: root.outsideCondition.length > 0 ? root.friendlyCondition(root.outsideCondition) : ""
+                                        color: Theme.foreground
+                                        font.family: "JetBrainsMono Nerd Font"
+                                        font.pixelSize: 11
+                                        font.letterSpacing: 1
+                                    }
+                                }
+                            }
+                        }
                     }
-
-                    // TEMP label under office temp
-                    Text {
-                        x: officeTempText.x
-                        y: officeTempText.y + officeTempText.height - 2
-                        text: "TEMP"
-                        color: Theme.foreground
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: 11
-                        font.letterSpacing: 1
-                    }
-
-                    // HUMID label under humidity
-                    Text {
-                        x: officeHumidText.x
-                        y: officeHumidText.y + officeHumidText.height - 2
-                        text: "HUMID"
-                        color: Theme.foreground
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: 11
-                        font.letterSpacing: 1
-                    }
-                }
-
-                // ── vertical divider (only when office panel is shown) ─────────
-                Rectangle {
-                    visible: root.showOffice
-                    x: root.dividerX - 1
-                    y: root.cardPadding
-                    width: 3
-                    height: root.cardHeight - root.cardPadding * 2
-                    color: Theme.grey0
-                    opacity: 0.6
-                }
-
-                // ── RIGHT PANEL: Outside ───────────────────────────────────────
-
-                // OUTSIDE label
-                Text {
-                    x: root.rightPanelX + root.cardPadding
-                    y: root.cardPadding - 1
-                    text: "OUTSIDE"
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.weight: Font.Medium
-                    font.letterSpacing: 1
-                }
-
-                // outside temperature value
-                Text {
-                    id: outsideTempText
-                    x: root.rightPanelX + root.cardPadding
-                    y: root.cardPadding + 20
-                    text: root.outsideTemp !== 0 ? root.outsideTemp.toFixed(1) + "°" : "—"
-                    color: root.tempColor(root.outsideTemp)
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 30
-                    font.weight: Font.DemiBold
-                }
-
-                // weather condition icon (right column, same row as temp — mirrors humidity slot)
-                Text {
-                    id: outsideIconText
-                    x: outsideTempText.x + outsideTempText.width + 10
-                    y: outsideTempText.y
-                    text: root.outsideCondition.length > 0 ? root.conditionIcon(root.outsideCondition) : ""
-                    color: root.tempColor(root.outsideTemp)
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 30
-                }
-
-                // TEMP label under outside temp
-                Text {
-                    x: outsideTempText.x
-                    y: outsideTempText.y + outsideTempText.height - 2
-                    text: "TEMP"
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.letterSpacing: 1
-                }
-
-                // condition text (e.g. "light rain") — below TEMP label, mirrors HUMID position
-                Text {
-                    x: outsideIconText.x
-                    y: outsideIconText.y + outsideIconText.height - 2
-                    width: root.cardWidth / 2 - root.cardPadding * 2
-                    text: root.outsideCondition
-                    color: Theme.foreground
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 11
-                    font.letterSpacing: 1
-                    elide: Text.ElideRight
-                    maximumLineCount: 1
                 }
             }
         }
