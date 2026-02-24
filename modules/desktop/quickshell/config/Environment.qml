@@ -17,8 +17,12 @@ import QtQuick
 // Card width is content-driven: each panel sizes to its content and the
 // card expands to fit, so longer condition strings never get truncated.
 //
-// Outside weather data (temp, wind speed/bearing, condition) all come from
-// a single weather.home API call to avoid redundant requests.
+// Outside weather data (temp, wind speed/direction, condition, humidity) comes
+// from MetService's public JSON API for Wellington (location ID 93434).
+// Two endpoints are fetched in parallel and merged with jq:
+//   currentConditions → temp, wind speed (km/h), wind direction (cardinal), humidity
+//   twoDayForecast    → current period condition slug (e.g. "partly-cloudy")
+// No API key is required; a Referer header is sufficient.
 //
 // Temperature colour scale (both office and outside):
 //   ≤ 8°C    → blue+purple midpoint  (cold winter morning)
@@ -82,7 +86,7 @@ PanelWindow {
     property string outsideCondition: ""
     property real outsideWindSpeed: 0
     property string outsideWindUnit: "km/h"
-    property real outsideWindBearing: -1   // -1 = unknown
+    property string outsideWindDir: ""     // cardinal string from MetService, e.g. "SE"
     property bool hasData: false
 
     // -- temperature colour helper --
@@ -134,36 +138,38 @@ PanelWindow {
         return Theme.red;
     }
 
-    // -- HA state → human-friendly label --
+    // -- MetService/HA condition slug → human-friendly label --
     function friendlyCondition(cond) {
-        var c = cond.toLowerCase();
-        if (c === "partlycloudy")
+        var c = cond.toLowerCase().replace(/-/g, " ");
+        // known multi-word mappings
+        if (c === "partlycloudy" || c === "partly cloudy")
             return "partly cloudy";
-        if (c === "mostlycloudy")
+        if (c === "mostlycloudy" || c === "mostly cloudy")
             return "mostly cloudy";
-        if (c === "mostlysunny")
+        if (c === "mostlysunny" || c === "mostly sunny")
             return "mostly sunny";
-        if (c === "partlysunny")
+        if (c === "partlysunny" || c === "partly sunny")
             return "partly sunny";
-        if (c === "lightrain")
+        if (c === "lightrain" || c === "light rain")
             return "light rain";
-        if (c === "heavyrain")
+        if (c === "heavyrain" || c === "heavy rain")
             return "heavy rain";
-        if (c === "lightsnow")
+        if (c === "lightsnow" || c === "light snow")
             return "light snow";
-        if (c === "heavysnow")
+        if (c === "heavysnow" || c === "heavy snow")
             return "heavy snow";
-        if (c === "freezingrain")
+        if (c === "freezingrain" || c === "freezing rain")
             return "freezing rain";
-        if (c === "lightshowers")
+        if (c === "lightshowers" || c === "light showers")
             return "light showers";
-        if (c === "heavyshowers")
+        if (c === "heavyshowers" || c === "heavy showers")
             return "heavy showers";
-        if (c === "lightsleet")
+        if (c === "lightsleet" || c === "light sleet")
             return "light sleet";
-        if (c === "heavysleet")
+        if (c === "heavysleet" || c === "heavy sleet")
             return "heavy sleet";
-        return cond.replace(/[_-]/g, " ");
+        // MetService-specific slugs (already space-separated after replace above)
+        return c;
     }
 
     // -- weather condition → Nerd Font icon --
@@ -218,29 +224,18 @@ PanelWindow {
         return "󰖙";
     }
 
-    // -- wind bearing (degrees) → cardinal compass label --
-    // 16-point compass; bearing 0/360 = N.
-    function windCardinal(deg) {
-        if (deg < 0)
+    // -- wind cardinal string → Unicode directional arrow --
+    // dir is what MetService gives us: "N","NNE","NE","ENE","E","ESE","SE","SSE",
+    // "S","SSW","SW","WSW","W","WNW","NW","NNW".
+    // The arrow shows where wind is blowing TOWARD (opposite of origin direction).
+    function windArrow(dir) {
+        if (!dir || dir.length === 0)
             return "";
-        var d = ((deg % 360) + 360) % 360;
-        var idx = Math.round(d / 22.5) % 16;
-        var pts = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-        return pts[idx];
-    }
-
-    // -- wind bearing → Unicode directional arrow --
-    // Bearing is the direction the wind comes FROM. The arrow shows where it is
-    // blowing TOWARD, so we add 180° to get the travel direction.
-    // e.g. bearing 168° (SSE) → travelling NNW → arrow ↑
-    function windArrow(deg) {
-        if (deg < 0)
-            return "";
-        var d = (((deg + 180) % 360) + 360) % 360;
-        var idx = Math.round(d / 45) % 8;
-        // ↑ ↗ → ↘ ↓ ↙ ← ↖
-        var arrows = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
-        return arrows[idx];
+        var pts = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+        // arrows indexed to match pts (0=N blows toward S=↓, etc.)
+        var toward = ["↓","↙","↙","↙","←","↖","↖","↖","↑","↗","↗","↗","→","↘","↘","↘"];
+        var idx = pts.indexOf(dir.toUpperCase());
+        return idx >= 0 ? toward[idx] : "";
     }
 
     // -- HA polling: office temperature --
@@ -271,24 +266,25 @@ PanelWindow {
         }
     }
 
-    // -- HA polling: all outside weather from weather.home in one request --
-    // Returns JSON with state, temperature, wind_speed, wind_speed_unit, wind_bearing.
+    // -- MetService polling: outside weather for Wellington --
+    // Fetches currentConditions (temp, wind, humidity) and twoDayForecast
+    // (condition slug) in one shell pipeline and merges them with jq.
+    // The condition is chosen based on the current hour:
+    //   00-05 → overnight, 06-11 → morning, 12-17 → afternoon, 18-23 → evening
     Process {
         id: outsideWeatherProc
-        command: ["sh", "-c", "curl -X GET -H \"Authorization: Bearer $(cat /run/secrets/hass_api_key)\" -H \"Content-Type: application/json\" -s \"https://$(cat /run/secrets/hass_domain)/api/states/weather.home\" | jq -c '{state: .state, temp: .attributes.temperature, wind_speed: .attributes.wind_speed, wind_unit: .attributes.wind_speed_unit, wind_bearing: .attributes.wind_bearing}'"]
+        command: ["sh", "-c", "HOUR=$(date +%-H); COND=$(curl -sf 'https://www.metservice.com/publicData/webdata/module/twoDayForecast/93434/kelburn_wellington' -H 'Referer: https://www.metservice.com/' | jq -r --argjson h \"$HOUR\" 'if $h < 6 then .days[0].breakdown.overnight.condition elif $h < 12 then .days[0].breakdown.morning.condition elif $h < 18 then .days[0].breakdown.afternoon.condition else .days[0].breakdown.evening.condition end'); curl -sf 'https://www.metservice.com/publicData/webdata/module/currentConditions/93434/93434?pagetype=48hr' -H 'Referer: https://www.metservice.com/' | jq -c --arg cond \"$COND\" '{temp: .observations.temperature[0].current, wind_speed: .observations.wind[0].averageSpeed, wind_dir: .observations.wind[0].direction, humidity: .observations.rain[0].relativeHumidity, condition: $cond}'"]
         stdout: StdioCollector {
             onStreamFinished: {
                 try {
                     var obj = JSON.parse(this.text.trim());
                     if (obj.temp !== undefined && obj.temp !== null)
                         root.outsideTemp = obj.temp;
-                    if (obj.state && obj.state !== "null" && obj.state !== "unknown")
-                        root.outsideCondition = obj.state;
+                    if (obj.condition && obj.condition !== "null" && obj.condition !== "unknown")
+                        root.outsideCondition = obj.condition;
                     if (obj.wind_speed !== undefined && obj.wind_speed !== null)
                         root.outsideWindSpeed = obj.wind_speed;
-                    if (obj.wind_unit)
-                        root.outsideWindUnit = obj.wind_unit;
-                    root.outsideWindBearing = (obj.wind_bearing !== undefined && obj.wind_bearing !== null) ? obj.wind_bearing : -1;
+                    root.outsideWindDir = (obj.wind_dir && obj.wind_dir !== "null") ? obj.wind_dir : "";
                 } catch (e) {}
                 root._checkData();
             }
@@ -600,13 +596,13 @@ PanelWindow {
                                     spacing: 3
 
                                     Text {
-                                        text: root.outsideWindBearing >= 0 ? root.windArrow(root.outsideWindBearing) : ""
+                                        text: root.outsideWindDir.length > 0 ? root.windArrow(root.outsideWindDir) : ""
                                         font.family: "JetBrainsMono Nerd Font"
                                         font.pixelSize: 11
                                     }
 
                                     Text {
-                                        text: root.outsideWindBearing >= 0 ? root.windCardinal(root.outsideWindBearing) : ""
+                                        text: root.outsideWindDir
                                         font.family: "JetBrainsMono Nerd Font"
                                         font.pixelSize: 11
                                         font.letterSpacing: 1
@@ -716,12 +712,12 @@ PanelWindow {
                             }
 
                             Row {
-                                visible: root.outsideWindBearing >= 0
+                                visible: root.outsideWindDir.length > 0
                                 spacing: 3
                                 anchors.verticalCenter: parent.verticalCenter
 
                                 Text {
-                                    text: root.windArrow(root.outsideWindBearing)
+                                    text: root.windArrow(root.outsideWindDir)
                                     color: Qt.rgba(Theme.foreground.r, Theme.foreground.g, Theme.foreground.b, 0.6)
                                     font.family: "JetBrainsMono Nerd Font"
                                     font.pixelSize: 11
@@ -729,7 +725,7 @@ PanelWindow {
                                 }
 
                                 Text {
-                                    text: root.windCardinal(root.outsideWindBearing)
+                                    text: root.outsideWindDir
                                     color: Qt.rgba(Theme.foreground.r, Theme.foreground.g, Theme.foreground.b, 0.6)
                                     font.family: "JetBrainsMono Nerd Font"
                                     font.pixelSize: 11
