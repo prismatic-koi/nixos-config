@@ -115,6 +115,10 @@ PanelWindow {
     anchors.right: true
     exclusiveZone: 0
     focusable: false
+    // Only the card itself intercepts input; the rest of the overlay is click-through
+    mask: Region {
+        item: card
+    }
 
     // -- card --
     Item {
