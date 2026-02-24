@@ -21,9 +21,9 @@
     aqua = "#56b6c2";
     blue = "#61afef";
     purple = "#c678dd";
-    grey0 = "#848b98";
+    grey0 = "#535965";
     grey1 = "#5c6370";
-    grey2 = "#535965";
+    grey2 = "#848b98";
     statusline1 = "#98c379";
     statusline2 = "#e5c07b";
     statusline3 = "#e86671";
