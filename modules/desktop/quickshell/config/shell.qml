@@ -41,6 +41,10 @@ ShellRoot {
         id: statusBar
     }
 
+    OsdOverlay {
+        id: osd
+    }
+
     // Hyprland IPC event handler
     // Add event routing for new widgets here
     Connections {
@@ -75,6 +79,28 @@ ShellRoot {
                     statusBar.setInhibited(true);
                 } else if (data === "quickshell:inhibit-off") {
                     statusBar.setInhibited(false);
+                } else if (data.startsWith("quickshell:osd:")) {
+                    // OSD events: quickshell:osd:<type>:<value>
+                    // e.g. quickshell:osd:volume:75
+                    //      quickshell:osd:volume:muted
+                    //      quickshell:osd:brightness:40
+                    //      quickshell:osd:touchpad:on
+                    var parts = data.split(":");
+                    if (parts.length >= 4) {
+                        var osdType = parts[2];
+                        var osdRaw = parts[3];
+                        var osdValue;
+                        if (osdRaw === "muted") {
+                            osdValue = -1;
+                        } else if (osdRaw === "on") {
+                            osdValue = 1;
+                        } else if (osdRaw === "off") {
+                            osdValue = 0;
+                        } else {
+                            osdValue = parseInt(osdRaw, 10);
+                        }
+                        osd.show(osdType, osdValue);
+                    }
                 }
             }
         }

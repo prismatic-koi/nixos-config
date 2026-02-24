@@ -300,7 +300,7 @@ in
               ", XF86AudioPrev, exec, ${pkgs.playerctl}/bin/playerctl previous"
               (lib.mkIf config.nx.isLaptop ", XF86MonBrightnessUp, exec, ${brightnessUp}")
               (lib.mkIf config.nx.isLaptop ", XF86MonBrightnessDown, exec, ${brightnessDown}")
-              # on my asus laptop, one of the function keys presses Super_L+p for some reason for touchpad disable
+              # The Asus laptop firmware maps the touchpad toggle Fn key to Super+P.
               (lib.mkIf config.nx.isLaptop "SUPER, p, exec, ${toggleTouchpad}")
               # print screen
               ", Print, exec, ${scriptsDir}/application.grim.fullScreenshotToFile"

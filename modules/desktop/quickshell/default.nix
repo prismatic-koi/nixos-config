@@ -82,6 +82,7 @@ let
         cp ${./config/WindowTitle.qml} $out/WindowTitle.qml
         cp ${./config/Environment.qml} $out/Environment.qml
         cp ${./config/StatusBar.qml} $out/StatusBar.qml
+        cp ${./config/OsdOverlay.qml} $out/OsdOverlay.qml
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
@@ -93,6 +94,7 @@ let
     WindowTitle 1.0 WindowTitle.qml
     Environment 1.0 Environment.qml
     StatusBar 1.0 StatusBar.qml
+    OsdOverlay 1.0 OsdOverlay.qml
     EOF
   '';
 in

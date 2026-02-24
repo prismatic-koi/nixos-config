@@ -43,46 +43,22 @@
             #!/bin/sh
             export STATUS_FILE="$XDG_RUNTIME_DIR/touchpad_status"
 
-            # Notification ID file
-            ID_FILE="$XDG_RUNTIME_DIR/touchpad_notification_id"
-
             if ! [ -f "$STATUS_FILE" ]; then
               # disable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
               touch "$STATUS_FILE"
               echo "disabled" > "$STATUS_FILE"
-              
-              # Send notification
-              if [ -f "$ID_FILE" ]; then
-                notify_id=$(cat "$ID_FILE")
-                ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i input-touchpad-off "Touchpad" "Disabled" > "$ID_FILE"
-              else
-                ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i input-touchpad-off "Touchpad" "Disabled" > "$ID_FILE"
-              fi
+              hyprctl dispatch event "quickshell:osd:touchpad:off" > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "enabled" ]; then
               # disable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
               echo "disabled" > "$STATUS_FILE"
-              
-              # Send notification
-              if [ -f "$ID_FILE" ]; then
-                notify_id=$(cat "$ID_FILE")
-                ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i input-touchpad-off "Touchpad" "Disabled" > "$ID_FILE"
-              else
-                ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i input-touchpad-off "Touchpad" "Disabled" > "$ID_FILE"
-              fi
+              hyprctl dispatch event "quickshell:osd:touchpad:off" > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "disabled" ]; then
               # enable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' true > /dev/null
               echo "enabled" > "$STATUS_FILE"
-              
-              # Send notification
-              if [ -f "$ID_FILE" ]; then
-                notify_id=$(cat "$ID_FILE")
-                ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i input-touchpad-on "Touchpad" "Enabled" > "$ID_FILE"
-              else
-                ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i input-touchpad-on "Touchpad" "Enabled" > "$ID_FILE"
-              fi
+              hyprctl dispatch event "quickshell:osd:touchpad:on" > /dev/null
             fi
           '';
       };
@@ -98,27 +74,8 @@
             # Get current volume percentage
             volume=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print int($2 * 100)}')
 
-            # Determine icon based on volume level
-            if [ "$volume" -eq 0 ]; then
-              icon="audio-volume-muted"
-            elif [ "$volume" -le 33 ]; then
-              icon="audio-volume-low"
-            elif [ "$volume" -le 66 ]; then
-              icon="audio-volume-medium"
-            else
-              icon="audio-volume-high"
-            fi
-
-            # Notification ID file
-            ID_FILE="$XDG_RUNTIME_DIR/volume_notification_id"
-
-            # Send notification and store/reuse ID
-            if [ -f "$ID_FILE" ]; then
-              notify_id=$(cat "$ID_FILE")
-              ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i "$icon" "Volume" "Raised to ''${volume}%" > "$ID_FILE"
-            else
-              ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i "$icon" "Volume" "Raised to ''${volume}%" > "$ID_FILE"
-            fi
+            # Fire OSD event
+            hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
           '';
       };
       home.file.".local/scripts/system.audio.volumeDown" = {
@@ -133,27 +90,8 @@
             # Get current volume percentage
             volume=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print int($2 * 100)}')
 
-            # Determine icon based on volume level
-            if [ "$volume" -eq 0 ]; then
-              icon="audio-volume-muted"
-            elif [ "$volume" -le 33 ]; then
-              icon="audio-volume-low"
-            elif [ "$volume" -le 66 ]; then
-              icon="audio-volume-medium"
-            else
-              icon="audio-volume-high"
-            fi
-
-            # Notification ID file
-            ID_FILE="$XDG_RUNTIME_DIR/volume_notification_id"
-
-            # Send notification and store/reuse ID
-            if [ -f "$ID_FILE" ]; then
-              notify_id=$(cat "$ID_FILE")
-              ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i "$icon" "Volume" "Lowered to ''${volume}%" > "$ID_FILE"
-            else
-              ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i "$icon" "Volume" "Lowered to ''${volume}%" > "$ID_FILE"
-            fi
+            # Fire OSD event
+            hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
           '';
       };
       home.file.".local/scripts/system.audio.toggleMute" = {
@@ -168,37 +106,12 @@
             # Check if muted
             mute_status=$(wpctl get-volume @DEFAULT_AUDIO_SINK@)
 
-            # Notification ID file (same as volume scripts)
-            ID_FILE="$XDG_RUNTIME_DIR/volume_notification_id"
-
-            # Send notification and store/reuse ID
+            # Fire OSD event
             if echo "$mute_status" | grep -q "MUTED"; then
-              if [ -f "$ID_FILE" ]; then
-                notify_id=$(cat "$ID_FILE")
-                ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i audio-volume-muted "Volume" "Muted" > "$ID_FILE"
-              else
-                ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i audio-volume-muted "Volume" "Muted" > "$ID_FILE"
-              fi
+              hyprctl dispatch event "quickshell:osd:volume:muted" > /dev/null
             else
               volume=$(echo "$mute_status" | awk '{print int($2 * 100)}')
-
-              # Determine icon based on volume level
-              if [ "$volume" -eq 0 ]; then
-                icon="audio-volume-muted"
-              elif [ "$volume" -le 33 ]; then
-                icon="audio-volume-low"
-              elif [ "$volume" -le 66 ]; then
-                icon="audio-volume-medium"
-              else
-                icon="audio-volume-high"
-              fi
-
-              if [ -f "$ID_FILE" ]; then
-                notify_id=$(cat "$ID_FILE")
-                ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i "$icon" "Volume" "Unmuted at ''${volume}%" > "$ID_FILE"
-              else
-                ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i "$icon" "Volume" "Unmuted at ''${volume}%" > "$ID_FILE"
-              fi
+              hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
             fi
           '';
       };
@@ -216,23 +129,8 @@
             max_brightness=$(${pkgs.brightnessctl}/bin/brightnessctl m)
             brightness_percent=$(( brightness * 100 / max_brightness ))
 
-            # Determine icon based on brightness level
-            if [ "$brightness_percent" -le 50 ]; then
-              icon="brightness-low"
-            else
-              icon="brightness-high"
-            fi
-
-            # Notification ID file
-            ID_FILE="$XDG_RUNTIME_DIR/brightness_notification_id"
-
-            # Send notification and store/reuse ID
-            if [ -f "$ID_FILE" ]; then
-              notify_id=$(cat "$ID_FILE")
-              ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i "$icon" "Brightness" "Raised to ''${brightness_percent}%" > "$ID_FILE"
-            else
-              ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i "$icon" "Brightness" "Raised to ''${brightness_percent}%" > "$ID_FILE"
-            fi
+            # Fire OSD event
+            hyprctl dispatch event "quickshell:osd:brightness:''${brightness_percent}" > /dev/null
           '';
       };
       home.file.".local/scripts/system.display.brightnessDown" = lib.mkIf config.nx.isLaptop {
@@ -249,23 +147,8 @@
             max_brightness=$(${pkgs.brightnessctl}/bin/brightnessctl m)
             brightness_percent=$(( brightness * 100 / max_brightness ))
 
-            # Determine icon based on brightness level
-            if [ "$brightness_percent" -le 50 ]; then
-              icon="brightness-low"
-            else
-              icon="brightness-high"
-            fi
-
-            # Notification ID file
-            ID_FILE="$XDG_RUNTIME_DIR/brightness_notification_id"
-
-            # Send notification and store/reuse ID
-            if [ -f "$ID_FILE" ]; then
-              notify_id=$(cat "$ID_FILE")
-              ${pkgs.libnotify}/bin/notify-send -r "$notify_id" -p -t 2000 -u low -i "$icon" "Brightness" "Lowered to ''${brightness_percent}%" > "$ID_FILE"
-            else
-              ${pkgs.libnotify}/bin/notify-send -p -t 2000 -u low -i "$icon" "Brightness" "Lowered to ''${brightness_percent}%" > "$ID_FILE"
-            fi
+            # Fire OSD event
+            hyprctl dispatch event "quickshell:osd:brightness:''${brightness_percent}" > /dev/null
           '';
       };
       home.file.".local/scripts/cli.system.batteryStatus" = lib.mkIf config.nx.isLaptop {
