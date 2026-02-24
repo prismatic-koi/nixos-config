@@ -8,10 +8,9 @@ import QtQuick
 // Layout (mirrors the NowPlaying card size, anchored top-right):
 //
 //   ┌────────────────────────────────────────────────┐
-//   │  ● OFFICE          │  ● OUTSIDE               │
-//   │  23.7°    66.6%    │  23.5°                   │
-//   │  TEMP     HUMID    │  TEMP                    │
-//   │                    │  light rain               │
+//   │  OFFICE            │  OUTSIDE                  │
+//   │  23.7°    66.6%    │  23.5°    ☁               │
+//   │  TEMP     HUMID    │  TEMP     light rain       │
 //   └────────────────────┴──────────────────────────┘
 //
 // Temperature colour scale (both office and outside):
@@ -321,18 +320,9 @@ PanelWindow {
 
                 // ── LEFT PANEL: Office ─────────────────────────────────────
 
-                // office dot
-                Rectangle {
-                    id: officeDot
-                    x: root.cardPadding
-                    y: root.cardPadding
-                    width: 8; height: 8; radius: 4
-                    color: Theme.green
-                }
-
                 // OFFICE label
                 Text {
-                    x: root.cardPadding + officeDot.width + 6
+                    x: root.cardPadding
                     y: root.cardPadding - 1
                     text: "OFFICE"
                     color: Theme.secondary
@@ -400,18 +390,9 @@ PanelWindow {
 
                 // ── RIGHT PANEL: Outside ───────────────────────────────────
 
-                // outside dot (colour driven by temperature)
-                Rectangle {
-                    id: outsideDot
-                    x: root.dividerX + root.cardPadding
-                    y: root.cardPadding
-                    width: 8; height: 8; radius: 4
-                    color: root.tempColor(root.outsideTemp)
-                }
-
                 // OUTSIDE label
                 Text {
-                    x: root.dividerX + root.cardPadding + outsideDot.width + 6
+                    x: root.dividerX + root.cardPadding
                     y: root.cardPadding - 1
                     text: "OUTSIDE"
                     color: Theme.secondary
@@ -419,16 +400,6 @@ PanelWindow {
                     font.pixelSize: 11
                     font.weight: Font.Medium
                     font.letterSpacing: 1
-                }
-
-                // weather condition icon (top-right of outside panel)
-                Text {
-                    x: root.cardWidth - root.cardPadding - width
-                    y: root.cardPadding - 2
-                    text: root.outsideCondition.length > 0 ? root.conditionIcon(root.outsideCondition) : ""
-                    color: root.tempColor(root.outsideTemp)
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 16
                 }
 
                 // outside temperature value
@@ -443,6 +414,17 @@ PanelWindow {
                     font.weight: Font.DemiBold
                 }
 
+                // weather condition icon (right column, same row as temp — mirrors humidity slot)
+                Text {
+                    id: outsideIconText
+                    x: outsideTempText.x + outsideTempText.width + 10
+                    y: outsideTempText.y
+                    text: root.outsideCondition.length > 0 ? root.conditionIcon(root.outsideCondition) : ""
+                    color: root.tempColor(root.outsideTemp)
+                    font.family: "JetBrainsMono Nerd Font"
+                    font.pixelSize: 30
+                }
+
                 // TEMP label under outside temp
                 Text {
                     x: outsideTempText.x
@@ -454,15 +436,16 @@ PanelWindow {
                     font.letterSpacing: 1
                 }
 
-                // condition text (e.g. "light rain")
+                // condition text (e.g. "light rain") — below TEMP label, mirrors HUMID position
                 Text {
-                    x: outsideTempText.x
-                    y: root.cardHeight - root.cardPadding - height
+                    x: outsideIconText.x
+                    y: outsideIconText.y + outsideIconText.height - 2
                     width: root.cardWidth / 2 - root.cardPadding * 2
                     text: root.outsideCondition
                     color: Theme.secondary
                     font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: 13
+                    font.pixelSize: 11
+                    font.letterSpacing: 1
                     elide: Text.ElideRight
                     maximumLineCount: 1
                 }
