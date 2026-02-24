@@ -65,6 +65,7 @@ PanelWindow {
 
     // -- previous state for flash detection --
     property real _prevOutsideTemp: -999
+    property bool _initialised: false  // true after first successful data load
 
     // -- temperature colour helper --
     // Maps temperature bands to theme colours (solid blocks, no gradient).
@@ -195,9 +196,15 @@ PanelWindow {
 
     function _checkData() {
         root.hasData = (root.officeTemp !== 0 || root.officeHumidity !== 0 || root.outsideTemp !== 0);
+        if (root.hasData && !root._initialised) {
+            // seed prev values so the next *change* fires correctly
+            root._prevOutsideTemp = root.outsideTemp;
+            root._initialised = true;
+        }
     }
 
     function _checkFlash() {
+        if (!root._initialised) return;  // don't flash on first data load
         if (root.outsideTemp !== root._prevOutsideTemp && root.hasData) {
             root._prevOutsideTemp = root.outsideTemp;
             root.flashBriefly();

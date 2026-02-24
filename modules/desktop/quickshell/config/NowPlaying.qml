@@ -56,6 +56,7 @@ PanelWindow {
     // -- previous state for flash-on-change detection --
     property string _prevDisplayText: ""
     property bool _prevIsPlaying: false
+    property bool _initialised: false  // true after first poll; suppresses startup flash
 
     function formatTime(seconds) {
         var s = Math.floor(seconds);
@@ -169,6 +170,15 @@ PanelWindow {
         var textChanged = displayText !== _prevDisplayText && displayText !== "";
         // only flash on resume/start (false→true), not on pause (true→false)
         var resumed = isPlaying && !_prevIsPlaying;
+
+        if (!_initialised) {
+            // seed state on first poll so we don't treat initial load as a change
+            _prevDisplayText = displayText;
+            _prevIsPlaying = isPlaying;
+            _initialised = true;
+            return;
+        }
+
         _prevDisplayText = displayText;
         _prevIsPlaying = isPlaying;
 
