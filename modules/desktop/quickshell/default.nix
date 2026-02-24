@@ -93,30 +93,13 @@ in
     };
   };
   config = lib.mkIf (config.nx.desktop.quickshell.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben =
-      {
-        lib,
-        ...
-      }:
-      {
-        home = {
-          packages = [
-            pkgs.quickshell
-          ];
-          # Deploy quickshell config as real files (not symlinks into the nix store).
-          # Quickshell watches config files with inotify including IN_ATTRIB.
-          # When auto-optimise-store deduplicates files during `nix build`, the
-          # hard-link count changes on store inodes, triggering spurious reloads.
-          # Copying to a mutable directory avoids this.
-          activation.quickshellConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
-            config_dir="$HOME/.config/quickshell/shell"
-            run mkdir -p "$config_dir"
-            run rm -f "$config_dir"/*.qml "$config_dir"/qmldir
-            for f in ${quickshellConfig}/*; do
-              run cp "$f" "$config_dir/$(basename "$f")"
-            done
-          '';
-        };
+    home-manager.users.ben = {
+      programs.quickshell = {
+        enable = true;
+        configs.shell = quickshellConfig;
+        activeConfig = "shell";
+        systemd.enable = true;
       };
+    };
   };
 }
