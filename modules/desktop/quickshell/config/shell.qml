@@ -37,6 +37,10 @@ ShellRoot {
         id: windowTitle
     }
 
+    StatusBar {
+        id: statusBar
+    }
+
     // Hyprland IPC event handler
     // Add event routing for new widgets here
     Connections {
@@ -60,11 +64,17 @@ ShellRoot {
                     nowPlaying.showBar();
                     windowTitle.showBar();
                     environment.showBar();
+                    statusBar.showBar();
                 } else if (data === "quickshell:hide") {
                     workspaceBar.hideBar();
                     nowPlaying.hideBar();
                     windowTitle.hideBar();
                     environment.hideBar();
+                    statusBar.hideBar();
+                } else if (data === "quickshell:inhibit-on") {
+                    statusBar.setInhibited(true);
+                } else if (data === "quickshell:inhibit-off") {
+                    statusBar.setInhibited(false);
                 }
             }
         }

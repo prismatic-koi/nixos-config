@@ -42,10 +42,10 @@
           ''
             #!/bin/sh
             export STATUS_FILE="$XDG_RUNTIME_DIR/touchpad_status"
-            
+
             # Notification ID file
             ID_FILE="$XDG_RUNTIME_DIR/touchpad_notification_id"
-            
+
             if ! [ -f "$STATUS_FILE" ]; then
               # disable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
@@ -276,10 +276,10 @@
             #!/bin/sh
             # Get battery capacity
             capacity=$(cat /sys/class/power_supply/BAT0/capacity 2>/dev/null || echo "0")
-            
+
             # Check if charging
             status=$(cat /sys/class/power_supply/BAT0/status 2>/dev/null || echo "Unknown")
-            
+
             # Determine icon based on charging status and capacity
             if [ "$status" = "Charging" ] || [ "$status" = "Full" ]; then
               icon="󰂄"
@@ -304,7 +304,7 @@
             else
               icon="󰂂"
             fi
-            
+
             echo "''${icon} ''${capacity}%"
           '';
       };
@@ -433,6 +433,7 @@
 
                 systemd-inhibit --what=idle --why="Preventing idle for a task" sleep infinity &
                 echo $! > "$LOCKFILE"
+                hyprctl dispatch event quickshell:inhibit-on >/dev/null 2>&1 || true
             }
 
             stop_inhibit() {
@@ -448,6 +449,7 @@
                     fi
                     rm -f "$LOCKFILE"
                 fi
+                hyprctl dispatch event quickshell:inhibit-off >/dev/null 2>&1 || true
             }
 
             status_inhibit() {

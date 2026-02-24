@@ -63,6 +63,9 @@ let
         readonly property string themeName: "${theme.name}"
         readonly property string themeType: "${theme.type}"
         readonly property string deviceLocation: "${config.nx.deviceLocation}"
+        readonly property bool externalAudio: ${
+          if config.nx.externalAudio.enable then "true" else "false"
+        }
     }
   '';
 
@@ -78,6 +81,7 @@ let
         cp ${./config/NowPlaying.qml} $out/NowPlaying.qml
         cp ${./config/WindowTitle.qml} $out/WindowTitle.qml
         cp ${./config/Environment.qml} $out/Environment.qml
+        cp ${./config/StatusBar.qml} $out/StatusBar.qml
         # add the generated theme singleton
         cp ${themeQml} $out/Theme.qml
         # QML requires a qmldir to register singletons and custom types
@@ -88,6 +92,7 @@ let
     NowPlaying 1.0 NowPlaying.qml
     WindowTitle 1.0 WindowTitle.qml
     Environment 1.0 Environment.qml
+    StatusBar 1.0 StatusBar.qml
     EOF
   '';
 in

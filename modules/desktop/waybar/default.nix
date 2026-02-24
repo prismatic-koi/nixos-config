@@ -32,113 +32,113 @@ with config.theme;
       package = pkgs.waybar;
       systemd.target = "sway-session.target";
       settings = {
-        topBar = {
-          name = "topBar";
-          layer = "top";
-          position = "top";
-          height = 40;
-          mode = "overlay";
-          start_hidden = true;
-          margin = "30"; # margin for the whole bar
-          # modules-left = [
-          #   (lib.mkIf enableSway "sway/workspaces")
-          #   (lib.mkIf enableSway "sway/scratchpad")
-          #   (lib.mkIf enableSway "sway/mode")
-          #   (lib.mkIf enableHyprland "hyprland/workspaces")
-          #   (lib.mkIf enableHyprland "hyprland/submap")
-          # ];
-          # modules-center = [
-          #   "hyprland/window"
-          # ];
-          modules-right = [
-            "tray"
-            (lib.mkIf (externalAudio == false) "pulseaudio")
-            (lib.mkIf externalAudio "custom/audio-enabled")
-            "custom/notification"
-            "custom/inhibitidle"
-            "custom/clock"
-          ];
-          "sway/workspaces" = {
-            "all-outputs" = false;
-            "disable-scroll" = true;
-          };
-          "sway/scratchpad" = {
-            "format" = "{icon} {count}";
-            "show-empty" = false;
-            "format-icons" = [
-              ""
-              "󰎝"
-            ];
-            "tooltip" = true;
-            "tooltip-format" = "{app}: {title}";
-          };
-          "hyprland/workspaces" = {
-            "persistent-workspaces" = {
-              "*" = 9;
-            };
-          };
-          "hyprland/window" = {
-            "format" = "{title}";
-            "rewrite" = {
-              # remove the browser name from the title
-              "(.*) — Mozilla Firefox" = "$1";
-              "(.*) - qutebrowser" = "$1";
-            };
-          };
-          "custom/office-temp" = lib.mkIf enableHomeAutomation {
-            "return-type" = "string";
-            "interval" = 60;
-            "format" = " {}";
-            "exec" = "${homeDir}/.local/scripts/cli.home.office.getTemperature";
-          };
-          "custom/office-humidity" = lib.mkIf enableHomeAutomation {
-            "return-type" = "string";
-            "interval" = 60;
-            "format" = " {}";
-            "exec" = "${homeDir}/.local/scripts/cli.home.office.getHumidity";
-          };
-          "tray" = {
-            "icon-size" = 18;
-            "spacing" = 12;
-          };
-          "pulseaudio" = lib.mkIf (externalAudio == false) {
-            "format" = "󰕾 {volume}%";
-            "format-muted" = "󰖁 {volume}%";
-            "on-click" = "qpwgraph";
-          };
-          "custom/audio-enabled" = {
-            "return-type" = "string";
-            "interval" = 1;
-            "exec" = "${homeDir}/.local/scripts/cli.audio.outputEnabled";
-          };
-          "custom/inhibitidle" = {
-            "return-type" = "json";
-            "interval" = 1;
-            "exec" = "${homeDir}/.local/scripts/cli.system.inhibitIdle statusjson";
-            "format" = "{}";
-          };
-          "custom/clock" = {
-            "return-type" = "string";
-            "interval" = 1;
-            "exec" = "date +'%F %T'";
-          };
-          "custom/notification" = {
-            "tooltip" = false;
-            "format" = "{icon}";
-            "format-icons" = {
-              "notification" = "<span foreground='${red}'><sup></sup></span>";
-              "none" = "";
-              "dnd-notification" = "<span foreground='${red}'><sup></sup></span>";
-              "dnd-none" = "";
-            };
-            "return-type" = "json";
-            "exec-if" = "which swaync-client";
-            "exec" = "swaync-client -swb";
-            "on-click" = "swaync-client -t -sw";
-            "on-click-right" = "swaync-client -d -sw";
-            "escape" = true;
-          };
-        };
+        # topBar = {
+        #   name = "topBar";
+        #   layer = "top";
+        #   position = "top";
+        #   height = 40;
+        #   mode = "overlay";
+        #   start_hidden = true;
+        #   margin = "30"; # margin for the whole bar
+        #   # modules-left = [
+        #   #   (lib.mkIf enableSway "sway/workspaces")
+        #   #   (lib.mkIf enableSway "sway/scratchpad")
+        #   #   (lib.mkIf enableSway "sway/mode")
+        #   #   (lib.mkIf enableHyprland "hyprland/workspaces")
+        #   #   (lib.mkIf enableHyprland "hyprland/submap")
+        #   # ];
+        #   # modules-center = [
+        #   #   "hyprland/window"
+        #   # ];
+        #   modules-right = [
+        #     "tray"
+        #     (lib.mkIf (externalAudio == false) "pulseaudio")
+        #     (lib.mkIf externalAudio "custom/audio-enabled")
+        #     "custom/notification"
+        #     "custom/inhibitidle"
+        #     "custom/clock"
+        #   ];
+        #   "sway/workspaces" = {
+        #     "all-outputs" = false;
+        #     "disable-scroll" = true;
+        #   };
+        #   "sway/scratchpad" = {
+        #     "format" = "{icon} {count}";
+        #     "show-empty" = false;
+        #     "format-icons" = [
+        #       ""
+        #       "󰎝"
+        #     ];
+        #     "tooltip" = true;
+        #     "tooltip-format" = "{app}: {title}";
+        #   };
+        #   "hyprland/workspaces" = {
+        #     "persistent-workspaces" = {
+        #       "*" = 9;
+        #     };
+        #   };
+        #   "hyprland/window" = {
+        #     "format" = "{title}";
+        #     "rewrite" = {
+        #       # remove the browser name from the title
+        #       "(.*) — Mozilla Firefox" = "$1";
+        #       "(.*) - qutebrowser" = "$1";
+        #     };
+        #   };
+        #   "custom/office-temp" = lib.mkIf enableHomeAutomation {
+        #     "return-type" = "string";
+        #     "interval" = 60;
+        #     "format" = " {}";
+        #     "exec" = "${homeDir}/.local/scripts/cli.home.office.getTemperature";
+        #   };
+        #   "custom/office-humidity" = lib.mkIf enableHomeAutomation {
+        #     "return-type" = "string";
+        #     "interval" = 60;
+        #     "format" = " {}";
+        #     "exec" = "${homeDir}/.local/scripts/cli.home.office.getHumidity";
+        #   };
+        #   "tray" = {
+        #     "icon-size" = 18;
+        #     "spacing" = 12;
+        #   };
+        #   "pulseaudio" = lib.mkIf (externalAudio == false) {
+        #     "format" = "󰕾 {volume}%";
+        #     "format-muted" = "󰖁 {volume}%";
+        #     "on-click" = "qpwgraph";
+        #   };
+        #   "custom/audio-enabled" = {
+        #     "return-type" = "string";
+        #     "interval" = 1;
+        #     "exec" = "${homeDir}/.local/scripts/cli.audio.outputEnabled";
+        #   };
+        #   "custom/inhibitidle" = {
+        #     "return-type" = "json";
+        #     "interval" = 1;
+        #     "exec" = "${homeDir}/.local/scripts/cli.system.inhibitIdle statusjson";
+        #     "format" = "{}";
+        #   };
+        #   "custom/clock" = {
+        #     "return-type" = "string";
+        #     "interval" = 1;
+        #     "exec" = "date +'%F %T'";
+        #   };
+        #   "custom/notification" = {
+        #     "tooltip" = false;
+        #     "format" = "{icon}";
+        #     "format-icons" = {
+        #       "notification" = "<span foreground='${red}'><sup></sup></span>";
+        #       "none" = "";
+        #       "dnd-notification" = "<span foreground='${red}'><sup></sup></span>";
+        #       "dnd-none" = "";
+        #     };
+        #     "return-type" = "json";
+        #     "exec-if" = "which swaync-client";
+        #     "exec" = "swaync-client -swb";
+        #     "on-click" = "swaync-client -t -sw";
+        #     "on-click-right" = "swaync-client -d -sw";
+        #     "escape" = true;
+        #   };
+        # };
         bottomBar = {
           name = "bottomBar";
           layer = "top";
