@@ -325,7 +325,7 @@ PanelWindow {
                     x: root.cardPadding
                     y: root.cardPadding - 1
                     text: "OFFICE"
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.weight: Font.Medium
@@ -361,7 +361,7 @@ PanelWindow {
                     x: officeTempText.x
                     y: officeTempText.y + officeTempText.height - 2
                     text: "TEMP"
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.letterSpacing: 1
@@ -372,7 +372,7 @@ PanelWindow {
                     x: officeHumidText.x
                     y: officeHumidText.y + officeHumidText.height - 2
                     text: "HUMID"
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.letterSpacing: 1
@@ -395,7 +395,7 @@ PanelWindow {
                     x: root.dividerX + root.cardPadding
                     y: root.cardPadding - 1
                     text: "OUTSIDE"
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.weight: Font.Medium
@@ -430,7 +430,7 @@ PanelWindow {
                     x: outsideTempText.x
                     y: outsideTempText.y + outsideTempText.height - 2
                     text: "TEMP"
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.letterSpacing: 1
@@ -442,7 +442,7 @@ PanelWindow {
                     y: outsideIconText.y + outsideIconText.height - 2
                     width: root.cardWidth / 2 - root.cardPadding * 2
                     text: root.outsideCondition
-                    color: Theme.secondary
+                    color: Theme.foreground
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: 11
                     font.letterSpacing: 1
