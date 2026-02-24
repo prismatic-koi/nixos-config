@@ -44,14 +44,15 @@ PanelWindow {
     id: root
 
     // -- configuration --
-    readonly property int cardWidth: 450
     readonly property int cardHeight: 120
     readonly property int cardRadius: 10
     readonly property int cardMargin: 30
     readonly property int cardPadding: 15
-    readonly property int dividerX: cardWidth / 2
     // showOffice: true only when this machine is physically in the office
     readonly property bool showOffice: Theme.deviceLocation === "office"
+    // card is full-width (two panels) when office is shown, half-width otherwise
+    readonly property int cardWidth: showOffice ? 450 : 225
+    readonly property int dividerX: 225
     // right panel starts at divider when office is shown, or at 0 for full-width
     readonly property int rightPanelX: showOffice ? dividerX : 0
 
