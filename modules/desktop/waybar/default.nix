@@ -150,9 +150,7 @@ with config.theme;
           # modules-left = [
           #   (lib.mkIf enableMpd "custom/mpd")
           # ];
-          modules-center = [
-            (lib.mkIf config.nx.desktop.offline-focus-mode.enable "custom/system-mode")
-          ];
+
           modules-right = [
             "cpu"
             "memory"
@@ -162,12 +160,6 @@ with config.theme;
             "power-profiles-daemon"
             "systemd-failed-units"
           ];
-          "custom/system-mode" = {
-            "return-type" = "json";
-            "interval" = 1;
-            "exec" = "${homeDir}/.local/scripts/cli.desktop.getSystemMode json";
-            "format" = "{}";
-          };
 
           "cpu" = {
             "format" = " {usage}%";
@@ -315,16 +307,6 @@ with config.theme;
           #custom-inhibitidle.active {
             color: ${bg0};
             background-color: ${red};
-          }
-          #custom-system-mode.normal {
-            color: ${bg0};
-            background-color: ${orange};
-            padding: 0 12px;
-          }
-          #custom-system-mode.offline-focus {
-            color: ${bg0};
-            background-color: ${blue};
-            padding: 0 12px;
           }
           label:focus {
             background-color: ${bg0};
