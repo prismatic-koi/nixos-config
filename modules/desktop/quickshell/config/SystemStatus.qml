@@ -31,6 +31,7 @@ PanelWindow {
     // -- state: network --
     property string networkText: "no network"
     property bool networkConnected: false
+    property bool networkIsWifi: false
 
     // -- state: VPN --
     property bool vpnConnected: false
@@ -52,25 +53,34 @@ PanelWindow {
         id: netProc
         command: [
             "sh", "-c",
-            // Try Wi-Fi first (iw dev), then fall back to ethernet (ip link)
-            "iw dev 2>/dev/null | awk '/Interface/{iface=$2} /ssid/{ssid=substr($0, index($0,$2)); found=1} END{if(found) print \"wifi:\" ssid; else exit 1}' || " +
-            "ip route show default 2>/dev/null | awk '{print \"eth:\" $5; exit}' || " +
-            "echo 'none:'"
+            // Try Wi-Fi via nmcli (SSID + signal), fall back to ethernet iface name
+            "wifi=$(nmcli -t -f active,ssid,signal dev wifi 2>/dev/null | awk -F: '/^yes:/{printf \"%s:%s\", $2, $3; exit}'); " +
+            "if [ -n \"$wifi\" ]; then echo \"wifi:$wifi\"; " +
+            "else eth=$(nmcli -t -f device,type,state dev 2>/dev/null | awk -F: '$2==\"ethernet\" && $3==\"connected\"{print $1; exit}'); " +
+            "[ -n \"$eth\" ] && echo \"eth:$eth\" || echo 'none:'; fi"
         ]
         stdout: StdioCollector {
             onStreamFinished: {
                 var out = this.text.trim();
                 if (out.startsWith("wifi:")) {
-                    var ssid = out.substring(5).trim();
-                    root.networkText = ssid.length > 0 ? ssid : "Wi-Fi";
+                    // format: wifi:<ssid>:<signal>
+                    var rest = out.substring(5);
+                    var lastColon = rest.lastIndexOf(":");
+                    var ssid = lastColon > 0 ? rest.substring(0, lastColon) : rest;
+                    var sig = lastColon > 0 ? parseInt(rest.substring(lastColon + 1), 10) : 0;
+                    var strength = isNaN(sig) ? "" : (" (" + sig + "%)");
+                    root.networkText = (ssid.length > 0 ? ssid : "Wi-Fi") + strength;
                     root.networkConnected = true;
+                    root.networkIsWifi = true;
                 } else if (out.startsWith("eth:")) {
                     var iface = out.substring(4).trim();
                     root.networkText = iface.length > 0 ? iface : "ethernet";
                     root.networkConnected = true;
+                    root.networkIsWifi = false;
                 } else {
                     root.networkText = "no network";
                     root.networkConnected = false;
+                    root.networkIsWifi = false;
                 }
             }
         }
@@ -95,7 +105,9 @@ PanelWindow {
         id: vpnProc
         command: [
             "sh", "-c",
-            "ip link show wgnord 2>/dev/null | grep -q 'state UP' && echo connected || echo disconnected"
+            // WireGuard interfaces always report 'state UNKNOWN' in ip-link, so
+            // use nmcli which correctly reports 'connected (externally)' for wgnord.
+            "nmcli -t -f device,type,state dev 2>/dev/null | grep -q '^wgnord:wireguard:connected' && echo connected || echo disconnected"
         ]
         stdout: StdioCollector {
             onStreamFinished: {
@@ -278,7 +290,9 @@ PanelWindow {
     anchors.bottom: true
     anchors.right: true
     readonly property int travelSize: barMargin + barHeight
-    implicitWidth: 900 + travelSize
+    // Width covers the pill at max reasonable size (long SSID + all sections)
+    // plus travelSize on the left to allow room for the diagonal slide-in.
+    implicitWidth: 600 + travelSize
     implicitHeight: travelSize + barHeight + travelSize
     exclusiveZone: 0
     focusable: false
@@ -328,7 +342,7 @@ PanelWindow {
                 visible: false
                 spacing: 0
 
-                // network (max width estimate with a moderate SSID)
+                // network — worst-case width: wifi icon + long SSID + signal
                 Text {
                     text: "󱚽"
                     font.family: "JetBrainsMono Nerd Font"
@@ -336,7 +350,7 @@ PanelWindow {
                 }
                 Item { width: root.itemSpacing; height: 1 }
                 Text {
-                    text: "no network"
+                    text: "My Network Name (100%)"
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: root.fontSize
                 }
@@ -398,7 +412,7 @@ PanelWindow {
                 // ── Network ───────────────────────────────────────────────────
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.networkConnected ? "󱚽" : "󰤭"
+                    text: !root.networkConnected ? "󰤭" : root.networkIsWifi ? "󱚽" : "󰈀"
                     color: root.networkConnected ? Theme.foreground : Theme.grey0
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: root.fontSize
@@ -424,7 +438,7 @@ PanelWindow {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.vpnConnected ? "󰌾" : "󰌿"
-                    color: root.vpnConnected ? Theme.green : Theme.grey0
+                    color: root.vpnConnected ? Theme.blue : Theme.orange
                     font.family: "JetBrainsMono Nerd Font"
                     font.pixelSize: root.fontSize
                     verticalAlignment: Text.AlignVCenter
