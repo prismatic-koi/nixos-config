@@ -101,39 +101,43 @@
         # xdg.mimeApps is Linux-only
         xdg.mimeApps.enable = pkgs.stdenv.isLinux;
         # some default programs that require no configuration
-        home.packages = with pkgs; [
-          age
-          cachix
-          curl
-          dig
-          direnv
-          dust
-          eza
-          fdupes
-          file
-          fzf
-          fzy
-          google-cloud-sdk
-          htop
-          imagemagick
-          jnv
-          jq
-          killall
-          nixfmt
-          openssl
-          p7zip
-          pdftk
-          ripgrep
-          socat
-          sops
-          sqlite
-          unrar
-          unzip
-          wget
-          xdg-utils
-          yq-go
-          yt-dlp
-        ];
+        home.packages =
+          with pkgs;
+          [
+            age
+            cachix
+            curl
+            dig
+            direnv
+            dust
+            eza
+            fdupes
+            file
+            fzf
+            fzy
+            google-cloud-sdk
+            htop
+            imagemagick
+            jnv
+            jq
+            killall
+            nixfmt
+            openssl
+            p7zip
+            pdftk
+            ripgrep
+            socat
+            sops
+            sqlite
+            unrar
+            unzip
+            wget
+            xdg-utils
+            yq-go
+          ]
+          ++ lib.optionals pkgs.stdenv.isLinux [
+            yt-dlp # Linux-only due to D-Bus dependencies
+          ];
       };
     };
 }
