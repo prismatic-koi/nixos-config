@@ -332,6 +332,7 @@ in
             binde=,k,resizeactive,0 -10
             binde=,l,resizeactive,10 0
             bind=,escape,submap,reset
+            bindrt=SUPER,SUPER_L,exec,pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide
             submap=reset
             # exit submap (with auto reset after 3 sec)
             bind=SUPER SHIFT,E,exec,sleep 3 && hyprctl dispatch submap reset
@@ -346,6 +347,7 @@ in
             # reboot
             binde=,r,exec, systemctl reboot
             bind=,escape,submap,reset
+            bindrt=SUPER,SUPER_L,exec,pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide
             submap=reset
           '';
           systemd = {
