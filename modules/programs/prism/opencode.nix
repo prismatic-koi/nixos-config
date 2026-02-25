@@ -78,6 +78,7 @@
         "gh issue list *" = "allow";
         "gh pr view *" = "allow";
         "gh pr list *" = "allow";
+        "gh pr diff *" = "allow";
         "gh repo view *" = "allow";
         "gh release list *" = "allow";
         "gh release view *" = "allow";
