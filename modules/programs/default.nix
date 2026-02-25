@@ -2,6 +2,7 @@
   lib,
   config,
   pkgs,
+  isLinux,
   ...
 }:
 {
@@ -11,7 +12,6 @@
     ./calibre.nix
     ./choose.nix
     ./chromium.nix
-    ./corectrl.nix
     ./claude-code.nix
     ./cura-appimage.nix
     ./darktable.nix
@@ -50,6 +50,9 @@
     ./discord.nix
     ./zathura.nix
     ./zsh.nix
+  ]
+  ++ lib.optionals isLinux [
+    ./corectrl.nix
   ];
   options = {
     nx.programs = {

@@ -76,7 +76,10 @@
             ];
             overlays = [ self.overlays.modifications ];
           };
-          specialArgs = { inherit inputs outputs; };
+          specialArgs = {
+            inherit inputs outputs;
+            isLinux = true;
+          };
           modules =
             let
               defaults = { pkgs, ... }: { };
@@ -111,7 +114,10 @@
             ];
             overlays = [ self.overlays.modifications ];
           };
-          specialArgs = { inherit inputs outputs; };
+          specialArgs = {
+            inherit inputs outputs;
+            isLinux = false;
+          };
           modules =
             let
               defaults = { pkgs, ... }: { };
