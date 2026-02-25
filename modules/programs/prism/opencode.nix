@@ -38,6 +38,7 @@
         "sort *" = "allow";
         "uniq *" = "allow";
         "wc *" = "allow";
+        "xargs *" = "allow";
         # system information (read-only)
         "date *" = "allow";
         "env *" = "allow";
