@@ -44,41 +44,40 @@ in
               blur_passes = 0;
             }
           ];
-          label =
-            [
-              {
-                monitor = "";
-                text = ''cmd[update:1000] echo $(date +'%T')'';
-                color = toRgba theme.foreground;
-                font_size = 95;
-                font_family = "JetBrainsMono Nerd Font";
-                position = "0, 100";
-                halign = "center";
-                valign = "center";
-              }
-              {
-                monitor = "";
-                text = ''cmd[update:1000] echo $(date +'%F')'';
-                color = toRgba theme.foreground;
-                font_size = 22;
-                font_family = "JetBrainsMono Nerd Font";
-                position = "0, 0";
-                halign = "center";
-                valign = "center";
-              }
-            ]
-            ++ lib.optionals config.nx.isLaptop [
-              {
-                monitor = "";
-                text = ''cmd[update:5000] ${homeDir}/.local/scripts/cli.system.batteryStatus'';
-                color = toRgba theme.foreground;
-                font_size = 18;
-                font_family = "JetBrainsMono Nerd Font";
-                position = "0, -200";
-                halign = "center";
-                valign = "center";
-              }
-            ];
+          label = [
+            {
+              monitor = "";
+              text = "cmd[update:1000] echo $(date +'%T')";
+              color = toRgba theme.foreground;
+              font_size = 95;
+              font_family = "JetBrainsMono Nerd Font";
+              position = "0, 100";
+              halign = "center";
+              valign = "center";
+            }
+            {
+              monitor = "";
+              text = "cmd[update:1000] echo $(date +'%F')";
+              color = toRgba theme.foreground;
+              font_size = 22;
+              font_family = "JetBrainsMono Nerd Font";
+              position = "0, 0";
+              halign = "center";
+              valign = "center";
+            }
+          ]
+          ++ lib.optionals config.nx.isLaptop [
+            {
+              monitor = "";
+              text = "cmd[update:5000] ${homeDir}/.local/scripts/cli.system.batteryStatus";
+              color = toRgba theme.foreground;
+              font_size = 18;
+              font_family = "JetBrainsMono Nerd Font";
+              position = "0, -200";
+              halign = "center";
+              valign = "center";
+            }
+          ];
           input-field = {
             monitor = "";
             size = "300,50";

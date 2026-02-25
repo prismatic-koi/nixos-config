@@ -11,25 +11,27 @@
     # we provide this as a no-op to maintain configuration compatibility across
     # both platforms, preventing errors when shared modules reference this option.
     environment.persistence = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          directories = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Directories to persist (darwin stub)";
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            directories = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Directories to persist (darwin stub)";
+            };
+            files = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Files to persist (darwin stub)";
+            };
+            hideMounts = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Hide mounts (darwin stub)";
+            };
           };
-          files = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Files to persist (darwin stub)";
-          };
-          hideMounts = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Hide mounts (darwin stub)";
-          };
-        };
-      });
+        }
+      );
       default = { };
       description = ''
         Stub implementation of environment.persistence for darwin compatibility.
@@ -80,14 +82,16 @@
 
     # Stub for darwin compatibility: fileSystems
     fileSystems = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          neededForBoot = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            neededForBoot = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+            };
           };
-        };
-      });
+        }
+      );
       default = { };
       description = "Stub for fileSystems (darwin compatibility)";
     };
@@ -426,20 +430,22 @@
     home-manager.sharedModules = [
       {
         options.home.persistence = lib.mkOption {
-          type = lib.types.attrsOf (lib.types.submodule {
-            options = {
-              directories = lib.mkOption {
-                type = lib.types.listOf lib.types.anything;
-                default = [ ];
-                description = "Directories to persist (darwin stub)";
+          type = lib.types.attrsOf (
+            lib.types.submodule {
+              options = {
+                directories = lib.mkOption {
+                  type = lib.types.listOf lib.types.anything;
+                  default = [ ];
+                  description = "Directories to persist (darwin stub)";
+                };
+                files = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                  description = "Files to persist (darwin stub)";
+                };
               };
-              files = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                description = "Files to persist (darwin stub)";
-              };
-            };
-          });
+            }
+          );
           default = { };
           description = ''
             Stub implementation of home.persistence for darwin compatibility.
