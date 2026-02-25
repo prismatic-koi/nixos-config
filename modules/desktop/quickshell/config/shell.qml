@@ -41,6 +41,10 @@ ShellRoot {
         id: statusBar
     }
 
+    SystemStatus {
+        id: systemStatus
+    }
+
     OsdOverlay {
         id: osd
     }
@@ -69,12 +73,14 @@ ShellRoot {
                     windowTitle.showBar();
                     environment.showBar();
                     statusBar.showBar();
+                    systemStatus.showBar();
                 } else if (data === "quickshell:hide") {
                     workspaceBar.hideBar();
                     nowPlaying.hideBar();
                     windowTitle.hideBar();
                     environment.hideBar();
                     statusBar.hideBar();
+                    systemStatus.hideBar();
                 } else if (data === "quickshell:inhibit-on") {
                     statusBar.setInhibited(true);
                 } else if (data === "quickshell:inhibit-off") {
