@@ -51,6 +51,10 @@ rec {
       # Use stable until upstream is fixed.
       calibre = stablePkgs.calibre;
 
+      # azure-cli has Python 3.13 compatibility issues in unstable.
+      # Use stable until upstream is fixed.
+      azure-cli = stablePkgs.azure-cli;
+
       vimPlugins = prev.vimPlugins // {
         obsidian-nvim = prev.vimUtils.buildVimPlugin {
           pname = "obsidian-nvim";
