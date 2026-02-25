@@ -124,6 +124,10 @@ in
       # the quickshellConfig store path (changes on every rebuild).
       systemd.user.services.quickshell = {
         Unit.X-Restart-Triggers = [ "${quickshellConfig}" ];
+        # Workaround for Qt QML GC crash (QTBUG-134687): setting QV4_GC_TIMELIMIT=0
+        # disables the incremental GC time limit, preventing SIGSEGV in QV4::MarkStack::drain
+        # during rapid window open/close events.
+        Service.Environment = [ "QV4_GC_TIMELIMIT=0" ];
       };
     };
   };
