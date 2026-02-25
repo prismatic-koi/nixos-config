@@ -158,9 +158,23 @@ in
 
                   # Custom keybindings
                   bindkey -s ^v "nvim\n"
-                  bindkey -s ^p "python\n"
                   bindkey -s ^o "cli.tmux.projectSessioniser ~/documents/obsidian\n"
                   bindkey -s ^f "cli.tmux.projectSessioniser\n"
+
+                  _prism_launch() {
+                    _PRISM_LAUNCH_PENDING=1
+                    zle accept-line
+                  }
+                  zle -N _prism_launch
+                  bindkey ^p _prism_launch
+
+                  _prism_launch_precmd() {
+                    if [[ -n "$_PRISM_LAUNCH_PENDING" ]]; then
+                      unset _PRISM_LAUNCH_PENDING
+                      cli.prism.launch --in-terminal
+                    fi
+                  }
+                  precmd_functions+=(_prism_launch_precmd)
                 '';
               in
               lib.mkOrder 1000 commonInit;

@@ -174,6 +174,12 @@
           ''
             #!/usr/bin/env bash
             # Launch Prism with scratchpad and context switcher
+            # --in-terminal: attach in the current terminal instead of spawning a new kitty window
+
+            IN_TERMINAL=0
+            if [ "$1" = "--in-terminal" ]; then
+                IN_TERMINAL=1
+            fi
 
             # Check if we're already in tmux
             if [ -n "$TMUX" ]; then
@@ -191,6 +197,16 @@
                 # Small delay to let terminal settle, then open context switcher
                 sleep 0.1
                 ${tmux} display-popup -w 80% -h 80% -E "cli.tmux.contextSwitcher"
+            elif [ "$IN_TERMINAL" = "1" ]; then
+                # In a terminal but not tmux - attach in-place
+                if ! ${tmux} has-session -t scratchpad 2>/dev/null; then
+                    ${tmux} new-session -ds scratchpad -c "$HOME"
+                    ${tmux} rename-window -t scratchpad:0 term
+                fi
+                # Fire context switcher once after attach, then remove the hook
+                ${tmux} set-hook -t scratchpad client-attached \
+                    "run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E 'cli.tmux.contextSwitcher' ; set-hook -u client-attached"
+                exec ${tmux} new-session -As scratchpad
             else
                 # Outside tmux - launch in new kitty window with delay before popup
                 ${kitty} --title "Prism" ${tmux} new-session -As scratchpad -c "$HOME" \; \
