@@ -22,6 +22,7 @@
       hyprland = {
         layout = "dwindle";
       };
+      waybar.enable = false;
       wallpaper.variant = "enso";
     };
     programs = {

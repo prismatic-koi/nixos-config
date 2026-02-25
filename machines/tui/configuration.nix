@@ -21,6 +21,7 @@
         screenTimeout.duration = 600; # screen off after 10 minutes
         suspendTimeout.duration = 900; # suspend after 15 minutes
       };
+      waybar.enable = false;
       # hyprlock.oled = true;
       wallpaper = {
         variant = "enso";
