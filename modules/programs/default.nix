@@ -27,7 +27,6 @@
     ./kubetools.nix
     ./lf.nix
     ./libreoffice.nix
-    ./mangohud.nix
     ./mpv.nix
     ./ncmpcpp.nix
     ./nh.nix
@@ -53,6 +52,7 @@
   ]
   ++ lib.optionals isLinux [
     ./corectrl.nix
+    ./mangohud.nix
   ];
   options = {
     nx.programs = {
