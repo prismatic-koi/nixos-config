@@ -49,7 +49,6 @@ in
         emojipicker = "${homeDir}/.local/scripts/application.rofi.emojipicker";
         runscripts = "${homeDir}/.local/scripts/application.scripts.launcher";
         calculator = "${homeDir}/.local/scripts/application.rofi.calculator";
-        nvimsessionlauncher = "${homeDir}/.local/scripts/application.nvim.sessionLauncher";
         applicationlauncher = "${homeDir}/.local/scripts/application.launcher";
         # applications
         terminal = "kitty";
@@ -57,7 +56,6 @@ in
         calendar = "firefox --new-window https://calendar.google.com";
         filemanager = "lf";
         musicplayer = "kitty ncmpcpp";
-        obsidian = "kitty ${homeDir}/.local/scripts/cli.tmux.projectSessioniser ${homeDir}/documents/obsidian";
         addtoshoppinglist = "home.shoppinglist.addItem";
         openshoppinglist = "firefox --new-window https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5";
       in
@@ -144,7 +142,6 @@ in
             "${super}+period" = "exec ${emojipicker}";
             "${super}+Space" = "exec ${runscripts}";
             "${super}+c" = "exec ${calculator}";
-            "${super}+f" = "exec ${nvimsessionlauncher}";
             # Notifications Center
             "${super}+n" = "exec swaync-client -t -sw";
             "${super}+Shift+n" = "exec swaync-client --close-all && swaync-client --close-panel";
@@ -157,7 +154,7 @@ in
             "${alt}+m" = "exec ${musicplayer}";
             "${alt}+l" = "exec ${addtoshoppinglist}";
             "${alt}+Shift+l" = "exec ${openshoppinglist}";
-            "${alt}+o" = "exec ${obsidian}";
+            "${alt}+o" = "exec ${homeDir}/.local/scripts/cli.prism.launch --path ${homeDir}/documents/obsidian";
             # Media Controls
             "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
             # "XF86AudioRaiseVolume" = "exec wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+";

@@ -44,7 +44,6 @@ in
           emojipicker = "${scriptsDir}/application.rofi.emojipicker";
           runscripts = "${scriptsDir}/application.scripts.launcher";
           calculator = "${scriptsDir}/application.rofi.calculator";
-          nvimsessionlauncher = "${scriptsDir}/application.nvim.sessionLauncher";
           applicationlauncher = "${scriptsDir}/application.launcher";
           toggleTouchpad = "${scriptsDir}/system.inputs.toggleTouchpad";
           volumeUp = "${scriptsDir}/system.audio.volumeUp";
@@ -60,8 +59,6 @@ in
           calendar = "${newwindow} https://calendar.google.com";
           filemanager = "${terminal} lf";
           musicplayer = "${terminal} ncmpcpp";
-          obsidian = "${terminal} ${scriptsDir}/cli.tmux.projectSessioniser ${homeDir}/documents/obsidian";
-          nixosconfig = "${terminal} ${scriptsDir}/cli.tmux.projectSessioniser ${homeDir}/code/nixos-config";
           addtodailytodo = "${scriptsDir}/obsidian.dailyTodo.addItem";
           addtoshoppinglist = "${scriptsDir}/home.shoppinglist.addItem";
           openshoppinglist = "${newwindow} https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5";
@@ -268,7 +265,6 @@ in
               "SUPER, period, exec, ${emojipicker}"
               "SUPER, Space, exec, ${runscripts}"
               "SUPER, c, exec, ${calculator}"
-              "SUPER, f, exec, ${nvimsessionlauncher}"
               "SUPER SHIFT, F, fullscreen"
               "SUPER, i, exec, ${scriptsDir}/cli.system.inhibitIdle toggle"
               # Notification Center
@@ -285,8 +281,8 @@ in
               "ALT, t, exec, ${addtodailytodo}"
               "ALT, l, exec, ${addtoshoppinglist}"
               "ALT SHIFT, l, exec, ${openshoppinglist}"
-              "ALT, o, exec, ${obsidian}"
-              "ALT, n, exec, ${nixosconfig}"
+              "ALT, o, exec, ${prismLauncher} --path ${homeDir}/documents/obsidian"
+              "ALT, n, exec, ${prismLauncher} --path ${homeDir}/code/nixos-config"
               "ALT, p, exec, ${prismLauncher}"
               # media controls
               ", XF86AudioMute, exec, ${toggleMute}"

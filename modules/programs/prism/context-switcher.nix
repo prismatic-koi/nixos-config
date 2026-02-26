@@ -316,8 +316,31 @@
                         check=True
                     )
 
+                def open_path(path):
+                    """Open a specific path directly, handling bare repos by auto-selecting default branch."""
+                    directory = os.path.expanduser(path)
+                    if not os.path.isdir(directory):
+                        print(f"Error: Directory does not exist: {directory}", file=sys.stderr)
+                        sys.exit(1)
+
+                    if is_bare_repo(directory):
+                        # Bare repo: auto-select the default branch worktree
+                        worktrees = get_worktrees(directory)
+                        if not worktrees:
+                            print(f"Error: No worktrees found in {directory}", file=sys.stderr)
+                            sys.exit(1)
+                        # get_worktrees puts default branch first
+                        create_or_switch_session(worktrees[0], directory)
+                    else:
+                        create_or_switch_session(directory, None)
+
                 def main():
                     """Main function to run the context switcher."""
+                    # Check for --path argument to skip the interactive picker
+                    if len(sys.argv) >= 3 and sys.argv[1] == "--path":
+                        open_path(sys.argv[2])
+                        return
+
                     projects = get_project_list()
 
                     # Create a formatted list for fzy

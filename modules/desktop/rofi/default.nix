@@ -12,7 +12,6 @@ with config.theme;
     ./add-to-shopping-list.nix
     ./application-launcher.nix
     ./emoji-picker.nix
-    ./nvim-session-launcher.nix
     ./rofi-calculator.nix
     ./script-launcher.nix
     # rofi themeing (theme.rasi)

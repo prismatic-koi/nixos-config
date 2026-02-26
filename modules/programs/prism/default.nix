@@ -22,48 +22,6 @@
         };
       };
 
-      sessioniser = {
-        windows = lib.mkOption {
-          type = lib.types.listOf (
-            lib.types.submodule {
-              options = {
-                index = lib.mkOption {
-                  type = lib.types.int;
-                  description = "Window index";
-                };
-                name = lib.mkOption {
-                  type = lib.types.str;
-                  description = "Window name";
-                };
-                command = lib.mkOption {
-                  type = lib.types.nullOr lib.types.str;
-                  default = null;
-                  description = "Command to run in the window (null for default shell)";
-                };
-              };
-            }
-          );
-          default = [
-            {
-              index = 0;
-              name = "edit";
-              command = null;
-            } # nvim launched by sessioniser logic
-            {
-              index = 1;
-              name = "agent";
-              command = "agent";
-            } # special marker, expanded with env vars
-            {
-              index = 2;
-              name = "term";
-              command = null;
-            } # plain shell
-          ];
-          description = "Default windows to create in each project session";
-        };
-      };
-
       # Internal computed values for submodules to use
       _internal = lib.mkOption {
         type = lib.types.attrs;
@@ -91,9 +49,9 @@
     nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
     nx.programs.prism.scripts.enable = lib.mkDefault true;
 
-    # Auto-enable choose on Darwin when sessioniser is enabled
+    # Auto-enable choose on Darwin when contextSwitcher is enabled
     nx.programs.choose.enable = lib.mkDefault (
-      pkgs.stdenv.isDarwin && config.nx.programs.prism.sessioniser.enable
+      pkgs.stdenv.isDarwin && config.nx.programs.prism.contextSwitcher.enable
     );
 
     # Computed values that submodules can reference

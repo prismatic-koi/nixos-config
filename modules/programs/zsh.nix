@@ -158,8 +158,7 @@ in
 
                   # Custom keybindings
                   bindkey -s ^v "nvim\n"
-                  bindkey -s ^o "cli.tmux.projectSessioniser ~/documents/obsidian\n"
-                  bindkey -s ^f "cli.tmux.projectSessioniser\n"
+                  bindkey -s ^o "cli.prism.launch --in-terminal --path ~/documents/obsidian\n"
 
                   _prism_launch() {
                     _PRISM_LAUNCH_PENDING=1

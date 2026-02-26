@@ -175,10 +175,23 @@
             #!/usr/bin/env bash
             # Launch Prism with scratchpad and context switcher
             # --in-terminal: attach in the current terminal instead of spawning a new kitty window
+            # --path <dir>: skip the interactive picker and open a specific directory
 
             IN_TERMINAL=0
-            if [ "$1" = "--in-terminal" ]; then
-                IN_TERMINAL=1
+            PATH_ARG=""
+
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --in-terminal) IN_TERMINAL=1; shift ;;
+                    --path) PATH_ARG="$2"; shift 2 ;;
+                    *) shift ;;
+                esac
+            done
+
+            if [ -n "$PATH_ARG" ]; then
+                SWITCHER_CMD="cli.tmux.contextSwitcher --path \"$PATH_ARG\""
+            else
+                SWITCHER_CMD="cli.tmux.contextSwitcher"
             fi
 
             # Check if we're already in tmux
@@ -196,7 +209,7 @@
                 
                 # Small delay to let terminal settle, then open context switcher
                 sleep 0.1
-                ${tmux} display-popup -w 80% -h 80% -E "cli.tmux.contextSwitcher"
+                ${tmux} display-popup -w 80% -h 80% -E "$SWITCHER_CMD"
             elif [ "$IN_TERMINAL" = "1" ]; then
                 # In a terminal but not tmux - attach in-place
                 if ! ${tmux} has-session -t scratchpad 2>/dev/null; then
@@ -205,14 +218,14 @@
                 fi
                 # Fire context switcher once after attach, then remove the hook
                 ${tmux} set-hook -t scratchpad client-attached \
-                    "run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E 'cli.tmux.contextSwitcher' ; set-hook -u client-attached"
+                    "run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E '$SWITCHER_CMD' ; set-hook -u client-attached"
                 exec ${tmux} new-session -As scratchpad
             else
                 # Outside tmux - launch in new kitty window with delay before popup
                 ${kitty} --title "Prism" ${tmux} new-session -As scratchpad -c "$HOME" \; \
                     rename-window -t scratchpad:0 term \; \
                     run-shell "sleep 0.2" \; \
-                    display-popup -w 80% -h 80% -E "cli.tmux.contextSwitcher" &
+                    display-popup -w 80% -h 80% -E "$SWITCHER_CMD" &
             fi
           '';
       };
