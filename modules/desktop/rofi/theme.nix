@@ -35,7 +35,7 @@ with config.theme;
       }
       entry {
         padding: 10px;
-        placeholder-color: ${bg5};
+        placeholder-color: ${grey1};
       }
       listview {
         margin: 5px 0px 0px 0px;
