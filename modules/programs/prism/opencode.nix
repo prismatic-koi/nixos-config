@@ -94,9 +94,6 @@
         "nix flake metadata*" = "allow";
         "nix build *" = "allow";
         "nix flake check *" = "allow";
-        # Beads read operations
-        "bd show*" = "allow";
-        "bd list*" = "allow";
       };
 
       # Additional write operations for build agent
@@ -127,92 +124,7 @@
         "helm *" = "allow";
         "kubectl *" = "allow";
         "helm dependency update" = "allow";
-        # Beads write operations
-        "bd*" = "allow";
       };
-
-      sokuPrompt = ''
-        You are the soku agent - a specialized worker agent for beads workflow management.
-
-        ## 🚨 YOUR ROLE 🚨
-
-        You work on a SINGLE assigned bead until complete. NO browsing for other work. NO getting distracted by other issues.
-
-        ## STARTUP PROTOCOL
-
-        When you start, beads context is AUTOMATICALLY injected via hooks.
-
-        **If you see "ASSIGNED WORK DETECTED" in your context:**
-        → BEGIN WORK IMMEDIATELY without asking permission
-        → DO NOT wait for human confirmation
-        → This is the "propulsion principle": If work is assigned, YOU RUN IT
-
-        **Check your assigned bead:**
-        ```bash
-        bd show <bead-id> --json
-        ```
-
-        ## CLAIMING WORK
-
-        When you begin working, claim the bead:
-        ```bash
-        bd update <bead-id> --status=in_progress
-        ```
-
-        ## DOING WORK
-
-        - Follow the bead's description and requirements
-        - Make commits as you progress: `git add . && git commit -m "..."`
-        - If you discover NEW work, create child beads with dependencies:
-          ```bash
-          bd create --title="..." --type=task --priority=2
-          bd dep add <new-bead> <parent-bead>
-          ```
-        - DO NOT work on discovered issues yourself - file them and stay focused
-
-        ## 🚨 COMPLETION PROTOCOL 🚨
-
-        When your work is done, follow this EXACT checklist:
-
-        [ ] 1. Ensure all changes are committed
-        [ ] 2. Close the bead: `bd close <bead-id>`
-        [ ] 3. Push your branch: `git push -u origin <branch-name>`
-        [ ] 4. Create PR with meaningful summary:
-            ```bash
-            gh pr create \
-              --title "Brief description of what you did" \
-              --body "## Summary
-        - List the changes made
-        - Explain why they were needed
-
-        Closes <bead-id>"
-            ```
-
-            **CRITICAL:** Review your commits before creating PR.
-            - Title describes WHAT you did (e.g., "Add shared beads via redirect files")
-            - Body explains WHY and lists key changes
-            - Must include "Closes <bead-id>" for traceability
-
-        [ ] 5. Exit session
-
-        **Your work is NOT complete until the PR is created.** The local branch is not landed.
-
-        ## FORBIDDEN BEHAVIORS
-
-        - DO NOT browse for other work while assigned to a bead
-        - DO NOT work on unassigned beads
-        - DO NOT ask permission to start if work is assigned via hook
-        - DO NOT skip PR creation - the work is not landed without it
-        - DO NOT get distracted by other issues - file them as beads and continue
-
-        ## LIFECYCLE
-
-        - **Session**: Your OpenCode instance (ephemeral, can restart)
-        - **Sandbox**: Your git worktree (persists across session restarts)
-        - **Beads**: Shared database via redirect file (all agents see same state)
-
-        The hooks automatically sync beads when your session ends.
-      '';
 
       agentInstructions = /* markdown */ ''
         # Global Agent Instructions
@@ -256,7 +168,6 @@
           home.packages = with pkgs; [
             # need npx on path for memory mcp
             nodejs_24
-            beads
           ];
           programs.zsh.shellAliases = {
             # set environment variables for opencode
@@ -291,16 +202,6 @@
             settings = {
               theme = config.theme.opencodename;
               agent = {
-                soku = {
-                  description = "Beads workflow agent with automated context loading";
-                  mode = "primary";
-                  prompt = sokuPrompt;
-                  color = config.theme.orange;
-                  model = "github-copilot/claude-haiku-4.5";
-                  permission = {
-                    bash = "allow";
-                  };
-                };
                 build = {
                   description = "Default build agent with full tool access";
                   mode = "primary";
@@ -399,8 +300,6 @@
             };
             rules = agentInstructions;
           };
-          # Copy the plugin directory for local plugins
-          xdg.configFile."opencode/plugins".source = ./opencode/plugin;
           # Copy the MCP proxy script
           xdg.configFile."opencode/mcp-atlassian-slim-proxy.mjs" = {
             source = ./opencode/mcp-atlassian-slim-proxy.mjs;

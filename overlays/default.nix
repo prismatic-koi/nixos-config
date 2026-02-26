@@ -38,9 +38,6 @@ rec {
       # use master for playwright-mcp, not in stable yet
       playwright-mcp = masterPkgs.playwright-mcp;
 
-      # use master for beads, need the bleeding edge
-      beads = masterPkgs.beads;
-
       # ncmpcpp and openscad fail to build against boost 1.89 because their old
       # build systems try to link boost_system as a shared library, but it has
       # been header-only since boost 1.69. Pin to boost187 until upstream is fixed.
