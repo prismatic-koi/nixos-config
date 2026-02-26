@@ -318,8 +318,7 @@ PanelWindow {
             color: Theme.bg3
             clip: true
 
-            readonly property int baseWidth: contentRow.implicitWidth + root.hPad * 2
-            width: baseWidth
+            width: barRow.implicitWidth + root.hPad * 2
             Behavior on width {
                 NumberAnimation { duration: 200; easing.type: Easing.OutCubic }
             }
@@ -334,72 +333,6 @@ PanelWindow {
                 // slide diagonally: right and down when hidden (bottom-right mirror of top-right)
                 x: (1 - root.slideProgress) * root.travelSize
                 y: (1 - root.slideProgress) * root.travelSize
-            }
-
-            // Invisible measurement row to compute a stable implicitWidth
-            Row {
-                id: contentRow
-                visible: false
-                spacing: 0
-
-                // network — worst-case width: wifi icon + long SSID + signal
-                Text {
-                    text: "󱚽"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.itemSpacing; height: 1 }
-                Text {
-                    text: "My Network Name (100%)"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.groupSpacing; height: 1 }
-                Rectangle { width: root.dividerW; height: root.dividerH }
-                Item { width: root.groupSpacing; height: 1 }
-
-                // VPN
-                Text {
-                    text: "󰌾"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.groupSpacing; height: 1 }
-                Rectangle { width: root.dividerW; height: root.dividerH }
-                Item { width: root.groupSpacing; height: 1 }
-
-                // battery
-                Text {
-                    text: "󰂀"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.itemSpacing; height: 1 }
-                Text {
-                    text: "100%"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.groupSpacing; height: 1 }
-                Rectangle { width: root.dividerW; height: root.dividerH }
-                Item { width: root.groupSpacing; height: 1 }
-
-                // power profile
-                Text {
-                    text: "󰾅"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
-                Item { width: root.groupSpacing; height: 1 }
-                Rectangle { width: root.dividerW; height: root.dividerH }
-                Item { width: root.groupSpacing; height: 1 }
-
-                // systemd
-                Text {
-                    text: "󰄳"
-                    font.family: "JetBrainsMono Nerd Font"
-                    font.pixelSize: root.fontSize
-                }
             }
 
             // Visible content row
