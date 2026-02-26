@@ -304,11 +304,17 @@
                                 check=True
                             )
 
-                            # Select the edit window
-                            subprocess.run(
-                                ["${tmux}", "select-window", "-t", f"{session_name}:0"],
-                                check=True
-                            )
+                            # Select the agent window by default, except for obsidian (which opens edit/nvim)
+                            if "obsidian" in directory:
+                                subprocess.run(
+                                    ["${tmux}", "select-window", "-t", f"{session_name}:0"],
+                                    check=True
+                                )
+                            else:
+                                subprocess.run(
+                                    ["${tmux}", "select-window", "-t", f"{session_name}:1"],
+                                    check=True
+                                )
 
                     # Switch to the session
                     subprocess.run(

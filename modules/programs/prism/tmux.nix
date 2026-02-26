@@ -73,6 +73,12 @@ in
               'if-shell "[ #{window_name} = term ]" "last-window" "select-window -t term"' \
               'new-window -n term'
 
+            # toggle to/from edit window (C-e)
+            unbind C-e
+            bind -n C-e if-shell 'tmux list-windows -F "##I:##W" | grep -q ":edit$"' \
+              'if-shell "[ #{window_name} = edit ]" "last-window" "select-window -t edit"' \
+              'new-window -n edit'
+
             # new window with opencode agent (prefix + a)
             bind a new-window -n agent "opencode"
 
