@@ -21,6 +21,7 @@
         "head *" = "allow";
         "less *" = "allow";
         "more *" = "allow";
+        "strings *" = "allow";
         "tail *" = "allow";
         # file/directory listing and searching
         "file *" = "allow";
