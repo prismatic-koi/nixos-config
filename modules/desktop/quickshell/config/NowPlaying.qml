@@ -32,7 +32,7 @@ PanelWindow {
     // -- configuration --
     readonly property int cardWidth: 450
     readonly property int cardHeight: 120
-    readonly property int cardRadius: 10
+    readonly property int cardRadius: 5
     readonly property int cardMargin: 30
     readonly property int cardPadding: 15
     readonly property int waveformAreaHeight: 38  // total height reserved for waveform area

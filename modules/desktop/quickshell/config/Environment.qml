@@ -61,7 +61,7 @@ PanelWindow {
 
     // -- configuration --
     readonly property int cardHeight: 120
-    readonly property int cardRadius: 10
+    readonly property int cardRadius: 5
     readonly property int cardMargin: 30
     readonly property int cardPadding: 15
     readonly property int panelSpacing: 10  // gap between data columns within a panel
