@@ -75,7 +75,7 @@
           statusbar = {
             normal = {
               fg = foreground;
-              bg = bg3;
+              bg = bg2;
             };
             insert = {
               fg = bg0;
