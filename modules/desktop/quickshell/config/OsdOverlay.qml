@@ -105,7 +105,7 @@ PanelWindow {
 
     // -- window configuration --
     // Full-screen transparent layer; card is positioned via anchors/margins
-    visible: true
+    visible: showing
     color: "transparent"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.namespace: "quickshell-osd"
