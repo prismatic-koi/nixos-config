@@ -23,39 +23,30 @@ rec {
       };
     in
     {
-      # use stable for firefox, unstable is currently failing to build
-      firefox = stablePkgs.firefox;
+      # packages where we use master by default for bleeding edge
 
-      # use master for opencode, need the bleeding edge
-      opencode = masterPkgs.opencode;
-
-      # use master for claude-code, need the bleeding edge
       claude-code = masterPkgs.claude-code;
-
-      # use master for discord, they block older versions
       discord = masterPkgs.discord;
-
-      # use master for playwright-mcp, not in stable yet
+      opencode = masterPkgs.opencode;
       playwright-mcp = masterPkgs.playwright-mcp;
 
-      # ncmpcpp and openscad fail to build against boost 1.89 because their old
-      # build systems try to link boost_system as a shared library, but it has
-      # been header-only since boost 1.69. Pin to boost187 until upstream is fixed.
-      ncmpcpp = prev.ncmpcpp.override { boost = prev.boost187; };
-      openscad = prev.openscad.override { boost = prev.boost187; };
+      # package build fixes and other things
+
+      # use stable for firefox, unstable is currently failing to build
+      firefox = stablePkgs.firefox;
 
       # calibre 8.16 fails to build due to a missing qmake in qtbase6-setup-hook.
       # Use stable until upstream is fixed.
       calibre = stablePkgs.calibre;
 
-      # azure-cli has Python 3.13 compatibility issues in unstable.
-      # Use stable until upstream is fixed.
-      azure-cli = stablePkgs.azure-cli;
+      # libreoffice noto-fonts subset derivation uses a broken glob pattern after
+      # noto-fonts filenames changed. Use master until nixpkgs#494721 lands in unstable.
+      libreoffice = masterPkgs.libreoffice;
 
       vimPlugins = prev.vimPlugins // {
         obsidian-nvim = prev.vimUtils.buildVimPlugin {
           pname = "obsidian-nvim";
-          version = "3.15.3";
+          version = "3.15.10";
           checkInputs = with prev.vimPlugins; [
             fzf-lua
             mini-nvim
@@ -71,8 +62,8 @@ rec {
           src = prev.fetchFromGitHub {
             owner = "obsidian-nvim";
             repo = "obsidian.nvim";
-            rev = "cc9f7b2588577a1961c563b8baa90f636e2d61b7";
-            hash = "sha256-tGS1QLNcArFGGj2g2cmguHwzlEQBSRiCzj0FLxbm1FQ=";
+            rev = "20432a5ca03d99a9d5ad51d362e19d9b832e46f0";
+            hash = "sha256-zS6pX05kGFEsKlHef6xkfqIBCtNPbgbNKvzqj8ld5KM=";
           };
         };
       };
