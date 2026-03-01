@@ -1,6 +1,6 @@
 # My NixOS configuration
 
-Does anybody even read the readme for nix repos? the code speaks for itself.
+Does anybody even read the readme for nix repos? The code speaks for itself.
 
 ## Highlights
 - Multiple Nix configurations

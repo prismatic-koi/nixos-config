@@ -30,32 +30,107 @@
         text = /* bash */ ''
           #!/bin/sh
 
-          # Check if JSON output is requested
+          # Returns 0 if VPN is genuinely passing traffic, 1 otherwise.
+          # Two checks must both pass:
+          #   1. WireGuard last-handshake is within 3 minutes (stale = lost connectivity)
+          #   2. NordVPN DNS (inside the tunnel) responds to a ping via the wgnord interface
+
+          NORDVPN_DNS="103.86.96.100"
+          HANDSHAKE_MAX_AGE=180  # seconds
+
+          check_vpn() {
+            # Interface must exist
+            if ! ${pkgs.iproute2}/bin/ip link show wgnord > /dev/null 2>&1; then
+              echo "no_interface"
+              return 1
+            fi
+
+            # Must have an endpoint configured
+            server_ip="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord endpoints 2>/dev/null \
+              | ${pkgs.gawk}/bin/awk '{print $2}' \
+              | ${pkgs.coreutils}/bin/cut -d: -f1)"
+            if [ -z "$server_ip" ]; then
+              echo "no_endpoint"
+              return 1
+            fi
+
+            # Handshake must be recent (wg reports seconds-since-epoch of last handshake)
+            last_handshake="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord latest-handshakes 2>/dev/null \
+              | ${pkgs.gawk}/bin/awk '{print $2}')"
+            if [ -z "$last_handshake" ] || [ "$last_handshake" -eq 0 ]; then
+              echo "no_handshake"
+              return 1
+            fi
+            now="$(${pkgs.coreutils}/bin/date +%s)"
+            age=$(( now - last_handshake ))
+            if [ "$age" -gt "$HANDSHAKE_MAX_AGE" ]; then
+              echo "stale_handshake:$age"
+              return 1
+            fi
+
+            # Ping NordVPN DNS through the wgnord interface to confirm traffic routing
+            if ! ${pkgs.iputils}/bin/ping -I wgnord -c 1 -W 3 "$NORDVPN_DNS" > /dev/null 2>&1; then
+              echo "ping_failed"
+              return 1
+            fi
+
+            echo "ok:$server_ip"
+            return 0
+          }
+
+          result="$(check_vpn)"
+          status=$?
+
           if [ "$1" = "json" ]; then
             # JSON output for waybar
-            if ${pkgs.iproute2}/bin/ip link show wgnord > /dev/null 2>&1; then
-              server_ip="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord endpoints 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $2}' | ${pkgs.coreutils}/bin/cut -d: -f1)"
-              if [ -n "$server_ip" ]; then
-                printf '{"text": "󰌾", "class": "connected", "tooltip": "VPN Connected: %s"}' "$server_ip"
-              else
-                printf '{"text": "󰌾", "class": "error", "tooltip": "VPN Interface up but no endpoint"}'
-              fi
+            server_ip="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord endpoints 2>/dev/null \
+              | ${pkgs.gawk}/bin/awk '{print $2}' \
+              | ${pkgs.coreutils}/bin/cut -d: -f1)"
+            if [ $status -eq 0 ]; then
+              printf '{"text": "󰌾", "class": "connected", "tooltip": "VPN Connected: %s"}' "$server_ip"
             else
-              printf '{"text": "󰌿", "class": "disconnected", "tooltip": "VPN Disconnected"}'
+              case "$result" in
+                no_interface)   tooltip="VPN Disconnected" ;;
+                no_endpoint)    tooltip="Interface up but no endpoint" ;;
+                no_handshake)   tooltip="No WireGuard handshake yet" ;;
+                stale_handshake:*) age="''${result#stale_handshake:}"; tooltip="Handshake stale (''${age}s ago) — reconnecting?" ;;
+                ping_failed)    tooltip="Interface up but traffic not routing through VPN" ;;
+                *)              tooltip="VPN status unknown" ;;
+              esac
+              if [ "$result" = "no_interface" ]; then
+                printf '{"text": "󰌿", "class": "disconnected", "tooltip": "%s"}' "$tooltip"
+              else
+                printf '{"text": "󰌾", "class": "error", "tooltip": "%s"}' "$tooltip"
+              fi
             fi
           else
             # Human-readable output
-            if ${pkgs.iproute2}/bin/ip link show wgnord > /dev/null 2>&1; then
-              server_ip="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord endpoints 2>/dev/null | ${pkgs.gawk}/bin/awk '{print $2}' | ${pkgs.coreutils}/bin/cut -d: -f1)"
-              if [ -n "$server_ip" ]; then
-                printf "\033[32mConnected to: %s\n\033[0m" "$server_ip"
-                exit 0
-              else
-                printf "\033[33mInterface up but no endpoint found\n\033[0m"
-                exit 1
-              fi
+            if [ $status -eq 0 ]; then
+              server_ip="''${result#ok:}"
+              printf "\033[32mConnected to: %s\n\033[0m" "$server_ip"
+              exit 0
             else
-              printf "\033[31mNo active VPN connection\n\033[0m"
+              case "$result" in
+                no_interface)
+                  printf "\033[31mNo active VPN connection\n\033[0m"
+                  ;;
+                no_endpoint)
+                  printf "\033[33mInterface up but no endpoint configured\n\033[0m"
+                  ;;
+                no_handshake)
+                  printf "\033[33mNo WireGuard handshake established yet\n\033[0m"
+                  ;;
+                stale_handshake:*)
+                  age="''${result#stale_handshake:}"
+                  printf "\033[33mHandshake stale (%ss ago) — likely lost connectivity\n\033[0m" "$age"
+                  ;;
+                ping_failed)
+                  printf "\033[31mInterface up but traffic is NOT routing through VPN\n\033[0m"
+                  ;;
+                *)
+                  printf "\033[31mVPN status unknown\n\033[0m"
+                  ;;
+              esac
               exit 1
             fi
           fi
