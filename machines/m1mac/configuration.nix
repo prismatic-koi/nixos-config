@@ -50,7 +50,6 @@
     auth0-cli
     azure-cli
     gnutar
-    go
     jankyborders
     podman # darwin doesn't use virtualisation.podman
     rustup

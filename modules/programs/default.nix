@@ -21,6 +21,7 @@
     ./gcalcli.nix
     ./gimp.nix
     ./git.nix
+    ./golang.nix
     ./home-automation.nix
     ./k9s.nix
     ./kitty.nix

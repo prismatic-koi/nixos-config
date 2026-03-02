@@ -95,6 +95,13 @@
         "nix flake metadata*" = "allow";
         "nix build *" = "allow";
         "nix flake check *" = "allow";
+        # Go read operations
+        "go version*" = "allow";
+        "go env*" = "allow";
+        "go list *" = "allow";
+        "go doc *" = "allow";
+        "go vet *" = "allow";
+        "gopls *" = "allow";
       };
 
       # Additional write operations for build agent
@@ -125,6 +132,16 @@
         "helm *" = "allow";
         "kubectl *" = "allow";
         "helm dependency update" = "allow";
+        # Go write operations
+        "go build *" = "allow";
+        "go run *" = "allow";
+        "go test *" = "allow";
+        "go mod *" = "allow";
+        "go get *" = "allow";
+        "go install *" = "allow";
+        "go generate *" = "allow";
+        "go fmt *" = "allow";
+        "goimports *" = "allow";
       };
 
       agentInstructions = /* markdown */ ''
