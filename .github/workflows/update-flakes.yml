@@ -49,7 +49,7 @@ jobs:
           tool-cache: true
       - uses: actions/checkout@v6
       - name: Download updated flake
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: updated-flake
       - uses: cachix/install-nix-action@v31
@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Download updated flake
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: updated-flake
       - name: Create Pull Request
