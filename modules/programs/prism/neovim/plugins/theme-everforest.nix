@@ -61,6 +61,10 @@ in
           			bg = palette.none,
           			italic = true,
           		}
+          		hl["ObsidianBullet"] = {
+          			fg = palette.grey0,
+          			bg = palette.none,
+          		}
           	end,
           })
           everforest.load()
