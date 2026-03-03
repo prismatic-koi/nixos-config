@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name     Universal URL Rewriter
-// @version  1.1
+// @version  1.2
 // @grant    none
 // @include  *
 // @run-at   document-start
@@ -20,11 +20,10 @@
     // ============================================================
     
     const rewriteRules = [
-        // Remove WordPress CDN prefix for howbabycomic.com
+        // Remove WordPress CDN prefix (i0-i3.wp.com proxies images poorly)
         {
-            pattern: /https?:\/\/i0\.wp\.com\//,
+            pattern: /https?:\/\/i[0-3]\.wp\.com\//,
             replacement: 'https://',
-            hosts: ['howbabycomic.com']
         },
         
         // Example: Add more rules here as needed
@@ -63,6 +62,16 @@
         return rewrittenUrl;
     }
     
+    // Apply rewrite rules to each URL in a srcset attribute value
+    function rewriteSrcset(srcset) {
+        if (!srcset) return srcset;
+        return srcset.split(',').map(function(entry) {
+            var parts = entry.trim().split(/\s+/);
+            parts[0] = rewriteUrl(parts[0]);
+            return parts.join(' ');
+        }).join(', ');
+    }
+    
     // Intercept image requests
     const originalImage = window.Image;
     window.Image = function() {
@@ -86,17 +95,37 @@
     Element.prototype.setAttribute = function(name, value) {
         if ((name === 'src' || name === 'href') && typeof value === 'string') {
             value = rewriteUrl(value);
+        } else if (name === 'srcset' && typeof value === 'string') {
+            value = rewriteSrcset(value);
         }
         return originalSetAttribute.call(this, name, value);
     };
     
     // Fix existing resources on page load
     window.addEventListener('DOMContentLoaded', function() {
-        // Fix images
-        document.querySelectorAll('img[src]').forEach(function(img) {
+        // Fix images (src and srcset)
+        document.querySelectorAll('img[src], img[srcset]').forEach(function(img) {
             const newSrc = rewriteUrl(img.src);
             if (newSrc !== img.src) {
                 img.src = newSrc;
+            }
+            var srcset = img.getAttribute('srcset');
+            if (srcset) {
+                var newSrcset = rewriteSrcset(srcset);
+                if (newSrcset !== srcset) {
+                    img.setAttribute('srcset', newSrcset);
+                }
+            }
+        });
+        
+        // Fix source elements (used in <picture>)
+        document.querySelectorAll('source[srcset]').forEach(function(source) {
+            var srcset = source.getAttribute('srcset');
+            if (srcset) {
+                var newSrcset = rewriteSrcset(srcset);
+                if (newSrcset !== srcset) {
+                    source.setAttribute('srcset', newSrcset);
+                }
             }
         });
         
@@ -136,10 +165,17 @@
                         node.href = newHref;
                     }
                 }
+                var srcset = node.getAttribute && node.getAttribute('srcset');
+                if (srcset) {
+                    var newSrcset = rewriteSrcset(srcset);
+                    if (newSrcset !== srcset) {
+                        node.setAttribute('srcset', newSrcset);
+                    }
+                }
                 
                 // Check descendants
                 if (node.querySelectorAll) {
-                    node.querySelectorAll('img[src], a[href], iframe[src]').forEach(function(elem) {
+                    node.querySelectorAll('img[src], img[srcset], source[srcset], a[href], iframe[src]').forEach(function(elem) {
                         if (elem.src) {
                             const newSrc = rewriteUrl(elem.src);
                             if (newSrc !== elem.src) {
@@ -150,6 +186,13 @@
                             const newHref = rewriteUrl(elem.href);
                             if (newHref !== elem.href) {
                                 elem.href = newHref;
+                            }
+                        }
+                        var eSrcset = elem.getAttribute('srcset');
+                        if (eSrcset) {
+                            var eNewSrcset = rewriteSrcset(eSrcset);
+                            if (eNewSrcset !== eSrcset) {
+                                elem.setAttribute('srcset', eNewSrcset);
                             }
                         }
                     });
