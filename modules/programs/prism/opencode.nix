@@ -102,6 +102,8 @@
         "go doc *" = "allow";
         "go vet *" = "allow";
         "gopls *" = "allow";
+        # playwright-cli browser automation
+        "playwright-cli *" = "allow";
       };
 
       # Additional write operations for build agent
@@ -259,6 +261,7 @@
                 };
               };
               mcp = {
+                # playwright-mcp disabled in favour of playwright-cli bash tool
                 playwright = {
                   type = "local";
                   command = [
@@ -272,7 +275,7 @@
                     )
                     "--headless"
                   ];
-                  enabled = true;
+                  enabled = false;
                 };
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                   type = "local";
