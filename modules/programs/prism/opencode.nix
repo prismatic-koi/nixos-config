@@ -156,25 +156,9 @@
         ## Web Fetching
 
         When the webfetch tool fails with a 403 Forbidden error or similar access restrictions, use playwright-cli via the Bash tool to fetch the content with a real browser instead.
+        There is a skill for playwright-cli, activate it if you need it.
 
         After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
-
-        ### Usage
-
-        If webfetch returns a 403 error:
-        ```
-        Error: HTTP 403 Forbidden
-        ```
-
-        Do NOT use the playwright_* tools directly in the main conversation, as they generate very large outputs that quickly fill the context window.
-
-        Instead, use the Task tool to launch a subagent that will use Playwright to extract the content and return only the relevant information:
-        ```
-        Launch a general subagent with a prompt like:
-        "Use the Playwright MCP server to navigate to [URL], extract [specific content needed], and return only the extracted information as markdown. Do not include full page snapshots or accessibility trees in your response to me."
-        ```
-
-        The subagent will handle all the verbose Playwright interactions in its own context, and only return the clean, extracted content back to you.
 
         ## Local Environment Instructions
 
@@ -263,22 +247,6 @@
                 };
               };
               mcp = {
-                # playwright-mcp disabled in favour of playwright-cli bash tool
-                playwright = {
-                  type = "local";
-                  command = [
-                    "${pkgs.playwright-mcp}/bin/mcp-server-playwright"
-                    "--executable-path"
-                    (
-                      if pkgs.stdenv.isDarwin then
-                        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-                      else
-                        "${pkgs.chromium}/bin/chromium"
-                    )
-                    "--headless"
-                  ];
-                  enabled = false;
-                };
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                   type = "local";
                   enabled = true;
