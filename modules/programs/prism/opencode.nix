@@ -157,6 +157,8 @@
 
         When the webfetch tool fails with a 403 Forbidden error or similar access restrictions, use playwright-cli via the Bash tool to fetch the content with a real browser instead.
 
+        After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
+
         ### Usage
 
         If webfetch returns a 403 error:
