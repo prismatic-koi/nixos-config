@@ -38,8 +38,8 @@ rec {
       # use stable for firefox, unstable is currently failing to build
       firefox = stablePkgs.firefox;
 
-      # calibre 8.16 fails to build due to a missing qmake in qtbase6-setup-hook.
-      # Use stable until upstream is fixed.
+      # calibre on unstable has had recurring build failures (e.g. 8.16 missing
+      # qmake in qtbase6-setup-hook). Use stable to get a known-good version.
       calibre = stablePkgs.calibre;
 
       # libreoffice noto-fonts subset derivation uses a broken glob pattern after
