@@ -326,6 +326,8 @@
           };
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
+          # playwright-cli global skill (installed here rather than per-project)
+          xdg.configFile."opencode/skills/playwright-cli".source = ./opencode/skills/playwright-cli;
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"
