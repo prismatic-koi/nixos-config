@@ -10,7 +10,7 @@ import QtQuick
 // as the title changes between windows.
 //
 // Visibility: hidden at rest, shown on Super hold via custom Hyprland IPC
-// event (quickshell:show / quickshell:hide). Hidden when no window is focused.
+// event (quickshell:show / quickshell:hide). Hidden when activeToplevel has no title.
 //
 // Usage from shell.qml:
 //   WindowTitle { id: windowTitle }
@@ -46,14 +46,10 @@ PanelWindow {
     }
 
     // -- active window title (with browser-suffix rewrites) --
-    // Only show a title when the focused workspace actually has windows.
-    // Hyprland.activeToplevel persists across workspace switches so we
-    // guard against empty workspaces by checking the toplevel count.
-    property bool workspaceHasWindows: {
-        var fw = Hyprland.focusedWorkspace;
-        return fw ? fw.toplevels.values.length > 0 : false;
-    }
-    property string rawTitle: (workspaceHasWindows && Hyprland.activeToplevel) ? Hyprland.activeToplevel.title : ""
+    // Use activeToplevel directly — empty string means no window is focused,
+    // which is sufficient to suppress display without touching the workspace
+    // toplevel list during volatile state transitions.
+    property string rawTitle: Hyprland.activeToplevel ? Hyprland.activeToplevel.title : ""
     property string windowTitle: {
         var t = rawTitle;
         // strip " — Mozilla Firefox" suffix
