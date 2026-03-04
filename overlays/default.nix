@@ -30,6 +30,9 @@ rec {
       opencode = masterPkgs.opencode;
       playwright-mcp = masterPkgs.playwright-mcp;
 
+      # packages not yet in nixpkgs; use local definitions
+      playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
+
       # package build fixes and other things
 
       # use stable for firefox, unstable is currently failing to build

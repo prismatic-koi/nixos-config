@@ -186,6 +186,7 @@
           home.packages = with pkgs; [
             # need npx on path for memory mcp
             nodejs_24
+            playwright-cli
           ];
           programs.zsh.shellAliases = {
             # set environment variables for opencode
