@@ -28,24 +28,11 @@ rec {
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
       opencode = masterPkgs.opencode;
-      playwright-mcp = masterPkgs.playwright-mcp;
 
       # packages not yet in nixpkgs; use local definitions
       playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
 
-      # package build fixes and other things
-
-      # use stable for firefox, unstable is currently failing to build
-      firefox = stablePkgs.firefox;
-
-      # calibre on unstable has had recurring build failures (e.g. 8.16 missing
-      # qmake in qtbase6-setup-hook). Use stable to get a known-good version.
-      calibre = stablePkgs.calibre;
-
-      # libreoffice noto-fonts subset derivation uses a broken glob pattern after
-      # noto-fonts filenames changed. Use master until nixpkgs#494721 lands in unstable.
-      libreoffice = masterPkgs.libreoffice;
-
+      # pinned to prevent random unstable changes which seem common these days
       vimPlugins = prev.vimPlugins // {
         obsidian-nvim = prev.vimUtils.buildVimPlugin {
           pname = "obsidian-nvim";
