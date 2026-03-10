@@ -10,11 +10,7 @@ let
 in
 {
   imports = [
-    ../../modules/colour-scheme
-    ../../modules/programs
-    ../../modules/services
-    ../../modules/system
-    ../../modules/desktop/rofi
+    ../../modules
   ];
 
   nx.username = "bensherman";
