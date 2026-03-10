@@ -53,7 +53,7 @@
         "/var/lib/bluetooth"
         "/var/lib/nixos"
         "/var/lib/sops-nix"
-        "/var/lib/systemd/coredump"
+        "/var/lib/systemd"
         "/var/lib/wgnord"
         "/var/log"
       ];
