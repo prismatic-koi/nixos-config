@@ -418,10 +418,150 @@
             type = lib.types.bool;
             default = false;
           };
+          graphics = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                enable = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+                enable32Bit = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+              };
+            };
+            default = { };
+            description = "Stub for hardware.graphics (darwin compatibility)";
+          };
         };
       };
       default = { };
       description = "Stub for hardware (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: programs.gamemode
+    programs.gamemode = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+        };
+      };
+      default = { };
+      description = "Stub for programs.gamemode (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: programs.hyprland
+    programs.hyprland = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+        };
+      };
+      default = { };
+      description = "Stub for programs.hyprland (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: programs.sway
+    programs.sway = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          extraPackages = lib.mkOption {
+            type = lib.types.listOf lib.types.anything;
+            default = [ ];
+          };
+        };
+      };
+      default = { };
+      description = "Stub for programs.sway (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: programs.steam
+    programs.steam = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          gamescopeSession.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          protontricks.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          package = lib.mkOption {
+            type = lib.types.nullOr lib.types.anything;
+            default = null;
+          };
+        };
+      };
+      default = { };
+      description = "Stub for programs.steam (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: xdg.portal
+    xdg.portal = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+          wlr.enable = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+          };
+        };
+      };
+      default = { };
+      description = "Stub for xdg.portal (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: sops
+    # On Darwin, sops is configured via home-manager, not system-level
+    sops = lib.mkOption {
+      type = lib.types.submodule {
+        options = {
+          age = lib.mkOption {
+            type = lib.types.submodule {
+              options = {
+                keyFile = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                };
+                generateKey = lib.mkOption {
+                  type = lib.types.bool;
+                  default = false;
+                };
+                sshKeyPaths = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                };
+              };
+            };
+            default = { };
+          };
+          secrets = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = { };
+          };
+        };
+      };
+      default = { };
+      description = "Stub for sops (darwin compatibility - use home-manager sops instead)";
     };
   };
 

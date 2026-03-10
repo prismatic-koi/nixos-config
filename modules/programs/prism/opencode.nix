@@ -171,11 +171,16 @@
       # Common configuration for both platforms
       {
         home-manager.users.${config.nx.username} = {
-          home.packages = with pkgs; [
-            # need npx on path for memory mcp
-            nodejs_24
-            playwright-cli
-          ];
+          home.packages =
+            with pkgs;
+            [
+              # need npx on path for memory mcp
+              nodejs_24
+            ]
+            ++ lib.optionals pkgs.stdenv.isLinux [
+              # playwright-cli depends on chromium which is Linux-only
+              playwright-cli
+            ];
           programs.zsh.shellAliases = {
             # set environment variables for opencode
             opencode = "${envPrefix} opencode";
@@ -301,8 +306,10 @@
           };
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
-          # playwright-cli global skill (installed here rather than per-project)
-          xdg.configFile."opencode/skills/playwright-cli".source = ./opencode/skills/playwright-cli;
+          # playwright-cli global skill (Linux-only: playwright-cli depends on chromium)
+          xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
+            source = ./opencode/skills/playwright-cli;
+          };
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"

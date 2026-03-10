@@ -30,7 +30,9 @@ rec {
       opencode = masterPkgs.opencode;
 
       # packages not yet in nixpkgs; use local definitions
-      playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
+      # playwright-cli depends on chromium which is Linux-only
+      playwright-cli =
+        if final.stdenv.isLinux then final.callPackage ../pkgs/playwright-cli.nix { } else null;
 
       # pinned to prevent random unstable changes which seem common these days
       vimPlugins = prev.vimPlugins // {

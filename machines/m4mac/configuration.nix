@@ -33,6 +33,9 @@ in
       discord.enable = false; # Not commonly used on Darwin
       gimp.enable = false; # Not commonly used on Darwin
       signal.enable = false; # Not available on Darwin
+      vimiv.enable = false; # Linux-only (Qt GPU dependencies)
+      mpv.enable = false;
+      zathura.enable = false;
       ssh.enableWorkKeys = true;
       homeAutomation.enable = true;
     };
@@ -58,12 +61,6 @@ in
     tree
     tridactyl-native
     utm
-  ];
-
-  fonts.packages = with pkgs; [
-    nerd-fonts.jetbrains-mono
-    noto-fonts
-    noto-fonts-color-emoji
   ];
 
   security.sudo.extraConfig = ''
@@ -163,18 +160,24 @@ in
     extraSpecialArgs = {
       inherit inputs;
     };
-    users.${username}.home = {
-      username = username;
-      homeDirectory = "/Users/${username}";
-      stateVersion = "23.11";
+    users.${username} = {
+      programs.chromium = {
+        enable = false;
+        package = pkgs.hello; # override Linux-only default so Darwin eval doesn't fail
+      };
+      home = {
+        username = username;
+        homeDirectory = "/Users/${username}";
+        stateVersion = "23.11";
 
-      sessionPath = [
-        "/opt/homebrew/bin"
-      ];
+        sessionPath = [
+          "/opt/homebrew/bin"
+        ];
 
-      file = {
-        ".config/karabiner/karabiner.json".source = ./files/karabiner.json;
-        ".config/aerospace/aerospace.toml".source = ./files/aerospace.toml;
+        file = {
+          ".config/karabiner/karabiner.json".source = ./files/karabiner.json;
+          ".config/aerospace/aerospace.toml".source = ./files/aerospace.toml;
+        };
       };
     };
   };

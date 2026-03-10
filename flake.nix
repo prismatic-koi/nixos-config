@@ -109,7 +109,10 @@
           pkgs = import nixpkgs {
             inherit system;
             config = lib.mkMerge [
-              { allowUnfree = true; }
+              {
+                allowUnfree = true;
+                allowUnsupportedSystem = true; # needed for packages with linux-only meta.platforms evaluated on darwin
+              }
               extraConfig # Merge any extra configuration
             ];
             overlays = [ self.overlays.modifications ];

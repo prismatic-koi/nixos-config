@@ -3,6 +3,7 @@
   lib,
   pkgs,
   inputs,
+  isLinux,
   ...
 }:
 let
@@ -10,8 +11,8 @@ let
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
 in
 {
-  # Import sops modules - NixOS module for system, home-manager module for user config
-  imports = [ inputs.sops-nix.nixosModules.sops ];
+  # Import sops modules - NixOS module for Linux only (Darwin uses home-manager sops module)
+  imports = lib.optionals isLinux [ inputs.sops-nix.nixosModules.sops ];
 
   options = {
     nx.system.sops.enable = lib.mkEnableOption "Enable sops module" // {

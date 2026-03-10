@@ -1,8 +1,10 @@
-{ ... }:
+{
+  isLinux,
+  ...
+}:
 {
   imports = [
     ./additional-theming.nix
-    ./fonts.nix
     ./hyprland
     ./quickshell
     ./rofi
@@ -11,5 +13,6 @@
     ./swaync.nix
     ./wallpaper
     ./waybar
-  ];
+  ]
+  ++ (if isLinux then [ ./fonts-linux.nix ] else [ ./fonts-darwin.nix ]);
 }
