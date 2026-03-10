@@ -5,7 +5,7 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
 in
 {
   options = {
@@ -24,7 +24,7 @@ in
         && pkgs.stdenv.isLinux
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           # a systemd service clear qutebrowser history older than 7 days
           systemd.user.services.clear-qutebrowser-history =
             let

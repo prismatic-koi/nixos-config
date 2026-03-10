@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf pkgs.stdenv.isLinux {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       # set up the cusors and icon themes the way I like it
       home.pointerCursor = {
         gtk.enable = true;
@@ -32,7 +32,7 @@
         };
         gtk2 = {
           # not in home dir please
-          configLocation = "${config.home-manager.users.ben.xdg.configHome}/gtk-2.0/gtkrc";
+          configLocation = "${config.home-manager.users.${config.nx.username}.xdg.configHome}/gtk-2.0/gtkrc";
         };
         gtk3 = lib.mkIf (config.theme.type == "dark") {
           extraConfig.gtk-application-prefer-dark-theme = true;

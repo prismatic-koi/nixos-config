@@ -7,10 +7,11 @@
 let
   hostname = config.networking.hostName;
   configDir = config.nx.services.syncthing.configDir;
+  username = config.nx.username;
   hosts = [
     "navi"
     "tui"
-    "m1mac"
+    "m4mac"
   ];
   files = [
     "cert.pem"
@@ -19,7 +20,7 @@ let
   mkSecret =
     host:
     lib.mkIf (hostname == host) {
-      owner = "ben";
+      owner = username;
       mode = "0600";
       sopsFile = ./secret.sops.yaml;
     };
@@ -46,7 +47,7 @@ in
 
       # Darwin: home-manager sops with certs placed directly in syncthing config directory
       (lib.mkIf pkgs.stdenv.isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           sops.secrets = {
             "${hostname}-syncthing-cert" = {
               sopsFile = ./secret.sops.yaml;
@@ -58,8 +59,8 @@ in
             };
           };
           services.syncthing = {
-            cert = config.home-manager.users.ben.sops.secrets."${hostname}-syncthing-cert".path;
-            key = config.home-manager.users.ben.sops.secrets."${hostname}-syncthing-key".path;
+            cert = config.home-manager.users.${username}.sops.secrets."${hostname}-syncthing-cert".path;
+            key = config.home-manager.users.${username}.sops.secrets."${hostname}-syncthing-key".path;
           };
         };
       })

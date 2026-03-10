@@ -6,7 +6,8 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  username = config.nx.username;
+  homeDir = config.home-manager.users.${username}.home.homeDirectory;
 in
 {
   # Import sops modules - NixOS module for system, home-manager module for user config
@@ -44,7 +45,7 @@ in
           in
           {
             "age/personal" = {
-              owner = "ben";
+              owner = username;
               mode = "0600";
               path = "${homeDir}/.config/sops/age/keys.txt";
               sopsFile = sopsFile;
@@ -52,7 +53,7 @@ in
           };
         system.activationScripts.homeAgeKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.config/sops/age
-          chown ben:users ${homeDir}/.config/sops/age
+          chown ${username}:users ${homeDir}/.config/sops/age
         '';
         environment.sessionVariables = {
           SOPS_AGE_KEY_FILE = "${homeDir}/.config/sops/age/keys.txt";
@@ -61,7 +62,7 @@ in
 
       # Darwin home-manager sops configuration
       (lib.mkIf pkgs.stdenv.isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           imports = [
             inputs.sops-nix.homeManagerModules.sops
           ];
@@ -89,7 +90,7 @@ in
 
       # Common configuration for both platforms
       {
-        home-manager.users.ben.home.sessionVariables = {
+        home-manager.users.${username}.home.sessionVariables = {
           SOPS_AGE_KEY_FILE = "${homeDir}/.config/sops/age/keys.txt";
         };
       }

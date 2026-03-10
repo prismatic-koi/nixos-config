@@ -17,7 +17,7 @@
     ./plugins
   ];
   config = lib.mkIf config.nx.programs.prism.neovim.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.neovim = {
         enable = true;
         defaultEditor = true;

@@ -5,7 +5,8 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  username = config.nx.username;
+  homeDir = config.home-manager.users.${username}.home.homeDirectory;
 in
 {
   imports = [
@@ -29,7 +30,7 @@ in
         if pkgs.stdenv.isDarwin then
           "${homeDir}/Library/Application Support/Syncthing"
         else
-          "/persist/home/ben/.config/syncthing";
+          "/persist/home/${username}/.config/syncthing";
       description = "Location for syncthing config";
     };
     nx.services.syncthing.obsidian.enable = lib.mkEnableOption "Set up syncthing obsidian folder" // {
@@ -41,7 +42,7 @@ in
         if pkgs.stdenv.isDarwin then
           "${homeDir}/Documents/obsidian"
         else
-          "/persist/home/ben/documents/obsidian";
+          "/persist/home/${username}/documents/obsidian";
       description = "Location for obsidian folder";
     };
     nx.services.syncthing.calibre.enable = lib.mkEnableOption "Set up syncthing calibre folder" // {
@@ -53,7 +54,7 @@ in
         if pkgs.stdenv.isDarwin then
           "${homeDir}/Documents/calibre"
         else
-          "/persist/home/ben/documents/calibre";
+          "/persist/home/${username}/documents/calibre";
       description = "Location for calibre folder";
     };
     nx.services.syncthing.music.enable = lib.mkEnableOption "Set up syncthing music folder" // {
@@ -61,7 +62,7 @@ in
     };
     nx.services.syncthing.music.path = lib.mkOption {
       type = lib.types.str;
-      default = if pkgs.stdenv.isDarwin then "${homeDir}/Music" else "/persist/home/ben/music/";
+      default = if pkgs.stdenv.isDarwin then "${homeDir}/Music" else "/persist/home/${username}/music/";
       description = "Location for music folder";
     };
     nx.services.syncthing.photos.enable = lib.mkEnableOption "Set up syncthing photos folder" // {
@@ -70,7 +71,10 @@ in
     nx.services.syncthing.photos.path = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then "${homeDir}/Pictures/photos" else "/persist/home/ben/pictures/photos";
+        if pkgs.stdenv.isDarwin then
+          "${homeDir}/Pictures/photos"
+        else
+          "/persist/home/${username}/pictures/photos";
       description = "Location for photos folder";
     };
     nx.services.syncthing.darktable.enable = lib.mkEnableOption "Set up syncthing darktable folder" // {
@@ -82,7 +86,7 @@ in
         if pkgs.stdenv.isDarwin then
           "${homeDir}/.config/darktable"
         else
-          "/persist/home/ben/.config/darktable";
+          "/persist/home/${username}/.config/darktable";
       description = "Location for darktable folder";
     };
   };
@@ -93,7 +97,7 @@ in
         # NixOS: system-level syncthing service
         services.syncthing = lib.mkIf pkgs.stdenv.isLinux {
           enable = true;
-          user = "ben";
+          user = username;
 
           # if you don't put the database and config somewhere stable
           # syncthing will panic every startup and rebuild the database or maybe remove and re-add the folder?
@@ -142,7 +146,7 @@ in
         };
 
         # Darwin: home-manager syncthing service
-        home-manager.users.ben.services.syncthing = lib.mkIf pkgs.stdenv.isDarwin {
+        home-manager.users.${username}.services.syncthing = lib.mkIf pkgs.stdenv.isDarwin {
           enable = true;
           settings = {
             devices = {
@@ -202,28 +206,28 @@ in
         # Linux-only: activation scripts with chown
         system.activationScripts = {
           documentsFolder = lib.mkIf config.nx.services.syncthing.enable ''
-            mkdir -p /home/ben/documents
-            chown ben:users /home/ben/documents
+            mkdir -p /home/${username}/documents
+            chown ${username}:users /home/${username}/documents
           '';
           picturesFolder = lib.mkIf config.nx.services.syncthing.enable ''
-            mkdir -p /home/ben/pictures
-            chown ben:users /home/ben/pictures
+            mkdir -p /home/${username}/pictures
+            chown ${username}:users /home/${username}/pictures
           '';
           obsidianFolder = lib.mkIf config.nx.services.syncthing.obsidian.enable ''
-            mkdir -p /home/ben/documents/obsidian
-            chown ben:users /home/ben/documents/obsidian
+            mkdir -p /home/${username}/documents/obsidian
+            chown ${username}:users /home/${username}/documents/obsidian
           '';
           musicFolder = lib.mkIf config.nx.services.syncthing.music.enable ''
-            mkdir -p /home/ben/music
-            chown ben:users /home/ben/music
+            mkdir -p /home/${username}/music
+            chown ${username}:users /home/${username}/music
           '';
           photosFolder = lib.mkIf config.nx.services.syncthing.photos.enable ''
-            mkdir -p /home/ben/pictures/photos
-            chown ben:users /home/ben/pictures/photos
+            mkdir -p /home/${username}/pictures/photos
+            chown ${username}:users /home/${username}/pictures/photos
           '';
           darktableFolder = lib.mkIf config.nx.services.syncthing.darktable.enable ''
-            mkdir -p /home/ben/.config/darktable
-            chown ben:users /home/ben/.config/darktable
+            mkdir -p /home/${username}/.config/darktable
+            chown ${username}:users /home/${username}/.config/darktable
           '';
         };
       })
@@ -234,7 +238,7 @@ in
         # login/boot — it relies solely on the activation script to bootstrap it.
         # If the plist hasn't changed between generations the activation script
         # skips re-bootstrapping, leaving syncthing dead after a reboot.
-        home-manager.users.ben.launchd.agents.syncthing = {
+        home-manager.users.${username}.launchd.agents.syncthing = {
           enable = true;
           config.RunAtLoad = true;
         };
@@ -243,16 +247,16 @@ in
       # Common: environment variables and persistence
       {
         # Set env for OBSIDIAN_VAULT_PATH when obsidian folder is enabled
-        home-manager.users.ben.home.sessionVariables =
-          lib.mkIf config.nx.services.syncthing.obsidian.enable
-            {
-              OBSIDIAN_VAULT_PATH = config.nx.services.syncthing.obsidian.path;
-            };
+        home-manager.users.${username} = {
+          home.sessionVariables = lib.mkIf config.nx.services.syncthing.obsidian.enable {
+            OBSIDIAN_VAULT_PATH = config.nx.services.syncthing.obsidian.path;
+          };
 
-        # persist the syncthing config with home-manager impermanence module
-        # (no-op on darwin via impermanence-stub)
-        home-manager.users.ben.home.persistence."/persist" = {
-          directories = [ ".config/syncthing" ];
+          # persist the syncthing config with home-manager impermanence module
+          # (no-op on darwin via impermanence-stub)
+          home.persistence."/persist" = {
+            directories = [ ".config/syncthing" ];
+          };
         };
       }
     ]

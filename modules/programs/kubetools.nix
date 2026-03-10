@@ -5,7 +5,8 @@
   ...
 }:
 let
-  kubeDir = "${config.home-manager.users.ben.home.homeDirectory}/.config/kube";
+  username = config.nx.username;
+  kubeDir = "${config.home-manager.users.${username}.home.homeDirectory}/.config/kube";
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
 in
@@ -21,7 +22,7 @@ in
     lib.mkMerge [
       # Common configuration (both platforms)
       {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           home.packages = with pkgs; [
             kubectl
             kubernetes-helm
@@ -40,28 +41,28 @@ in
       (lib.mkIf isLinux {
         # admin kubeconfig
         sops.secrets.kubeconfig = {
-          owner = "ben";
+          owner = username;
           mode = "0600";
           path = "${kubeDir}/config";
           sopsFile = ./secrets/kubeconfig.sops.yaml;
         };
         # agents readonly kubeconfig
         sops.secrets.agents-kubeconfig = {
-          owner = "ben";
+          owner = username;
           mode = "0600";
           path = "${kubeDir}/agents-config";
           sopsFile = ./secrets/kubeconfig.sops.yaml;
         };
         system.activationScripts.kubeConfigFolderPermissions = ''
           mkdir -p ${kubeDir}
-          chown ben:users ${config.home-manager.users.ben.home.homeDirectory}/.config
-          chown ben:users ${kubeDir}
+          chown ${username}:users ${config.home-manager.users.${username}.home.homeDirectory}/.config
+          chown ${username}:users ${kubeDir}
         '';
       })
 
       # Darwin: home-manager sops with work kubeconfigs only
       (lib.mkIf isDarwin {
-        home-manager.users.ben.sops.secrets = {
+        home-manager.users.${username}.sops.secrets = {
           workkube = {
             path = "${kubeDir}/config";
             sopsFile = ./secrets/kubeconfig.sops.yaml;

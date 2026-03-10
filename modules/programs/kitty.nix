@@ -101,7 +101,7 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.kitty.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.kitty = {
         enable = true;
         font = {

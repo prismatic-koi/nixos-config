@@ -5,6 +5,9 @@
   lib,
   ...
 }:
+let
+  username = config.nx.username;
+in
 {
   imports = [
     ../../modules/colour-scheme
@@ -14,8 +17,10 @@
     ../../modules/desktop/rofi
   ];
 
-  users.users.ben = {
-    home = "/Users/ben";
+  nx.username = "bensherman";
+
+  users.users.${username} = {
+    home = "/Users/${username}";
   };
 
   networking.hostName = "m4mac";
@@ -66,14 +71,14 @@
   ];
 
   security.sudo.extraConfig = ''
-    ben ALL=(ALL:ALL) NOPASSWD: ALL
+    ${username} ALL=(ALL:ALL) NOPASSWD: ALL
   '';
 
   services = {
     karabiner-elements.enable = false;
   };
 
-  system.primaryUser = "ben";
+  system.primaryUser = username;
 
   system.defaults = {
     finder = {
@@ -152,7 +157,7 @@
   system.activationScripts.extraActivation.text = ''
     # Set Cmd+Q shortcut for Plexamp (Electron app workaround)
     # Run as user since defaults needs to write to user preferences
-    sudo -u ben /usr/bin/defaults write tv.plex.plexamp NSUserKeyEquivalents -dict-add "Quit Plexamp" "@q"
+    sudo -u ${username} /usr/bin/defaults write tv.plex.plexamp NSUserKeyEquivalents -dict-add "Quit Plexamp" "@q"
   '';
 
   # Home Manager configuration
@@ -162,20 +167,18 @@
     extraSpecialArgs = {
       inherit inputs;
     };
-    users = {
-      ben.home = {
-        username = "ben";
-        homeDirectory = "/Users/ben";
-        stateVersion = "23.11";
+    users.${username}.home = {
+      username = username;
+      homeDirectory = "/Users/${username}";
+      stateVersion = "23.11";
 
-        sessionPath = [
-          "/opt/homebrew/bin"
-        ];
+      sessionPath = [
+        "/opt/homebrew/bin"
+      ];
 
-        file = {
-          ".config/karabiner/karabiner.json".source = ./files/karabiner.json;
-          ".config/aerospace/aerospace.toml".source = ./files/aerospace.toml;
-        };
+      file = {
+        ".config/karabiner/karabiner.json".source = ./files/karabiner.json;
+        ".config/aerospace/aerospace.toml".source = ./files/aerospace.toml;
       };
     };
   };

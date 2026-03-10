@@ -4,6 +4,9 @@
   pkgs,
   ...
 }:
+let
+  username = config.nx.username;
+in
 {
   options = {
     nx.system.impermanence.enable = lib.mkEnableOption "Code to support impermanence" // {
@@ -68,37 +71,39 @@
       mkdir -p /persist/system/var/lib/wgnord
       mkdir -p /persist/system/etc/wireguard
       mkdir -p /persist/cache
-      chown -R ben:users /persist/cache
-      mkdir -p /persist/home/ben
-      mkdir -p /persist/home/ben/.ssh
-      mkdir -p /persist/home/ben/.local/share/Steam
-      chown -R ben:users /persist/home/ben
+      chown -R ${username}:users /persist/cache
+      mkdir -p /persist/home/${username}
+      mkdir -p /persist/home/${username}/.ssh
+      mkdir -p /persist/home/${username}/.local/share/Steam
+      chown -R ${username}:users /persist/home/${username}
     '';
     # ensure these empty directories exist
     system.activationScripts.emptyDirs = ''
-      mkdir -p /home/ben/downloads
-      chown -R ben:users /home/ben/downloads
+      mkdir -p /home/${username}/downloads
+      chown -R ${username}:users /home/${username}/downloads
     '';
     # home-manager things to persist
-    home-manager.users.ben.home.persistence."/persist" = {
-      directories = [
-        ".local/share/nix"
-        ".local/state/nix"
-        ".local/state/home-manager"
-        ".cache"
-        "code"
-        "documents"
-        "games"
-        "pictures"
-        # mount music on all machines except navi (it uses dedicated drive for music)
-        (lib.mkIf (config.networking.hostName != "navi") "music")
-      ];
-    };
-    home-manager.users.ben.home.activation = {
-      # ensure these empty directories exist
-      emptyDirs = ''
-        mkdir -p /home/ben/downloads
-      '';
+    home-manager.users.${username} = {
+      home.persistence."/persist" = {
+        directories = [
+          ".local/share/nix"
+          ".local/state/nix"
+          ".local/state/home-manager"
+          ".cache"
+          "code"
+          "documents"
+          "games"
+          "pictures"
+          # mount music on all machines except navi (it uses dedicated drive for music)
+          (lib.mkIf (config.networking.hostName != "navi") "music")
+        ];
+      };
+      home.activation = {
+        # ensure these empty directories exist
+        emptyDirs = ''
+          mkdir -p /home/${username}/downloads
+        '';
+      };
     };
   };
 }

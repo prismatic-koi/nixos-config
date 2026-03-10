@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.python.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         (python3.withPackages (python313Packages: [
           python313Packages.beautifulsoup4

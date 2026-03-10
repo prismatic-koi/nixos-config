@@ -6,7 +6,7 @@
 }:
 let
   cfg = config.nx.programs.voiceToText;
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
 
   # Python environment with openai-whisper and ROCm-enabled PyTorch
   pythonWithWhisper = pkgs.python313.withPackages (
@@ -452,53 +452,55 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Install packages
-    home-manager.users.ben.home.packages = [
-      voiceToTextClient # User-facing client
-      pkgs.wtype
-      pkgs.wl-clipboard
-      pkgs.pipewire
-      pkgs.libnotify
-      pkgs.pulseaudio # for paplay
-      pkgs.kdePackages.ocean-sound-theme # KDE Ocean sound theme
-    ];
+    home-manager.users.${config.nx.username} = {
+      # Install packages
+      home.packages = [
+        voiceToTextClient # User-facing client
+        pkgs.wtype
+        pkgs.wl-clipboard
+        pkgs.pipewire
+        pkgs.libnotify
+        pkgs.pulseaudio # for paplay
+        pkgs.kdePackages.ocean-sound-theme # KDE Ocean sound theme
+      ];
 
-    # Systemd user service for the daemon
-    home-manager.users.ben.systemd.user.services.voice-to-text = {
-      Unit = {
-        Description = "Voice-to-Text Whisper daemon";
-        After = [ "pipewire.service" ];
-        Wants = [ "pipewire.service" ];
+      # Systemd user service for the daemon
+      systemd.user.services.voice-to-text = {
+        Unit = {
+          Description = "Voice-to-Text Whisper daemon";
+          After = [ "pipewire.service" ];
+          Wants = [ "pipewire.service" ];
+        };
+
+        Service = {
+          Type = "simple";
+          ExecStart = "${voiceToTextDaemon}/bin/voice-to-text-daemon";
+          Restart = "on-failure";
+          RestartSec = 5;
+          Environment = [
+            "HSA_OVERRIDE_GFX_VERSION=10.3.0"
+            "ROCM_PATH=${pkgs.rocmPackages.clr}"
+          ];
+        };
+
+        Install = {
+          WantedBy = [ "default.target" ];
+        };
       };
 
-      Service = {
-        Type = "simple";
-        ExecStart = "${voiceToTextDaemon}/bin/voice-to-text-daemon";
-        Restart = "on-failure";
-        RestartSec = 5;
-        Environment = [
-          "HSA_OVERRIDE_GFX_VERSION=10.3.0"
-          "ROCM_PATH=${pkgs.rocmPackages.clr}"
+      # Hyprland keybinding
+      wayland.windowManager.hyprland.settings.bind = [
+        "${cfg.keybind}, exec, voice-to-text toggle"
+        "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
+      ];
+
+      # Persist configuration and cache
+      home.persistence."/persist" = {
+        directories = [
+          ".config/voice-to-text"
+          ".cache/voice-to-text"
         ];
       };
-
-      Install = {
-        WantedBy = [ "default.target" ];
-      };
-    };
-
-    # Hyprland keybinding
-    home-manager.users.ben.wayland.windowManager.hyprland.settings.bind = [
-      "${cfg.keybind}, exec, voice-to-text toggle"
-      "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
-    ];
-
-    # Persist configuration and cache
-    home-manager.users.ben.home.persistence."/persist" = {
-      directories = [
-        ".config/voice-to-text"
-        ".cache/voice-to-text"
-      ];
     };
   };
 }

@@ -306,78 +306,80 @@ in
       batteryNotifier.enable = false;
     };
 
-    home-manager.users.ben = lib.mkIf (builtins.any (d: d.enable) (lib.attrValues cfg.devices)) {
-      home.packages = with pkgs; [
-        polychromatic
-        dunst
-        libnotify
-      ];
+    home-manager.users.${config.nx.username} =
+      lib.mkIf (builtins.any (d: d.enable) (lib.attrValues cfg.devices))
+        {
+          home.packages = with pkgs; [
+            polychromatic
+            dunst
+            libnotify
+          ];
 
-      # Merged systemd services definition
-      systemd.user.services =
-        # Polling services (triggered by timers)
-        (lib.attrsets.mapAttrs' (
-          name: device:
-          lib.nameValuePair "battery-notifier-${name}" {
-            Unit = {
-              Description = "Run polling battery notifier for ${name}";
-            };
-            Service = {
-              Type = "oneshot";
-              ExecStart = ''
-                ${battery-notifier-script}/bin/battery-notifier \
-                  --name "${name}" \
-                  --level-cmd '${device.levelCmd}' \
-                  ${lib.optionalString (device.statusCmd != null) "--status-cmd '${device.statusCmd}'"} \
-                  --low-threshold ${toString device.lowThreshold} \
-                  --full-threshold ${toString device.fullThreshold} \
-                  --dismiss-threshold ${toString device.dismissThreshold} \
-                  --re-notify-threshold ${toString device.reNotifyThreshold} \
-                  ${lib.optionalString device.ignoreZero "--ignore-zero"}
-              '';
-            };
-          }
-        ) (lib.filterAttrs (n: v: v.enable) cfg.devices))
-        //
-          # Event-driven services (triggered by udev)
-          (lib.attrsets.mapAttrs' (
+          # Merged systemd services definition
+          systemd.user.services =
+            # Polling services (triggered by timers)
+            (lib.attrsets.mapAttrs' (
+              name: device:
+              lib.nameValuePair "battery-notifier-${name}" {
+                Unit = {
+                  Description = "Run polling battery notifier for ${name}";
+                };
+                Service = {
+                  Type = "oneshot";
+                  ExecStart = ''
+                    ${battery-notifier-script}/bin/battery-notifier \
+                      --name "${name}" \
+                      --level-cmd '${device.levelCmd}' \
+                      ${lib.optionalString (device.statusCmd != null) "--status-cmd '${device.statusCmd}'"} \
+                      --low-threshold ${toString device.lowThreshold} \
+                      --full-threshold ${toString device.fullThreshold} \
+                      --dismiss-threshold ${toString device.dismissThreshold} \
+                      --re-notify-threshold ${toString device.reNotifyThreshold} \
+                      ${lib.optionalString device.ignoreZero "--ignore-zero"}
+                  '';
+                };
+              }
+            ) (lib.filterAttrs (n: v: v.enable) cfg.devices))
+            //
+              # Event-driven services (triggered by udev)
+              (lib.attrsets.mapAttrs' (
+                name: device:
+                lib.nameValuePair "battery-notifier-event-${name}" {
+                  Unit = {
+                    Description = "Run event-driven battery notifier for ${name}";
+                  };
+                  Service = {
+                    Type = "oneshot";
+                    ExecStart = ''
+                      ${battery-notifier-script}/bin/battery-notifier \
+                        --name "${name}" \
+                        --level-cmd '${device.levelCmd}' \
+                        ${lib.optionalString (device.statusCmd != null) "--status-cmd '${device.statusCmd}'"} \
+                        --low-threshold ${toString device.lowThreshold} \
+                        --full-threshold ${toString device.fullThreshold} \
+                        --dismiss-threshold ${toString device.dismissThreshold} \
+                        --re-notify-threshold ${toString device.reNotifyThreshold} \
+                        ${lib.optionalString device.ignoreZero "--ignore-zero"}
+                    '';
+                  };
+                }
+              ) (lib.filterAttrs (n: v: v.enable && v.udevTrigger) cfg.devices));
+
+          systemd.user.timers = lib.attrsets.mapAttrs' (
             name: device:
-            lib.nameValuePair "battery-notifier-event-${name}" {
+            lib.nameValuePair "battery-notifier-${name}" {
               Unit = {
-                Description = "Run event-driven battery notifier for ${name}";
+                Description = "Run battery notifier timer for ${name}";
               };
-              Service = {
-                Type = "oneshot";
-                ExecStart = ''
-                  ${battery-notifier-script}/bin/battery-notifier \
-                    --name "${name}" \
-                    --level-cmd '${device.levelCmd}' \
-                    ${lib.optionalString (device.statusCmd != null) "--status-cmd '${device.statusCmd}'"} \
-                    --low-threshold ${toString device.lowThreshold} \
-                    --full-threshold ${toString device.fullThreshold} \
-                    --dismiss-threshold ${toString device.dismissThreshold} \
-                    --re-notify-threshold ${toString device.reNotifyThreshold} \
-                    ${lib.optionalString device.ignoreZero "--ignore-zero"}
-                '';
+              Timer = device.timerConfig // {
+                Unit = "battery-notifier-${name}.service";
+              };
+              Install = {
+                WantedBy = [ "timers.target" ];
               };
             }
-          ) (lib.filterAttrs (n: v: v.enable && v.udevTrigger) cfg.devices));
-
-      systemd.user.timers = lib.attrsets.mapAttrs' (
-        name: device:
-        lib.nameValuePair "battery-notifier-${name}" {
-          Unit = {
-            Description = "Run battery notifier timer for ${name}";
-          };
-          Timer = device.timerConfig // {
-            Unit = "battery-notifier-${name}.service";
-          };
-          Install = {
-            WantedBy = [ "timers.target" ];
-          };
-        }
-      ) (lib.filterAttrs (n: v: v.enable) cfg.devices);
-    };
+          ) (lib.filterAttrs (n: v: v.enable) cfg.devices);
+        };
 
     nx.services.batteryNotifier.devices = {
       laptop = {

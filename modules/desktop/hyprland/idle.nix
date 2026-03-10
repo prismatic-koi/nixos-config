@@ -43,7 +43,7 @@
     };
   };
   config = lib.mkIf (config.nx.desktop.hyprland.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       services.hypridle =
         let
           lockCfg = config.nx.desktop.hyprland.lockTimeout;

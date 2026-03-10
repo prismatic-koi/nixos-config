@@ -6,7 +6,7 @@
 with config.theme;
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.file.".config/tridactyl/home.html".text =
         # html
         ''

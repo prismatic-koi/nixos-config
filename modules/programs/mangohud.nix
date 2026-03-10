@@ -10,7 +10,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.mangohud.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.mangohud = {
         enable = true;
         settings = {

@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf (config.nx.desktop.waybar.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home = {
+    home-manager.users.${config.nx.username}.home = {
       file.".local/scripts/cli.mpd.nowPlaying" = {
         executable = true;
         text =

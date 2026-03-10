@@ -5,7 +5,7 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
 in
 {
   imports = [
@@ -21,7 +21,7 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.firefox.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.firefox = {
         # NOTE: On macOS, programs.firefox works but may have limitations.
         # If issues arise, Firefox can be installed via Homebrew while

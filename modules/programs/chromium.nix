@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.chromium.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.chromium = {
         enable = true;
         package = pkgs.chromium;
@@ -39,7 +39,7 @@
         ];
       };
       wayland.windowManager.hyprland.settings =
-        lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+        lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
           {
             windowrule = [
               # sometimes chromium thinks its fine to open in a tiny window

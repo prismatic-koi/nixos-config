@@ -5,7 +5,7 @@
   ...
 }:
 {
-  home-manager.users.ben.programs.neovim.plugins =
+  home-manager.users.${config.nx.username}.programs.neovim.plugins =
     lib.mkIf (config.theme.name == "catppuccin-latte")
       [
         {

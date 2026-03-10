@@ -5,7 +5,7 @@
   ...
 }:
 let
-  configDir = "${config.home-manager.users.ben.home.homeDirectory}/.config";
+  configDir = "${config.home-manager.users.${config.nx.username}.home.homeDirectory}/.config";
   resolution = config.nx.desktop.wallpaper.resolution;
   variant = config.nx.desktop.wallpaper.variant;
 in
@@ -30,7 +30,7 @@ in
     };
   };
   config = lib.mkIf (config.nx.desktop.wallpaper.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben =
+    home-manager.users.${config.nx.username} =
       {
         config,
         lib,

@@ -107,7 +107,7 @@ in
     };
   };
   config = lib.mkIf (config.nx.desktop.quickshell.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.quickshell = {
         enable = true;
         configs.shell = quickshellConfig;

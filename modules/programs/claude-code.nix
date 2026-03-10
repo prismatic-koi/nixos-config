@@ -22,7 +22,7 @@
       );
     in
     {
-      home-manager.users.ben = {
+      home-manager.users.${config.nx.username} = {
         programs.zsh.shellAliases = {
           # set environment variables for claude-code
           claude-code = "${envPrefix} claude-code";

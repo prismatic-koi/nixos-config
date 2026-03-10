@@ -17,70 +17,72 @@ let
   theme = config.theme;
 in
 {
-  home-manager.users.ben.programs.neovim.plugins = lib.mkIf (config.theme.name == "github-light") [
-    {
-      plugin = github-nvim-theme;
-      type = "lua";
-      config =
-        # lua
-        ''
-          require("github-theme").setup({
-          	groups = {
-          		all = {
-          			ObsidianTodo = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			ObsidianDone = {
-          				fg = "${theme.green}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			ObsidianRightArrow = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			ObsidianTilde = {
-          				fg = "${theme.orange}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			ObsidianRefText = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          				style = "NONE", -- no underline for obsidian links
-          			},
-          			ObsidianExtLinkIcon = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          			},
-          			ObsidianTag = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          				style = "italic",
-          			},
-          			["@markup.heading.1.markdown"] = {
-          				fg = "${theme.blue}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			["@markup.heading.2.markdown"] = {
-          				fg = "${theme.green}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          			["@markup.heading.3.markdown"] = {
-          				fg = "${theme.purple}",
-          				bg = "none",
-          				style = "bold",
-          			},
-          		},
-          	},
-          })
-          vim.cmd("colorscheme github_light")
-        '';
-    }
-  ];
+  home-manager.users.${config.nx.username}.programs.neovim.plugins =
+    lib.mkIf (config.theme.name == "github-light")
+      [
+        {
+          plugin = github-nvim-theme;
+          type = "lua";
+          config =
+            # lua
+            ''
+              require("github-theme").setup({
+              	groups = {
+              		all = {
+              			ObsidianTodo = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			ObsidianDone = {
+              				fg = "${theme.green}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			ObsidianRightArrow = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			ObsidianTilde = {
+              				fg = "${theme.orange}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			ObsidianRefText = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              				style = "NONE", -- no underline for obsidian links
+              			},
+              			ObsidianExtLinkIcon = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              			},
+              			ObsidianTag = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              				style = "italic",
+              			},
+              			["@markup.heading.1.markdown"] = {
+              				fg = "${theme.blue}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			["@markup.heading.2.markdown"] = {
+              				fg = "${theme.green}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              			["@markup.heading.3.markdown"] = {
+              				fg = "${theme.purple}",
+              				bg = "none",
+              				style = "bold",
+              			},
+              		},
+              	},
+              })
+              vim.cmd("colorscheme github_light")
+            '';
+        }
+      ];
 }

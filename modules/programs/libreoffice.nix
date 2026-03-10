@@ -14,7 +14,7 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.libreoffice.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         libreoffice
         # language/spellchecker
@@ -30,7 +30,7 @@ in
         ];
       };
       wayland.windowManager.hyprland.settings =
-        lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+        lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
           {
             windowrule = [
               # prevent libreoffice-writer from fullscreening

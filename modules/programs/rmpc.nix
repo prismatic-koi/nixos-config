@@ -17,7 +17,7 @@
         && config.nx.services.mpd.enable
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           programs.rmpc = {
             enable = true;
             config =

@@ -14,6 +14,11 @@
     ./system
   ];
   options = {
+    nx.username = lib.mkOption {
+      default = "ben";
+      description = "primary username for this machine";
+      type = lib.types.str;
+    };
     nx.externalAudio.enable = lib.mkEnableOption {
       default = false;
       description = "machine is using external audio control, disable things like volume controls";
@@ -30,6 +35,6 @@
   };
   config = {
     # Let Home Manager install and manage itself.
-    home-manager.users.ben.programs.home-manager.enable = true;
+    home-manager.users.${config.nx.username}.programs.home-manager.enable = true;
   };
 }

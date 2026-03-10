@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.mpv.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.mpv = {
         enable = true;
         package = pkgs.mpv.override {

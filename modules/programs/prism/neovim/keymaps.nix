@@ -1,7 +1,7 @@
-{ ... }:
+{ config, ... }:
 {
   # Setting various vim options
-  home-manager.users.ben.programs.neovim = {
+  home-manager.users.${config.nx.username}.programs.neovim = {
     initLua =
       # lua
       ''

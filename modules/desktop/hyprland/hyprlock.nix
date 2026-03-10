@@ -5,7 +5,7 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
   theme = config.theme;
   resolution = config.nx.desktop.wallpaper.resolution;
 in
@@ -22,7 +22,7 @@ in
     };
   };
   config = lib.mkIf (config.nx.desktop.hyprlock.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.programs.hyprlock =
+    home-manager.users.${config.nx.username}.programs.hyprlock =
       let
         oled = config.nx.desktop.hyprlock.oled;
         # Convert hex color to rgba format (remove # and add ff for alpha)

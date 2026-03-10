@@ -5,7 +5,7 @@
 }:
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
-    home-manager.users.ben.home.file.".config/tridactyl/tridactylrc".text =
+    home-manager.users.${config.nx.username}.home.file.".config/tridactyl/tridactylrc".text =
       # tridactyl
       ''
         " Unbind

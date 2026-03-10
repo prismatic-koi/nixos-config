@@ -12,7 +12,7 @@
   };
 
   config = lib.mkIf (config.nx.programs.prism.scripts.enable && config.nx.programs.prism.enable) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.sessionPath = [ "$HOME/.local/scripts" ];
 
       home.file.".local/scripts/cli.git.worktreeClone" = {

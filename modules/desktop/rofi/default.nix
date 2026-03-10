@@ -25,7 +25,7 @@ with config.theme;
   config = lib.mkMerge [
     # Linux: rofi configuration
     (lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
-      home-manager.users.ben = {
+      home-manager.users.${config.nx.username} = {
         programs.rofi = {
           enable = true;
           package = pkgs.rofi;
@@ -59,7 +59,7 @@ with config.theme;
 
     # Common: sessionPath for scripts (needed on Darwin too)
     (lib.mkIf config.nx.desktop.rofi.enable {
-      home-manager.users.ben.home.sessionPath = [ "$HOME/.local/scripts" ];
+      home-manager.users.${config.nx.username}.home.sessionPath = [ "$HOME/.local/scripts" ];
     })
   ];
 }

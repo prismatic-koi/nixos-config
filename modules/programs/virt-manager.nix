@@ -26,7 +26,7 @@
     environment.etc."libvirt/secret.conf".text = ''
       encrypt_data = 0
     '';
-    users.users.ben.extraGroups = [
+    users.users.${config.nx.username}.extraGroups = [
       "libvirt"
     ];
     environment.persistence."/persist/system" = {

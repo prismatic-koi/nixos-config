@@ -4,6 +4,9 @@
   config,
   ...
 }:
+let
+  username = config.nx.username;
+in
 {
   imports = [
     ./hardware-boot-switch.nix
@@ -18,7 +21,7 @@
   config = lib.mkMerge [
     # Cross-platform: home-manager XDG configuration
     {
-      home-manager.users.ben = {
+      home-manager.users.${username} = {
         # Enable XDG base directory support
         # This sets the directories and environment variables automatically
         xdg.enable = true;

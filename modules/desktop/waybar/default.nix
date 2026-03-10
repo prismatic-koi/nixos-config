@@ -10,8 +10,8 @@ let
   location = config.nx.deviceLocation;
   enableMpd = config.nx.services.mpd.enable;
   enableHyprland = config.nx.desktop.hyprland.enable;
-  enableSway = config.home-manager.users.ben.wayland.windowManager.sway.enable;
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  enableSway = config.home-manager.users.${config.nx.username}.wayland.windowManager.sway.enable;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
   isLaptop = config.nx.isLaptop;
 in
 with config.theme;
@@ -27,7 +27,7 @@ with config.theme;
     ./scripts.nix
   ];
   config = lib.mkIf (config.nx.desktop.waybar.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.programs.waybar = {
+    home-manager.users.${config.nx.username}.programs.waybar = {
       enable = true;
       package = pkgs.waybar;
       systemd.target = "sway-session.target";

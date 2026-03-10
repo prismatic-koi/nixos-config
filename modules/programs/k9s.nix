@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.k9s.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.k9s = {
         enable = true;
         package = pkgs.k9s;

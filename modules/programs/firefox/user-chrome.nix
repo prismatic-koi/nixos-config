@@ -11,7 +11,7 @@ with config.theme;
     };
   };
   config = lib.mkIf config.nx.programs.firefox.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       # heavy firefox customization
       # mostly inspired/copied from https://github.com/Dook97/firefox-qutebrowser-userchrome
       programs.firefox.profiles.main.userChrome =

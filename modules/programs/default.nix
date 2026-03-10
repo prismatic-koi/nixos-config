@@ -98,7 +98,7 @@
       nx.programs.defaultWebBrowserSettings = lib.mkDefault (
         lib.attrByPath [ config.nx.programs.defaultWebBrowser ] { } browserSettings
       );
-      home-manager.users.ben = {
+      home-manager.users.${config.nx.username} = {
         # xdg.mimeApps is Linux-only
         xdg.mimeApps.enable = pkgs.stdenv.isLinux;
         # some default programs that require no configuration

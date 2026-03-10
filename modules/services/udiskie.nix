@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf (config.nx.udiskie.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.services.udiskie = {
+    home-manager.users.${config.nx.username}.services.udiskie = {
       enable = true;
       automount = true;
       notify = true;

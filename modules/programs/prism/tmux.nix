@@ -16,7 +16,7 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.prism.tmux.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.tmux = {
         enable = true;
         secureSocket = false; # for some reason, tmux started via hyprland doesnt respect this and I only want 1 tmux server running

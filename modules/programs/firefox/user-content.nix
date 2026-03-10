@@ -6,7 +6,7 @@
 with config.theme;
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
-    home-manager.users.ben.programs.firefox.profiles.main.userContent =
+    home-manager.users.${config.nx.username}.programs.firefox.profiles.main.userContent =
       # css
       ''
         /* gmail checker extension */

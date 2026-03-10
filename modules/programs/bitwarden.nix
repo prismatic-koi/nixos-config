@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.bitwarden.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         bitwarden-desktop
         bitwarden-cli

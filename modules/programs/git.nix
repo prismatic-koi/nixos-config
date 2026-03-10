@@ -5,7 +5,8 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  username = config.nx.username;
+  homeDir = config.home-manager.users.${username}.home.homeDirectory;
 in
 {
   options = {
@@ -21,7 +22,7 @@ in
     lib.mkMerge [
       # Common git and ssh configuration for both platforms
       {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           programs.ssh = {
             enable = true;
             matchBlocks = {
@@ -69,19 +70,19 @@ in
       (lib.mkIf isLinux {
         sops.secrets = {
           "ssh/prismatic-koi-ed25519-signingkey" = {
-            owner = "ben";
+            owner = username;
             mode = "0600";
             path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey";
             sopsFile = ./secrets/ssh.sops.yaml;
           };
           "ssh/prismatic-koi-ed25519-signingkey.pub" = {
-            owner = "ben";
+            owner = username;
             mode = "0600";
             path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey.pub";
             sopsFile = ./secrets/ssh.sops.yaml;
           };
           "github_token" = {
-            owner = "ben";
+            owner = username;
             mode = "0600";
             sopsFile = ./secrets/github.sops.yaml;
           };
@@ -90,7 +91,7 @@ in
         # Linux-only: system activation scripts (for impermanence)
         system.activationScripts.signingKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.ssh
-          chown ben:users ${homeDir}/.ssh
+          chown ${username}:users ${homeDir}/.ssh
         '';
 
         # Environment variables for GitHub token
@@ -102,7 +103,7 @@ in
 
       # Darwin: sops secrets via home-manager
       (lib.mkIf isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           sops.secrets = {
             "ssh/prismatic-koi-ed25519-signingkey" = {
               path = "${homeDir}/.ssh/prismatic-koi-ed25519-signingkey";
@@ -119,8 +120,10 @@ in
 
           # Environment variables for GitHub token
           home.sessionVariables = {
-            GITHUB_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
-            GITHUB_PACKAGES_TOKEN = "$(cat ${config.home-manager.users.ben.sops.secrets.github_token.path})";
+            GITHUB_TOKEN = "$(cat ${config.home-manager.users.${username}.sops.secrets.github_token.path})";
+            GITHUB_PACKAGES_TOKEN = "$(cat ${
+              config.home-manager.users.${username}.sops.secrets.github_token.path
+            })";
           };
         };
       })

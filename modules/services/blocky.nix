@@ -104,7 +104,7 @@
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
     };
-    home-manager.users.ben.home = {
+    home-manager.users.${config.nx.username}.home = {
       # making sure scripts are on path if not set elsewhere
       sessionPath = [ "$HOME/.local/scripts" ];
       # utility scripts for blocky

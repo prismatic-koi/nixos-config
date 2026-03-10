@@ -19,7 +19,7 @@
         && pkgs.stdenv.isLinux
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           home.packages = with pkgs; [
             pscx2
           ];

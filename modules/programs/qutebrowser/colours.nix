@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.qutebrowser.settings = {
         colors = with config.theme; {
           webpage = {

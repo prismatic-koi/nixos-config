@@ -13,7 +13,7 @@ with config.theme;
     };
   };
   config = lib.mkIf (config.nx.desktop.swaylock.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.programs.swaylock = {
+    home-manager.users.${config.nx.username}.programs.swaylock = {
       enable = true;
       settings = {
         color = "000000";

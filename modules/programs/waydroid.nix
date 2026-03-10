@@ -33,7 +33,7 @@
         XDG_DATA_HOME = "/persist/home/ben/.local/share";
       };
 
-      # home-manager.users.ben = {
+      # home-manager.users.${config.nx.username} = {
       #   home.persistence."/persist" = {
       #     directories = [
       #       ".local/share/waydroid"

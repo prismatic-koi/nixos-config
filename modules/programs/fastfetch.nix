@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.fastfetch.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         fastfetch
       ];
@@ -44,7 +44,7 @@
                          $5▝▀▀▀    ▀▀▀▀▘       $4▀▀▀▘
               '';
             };
-            # config.home-manager.users.ben.home.file."nixos-logo".source;
+            # config.home-manager.users.${config.nx.username}.home.file."nixos-logo".source;
             color = with config.theme; {
               "1" = "${yellow}";
               "2" = "${green}";

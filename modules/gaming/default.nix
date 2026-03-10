@@ -24,7 +24,7 @@
       enable32Bit = true;
     };
     programs.gamemode.enable = true;
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.persistence."/persist" = {
         directories = [
           ".local/share/vulkan"

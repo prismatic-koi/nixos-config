@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf (config.nx.desktop.sway.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.wayland.windowManager.sway.config = {
+    home-manager.users.${config.nx.username}.wayland.windowManager.sway.config = {
       startup = [
         {
           # swayidle: lock screen after 30 minutes of inactivity

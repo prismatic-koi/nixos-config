@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.discord.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.discord = {
         enable = true;
         package = pkgs.discord;
@@ -22,7 +22,7 @@
         ];
       };
       wayland.windowManager.hyprland.settings =
-        lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+        lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
           {
             windowrule = [
               # silently open on workspace 2

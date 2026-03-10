@@ -1,7 +1,7 @@
-{ ... }:
+{ config, ... }:
 {
   # Setting my abbreviations
-  home-manager.users.ben.programs.neovim = {
+  home-manager.users.${config.nx.username}.programs.neovim = {
     extraConfig =
       # vim
       ''

@@ -7,7 +7,7 @@
 with config.theme;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home.file.".config/rofi/theme.rasi".text = ''
+    home-manager.users.${config.nx.username}.home.file.".config/rofi/theme.rasi".text = ''
       * {
         background-color: transparent;
         text-color: ${foreground};

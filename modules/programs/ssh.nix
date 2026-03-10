@@ -5,10 +5,11 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  username = config.nx.username;
+  homeDir = config.home-manager.users.${username}.home.homeDirectory;
   cloudflaredBlock = {
     proxyCommand = "${pkgs.cloudflared}/bin/cloudflared access ssh --hostname %h.$CLOUDFLARED_DOMAIN";
-    user = "ben";
+    user = username;
     port = 22;
     identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
   };
@@ -31,7 +32,7 @@ in
     lib.mkMerge [
       # Common configuration (both platforms)
       {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           home.packages = with pkgs; [
             cloudflared
           ];
@@ -60,7 +61,7 @@ in
               "nas0" = {
                 hostname = "10.87.42.200";
                 port = 220;
-                user = "ben";
+                user = username;
                 identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
             };
@@ -92,7 +93,7 @@ in
           let
             sopsFile = ./secrets/ssh.sops.yaml;
             mkSecret = name: {
-              owner = "ben";
+              owner = username;
               mode = "0600";
               path = "${homeDir}/.ssh/${name}";
               sopsFile = sopsFile;
@@ -105,7 +106,7 @@ in
             "ssh/prismatic-koi-rsa" = mkSecret "prismatic-koi-rsa";
             "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
             "config/cloudflared_domain" = {
-              owner = "ben";
+              owner = username;
               mode = "0600";
               sopsFile = sopsFile;
             };
@@ -119,7 +120,7 @@ in
             "ssh/work-ed25519" = mkSecret "work-ed25519";
             "ssh/work-ed25519.pub" = mkSecret "work-ed25519.pub";
             "ssh/workconfig" = {
-              owner = "ben";
+              owner = username;
               mode = "0600";
               path = "${homeDir}/.ssh/workconfig";
               format = "binary";
@@ -133,13 +134,13 @@ in
 
         system.activationScripts.sshKeysFolderPermissions = ''
           mkdir -p ${homeDir}/.ssh
-          chown ben:users ${homeDir}/.ssh
+          chown ${username}:users ${homeDir}/.ssh
         '';
       })
 
       # Darwin-specific (sops via home-manager, no activation scripts)
       (lib.mkIf isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           sops.secrets =
             let
               sopsFile = ./secrets/ssh.sops.yaml;
@@ -175,7 +176,7 @@ in
 
           home.sessionVariables = {
             CLOUDFLARED_DOMAIN = "$(cat ${
-              config.home-manager.users.ben.sops.secrets."config/cloudflared_domain".path
+              config.home-manager.users.${username}.sops.secrets."config/cloudflared_domain".path
             })";
           };
         };

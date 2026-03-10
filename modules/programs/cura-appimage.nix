@@ -33,7 +33,7 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.cura.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = [
         cura-appimage
       ];

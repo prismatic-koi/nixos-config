@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.darktable.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         darktable
       ];
@@ -21,7 +21,7 @@
         ];
       };
       wayland.windowManager.hyprland.settings =
-        lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+        lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
           {
             windowrule = [
               # darktable splash screen

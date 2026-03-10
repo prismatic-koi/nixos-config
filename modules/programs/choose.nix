@@ -19,7 +19,7 @@ in
   };
 
   config = lib.mkIf (config.nx.programs.choose.enable && isDarwin) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = [ pkgs.choose-gui ];
 
       # Scripts launcher

@@ -9,9 +9,9 @@ let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
 
-  # For NixOS, we use home-manager.users.ben
-  # For darwin with home-manager via nix-darwin, we also use home-manager.users.ben
-  hmConfig = config.home-manager.users.ben;
+  # For NixOS, we use home-manager.users.${username}
+  # For darwin with home-manager via nix-darwin, we also use home-manager.users.${username}
+  hmConfig = config.home-manager.users.${config.nx.username};
 
   homeDir = hmConfig.home.homeDirectory;
 in
@@ -37,7 +37,7 @@ in
 
       # Common home-manager config
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           # On NixOS we set ZDOTDIR at system level, so we don't need .zshenv
           # On Darwin we need .zshenv to bootstrap ZDOTDIR
           home.file.".zshenv".enable = isDarwin;

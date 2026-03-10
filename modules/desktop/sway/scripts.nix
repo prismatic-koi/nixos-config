@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf (config.nx.desktop.sway.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home = {
+    home-manager.users.${config.nx.username}.home = {
       # my scripts relevant to sway
       sessionPath = [ "$HOME/.local/scripts" ];
       file.".local/scripts/cli.system.setSwayGaps" = {

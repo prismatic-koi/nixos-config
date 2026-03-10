@@ -20,11 +20,11 @@
         && pkgs.stdenv.isLinux
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           programs.ncmpcpp = {
             enable = true;
             package = pkgs.ncmpcpp.override { visualizerSupport = true; };
-            mpdMusicDir = config.home-manager.users.ben.services.mpd.musicDirectory;
+            mpdMusicDir = config.home-manager.users.${config.nx.username}.services.mpd.musicDirectory;
             settings = {
               display_bitrate = "yes";
               user_interface = "alternative";

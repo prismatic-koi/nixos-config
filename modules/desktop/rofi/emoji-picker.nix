@@ -7,7 +7,7 @@
 with config.theme;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home = {
+    home-manager.users.${config.nx.username}.home = {
       file.".local/scripts/application.rofi.emojipicker" = {
         executable = true;
         text =

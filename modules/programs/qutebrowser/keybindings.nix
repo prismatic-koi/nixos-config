@@ -5,7 +5,7 @@
 }:
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       # keybindings
       # I did used to use a combination of config.bind and c.bindings
       # but my 'ch' with no leader did not work in config.bind

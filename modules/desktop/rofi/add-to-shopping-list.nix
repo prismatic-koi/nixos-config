@@ -8,6 +8,7 @@ with config.theme;
 let
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
+  username = config.nx.username;
 in
 {
   config = lib.mkMerge [
@@ -15,14 +16,14 @@ in
     (lib.mkIf (config.nx.desktop.rofi.enable && isLinux) {
       # notion API key
       sops.secrets.notion_shopping_list_key = {
-        owner = "ben";
+        owner = username;
         mode = "0600";
         sopsFile = ./secrets/notion.sops.yaml;
       };
       environment.sessionVariables = {
         NOTION_SHOPPING_LIST_KEY = "$(cat ${config.sops.secrets.notion_shopping_list_key.path})";
       };
-      home-manager.users.ben.home = {
+      home-manager.users.${username}.home = {
         file.".local/scripts/home.shoppinglist.addItem" = {
           executable = true;
           text = ''
@@ -70,14 +71,16 @@ in
 
     # Darwin: choose with home-manager sops
     (lib.mkIf (config.nx.desktop.rofi.enable && isDarwin) {
-      home-manager.users.ben = {
+      home-manager.users.${username} = {
         sops.secrets = {
           notion_shopping_list_key = {
             sopsFile = ./secrets/notion.sops.yaml;
           };
         };
         home.sessionVariables = {
-          NOTION_SHOPPING_LIST_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.notion_shopping_list_key.path})";
+          NOTION_SHOPPING_LIST_KEY = "$(cat ${
+            config.home-manager.users.${username}.sops.secrets.notion_shopping_list_key.path
+          })";
         };
         home.file.".local/scripts/home.shoppinglist.addItem" = {
           executable = true;

@@ -12,7 +12,7 @@ with config.theme;
     };
   };
   config = lib.mkIf config.nx.programs.zathura.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.zathura = {
         enable = true;
         options = lib.mkIf pkgs.stdenv.isLinux {

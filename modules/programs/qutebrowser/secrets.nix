@@ -5,7 +5,7 @@
   ...
 }:
 let
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
 in
@@ -40,7 +40,7 @@ in
 
       # Darwin: home-manager sops
       (lib.mkIf isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           sops.secrets = {
             "bookmarks.sops" = {
               # using binary format to preserve multiline strings
@@ -53,7 +53,9 @@ in
             };
           };
           home.sessionVariables = {
-            BITWARDEN_PASSWORD = "$(cat ${config.home-manager.users.ben.sops.secrets.bitwarden_password.path})";
+            BITWARDEN_PASSWORD = "$(cat ${
+              config.home-manager.users.${config.nx.username}.sops.secrets.bitwarden_password.path
+            })";
           };
         };
       })

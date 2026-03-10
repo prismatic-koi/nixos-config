@@ -17,7 +17,7 @@
         && config.nx.programs.prism.tmux.enable
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           # making sure scripts are on path if not set elsewhere
           home.sessionPath = [ "$HOME/.local/scripts" ];
 

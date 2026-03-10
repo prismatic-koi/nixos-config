@@ -1,6 +1,6 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
-  home-manager.users.ben.programs.neovim.plugins = [
+  home-manager.users.${config.nx.username}.programs.neovim.plugins = [
     {
       plugin = pkgs.vimPlugins.nvim-treesitter.withPlugins (
         treesitter-plugins: with treesitter-plugins; [

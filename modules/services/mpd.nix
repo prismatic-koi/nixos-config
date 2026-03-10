@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf (config.nx.services.mpd.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         mpc # for commandline control
       ];

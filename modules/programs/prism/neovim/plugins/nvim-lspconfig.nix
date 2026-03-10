@@ -1,6 +1,6 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
-  home-manager.users.ben = {
+  home-manager.users.${config.nx.username} = {
     home.packages = with pkgs; [
       helm-ls
       lua-language-server

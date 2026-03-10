@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf (config.nx.programs.dragon-drop.enable) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [ dragon-drop ];
       # lf integration
       programs.lf.extraConfig = lib.mkIf config.nx.programs.lf.enable ''

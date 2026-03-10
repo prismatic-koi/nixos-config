@@ -10,7 +10,7 @@
   };
 
   config = lib.mkIf config.nx.programs.rclone.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [ rclone ];
     };
 

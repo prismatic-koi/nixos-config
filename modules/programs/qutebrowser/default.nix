@@ -21,14 +21,16 @@
     let
       isLinux = pkgs.stdenv.isLinux;
       isDarwin = pkgs.stdenv.isDarwin;
-      homeDir = config.home-manager.users.ben.home.homeDirectory;
+      homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
 
       qutebrowser-setup = pkgs.writeShellScript "qutebrowser-setup" (
         builtins.concatStringsSep "\n" (
           builtins.map (
             n:
-            "${config.home-manager.users.ben.programs.qutebrowser.package}/share/qutebrowser/scripts/dictcli.py install ${n}"
-          ) config.home-manager.users.ben.programs.qutebrowser.settings.spellcheck.languages
+            "${
+              config.home-manager.users.${config.nx.username}.programs.qutebrowser.package
+            }/share/qutebrowser/scripts/dictcli.py install ${n}"
+          ) config.home-manager.users.${config.nx.username}.programs.qutebrowser.settings.spellcheck.languages
         )
       );
 
@@ -97,7 +99,9 @@
 
             # Load Bitwarden password from sops secret if available and not already set
             if [ -z "$BITWARDEN_PASSWORD" ]; then
-              BW_SECRET_PATH="${config.home-manager.users.ben.sops.secrets.bitwarden_password.path}"
+              BW_SECRET_PATH="${
+                config.home-manager.users.${config.nx.username}.sops.secrets.bitwarden_password.path
+              }"
               if [ -f "$BW_SECRET_PATH" ]; then
                 export BITWARDEN_PASSWORD="$(cat "$BW_SECRET_PATH")"
               fi
@@ -182,7 +186,7 @@
     lib.mkMerge [
       # Common configuration for both platforms
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           programs.qutebrowser = {
             enable = true;
             settings = {
@@ -368,7 +372,7 @@
 
       # Linux-specific configuration
       (lib.mkIf isLinux {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           # systemd unit to prefetch bitwarden cache
           systemd.user.services.bitwarden-prefetch = {
             Unit = {
@@ -460,7 +464,7 @@
 
           # Hyprland window rules
           wayland.windowManager.hyprland.settings =
-            lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+            lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
               {
                 windowrule = [
                   # floating filepickers and editors
@@ -479,7 +483,7 @@
 
       # Darwin-specific configuration
       (lib.mkIf isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           # macOS launchd service to prefetch bitwarden cache periodically
           launchd.agents.bitwarden-prefetch = {
             enable = true;
@@ -487,7 +491,9 @@
               ProgramArguments = [
                 "${pkgs.writeShellScript "bitwarden-prefetch-wrapper" ''
                   export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
-                  export BITWARDEN_PASSWORD="$(cat ${config.home-manager.users.ben.sops.secrets.bitwarden_password.path})"
+                  export BITWARDEN_PASSWORD="$(cat ${
+                    config.home-manager.users.${config.nx.username}.sops.secrets.bitwarden_password.path
+                  })"
                   exec ${bitwarden-prefetch}/bin/bitwarden-prefetch
                 ''}"
               ];

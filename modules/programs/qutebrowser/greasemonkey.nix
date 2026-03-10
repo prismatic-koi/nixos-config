@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.qutebrowser.greasemonkey = with config.theme; [
         # general theme variables, to be used in other scripts
         # made available here to all sites

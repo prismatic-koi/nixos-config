@@ -170,7 +170,7 @@
     lib.mkMerge [
       # Common configuration for both platforms
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           home.packages = with pkgs; [
             # need npx on path for memory mcp
             nodejs_24
@@ -251,7 +251,9 @@
                   type = "local";
                   enabled = true;
                   command = [
-                    "${config.home-manager.users.ben.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs"
+                    "${
+                      config.home-manager.users.${config.nx.username}.xdg.configHome
+                    }/opencode/mcp-atlassian-slim-proxy.mjs"
                   ];
                   environment = {
                     ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";

@@ -5,7 +5,7 @@
   ...
 }:
 {
-  home-manager.users.ben.programs.neovim.plugins = [
+  home-manager.users.${config.nx.username}.programs.neovim.plugins = [
     pkgs.vimPlugins.vim-rhubarb
     {
       plugin = pkgs.vimPlugins.vim-fugitive;

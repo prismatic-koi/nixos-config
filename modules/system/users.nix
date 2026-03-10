@@ -4,14 +4,17 @@
   lib,
   ...
 }:
+let
+  username = config.nx.username;
+in
 {
   config = lib.mkIf pkgs.stdenv.isLinux {
-    # Set up main user account: ben
+    # Set up main user account
     # Define a user account. Don't forget to set a password with 'passwd'.
-    users.users.ben = {
+    users.users.${username} = {
       isNormalUser = true;
       hashedPasswordFile = config.sops.secrets.ben_hashed_password.path;
-      description = "ben";
+      description = username;
       extraGroups = [
         "wheel"
         (lib.mkIf config.networking.networkmanager.enable "networkmanager")

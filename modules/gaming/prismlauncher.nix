@@ -21,7 +21,7 @@
         && pkgs.stdenv.isLinux
       )
       {
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           home.packages = with pkgs; [
             prismlauncher
           ];
@@ -31,7 +31,7 @@
             ];
           };
           wayland.windowManager.hyprland.settings =
-            lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+            lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
               {
                 windowrule = [
                   "tile on, match:class PrismLauncher"

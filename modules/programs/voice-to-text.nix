@@ -6,7 +6,7 @@
 }:
 let
   cfg = config.nx.programs.voiceToText;
-  homeDir = config.home-manager.users.ben.home.homeDirectory;
+  homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
 
   # Python environment with openai-whisper and ROCm-enabled PyTorch
   pythonWithWhisper = pkgs.python313.withPackages (
@@ -426,44 +426,46 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    # Install required system packages (but not Python env to avoid conflicts)
-    home-manager.users.ben.home.packages = [
-      voiceToTextScript # This uses pythonWithWhisper in its shebang
-      pkgs.wtype
-      pkgs.wl-clipboard
-      pkgs.pipewire
-      pkgs.libnotify
-      pkgs.pulseaudio # for paplay notification sound
-    ];
+    home-manager.users.${config.nx.username} = {
+      # Install required system packages (but not Python env to avoid conflicts)
+      home.packages = [
+        voiceToTextScript # This uses pythonWithWhisper in its shebang
+        pkgs.wtype
+        pkgs.wl-clipboard
+        pkgs.pipewire
+        pkgs.libnotify
+        pkgs.pulseaudio # for paplay notification sound
+      ];
+
+      # Add Hyprland keybinding
+      wayland.windowManager.hyprland.settings.bind = [
+        # Hold to talk: press to start recording, release to transcribe
+        "${cfg.keybind}, exec, voice-to-text toggle"
+        # Cancel recording
+        "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
+      ];
+
+      # Persist configuration and model cache
+      home.persistence."/persist" = {
+        directories = [
+          ".config/voice-to-text"
+          ".cache/voice-to-text" # Model cache
+        ];
+      };
+
+      # Environment variables for ROCm
+      home.sessionVariables = {
+        # Enable ROCm for faster-whisper
+        HSA_OVERRIDE_GFX_VERSION = "10.3.0"; # For RX 6950 XT
+        ROCM_PATH = "${pkgs.rocmPackages.clr}";
+      };
+    };
 
     # Enable PipeWire
     services.pipewire = {
       enable = true;
       audio.enable = true;
       pulse.enable = true;
-    };
-
-    # Add Hyprland keybinding
-    home-manager.users.ben.wayland.windowManager.hyprland.settings.bind = [
-      # Hold to talk: press to start recording, release to transcribe
-      "${cfg.keybind}, exec, voice-to-text toggle"
-      # Cancel recording
-      "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
-    ];
-
-    # Persist configuration and model cache
-    home-manager.users.ben.home.persistence."/persist" = {
-      directories = [
-        ".config/voice-to-text"
-        ".cache/voice-to-text" # Model cache
-      ];
-    };
-
-    # Environment variables for ROCm
-    home-manager.users.ben.home.sessionVariables = {
-      # Enable ROCm for faster-whisper
-      HSA_OVERRIDE_GFX_VERSION = "10.3.0"; # For RX 6950 XT
-      ROCM_PATH = "${pkgs.rocmPackages.clr}";
     };
   };
 }

@@ -38,7 +38,7 @@
         environment.sessionVariables = {
           STEAM_EXTRA_COMPAT_TOOLS_PATHS = "/home/ben/.steam/root/compatibilitytools.d";
         };
-        home-manager.users.ben = {
+        home-manager.users.${config.nx.username} = {
           home.persistence."/persist" = {
             directories = [
               (lib.mkIf config.nx.gaming.steam.persist ".local/share/Steam")
@@ -47,7 +47,7 @@
             ];
           };
           wayland.windowManager.hyprland.settings =
-            lib.mkIf (config.home-manager.users.ben.wayland.windowManager.hyprland.enable)
+            lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
               {
                 windowrule = [
                   # fake fullscreen, good store videos

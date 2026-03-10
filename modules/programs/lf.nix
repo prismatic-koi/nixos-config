@@ -11,7 +11,7 @@
     };
   };
   config = lib.mkIf config.nx.programs.lf.enable {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       programs.lf = {
         enable = true;
         settings = {

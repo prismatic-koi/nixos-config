@@ -7,6 +7,7 @@
 let
   isLinux = pkgs.stdenv.isLinux;
   isDarwin = pkgs.stdenv.isDarwin;
+  username = config.nx.username;
 in
 {
   options = {
@@ -20,13 +21,13 @@ in
       (lib.mkIf isLinux {
         # home-assistant API key
         sops.secrets.hass_api_key = {
-          owner = "ben";
+          owner = username;
           mode = "0600";
           sopsFile = ./secrets/home-assistant.sops.yaml;
         };
         # secret domain
         sops.secrets.hass_domain = {
-          owner = "ben";
+          owner = username;
           mode = "0600";
           sopsFile = ./secrets/home-assistant.sops.yaml;
         };
@@ -39,7 +40,7 @@ in
 
       # Darwin: home-manager sops
       (lib.mkIf isDarwin {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           sops.secrets = {
             hass_api_key = {
               sopsFile = ./secrets/home-assistant.sops.yaml;
@@ -50,15 +51,15 @@ in
           };
           # add api key to environment
           home.sessionVariables = {
-            HASS_API_KEY = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_api_key.path})";
-            HASS_DOMAIN = "$(cat ${config.home-manager.users.ben.sops.secrets.hass_domain.path})";
+            HASS_API_KEY = "$(cat ${config.home-manager.users.${username}.sops.secrets.hass_api_key.path})";
+            HASS_DOMAIN = "$(cat ${config.home-manager.users.${username}.sops.secrets.hass_domain.path})";
           };
         };
       })
 
       # Common configuration (both platforms)
       {
-        home-manager.users.ben = {
+        home-manager.users.${username} = {
           # my scripts relevant to homeAutomation
           home.sessionPath = [ "$HOME/.local/scripts" ];
 
@@ -162,7 +163,7 @@ in
           };
           # relevant home automation keyboard shortcuts in sway
           wayland.windowManager.sway.config =
-            lib.mkIf config.home-manager.users.ben.wayland.windowManager.sway.enable
+            lib.mkIf config.home-manager.users.${username}.wayland.windowManager.sway.enable
               {
                 keybindings =
                   let
@@ -171,7 +172,7 @@ in
                     pageup = "Prior";
                     pagedown = "Next";
                     newwindow = config.nx.programs.defaultWebBrowserSettings.newWindowCmd;
-                    homeDir = config.home-manager.users.ben.home.homeDirectory;
+                    homeDir = config.home-manager.users.${username}.home.homeDirectory;
                   in
                   {
                     "${super}+${pageup}" = "exec ${homeDir}/.local/scripts/home.office.openBlinds";
@@ -180,13 +181,13 @@ in
                   };
               };
           wayland.windowManager.hyprland.settings =
-            lib.mkIf config.home-manager.users.ben.wayland.windowManager.hyprland.enable
+            lib.mkIf config.home-manager.users.${username}.wayland.windowManager.hyprland.enable
               {
                 bind =
                   let
                     pageup = "Prior";
                     pagedown = "Next";
-                    homeDir = config.home-manager.users.ben.home.homeDirectory;
+                    homeDir = config.home-manager.users.${username}.home.homeDirectory;
                     newwindow = config.nx.programs.defaultWebBrowserSettings.newWindowCmd;
                   in
                   [

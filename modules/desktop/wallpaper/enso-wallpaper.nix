@@ -11,7 +11,7 @@ let
 in
 {
   config = lib.mkIf (config.nx.desktop.wallpaper.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben = {
+    home-manager.users.${config.nx.username} = {
       home.file.".config/enso-wallpaper-2880x1800.svg" =
         lib.mkIf (variant == "enso" && resolution == "2880x1800")
           {

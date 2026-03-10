@@ -6,7 +6,7 @@
 }:
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
-    home-manager.users.ben.home.file.".local/scripts/application.scripts.launcher" = {
+    home-manager.users.${config.nx.username}.home.file.".local/scripts/application.scripts.launcher" = {
       executable = true;
       text =
         # bash

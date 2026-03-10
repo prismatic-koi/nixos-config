@@ -1,6 +1,6 @@
-{ pkgs, ... }:
+{ config, pkgs, ... }:
 {
-  home-manager.users.ben = {
+  home-manager.users.${config.nx.username} = {
     programs.neovim.plugins = [
       {
         plugin = pkgs.vimPlugins.copilot-lua;
