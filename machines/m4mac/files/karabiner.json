@@ -759,7 +759,16 @@
             "description": "Map Command+Q to Command+W for apps that use CMD+W to close windows",
             "manipulators": [
               {
-                "type": "basic",
+                "conditions": [
+                  {
+                    "bundle_identifiers": [
+                      "^com\\.mozilla\\.firefox$",
+                      "^net\\.kovidgoyal\\.kitty$",
+                      "^com\\.microsoft\\.edgemac$"
+                    ],
+                    "type": "frontmost_application_if"
+                  }
+                ],
                 "from": {
                   "key_code": "q",
                   "modifiers": {
@@ -776,16 +785,7 @@
                     ]
                   }
                 ],
-                "conditions": [
-                  {
-                    "type": "frontmost_application_if",
-                    "bundle_identifiers": [
-                      "^com\\.mozilla\\.firefox$",
-                      "^net\\.kovidgoyal\\.kitty$",
-                      "^com\\.microsoft\\.edgemac$"
-                    ]
-                  }
-                ]
+                "type": "basic"
               }
             ]
           }
@@ -1076,6 +1076,33 @@
             "product_id": 22356,
             "vendor_id": 222
           }
+        },
+        {
+          "identifiers": {
+            "is_keyboard": true
+          },
+          "simple_modifications": [
+            {
+              "from": {
+                "key_code": "left_command"
+              },
+              "to": [
+                {
+                  "key_code": "left_option"
+                }
+              ]
+            },
+            {
+              "from": {
+                "key_code": "left_option"
+              },
+              "to": [
+                {
+                  "key_code": "left_command"
+                }
+              ]
+            }
+          ]
         }
       ],
       "name": "Default profile",
