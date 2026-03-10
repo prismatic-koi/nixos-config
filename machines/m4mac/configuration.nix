@@ -18,7 +18,7 @@
     home = "/Users/ben";
   };
 
-  networking.hostName = "m1mac";
+  networking.hostName = "m4mac";
 
   # Module configuration using nx namespace (matching NixOS pattern)
   nx = {
