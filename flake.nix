@@ -152,9 +152,9 @@
       };
 
       darwinConfigurations = {
-        m1mac = mkDarwinSystem {
+        m4mac = mkDarwinSystem {
           system = "aarch64-darwin";
-          configFile = "m1mac";
+          configFile = "m4mac";
         };
       };
     };
