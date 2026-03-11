@@ -38,6 +38,7 @@ in
       zathura.enable = false;
       ssh.enableWorkKeys = true;
       homeAutomation.enable = true;
+      aws.enable = true;
     };
     desktop.rofi.enable = true; # For shopping list script (uses choose on Darwin)
     services = {
@@ -51,12 +52,10 @@ in
   # Darwin-specific packages not in shared modules
   environment.systemPackages = with pkgs; [
     arping
-    awscli2
     gnutar
     jankyborders
     podman # darwin doesn't use virtualisation.podman
     rustup
-    ssm-session-manager-plugin
     tree
     tridactyl-native
     utm

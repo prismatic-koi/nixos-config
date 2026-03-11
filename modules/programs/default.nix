@@ -8,6 +8,7 @@
 {
   imports = [
     ./anki.nix
+    ./aws.nix
     ./bitwarden.nix
     ./calibre.nix
     ./choose.nix

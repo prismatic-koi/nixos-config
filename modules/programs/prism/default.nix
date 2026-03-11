@@ -17,6 +17,7 @@
           type = lib.types.attrsOf lib.types.str;
           default = {
             KUBECONFIG = "$HOME/.config/kube/agents-config";
+            AWS_CONFIG_FILE = "$HOME/.config/aws/readonly-config";
           };
           description = "Environment variables to set for the AI agent (opencode)";
         };
