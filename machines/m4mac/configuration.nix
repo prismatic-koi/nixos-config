@@ -51,8 +51,7 @@ in
   # Darwin-specific packages not in shared modules
   environment.systemPackages = with pkgs; [
     arping
-    auth0-cli
-    azure-cli
+    awscli2
     gnutar
     jankyborders
     podman # darwin doesn't use virtualisation.podman

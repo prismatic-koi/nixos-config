@@ -68,14 +68,14 @@ cmd-alt-h = [] # Disable "hide others"
 
 alt-enter = 'exec-and-forget open -a "kitty.app" --new'
 # alt-b = 'exec-and-forget open -a "Firefox.app" --new'
-alt-b = 'exec-and-forget open -na "Microsoft Edge" --args --new-window'
+alt-b = 'exec-and-forget open -a "Google Chrome"'
 alt-f = 'exec-and-forget open -a "kitty.app" --new --args lf'
 # alt-c = 'exec-and-forget open -a "Firefox.app" --new --args --new-window https://calendar.google.com'
-alt-c = 'exec-and-forget open -na "Microsoft Edge" --args --new-window https://calendar.google.com'
+alt-c = 'exec-and-forget open -a "Google Chrome" https://calendar.google.com'
 cmd-space = 'exec-and-forget ~/.local/scripts/application.scripts.launcher'
 alt-l = 'exec-and-forget ~/.local/scripts/home.shoppinglist.addItem'
 # alt-shift-l = 'exec-and-forget open -a "Firefox.app" --new --args --new-window https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5'
-alt-shift-l = 'exec-and-forget open -na "Microsoft Edge" --args --new-window https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5'
+alt-shift-l = 'exec-and-forget open -a "Google Chrome" https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5'
 alt-o = 'exec-and-forget ~/.local/scripts/cli.prism.launch --path ~/Documents/obsidian'
 alt-p = 'exec-and-forget ~/.local/scripts/cli.prism.launch'  # Prism launcher
 

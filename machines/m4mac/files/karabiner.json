@@ -764,7 +764,7 @@
                     "bundle_identifiers": [
                       "^com\\.mozilla\\.firefox$",
                       "^net\\.kovidgoyal\\.kitty$",
-                      "^com\\.microsoft\\.edgemac$"
+                      "^com\\.google\\.Chrome$"
                     ],
                     "type": "frontmost_application_if"
                   }
