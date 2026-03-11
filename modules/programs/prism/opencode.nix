@@ -209,10 +209,14 @@
                 --   { silent = true, desc = "[O]pen project with [A]I agent" }
                 -- )
               '';
+          # Theme is configured in tui.json, not opencode.json
+          xdg.configFile."opencode/tui.json".text = builtins.toJSON {
+            "$schema" = "https://opencode.ai/tui.json";
+            theme = config.theme.opencodename;
+          };
           programs.opencode = {
             enable = true;
             settings = {
-              theme = config.theme.opencodename;
               agent = {
                 build = {
                   description = "Default build agent with full tool access";

@@ -40,7 +40,10 @@ in
       homeAutomation.enable = true;
       aws.enable = true;
     };
-    desktop.rofi.enable = true; # For shopping list script (uses choose on Darwin)
+    desktop = {
+      theme = "onedark";
+      rofi.enable = true; # For shopping list script (uses choose on Darwin)
+    };
     services = {
       syncthing = {
         enable = true;
