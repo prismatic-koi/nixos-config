@@ -80,7 +80,7 @@ in
               'new-window -n edit'
 
             # new window with opencode agent (prefix + a)
-            bind a new-window -n agent "opencode"
+            bind a new-window -n agent "zsh -ic opencode"
 
             # opencode scrolling keybinds (only active when opencode is running)
             # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command

@@ -185,17 +185,6 @@
             # set environment variables for opencode
             opencode = "${envPrefix} opencode";
           };
-          programs.tmux.extraConfig =
-            # tmux
-            ''
-              # new window with opencode
-              bind a new-window "${envPrefix} opencode"
-              # opencode scrolling keybinds (only active when opencode is running)
-              bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
-              bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
-              bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
-              bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
-            '';
           programs.neovim.initLua =
             lib.mkAfter
               # lua
