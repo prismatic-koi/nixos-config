@@ -94,6 +94,10 @@ in
                 "break-pane -s 'edit.1' -n 'agent'" \
                 "join-pane -h -s 'agent.0' -t 'edit'"
 
+            # Remove HM session vars guard from tmux environment so new shells
+            # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
+            set-environment -r __HM_SESS_VARS_SOURCED
+
             # vim style copy
             set -g mode-keys vi
             bind-key -T copy-mode-vi 'v' send -X begin-selection
