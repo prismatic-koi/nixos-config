@@ -104,6 +104,8 @@
         "gopls *" = "allow";
         # playwright-cli browser automation
         "playwright-cli *" = "allow";
+        # pdf text extraction
+        "pdftotext *" = "allow";
       };
 
       # Additional write operations for build agent
@@ -176,6 +178,8 @@
             [
               # need npx on path for memory mcp
               nodejs_24
+              # pdf text extraction for agent use
+              poppler-utils
             ]
             ++ lib.optionals pkgs.stdenv.isLinux [
               # playwright-cli depends on chromium which is Linux-only
