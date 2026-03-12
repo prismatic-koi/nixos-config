@@ -39,6 +39,7 @@ in
       ssh.enableWorkKeys = true;
       homeAutomation.enable = true;
       aws.enable = true;
+      gitlab-cli.enable = true;
     };
     desktop = {
       theme = "onedark";

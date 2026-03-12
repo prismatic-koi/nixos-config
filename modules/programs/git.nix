@@ -32,6 +32,12 @@ in
                 port = 22;
                 identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
+              "gitlab.com" = {
+                user = "git";
+                hostname = "gitlab.com";
+                port = 22;
+                identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+              };
             };
           };
           programs.git = {

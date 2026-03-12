@@ -22,6 +22,7 @@
     ./gcalcli.nix
     ./gimp.nix
     ./git.nix
+    ./gitlab-cli.nix
     ./golang.nix
     ./home-automation.nix
     ./k9s.nix
