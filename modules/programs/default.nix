@@ -126,6 +126,7 @@
             killall
             nixfmt
             openssl
+            opentofu
             p7zip
             pdftk
             ripgrep
