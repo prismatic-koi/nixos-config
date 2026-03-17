@@ -23,6 +23,9 @@ rec {
       };
     in
     {
+      # packages pinned to stable to avoid broken builds in unstable
+      bitwarden-desktop = stablePkgs.bitwarden-desktop;
+
       # packages where we use master by default for bleeding edge
 
       claude-code = masterPkgs.claude-code;
