@@ -8,6 +8,7 @@
     ./gitsigns.nix
     ./image.nix
     ./leap.nix
+    ./markdown-preview.nix
     ./lualine.nix
     ./luasnip.nix
     ./nvim-cmp.nix
