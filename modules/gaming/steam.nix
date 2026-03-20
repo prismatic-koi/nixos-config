@@ -36,7 +36,7 @@
           };
         };
         environment.sessionVariables = {
-          STEAM_EXTRA_COMPAT_TOOLS_PATHS = "/home/ben/.steam/root/compatibilitytools.d";
+          STEAM_EXTRA_COMPAT_TOOLS_PATHS = "/home/${config.nx.username}/.steam/root/compatibilitytools.d";
         };
         home-manager.users.${config.nx.username} = {
           home.persistence."/persist" = {

@@ -30,7 +30,7 @@
 
       # Redirect waydroid user data to persistent storage directly
       systemd.services.waydroid-container.environment = {
-        XDG_DATA_HOME = "/persist/home/ben/.local/share";
+        XDG_DATA_HOME = "/persist/home/${config.nx.username}/.local/share";
       };
 
       # home-manager.users.${config.nx.username} = {

@@ -5,8 +5,6 @@
   ...
 }:
 {
-  imports = [ ./schema.nix ];
-
   theme = lib.mkIf (config.nx.desktop.theme == "everforest") {
     name = "everforest";
     opencodename = "everforest";

@@ -5,8 +5,6 @@
   ...
 }:
 {
-  imports = [ ./schema.nix ];
-
   theme = lib.mkIf (config.nx.desktop.theme == "github-light") {
     name = "github-light";
     opencodename = "github";

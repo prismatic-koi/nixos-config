@@ -17,7 +17,7 @@
       ];
       services.mpd = {
         enable = true;
-        musicDirectory = "/home/ben/music";
+        musicDirectory = "/home/${config.nx.username}/music";
         network.listenAddress = "0.0.0.0";
         extraConfig = ''
           db_file            "~/.local/share/mpd/database"

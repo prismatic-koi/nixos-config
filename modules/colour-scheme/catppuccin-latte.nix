@@ -5,8 +5,6 @@
   ...
 }:
 {
-  imports = [ ./schema.nix ];
-
   theme = lib.mkIf (config.nx.desktop.theme == "catppuccin-latte") {
     name = "catppuccin-latte";
     opencodename = "catppuccin";

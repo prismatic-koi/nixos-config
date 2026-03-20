@@ -5,8 +5,6 @@
   ...
 }:
 {
-  imports = [ ./schema.nix ];
-
   theme = lib.mkIf (config.nx.desktop.theme == "onedark") {
     name = "onedark";
     opencodename = "one-dark";

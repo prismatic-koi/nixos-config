@@ -5,6 +5,7 @@
 }:
 {
   imports = [
+    ./schema.nix
     ./catppuccin-latte.nix
     ./everforest.nix
     ./github-light.nix

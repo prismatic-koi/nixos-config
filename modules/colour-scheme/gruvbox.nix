@@ -4,8 +4,6 @@
   ...
 }:
 {
-  imports = [ ./schema.nix ];
-
   theme = lib.mkMerge [
     (lib.mkIf (config.nx.desktop.theme == "gruvbox-light") {
       name = "gruvbox-light";
