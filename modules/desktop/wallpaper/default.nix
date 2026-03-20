@@ -12,6 +12,7 @@ in
 {
   imports = [
     ./enso-wallpaper.nix
+    ./enso-6colour-wallpaper.nix
     ./rainbox-wallpaper.nix
   ];
   options = {
