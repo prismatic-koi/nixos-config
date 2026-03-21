@@ -58,11 +58,6 @@
         -- Terminal keymaps
         map("t", "<Esc>", "<C-\\><C-n>", { silent = true, desc = "Exit terminal mode" })
 
-        -- Since I will mostly use this in my obsidian vault, I'm going to continue to use the <leader>o convention.
-        -- these functions are included in functions.lua
-        map("n", "<leader>oc", ":lua toggle_checkbox()<CR>", { noremap = true, desc = "[O]bsidian [C]heckbox" })
-        map("n", "<leader>ol", ":lua wrap_wiki_link_normal()<CR>", { noremap = true, desc = "[O]bsidian [L]ink" })
-        map("x", "<leader>ol", ":lua wrap_wiki_link_visual()<CR>", { noremap = true, desc = "[O]bsidian [L]ink" })
       '';
   };
 }

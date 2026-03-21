@@ -94,17 +94,6 @@
           	return out
           end
 
-          -- Define wiki_link_func separately
-          local wikiLinkFunction = function(opts)
-          	if opts.id == nil then
-          		return string.format("[[%s]]", opts.label)
-          	elseif opts.label ~= opts.id then
-          		return string.format("[[%s|%s]]", opts.id, opts.label)
-          	else
-          		return string.format("[[%s]]", opts.id)
-          	end
-          end
-
           -- Define img_name_func separately
           local imgNameFunction = function()
           	return string.format(os.date("%Y-%m-%d_%H%M%S"), "_pasted_image")
@@ -162,7 +151,9 @@
           		substitutions = templateSubstitutions,
           	},
           	new_notes_location = "notes_subdir",
-          	wiki_link_func = wikiLinkFunction,
+          	link = {
+          		style = "wiki",
+          	},
             frontmatter = {
               enabled = true,
               func = noteFrontmatterFunction,
@@ -328,7 +319,7 @@
           vim.keymap.set("n", "<leader>ob", "<cmd>Obsidian backlinks<cr>", { desc = "[O]bsidian [B]acklinks" })
           vim.keymap.set("n", "<leader>oc", "<cmd>Obsidian toggle_checkbox<cr>", { desc = "[O]bsidian [C]heckbox" })
           vim.keymap.set("n", "<leader>of", "<cmd>Obsidian follow_link<cr>", { desc = "[O]bsidian [F]ollow" })
-          vim.keymap.set("n", "<leader>ol", "<cmd>Obsidian link_new<cr>", { desc = "[O]bsidian [L]ink" })
+          vim.keymap.set("v", "<leader>ol", "<cmd>Obsidian link_new<cr>", { desc = "[O]bsidian [L]ink (new note from selection)" })
           vim.keymap.set("n", "<leader>oo", "<cmd>Obsidian open<cr>", { desc = "[O]bsidian [O]pen" })
           vim.keymap.set("n", "<leader>osn", "<cmd>Obsidian search<cr>", { desc = "[O]bsidian [S]earch [N]otes" })
           vim.keymap.set("n", "<leader>ost", "<cmd>Obsidian tags<cr>", { desc = "[O]bsidian [S]earch [T]ags" })
