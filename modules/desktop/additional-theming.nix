@@ -17,10 +17,6 @@
       };
       gtk = {
         enable = true;
-        theme = lib.mkIf (config.theme.type == "dark") {
-          name = "Everforest-Dark-BL";
-          package = pkgs.everforest-gtk-theme;
-        };
         iconTheme = {
           name = "Papirus-Dark";
           package = pkgs.papirus-icon-theme;
