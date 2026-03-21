@@ -23,7 +23,7 @@
         layout = "dwindle";
       };
       waybar.enable = false;
-      wallpaper.variant = "enso";
+      wallpaper.variant = "enso-6colour";
     };
     programs = {
       anki.enable = false; # build broken as of 2025-08-30
