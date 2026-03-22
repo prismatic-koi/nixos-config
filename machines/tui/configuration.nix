@@ -23,10 +23,7 @@
       };
       waybar.enable = false;
       # hyprlock.oled = true;
-      wallpaper = {
-        variant = "enso";
-        resolution = "2880x1800";
-      };
+      wallpaper.variant = "enso";
     };
     programs = {
       chromium.enable = true;
