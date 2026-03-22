@@ -129,6 +129,11 @@
               defaults
               ./machines/${configFile}/configuration.nix
               home-manager.darwinModules.home-manager
+              # Explicitly imported here - modules/darwin is NOT imported anywhere else.
+              # Do not remove thinking it's a duplicate; it provides Darwin stubs for
+              # Linux-only options (boot, environment.persistence, systemd, etc.) that
+              # shared modules reference, allowing them to evaluate on Darwin without errors.
+              ./modules/darwin/impermanence-stub.nix
             ]
             ++ extraModules;
         };
