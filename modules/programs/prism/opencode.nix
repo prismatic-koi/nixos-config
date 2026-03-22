@@ -292,6 +292,8 @@
               plugin = [
                 # a plugin to use Gemini auth for LLM access
                 "opencode-gemini-auth@latest"
+                # tmux window status colours based on agent state
+                "./plugins/tmux-status"
               ];
             };
             rules = agentInstructions;
@@ -303,6 +305,10 @@
           };
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
+          # tmux status plugin
+          xdg.configFile."opencode/plugins/tmux-status.ts" = {
+            source = ./opencode/plugins/tmux-status.ts;
+          };
           # playwright-cli global skill (Linux-only: playwright-cli depends on chromium)
           xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
             source = ./opencode/skills/playwright-cli;

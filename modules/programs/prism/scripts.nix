@@ -230,6 +230,66 @@
           '';
       };
 
+      home.file.".local/scripts/cli.tmux.setStatus" = {
+        executable = true;
+        text =
+          with config.theme;
+          # bash
+          ''
+            #!/usr/bin/env bash
+
+            # Exit silently if not in tmux
+            if [ -z "$TMUX" ]; then
+              exit 0
+            fi
+
+            # Read JSON from stdin (required by hooks)
+            HOOK_JSON=$(cat)
+
+            ACTION="''${1:-}"
+
+            # Get the window ID for the pane where this hook is running
+            WINDOW_ID=$(${pkgs.tmux}/bin/tmux display-message -t "$TMUX_PANE" -p '#{window_id}')
+
+            # State colours (from theme)
+            # active   = purple (agent is working)
+            # waiting  = yellow (waiting for user input)
+            # finished = green  (idle, ready for next prompt)
+            # compact  = blue   (compacting context)
+            # error    = red    (error / retrying)
+
+            ACTIVE_FMT='#[fg=${purple}]#I:#W#{?window_flags,#{window_flags}, }'
+            WAITING_FMT='#[fg=${yellow}]#I:#W#{?window_flags,#{window_flags}, }'
+            FINISHED_FMT='#[fg=${green}]#I:#W#{?window_flags,#{window_flags}, }'
+            COMPACT_FMT='#[fg=${blue}]#I:#W#{?window_flags,#{window_flags}, }'
+            ERROR_FMT='#[fg=${red}]#I:#W#{?window_flags,#{window_flags}, }'
+
+            set_status() {
+              local state="$1" fmt="$2"
+              ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" window-status-format "$fmt"
+              ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" window-status-current-format "$fmt"
+              # store state for choose-tree -F to read
+              ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" @agent_state "$state"
+            }
+
+            case "$ACTION" in
+              set-active)    set_status "active"     "$ACTIVE_FMT" ;;
+              set-waiting)   set_status "waiting"    "$WAITING_FMT" ;;
+              set-finished)  set_status "finished"   "$FINISHED_FMT" ;;
+              set-compacting) set_status "compacting" "$COMPACT_FMT" ;;
+              set-error)     set_status "error"      "$ERROR_FMT" ;;
+              clear)
+                # Unset per-window overrides to fall back to global config
+                ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" -u window-status-format
+                ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" -u window-status-current-format
+                ${pkgs.tmux}/bin/tmux set-window-option -t "$WINDOW_ID" -u @agent_state
+                ;;
+            esac
+
+            exit 0
+          '';
+      };
+
       programs.zsh.shellAliases = {
         gwc = "cli.git.worktreeClone";
       };

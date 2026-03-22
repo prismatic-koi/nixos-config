@@ -33,6 +33,8 @@ in
             # set -g status-right "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}#{=21:pane_title} "
             set -g status-right "#h "
             set -g status-style 'bg=${bg1} fg=${secondary}'
+            set -g message-style 'bg=${primary} fg=${bg1}'
+            set -g mode-style 'bg=${bg3} fg=${foreground}'
             set -g status-left-style 'bg=${bg1} fg=${secondary}'
             set -g status-right-style 'bg=${bg1} fg=${primary}'
             # for kitty images in image.nvim
@@ -66,6 +68,9 @@ in
 
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
+
+            # window switcher with agent state colours (C-w)
+            bind -n C-w choose-tree -Zw -F '#{?window_name,#{?#{==:#{@agent_state},active},#[fg=${purple}],#{?#{==:#{@agent_state},waiting},#[fg=${yellow}],#{?#{==:#{@agent_state},finished},#[fg=${green}],#{?#{==:#{@agent_state},compacting},#[fg=${blue}],#{?#{==:#{@agent_state},error},#[fg=${red}],}}}}}#{window_index}:#{window_name}#{window_flags}#[default],#{session_name}}'
 
             # toggle to/from term window (C-Space)
             unbind C-Space
