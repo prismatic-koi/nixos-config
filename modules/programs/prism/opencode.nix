@@ -102,6 +102,8 @@
         "go doc *" = "allow";
         "go vet *" = "allow";
         "gopls *" = "allow";
+        # AWS CLI (read-only config)
+        "aws *" = "allow";
         # playwright-cli browser automation
         "playwright-cli *" = "allow";
         # pdf text extraction
