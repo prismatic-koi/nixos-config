@@ -60,6 +60,7 @@ in
     jankyborders
     mysql80
     podman # darwin doesn't use virtualisation.podman
+    postgresql
     rustup
     tree
     tridactyl-native
