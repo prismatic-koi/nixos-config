@@ -71,6 +71,10 @@ in
             path = "${kubeDir}/agents-config";
             sopsFile = ./secrets/kubeconfig.sops.yaml;
           };
+          kubeconfig = {
+            path = "${kubeDir}/config-home";
+            sopsFile = ./secrets/kubeconfig.sops.yaml;
+          };
         };
       })
     ]
