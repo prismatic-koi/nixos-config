@@ -74,15 +74,11 @@ in
 
             # toggle to/from term window (C-Space)
             unbind C-Space
-            bind -n C-Space if-shell 'tmux list-windows -F "##I:##W" | grep -q ":term$"' \
-              'if-shell "[ #{window_name} = term ]" "last-window" "select-window -t term"' \
-              'new-window -n term'
+            bind -n C-Space run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":term$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n term; elif [ "$cur" = "term" ]; then ${pkgs.tmux}/bin/tmux last-window; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
 
             # toggle to/from edit window (C-e)
             unbind C-e
-            bind -n C-e if-shell 'tmux list-windows -F "##I:##W" | grep -q ":edit$"' \
-              'if-shell "[ #{window_name} = edit ]" "last-window" "select-window -t edit"' \
-              'new-window -n edit'
+            bind -n C-e run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":edit$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n edit; elif [ "$cur" = "edit" ]; then ${pkgs.tmux}/bin/tmux last-window; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
 
             # new window with opencode agent (prefix + a)
             bind a new-window -n agent "zsh -ic opencode"
