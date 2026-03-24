@@ -32,9 +32,15 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
           await tmux("set-error");
           break;
         case "session.compacted":
-          await tmux("set-compacting");
+          // compaction finished — transition back to active (agent resumes)
+          await tmux("set-active");
           break;
       }
+    },
+    // fires before the LLM generates the compaction summary
+    "experimental.session.compacting": async (_input, output) => {
+      await tmux("set-compacting");
+      return output;
     },
   };
 };
