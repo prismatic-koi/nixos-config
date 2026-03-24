@@ -79,7 +79,7 @@ argument_parser.add_argument(
     "--merge-candidates",
     "-m",
     action="store_true",
-    help="Merge pass candidates for fully-qualified and registered domain name",
+    help="Merge pass candidates for fully-qualified and top domain under public suffix",
 )
 group = argument_parser.add_mutually_exclusive_group()
 group.add_argument(
@@ -332,14 +332,14 @@ def main(arguments):
     extract_result = tldextract.extract(arguments.url)
 
     # Try to find candidates using targets in the following order: fully-qualified domain name (includes subdomains),
-    # the registered domain name and finally: the IPv4 address if that's what
+    # the top domain under public suffix and finally: the IPv4 address if that's what
     # the URL represents
     candidates = []
     for target in filter(
         None,
         [
             extract_result.fqdn,
-            extract_result.registered_domain,
+            extract_result.top_domain_under_public_suffix,
             extract_result.subdomain + "." + extract_result.domain,
             extract_result.domain,
             extract_result.ipv4,
