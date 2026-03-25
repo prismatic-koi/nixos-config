@@ -115,7 +115,6 @@ in
               enable = true;
               plugins = [
                 "git"
-                "git-auto-fetch"
                 "history"
               ];
             };
