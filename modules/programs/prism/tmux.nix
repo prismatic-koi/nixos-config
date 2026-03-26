@@ -72,13 +72,14 @@ in
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
 
-            # ensure the prism-dashboard session exists, creating it if needed
+            # ensure the prism-dashboard session exists, creating it if needed.
+            # the session runs a restart loop so it survives the TUI exiting.
             # used by both C-w (popup) and prefix+D (switch)
             bind -n C-w display-popup -E -w 80% -h 60% -b single \
-              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'prism dashboard'; tmux attach-session -t prism-dashboard"
+              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'while true; do prism dashboard --popup; done'; tmux attach-session -t prism-dashboard"
             # switch to the persistent dashboard session (prefix+D)
             bind-key D run-shell \
-              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'prism dashboard'; tmux switch-client -t prism-dashboard"
+              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'while true; do prism dashboard --popup; done'; tmux switch-client -t prism-dashboard"
 
             # toggle to/from term window (C-Space)
             unbind C-Space

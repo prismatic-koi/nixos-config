@@ -496,10 +496,27 @@
                     else:
                         create_or_switch_session(selected, None)
 
+                def ensure_dashboard_session():
+                    """Ensure the prism-dashboard session exists in the background."""
+                    r = subprocess.run(
+                        ["${tmux}", "has-session", "-t", "prism-dashboard"],
+                        capture_output=True
+                    )
+                    if r.returncode != 0:
+                        subprocess.Popen(
+                            ["${tmux}", "new-session", "-ds", "prism-dashboard",
+                             "-n", "dashboard", "while true; do prism dashboard --popup; done"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+
                 def main():
                     if len(sys.argv) >= 3 and sys.argv[1] == "--path":
                         open_path(sys.argv[2])
                         return
+
+                    # Ensure dashboard session is running in the background
+                    ensure_dashboard_session()
 
                     projects = get_project_list()
                     selected = fzy_pick(projects, prompt="project> ")

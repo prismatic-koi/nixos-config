@@ -249,13 +249,13 @@ func (m dashModel) View() string {
 const dashSession = "prism-dashboard"
 
 // ensureDashSession creates the prism-dashboard session if it doesn't exist.
+// The session command is a restart loop so it survives the TUI exiting.
 func ensureDashSession() error {
 	if tmux.HasSession(dashSession) {
 		return nil
 	}
-	// Create detached session running prism dashboard in --popup mode
-	// (popup mode = run the TUI directly, no redirect logic)
-	c := exec.Command("tmux", "new-session", "-ds", dashSession, "-n", "dashboard", "prism dashboard --popup")
+	c := exec.Command("tmux", "new-session", "-ds", dashSession, "-n", "dashboard",
+		"while true; do prism dashboard --popup; done")
 	return c.Run()
 }
 
