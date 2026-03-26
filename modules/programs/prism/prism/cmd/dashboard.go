@@ -300,17 +300,23 @@ func (m dashModel) View() string {
 
 			var statStr string
 			if stat.Files == 0 {
-				statStr = fmt.Sprintf("%-*s", statW, styleDim.Render("—"))
+				statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
 			} else {
 				fileWord := "files"
 				if stat.Files == 1 {
 					fileWord = "file "
 				}
-				statStr = fmt.Sprintf("%-*s", statW, fmt.Sprintf("%d %s %s %s",
-					stat.Files, fileWord,
-					styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)),
-					styleDel.Render(fmt.Sprintf("-%d", stat.Deletions)),
-				))
+				// Build plain portion then pad, append coloured +/- separately.
+				plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
+				coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+					" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+				// Pad to statW based on visible width of plain + raw +N -N.
+				rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+				pad := statW - len(rawStat)
+				if pad < 0 {
+					pad = 0
+				}
+				statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
 			}
 
 			prefix := styleFg.Render(fmt.Sprintf(" %s%-*s  ", dot, sessionW, sessionDisplay))
