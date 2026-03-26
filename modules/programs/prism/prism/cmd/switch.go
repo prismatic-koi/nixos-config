@@ -346,13 +346,14 @@ func (m inputModel) View() string {
 	sb.WriteString("\n")
 	sb.WriteString(styleCursor.Render(m.prompt))
 	sb.WriteString(m.value)
-	// Show what the branch name will sanitise to if different from raw input.
-	sanitised := git.SanitiseBranch(m.value)
-	if sanitised != "" && sanitised != m.value {
-		sb.WriteString("  " + styleHint.Render("→ "+sanitised))
-	}
 	sb.WriteString(styleDim.Render("█"))
 	sb.WriteString("\n")
+	// Sanitised preview on its own line — keeps the cursor on the input line.
+	sanitised := git.SanitiseBranch(m.value)
+	if sanitised != "" && sanitised != m.value {
+		sb.WriteString(styleHint.Render("  → " + sanitised))
+		sb.WriteString("\n")
+	}
 	sb.WriteString(styleDim.Render("  enter confirm  esc cancel"))
 	sb.WriteString("\n")
 	return sb.String()
