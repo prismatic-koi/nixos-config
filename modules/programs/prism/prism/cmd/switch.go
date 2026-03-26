@@ -204,31 +204,36 @@ func (m pickerModel) View() string {
 	}
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	styleSelected := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary))
-	styleSpecial := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow))
-
-	divW := 60
-	if m.width > 2 && m.width-2 < divW {
-		divW = m.width - 2
-	}
-	if divW < 0 {
-		divW = 0
-	}
+	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	// Selected row: primary fg on a subtle background, full width.
+	styleRowSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorPrimary)).
+		Background(lipgloss.Color(ColorSecondary)).
+		Bold(true).
+		Width(m.width)
+	styleRowSpecialSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorYellow)).
+		Background(lipgloss.Color(ColorSecondary)).
+		Bold(true).
+		Width(m.width)
+	styleRowNormal := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorSecondary)).
+		Width(m.width)
+	styleRowSpecial := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorYellow)).
+		Width(m.width)
 
 	var sb strings.Builder
 
-	// Prompt + filter input.
+	// Prompt + filter input — pad with a leading space to match row indent.
 	sb.WriteString("\n")
-	sb.WriteString(styleCursor.Render(m.prompt))
+	sb.WriteString(stylePrompt.Render(" " + m.prompt))
 	sb.WriteString(m.filter)
-	sb.WriteString(styleDim.Render("█")) // cursor
-	sb.WriteString("\n")
-	sb.WriteString(styleDim.Render(strings.Repeat("─", divW)))
-	sb.WriteString("\n")
+	sb.WriteString(styleDim.Render("█"))
+	sb.WriteString("\n\n")
 
 	// Visible window of matched items.
-	maxVisible := m.height - 5
+	maxVisible := m.height - 6
 	if maxVisible < 1 {
 		maxVisible = 10
 	}
@@ -243,32 +248,31 @@ func (m pickerModel) View() string {
 
 	for i := start; i < end; i++ {
 		e := m.matched[i]
-		prefix := "  "
-		var line string
+		// Pad display with a leading space for breathing room.
+		text := " " + e.display
+		var row string
 		if i == m.cursor {
-			prefix = styleCursor.Render("> ")
 			if e.special != "" {
-				line = styleSpecial.Render(e.display)
+				row = styleRowSpecialSelected.Render(text)
 			} else {
-				line = styleSelected.Render(e.display)
+				row = styleRowSelected.Render(text)
 			}
 		} else {
 			if e.special != "" {
-				line = styleSpecial.Render(e.display)
+				row = styleRowSpecial.Render(text)
 			} else {
-				line = styleDim.Render(e.display)
+				row = styleRowNormal.Render(text)
 			}
 		}
-		sb.WriteString(prefix + line + "\n")
+		sb.WriteString(row + "\n")
 	}
 
 	if len(m.matched) == 0 {
-		sb.WriteString(styleDim.Render("  no matches") + "\n")
+		sb.WriteString(styleDim.Render(" no matches") + "\n")
 	}
 
-	sb.WriteString(styleDim.Render(strings.Repeat("─", divW)))
 	sb.WriteString("\n")
-	sb.WriteString(styleDim.Render("  type to filter  ↑/↓ navigate  enter select  esc cancel"))
+	sb.WriteString(styleDim.Render(" ↑/↓ navigate  enter select  esc cancel"))
 	sb.WriteString("\n")
 
 	return sb.String()
