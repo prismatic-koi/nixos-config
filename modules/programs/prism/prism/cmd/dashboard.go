@@ -95,10 +95,10 @@ type dashModel struct {
 }
 
 func newDashModel(client string, popup bool) dashModel {
-	// Use ClientSession so we get the session the *viewer* is in, not the
-	// session the prism-dashboard process itself is running in.
-	currentSession, _ := tmux.ClientSession(client)
-	inDashSession := currentSession == dashSession
+	// CallerSession reads @prism_caller stamped by the tmux binding — the only
+	// reliable way to know which session the viewer came from.
+	currentSession := tmux.CallerSession()
+	inDashSession := currentSession == dashSession || currentSession == ""
 	return dashModel{
 		client:         client,
 		popup:          popup || inDashSession,
@@ -125,10 +125,10 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
 		}
-		// Refresh which session the client is currently viewing
-		if s, err := tmux.ClientSession(m.client); err == nil {
-			m.currentSession = s
-		}
+		// Refresh caller session — stamped into @prism_caller by the tmux
+		// binding at the moment C-w / prefix+D was pressed, so it always
+		// reflects the actual session the viewer came from.
+		m.currentSession = tmux.CallerSession()
 
 	case tea.KeyMsg:
 		switch msg.String() {

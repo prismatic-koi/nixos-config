@@ -109,6 +109,14 @@ func ClientSession(client string) (string, error) {
 	return run("display-message", "-t", client, "-p", "#{session_name}")
 }
 
+// CallerSession returns the value of the @prism_caller global tmux option,
+// which is stamped by the C-w / prefix+D bindings before attaching to
+// prism-dashboard. This reliably identifies which session the viewer came from.
+func CallerSession() string {
+	val, _ := run("show-option", "-gv", "@prism_caller")
+	return val
+}
+
 // CurrentClient returns the client name for the current tmux client.
 func CurrentClient() (string, error) {
 	return run("display-message", "-p", "#{client_name}")
