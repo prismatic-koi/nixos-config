@@ -26,6 +26,7 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
         case "session.idle":
           await tmux("set-finished");
           break;
+        case "session.created":
         case "session.updated":
           if (event.properties.info.title)
             await setTitle(event.properties.info.title);
