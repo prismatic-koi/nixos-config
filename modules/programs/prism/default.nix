@@ -23,6 +23,20 @@
         };
       };
 
+      worktreeExclude = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "obsidian" ];
+        example = [
+          "nixos-config"
+          "dotfiles"
+        ];
+        description = ''
+          List of repository directory names to exclude from automatic bare+worktree
+          conversion. Repos matching any name in this list will be opened directly
+          as regular directories rather than being offered a worktree conversion.
+        '';
+      };
+
       # Internal computed values for submodules to use
       _internal = lib.mkOption {
         type = lib.types.attrs;
@@ -62,6 +76,10 @@
       agentEnvPrefix = lib.concatStringsSep " " (
         lib.mapAttrsToList (name: value: "${name}=${value}") config.nx.programs.prism.agent.envVars
       );
+      # Python list literal for use in generated scripts
+      worktreeExcludePyList = "[${
+        lib.concatStringsSep ", " (map (n: "\"${n}\"") config.nx.programs.prism.worktreeExclude)
+      }]";
     };
   };
 }

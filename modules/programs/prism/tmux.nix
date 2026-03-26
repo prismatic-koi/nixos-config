@@ -61,6 +61,9 @@ in
             bind-key X kill-window
             # close pane without confirmation
             bind-key x kill-pane
+            # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
+            # TMUX_PANE is inherited by the popup shell; the script uses it to resolve the session
+            bind-key W display-popup -E -w 60% -h 40% -b single "cli.tmux.worktreeCleanup"
             # easy config reload
             bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
 
@@ -69,8 +72,9 @@ in
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
 
-            # window switcher with agent state colours (C-w)
-            bind -n C-w choose-tree -Zw -F '#{?window_name,#{?#{==:#{@agent_state},active},#[fg=${purple}],#{?#{==:#{@agent_state},waiting},#[fg=${yellow}],#{?#{==:#{@agent_state},finished},#[fg=${green}],#{?#{==:#{@agent_state},compacting},#[fg=${blue}],#{?#{==:#{@agent_state},error},#[fg=${red}],}}}}}#{window_index}:#{window_name}#{window_flags}#[default],#{session_name}}'
+            # agent dashboard popup (C-w) — replaces choose-tree
+            # TODO: replace with a Bubble Tea live-updating TUI
+            bind -n C-w display-popup -E -w 80% -h 60% -b single "cli.tmux.dashboard"
 
             # toggle to/from term window (C-Space)
             unbind C-Space
