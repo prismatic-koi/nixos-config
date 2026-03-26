@@ -2,7 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -243,17 +246,63 @@ func (m dashModel) View() string {
 
 // ── cobra command ─────────────────────────────────────────────────────────────
 
+const dashSession = "prism-dashboard"
+
+// ensureDashSession creates the prism-dashboard session if it doesn't exist.
+func ensureDashSession() error {
+	if tmux.HasSession(dashSession) {
+		return nil
+	}
+	// Create detached session running prism dashboard in --popup mode
+	// (popup mode = run the TUI directly, no redirect logic)
+	c := exec.Command("tmux", "new-session", "-ds", dashSession, "-n", "dashboard", "prism dashboard --popup")
+	return c.Run()
+}
+
 var dashboardCmd = &cobra.Command{
 	Use:   "dashboard",
 	Short: "Live agent status dashboard",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		popup, _ := cmd.Flags().GetBool("popup")
-		client, _ := tmux.CurrentClient()
-		m := newDashModel(client, popup)
-		p := tea.NewProgram(m, tea.WithAltScreen())
-		_, err := p.Run()
-		return err
+
+		// --popup: we are already attached inside the persistent session,
+		// just run the TUI directly.
+		if popup {
+			client, _ := tmux.CurrentClient()
+			m := newDashModel(client, popup)
+			p := tea.NewProgram(m, tea.WithAltScreen())
+			_, err := p.Run()
+			return err
+		}
+
+		inTmux := os.Getenv("TMUX") != ""
+
+		if inTmux {
+			// Inside tmux as a CLI call: ensure session exists, switch to it.
+			if err := ensureDashSession(); err != nil {
+				return err
+			}
+			client, _ := tmux.CurrentClient()
+			return tmux.SwitchClient(client, dashSession)
+		}
+
+		// Outside tmux: ensure session exists, then exec tmux attach so this
+		// process is replaced by a full tmux client attached to the dashboard.
+		if err := ensureDashSession(); err != nil {
+			return err
+		}
+		return syscallExecTmux(dashSession)
 	},
+}
+
+// syscallExecTmux replaces the current process with tmux attached to session
+// using syscall.Exec so no parent process remains.
+func syscallExecTmux(session string) error {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		return err
+	}
+	return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", session}, os.Environ())
 }
 
 func init() {
