@@ -72,9 +72,8 @@ in
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
 
-            # agent dashboard popup (C-w) — replaces choose-tree
-            # TODO: replace with a Bubble Tea live-updating TUI
-            bind -n C-w display-popup -E -w 80% -h 60% -b single "cli.tmux.dashboard"
+            # agent dashboard popup (C-w) — Bubble Tea live TUI
+            bind -n C-w display-popup -E -w 80% -h 60% -b single "prism dashboard --popup"
 
             # toggle to/from term window (C-Space)
             unbind C-Space

@@ -54,6 +54,7 @@
     ./context-switcher.nix
     ./scripts.nix
     ./claude-code.nix
+    ./prism-tui.nix
   ];
 
   config = lib.mkIf config.nx.programs.prism.enable {
@@ -65,6 +66,7 @@
     nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
     nx.programs.prism.scripts.enable = lib.mkDefault true;
     nx.programs.prism.claude-code.enable = lib.mkDefault true;
+    nx.programs.prism.tui.enable = lib.mkDefault true;
 
     # Auto-enable choose on Darwin when contextSwitcher is enabled
     nx.programs.choose.enable = lib.mkDefault (

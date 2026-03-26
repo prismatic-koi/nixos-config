@@ -34,5 +34,7 @@ rec {
       playwright-cli =
         if final.stdenv.isLinux then final.callPackage ../pkgs/playwright-cli.nix { } else null;
 
+      prism = final.callPackage ../pkgs/prism.nix { };
+
     };
 }
