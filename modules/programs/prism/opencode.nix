@@ -278,6 +278,7 @@
                 "atlasian_lookup*" = "allow";
                 "atlasian_search*" = "allow";
                 "atlasian_fetch" = "allow";
+                "atlasian_fetchAtlassian" = "allow";
                 # Write operations (ask)
                 "atlasian_create*" = "ask";
                 "atlasian_edit*" = "ask";
