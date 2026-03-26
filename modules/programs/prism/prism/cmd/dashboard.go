@@ -133,10 +133,19 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
-			// Exit with code 2 to signal intentional quit to the restart loop.
-			// The loop only restarts on exit code 0 (e.g. after Enter navigation).
+			if m.popup {
+				// Direct popup mode (C-w): just quit, display-popup -E closes it.
+				return m, tea.Quit
+			}
+			// Persistent session mode (prefix+D): switch caller client back to
+			// their previous session. TUI keeps running via the restart loop.
 			return m, tea.Sequence(
-				func() tea.Msg { os.Exit(2); return nil },
+				func() tea.Msg {
+					if client := tmux.CallerClient(); client != "" {
+						_ = tmux.SwitchClient(client, tmux.CallerSession())
+					}
+					return nil
+				},
 				tea.Quit,
 			)
 
