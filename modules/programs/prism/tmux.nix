@@ -54,9 +54,20 @@ in
             # window switching
             bind -r p previous-window
             bind -r n next-window
-            # window splitting
-            bind -r v split-window -v
-            bind -r b split-window -h
+            # window splitting — unbound (used by accident more than intentionally)
+            unbind v
+            unbind b
+            # open current repo in browser (prefix+b)
+            bind-key b run-shell '\
+              dir="$(tmux display-message -p "#{pane_current_path}")"; \
+              url="$(git -C "$dir" remote get-url origin 2>/dev/null)"; \
+              if [ -z "$url" ]; then exit 0; fi; \
+              url="$(echo "$url" | sed \
+                -e "s|git@\([^:]*\):\(.*\)\.git|https://\1/\2|" \
+                -e "s|git@\([^:]*\):\(.*\)|https://\1/\2|" \
+                -e "s|\.git$$||")"; \
+              ${if isDarwin then "open" else "${pkgs.xdg-utils}/bin/xdg-open"} "$url" 2>/dev/null &'
+
             # close window without confirmation
             bind-key X kill-window
             # close pane without confirmation
