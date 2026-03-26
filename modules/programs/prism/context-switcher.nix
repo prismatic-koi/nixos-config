@@ -422,9 +422,10 @@
                         )
                         projects = [p for p in result.stdout.strip().split("\n") if p]
                         projects.insert(0, "[scratchpad]")
+                        projects.insert(0, "[dashboard]")
                         return projects
                     except subprocess.CalledProcessError:
-                        return ["[scratchpad]"]
+                        return ["[dashboard]", "[scratchpad]"]
 
                 # ── fzy helpers ────────────────────────────────────────────────────────────
 
@@ -523,7 +524,10 @@
                     if not selected:
                         sys.exit(0)
 
-                    if selected == "[scratchpad]":
+                    if selected == "[dashboard]":
+                        ensure_dashboard_session()
+                        subprocess.run(["${tmux}", "switch-client", "-t", "prism-dashboard"])
+                    elif selected == "[scratchpad]":
                         create_or_switch_session("[scratchpad]")
                     elif is_bare_repo(selected):
                         handle_bare_repo(selected)
