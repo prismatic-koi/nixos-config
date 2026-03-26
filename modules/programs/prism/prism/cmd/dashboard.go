@@ -96,9 +96,12 @@ type dashModel struct {
 
 func newDashModel(client string, popup bool) dashModel {
 	currentSession, _ := tmux.CurrentSession()
+	// If we're running inside prism-dashboard itself, treat as persistent mode
+	// regardless of --popup flag — q/esc should detach, not quit the process.
+	inDashSession := currentSession == dashSession
 	return dashModel{
 		client:         client,
-		popup:          popup,
+		popup:          popup || inDashSession,
 		currentSession: currentSession,
 	}
 }
@@ -126,6 +129,17 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
+			if m.popup {
+				// In persistent/popup mode: detach the client rather than
+				// quitting the process (which would just restart via the loop).
+				return m, tea.Sequence(
+					func() tea.Msg {
+						_ = tmux.DetachClient(m.client)
+						return nil
+					},
+					tea.Quit,
+				)
+			}
 			return m, tea.Quit
 
 		case "j", "down":

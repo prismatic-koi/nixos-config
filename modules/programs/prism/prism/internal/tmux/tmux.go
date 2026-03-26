@@ -115,6 +115,17 @@ func NewSession(name, dir string) error {
 	return err
 }
 
+// DetachClient detaches the named client from its current session.
+// If client is empty, detaches the current client.
+func DetachClient(client string) error {
+	if client == "" {
+		_, err := run("detach-client")
+		return err
+	}
+	_, err := run("detach-client", "-s", client)
+	return err
+}
+
 // SelectAgentWindow selects the agent window in a session.
 func SelectAgentWindow(session string) error {
 	out, err := run("list-windows", "-t", session, "-F", "#{window_index}|#{window_name}")
