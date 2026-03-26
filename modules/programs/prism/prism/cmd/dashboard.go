@@ -278,8 +278,15 @@ func (m dashModel) View() string {
 		}
 
 		if isSelected {
-			// Render the entire row as one plain string padded to full width,
-			// then apply a single background style — no mid-line colour breaks.
+			// Bar colour: state colour for active states, primary for idle/finished.
+			barBg := lipgloss.Color(ColorPrimary)
+			switch s.AgentState {
+			case "active", "waiting", "compacting", "error":
+				if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
+					barBg = c
+				}
+			}
+
 			plain := fmt.Sprintf(" %s%-*s  %-*s  %-*s",
 				dot, sessionW, sessionDisplay, stateW, stateLabel(s.AgentState), statW, statPlain)
 			if titleW > 0 {
@@ -287,7 +294,7 @@ func (m dashModel) View() string {
 			}
 			row := lipgloss.NewStyle().
 				Foreground(lipgloss.Color(ColorBg0)).
-				Background(lipgloss.Color(ColorPrimary)).
+				Background(barBg).
 				Bold(true).
 				Width(m.width).
 				Render(plain)
