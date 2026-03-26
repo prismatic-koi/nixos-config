@@ -106,7 +106,7 @@
       ben.home = {
         username = "ben";
         homeDirectory = "/home/ben";
-        stateVersion = "24.05"; # Do Not Touch!
+        stateVersion = "25.11";
       };
     };
   };

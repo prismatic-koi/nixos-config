@@ -34,7 +34,5 @@ rec {
       playwright-cli =
         if final.stdenv.isLinux then final.callPackage ../pkgs/playwright-cli.nix { } else null;
 
-      meridian = final.callPackage ../pkgs/meridian.nix { };
-
     };
 }
