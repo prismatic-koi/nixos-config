@@ -7,7 +7,6 @@ package cmd
 //	SwitchWorktreeExclude  colon-separated repo names to skip bare conversion
 //	SwitchProjectLocations colon-separated dirs whose subdirs become entries
 //	SwitchProjectSpecific  colon-separated dirs shown as direct entries
-//	SwitchAgentEnvPrefix   env var prefix string prepended to opencode invocation
 
 import (
 	"fmt"
@@ -200,10 +199,22 @@ func (m *pickerModel) refilter() {
 }
 
 func (m pickerModel) View() string {
+	if m.width == 0 {
+		return ""
+	}
+
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleSelected := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary))
 	styleSpecial := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow))
+
+	divW := 60
+	if m.width > 2 && m.width-2 < divW {
+		divW = m.width - 2
+	}
+	if divW < 0 {
+		divW = 0
+	}
 
 	var sb strings.Builder
 
@@ -213,7 +224,7 @@ func (m pickerModel) View() string {
 	sb.WriteString(m.filter)
 	sb.WriteString(styleDim.Render("█")) // cursor
 	sb.WriteString("\n")
-	sb.WriteString(styleDim.Render(strings.Repeat("─", min(m.width-2, 60))))
+	sb.WriteString(styleDim.Render(strings.Repeat("─", divW)))
 	sb.WriteString("\n")
 
 	// Visible window of matched items.
@@ -255,7 +266,7 @@ func (m pickerModel) View() string {
 		sb.WriteString(styleDim.Render("  no matches") + "\n")
 	}
 
-	sb.WriteString(styleDim.Render(strings.Repeat("─", min(m.width-2, 60))))
+	sb.WriteString(styleDim.Render(strings.Repeat("─", divW)))
 	sb.WriteString("\n")
 	sb.WriteString(styleDim.Render("  type to filter  ↑/↓ navigate  enter select  esc cancel"))
 	sb.WriteString("\n")
@@ -319,7 +330,7 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.value = string(runes[:len(runes)-1])
 			}
 		default:
-			if msg.Type == tea.KeyRunes {
+			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
 				m.value += msg.String()
 			}
 		}
@@ -330,10 +341,16 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m inputModel) View() string {
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	styleHint := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Italic(true)
 	var sb strings.Builder
 	sb.WriteString("\n")
 	sb.WriteString(styleCursor.Render(m.prompt))
 	sb.WriteString(m.value)
+	// Show what the branch name will sanitise to if different from raw input.
+	sanitised := git.SanitiseBranch(m.value)
+	if sanitised != "" && sanitised != m.value {
+		sb.WriteString("  " + styleHint.Render("→ "+sanitised))
+	}
 	sb.WriteString(styleDim.Render("█"))
 	sb.WriteString("\n")
 	sb.WriteString(styleDim.Render("  enter confirm  esc cancel"))
