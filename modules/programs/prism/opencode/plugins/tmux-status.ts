@@ -15,12 +15,8 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
   // Flag to suppress busy→active transitions while compaction is in progress.
   let compacting = false;
 
-  const log = (msg: string) =>
-    Bun.write("/tmp/prism-plugin.log", `${new Date().toISOString()} ${msg}\n`, { append: true });
-
   return {
     event: async ({ event }) => {
-      await log(`event: ${event.type} ${JSON.stringify(event.properties)}`);
       switch (event.type) {
         case "session.status":
           if (event.properties.status.type === "busy") {
