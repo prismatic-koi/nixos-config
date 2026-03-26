@@ -28,7 +28,6 @@
     programs = {
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
-      claude-code.enable = true;
       corectrl.enable = true;
       cura.enable = true;
       darktable.enable = true;

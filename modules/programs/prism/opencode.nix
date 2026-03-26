@@ -182,11 +182,17 @@
               nodejs_24
               # pdf text extraction for agent use
               poppler-utils
+              # meridian proxy for Claude Max subscription
+              meridian
             ]
             ++ lib.optionals pkgs.stdenv.isLinux [
               # playwright-cli depends on chromium which is Linux-only
               playwright-cli
             ];
+          home.sessionVariables = {
+            ANTHROPIC_API_KEY = "dummy";
+            ANTHROPIC_BASE_URL = "http://127.0.0.1:3456";
+          };
           programs.zsh.shellAliases = {
             # set environment variables for opencode
             opencode = "${envPrefix} opencode";
@@ -212,6 +218,7 @@
           programs.opencode = {
             enable = true;
             settings = {
+              model = "anthropic/claude-sonnet-4-6";
               agent = {
                 build = {
                   description = "Default build agent with full tool access";
@@ -296,7 +303,19 @@
                 "opencode-gemini-auth@latest"
                 # tmux window status colours based on agent state
                 "./plugins/tmux-status"
+                # inject session headers for Meridian proxy (https://github.com/rynfar/opencode-claude-max-proxy)
+                # run Meridian separately: `meridian` (after `claude login`)
+                "./plugins/claude-max-headers"
               ];
+              provider = {
+                anthropic = {
+                  options = {
+                    baseURL = "http://127.0.0.1:3456";
+                    # placeholder — real auth is via `claude login` OAuth, not an API key
+                    apiKey = "dummy";
+                  };
+                };
+              };
             };
             rules = agentInstructions;
           };
@@ -311,6 +330,10 @@
           xdg.configFile."opencode/plugins/tmux-status.ts" = {
             source = ./opencode/plugins/tmux-status.ts;
           };
+          # meridian session header injection plugin
+          xdg.configFile."opencode/plugins/claude-max-headers.ts" = {
+            source = ./opencode/plugins/claude-max-headers.ts;
+          };
           # playwright-cli global skill (Linux-only: playwright-cli depends on chromium)
           xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
             source = ./opencode/skills/playwright-cli;
@@ -324,6 +347,46 @@
           };
         };
       }
+
+      # Linux: run Meridian as a systemd user service
+      (lib.mkIf pkgs.stdenv.isLinux {
+        home-manager.users.${config.nx.username} = {
+          systemd.user.services.meridian = {
+            Unit = {
+              Description = "Meridian — local Anthropic API proxy for Claude Max";
+              After = [ "network.target" ];
+            };
+            Service = {
+              Type = "simple";
+              ExecStart = "${pkgs.meridian}/bin/meridian";
+              Restart = "on-failure";
+              RestartSec = 5;
+            };
+            Install = {
+              WantedBy = [ "default.target" ];
+            };
+          };
+        };
+      })
+
+      # macOS: run Meridian as a launchd user agent
+      (lib.mkIf pkgs.stdenv.isDarwin {
+        home-manager.users.${config.nx.username} = {
+          launchd.agents.meridian = {
+            enable = true;
+            config = {
+              Label = "com.user.meridian";
+              ProgramArguments = [
+                "${pkgs.meridian}/bin/meridian"
+              ];
+              RunAtLoad = true;
+              KeepAlive = true;
+              StandardOutPath = "/tmp/meridian.log";
+              StandardErrorPath = "/tmp/meridian.log";
+            };
+          };
+        };
+      })
     ]
   );
 }

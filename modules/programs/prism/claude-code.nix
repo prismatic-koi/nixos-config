@@ -6,11 +6,11 @@
 }:
 {
   options = {
-    nx.programs.claude-code.enable = lib.mkEnableOption "enables claude-code" // {
+    nx.programs.prism.claude-code.enable = lib.mkEnableOption "enables claude-code" // {
       default = false;
     };
   };
-  config = lib.mkIf config.nx.programs.claude-code.enable (
+  config = lib.mkIf config.nx.programs.prism.claude-code.enable (
     let
       # Define claude-code environment variables in one place
       claudeCodeEnvVars = {

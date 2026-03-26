@@ -13,7 +13,6 @@
     ./calibre.nix
     ./choose.nix
     ./chromium.nix
-    ./claude-code.nix
     ./cura-appimage.nix
     ./darktable.nix
     ./dragon-drop.nix
