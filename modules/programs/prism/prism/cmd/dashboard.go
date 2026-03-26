@@ -85,13 +85,14 @@ func fetchSessions() tea.Msg {
 // ── model ─────────────────────────────────────────────────────────────────────
 
 type dashModel struct {
-	sessions       []tmux.Session
-	cursor         int
-	width          int
-	height         int
-	client         string
-	popup          bool
-	currentSession string // session the viewing client is in
+	sessions          []tmux.Session
+	cursor            int
+	cursorInitialised bool // true once we've snapped cursor to currentSession
+	width             int
+	height            int
+	client            string
+	popup             bool
+	currentSession    string // session the viewing client is in
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -122,13 +123,20 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionsMsg:
 		m.sessions = filterSessions([]tmux.Session(msg))
+		m.currentSession = tmux.CallerSession()
+		if !m.cursorInitialised {
+			// Snap cursor to the current session on first load.
+			m.cursorInitialised = true
+			for i, s := range m.sessions {
+				if s.Name == m.currentSession {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
 		}
-		// Refresh caller session — stamped into @prism_caller by the tmux
-		// binding at the moment C-w / prefix+D was pressed, so it always
-		// reflects the actual session the viewer came from.
-		m.currentSession = tmux.CallerSession()
 
 	case tea.KeyMsg:
 		switch msg.String() {
