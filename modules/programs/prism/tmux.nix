@@ -74,6 +74,8 @@ in
 
             # agent dashboard popup (C-w) — Bubble Tea live TUI
             bind -n C-w display-popup -E -w 80% -h 60% -b single "prism dashboard --popup"
+            # agent dashboard standalone window (prefix+D)
+            bind-key D new-window -n dashboard "prism dashboard"
 
             # toggle to/from term window (C-Space)
             unbind C-Space
