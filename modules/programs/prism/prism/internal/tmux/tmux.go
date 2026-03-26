@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -93,6 +94,11 @@ func SwitchClient(client, session string) error {
 	return err
 }
 
+// SwitchClientCurrent switches the current tmux client to the named session.
+func SwitchClientCurrent(session string) (string, error) {
+	return run("switch-client", "-t", session)
+}
+
 // CurrentSession returns the session name for the current tmux client.
 func CurrentSession() (string, error) {
 	return run("display-message", "-p", "#{session_name}")
@@ -150,6 +156,56 @@ func DetachClient(client string) error {
 	}
 	_, err := run("detach-client", "-s", client)
 	return err
+}
+
+// RenameWindow renames a window in a session.
+func RenameWindow(target, name string) error {
+	_, err := run("rename-window", "-t", target, name)
+	return err
+}
+
+// NewWindow creates a new window in a session. name may be empty.
+func NewWindow(session string, idx int, name, dir string) error {
+	args := []string{"new-window", "-t", fmt.Sprintf("%s:%d", session, idx), "-n", name}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	_, err := run(args...)
+	return err
+}
+
+// SendKeys sends key strokes to a target pane/window.
+func SendKeys(target, keys string) error {
+	_, err := run("send-keys", "-t", target, keys, "C-m")
+	return err
+}
+
+// SelectWindow selects a window by index in a session.
+func SelectWindow(session string, idx int) error {
+	_, err := run("select-window", "-t", fmt.Sprintf("%s:%d", session, idx))
+	return err
+}
+
+// NewSessionDetached creates a new detached session with a working directory.
+// Returns immediately; caller can then configure windows.
+func NewSessionDetached(name, dir string) error {
+	args := []string{"new-session", "-ds", name}
+	if dir != "" {
+		args = append(args, "-c", dir)
+	}
+	_, err := run(args...)
+	return err
+}
+
+// KillSession kills a tmux session.
+func KillSession(name string) error {
+	_, err := run("kill-session", "-t", name)
+	return err
+}
+
+// ListWindows returns raw "name|path" lines for all windows in a session.
+func ListWindows(session string) (string, error) {
+	return run("list-windows", "-t", session, "-F", "#{window_name}|#{pane_current_path}")
 }
 
 // SelectAgentWindow selects the agent window in a session.

@@ -10,6 +10,10 @@
   colorGreen ? "#a9b665",
   colorBlue ? "#7daea3",
   colorRed ? "#ea6962",
+  # Project/worktree config (colon-separated strings).
+  worktreeExclude ? "obsidian",
+  projectLocations ? "~/code",
+  projectSpecific ? "~/documents/obsidian",
 }:
 
 buildGoModule {
@@ -33,6 +37,9 @@ buildGoModule {
     "-X github.com/prismatic-koi/prism/cmd.ColorGreen=${colorGreen}"
     "-X github.com/prismatic-koi/prism/cmd.ColorBlue=${colorBlue}"
     "-X github.com/prismatic-koi/prism/cmd.ColorRed=${colorRed}"
+    "-X github.com/prismatic-koi/prism/cmd.SwitchWorktreeExclude=${worktreeExclude}"
+    "-X github.com/prismatic-koi/prism/cmd.SwitchProjectLocations=${projectLocations}"
+    "-X github.com/prismatic-koi/prism/cmd.SwitchProjectSpecific=${projectSpecific}"
   ];
 
   meta = {

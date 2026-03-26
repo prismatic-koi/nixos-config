@@ -15,7 +15,7 @@ with config.theme;
   config = lib.mkIf (config.nx.programs.prism.tui.enable && config.nx.programs.prism.enable) {
     home-manager.users.${config.nx.username} = {
       home.packages = [
-        # Build with theme colours injected via ldflags so the TUI matches the active theme
+        # Build with theme colours and project config injected via ldflags
         (pkgs.callPackage ../../../pkgs/prism.nix {
           colorPrimary = primary;
           colorSecondary = secondary;
@@ -24,6 +24,9 @@ with config.theme;
           colorGreen = green;
           colorBlue = blue;
           colorRed = red;
+          worktreeExclude = config.nx.programs.prism._internal.worktreeExcludeList;
+          projectLocations = config.nx.programs.prism._internal.projectLocationsList;
+          projectSpecific = config.nx.programs.prism._internal.projectSpecificList;
         })
       ];
     };

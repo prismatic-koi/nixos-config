@@ -37,6 +37,31 @@
         '';
       };
 
+      projects = {
+        locations = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ "~/code" ];
+          example = [
+            "~/code"
+            "~/work"
+          ];
+          description = ''
+            Directories to scan for projects. Each immediate subdirectory becomes
+            a selectable entry in the context switcher.
+          '';
+        };
+
+        specific = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ "~/documents/obsidian" ];
+          example = [ "~/documents/obsidian" ];
+          description = ''
+            Specific directories to include directly in the context switcher
+            (not scanned for subdirectories).
+          '';
+        };
+      };
+
       # Internal computed values for submodules to use
       _internal = lib.mkOption {
         type = lib.types.attrs;
@@ -82,6 +107,10 @@
       worktreeExcludePyList = "[${
         lib.concatStringsSep ", " (map (n: "\"${n}\"") config.nx.programs.prism.worktreeExclude)
       }]";
+      # Colon-separated strings for Go ldflags
+      worktreeExcludeList = lib.concatStringsSep ":" config.nx.programs.prism.worktreeExclude;
+      projectLocationsList = lib.concatStringsSep ":" config.nx.programs.prism.projects.locations;
+      projectSpecificList = lib.concatStringsSep ":" config.nx.programs.prism.projects.specific;
     };
   };
 }
