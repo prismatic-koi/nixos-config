@@ -20,13 +20,15 @@ import (
 // Injected at build time via ldflags from the Nix module so they match the
 // user's active theme. Defaults are gruvbox-dark fallbacks.
 var (
-	ColorPrimary   = "#d4be98"
-	ColorSecondary = "#a89984"
-	ColorPurple    = "#d3869b"
-	ColorYellow    = "#d8a657"
-	ColorGreen     = "#a9b665"
-	ColorBlue      = "#7daea3"
-	ColorRed       = "#ea6962"
+	ColorPrimary    = "#d4be98"
+	ColorSecondary  = "#a89984"
+	ColorPurple     = "#d3869b"
+	ColorYellow     = "#d8a657"
+	ColorGreen      = "#a9b665"
+	ColorBlue       = "#7daea3"
+	ColorRed        = "#ea6962"
+	ColorBgVisual   = "#543a48"
+	ColorForeground = "#d3c6aa"
 )
 
 // ── styles ────────────────────────────────────────────────────────────────────

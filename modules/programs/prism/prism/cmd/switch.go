@@ -205,19 +205,19 @@ func (m pickerModel) View() string {
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	// Selected row: primary fg on a subtle background, full width.
+	// Selected row: bg_visual background, terminal-default fg (dark bg colour reads as text).
 	styleRowSelected := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(ColorPrimary)).
-		Background(lipgloss.Color(ColorSecondary)).
+		Background(lipgloss.Color(ColorBgVisual)).
 		Bold(true).
 		Width(m.width)
 	styleRowSpecialSelected := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(ColorYellow)).
-		Background(lipgloss.Color(ColorSecondary)).
+		Background(lipgloss.Color(ColorBgVisual)).
 		Bold(true).
 		Width(m.width)
 	styleRowNormal := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(ColorSecondary)).
+		Foreground(lipgloss.Color(ColorForeground)).
 		Width(m.width)
 	styleRowSpecial := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(ColorYellow)).
