@@ -12,6 +12,7 @@ type Session struct {
 	Name        string
 	AgentState  string // active | waiting | finished | compacting | error | ""
 	AgentPath   string // pane_current_path of the agent window
+	AgentTitle  string // @agent_title window option, set by the tmux-status plugin
 	ClientCount int    // number of tmux clients currently attached
 }
 
@@ -55,37 +56,38 @@ func Sessions() ([]Session, error) {
 		if name == "" {
 			continue
 		}
-		state, path := agentWindow(name)
+		state, path, title := agentWindow(name)
 		sessions = append(sessions, Session{
 			Name:        name,
 			AgentState:  state,
 			AgentPath:   path,
+			AgentTitle:  title,
 			ClientCount: clients[name],
 		})
 	}
 	return sessions, nil
 }
 
-// agentWindow returns the @agent_state and pane_current_path for the agent
-// window of a session, falling back to the term window path if no agent window exists.
-func agentWindow(session string) (state, path string) {
+// agentWindow returns the @agent_state, pane_current_path, and @agent_title
+// for the agent window of a session.
+func agentWindow(session string) (state, path, title string) {
 	out, err := run(
 		"list-windows", "-t", session,
-		"-F", "#{window_name}|#{@agent_state}|#{pane_current_path}",
+		"-F", "#{window_name}|#{@agent_state}|#{pane_current_path}|#{@agent_title}",
 	)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 3)
-		if len(parts) != 3 {
+		parts := strings.SplitN(line, "|", 4)
+		if len(parts) != 4 {
 			continue
 		}
 		if parts[0] == "agent" {
-			return parts[1], parts[2]
+			return parts[1], parts[2], parts[3]
 		}
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // SwitchClient switches the named client to the named session.

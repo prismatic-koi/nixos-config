@@ -4,6 +4,12 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
   const tmux = (action: string) =>
     $`echo '{}' | cli.tmux.setStatus ${action}`.quiet().nothrow();
 
+  const setTitle = (title: string) =>
+    $`tmux set-window-option @agent_title ${title}`.quiet().nothrow();
+
+  const clearTitle = () =>
+    $`tmux set-window-option -u @agent_title`.quiet().nothrow();
+
   return {
     event: async ({ event }) => {
       switch (event.type) {
@@ -18,8 +24,13 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
         case "session.idle":
           await tmux("set-finished");
           break;
+        case "session.updated":
+          if (event.properties.info.title)
+            await setTitle(event.properties.info.title);
+          break;
         case "session.deleted":
           await tmux("clear");
+          await clearTitle();
           break;
         case "permission.asked":
           await tmux("set-waiting");
