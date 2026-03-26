@@ -4,11 +4,13 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
   const tmux = (action: string) =>
     $`echo '{}' | cli.tmux.setStatus ${action}`.quiet().nothrow();
 
+  const pane = process.env.TMUX_PANE ?? "";
+
   const setTitle = (title: string) =>
-    $`tmux set-window-option @agent_title ${title}`.quiet().nothrow();
+    $`tmux set-window-option -t ${pane} @agent_title ${title}`.quiet().nothrow();
 
   const clearTitle = () =>
-    $`tmux set-window-option -u @agent_title`.quiet().nothrow();
+    $`tmux set-window-option -t ${pane} -u @agent_title`.quiet().nothrow();
 
   return {
     event: async ({ event }) => {
