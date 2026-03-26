@@ -27,8 +27,8 @@ var (
 	ColorGreen      = "#a9b665"
 	ColorBlue       = "#7daea3"
 	ColorRed        = "#ea6962"
-	ColorBgVisual   = "#543a48"
 	ColorForeground = "#d3c6aa"
+	ColorBg0        = "#2d353b"
 )
 
 // ── styles ────────────────────────────────────────────────────────────────────

@@ -205,22 +205,14 @@ func (m pickerModel) View() string {
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	// Selected row: bg_visual background, terminal-default fg (dark bg colour reads as text).
+	// Selected row: ColorPrimary bg, bg0 as text — bright accent bar, dark readable text on top.
 	styleRowSelected := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(ColorPrimary)).
-		Background(lipgloss.Color(ColorBgVisual)).
-		Bold(true).
-		Width(m.width)
-	styleRowSpecialSelected := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(ColorYellow)).
-		Background(lipgloss.Color(ColorBgVisual)).
+		Foreground(lipgloss.Color(ColorBg0)).
+		Background(lipgloss.Color(ColorPrimary)).
 		Bold(true).
 		Width(m.width)
 	styleRowNormal := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(ColorForeground)).
-		Width(m.width)
-	styleRowSpecial := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(ColorYellow)).
 		Width(m.width)
 
 	var sb strings.Builder
@@ -248,21 +240,12 @@ func (m pickerModel) View() string {
 
 	for i := start; i < end; i++ {
 		e := m.matched[i]
-		// Pad display with a leading space for breathing room.
 		text := " " + e.display
 		var row string
 		if i == m.cursor {
-			if e.special != "" {
-				row = styleRowSpecialSelected.Render(text)
-			} else {
-				row = styleRowSelected.Render(text)
-			}
+			row = styleRowSelected.Render(text)
 		} else {
-			if e.special != "" {
-				row = styleRowSpecial.Render(text)
-			} else {
-				row = styleRowNormal.Render(text)
-			}
+			row = styleRowNormal.Render(text)
 		}
 		sb.WriteString(row + "\n")
 	}
