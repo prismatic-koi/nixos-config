@@ -133,17 +133,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
-			if m.popup {
-				// In persistent/popup mode: detach the client rather than
-				// quitting the process (which would just restart via the loop).
-				return m, tea.Sequence(
-					func() tea.Msg {
-						_ = tmux.DetachClient(m.client)
-						return nil
-					},
-					tea.Quit,
-				)
-			}
+			// tea.Quit exits the TUI process. When running via display-popup -E,
+			// this closes the popup automatically. The restart loop in the
+			// prism-dashboard session relaunches the TUI for next time.
 			return m, tea.Quit
 
 		case "j", "down":
@@ -164,8 +156,10 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Sequence(
 				func() tea.Msg {
 					_ = tmux.SelectAgentWindow(selected.Name)
-					if m.client != "" {
-						_ = tmux.SwitchClient(m.client, selected.Name)
+					// Use the caller client stamped at popup-open time —
+					// m.client is the process client, not the viewer's client.
+					if client := tmux.CallerClient(); client != "" {
+						_ = tmux.SwitchClient(client, selected.Name)
 					}
 					return nil
 				},

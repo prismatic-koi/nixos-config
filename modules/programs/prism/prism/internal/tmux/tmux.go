@@ -117,6 +117,13 @@ func CallerSession() string {
 	return val
 }
 
+// CallerClient returns the @prism_caller_client global — the client name
+// that opened the dashboard. Used to switch-client the right terminal on Enter.
+func CallerClient() string {
+	val, _ := run("show-option", "-gv", "@prism_caller_client")
+	return val
+}
+
 // CurrentClient returns the client name for the current tmux client.
 func CurrentClient() (string, error) {
 	return run("display-message", "-p", "#{client_name}")
