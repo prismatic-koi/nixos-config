@@ -31,10 +31,16 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
           await tmux("set-finished");
           break;
         case "session.created":
-        case "session.updated":
-          if (event.properties.info.title)
-            await setTitle(event.properties.info.title);
+        case "session.updated": {
+          const info = event.properties.info;
+          if (info.title) await setTitle(info.title);
+          // session.updated fires with info.compacting set when compaction starts.
+          if (info.compacting) {
+            compacting = true;
+            await tmux("set-compacting");
+          }
           break;
+        }
         case "session.deleted":
           await tmux("clear");
           await clearTitle();
