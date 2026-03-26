@@ -76,10 +76,10 @@ in
             # Otherwise stamp the calling session into @prism_caller, ensure
             # the dashboard session exists, then attach to it via popup.
             bind -n C-w run-shell \
-              'if [ "$(tmux display-message -p "#S")" = "prism-dashboard" ]; then tmux detach-client; else tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard "while true; do prism dashboard --popup; done"; tmux display-popup -E -w 80% -h 60% -b single "tmux attach-session -t prism-dashboard"; fi'
+              'if [ "$(tmux display-message -p "#S")" = "prism-dashboard" ]; then tmux detach-client; else tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard "while prism dashboard --popup; do true; done"; tmux display-popup -E -w 80% -h 60% -b single "tmux attach-session -t prism-dashboard"; fi'
             # prefix+D: same but switch-client instead of popup.
             bind-key D run-shell \
-              'if [ "$(tmux display-message -p "#S")" = "prism-dashboard" ]; then tmux detach-client; else tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard "while true; do prism dashboard --popup; done"; tmux switch-client -t prism-dashboard; fi'
+              'if [ "$(tmux display-message -p "#S")" = "prism-dashboard" ]; then tmux detach-client; else tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard "while prism dashboard --popup; do true; done"; tmux switch-client -t prism-dashboard; fi'
 
             # toggle to/from term window (C-Space)
             unbind C-Space

@@ -506,7 +506,7 @@
                     if r.returncode != 0:
                         subprocess.Popen(
                             ["${tmux}", "new-session", "-ds", "prism-dashboard",
-                             "-n", "dashboard", "while true; do prism dashboard --popup; done"],
+                             "-n", "dashboard", "while prism dashboard --popup; do true; done"],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                         )

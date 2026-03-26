@@ -133,10 +133,12 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "esc":
-			// tea.Quit exits the TUI process. When running via display-popup -E,
-			// this closes the popup automatically. The restart loop in the
-			// prism-dashboard session relaunches the TUI for next time.
-			return m, tea.Quit
+			// Exit with code 2 to signal intentional quit to the restart loop.
+			// The loop only restarts on exit code 0 (e.g. after Enter navigation).
+			return m, tea.Sequence(
+				func() tea.Msg { os.Exit(2); return nil },
+				tea.Quit,
+			)
 
 		case "j", "down":
 			if m.cursor < len(m.sessions)-1 {
@@ -297,7 +299,7 @@ func ensureDashSession() error {
 		return nil
 	}
 	c := exec.Command("tmux", "new-session", "-ds", dashSession, "-n", "dashboard",
-		"while true; do prism dashboard --popup; done")
+		"while prism dashboard --popup; do true; done")
 	return c.Run()
 }
 
