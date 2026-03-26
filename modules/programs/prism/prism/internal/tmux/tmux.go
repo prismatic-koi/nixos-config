@@ -137,6 +137,11 @@ func CurrentClient() (string, error) {
 	return run("display-message", "-p", "#{client_name}")
 }
 
+// CurrentPanePath returns the pane_current_path of the current pane.
+func CurrentPanePath() (string, error) {
+	return run("display-message", "-p", "#{pane_current_path}")
+}
+
 // HasSession returns true if a session with the given name exists.
 func HasSession(name string) bool {
 	err := exec.Command("tmux", "has-session", "-t", name).Run()

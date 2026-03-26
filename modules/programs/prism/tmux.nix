@@ -101,8 +101,11 @@ in
             unbind C-e
             bind -n C-e run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":edit$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n edit; elif [ "$cur" = "edit" ]; then ${pkgs.tmux}/bin/tmux last-window; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
 
-            # new window with opencode agent (prefix + a)
-            bind a new-window -n agent "zsh -ic opencode"
+            # spawn new timestamped worktree from current repo (prefix+a)
+            # prism spawn infers the repo from the current pane path, creates
+            # a zettelkasten-timestamped branch+worktree, and switches to it.
+            bind a run-shell \
+              'tmux display-popup -E -w 60% -h 20% -b single "prism spawn || { echo; printf \"press any key to close\"; read -rn1; }"'
 
             # opencode scrolling keybinds (only active when opencode is running)
             # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
