@@ -72,10 +72,13 @@ in
             # context switcher popup (C-f)
             bind -n C-f display-popup -E -w 80% -h 80% -b single "cli.tmux.contextSwitcher"
 
-            # agent dashboard popup (C-w) — Bubble Tea live TUI
-            bind -n C-w display-popup -E -w 80% -h 60% -b single "prism dashboard --popup"
-            # agent dashboard standalone window (prefix+D)
-            bind-key D new-window -n dashboard "prism dashboard"
+            # ensure the prism-dashboard session exists, creating it if needed
+            # used by both C-w (popup) and prefix+D (switch)
+            bind -n C-w display-popup -E -w 80% -h 60% -b single \
+              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'prism dashboard'; tmux attach-session -t prism-dashboard"
+            # switch to the persistent dashboard session (prefix+D)
+            bind-key D run-shell \
+              "tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard 'prism dashboard'; tmux switch-client -t prism-dashboard"
 
             # toggle to/from term window (C-Space)
             unbind C-Space
