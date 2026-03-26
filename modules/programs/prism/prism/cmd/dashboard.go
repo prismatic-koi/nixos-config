@@ -209,31 +209,40 @@ func (m dashModel) View() string {
 		return ""
 	}
 
-	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
-	styleHere := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Bold(true)
-	styleClient := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorBlue))
 
-	// prefix column: 2 chars for cursor + 2 for client dot
-	const prefixW = 4
-	const sessionW = 30
+	// Full-width row styles — same pattern as the picker.
+	rowW := m.width
+	styleRowSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorBg0)).
+		Background(lipgloss.Color(ColorPrimary)).
+		Bold(true).
+		Width(rowW)
+	styleRowNormal := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorForeground)).
+		Width(rowW)
+
+	// For selected rows the ins/del colours need to be readable on ColorPrimary bg.
+	styleInsSelected := lipgloss.NewStyle().
+		Foreground(lipgloss.Color(ColorBg0)).
+		Background(lipgloss.Color(ColorPrimary)).
+		Bold(true)
+	styleDelSelected := styleInsSelected
+
+	const sessionW = 28
 	const stateW = 10
-	const statW = 22
-	totalW := min(m.width-2, prefixW+sessionW+stateW+statW+6)
-	divider := styleDim.Render(strings.Repeat("─", totalW))
+	const dotW = 2 // ◆/●/space + space
 
 	var sb strings.Builder
 
 	sb.WriteString("\n")
 	sb.WriteString(styleHeader.Render(
-		fmt.Sprintf("%-*s%-*s  %-*s  %s", prefixW, "", sessionW, "session", stateW, "state", "changes"),
+		fmt.Sprintf(" %-*s%-*s  %-*s  %s", dotW, "", sessionW, "session", stateW, "state", "changes"),
 	))
-	sb.WriteString("\n")
-	sb.WriteString(divider)
-	sb.WriteString("\n")
+	sb.WriteString("\n\n")
 
 	if len(m.sessions) == 0 {
 		sb.WriteString(styleDim.Render("  no active sessions"))
@@ -242,64 +251,80 @@ func (m dashModel) View() string {
 
 	for i, s := range m.sessions {
 		isHere := s.Name == m.currentSession
-		sStyle := stateStyle(s.AgentState)
-		if isHere {
-			sStyle = styleHere
+		isSelected := i == m.cursor
+		isFg := ColorForeground
+		if isSelected {
+			isFg = ColorBg0
 		}
-		label := fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState))
 
-		stat := git.Stat(s.AgentPath)
-		var statStr string
-		if stat.Files == 0 {
-			statStr = styleDim.Render("—")
-		} else {
-			fileWord := "files"
-			if stat.Files == 1 {
-				fileWord = "file "
-			}
-			statStr = fmt.Sprintf("%d %s %s %s",
-				stat.Files,
-				fileWord,
-				styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)),
-				styleDel.Render(fmt.Sprintf("-%d", stat.Deletions)),
-			)
+		// dot: ◆ = you are here, ● = someone else attached, space = unattached
+		var dot string
+		switch {
+		case isHere:
+			dot = "◆ "
+		case s.ClientCount > 0:
+			dot = "● "
+		default:
+			dot = "  "
 		}
+
+		// state label coloured by agent state (overridden to bg0 when selected)
+		stateColour := stateStyle(s.AgentState).GetForeground()
+		if isSelected {
+			stateColour = lipgloss.Color(ColorBg0)
+		}
+		stateStr := lipgloss.NewStyle().
+			Foreground(stateColour).
+			Background(func() lipgloss.Color {
+				if isSelected {
+					return lipgloss.Color(ColorPrimary)
+				}
+				return lipgloss.Color("")
+			}()).
+			Bold(isSelected).
+			Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
 
 		sessionDisplay := s.Name
 		if len(sessionDisplay) > sessionW {
 			sessionDisplay = sessionDisplay[:sessionW-1] + "…"
 		}
 
-		// cursor indicator (2 chars)
-		cursorStr := "  "
-		if i == m.cursor {
-			cursorStr = styleCursor.Render("> ")
+		stat := git.Stat(s.AgentPath)
+		var statStr string
+		if stat.Files == 0 {
+			statStr = lipgloss.NewStyle().Foreground(lipgloss.Color(isFg)).Faint(true).Render("—")
+		} else {
+			fileWord := "files"
+			if stat.Files == 1 {
+				fileWord = "file "
+			}
+			insStyle := styleIns
+			delStyle := styleDel
+			if isSelected {
+				insStyle = styleInsSelected
+				delStyle = styleDelSelected
+			}
+			statStr = fmt.Sprintf("%d %s %s %s",
+				stat.Files,
+				fileWord,
+				insStyle.Render(fmt.Sprintf("+%d", stat.Insertions)),
+				delStyle.Render(fmt.Sprintf("-%d", stat.Deletions)),
+			)
 		}
 
-		// client dot indicator (2 chars)
-		// ● = has clients, ◆ = this is where you are, space = unattached
-		var dotStr string
-		switch {
-		case isHere:
-			dotStr = styleHere.Render("◆ ")
-		case s.ClientCount > 1:
-			dotStr = styleClient.Render(fmt.Sprintf("%d ", s.ClientCount))
-		case s.ClientCount == 1:
-			dotStr = styleClient.Render("● ")
-		default:
-			dotStr = "  "
+		// Build the fixed-width portion (dot + session + state) then append stat.
+		// We can't include statStr in the Width() render because it contains ANSI
+		// escapes that would mess up the width calculation.
+		fixed := fmt.Sprintf(" %s%-*s  %s  ", dot, sessionW, sessionDisplay, stateStr)
+		var row string
+		if isSelected {
+			row = styleRowSelected.Render(fixed) + statStr
+		} else {
+			row = styleRowNormal.Render(fixed) + statStr
 		}
-
-		sb.WriteString(fmt.Sprintf("%s%s%s  %s  %s\n",
-			cursorStr,
-			dotStr,
-			sStyle.Render(fmt.Sprintf("%-*s", sessionW, sessionDisplay)),
-			sStyle.Render(label),
-			statStr,
-		))
+		sb.WriteString(row + "\n")
 	}
 
-	sb.WriteString(divider)
 	sb.WriteString("\n")
 	sb.WriteString(styleDim.Render("  j/k move  enter switch  q close"))
 	sb.WriteString("\n")
