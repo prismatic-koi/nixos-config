@@ -95,9 +95,9 @@ type dashModel struct {
 }
 
 func newDashModel(client string, popup bool) dashModel {
-	currentSession, _ := tmux.CurrentSession()
-	// If we're running inside prism-dashboard itself, treat as persistent mode
-	// regardless of --popup flag — q/esc should detach, not quit the process.
+	// Use ClientSession so we get the session the *viewer* is in, not the
+	// session the prism-dashboard process itself is running in.
+	currentSession, _ := tmux.ClientSession(client)
 	inDashSession := currentSession == dashSession
 	return dashModel{
 		client:         client,
@@ -124,6 +124,10 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions = filterSessions([]tmux.Session(msg))
 		if m.cursor >= len(m.sessions) {
 			m.cursor = max(0, len(m.sessions)-1)
+		}
+		// Refresh which session the client is currently viewing
+		if s, err := tmux.ClientSession(m.client); err == nil {
+			m.currentSession = s
 		}
 
 	case tea.KeyMsg:

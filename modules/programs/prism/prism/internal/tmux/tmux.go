@@ -98,6 +98,17 @@ func CurrentSession() (string, error) {
 	return run("display-message", "-p", "#{session_name}")
 }
 
+// ClientSession returns the session name that the named client is currently
+// viewing. Unlike CurrentSession, this works correctly from inside a
+// persistent session (e.g. prism-dashboard) where the process session differs
+// from the client's actual session.
+func ClientSession(client string) (string, error) {
+	if client == "" {
+		return CurrentSession()
+	}
+	return run("display-message", "-t", client, "-p", "#{session_name}")
+}
+
 // CurrentClient returns the client name for the current tmux client.
 func CurrentClient() (string, error) {
 	return run("display-message", "-p", "#{client_name}")
