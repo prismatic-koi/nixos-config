@@ -33,6 +33,7 @@
         gtk3 = lib.mkIf (config.theme.type == "dark") {
           extraConfig.gtk-application-prefer-dark-theme = true;
         };
+        gtk4.theme = null;
       };
       qt = {
         enable = true;
