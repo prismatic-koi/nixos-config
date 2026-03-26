@@ -85,16 +85,22 @@ func fetchSessions() tea.Msg {
 // ── model ─────────────────────────────────────────────────────────────────────
 
 type dashModel struct {
-	sessions []tmux.Session
-	cursor   int
-	width    int
-	height   int
-	client   string
-	popup    bool
+	sessions       []tmux.Session
+	cursor         int
+	width          int
+	height         int
+	client         string
+	popup          bool
+	currentSession string // session the viewing client is in
 }
 
 func newDashModel(client string, popup bool) dashModel {
-	return dashModel{client: client, popup: popup}
+	currentSession, _ := tmux.CurrentSession()
+	return dashModel{
+		client:         client,
+		popup:          popup,
+		currentSession: currentSession,
+	}
 }
 
 func (m dashModel) Init() tea.Cmd {
@@ -175,18 +181,22 @@ func (m dashModel) View() string {
 	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
+	styleHere := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorYellow)).Bold(true)
+	styleClient := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorBlue))
 
-	const sessionW = 32
+	// prefix column: 2 chars for cursor + 2 for client dot
+	const prefixW = 4
+	const sessionW = 30
 	const stateW = 10
-	const statW = 22 // "99 files +9999 -9999"
-	totalW := min(m.width-2, sessionW+stateW+statW+6)
+	const statW = 22
+	totalW := min(m.width-2, prefixW+sessionW+stateW+statW+6)
 	divider := styleDim.Render(strings.Repeat("─", totalW))
 
 	var sb strings.Builder
 
 	sb.WriteString("\n")
 	sb.WriteString(styleHeader.Render(
-		fmt.Sprintf("  %-*s  %-*s  %s", sessionW, "session", stateW, "state", "changes"),
+		fmt.Sprintf("%-*s%-*s  %-*s  %s", prefixW, "", sessionW, "session", stateW, "state", "changes"),
 	))
 	sb.WriteString("\n")
 	sb.WriteString(divider)
@@ -198,7 +208,11 @@ func (m dashModel) View() string {
 	}
 
 	for i, s := range m.sessions {
+		isHere := s.Name == m.currentSession
 		sStyle := stateStyle(s.AgentState)
+		if isHere {
+			sStyle = styleHere
+		}
 		label := fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState))
 
 		stat := git.Stat(s.AgentPath)
@@ -223,13 +237,29 @@ func (m dashModel) View() string {
 			sessionDisplay = sessionDisplay[:sessionW-1] + "…"
 		}
 
-		prefix := "  "
+		// cursor indicator (2 chars)
+		cursorStr := "  "
 		if i == m.cursor {
-			prefix = styleCursor.Render("> ")
+			cursorStr = styleCursor.Render("> ")
 		}
 
-		sb.WriteString(fmt.Sprintf("%s%s  %s  %s\n",
-			prefix,
+		// client dot indicator (2 chars)
+		// ● = has clients, ◆ = this is where you are, space = unattached
+		var dotStr string
+		switch {
+		case isHere:
+			dotStr = styleHere.Render("◆ ")
+		case s.ClientCount > 1:
+			dotStr = styleClient.Render(fmt.Sprintf("%d ", s.ClientCount))
+		case s.ClientCount == 1:
+			dotStr = styleClient.Render("● ")
+		default:
+			dotStr = "  "
+		}
+
+		sb.WriteString(fmt.Sprintf("%s%s%s  %s  %s\n",
+			cursorStr,
+			dotStr,
 			sStyle.Render(fmt.Sprintf("%-*s", sessionW, sessionDisplay)),
 			sStyle.Render(label),
 			statStr,

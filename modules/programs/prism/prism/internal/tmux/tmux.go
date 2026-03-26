@@ -8,9 +8,10 @@ import (
 
 // Session represents a tmux session with its agent state.
 type Session struct {
-	Name       string
-	AgentState string // active | waiting | finished | compacting | error | ""
-	AgentPath  string // pane_current_path of the agent window
+	Name        string
+	AgentState  string // active | waiting | finished | compacting | error | ""
+	AgentPath   string // pane_current_path of the agent window
+	ClientCount int    // number of tmux clients currently attached
 }
 
 // run executes a tmux command and returns trimmed stdout.
@@ -22,12 +23,30 @@ func run(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// clientsPerSession returns a map of session name → number of attached clients.
+func clientsPerSession() map[string]int {
+	counts := map[string]int{}
+	out, err := run("list-clients", "-F", "#{session_name}")
+	if err != nil {
+		return counts
+	}
+	for _, name := range strings.Split(out, "\n") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	return counts
+}
+
 // Sessions returns all current tmux sessions.
 func Sessions() ([]Session, error) {
 	out, err := run("list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		return nil, err
 	}
+
+	clients := clientsPerSession()
 
 	var sessions []Session
 	for _, name := range strings.Split(out, "\n") {
@@ -37,9 +56,10 @@ func Sessions() ([]Session, error) {
 		}
 		state, path := agentWindow(name)
 		sessions = append(sessions, Session{
-			Name:       name,
-			AgentState: state,
-			AgentPath:  path,
+			Name:        name,
+			AgentState:  state,
+			AgentPath:   path,
+			ClientCount: clients[name],
 		})
 	}
 	return sessions, nil
@@ -95,8 +115,7 @@ func NewSession(name, dir string) error {
 	return err
 }
 
-// SelectWindow selects the window with the given name in a session, returning
-// true if the window was found and selected.
+// SelectAgentWindow selects the agent window in a session.
 func SelectAgentWindow(session string) error {
 	out, err := run("list-windows", "-t", session, "-F", "#{window_index}|#{window_name}")
 	if err != nil {
@@ -109,6 +128,5 @@ func SelectAgentWindow(session string) error {
 			return err
 		}
 	}
-	// Fallback: switch to session without window selection
 	return nil
 }
