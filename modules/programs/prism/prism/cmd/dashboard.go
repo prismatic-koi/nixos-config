@@ -521,17 +521,23 @@ func (m dashModel) View() string {
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
 
 	const stateW = 10
-	const statW = 22
 	const dotW = 2
 	const sessionWMax = 28
 	const sessionWMin = 14
-	// Fixed columns excluding session: dot + state + stat + separators.
-	fixedOther := 1 + dotW + 2 + stateW + 2 + statW + 2
-	// Title gets whatever is left after all fixed columns; hide if < 10.
-	titleW := m.width - (fixedOther + sessionWMax)
-	// Shrink the session column when the terminal is narrow, down to sessionWMin.
+	const statWFull = 22    // "2 files +122 -14"
+	const statWCompact = 10 // "+122 -14"
+	// Try full layout first; compress stat then session if too narrow.
+	fixedOther := 1 + dotW + 2 + stateW + 2 + 2 // dot+session gap+state gap+stat gap
+	titleW := m.width - (fixedOther + sessionWMax + statWFull)
+	statW := statWFull
 	sessionW := sessionWMax
 	if titleW < 0 {
+		// Try compact stat column first.
+		titleW = m.width - (fixedOther + sessionWMax + statWCompact)
+		statW = statWCompact
+	}
+	if titleW < 0 {
+		// Still too narrow: shrink session column too.
 		sessionW = max(sessionWMin, sessionWMax+titleW)
 		titleW = 0
 	} else if titleW < 10 {
@@ -547,7 +553,11 @@ func (m dashModel) View() string {
 	sb.WriteString(rainbowLineWidth(strings.Repeat("─", m.width), m.width))
 	sb.WriteString("\n")
 
-	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s", dotW, "", sessionW, "session", stateW, "state", statW, "changes")
+	changesHeader := "changes"
+	if statW == statWCompact {
+		changesHeader = "+/-"
+	}
+	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s", dotW, "", sessionW, "session", stateW, "state", statW, changesHeader)
 	if titleW > 0 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
@@ -583,6 +593,8 @@ func (m dashModel) View() string {
 		var statPlain string
 		if stat.Files == 0 {
 			statPlain = "—"
+		} else if statW == statWCompact {
+			statPlain = fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions)
 		} else {
 			fileWord := "files"
 			if stat.Files == 1 {
@@ -627,6 +639,16 @@ func (m dashModel) View() string {
 			var statStr string
 			if stat.Files == 0 {
 				statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
+			} else if statW == statWCompact {
+				// Compact: just +N -N coloured, no file count.
+				coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+					" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+				rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
+				pad := statW - rawLen
+				if pad < 0 {
+					pad = 0
+				}
+				statStr = coloured + strings.Repeat(" ", pad)
 			} else {
 				fileWord := "files"
 				if stat.Files == 1 {
@@ -636,7 +658,6 @@ func (m dashModel) View() string {
 				plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
 				coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
 					" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-				// Pad to statW based on visible width of plain + raw +N -N.
 				rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
 				pad := statW - len(rawStat)
 				if pad < 0 {
