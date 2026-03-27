@@ -35,19 +35,20 @@ var (
 // ── header art ────────────────────────────────────────────────────────────────
 
 // artLines is the DSOTM-inspired prism header: small figlet "PRISM" with a
-// triangle whose right vertex emits a rainbow spectrum fan below.
+// triangle whose apex sits above the M and whose right face emits a short
+// rainbow spectrum fan. The triangle left face merges with the figlet right edge.
 var artLines = []string{
-	`                      /\`,
-	`                     /  \·───────────────────────────────`,
-	`  ___  ___ ___ ___ __/ __ \·──────────────────────────────`,
-	` | _ \| _ \_ _/ __|  \/  | \·─────────────────────────────`,
-	` |  _/|   /| |\__ \ |\/| |  \·────────────────────────────`,
-	` |_|  |_|_\___|___/_|  |_|   \·───────────────────────────`,
-	`                  /____________\`,
+	`                              /\`,
+	`                             /  \·─────────────`,
+	`  ___  ___ ___ ___ __  __   /    \·─────────────`,
+	` | _ \| _ \_ _/ __|  \/  | /      \·─────────────`,
+	` |  _/|   /| |\__ \ |\/| |/        \·─────────────`,
+	` |_|  |_|_\___|___/_|  |_|/          \·─────────────`,
+	`                         /__________\`,
 }
 
 // artWidth is the width of the widest art line, used to normalise gradient positions.
-const artWidth = 58
+const artWidth = 52
 
 // rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
 // Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
@@ -107,10 +108,17 @@ func rainbowLine(line string) string {
 	return sb.String()
 }
 
-// renderArt returns the full header art block as a single string.
-func renderArt() string {
+// renderArt returns the full header art block right-aligned within termWidth.
+func renderArt(termWidth int) string {
+	// Pad each line on the left so the block sits flush against the right edge.
+	leftPad := termWidth - artWidth
+	if leftPad < 0 {
+		leftPad = 0
+	}
+	prefix := strings.Repeat(" ", leftPad)
 	var sb strings.Builder
 	for _, line := range artLines {
+		sb.WriteString(prefix)
 		sb.WriteString(rainbowLine(line))
 		sb.WriteString("\n")
 	}
@@ -314,7 +322,7 @@ func (m dashModel) View() string {
 	var sb strings.Builder
 
 	// ── header art ──────────────────────────────────────────────────────────
-	sb.WriteString(renderArt())
+	sb.WriteString(renderArt(m.width))
 
 	// Dim separator between art and column headers.
 	sb.WriteString(styleDim.Render(strings.Repeat("─", m.width)))
