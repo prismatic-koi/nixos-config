@@ -359,10 +359,7 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		default:
 			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-				// Strip bracketed paste escape sequences if present.
-				s := strings.TrimPrefix(msg.String(), "\x1b[200~")
-				s = strings.TrimSuffix(s, "\x1b[201~")
-				ins := []rune(s)
+				ins := []rune(msg.String())
 				m.runes = append(m.runes[:m.cursor], append(ins, m.runes[m.cursor:]...)...)
 				m.cursor += len(ins)
 			}
@@ -411,7 +408,7 @@ func (m inputModel) View() string {
 // or empty string if cancelled.
 func promptInput(prompt string) string {
 	m := inputModel{prompt: prompt, sanitiseHint: false}
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutBracketedPaste())
 	result, err := p.Run()
 	if err != nil {
 		return ""
@@ -426,7 +423,7 @@ func promptInput(prompt string) string {
 // promptBranchInput is like promptInput but shows a branch-name sanitise preview.
 func promptBranchInput(prompt string) string {
 	m := inputModel{prompt: prompt, sanitiseHint: true}
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithoutBracketedPaste())
 	result, err := p.Run()
 	if err != nil {
 		return ""
