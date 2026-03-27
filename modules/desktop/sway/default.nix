@@ -156,7 +156,7 @@ in
                 "${alt}+m" = "exec ${musicplayer}";
                 "${alt}+l" = "exec ${addtoshoppinglist}";
                 "${alt}+Shift+l" = "exec ${openshoppinglist}";
-                "${alt}+o" = "exec ${homeDir}/.local/scripts/cli.prism.launch --path ${homeDir}/documents/obsidian";
+                "${alt}+o" = "exec prism launch --path ${homeDir}/documents/obsidian";
                 # Media Controls
                 "XF86AudioMute" = "exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
                 # "XF86AudioRaiseVolume" = "exec wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+";

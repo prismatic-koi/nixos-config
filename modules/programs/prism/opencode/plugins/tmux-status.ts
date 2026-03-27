@@ -1,8 +1,8 @@
 import type { Plugin } from "@opencode-ai/plugin";
 
 export const TmuxStatus: Plugin = async ({ $ }) => {
-  const tmux = (action: string) =>
-    $`echo '{}' | cli.tmux.setStatus ${action}`.quiet().nothrow();
+  const notify = (state: string) =>
+    $`echo '{}' | prism notify ${state}`.quiet().nothrow();
 
   const pane = process.env.TMUX_PANE ?? "";
 
@@ -21,14 +21,14 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
         case "session.status":
           if (event.properties.status.type === "busy") {
             // Don't overwrite compacting state with active.
-            if (!compacting) await tmux("set-active");
+            if (!compacting) await notify("set-active");
           } else if (event.properties.status.type === "retry")
-            await tmux("set-error");
+            await notify("set-error");
           else if (event.properties.status.type === "idle")
-            await tmux("set-finished");
+            await notify("set-finished");
           break;
         case "session.idle":
-          await tmux("set-finished");
+          await notify("set-finished");
           break;
         case "session.created":
         case "session.updated": {
@@ -37,27 +37,27 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
           // session.updated fires with info.compacting set when compaction starts.
           if (info.compacting) {
             compacting = true;
-            await tmux("set-compacting");
+            await notify("set-compacting");
           }
           break;
         }
         case "session.deleted":
-          await tmux("clear");
+          await notify("clear");
           await clearTitle();
           break;
         case "permission.asked":
-          await tmux("set-waiting");
+          await notify("set-waiting");
           break;
         case "permission.replied":
-          await tmux("set-active");
+          await notify("set-active");
           break;
         case "session.error":
-          await tmux("set-error");
+          await notify("set-error");
           break;
         case "session.compacted":
           // Compaction done — agent returns to idle.
           compacting = false;
-          await tmux("set-finished");
+          await notify("set-finished");
           break;
       }
     },
@@ -65,7 +65,7 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
     // Set flag so concurrent busy events don't override the compacting state.
     "experimental.session.compacting": async (_input, output) => {
       compacting = true;
-      await tmux("set-compacting");
+      await notify("set-compacting");
       return output;
     },
   };

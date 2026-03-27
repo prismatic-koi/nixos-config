@@ -52,7 +52,7 @@ in
             toggleMute = "${scriptsDir}/system.audio.toggleMute";
             brightnessUp = "${scriptsDir}/system.display.brightnessUp";
             brightnessDown = "${scriptsDir}/system.display.brightnessDown";
-            prismLauncher = "${scriptsDir}/cli.prism.launch";
+            prismLauncher = "prism launch";
             # applications
             terminal = "kitty";
             browser = config.nx.programs.defaultWebBrowserSettings.cmd;

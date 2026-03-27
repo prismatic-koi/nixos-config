@@ -77,7 +77,6 @@
     ./tmux.nix
     ./sessioniser.nix
     ./context-switcher.nix
-    ./scripts.nix
     ./claude-code.nix
     ./prism-tui.nix
   ];
@@ -89,7 +88,6 @@
     nx.programs.prism.tmux.enable = lib.mkDefault true;
     nx.programs.prism.sessioniser.enable = lib.mkDefault true;
     nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
-    nx.programs.prism.scripts.enable = lib.mkDefault true;
     nx.programs.prism.claude-code.enable = lib.mkDefault true;
     nx.programs.prism.tui.enable = lib.mkDefault true;
 

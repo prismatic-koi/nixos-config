@@ -87,6 +87,23 @@ func IsRegularRepo(dir string) bool {
 	return err == nil && !IsBareRepo(dir)
 }
 
+// IsInsideRegularRepo returns true if dir or any of its parents is a regular
+// (non-bare) git repo. Mirrors the walk-up logic used by BareRoot.
+func IsInsideRegularRepo(dir string) bool {
+	p := dir
+	for {
+		if IsRegularRepo(p) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
+	}
+	return false
+}
+
 // gitDir returns the path to the .bare directory for a bare-layout repo.
 func gitDir(projectPath string) string {
 	return filepath.Join(projectPath, ".bare")

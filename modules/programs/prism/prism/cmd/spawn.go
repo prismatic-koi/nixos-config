@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,10 +21,17 @@ var spawnCmd = &cobra.Command{
 	Use:   "spawn",
 	Short: "Create a new timestamped worktree from the current repo and switch to it",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Get the current pane path — works both inside popup and normal pane.
-		panePathRaw, err := tmux.CurrentPanePath()
-		if err != nil || panePathRaw == "" {
-			return fmt.Errorf("could not determine current pane path")
+		// PRISM_SPAWN_PATH is set by the tmux binding via display-popup -e so
+		// that the caller's pane path is available inside the popup (inside a
+		// display-popup, tmux display-message returns the popup's own path).
+		panePathRaw := os.Getenv("PRISM_SPAWN_PATH")
+		if panePathRaw == "" {
+			// Fallback: query tmux directly (works when not in a popup).
+			var err error
+			panePathRaw, err = tmux.CurrentPanePath()
+			if err != nil || panePathRaw == "" {
+				return fmt.Errorf("could not determine current pane path")
+			}
 		}
 
 		// Walk up from the pane path to find a bare repo root.
@@ -35,7 +43,10 @@ var spawnCmd = &cobra.Command{
 			}
 		}
 		if bareRoot == "" {
-			return fmt.Errorf("not inside a prism bare repo (no .bare found above %s)", panePathRaw)
+			if git.IsInsideRegularRepo(panePathRaw) {
+				return fmt.Errorf("this repo isn't using the worktree layout yet\nuse C-f to convert it first")
+			}
+			return fmt.Errorf("not inside a git repo")
 		}
 
 		// Zettelkasten timestamp: 20260327T1423

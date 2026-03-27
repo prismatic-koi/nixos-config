@@ -157,7 +157,7 @@ in
 
                   # Custom keybindings
                   bindkey -s ^v "nvim\n"
-                  bindkey -s ^o "cli.prism.launch --in-terminal --path ~/documents/obsidian\n"
+                  bindkey -s ^o "prism launch --in-terminal --path ~/documents/obsidian\n"
 
                   _prism_launch() {
                     _PRISM_LAUNCH_PENDING=1
@@ -169,7 +169,7 @@ in
                   _prism_launch_precmd() {
                     if [[ -n "$_PRISM_LAUNCH_PENDING" ]]; then
                       unset _PRISM_LAUNCH_PENDING
-                      cli.prism.launch --in-terminal
+                      prism launch --in-terminal
                     fi
                   }
                   precmd_functions+=(_prism_launch_precmd)

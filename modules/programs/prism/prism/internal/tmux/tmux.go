@@ -216,6 +216,57 @@ func KillSession(name string) error {
 	return err
 }
 
+// Run executes an arbitrary tmux command and returns trimmed stdout.
+// Use this for commands not covered by the typed helpers.
+func Run(args ...string) (string, error) {
+	return run(args...)
+}
+
+// ListClients returns the names of all attached tmux clients.
+func ListClients() ([]string, error) {
+	out, err := run("list-clients", "-F", "#{client_name}")
+	if err != nil {
+		return nil, err
+	}
+	var clients []string
+	for _, c := range strings.Split(out, "\n") {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			clients = append(clients, c)
+		}
+	}
+	return clients, nil
+}
+
+// DisplayMessage sends a message to the named client's status bar.
+func DisplayMessage(client, msg string) error {
+	_, err := run("display-message", "-c", client, msg)
+	return err
+}
+
+// SetWindowOption sets a window option on the given window target.
+func SetWindowOption(target, option, value string) error {
+	_, err := run("set-window-option", "-t", target, option, value)
+	return err
+}
+
+// UnsetWindowOption unsets a window option on the given window target,
+// reverting it to the global default.
+func UnsetWindowOption(target, option string) error {
+	_, err := run("set-window-option", "-t", target, "-u", option)
+	return err
+}
+
+// WindowID returns the window ID for the given pane.
+func WindowID(pane string) (string, error) {
+	return run("display-message", "-t", pane, "-p", "#{window_id}")
+}
+
+// SessionNameOf returns the session name for the given window target.
+func SessionNameOf(target string) (string, error) {
+	return run("display-message", "-t", target, "-p", "#{session_name}")
+}
+
 // ListWindows returns raw "name|path" lines for all windows in a session.
 func ListWindows(session string) (string, error) {
 	return run("list-windows", "-t", session, "-F", "#{window_name}|#{pane_current_path}")
