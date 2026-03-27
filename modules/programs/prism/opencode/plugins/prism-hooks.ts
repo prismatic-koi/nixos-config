@@ -4,7 +4,7 @@ const PERMISSION_LOG =
   (process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`) +
   "/opencode/permission-asks.jsonl";
 
-export const TmuxStatus: Plugin = async ({ $ }) => {
+export const PrismHooks: Plugin = async ({ $ }) => {
   const notify = (state: string) =>
     $`echo '{}' | prism notify ${state}`.quiet().nothrow();
 
