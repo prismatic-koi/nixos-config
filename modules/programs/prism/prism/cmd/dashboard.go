@@ -183,8 +183,8 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	}
 
 	// Fixed column width — wide enough for the worst-case state line
-	// ("1 waiting  1 done  1 idle" = 25 chars) plus breathing room.
-	const statsW = 28
+	// ("1 active  1 waiting  1 done  1 idle" = 35 chars) plus breathing room.
+	const statsW = 37
 
 	// The art is 7 lines tall; build 7 stat lines to match, each exactly statsW wide.
 	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
@@ -199,23 +199,40 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	}
 
 	// ── merge with art lines ─────────────────────────────────────────────────
-	// Middle gap fills remaining width between stats and art.
-	artPad := m.width - statsW - artWidth
-	if artPad < 0 {
-		artPad = 0
-	}
-	middle := strings.Repeat(" ", artPad)
+	// Only render art if there is enough room alongside the stats panel.
+	// artWidth=42; below that threshold just show stats on their own lines.
+	showArt := m.width >= statsW+artWidth
 
 	var sb strings.Builder
-	for i, artLine := range artLines {
-		stat := strings.Repeat(" ", statsW)
-		if i < len(statLines) {
-			stat = statLines[i]
+	if showArt {
+		middle := strings.Repeat(" ", m.width-statsW-artWidth)
+		for i, artLine := range artLines {
+			stat := strings.Repeat(" ", statsW)
+			if i < len(statLines) {
+				stat = statLines[i]
+			}
+			sb.WriteString(stat)
+			sb.WriteString(middle)
+			sb.WriteString(rainbowLine(artLine))
+			sb.WriteString("\n")
 		}
-		sb.WriteString(stat)
-		sb.WriteString(middle)
-		sb.WriteString(rainbowLine(artLine))
-		sb.WriteString("\n")
+	} else {
+		// Narrow: stats lines with a small rainbow "PRISM" wordmark top-right.
+		wordmark := rainbowLine("PRISM")
+		wordmarkW := 5 // visible width of "PRISM"
+		for i, s := range statLines {
+			sb.WriteString(s)
+			if i == 0 {
+				// Right-align the wordmark on the first line.
+				pad := m.width - statsW - wordmarkW
+				if pad < 0 {
+					pad = 0
+				}
+				sb.WriteString(strings.Repeat(" ", pad))
+				sb.WriteString(wordmark)
+			}
+			sb.WriteString("\n")
+		}
 	}
 	return sb.String()
 }
