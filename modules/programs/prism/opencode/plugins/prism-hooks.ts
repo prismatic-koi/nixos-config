@@ -53,13 +53,14 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
           break;
         case "permission.asked": {
           notify("set-waiting");
-          // Log to JSONL for later analysis of ask-gated tool calls.
-          // permission.asked only carries sessionID + permissionID, not the
-          // command itself — but it's enough to count and timestamp asks.
+          // Log to JSONL for later analysis — permission.asked carries the
+          // full Permission object including tool type and command pattern.
           const entry = JSON.stringify({
             time: new Date().toISOString(),
-            sessionID: event.properties.sessionID,
-            permissionID: event.properties.permissionID,
+            tool: (event.properties as any).type,
+            pattern: (event.properties as any).pattern,
+            title: (event.properties as any).title,
+            sessionID: (event.properties as any).sessionID,
           });
           $`echo ${entry} >> ${PERMISSION_LOG}`.quiet().nothrow();
           break;
