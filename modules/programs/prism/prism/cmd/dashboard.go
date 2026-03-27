@@ -182,19 +182,9 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		return s + strings.Repeat(" ", w-vis)
 	}
 
-	// Measure the widest stat line to set the column width.
-	statsW := 0
-	for _, s := range []string{
-		fmt.Sprintf("%d sessions", len(m.sessions)),
-		stateLine,
-		fmt.Sprintf("+%d  -%d", totalIns, totalDel),
-		prLine,
-	} {
-		if len(s) > statsW {
-			statsW = len(s)
-		}
-	}
-	statsW += 2 // breathing room
+	// Fixed column width — wide enough for the worst-case state line
+	// ("1 waiting  1 done  1 idle" = 25 chars) plus breathing room.
+	const statsW = 28
 
 	// The art is 7 lines tall; build 7 stat lines to match, each exactly statsW wide.
 	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
@@ -269,6 +259,7 @@ func stateLabel(state string) string {
 type tickMsg time.Time
 type sessionsMsg []tmux.Session
 type ghTickMsg time.Time
+type cursorTimeoutMsg struct{}
 type githubStatsMsg struct {
 	openPRs int
 	err     bool // true = fetch failed, keep showing previous value
@@ -283,6 +274,12 @@ func tick() tea.Cmd {
 func ghTick() tea.Cmd {
 	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return ghTickMsg(t)
+	})
+}
+
+func cursorTimeoutCmd() tea.Cmd {
+	return tea.Tick(cursorTimeout, func(time.Time) tea.Msg {
+		return cursorTimeoutMsg{}
 	})
 }
 
@@ -320,6 +317,10 @@ func fetchGitHubStats() tea.Msg {
 
 // ── model ─────────────────────────────────────────────────────────────────────
 
+// cursorTimeout is how long the cursor bar stays visible after the last keypress
+// in persistent (non-popup) dashboard mode.
+const cursorTimeout = 3 * time.Second
+
 type dashModel struct {
 	sessions          []tmux.Session
 	cursor            int
@@ -331,6 +332,7 @@ type dashModel struct {
 	currentSession    string // session the viewing client is in
 	ghOpenPRs         int
 	ghLoaded          bool // false = still fetching, show "…"
+	cursorActive      bool // true = show selection bar; false = passive watch mode
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -338,10 +340,13 @@ func newDashModel(client string, popup bool) dashModel {
 	// reliable way to know which session the viewer came from.
 	currentSession := tmux.CallerSession()
 	inDashSession := currentSession == dashSession || currentSession == ""
+	isPopup := popup || inDashSession
 	return dashModel{
 		client:         client,
-		popup:          popup || inDashSession,
+		popup:          isPopup,
 		currentSession: currentSession,
+		// Popup mode always shows the cursor; persistent mode starts passive.
+		cursorActive: isPopup,
 	}
 }
 
@@ -367,6 +372,11 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ghOpenPRs = msg.openPRs
 		}
 		m.ghLoaded = true
+
+	case cursorTimeoutMsg:
+		if !m.popup {
+			m.cursorActive = false
+		}
 
 	case sessionsMsg:
 		m.sessions = filterSessions([]tmux.Session(msg))
@@ -405,14 +415,25 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 
 		case "j", "down":
+			if !m.cursorActive {
+				// First keypress just activates the cursor without moving.
+				m.cursorActive = true
+				return m, cursorTimeoutCmd()
+			}
 			if m.cursor < len(m.sessions)-1 {
 				m.cursor++
 			}
+			return m, cursorTimeoutCmd()
 
 		case "k", "up":
+			if !m.cursorActive {
+				m.cursorActive = true
+				return m, cursorTimeoutCmd()
+			}
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			return m, cursorTimeoutCmd()
 
 		case "enter":
 			if len(m.sessions) == 0 {
@@ -528,7 +549,7 @@ func (m dashModel) View() string {
 			title = title[:titleW-1] + "…"
 		}
 
-		if isSelected {
+		if isSelected && m.cursorActive {
 			// Bar colour: state colour for active states, primary for idle/finished.
 			barBg := lipgloss.Color(ColorPrimary)
 			switch s.AgentState {
