@@ -1,5 +1,4 @@
 import type { Plugin } from "@opencode-ai/plugin";
-import { appendFileSync } from "fs";
 
 const PERMISSION_LOG =
   (process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`) +
@@ -24,21 +23,17 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
     // Log every permission ask to a JSONL file for later analysis.
     // This gives accurate data on what commands are being gated, without
     // having to infer from tool call durations.
-    "permission.ask": async (input, output) => {
-      try {
-        const entry = JSON.stringify({
-          time: new Date().toISOString(),
-          tool: input.type,
-          pattern: input.pattern,
-          title: input.title,
-          sessionID: input.sessionID,
-          callID: input.callID ?? null,
-        });
-        appendFileSync(PERMISSION_LOG, entry + "\n");
-      } catch {
-        // Never block the permission flow due to logging failure.
-      }
-      return output;
+    "permission.ask": async (input, _output) => {
+      const entry = JSON.stringify({
+        time: new Date().toISOString(),
+        tool: input.type,
+        pattern: input.pattern,
+        title: input.title,
+        sessionID: input.sessionID,
+        callID: input.callID ?? null,
+      });
+      // Fire-and-forget — never block the permission flow due to logging.
+      $`echo ${entry} >> ${PERMISSION_LOG}`.quiet().nothrow();
     },
     event: async ({ event }) => {
       switch (event.type) {
