@@ -385,7 +385,7 @@
                 # a plugin to use Gemini auth for LLM access
                 "opencode-gemini-auth@latest"
                 # tmux window status colours based on agent state
-                "./plugins/tmux-status"
+                "./plugins/prism-hooks"
                 # use existing Claude Code credentials (via claude login OAuth)
                 # no separate proxy or API key needed
                 "opencode-claude-auth@latest"
@@ -404,8 +404,8 @@
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
           # tmux status plugin
-          xdg.configFile."opencode/plugins/tmux-status.ts" = {
-            source = ./opencode/plugins/tmux-status.ts;
+          xdg.configFile."opencode/plugins/prism-hooks.ts" = {
+            source = ./opencode/plugins/prism-hooks.ts;
           };
           # playwright-cli global skill (Linux-only: playwright-cli depends on chromium)
           xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
