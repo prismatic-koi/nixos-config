@@ -182,16 +182,36 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// fuzzyMatch returns true if all runes in pattern appear in s in order.
+func fuzzyMatch(s, pattern string) bool {
+	s = strings.ToLower(s)
+	pattern = strings.ToLower(pattern)
+	si := 0
+	for _, r := range pattern {
+		found := false
+		for ; si < len(s); si++ {
+			if rune(s[si]) == r {
+				si++
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *pickerModel) refilter() {
 	m.cursor = 0
 	if m.filter == "" {
 		m.matched = m.items
 		return
 	}
-	lower := strings.ToLower(m.filter)
 	var out []entry
 	for _, e := range m.items {
-		if strings.Contains(strings.ToLower(e.display), lower) {
+		if fuzzyMatch(e.display, m.filter) {
 			out = append(out, e)
 		}
 	}

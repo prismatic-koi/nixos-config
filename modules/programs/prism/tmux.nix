@@ -8,6 +8,21 @@ with config.theme;
 let
   background = if type == "dark" then bg0 else bg_dim;
   isDarwin = pkgs.stdenv.isDarwin;
+  prismPkg = pkgs.callPackage ../../../pkgs/prism.nix {
+    colorPrimary = primary;
+    colorSecondary = secondary;
+    colorPurple = purple;
+    colorYellow = yellow;
+    colorGreen = green;
+    colorBlue = blue;
+    colorRed = red;
+    colorForeground = foreground;
+    colorBg0 = bg0;
+    worktreeExclude = config.nx.programs.prism._internal.worktreeExcludeList;
+    projectLocations = config.nx.programs.prism._internal.projectLocationsList;
+    projectSpecific = config.nx.programs.prism._internal.projectSpecificList;
+  };
+  prism = "${prismPkg}/bin/prism";
 in
 {
   options = {
@@ -83,25 +98,25 @@ in
             # close pane without confirmation
             bind-key x kill-pane
             # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
-            bind-key W display-popup -E -w 60% -h 40% -b single "prism cleanup"
+            bind-key W display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
             # easy config reload
             bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
 
             # --- Prism-specific keybindings ---
 
             # context switcher popup (C-f)
-            bind -n C-f display-popup -E -w 80% -h 80% -b single "prism switch"
+            bind -n C-f display-popup -E -w 80% -h 80% -b single "${prism} switch"
 
             # C-w: run a fresh dashboard process directly in a popup.
             # Simple and reliable — q/esc closes the popup via -E, no session involved.
             # Still stamps @prism_caller/@prism_caller_client for the 'you are here'
             # indicator and Enter navigation.
             bind -n C-w run-shell \
-              'tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux display-popup -E -w 80% -h 60% -b single "prism dashboard --popup"'
+              '${pkgs.tmux}/bin/tmux set-option -g @prism_caller "$(${pkgs.tmux}/bin/tmux display-message -p "#S")"; ${pkgs.tmux}/bin/tmux set-option -g @prism_caller_client "$(${pkgs.tmux}/bin/tmux display-message -p "#{client_name}")"; ${pkgs.tmux}/bin/tmux display-popup -E -w 80% -h 60% -b single "${prism} dashboard --popup"'
             # prefix+D: switch to the persistent prism-dashboard session.
             # q/esc in that session detaches the client back to previous session.
             bind-key D run-shell \
-              'if [ "$(tmux display-message -p "#S")" = "prism-dashboard" ]; then tmux detach-client; else tmux set-option -g @prism_caller "$(tmux display-message -p "#S")"; tmux set-option -g @prism_caller_client "$(tmux display-message -p "#{client_name}")"; tmux has-session -t prism-dashboard 2>/dev/null || tmux new-session -ds prism-dashboard -n dashboard "while true; do prism dashboard --popup; done"; tmux switch-client -t prism-dashboard; fi'
+              'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux detach-client; else ${pkgs.tmux}/bin/tmux set-option -g @prism_caller "$(${pkgs.tmux}/bin/tmux display-message -p "#S")"; ${pkgs.tmux}/bin/tmux set-option -g @prism_caller_client "$(${pkgs.tmux}/bin/tmux display-message -p "#{client_name}")"; ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "while true; do ${prism} dashboard --popup; done"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
 
             # toggle to/from term window (C-Space)
             unbind C-Space
@@ -115,7 +130,7 @@ in
             # prism spawn infers the repo from the current pane path, creates
             # a zettelkasten-timestamped branch+worktree, and switches to it.
             bind a run-shell \
-              'tmux display-popup -E -w 60% -h 20% -b single "prism spawn || { echo; printf \"press any key to close\"; read -rn1; }"'
+              '${pkgs.tmux}/bin/tmux display-popup -E -w 60% -h 20% -b single "${prism} spawn || { echo; printf \"press any key to close\"; read -rn1; }"'
 
             # opencode scrolling keybinds (only active when opencode is running)
             # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
