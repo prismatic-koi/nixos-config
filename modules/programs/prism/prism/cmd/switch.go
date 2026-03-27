@@ -314,11 +314,14 @@ func pickString(prompt string, items []string) string {
 
 type inputModel struct {
 	prompt       string
-	value        string
+	runes        []rune // full input as runes
+	cursor       int    // insertion point (0 = before first rune)
 	done         bool
 	width        int
 	sanitiseHint bool // show branch-name sanitise preview
 }
+
+func (m inputModel) value() string { return string(m.runes) }
 
 func (m inputModel) Init() tea.Cmd { return nil }
 
@@ -333,14 +336,35 @@ func (m inputModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.done = true
 			return m, tea.Quit
+		case "left", "ctrl+b":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "right", "ctrl+f":
+			if m.cursor < len(m.runes) {
+				m.cursor++
+			}
+		case "home", "ctrl+a":
+			m.cursor = 0
+		case "end", "ctrl+e":
+			m.cursor = len(m.runes)
 		case "backspace", "ctrl+h":
-			if len(m.value) > 0 {
-				runes := []rune(m.value)
-				m.value = string(runes[:len(runes)-1])
+			if m.cursor > 0 {
+				m.runes = append(m.runes[:m.cursor-1], m.runes[m.cursor:]...)
+				m.cursor--
+			}
+		case "delete", "ctrl+d":
+			if m.cursor < len(m.runes) {
+				m.runes = append(m.runes[:m.cursor], m.runes[m.cursor+1:]...)
 			}
 		default:
 			if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-				m.value += msg.String()
+				// Strip bracketed paste escape sequences if present.
+				s := strings.TrimPrefix(msg.String(), "\x1b[200~")
+				s = strings.TrimSuffix(s, "\x1b[201~")
+				ins := []rune(s)
+				m.runes = append(m.runes[:m.cursor], append(ins, m.runes[m.cursor:]...)...)
+				m.cursor += len(ins)
 			}
 		}
 	}
@@ -351,16 +375,29 @@ func (m inputModel) View() string {
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleCursor := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleHint := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Italic(true)
+	styleCaret := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorBg0)).Background(lipgloss.Color(ColorPrimary))
 	var sb strings.Builder
 	sb.WriteString("\n")
 	sb.WriteString(styleCursor.Render(m.prompt))
-	sb.WriteString(m.value)
-	sb.WriteString(styleDim.Render("█"))
+	// Render text with a visible cursor block at the insertion point.
+	before := string(m.runes[:m.cursor])
+	after := string(m.runes[m.cursor:])
+	var caretChar string
+	if len(after) > 0 {
+		caretRunes := []rune(after)
+		caretChar = styleCaret.Render(string(caretRunes[0]))
+		after = string(caretRunes[1:])
+	} else {
+		caretChar = styleDim.Render("█")
+	}
+	sb.WriteString(before)
+	sb.WriteString(caretChar)
+	sb.WriteString(after)
 	sb.WriteString("\n")
 	// Sanitised preview on its own line — keeps the cursor on the input line.
 	if m.sanitiseHint {
-		sanitised := git.SanitiseBranch(m.value)
-		if sanitised != "" && sanitised != m.value {
+		sanitised := git.SanitiseBranch(m.value())
+		if sanitised != "" && sanitised != m.value() {
 			sb.WriteString(styleHint.Render("  → " + sanitised))
 			sb.WriteString("\n")
 		}
@@ -383,7 +420,7 @@ func promptInput(prompt string) string {
 	if !ok || !final.done {
 		return ""
 	}
-	return final.value
+	return final.value()
 }
 
 // promptBranchInput is like promptInput but shows a branch-name sanitise preview.
@@ -398,7 +435,7 @@ func promptBranchInput(prompt string) string {
 	if !ok || !final.done {
 		return ""
 	}
-	return final.value
+	return final.value()
 }
 
 // ── session management ────────────────────────────────────────────────────────
