@@ -479,10 +479,7 @@ func ensureAndSwitchSession(path string, projectRoot string) error {
 				case len(files) == 1:
 					nvimCmd = "nvim '" + files[0] + "'"
 				case strings.Contains(directory, "obsidian"):
-					landing := filepath.Join(directory, "notes", "landingpage.md")
-					if _, err := os.Stat(landing); err == nil {
-						nvimCmd = "nvim '" + landing + "'"
-					}
+					nvimCmd = "nvim +'Obsidian today'"
 				default:
 					readme := filepath.Join(directory, "README.md")
 					if _, err := os.Stat(readme); err == nil {
