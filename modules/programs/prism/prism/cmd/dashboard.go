@@ -53,9 +53,6 @@ const artWidth = 41
 // artHeight is the number of lines in the art block.
 const artHeight = 7
 
-// compactHeightThreshold: below this terminal height, use the compact 2-line header.
-const compactHeightThreshold = 16
-
 // rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
 // Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
 // (orange and aqua are not in the ldflags palette, but the interpolation between
@@ -180,7 +177,9 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	const wordmarkW = 5
 
 	// ── compact mode: terminal too short for full art block ──────────────────
-	if m.height < compactHeightThreshold {
+	// Full header needs: artHeight + separator(1) + col-header+blank(2) + sessions + bottom-blank(1)
+	fullHeaderNeeded := artHeight + 1 + 2 + len(m.sessions) + 1
+	if m.height > 0 && m.height < fullHeaderNeeded {
 		// 2 lines: "N sessions  STATE_SUMMARY" left + PRISM right on line 1,
 		// blank line 2 for breathing room.
 		sessionCount := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
