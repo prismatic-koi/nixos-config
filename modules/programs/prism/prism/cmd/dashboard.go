@@ -62,23 +62,19 @@ func isKitty() bool {
 // The caller is responsible for emitting (size-1) blank lines after this line
 // so that bubbletea's row accounting matches the physical terminal rows consumed.
 func kittySizedWordmark(size int, rightEdge int) string {
-	// Letter → colour mapping: P=purple, R=red, I=yellow, S=green, M=blue
-	// (spread across spectrum: roughly ROYGBP with 5 stops)
+	// P=red, R=yellow, I=green, S=blue, M=purple
 	colors := []string{ColorRed, ColorYellow, ColorGreen, ColorBlue, ColorPurple}
 	letters := []string{"P", "R", "I", "S", "M"}
-
-	sizeEsc := fmt.Sprintf("\x1b[66;s=%d;", size)
-	resetEsc := "\x1b[66;"
 
 	var word strings.Builder
 	for i, letter := range letters {
 		c := mustHex(colors[i])
-		hex := fmt.Sprintf("#%02x%02x%02x", uint8(c.R*255+0.5), uint8(c.G*255+0.5), uint8(c.B*255+0.5))
-		// Each sized letter occupies `size` cells wide.
-		word.WriteString(sizeEsc)
-		word.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(letter))
+		r8 := uint8(c.R*255 + 0.5)
+		g8 := uint8(c.G*255 + 0.5)
+		b8 := uint8(c.B*255 + 0.5)
+		// Raw ANSI: set truecolour fg, set kitty size, emit letter, reset both.
+		word.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm\x1b[66;s=%d;%s\x1b[0m\x1b[66;", r8, g8, b8, size, letter))
 	}
-	word.WriteString(resetEsc)
 
 	// Visible width = 5 letters × size cells each.
 	visibleW := 5 * size
