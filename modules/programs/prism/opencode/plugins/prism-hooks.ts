@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { appendFileSync } from "fs";
 
 const PERMISSION_LOG =
   (process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`) +
@@ -27,32 +28,32 @@ export const PrismHooks: Plugin = async ({ $ }) => {
         case "session.status":
           if (event.properties.status.type === "busy") {
             // Don't overwrite compacting state with active.
-            if (!compacting) notify("set-active");
+            if (!compacting) await notify("set-active");
           } else if (event.properties.status.type === "retry")
-            notify("set-error");
+            await notify("set-error");
           else if (event.properties.status.type === "idle")
-            notify("set-finished");
+            await notify("set-finished");
           break;
         case "session.idle":
-          notify("set-finished");
+          await notify("set-finished");
           break;
         case "session.created":
         case "session.updated": {
           const info = event.properties.info;
-          if (info.title) setTitle(info.title);
+          if (info.title) await setTitle(info.title);
           // session.updated fires with info.compacting set when compaction starts.
           if (info.compacting) {
             compacting = true;
-            notify("set-compacting");
+            await notify("set-compacting");
           }
           break;
         }
         case "session.deleted":
-          notify("clear");
-          clearTitle();
+          await notify("clear");
+          await clearTitle();
           break;
         case "permission.asked": {
-          notify("set-waiting");
+          await notify("set-waiting");
           // Log to JSONL for later analysis — permission.asked carries the
           // full Permission object including tool type and command pattern.
           const entry = JSON.stringify({
@@ -62,19 +63,19 @@ export const PrismHooks: Plugin = async ({ $ }) => {
             title: (event.properties as any).title,
             sessionID: (event.properties as any).sessionID,
           });
-          $`echo ${entry} >> ${PERMISSION_LOG}`.quiet().nothrow();
+          try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           break;
         }
         case "permission.replied":
-          notify("set-active");
+          await notify("set-active");
           break;
         case "session.error":
-          notify("set-error");
+          await notify("set-error");
           break;
         case "session.compacted":
           // Compaction done — agent returns to idle.
           compacting = false;
-          notify("set-finished");
+          await notify("set-finished");
           break;
       }
     },
@@ -82,7 +83,7 @@ export const PrismHooks: Plugin = async ({ $ }) => {
     // Set flag so concurrent busy events don't override the compacting state.
     "experimental.session.compacting": async (_input, output) => {
       compacting = true;
-      notify("set-compacting");
+      await notify("set-compacting");
       return output;
     },
   };
