@@ -173,7 +173,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		return s + strings.Repeat(" ", w-vis)
 	}
 
-	wordmark := rainbowLineWidth("PRISM", 5)
+	wordmark := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true).Render("PRISM")
 	const wordmarkW = 5
 
 	// ── compact mode: terminal too short for full art block ──────────────────
