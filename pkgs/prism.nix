@@ -1,6 +1,7 @@
 {
   lib,
   buildGoModule,
+  tmux,
   # Theme colours injected so the binary matches the user's active theme.
   # Each is a #rrggbb hex string.
   colorPrimary ? "#d4be98",
@@ -44,6 +45,7 @@ buildGoModule {
     "-X github.com/prismatic-koi/prism/cmd.SwitchWorktreeExclude=${worktreeExclude}"
     "-X github.com/prismatic-koi/prism/cmd.SwitchProjectLocations=${projectLocations}"
     "-X github.com/prismatic-koi/prism/cmd.SwitchProjectSpecific=${projectSpecific}"
+    "-X github.com/prismatic-koi/prism/internal/tmux.TmuxBin=${tmux}/bin/tmux"
   ];
 
   meta = {

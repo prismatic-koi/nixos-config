@@ -7,6 +7,12 @@ import (
 	"strings"
 )
 
+// TmuxBin is the path to the tmux binary. Injected at build time via ldflags
+// so that prism can find tmux regardless of the invoking shell's PATH
+// (e.g. when launched from a tmux display-popup on macOS with a stripped PATH).
+// Falls back to "tmux" for local dev builds.
+var TmuxBin = "tmux"
+
 // Session represents a tmux session with its agent state.
 type Session struct {
 	Name        string
@@ -18,7 +24,7 @@ type Session struct {
 
 // run executes a tmux command and returns trimmed stdout.
 func run(args ...string) (string, error) {
-	out, err := exec.Command("tmux", args...).Output()
+	out, err := exec.Command(TmuxBin, args...).Output()
 	if err != nil {
 		return "", err
 	}
@@ -144,7 +150,7 @@ func CurrentPanePath() (string, error) {
 
 // HasSession returns true if a session with the given name exists.
 func HasSession(name string) bool {
-	err := exec.Command("tmux", "has-session", "-t", name).Run()
+	err := exec.Command(TmuxBin, "has-session", "-t", name).Run()
 	return err == nil
 }
 
@@ -161,7 +167,7 @@ func DetachClient(client string) error {
 		_, err := run("detach-client")
 		return err
 	}
-	_, err := run("detach-client", "-s", client)
+	_, err := run("detach-client", "-c", client)
 	return err
 }
 
