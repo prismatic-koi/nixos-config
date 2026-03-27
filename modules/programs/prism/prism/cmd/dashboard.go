@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
@@ -30,6 +31,91 @@ var (
 	ColorForeground = "#d3c6aa"
 	ColorBg0        = "#2d353b"
 )
+
+// ── header art ────────────────────────────────────────────────────────────────
+
+// artLines is the DSOTM-inspired prism header: small figlet "PRISM" with a
+// triangle whose right vertex emits a rainbow spectrum fan below.
+var artLines = []string{
+	`                      /\`,
+	`                     /  \·───────────────────────────────`,
+	`  ___  ___ ___ ___ __/ __ \·──────────────────────────────`,
+	` | _ \| _ \_ _/ __|  \/  | \·─────────────────────────────`,
+	` |  _/|   /| |\__ \ |\/| |  \·────────────────────────────`,
+	` |_|  |_|_\___|___/_|  |_|   \·───────────────────────────`,
+	`                  /____________\`,
+}
+
+// artWidth is the width of the widest art line, used to normalise gradient positions.
+const artWidth = 58
+
+// rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
+// Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
+// (orange and aqua are not in the ldflags palette, but the interpolation between
+// red→yellow and green→blue naturally produces those intermediate hues.)
+func rainbowAt(t float64) colorful.Color {
+	stops := []colorful.Color{
+		mustHex(ColorRed),
+		mustHex(ColorYellow),
+		mustHex(ColorGreen),
+		mustHex(ColorBlue),
+		mustHex(ColorPurple),
+	}
+	scaled := t * float64(len(stops)-1)
+	i := int(scaled)
+	if i >= len(stops)-1 {
+		return stops[len(stops)-1]
+	}
+	frac := scaled - float64(i)
+	r1, g1, b1 := stops[i].R, stops[i].G, stops[i].B
+	r2, g2, b2 := stops[i+1].R, stops[i+1].G, stops[i+1].B
+	return colorful.Color{
+		R: r1 + (r2-r1)*frac,
+		G: g1 + (g2-g1)*frac,
+		B: b1 + (b2-b1)*frac,
+	}
+}
+
+func mustHex(h string) colorful.Color {
+	c, err := colorful.Hex(h)
+	if err != nil {
+		return colorful.Color{}
+	}
+	return c
+}
+
+// rainbowLine renders a single art line with a left-to-right rainbow gradient.
+// Spaces are passed through unstyled so the background shows through.
+func rainbowLine(line string) string {
+	var sb strings.Builder
+	col := 0
+	for _, ch := range line {
+		if ch == ' ' {
+			sb.WriteRune(' ')
+		} else {
+			t := float64(col) / float64(artWidth)
+			c := rainbowAt(t)
+			hex := fmt.Sprintf("#%02x%02x%02x",
+				uint8(c.R*255+0.5),
+				uint8(c.G*255+0.5),
+				uint8(c.B*255+0.5),
+			)
+			sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(string(ch)))
+		}
+		col++
+	}
+	return sb.String()
+}
+
+// renderArt returns the full header art block as a single string.
+func renderArt() string {
+	var sb strings.Builder
+	for _, line := range artLines {
+		sb.WriteString(rainbowLine(line))
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
 
 // ── styles ────────────────────────────────────────────────────────────────────
 
@@ -227,7 +313,13 @@ func (m dashModel) View() string {
 
 	var sb strings.Builder
 
+	// ── header art ──────────────────────────────────────────────────────────
+	sb.WriteString(renderArt())
+
+	// Dim separator between art and column headers.
+	sb.WriteString(styleDim.Render(strings.Repeat("─", m.width)))
 	sb.WriteString("\n")
+
 	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s", dotW, "", sessionW, "session", stateW, "state", statW, "changes")
 	if titleW > 0 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
@@ -336,7 +428,14 @@ func (m dashModel) View() string {
 	}
 
 	sb.WriteString("\n")
-	sb.WriteString(styleDim.Render("  j/k move  enter switch  q close"))
+	hint := "  j/k move  enter switch  q close"
+	count := fmt.Sprintf("%d sessions  ", len(m.sessions))
+	// Right-align the session count: pad between hint and count to fill m.width.
+	pad := m.width - len(hint) - len(count)
+	if pad < 1 {
+		pad = 1
+	}
+	sb.WriteString(styleDim.Render(hint + strings.Repeat(" ", pad) + count))
 	sb.WriteString("\n")
 
 	return sb.String()

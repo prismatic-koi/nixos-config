@@ -238,9 +238,9 @@ func (m pickerModel) View() string {
 
 	var sb strings.Builder
 
-	// Prompt + filter input — pad with a leading space to match row indent.
+	// Prompt + filter input.
 	sb.WriteString("\n")
-	sb.WriteString(stylePrompt.Render(" " + m.prompt))
+	sb.WriteString(stylePrompt.Render(" >> "))
 	sb.WriteString(m.filter)
 	sb.WriteString(styleDim.Render("█"))
 	sb.WriteString("\n\n")
