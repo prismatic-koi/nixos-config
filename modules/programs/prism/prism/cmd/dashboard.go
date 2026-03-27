@@ -108,18 +108,114 @@ func rainbowLine(line string) string {
 	return sb.String()
 }
 
-// renderArt returns the full header art block right-aligned within termWidth.
-func renderArt(termWidth int) string {
-	// Pad each line on the left so the block sits flush against the right edge.
-	leftPad := termWidth - artWidth
-	if leftPad < 0 {
-		leftPad = 0
+// renderHeader composites the stats panel (left) with the art block (right)
+// into a single header string that fills termWidth on each line.
+func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) string {
+	// ── build stats lines (plain strings, no ANSI yet) ───────────────────────
+	// Compute local stats from the sessions list.
+	var nActive, nWaiting, nIdle, nFinished int
+	var totalIns, totalDel int
+	for _, s := range m.sessions {
+		stat := git.Stat(s.AgentPath)
+		totalIns += stat.Insertions
+		totalDel += stat.Deletions
+		switch s.AgentState {
+		case "active":
+			nActive++
+		case "waiting":
+			nWaiting++
+		case "finished":
+			nFinished++
+		default:
+			nIdle++
+		}
 	}
-	prefix := strings.Repeat(" ", leftPad)
+
+	// PR line: show "…" until loaded.
+	var prLine string
+	if !m.ghLoaded {
+		prLine = "↑ …"
+	} else {
+		prLine = fmt.Sprintf("↑ %d open PRs", m.ghOpenPRs)
+	}
+
+	// State summary: only show non-zero counts.
+	var stateParts []string
+	if nActive > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d active", nActive))
+	}
+	if nWaiting > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d waiting", nWaiting))
+	}
+	if nFinished > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d done", nFinished))
+	}
+	if nIdle > 0 || len(stateParts) == 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d idle", nIdle))
+	}
+	stateLine := strings.Join(stateParts, "  ")
+
+	// The art is 7 lines tall; build 7 stats lines to match.
+	// Lines 0-1: blank breathing room
+	// Line 2: session count (bold label)
+	// Line 3: state breakdown
+	// Line 4: changes summary
+	// Line 5: open PRs
+	// Line 6: blank
+	const statsW = 22 // fixed width for the stats column
+	styleStatLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	styleStatDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
+
+	// Coloured changes line: +N -N
+	var changesLine string
+	if totalIns == 0 && totalDel == 0 {
+		changesLine = styleStatDim.Render("no changes")
+	} else {
+		changesLine = styleIns.Render(fmt.Sprintf("+%d", totalIns)) +
+			styleStatDim.Render("  ") +
+			styleDel.Render(fmt.Sprintf("-%d", totalDel))
+	}
+
+	prRendered := styleStatDim.Render(prLine)
+	stateRendered := styleStatDim.Render(stateLine)
+
+	// 7 rendered stat lines, padded to statsW visible chars each.
+	pad := func(s string, visLen int) string {
+		p := statsW - visLen
+		if p < 0 {
+			p = 0
+		}
+		return s + strings.Repeat(" ", p)
+	}
+
+	statLines := []string{
+		strings.Repeat(" ", statsW),
+		strings.Repeat(" ", statsW),
+		pad(sessionCountLine, lipgloss.Width(sessionCountLine)),
+		pad(stateRendered, lipgloss.Width(stateRendered)),
+		pad(changesLine, lipgloss.Width(changesLine)),
+		pad(prRendered, lipgloss.Width(prRendered)),
+		strings.Repeat(" ", statsW),
+	}
+
+	// ── merge with art lines ─────────────────────────────────────────────────
+	artPad := m.width - artWidth - statsW
+	if artPad < 0 {
+		artPad = 0
+	}
+	middle := strings.Repeat(" ", artPad)
+
 	var sb strings.Builder
-	for _, line := range artLines {
-		sb.WriteString(prefix)
-		sb.WriteString(rainbowLine(line))
+	for i, artLine := range artLines {
+		stat := ""
+		if i < len(statLines) {
+			stat = statLines[i]
+		}
+		sb.WriteString(stat)
+		sb.WriteString(middle)
+		sb.WriteString(rainbowLine(artLine))
 		sb.WriteString("\n")
 	}
 	return sb.String()
@@ -163,10 +259,21 @@ func stateLabel(state string) string {
 
 type tickMsg time.Time
 type sessionsMsg []tmux.Session
+type ghTickMsg time.Time
+type githubStatsMsg struct {
+	openPRs int
+	err     bool // true = fetch failed, keep showing previous value
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+func ghTick() tea.Cmd {
+	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
+		return ghTickMsg(t)
 	})
 }
 
@@ -176,6 +283,30 @@ func fetchSessions() tea.Msg {
 		return sessionsMsg(nil)
 	}
 	return sessionsMsg(sessions)
+}
+
+// fetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
+// Runs as a tea.Cmd so it never blocks the render loop.
+func fetchGitHubStats() tea.Msg {
+	const query = `{ viewer { pullRequests(states: OPEN, first: 1) { totalCount } } }`
+	out, err := exec.Command("gh", "api", "graphql", "-f", "query="+query).Output()
+	if err != nil {
+		return githubStatsMsg{err: true}
+	}
+	// Parse: {"data":{"viewer":{"pullRequests":{"totalCount":N}}}}
+	s := string(out)
+	idx := strings.Index(s, `"totalCount":`)
+	if idx < 0 {
+		return githubStatsMsg{err: true}
+	}
+	s = s[idx+len(`"totalCount":`):]
+	end := strings.IndexAny(s, ",}")
+	if end < 0 {
+		return githubStatsMsg{err: true}
+	}
+	var n int
+	fmt.Sscanf(strings.TrimSpace(s[:end]), "%d", &n)
+	return githubStatsMsg{openPRs: n}
 }
 
 // ── model ─────────────────────────────────────────────────────────────────────
@@ -189,6 +320,8 @@ type dashModel struct {
 	client            string
 	popup             bool
 	currentSession    string // session the viewing client is in
+	ghOpenPRs         int
+	ghLoaded          bool // false = still fetching, show "…"
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -204,7 +337,7 @@ func newDashModel(client string, popup bool) dashModel {
 }
 
 func (m dashModel) Init() tea.Cmd {
-	return tea.Batch(fetchSessions, tick())
+	return tea.Batch(fetchSessions, tick(), fetchGitHubStats, ghTick())
 }
 
 func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -216,6 +349,15 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		return m, tea.Batch(fetchSessions, tick())
+
+	case ghTickMsg:
+		return m, tea.Batch(fetchGitHubStats, ghTick())
+
+	case githubStatsMsg:
+		if !msg.err {
+			m.ghOpenPRs = msg.openPRs
+		}
+		m.ghLoaded = true
 
 	case sessionsMsg:
 		m.sessions = filterSessions([]tmux.Session(msg))
@@ -321,10 +463,10 @@ func (m dashModel) View() string {
 
 	var sb strings.Builder
 
-	// ── header art ──────────────────────────────────────────────────────────
-	sb.WriteString(renderArt(m.width))
+	// ── header: stats left, art right ───────────────────────────────────────
+	sb.WriteString(renderHeader(m, styleDim, styleIns, styleDel))
 
-	// Dim separator between art and column headers.
+	// Dim separator between header and column headers.
 	sb.WriteString(styleDim.Render(strings.Repeat("─", m.width)))
 	sb.WriteString("\n")
 
