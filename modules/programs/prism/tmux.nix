@@ -73,8 +73,8 @@ in
             unbind v
             unbind b
             # open current repo in browser (prefix+b)
-            bind-key b run-shell '\
-              dir="$(tmux display-message -p "#{pane_current_path}")"; \
+            bind-key b run-shell -b '\
+              dir="$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}")"; \
               bare=""; \
               p="$dir"; \
               while [ "$p" != "/" ]; do \
@@ -91,7 +91,7 @@ in
                 -e "s|git@\([^:]*\):\(.*\)\.git|https://\1/\2|" \
                 -e "s|git@\([^:]*\):\(.*\)|https://\1/\2|" \
                 -e "s|\.git$$||")"; \
-              ${if isDarwin then "open" else "${pkgs.xdg-utils}/bin/xdg-open"} "$url" 2>/dev/null &'
+              ${if isDarwin then "open" else "${pkgs.xdg-utils}/bin/xdg-open"} "$url" 2>/dev/null'
 
             # close window without confirmation
             bind-key X kill-window
