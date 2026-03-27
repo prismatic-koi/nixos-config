@@ -155,14 +155,6 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	}
 	stateLine := strings.Join(stateParts, "  ")
 
-	// The art is 7 lines tall; build 7 stats lines to match.
-	// Lines 0-1: blank breathing room
-	// Line 2: session count (bold label)
-	// Line 3: state breakdown
-	// Line 4: changes summary
-	// Line 5: open PRs
-	// Line 6: blank
-	const statsW = 22 // fixed width for the stats column
 	styleStatLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleStatDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
@@ -174,34 +166,51 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		changesLine = styleStatDim.Render("no changes")
 	} else {
 		changesLine = styleIns.Render(fmt.Sprintf("+%d", totalIns)) +
-			styleStatDim.Render("  ") +
+			"  " +
 			styleDel.Render(fmt.Sprintf("-%d", totalDel))
 	}
 
 	prRendered := styleStatDim.Render(prLine)
 	stateRendered := styleStatDim.Render(stateLine)
 
-	// 7 rendered stat lines, padded to statsW visible chars each.
-	pad := func(s string, visLen int) string {
-		p := statsW - visLen
-		if p < 0 {
-			p = 0
+	// padTo pads a rendered (ANSI) string to exactly w visible characters.
+	padTo := func(s string, w int) string {
+		vis := lipgloss.Width(s)
+		if vis >= w {
+			return s
 		}
-		return s + strings.Repeat(" ", p)
+		return s + strings.Repeat(" ", w-vis)
 	}
 
+	// Measure the widest stat line to set the column width.
+	statsW := 0
+	for _, s := range []string{
+		fmt.Sprintf("%d sessions", len(m.sessions)),
+		stateLine,
+		fmt.Sprintf("+%d  -%d", totalIns, totalDel),
+		prLine,
+	} {
+		if len(s) > statsW {
+			statsW = len(s)
+		}
+	}
+	statsW += 2 // breathing room
+
+	// The art is 7 lines tall; build 7 stat lines to match, each exactly statsW wide.
+	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
 	statLines := []string{
 		strings.Repeat(" ", statsW),
 		strings.Repeat(" ", statsW),
-		pad(sessionCountLine, lipgloss.Width(sessionCountLine)),
-		pad(stateRendered, lipgloss.Width(stateRendered)),
-		pad(changesLine, lipgloss.Width(changesLine)),
-		pad(prRendered, lipgloss.Width(prRendered)),
+		padTo(sessionCountLine, statsW),
+		padTo(stateRendered, statsW),
+		padTo(changesLine, statsW),
+		padTo(prRendered, statsW),
 		strings.Repeat(" ", statsW),
 	}
 
 	// ── merge with art lines ─────────────────────────────────────────────────
-	artPad := m.width - artWidth - statsW
+	// Middle gap fills remaining width between stats and art.
+	artPad := m.width - statsW - artWidth
 	if artPad < 0 {
 		artPad = 0
 	}
@@ -209,7 +218,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 	var sb strings.Builder
 	for i, artLine := range artLines {
-		stat := ""
+		stat := strings.Repeat(" ", statsW)
 		if i < len(statLines) {
 			stat = statLines[i]
 		}
