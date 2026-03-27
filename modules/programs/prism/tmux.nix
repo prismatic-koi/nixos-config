@@ -60,7 +60,17 @@ in
             # open current repo in browser (prefix+b)
             bind-key b run-shell '\
               dir="$(tmux display-message -p "#{pane_current_path}")"; \
-              url="$(git -C "$dir" remote get-url origin 2>/dev/null)"; \
+              bare=""; \
+              p="$dir"; \
+              while [ "$p" != "/" ]; do \
+                if [ -d "$p/.bare" ]; then bare="$p/.bare"; break; fi; \
+                p="$(dirname "$p")"; \
+              done; \
+              if [ -n "$bare" ]; then \
+                url="$(git --git-dir="$bare" remote get-url origin 2>/dev/null)"; \
+              else \
+                url="$(git -C "$dir" remote get-url origin 2>/dev/null)"; \
+              fi; \
               if [ -z "$url" ]; then exit 0; fi; \
               url="$(echo "$url" | sed \
                 -e "s|git@\([^:]*\):\(.*\)\.git|https://\1/\2|" \
