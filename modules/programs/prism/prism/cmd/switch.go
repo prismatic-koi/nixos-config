@@ -86,6 +86,7 @@ func projectEntries() []entry {
 	entries = append(entries,
 		entry{display: "[dashboard]", special: "[dashboard]"},
 		entry{display: "[scratchpad]", special: "[scratchpad]"},
+		entry{display: "[+ clone repo]", special: "[+ clone repo]"},
 	)
 
 	// Scan location dirs.
@@ -528,6 +529,42 @@ func handleRegularRepo(path string) error {
 	}
 }
 
+// ── clone repo ────────────────────────────────────────────────────────────────
+
+func handleCloneRepo() error {
+	repoURL := promptInput("clone url> ")
+	if repoURL == "" {
+		return nil
+	}
+
+	name := repoNameFromURL(repoURL)
+	if name == "" {
+		return fmt.Errorf("could not parse repository name from URL: %s", repoURL)
+	}
+
+	// Clone into the first configured project location.
+	locs := switchProjectLocations()
+	if len(locs) == 0 {
+		return fmt.Errorf("no project locations configured")
+	}
+	targetDir := filepath.Join(expandHome(locs[0]), name)
+
+	var cloneErr error
+	cloneErr = git.CloneWorktree(repoURL, targetDir, func(msg string) {
+		fmt.Println(msg)
+	})
+	if cloneErr != nil {
+		return fmt.Errorf("clone failed: %w", cloneErr)
+	}
+
+	// Switch to the default branch worktree.
+	worktrees := git.Worktrees(targetDir)
+	if len(worktrees) == 0 {
+		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
+	}
+	return ensureAndSwitchSession(worktrees[0], targetDir)
+}
+
 // ── ensure dashboard session ──────────────────────────────────────────────────
 
 func ensureSwitchDashSession() {
@@ -588,6 +625,9 @@ var switchCmd = &cobra.Command{
 
 		case "[scratchpad]":
 			return ensureAndSwitchSession("[scratchpad]", "")
+
+		case "[+ clone repo]":
+			return handleCloneRepo()
 
 		default:
 			p := chosen.path
