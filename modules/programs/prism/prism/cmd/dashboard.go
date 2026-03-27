@@ -50,6 +50,45 @@ var artLines = []string{
 // artWidth is the width of the widest art line, used to normalise gradient positions.
 const artWidth = 42
 
+// isKitty returns true if the terminal is kitty (or kitty-backed via tmux).
+// KITTY_WINDOW_ID is set by kitty and survives into tmux sessions.
+func isKitty() bool {
+	return os.Getenv("KITTY_WINDOW_ID") != "" || os.Getenv("TERM") == "kitty"
+}
+
+// kittySizedWordmark returns a right-aligned kitty text-sizing wordmark for the
+// narrow header fallback. Each letter of "PRISM" gets its own spectrum colour.
+// size=2 → double (2 rows tall), size=3 → triple (3 rows tall).
+// The caller is responsible for emitting (size-1) blank lines after this line
+// so that bubbletea's row accounting matches the physical terminal rows consumed.
+func kittySizedWordmark(size int, rightEdge int) string {
+	// Letter → colour mapping: P=purple, R=red, I=yellow, S=green, M=blue
+	// (spread across spectrum: roughly ROYGBP with 5 stops)
+	colors := []string{ColorRed, ColorYellow, ColorGreen, ColorBlue, ColorPurple}
+	letters := []string{"P", "R", "I", "S", "M"}
+
+	sizeEsc := fmt.Sprintf("\x1b[66;s=%d;", size)
+	resetEsc := "\x1b[66;"
+
+	var word strings.Builder
+	for i, letter := range letters {
+		c := mustHex(colors[i])
+		hex := fmt.Sprintf("#%02x%02x%02x", uint8(c.R*255+0.5), uint8(c.G*255+0.5), uint8(c.B*255+0.5))
+		// Each sized letter occupies `size` cells wide.
+		word.WriteString(sizeEsc)
+		word.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(hex)).Render(letter))
+	}
+	word.WriteString(resetEsc)
+
+	// Visible width = 5 letters × size cells each.
+	visibleW := 5 * size
+	pad := rightEdge - visibleW
+	if pad < 0 {
+		pad = 0
+	}
+	return strings.Repeat(" ", pad) + word.String()
+}
+
 // rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
 // Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
 // (orange and aqua are not in the ldflags palette, but the interpolation between
@@ -217,21 +256,44 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 			sb.WriteString("\n")
 		}
 	} else {
-		// Narrow: stats lines with a small rainbow "PRISM" wordmark top-right.
-		wordmark := rainbowLine("PRISM")
-		wordmarkW := 5 // visible width of "PRISM"
-		for i, s := range statLines {
-			sb.WriteString(s)
-			if i == 0 {
-				// Right-align the wordmark on the first line.
-				pad := m.width - statsW - wordmarkW
-				if pad < 0 {
-					pad = 0
+		// Narrow fallback: stats on the left, PRISM wordmark top-right.
+		if isKitty() {
+			// Use kitty text-sizing protocol: double-size = 2 rows tall.
+			// Emit the wordmark on line 0, a blank line on line 1 (consumed by
+			// the oversized glyphs), then remaining stat lines.
+			const size = 2
+			// Wordmark right-aligned in the space to the right of the stats panel.
+			wordmark := kittySizedWordmark(size, m.width-statsW)
+			for i, s := range statLines {
+				switch i {
+				case 0:
+					// Stats left, big PRISM right.
+					sb.WriteString(s)
+					sb.WriteString(wordmark)
+					sb.WriteString("\n")
+				case 1:
+					// Blank line claimed by the double-height glyphs above.
+					sb.WriteString("\n")
+				default:
+					sb.WriteString(s)
+					sb.WriteString("\n")
 				}
-				sb.WriteString(strings.Repeat(" ", pad))
-				sb.WriteString(wordmark)
 			}
-			sb.WriteString("\n")
+		} else {
+			// Non-kitty: plain rainbow "PRISM" right-aligned on first line.
+			wordmark := rainbowLine("PRISM")
+			for i, s := range statLines {
+				sb.WriteString(s)
+				if i == 0 {
+					pad := m.width - statsW - 5
+					if pad < 0 {
+						pad = 0
+					}
+					sb.WriteString(strings.Repeat(" ", pad))
+					sb.WriteString(wordmark)
+				}
+				sb.WriteString("\n")
+			}
 		}
 	}
 	return sb.String()
