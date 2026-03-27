@@ -313,10 +313,11 @@ func pickString(prompt string, items []string) string {
 // ── single-line text input model ──────────────────────────────────────────────
 
 type inputModel struct {
-	prompt string
-	value  string
-	done   bool
-	width  int
+	prompt       string
+	value        string
+	done         bool
+	width        int
+	sanitiseHint bool // show branch-name sanitise preview
 }
 
 func (m inputModel) Init() tea.Cmd { return nil }
@@ -357,10 +358,12 @@ func (m inputModel) View() string {
 	sb.WriteString(styleDim.Render("█"))
 	sb.WriteString("\n")
 	// Sanitised preview on its own line — keeps the cursor on the input line.
-	sanitised := git.SanitiseBranch(m.value)
-	if sanitised != "" && sanitised != m.value {
-		sb.WriteString(styleHint.Render("  → " + sanitised))
-		sb.WriteString("\n")
+	if m.sanitiseHint {
+		sanitised := git.SanitiseBranch(m.value)
+		if sanitised != "" && sanitised != m.value {
+			sb.WriteString(styleHint.Render("  → " + sanitised))
+			sb.WriteString("\n")
+		}
 	}
 	sb.WriteString(styleDim.Render("  enter confirm  esc cancel"))
 	sb.WriteString("\n")
@@ -370,7 +373,22 @@ func (m inputModel) View() string {
 // promptInput shows a single-line text input and returns the typed string,
 // or empty string if cancelled.
 func promptInput(prompt string) string {
-	m := inputModel{prompt: prompt}
+	m := inputModel{prompt: prompt, sanitiseHint: false}
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	result, err := p.Run()
+	if err != nil {
+		return ""
+	}
+	final, ok := result.(inputModel)
+	if !ok || !final.done {
+		return ""
+	}
+	return final.value
+}
+
+// promptBranchInput is like promptInput but shows a branch-name sanitise preview.
+func promptBranchInput(prompt string) string {
+	m := inputModel{prompt: prompt, sanitiseHint: true}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	result, err := p.Run()
 	if err != nil {
@@ -485,7 +503,7 @@ func handleBareRepo(projectPath string) error {
 	}
 
 	if chosen.special == "[+ create new worktree]" {
-		raw := promptInput("branch name> ")
+		raw := promptBranchInput("branch name> ")
 		if raw == "" {
 			return nil
 		}
