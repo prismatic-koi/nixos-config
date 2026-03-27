@@ -481,14 +481,22 @@ func (m dashModel) View() string {
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
 
-	const sessionW = 28
 	const stateW = 10
 	const statW = 22
 	const dotW = 2
-	// Title gets whatever is left after the fixed columns, min 10.
-	titleW := m.width - (1 + dotW + sessionW + 2 + stateW + 2 + statW + 2)
-	if titleW < 10 {
-		titleW = 0 // not enough room, hide it
+	const sessionWMax = 28
+	const sessionWMin = 14
+	// Fixed columns excluding session: dot + state + stat + separators.
+	fixedOther := 1 + dotW + 2 + stateW + 2 + statW + 2
+	// Title gets whatever is left after all fixed columns; hide if < 10.
+	titleW := m.width - (fixedOther + sessionWMax)
+	// Shrink the session column when the terminal is narrow, down to sessionWMin.
+	sessionW := sessionWMax
+	if titleW < 0 {
+		sessionW = max(sessionWMin, sessionWMax+titleW)
+		titleW = 0
+	} else if titleW < 10 {
+		titleW = 0
 	}
 
 	var sb strings.Builder
