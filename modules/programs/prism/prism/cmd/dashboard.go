@@ -38,17 +38,17 @@ var (
 // triangle whose apex sits above the M and whose right face emits a short
 // rainbow spectrum fan. The triangle left face merges with the figlet right edge.
 var artLines = []string{
-	`                              /\`,
-	`                             /  \·─────────────`,
-	`  ___  ___ ___ ___ __  __   /    \·─────────────`,
-	` | _ \| _ \_ _/ __|  \/  | /      \·─────────────`,
-	` |  _/|   /| |\__ \ |\/| |/        \·─────────────`,
-	` |_|  |_|_\___|___/_|  |_|/          \·─────────────`,
-	`                         /__________\`,
+	`                       /\`,
+	`                      /  \·───────────`,
+	`  ___  ___ ___ ___ __/ __ \·───────────`,
+	` | _ \| _ \_ _/ __|  \/  | \·───────────`,
+	` |  _/|   /| |\__ \ |\/| |  \·───────────`,
+	` |_|  |_|_\___|___/_|  |_|   \·───────────`,
+	`                 /____________\`,
 }
 
 // artWidth is the width of the widest art line, used to normalise gradient positions.
-const artWidth = 52
+const artWidth = 42
 
 // rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
 // Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
