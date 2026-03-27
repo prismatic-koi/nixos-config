@@ -378,13 +378,17 @@ func newDashModel(client string, popup bool) dashModel {
 	// CallerSession reads @prism_caller stamped by the tmux binding — the only
 	// reliable way to know which session the viewer came from.
 	currentSession := tmux.CallerSession()
+	// inDashSession: we are the persistent prism-dashboard session itself.
+	// In this mode the flag `popup` passed via --popup is true (the restart
+	// loop calls `prism dashboard --popup`), so isPopup captures C-w popups
+	// only when caller session is NOT the dashboard.
 	inDashSession := currentSession == dashSession || currentSession == ""
-	isPopup := popup || inDashSession
+	isPopup := popup && !inDashSession
 	return dashModel{
 		client:         client,
 		popup:          isPopup,
 		currentSession: currentSession,
-		// Popup mode always shows the cursor; persistent mode starts passive.
+		// Popup (C-w) always shows cursor. Persistent session starts passive.
 		cursorActive: isPopup,
 	}
 }
@@ -416,6 +420,14 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.popup {
 			m.cursorActive = false
 		}
+
+	case tea.BlurMsg:
+		if !m.popup {
+			m.cursorActive = false
+		}
+
+	case tea.FocusMsg:
+		// Focus regained — cursor stays hidden until user presses j/k.
 
 	case sessionsMsg:
 		m.sessions = filterSessions([]tmux.Session(msg))
@@ -706,7 +718,7 @@ var dashboardCmd = &cobra.Command{
 		if popup {
 			client, _ := tmux.CurrentClient()
 			m := newDashModel(client, popup)
-			p := tea.NewProgram(m, tea.WithAltScreen())
+			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
 			_, err := p.Run()
 			return err
 		}
