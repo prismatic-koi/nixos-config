@@ -95,13 +95,14 @@
         "nix flake metadata*" = "allow";
         "nix build *" = "allow";
         "nix flake check *" = "allow";
-        # Go read operations
+        # Go operations
         "go version*" = "allow";
         "go env*" = "allow";
         "go list *" = "allow";
         "go doc *" = "allow";
         "go vet *" = "allow";
         "gopls *" = "allow";
+        "go build *" = "allow";
         # AWS CLI (read-only config)
         "aws *" = "allow";
         # playwright-cli browser automation

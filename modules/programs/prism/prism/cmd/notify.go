@@ -35,8 +35,9 @@ var notifyCmd = &cobra.Command{
 }
 
 func runNotify(cmd *cobra.Command, args []string) error {
-	// Drain stdin — the opencode hook pipes JSON in but we don't need it.
-	_, _ = io.ReadAll(os.Stdin)
+	// Drain stdin in background — the opencode hook pipes JSON in but we don't
+	// need it, and we don't want to block on it before doing work.
+	go io.ReadAll(os.Stdin) //nolint:errcheck
 
 	if os.Getenv("TMUX") == "" {
 		return nil

@@ -40,6 +40,9 @@ in
         XDG_DATA_HOME = "$HOME/.local/share";
         XDG_STATE_HOME = "$HOME/.local/state";
         XDG_CACHE_HOME = "$HOME/.cache";
+        # Disable CGO globally — all non-Nix Go projects are pure Go, and Nix
+        # builds manage their own hermetic environment so this has no effect there.
+        CGO_ENABLED = "0";
       };
     })
   ];

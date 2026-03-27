@@ -32,6 +32,13 @@ in
   };
   config = lib.mkIf config.nx.programs.prism.tmux.enable {
     home-manager.users.${config.nx.username} = {
+      # Reload tmux config automatically after each nixos-rebuild switch.
+      # Only runs if a tmux server is already running (exits silently otherwise).
+      home.activation.reloadTmuxConfig = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        if ${pkgs.tmux}/bin/tmux list-sessions &>/dev/null 2>&1; then
+          ${pkgs.tmux}/bin/tmux source-file ''${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf
+        fi
+      '';
       programs.tmux = {
         enable = true;
         secureSocket = false; # for some reason, tmux started via hyprland doesnt respect this and I only want 1 tmux server running
