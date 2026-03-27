@@ -238,9 +238,32 @@ func ListClients() ([]string, error) {
 	return clients, nil
 }
 
-// DisplayMessage sends a message to the named client's status bar.
-func DisplayMessage(client, msg string) error {
-	_, err := run("display-message", "-c", client, msg)
+// clientWidth returns the terminal width of the named client in columns.
+func clientWidth(client string) int {
+	out, err := run("display-message", "-t", client, "-p", "#{client_width}")
+	if err != nil {
+		return 80
+	}
+	w := 0
+	fmt.Sscan(out, &w)
+	if w <= 0 {
+		return 80
+	}
+	return w
+}
+
+// DisplayMessage sends a styled, full-width message to the named client's
+// status bar for the given duration (milliseconds).
+// style is a tmux format string like "#[fg=colour,bg=colour]" that will be
+// prepended to the visible text. The message is padded to fill the client
+// width so the background colour spans the whole bar.
+func DisplayMessage(client, style, text string, durationMs int) error {
+	width := clientWidth(client)
+	// style bytes are invisible — pad total string length by len(style) extra
+	// so that the visible portion fills the bar.
+	total := width + len(style)
+	padded := fmt.Sprintf("%-*s", total, style+text)
+	_, err := run("display-message", "-c", client, "-d", fmt.Sprintf("%d", durationMs), padded)
 	return err
 }
 

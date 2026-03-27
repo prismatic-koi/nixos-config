@@ -92,9 +92,10 @@ func runNotify(cmd *cobra.Command, args []string) error {
 		if err == nil && sessionName != "" {
 			clients, err := tmux.ListClients()
 			if err == nil {
-				msg := fmt.Sprintf("%s is waiting", sessionName)
+				style := fmt.Sprintf("#[fg=%s,bg=%s]", ColorBg0, ColorYellow)
+				text := fmt.Sprintf(" %s is waiting", sessionName)
 				for _, client := range clients {
-					_ = tmux.DisplayMessage(client, msg)
+					_ = tmux.DisplayMessage(client, style, text, 3000)
 				}
 			}
 		}
