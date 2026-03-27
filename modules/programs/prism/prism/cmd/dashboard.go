@@ -676,15 +676,6 @@ func (m dashModel) View() string {
 	}
 
 	sb.WriteString("\n")
-	hint := "  j/k move  enter switch  q close"
-	count := fmt.Sprintf("%d sessions  ", len(m.sessions))
-	// Right-align the session count: pad between hint and count to fill m.width.
-	pad := m.width - len(hint) - len(count)
-	if pad < 1 {
-		pad = 1
-	}
-	sb.WriteString(styleDim.Render(hint + strings.Repeat(" ", pad) + count))
-	sb.WriteString("\n")
 
 	return sb.String()
 }
