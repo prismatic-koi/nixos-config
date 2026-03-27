@@ -229,17 +229,29 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 			sb.WriteString("\n")
 		}
 	} else {
-		// Narrow fallback: stats on the left, rainbow "PRISM" right-aligned top-right.
+		// Narrow fallback: stats lines, "PRISM" right-aligned to terminal edge.
+		// No art to conflict with, so always show the full wordmark regardless of statsW.
 		wordmark := rainbowLineWidth("PRISM", 5)
+		const wordmarkW = 5
 		for i, s := range statLines {
-			sb.WriteString(s)
 			if i == 0 {
-				pad := m.width - statsW - 5
+				// Right-align wordmark to m.width, overwriting any trailing stat padding.
+				pad := m.width - statsW - wordmarkW
 				if pad < 0 {
-					pad = 0
+					// Terminal narrower than stats+wordmark: trim stat line to make room.
+					trimmed := s
+					if len(trimmed) > m.width-wordmarkW {
+						trimmed = trimmed[:m.width-wordmarkW]
+					}
+					sb.WriteString(trimmed)
+					sb.WriteString(wordmark)
+				} else {
+					sb.WriteString(s)
+					sb.WriteString(strings.Repeat(" ", pad))
+					sb.WriteString(wordmark)
 				}
-				sb.WriteString(strings.Repeat(" ", pad))
-				sb.WriteString(wordmark)
+			} else {
+				sb.WriteString(s)
 			}
 			sb.WriteString("\n")
 		}
