@@ -11,7 +11,9 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
   const pane = process.env.TMUX_PANE ?? "";
 
   const setTitle = (title: string) =>
-    $`tmux set-window-option -t ${pane} @agent_title ${title}`.quiet().nothrow();
+    $`tmux set-window-option -t ${pane} @agent_title ${title}`
+      .quiet()
+      .nothrow();
 
   const clearTitle = () =>
     $`tmux set-window-option -t ${pane} -u @agent_title`.quiet().nothrow();
@@ -20,21 +22,6 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
   let compacting = false;
 
   return {
-    // Log every permission ask to a JSONL file for later analysis.
-    // This gives accurate data on what commands are being gated, without
-    // having to infer from tool call durations.
-    "permission.ask": async (input, _output) => {
-      const entry = JSON.stringify({
-        time: new Date().toISOString(),
-        tool: input.type,
-        pattern: input.pattern,
-        title: input.title,
-        sessionID: input.sessionID,
-        callID: input.callID ?? null,
-      });
-      // Fire-and-forget — never block the permission flow due to logging.
-      $`echo ${entry} >> ${PERMISSION_LOG}`.quiet().nothrow();
-    },
     event: async ({ event }) => {
       switch (event.type) {
         case "session.status":
@@ -64,9 +51,19 @@ export const TmuxStatus: Plugin = async ({ $ }) => {
           notify("clear");
           clearTitle();
           break;
-        case "permission.asked":
+        case "permission.asked": {
           notify("set-waiting");
+          // Log to JSONL for later analysis of ask-gated tool calls.
+          // permission.asked only carries sessionID + permissionID, not the
+          // command itself — but it's enough to count and timestamp asks.
+          const entry = JSON.stringify({
+            time: new Date().toISOString(),
+            sessionID: event.properties.sessionID,
+            permissionID: event.properties.permissionID,
+          });
+          $`echo ${entry} >> ${PERMISSION_LOG}`.quiet().nothrow();
           break;
+        }
         case "permission.replied":
           notify("set-active");
           break;
