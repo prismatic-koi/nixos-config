@@ -85,16 +85,28 @@ func mustHex(h string) colorful.Color {
 	return c
 }
 
-// rainbowLine renders a single art line with a left-to-right rainbow gradient.
-// Spaces are passed through unstyled so the background shows through.
+// rainbowLine renders a single art line with a left-to-right rainbow gradient
+// normalised over artWidth columns.
 func rainbowLine(line string) string {
+	return rainbowLineWidth(line, artWidth)
+}
+
+// rainbowLineWidth renders a string with a rainbow gradient spread across
+// totalWidth columns, so short strings like "PRISM" get the full spectrum.
+func rainbowLineWidth(line string, totalWidth int) string {
+	if totalWidth < 2 {
+		totalWidth = 2
+	}
 	var sb strings.Builder
 	col := 0
 	for _, ch := range line {
 		if ch == ' ' {
 			sb.WriteRune(' ')
 		} else {
-			t := float64(col) / float64(artWidth)
+			t := float64(col) / float64(totalWidth-1)
+			if t > 1 {
+				t = 1
+			}
 			c := rainbowAt(t)
 			hex := fmt.Sprintf("#%02x%02x%02x",
 				uint8(c.R*255+0.5),
@@ -218,7 +230,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		}
 	} else {
 		// Narrow fallback: stats on the left, rainbow "PRISM" right-aligned top-right.
-		wordmark := rainbowLine("PRISM")
+		wordmark := rainbowLineWidth("PRISM", 5)
 		for i, s := range statLines {
 			sb.WriteString(s)
 			if i == 0 {
@@ -519,8 +531,8 @@ func (m dashModel) View() string {
 	// ── header: stats left, art right ───────────────────────────────────────
 	sb.WriteString(renderHeader(m, styleDim, styleIns, styleDel))
 
-	// Dim separator between header and column headers.
-	sb.WriteString(styleDim.Render(strings.Repeat("─", m.width)))
+	// Rainbow separator between header and column headers.
+	sb.WriteString(rainbowLineWidth(strings.Repeat("─", m.width), m.width))
 	sb.WriteString("\n")
 
 	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s", dotW, "", sessionW, "session", stateW, "state", statW, "changes")
