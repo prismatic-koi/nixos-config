@@ -38,17 +38,23 @@ var (
 // triangle whose apex sits above the M and whose right face emits a short
 // rainbow spectrum fan. The triangle left face merges with the figlet right edge.
 var artLines = []string{
-	`                       /\`,
-	`                      /  \·───────────`,
-	`  ___  ___ ___ ___ __/ __ \·───────────`,
-	` | _ \| _ \_ _/ __|  \/  | \·───────────`,
-	` |  _/|   /| |\__ \ |\/| |  \·───────────`,
-	` |_|  |_|_\___|___/_|  |_|   \·───────────`,
-	`                 /____________\`,
+	`                      /\`,
+	`                     /  \·───────────`,
+	` ___  ___ ___ ___ __/ __ \·───────────`,
+	`| _ \| _ \_ _/ __|  \/  | \·───────────`,
+	`|  _/|   /| |\__ \ |\/| |  \·───────────`,
+	`|_|  |_|_\___|___/_|  |_|   \·───────────`,
+	`                /____________\`,
 }
 
 // artWidth is the width of the widest art line, used to normalise gradient positions.
-const artWidth = 42
+const artWidth = 41
+
+// artHeight is the number of lines in the art block.
+const artHeight = 7
+
+// compactHeightThreshold: below this terminal height, use the compact 2-line header.
+const compactHeightThreshold = 16
 
 // rainbowAt returns the everforest spectrum colour at normalised position t ∈ [0,1].
 // Uses the 5 available accent colours as stops: red → yellow → green → blue → purple.
@@ -122,9 +128,9 @@ func rainbowLineWidth(line string, totalWidth int) string {
 
 // renderHeader composites the stats panel (left) with the art block (right)
 // into a single header string that fills termWidth on each line.
+// When the terminal is too short, a compact 2-line header is used instead.
 func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) string {
-	// ── build stats lines (plain strings, no ANSI yet) ───────────────────────
-	// Compute local stats from the sessions list.
+	// ── compute stats ────────────────────────────────────────────────────────
 	var nActive, nWaiting, nIdle, nFinished int
 	var totalIns, totalDel int
 	for _, s := range m.sessions {
@@ -143,15 +149,6 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		}
 	}
 
-	// PR line: show "…" until loaded.
-	var prLine string
-	if !m.ghLoaded {
-		prLine = "↑ …"
-	} else {
-		prLine = fmt.Sprintf("↑ %d open PRs", m.ghOpenPRs)
-	}
-
-	// State summary: only show non-zero counts.
 	var stateParts []string
 	if nActive > 0 {
 		stateParts = append(stateParts, fmt.Sprintf("%d active", nActive))
@@ -170,9 +167,46 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	styleStatLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleStatDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
+	// padTo pads a rendered (ANSI) string to exactly w visible characters.
+	padTo := func(s string, w int) string {
+		vis := lipgloss.Width(s)
+		if vis >= w {
+			return s
+		}
+		return s + strings.Repeat(" ", w-vis)
+	}
 
-	// Coloured changes line: +N -N
+	wordmark := rainbowLineWidth("PRISM", 5)
+	const wordmarkW = 5
+
+	// ── compact mode: terminal too short for full art block ──────────────────
+	if m.height < compactHeightThreshold {
+		// 2 lines: "N sessions  STATE_SUMMARY" left + PRISM right on line 1,
+		// blank line 2 for breathing room.
+		sessionCount := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
+		stateStr := styleStatDim.Render(stateLine)
+		leftContent := sessionCount + "  " + stateStr
+		leftW := lipgloss.Width(leftContent)
+		pad := m.width - leftW - wordmarkW
+		if pad < 1 {
+			pad = 1
+		}
+		var sb strings.Builder
+		sb.WriteString(leftContent)
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(wordmark)
+		sb.WriteString("\n\n")
+		return sb.String()
+	}
+
+	// ── full mode ────────────────────────────────────────────────────────────
+	var prLine string
+	if !m.ghLoaded {
+		prLine = "↑ …"
+	} else {
+		prLine = fmt.Sprintf("↑ %d open PRs", m.ghOpenPRs)
+	}
+
 	var changesLine string
 	if totalIns == 0 && totalDel == 0 {
 		changesLine = styleStatDim.Render("no changes")
@@ -184,21 +218,12 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 	prRendered := styleStatDim.Render(prLine)
 	stateRendered := styleStatDim.Render(stateLine)
+	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
 
-	// padTo pads a rendered (ANSI) string to exactly w visible characters.
-	padTo := func(s string, w int) string {
-		vis := lipgloss.Width(s)
-		if vis >= w {
-			return s
-		}
-		return s + strings.Repeat(" ", w-vis)
-	}
-
-	// Fixed column width — wide enough for the worst-case state line
-	// ("1 active  1 waiting  1 done  1 idle" = 35 chars) plus breathing room.
+	// Fixed column width — wide enough for worst-case state line (35 chars) + room.
 	const statsW = 37
 
-	// The art is 7 lines tall; build 7 stat lines to match, each exactly statsW wide.
+	// 7 stat lines matching artHeight, each exactly statsW wide.
 	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
 	statLines := []string{
 		strings.Repeat(" ", statsW),
@@ -210,9 +235,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		strings.Repeat(" ", statsW),
 	}
 
-	// ── merge with art lines ─────────────────────────────────────────────────
-	// Only render art if there is enough room alongside the stats panel.
-	// artWidth=42; below that threshold just show stats on their own lines.
+	// Only render art if there is enough horizontal room.
 	showArt := m.width >= statsW+artWidth
 
 	var sb strings.Builder
@@ -229,16 +252,11 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 			sb.WriteString("\n")
 		}
 	} else {
-		// Narrow fallback: stats lines, "PRISM" right-aligned to terminal edge.
-		// No art to conflict with, so always show the full wordmark regardless of statsW.
-		wordmark := rainbowLineWidth("PRISM", 5)
-		const wordmarkW = 5
+		// Narrow: stats lines with PRISM wordmark right-aligned on first line.
 		for i, s := range statLines {
 			if i == 0 {
-				// Right-align wordmark to m.width, overwriting any trailing stat padding.
 				pad := m.width - statsW - wordmarkW
 				if pad < 0 {
-					// Terminal narrower than stats+wordmark: trim stat line to make room.
 					trimmed := s
 					if len(trimmed) > m.width-wordmarkW {
 						trimmed = trimmed[:m.width-wordmarkW]
