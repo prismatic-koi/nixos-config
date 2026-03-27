@@ -81,10 +81,13 @@
         "gh pr view *" = "allow";
         "gh pr list *" = "allow";
         "gh pr diff *" = "allow";
+        "gh pr checks *" = "allow";
         "gh repo view *" = "allow";
         "gh release list *" = "allow";
         "gh release view *" = "allow";
         "gh run view *" = "allow";
+        "gh run list *" = "allow";
+        "gh run watch *" = "allow";
         # Kubernetes read operations
         "kubectl get*" = "allow";
         "kubectl describe*" = "allow";
@@ -101,6 +104,11 @@
         "go list *" = "allow";
         "go doc *" = "allow";
         "go vet *" = "allow";
+        "go test *" = "allow";
+        "go get *" = "allow";
+        "go mod *" = "allow";
+        "go generate *" = "allow";
+        "go fmt *" = "allow";
         "gopls *" = "allow";
         "go build *" = "allow";
         # AWS CLI (read-only config)
@@ -140,14 +148,8 @@
         "kubectl *" = "allow";
         "helm dependency update" = "allow";
         # Go write operations
-        "go build *" = "allow";
         "go run *" = "allow";
-        "go test *" = "allow";
-        "go mod *" = "allow";
-        "go get *" = "allow";
         "go install *" = "allow";
-        "go generate *" = "allow";
-        "go fmt *" = "allow";
         "goimports *" = "allow";
       };
 
