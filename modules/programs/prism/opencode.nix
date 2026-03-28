@@ -151,6 +151,8 @@
         "go run *" = "allow";
         "go install *" = "allow";
         "goimports *" = "allow";
+        # Prism session management
+        "prism spawn *" = "allow";
       };
 
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
