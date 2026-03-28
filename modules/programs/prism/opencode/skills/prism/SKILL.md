@@ -73,15 +73,13 @@ prism pr 268 --repo nixos-config --prompt "review this PR and summarise the chan
 When the user asks you to create a ticket (e.g. Jira) and then spawn an agent to work on it:
 
 1. Create the ticket using the appropriate MCP tool and capture the ticket ID (e.g. `PROJ-123`)
-2. Use the ticket ID as the branch name and include it in the prompt so the spawned agent has full context
-3. Spawn the agent with enough detail that it can work autonomously without referring back
+2. Use the ticket ID as the branch name
+3. Spawn the agent — it has the Atlassian MCP available and can read the ticket itself
 
 ```bash
 # After creating ticket PROJ-123:
 prism spawn \
   --repo home-ops \
   --branch PROJ-123 \
-  --prompt "PROJ-123: <paste ticket title and description here so the agent has full context without needing to look it up>"
+  --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
-
-The spawned agent won't have access to your current session context, so the `--prompt` must be self-contained — include the ticket summary, acceptance criteria, and any relevant details rather than just the ticket ID.
