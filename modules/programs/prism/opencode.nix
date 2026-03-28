@@ -75,6 +75,11 @@
         "git *" = "allow";
         "git push *" = "ask";
         "git push" = "ask";
+        # cover `git -C <path> push` and `git --git-dir=... push` variants
+        "git -C * push" = "ask";
+        "git -C * push *" = "ask";
+        "git --git-dir* push" = "ask";
+        "git --git-dir* push *" = "ask";
         # GitHub CLI read operations
         "gh issue view *" = "allow";
         "gh issue list *" = "allow";
@@ -127,6 +132,11 @@
         "git add*" = "allow";
         "git push *" = "ask";
         "git push" = "ask";
+        # cover `git -C <path> push` and `git --git-dir=... push` variants
+        "git -C * push" = "ask";
+        "git -C * push *" = "ask";
+        "git --git-dir* push" = "ask";
+        "git --git-dir* push *" = "ask";
         # file operations that modify
         "mkdir *" = "allow";
         "rm *" = "allow";
