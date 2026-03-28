@@ -67,7 +67,7 @@ jobs:
       - name: Build NixOS config for ${{ matrix.config }} (after update)
         run: nix build --out-link result-after '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
       - name: Diff closures
-        run: NO_COLOR=1 nix store diff-closures ./result-before ./result-after > diff-${{ matrix.config }}.txt 2>&1 || true
+        run: nix store diff-closures ./result-before ./result-after 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > diff-${{ matrix.config }}.txt || true
       - name: Upload diff
         uses: actions/upload-artifact@v7
         with:
