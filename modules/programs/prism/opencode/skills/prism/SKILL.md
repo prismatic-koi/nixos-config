@@ -17,6 +17,18 @@ description: Spawn isolated agent sessions in their own git worktrees using the 
 | Task is long-running / should outlive this session | `prism spawn` |
 | Quick research or analysis within this repo | subagent (`@explore`, `@general`) |
 
+## Converting a repo to bare+worktree layout
+
+```bash
+# Convert the current directory
+prism convert
+
+# Convert a specific repo
+prism convert ~/code/nixos-config
+```
+
+This converts a regular git clone to the prism bare+worktree layout in-place. The working tree moves to `<repo>/<branch>/`, a bare clone is created at `<repo>/.bare`, and the index is populated immediately so `git status` is clean. This is the same operation as selecting `[convert to bare+worktree layout]` in the C-f picker.
+
 ## Basic usage
 
 ```bash
