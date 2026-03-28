@@ -88,6 +88,9 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	_ = tmux.SetWindowOption(windowID, "@agent_state", spec.state)
 
 	// On waiting: flash a display-message to all attached clients.
+	// StartDisplayMessage starts the tmux child process and returns immediately
+	// (without waiting for the display duration), so prism notify exits
+	// quickly and the plugin's await unblocks before the permission prompt.
 	if state == "set-waiting" {
 		sessionName, err := tmux.SessionNameOf(windowID)
 		if err == nil && sessionName != "" {
@@ -96,7 +99,7 @@ func runNotify(cmd *cobra.Command, args []string) error {
 				style := fmt.Sprintf("#[fg=%s,bg=%s]", ColorBg0, ColorYellow)
 				text := fmt.Sprintf(" %s is waiting", sessionName)
 				for _, client := range clients {
-					_ = tmux.DisplayMessage(client, style, text, 3000)
+					tmux.StartDisplayMessage(client, style, text, 1000)
 				}
 			}
 		}

@@ -53,9 +53,8 @@ export const PrismHooks: Plugin = async ({ $ }) => {
           await clearTitle();
           break;
         case "permission.asked": {
-          // Fire-and-forget — set-waiting triggers a 3s display-message in
-          // prism notify which would block the permission prompt from appearing.
-          notify("set-waiting");
+          // prism notify returns immediately (display-message runs async in Go).
+          await notify("set-waiting");
           // Log to JSONL for later analysis — permission.asked carries the
           // full Permission object including tool type and command pattern.
           const entry = JSON.stringify({

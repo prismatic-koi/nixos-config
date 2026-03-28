@@ -267,6 +267,19 @@ func DisplayMessage(client, style, text string, durationMs int) error {
 	return err
 }
 
+// StartDisplayMessage fires a display-message asynchronously. It blocks only
+// long enough to query the client width and start the child process, then
+// returns — it does not wait for the display duration to elapse.
+func StartDisplayMessage(client, style, text string, durationMs int) {
+	width := clientWidth(client)
+	total := width + len(style)
+	padded := fmt.Sprintf("%-*s", total, style+text)
+	cmd := exec.Command(TmuxBin, "display-message", "-c", client, "-d", fmt.Sprintf("%d", durationMs), padded)
+	if err := cmd.Start(); err == nil {
+		go cmd.Wait() //nolint:errcheck
+	}
+}
+
 // SetWindowOption sets a window option on the given window target.
 func SetWindowOption(target, option, value string) error {
 	_, err := run("set-window-option", "-t", target, option, value)
