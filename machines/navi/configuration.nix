@@ -47,6 +47,10 @@
       wgnord.enable = true;
     };
     services = {
+      flakeUpdateNotifier = {
+        enable = true;
+        notifyOnWake = true;
+      };
       syncthing = {
         enable = true;
         obsidian.enable = true;

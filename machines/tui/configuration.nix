@@ -41,6 +41,10 @@
       wgnord.enable = true;
     };
     services = {
+      flakeUpdateNotifier = {
+        enable = true;
+        notifyOnWake = true;
+      };
       blocky.enable = false; # for roaming, slows startup at home
       syncthing = {
         enable = true;

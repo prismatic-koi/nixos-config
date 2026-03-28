@@ -46,6 +46,7 @@ in
       rofi.enable = true; # For shopping list script (uses choose on Darwin)
     };
     services = {
+      flakeUpdateNotifier.enable = true;
       syncthing = {
         enable = true;
         obsidian.enable = true;

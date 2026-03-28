@@ -3,6 +3,7 @@
   imports = [
     ./battery-notifier.nix
     ./blocky.nix
+    ./flake-update-notifier.nix
     ./greetd.nix
     ./mpd.nix
     ./pipewire.nix
