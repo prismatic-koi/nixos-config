@@ -384,6 +384,7 @@ type dashModel struct {
 	width             int
 	height            int
 	client            string
+	callerClient      string // @prism_caller_client captured at init time (immutable)
 	popup             bool
 	currentSession    string // session the viewing client is in
 	ghOpenPRs         int
@@ -395,6 +396,11 @@ func newDashModel(client string, popup bool) dashModel {
 	// CallerSession reads @prism_caller stamped by the tmux binding — the only
 	// reliable way to know which session the viewer came from.
 	currentSession := tmux.CallerSession()
+	// Capture CallerClient once at init time. The global stamp @prism_caller_client
+	// is overwritten each time any client opens the dashboard, so reading it
+	// inside a handler would return whatever client opened the dashboard most
+	// recently — not necessarily the one interacting with this model instance.
+	callerClient := tmux.CallerClient()
 	// inDashSession: we are the persistent prism-dashboard session itself.
 	// In this mode the flag `popup` passed via --popup is true (the restart
 	// loop calls `prism dashboard --popup`), so isPopup captures C-w popups
@@ -403,6 +409,7 @@ func newDashModel(client string, popup bool) dashModel {
 	isPopup := popup && !inDashSession
 	return dashModel{
 		client:         client,
+		callerClient:   callerClient,
 		popup:          isPopup,
 		currentSession: currentSession,
 		// Popup (C-w) always shows cursor. Persistent session starts passive.
@@ -448,7 +455,8 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionsMsg:
 		m.sessions = filterSessions([]tmux.Session(msg))
-		m.currentSession = tmux.CallerSession()
+		// Do not re-read CallerSession() here — it may have changed if another
+		// client opened the dashboard. Use the value captured at init time.
 		if !m.cursorInitialised {
 			// Snap cursor to the current session on first load.
 			m.cursorInitialised = true
@@ -474,8 +482,8 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// their previous session. TUI keeps running via the restart loop.
 			return m, tea.Sequence(
 				func() tea.Msg {
-					if client := tmux.CallerClient(); client != "" {
-						_ = tmux.SwitchClient(client, tmux.CallerSession())
+					if m.callerClient != "" {
+						_ = tmux.SwitchClient(m.callerClient, m.currentSession)
 					}
 					return nil
 				},
@@ -511,10 +519,24 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Sequence(
 				func() tea.Msg {
 					_ = tmux.SelectAgentWindow(selected.Name)
-					// Use the caller client stamped at popup-open time —
-					// m.client is the process client, not the viewer's client.
-					if client := tmux.CallerClient(); client != "" {
-						_ = tmux.SwitchClient(client, selected.Name)
+					// For popup (C-w) mode: m.client is the client that owns this
+					// process — CurrentClient() at dashboard startup time — and is
+					// exactly the viewer. Use it directly.
+					//
+					// For persistent-session mode: m.callerClient was captured at
+					// model-init time from @prism_caller_client. This is stable
+					// because we read it once; subsequent dashboard opens by other
+					// clients won't overwrite our local copy.
+					//
+					// Either way, do NOT call tmux.CallerClient() here — that reads
+					// the global stamp which may have been overwritten by another
+					// client opening the dashboard after us.
+					target := m.client
+					if !m.popup && m.callerClient != "" {
+						target = m.callerClient
+					}
+					if target != "" {
+						_ = tmux.SwitchClient(target, selected.Name)
 					}
 					return nil
 				},
