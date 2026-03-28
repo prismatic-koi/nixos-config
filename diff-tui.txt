@@ -1,0 +1,5 @@
+claude-code: 2.1.83 → 2.1.84, [31;1m201.5 KiB[0m
+discord: 0.0.128 → 0.0.130, [32;1m-1.0 MiB[0m
+home-configuration-reference: [31;1m33.9 KiB[0m
+luajit: [31;1m14.0 KiB[0m
+opencode: [31;1m34.2 KiB[0m
