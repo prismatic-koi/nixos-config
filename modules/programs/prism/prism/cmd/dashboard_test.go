@@ -340,8 +340,6 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 		t.Fatalf("SwitchClient: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
 	gotA, err := s.clientSession(clientA)
 	if err != nil {
 		t.Fatalf("clientSession(clientA): %v", err)
