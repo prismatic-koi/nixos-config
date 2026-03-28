@@ -95,8 +95,9 @@ jobs:
       - name: Build PR body
         id: pr-body
         run: |
+          delim="$(openssl rand -hex 16)"
           {
-            echo 'body<<EOF'
+            echo "body<<${delim}"
             echo '## Run report'
             echo ''
             echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -112,7 +113,7 @@ jobs:
             echo '```'
             cat diff-tui.txt
             echo '```'
-            echo 'EOF'
+            echo "${delim}"
           } >> "$GITHUB_OUTPUT"
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v8
