@@ -56,10 +56,11 @@ in
             # tmux
             ''
               # appearance
+              set -g status-interval 5
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
               # set -g status-right "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}#{=21:pane_title} "
-              set -g status-right "#{?@prism_waiting,#[fg=${yellow}]#{@prism_waiting} waiting #[fg=${primary}]| ,}#h "
+              set -g status-right "#(count=$(${pkgs.tmux}/bin/tmux list-windows -a -F '#{@agent_state}' 2>/dev/null | grep -c '^waiting$'); [ \"$count\" -gt 0 ] && echo \"#[fg=${yellow}]$count waiting #[fg=${primary}]| \")#h "
               set -g status-style 'bg=${bg1} fg=${secondary}'
               set -g message-style 'bg=${primary} fg=${bg1}'
               set -g mode-style 'bg=${bg3} fg=${foreground}'

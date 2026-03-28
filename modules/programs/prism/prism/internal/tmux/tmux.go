@@ -3,8 +3,10 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // TmuxBin is the path to the tmux binary. Injected at build time via ldflags
@@ -193,6 +195,27 @@ func SendKeys(target, keys string) error {
 	return err
 }
 
+// SendKeysDelayed sends keystrokes to a target pane after a delay (milliseconds),
+// followed by a separate Enter keypress 500ms later.
+// Forks a detached child process so it survives after the parent exits.
+func SendKeysDelayed(target, keys string, delayMs int) error {
+	script := fmt.Sprintf(
+		"sleep %.1f && %s send-keys -t %s %s && sleep 0.5 && %s send-keys -t %s Enter",
+		float64(delayMs)/1000.0,
+		TmuxBin, shellEscape(target), shellEscape(keys),
+		TmuxBin, shellEscape(target),
+	)
+	cmd := exec.Command("sh", "-c", script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	return cmd.Start() // Start (not Run) — don't wait for it
+}
+
+// shellEscape wraps s in single quotes, escaping any single quotes within.
+// Used for building shell one-liners passed to sh -c.
+func shellEscape(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // SelectWindow selects a window by index in a session.
 func SelectWindow(session string, idx int) error {
 	_, err := run("select-window", "-t", fmt.Sprintf("%s:%d", session, idx))
@@ -208,6 +231,17 @@ func NewSessionDetached(name, dir string) error {
 	}
 	_, err := run(args...)
 	return err
+}
+
+// AttachSession attaches the current terminal to the named tmux session.
+// Used when running outside of tmux. Inherits stdin/stdout/stderr so tmux
+// can take over the terminal directly.
+func AttachSession(name string) error {
+	cmd := exec.Command(TmuxBin, "attach-session", "-t", name)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // KillSession kills a tmux session.

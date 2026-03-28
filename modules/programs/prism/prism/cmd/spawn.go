@@ -1,14 +1,20 @@
 package cmd
 
-// prism spawn — create a new timestamped worktree from the current repo
-// and switch to it immediately. Bound to prefix+a.
+// prism spawn — create a new timestamped worktree from the current (or named)
+// repo and switch to it immediately. Bound to prefix+a.
 //
-// Infers the bare repo root from the current tmux pane path.
-// Branch name format: 20260327T1423 (zettelkasten-style timestamp).
+// Flags:
+//
+//	--branch <name>   use a specific branch name instead of a timestamp
+//	--repo <name>     target repo by folder name under ~/code (or full path)
+//	--pr <number>     check out the branch for a given PR number
+//	--prompt <text>   pass an initial prompt to opencode on launch
+//	--agent <name>    opencode agent to use (default: build)
 
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,50 +25,141 @@ import (
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn",
-	Short: "Create a new timestamped worktree from the current repo and switch to it",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		// PRISM_SPAWN_PATH is set by the tmux binding via display-popup -e so
-		// that the caller's pane path is available inside the popup (inside a
-		// display-popup, tmux display-message returns the popup's own path).
-		panePathRaw := os.Getenv("PRISM_SPAWN_PATH")
-		if panePathRaw == "" {
-			// Fallback: query tmux directly (works when not in a popup).
-			var err error
-			panePathRaw, err = tmux.CurrentPanePath()
-			if err != nil || panePathRaw == "" {
-				return fmt.Errorf("could not determine current pane path")
-			}
-		}
-
-		// Walk up from the pane path to find a bare repo root.
-		bareRoot := git.BareRoot(panePathRaw)
-		if bareRoot == "" {
-			// Also try the path itself (if we're already at the project root).
-			if git.IsBareRepo(panePathRaw) {
-				bareRoot = panePathRaw
-			}
-		}
-		if bareRoot == "" {
-			if git.IsInsideRegularRepo(panePathRaw) {
-				return fmt.Errorf("this repo isn't using the worktree layout yet\nuse C-f to convert it first")
-			}
-			return fmt.Errorf("not inside a git repo")
-		}
-
-		// Zettelkasten timestamp: 20260327T1423
-		branch := time.Now().Format("20060102T1504")
-
-		// Create the worktree.
-		worktreePath, err := git.CreateWorktree(bareRoot, branch)
-		if err != nil {
-			return fmt.Errorf("create worktree: %w", err)
-		}
-
-		// Create session and switch to it.
-		return ensureAndSwitchSession(worktreePath, bareRoot)
-	},
+	Short: "Create a new worktree from the current (or named) repo and switch to it",
+	RunE:  runSpawn,
 }
 
 func init() {
+	spawnCmd.Flags().String("branch", "", "Branch name (default: timestamped)")
+	spawnCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
+	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
+	spawnCmd.Flags().String("prompt", "", "Initial prompt passed to opencode on launch")
+	spawnCmd.Flags().String("agent", "", "Opencode agent to use (default: build)")
+	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	rootCmd.AddCommand(spawnCmd)
+}
+
+func runSpawn(cmd *cobra.Command, args []string) error {
+	branchFlag, _ := cmd.Flags().GetString("branch")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+	prFlag, _ := cmd.Flags().GetString("pr")
+	promptFlag, _ := cmd.Flags().GetString("prompt")
+	agentFlag, _ := cmd.Flags().GetString("agent")
+
+	attachFlag, _ := cmd.Flags().GetBool("attach")
+	// headless when invoked from a shell/agent rather than the tmux keybinding.
+	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
+	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
+	opts := sessionOpts{
+		prompt:   promptFlag,
+		agent:    agentFlag,
+		headless: !fromKeybind && !attachFlag,
+	}
+
+	// Resolve the bare repo root.
+	bareRoot, err := resolveBareRoot(repoFlag)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the branch name.
+	branch, err := resolveBranch(bareRoot, branchFlag, prFlag)
+	if err != nil {
+		return err
+	}
+
+	// Create the worktree (handles local, remote-tracking, and new branches).
+	worktreePath, err := git.CreateWorktree(bareRoot, branch)
+	if err != nil {
+		return fmt.Errorf("create worktree: %w", err)
+	}
+
+	return ensureAndSwitchSession(worktreePath, bareRoot, opts)
+}
+
+// resolveBareRoot returns the bare repo root to operate on.
+// If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
+// full path. If not set, the current pane path is used (existing behaviour).
+func resolveBareRoot(repoFlag string) (string, error) {
+	if repoFlag != "" {
+		return resolveRepo(repoFlag)
+	}
+
+	// Fall back to inferring from the current tmux pane path.
+	panePathRaw := os.Getenv("PRISM_SPAWN_PATH")
+	if panePathRaw == "" {
+		var err error
+		panePathRaw, err = tmux.CurrentPanePath()
+		if err != nil || panePathRaw == "" {
+			return "", fmt.Errorf("could not determine current pane path")
+		}
+	}
+
+	bareRoot := git.BareRoot(panePathRaw)
+	if bareRoot == "" {
+		if git.IsBareRepo(panePathRaw) {
+			bareRoot = panePathRaw
+		}
+	}
+	if bareRoot == "" {
+		if git.IsInsideRegularRepo(panePathRaw) {
+			return "", fmt.Errorf("this repo isn't using the worktree layout yet\nuse C-f to convert it first")
+		}
+		return "", fmt.Errorf("not inside a git repo")
+	}
+	return bareRoot, nil
+}
+
+// resolveRepo resolves a repo shorthand (e.g. "nixos-config") to a full path
+// under ~/code, or accepts an absolute path directly.
+func resolveRepo(nameOrPath string) (string, error) {
+	// Absolute or home-relative path — use as-is.
+	candidate := expandHome(nameOrPath)
+	if filepath.IsAbs(candidate) {
+		if git.IsBareRepo(candidate) {
+			return candidate, nil
+		}
+		return "", fmt.Errorf("not a prism bare repo: %s", candidate)
+	}
+
+	// Shorthand: look under the configured project locations.
+	for _, loc := range switchProjectLocations() {
+		p := filepath.Join(expandHome(loc), nameOrPath)
+		if git.IsBareRepo(p) {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf(
+		"repo %q not found under ~/code\nhint: run `prism clone <url>` to add it",
+		nameOrPath,
+	)
+}
+
+// resolveBranch determines the branch name to use for the new worktree.
+// Priority: --pr flag > --branch flag > timestamped default.
+func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
+	if prFlag != "" {
+		// Fetch latest remote refs so the PR branch is available.
+		fmt.Printf("fetching origin for %s...\n", filepath.Base(bareRoot))
+		if err := git.FetchRemote(bareRoot); err != nil {
+			return "", fmt.Errorf("fetch: %w", err)
+		}
+		branch, err := git.PRBranch(bareRoot, prFlag)
+		if err != nil {
+			return "", fmt.Errorf("resolve PR branch: %w", err)
+		}
+		return branch, nil
+	}
+
+	if branchFlag != "" {
+		sanitised := git.SanitiseBranch(branchFlag)
+		if sanitised == "" {
+			return "", fmt.Errorf("branch name %q is empty after sanitisation", branchFlag)
+		}
+		return sanitised, nil
+	}
+
+	// Default: zettelkasten timestamp.
+	return time.Now().Format("20060102T1504"), nil
 }

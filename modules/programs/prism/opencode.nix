@@ -252,6 +252,10 @@
 
         After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
 
+        ## Search Scope
+
+        When asked to find something without an explicit scope, default to searching within the working directory. Do not traverse to parent directories unless explicitly instructed.
+
         ## Local Environment Instructions
 
         Avoid excessive use of `cd` commands at the start of your commands, if you are already in the right working directory, there is no need to `cd` into it before your command.

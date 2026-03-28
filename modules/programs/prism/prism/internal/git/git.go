@@ -434,6 +434,37 @@ func RemoveWorktree(projectPath, worktreePath string) error {
 	return nil
 }
 
+// FetchRemote runs git fetch origin for a bare-layout repo.
+func FetchRemote(projectPath string) error {
+	bare := gitDir(projectPath)
+	out, err := exec.Command("git", "--git-dir", bare, "fetch", "origin").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("fetch origin: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// PRBranch uses the gh CLI to return the head branch name for a given PR number
+// in the repo at projectPath.
+func PRBranch(projectPath, prNumber string) (string, error) {
+	bare := gitDir(projectPath)
+	// Resolve the remote URL so gh knows which repo to query.
+	remoteURL, err := runGit("--git-dir", bare, "remote", "get-url", "origin")
+	if err != nil || remoteURL == "" {
+		return "", fmt.Errorf("could not determine remote URL")
+	}
+	out, err := exec.Command("gh", "pr", "view", prNumber,
+		"--repo", remoteURL, "--json", "headRefName", "--jq", ".headRefName").Output()
+	if err != nil {
+		return "", fmt.Errorf("gh pr view: %w", err)
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "" {
+		return "", fmt.Errorf("could not determine branch for PR %s", prNumber)
+	}
+	return branch, nil
+}
+
 // BareRoot walks up from worktreePath to find the parent with a .bare dir.
 // Returns empty string if not found.
 func BareRoot(worktreePath string) string {

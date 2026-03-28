@@ -437,7 +437,33 @@ func promptBranchInput(prompt string) string {
 
 // ── session management ────────────────────────────────────────────────────────
 
-func ensureAndSwitchSession(path string, projectRoot string) error {
+// sessionOpts carries optional parameters for agent launch when creating a new session.
+type sessionOpts struct {
+	prompt   string // passed as opencode --prompt "..."
+	agent    string // passed as opencode --agent <name>; defaults to "build"
+	headless bool   // if true, create the session but don't switch any client to it
+}
+
+// buildOpencodeCmd returns the opencode launch command string (without prompt).
+// The prompt is sent separately via a delayed send-keys to work around a known
+// opencode bug where --prompt is ignored on TUI launch.
+// See: https://github.com/anomalyco/opencode/issues/8850
+//
+//	https://github.com/anomalyco/opencode/issues/14349
+func buildOpencodeCmd(opts sessionOpts) string {
+	agent := opts.agent
+	if agent == "" {
+		agent = "build"
+	}
+	return "opencode --agent " + agent
+}
+
+// shellQuote wraps s in single quotes, escaping any single quotes within.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
 	var sessionName string
 	var directory string
 
@@ -491,7 +517,13 @@ func ensureAndSwitchSession(path string, projectRoot string) error {
 
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
-			_ = tmux.SendKeys(sessionName+":1", "opencode")
+			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
+			// Work around opencode bug where --prompt is ignored on TUI launch.
+			// Instead, send the prompt as keystrokes after a delay for startup.
+			// https://github.com/anomalyco/opencode/issues/8850
+			if opts.prompt != "" {
+				_ = tmux.SendKeysDelayed(sessionName+":1", opts.prompt, 5000)
+			}
 
 			// Window 2: term.
 			_ = tmux.NewWindow(sessionName, 2, "term", directory)
@@ -505,10 +537,18 @@ func ensureAndSwitchSession(path string, projectRoot string) error {
 		}
 	}
 
-	client, _ := tmux.CurrentClient()
-	if client == "" {
-		client = tmux.CallerClient()
+	if opts.headless {
+		fmt.Printf("session %q created\n", sessionName)
+		return nil
 	}
+
+	// Outside tmux entirely — attach in this terminal directly.
+	if os.Getenv("TMUX") == "" {
+		return tmux.AttachSession(sessionName)
+	}
+
+	// Inside tmux — switch only the current client, never any other.
+	client, _ := tmux.CurrentClient()
 	if client != "" {
 		return tmux.SwitchClient(client, sessionName)
 	}
@@ -546,16 +586,16 @@ func handleBareRepo(projectPath string) error {
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-		return ensureAndSwitchSession(worktreePath, projectPath)
+		return ensureAndSwitchSession(worktreePath, projectPath, sessionOpts{})
 	}
 
-	return ensureAndSwitchSession(chosen.path, projectPath)
+	return ensureAndSwitchSession(chosen.path, projectPath, sessionOpts{})
 }
 
 func handleRegularRepo(path string) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
-		return ensureAndSwitchSession(path, "")
+		return ensureAndSwitchSession(path, "", sessionOpts{})
 	}
 
 	openDirect := "[open directly (no worktrees)]"
@@ -570,11 +610,11 @@ func handleRegularRepo(path string) error {
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
-			return ensureAndSwitchSession(path, "")
+			return ensureAndSwitchSession(path, "", sessionOpts{})
 		}
-		return ensureAndSwitchSession(worktreePath, path)
+		return ensureAndSwitchSession(worktreePath, path, sessionOpts{})
 	default:
-		return ensureAndSwitchSession(path, "")
+		return ensureAndSwitchSession(path, "", sessionOpts{})
 	}
 }
 
@@ -611,7 +651,7 @@ func handleCloneRepo() error {
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
 	}
-	return ensureAndSwitchSession(worktrees[0], targetDir)
+	return ensureAndSwitchSession(worktrees[0], targetDir, sessionOpts{})
 }
 
 // ── ensure dashboard session ──────────────────────────────────────────────────
@@ -644,9 +684,9 @@ var switchCmd = &cobra.Command{
 				if len(worktrees) == 0 {
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
-				return ensureAndSwitchSession(worktrees[0], p)
+				return ensureAndSwitchSession(worktrees[0], p, sessionOpts{})
 			}
-			return ensureAndSwitchSession(p, "")
+			return ensureAndSwitchSession(p, "", sessionOpts{})
 		}
 
 		// Ensure dashboard exists in background.
@@ -673,7 +713,7 @@ var switchCmd = &cobra.Command{
 			return err
 
 		case "[scratchpad]":
-			return ensureAndSwitchSession("[scratchpad]", "")
+			return ensureAndSwitchSession("[scratchpad]", "", sessionOpts{})
 
 		case "[+ clone repo]":
 			return handleCloneRepo()
@@ -686,7 +726,7 @@ var switchCmd = &cobra.Command{
 			case git.IsRegularRepo(p):
 				return handleRegularRepo(p)
 			default:
-				return ensureAndSwitchSession(p, "")
+				return ensureAndSwitchSession(p, "", sessionOpts{})
 			}
 		}
 	},
