@@ -7,19 +7,22 @@ package cmd
 // then sets the window-status-format and @agent_state window options so the
 // dashboard and status bar reflect the new state.
 //
-// On "waiting", also sends a display-message to all attached clients.
+// On "waiting", increments the global @prism_waiting counter so the
+// status-right can show "N waiting". On any other state, decrements it
+// if this window was previously waiting.
 
 import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// Colour vars are declared in dashboard.go and injected via ldflags.
 // ColorBg1 is the slightly lighter background used as the notification bg.
 var ColorBg1 = "#343f44"
 
@@ -69,6 +72,11 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	}
 
 	if state == "clear" {
+		// If this window was waiting, decrement the global counter.
+		prevState, _ := tmux.GetWindowOption(windowID, "@agent_state")
+		if strings.TrimSpace(prevState) == "waiting" {
+			adjustWaitingCount(-1)
+		}
 		_ = tmux.UnsetWindowOption(windowID, "window-status-format")
 		_ = tmux.UnsetWindowOption(windowID, "window-status-current-format")
 		_ = tmux.UnsetWindowOption(windowID, "@agent_state")
@@ -80,6 +88,16 @@ func runNotify(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown state: %s", state)
 	}
 
+	// Update the global waiting counter based on the transition.
+	prevState, _ := tmux.GetWindowOption(windowID, "@agent_state")
+	wasWaiting := strings.TrimSpace(prevState) == "waiting"
+	isWaiting := spec.state == "waiting"
+	if isWaiting && !wasWaiting {
+		adjustWaitingCount(+1)
+	} else if !isWaiting && wasWaiting {
+		adjustWaitingCount(-1)
+	}
+
 	// Build the status-bar format string — same pattern as the old bash script.
 	fmt_ := fmt.Sprintf("#[fg=%s]#I:#W#{?window_flags,#{window_flags}, }", spec.color)
 
@@ -87,23 +105,21 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	_ = tmux.SetWindowOption(windowID, "window-status-current-format", fmt_)
 	_ = tmux.SetWindowOption(windowID, "@agent_state", spec.state)
 
-	// On waiting: flash a display-message to all attached clients.
-	// StartDisplayMessage starts the tmux child process and returns immediately
-	// (without waiting for the display duration), so prism notify exits
-	// quickly and the plugin's await unblocks before the permission prompt.
-	if state == "set-waiting" {
-		sessionName, err := tmux.SessionNameOf(windowID)
-		if err == nil && sessionName != "" {
-			clients, err := tmux.ListClients()
-			if err == nil {
-				style := fmt.Sprintf("#[fg=%s,bg=%s]", ColorBg0, ColorYellow)
-				text := fmt.Sprintf(" %s is waiting", sessionName)
-				for _, client := range clients {
-					tmux.StartDisplayMessage(client, style, text, 1000)
-				}
-			}
-		}
-	}
-
 	return nil
+}
+
+// adjustWaitingCount increments or decrements the global @prism_waiting counter.
+// When the count reaches zero the option is unset so the status-right
+// conditional hides the indicator cleanly.
+func adjustWaitingCount(delta int) {
+	current := 0
+	if val, err := tmux.GetGlobalOption("@prism_waiting"); err == nil {
+		current, _ = strconv.Atoi(strings.TrimSpace(val))
+	}
+	next := current + delta
+	if next <= 0 {
+		_ = tmux.UnsetGlobalOption("@prism_waiting")
+	} else {
+		_ = tmux.SetGlobalOption("@prism_waiting", strconv.Itoa(next))
+	}
 }
