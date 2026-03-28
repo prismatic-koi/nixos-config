@@ -252,6 +252,12 @@
 
         After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
 
+        ## Pull Request Reviews
+
+        After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
+        The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
+        If it identifies issues, fix them before considering the work complete.
+
         ## Search Scope
 
         When asked to find something without an explicit scope, ALWAYS search within the working directory only. NEVER traverse to parent directories unless the user explicitly instructs you to. If you cannot find something in the working directory, say so — do not expand the search scope on your own.
@@ -407,6 +413,8 @@
           };
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
+          # Custom agents
+          xdg.configFile."opencode/agents".source = ./opencode/agents;
           # tmux status plugin
           xdg.configFile."opencode/plugins/prism-hooks.ts" = {
             source = ./opencode/plugins/prism-hooks.ts;
