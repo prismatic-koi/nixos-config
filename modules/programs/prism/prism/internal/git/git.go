@@ -357,6 +357,18 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// Prune stale entries.
 	_ = exec.Command("git", "--git-dir", barePath, "worktree", "prune").Run()
 
+	// Populate the index from the branch HEAD so the worktree is not treated
+	// as fully untracked. Manual worktree registration skips this step that
+	// `git worktree add` normally performs.
+	progress("  populating index...")
+	if out, err := exec.Command("git",
+		"--git-dir", barePath,
+		"--work-tree", worktreePath,
+		"read-tree", "HEAD",
+	).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("read-tree: %w: %s", err, out)
+	}
+
 	progress("  done — worktree at " + worktreePath)
 	return worktreePath, nil
 }
