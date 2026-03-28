@@ -360,9 +360,11 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// Populate the index from the branch HEAD so the worktree is not treated
 	// as fully untracked. Manual worktree registration skips this step that
 	// `git worktree add` normally performs.
+	// Must use the worktree-specific gitdir (worktreesDir) so that read-tree
+	// writes to .bare/worktrees/<branch>/index, not the bare repo's own index.
 	progress("  populating index...")
 	if out, err := exec.Command("git",
-		"--git-dir", barePath,
+		"--git-dir", worktreesDir,
 		"--work-tree", worktreePath,
 		"read-tree", "HEAD",
 	).CombinedOutput(); err != nil {
