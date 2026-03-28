@@ -272,7 +272,8 @@
 
         After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
         The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
-        If it identifies issues, fix them before considering the work complete.
+        If it identifies issues, fix them and then invoke `@review` again with the same PR number.
+        Repeat this cycle until the review passes with no issues before considering the work complete.
 
         ## Search Scope
 
