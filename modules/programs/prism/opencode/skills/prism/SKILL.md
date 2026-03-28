@@ -83,3 +83,26 @@ prism spawn \
   --branch PROJ-123 \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
+
+## Lifecycle: cleaning up after a merge
+
+When you spawn a session and later merge its PR yourself, you are responsible for cleaning up the worktree and session. The spawned agent cannot do this — it would be tearing down its own environment.
+
+`prism spawn` prints the session name when running headlessly:
+
+```
+session "nixos-config@update-plex" created
+```
+
+Note down the session name from that output. Once you have merged the PR, clean up:
+
+```bash
+prism cleanup --yes --session "nixos-config@update-plex"
+```
+
+`prism cleanup --yes --session <name>` will:
+- Remove the git worktree
+- Delete the branch if it is already merged (skips deletion if not, safe default)
+- Kill the tmux session, redirecting any attached client to `scratchpad`
+
+Only call this after you have confirmed the PR is merged. If the branch is not yet merged, branch deletion is skipped automatically.

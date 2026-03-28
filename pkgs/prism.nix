@@ -30,8 +30,6 @@ buildGoModule {
   # vendor/ directory is committed, so buildGoModule uses it directly
   vendorHash = null;
 
-  env.CGO_ENABLED = "0";
-
   ldflags = [
     "-s"
     "-w"

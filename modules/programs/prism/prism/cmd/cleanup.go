@@ -264,13 +264,22 @@ var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
 	Short: "Remove the current worktree session (project@branch sessions only)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		yesFlag, _ := cmd.Flags().GetBool("yes")
+		sessionFlag, _ := cmd.Flags().GetString("session")
+
 		if os.Getenv("TMUX") == "" {
 			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+W)")
 		}
 
-		session, err := tmux.CurrentSession()
-		if err != nil || session == "" {
-			return fmt.Errorf("could not determine current tmux session")
+		var session string
+		if sessionFlag != "" {
+			session = sessionFlag
+		} else {
+			var err error
+			session, err = tmux.CurrentSession()
+			if err != nil || session == "" {
+				return fmt.Errorf("could not determine current tmux session")
+			}
 		}
 
 		if !strings.Contains(session, "@") {
@@ -296,11 +305,60 @@ var cleanupCmd = &cobra.Command{
 			return fmt.Errorf("refusing to remove the default branch worktree '%s'\n  switch to a feature branch session first", worktreeName)
 		}
 
+		// Non-interactive path: --yes skips all prompts and runs headlessly.
+		if yesFlag {
+			return headlessCleanup(session, worktreeName, worktreePath, bareRoot)
+		}
+
 		m := newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr)
 		prog := tea.NewProgram(cleanupWrapper{m}, tea.WithAltScreen())
 		_, runErr := prog.Run()
 		return runErr
 	},
+}
+
+// headlessCleanup removes the worktree and session without any TUI interaction.
+// It always deletes the branch if it is already merged; if unmerged it skips
+// branch deletion (safe default — the orchestrator should only call this after
+// confirming the PR has been merged).
+func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error {
+	fmt.Printf("removing worktree %s...\n", worktreePath)
+	if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
+		return fmt.Errorf("worktree remove: %w", err)
+	}
+
+	if git.BranchExists(bareRoot, worktreeName) {
+		if git.BranchMerged(bareRoot, worktreeName, git.DefaultBranchFromBareRoot(bareRoot)) {
+			fmt.Printf("deleting merged branch %s...\n", worktreeName)
+			_ = git.DeleteBranch(bareRoot, worktreeName)
+		} else {
+			fmt.Printf("branch %s is not fully merged — skipping branch deletion\n", worktreeName)
+		}
+	}
+
+	// Ensure the scratchpad exists so we have somewhere to send the client.
+	if !tmux.HasSession("scratchpad") {
+		home, _ := os.UserHomeDir()
+		_ = tmux.NewSessionDetached("scratchpad", home)
+		_ = tmux.RenameWindow("scratchpad:0", "term")
+	}
+
+	// Attempt to redirect any client attached to the target session before
+	// killing it. This is best-effort — the session may be headless.
+	client, _ := tmux.CurrentClient()
+	if client == "" {
+		client = tmux.CallerClient()
+	}
+	if client != "" {
+		_ = tmux.SwitchClient(client, "scratchpad")
+	} else {
+		_, _ = tmux.SwitchClientCurrent("scratchpad")
+	}
+
+	fmt.Printf("killing session %s\n", session)
+	_ = tmux.KillSession(session)
+	fmt.Println("done")
+	return nil
 }
 
 // cleanupWrapper wraps cleanupModel to intercept cleanupDoneMsg in Update.
@@ -345,5 +403,7 @@ func worktreePathFromSession(session string) string {
 }
 
 func init() {
+	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
+	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	rootCmd.AddCommand(cleanupCmd)
 }
