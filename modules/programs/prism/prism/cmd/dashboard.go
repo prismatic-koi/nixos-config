@@ -512,6 +512,16 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cursorTimeoutCmd()
 
 		case "enter":
+			if !m.cursorActive {
+				// In persistent-session mode the cursor starts inactive (passive
+				// watch mode). Mirror the j/k behaviour: first Enter activates the
+				// cursor without immediately switching, so the user can confirm the
+				// highlighted session before committing.
+				if !m.popup {
+					m.cursorActive = true
+					return m, cursorTimeoutCmd()
+				}
+			}
 			if len(m.sessions) == 0 {
 				return m, nil
 			}
