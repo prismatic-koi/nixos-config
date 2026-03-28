@@ -519,23 +519,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Sequence(
 				func() tea.Msg {
 					_ = tmux.SelectAgentWindow(selected.Name)
-					// For popup (C-w) mode: m.client is the client that owns this
-					// process — CurrentClient() at dashboard startup time — and is
-					// exactly the viewer. Use it directly.
-					//
-					// For persistent-session mode: m.callerClient was captured at
-					// model-init time from @prism_caller_client. This is stable
-					// because we read it once; subsequent dashboard opens by other
-					// clients won't overwrite our local copy.
-					//
-					// Either way, do NOT call tmux.CallerClient() here — that reads
-					// the global stamp which may have been overwritten by another
-					// client opening the dashboard after us.
-					target := m.client
-					if !m.popup && m.callerClient != "" {
-						target = m.callerClient
-					}
-					if target != "" {
+					// dashSwitchTarget selects the right client for this model —
+					// see its doc comment for the full explanation.
+					if target := dashSwitchTarget(m.popup, m.client, m.callerClient); target != "" {
 						_ = tmux.SwitchClient(target, selected.Name)
 					}
 					return nil
@@ -556,6 +542,28 @@ func filterSessions(all []tmux.Session) []tmux.Session {
 		out = append(out, s)
 	}
 	return out
+}
+
+// dashSwitchTarget returns the tmux client name that should receive a
+// switch-client command when the user selects a session in the dashboard.
+//
+// Rules:
+//   - Popup (C-w) mode: the process runs inside the popup which is attached to
+//     the viewer's own client. client (= CurrentClient() at startup) is the
+//     correct target.
+//   - Persistent-session mode: the dashboard runs in a background session; the
+//     viewer's client is identified by the @prism_caller_client stamp that was
+//     captured at model-init time as callerClient. Use that value if non-empty,
+//     otherwise fall back to client.
+//
+// Either way, callers must NOT pass tmux.CallerClient() live — that reads a
+// server-wide global that gets overwritten whenever any client opens the
+// dashboard, causing the wrong client to be switched (the original bug).
+func dashSwitchTarget(popup bool, client, callerClient string) string {
+	if !popup && callerClient != "" {
+		return callerClient
+	}
+	return client
 }
 
 // ── view ──────────────────────────────────────────────────────────────────────

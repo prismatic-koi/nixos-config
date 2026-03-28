@@ -16,8 +16,9 @@
 package tmux_test
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/exec"
 	"strings"
@@ -45,7 +46,7 @@ func newServer(t *testing.T) *server {
 		t.Skip("tmux not found in PATH — skipping integration test")
 	}
 
-	socket := fmt.Sprintf("prism-test-%d-%d", os.Getpid(), rand.Int63())
+	socket := fmt.Sprintf("prism-test-%d-%s", os.Getpid(), randHex(8))
 	s := &server{socket: socket, bin: bin}
 
 	// Bootstrap: create the first session so the server stays alive.
@@ -57,6 +58,16 @@ func newServer(t *testing.T) *server {
 		_ = exec.Command(bin, "-L", socket, "kill-server").Run()
 	})
 	return s
+}
+
+// randHex returns n random hex bytes as a string (2*n characters), sourced
+// from crypto/rand so socket names are unpredictable across runs.
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 // run executes a tmux command against this server's socket.
