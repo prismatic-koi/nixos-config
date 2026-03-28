@@ -254,7 +254,7 @@
 
         ## Search Scope
 
-        When asked to find something without an explicit scope, default to searching within the working directory. Do not traverse to parent directories unless explicitly instructed.
+        When asked to find something without an explicit scope, ALWAYS search within the working directory only. NEVER traverse to parent directories unless the user explicitly instructs you to. If you cannot find something in the working directory, say so — do not expand the search scope on your own.
 
         ## Local Environment Instructions
 
@@ -415,6 +415,8 @@
           xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
             source = ./opencode/skills/playwright-cli;
           };
+          # prism skill — teaches agents how to spawn isolated sessions
+          xdg.configFile."opencode/skills/prism".source = ./opencode/skills/prism;
           # AWS skill — generated so clipboard command is platform-correct
           xdg.configFile."opencode/skills/aws/SKILL.md".text = awsSkill;
           home.persistence."/persist" = {
