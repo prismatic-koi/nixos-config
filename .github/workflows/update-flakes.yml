@@ -59,13 +59,13 @@ jobs:
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
       - name: Build NixOS config for ${{ matrix.config }} (before update)
-        run: nix build --no-print-build-logs --out-link result-before '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+        run: nix build --out-link result-before '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
       - name: Download updated flake
         uses: actions/download-artifact@v8
         with:
           name: updated-flake
       - name: Build NixOS config for ${{ matrix.config }} (after update)
-        run: nix build --no-print-build-logs --out-link result-after '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+        run: nix build --out-link result-after '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
       - name: Diff closures
         run: nix store diff-closures ./result-before ./result-after > diff-${{ matrix.config }}.txt 2>&1 || true
       - name: Upload diff

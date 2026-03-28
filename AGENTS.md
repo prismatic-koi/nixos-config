@@ -14,8 +14,8 @@ This document provides guidance for AI agents on how to interact with this NixOS
 
 ## Common Commands
 
-- **Building/Testing Changes:** To validate configuration changes without applying them, use the native Nix build command. Always pass `--no-print-build-logs` to suppress verbose builder output — errors will still be shown. Avoid `nh` for builds: it produces animated progress output that renders poorly in non-interactive environments.
-    - `nix build .#nixosConfigurations.navi.config.system.build.toplevel --no-print-build-logs`
+- **Building/Testing Changes:** To validate configuration changes without applying them, use the native Nix build command. Avoid `nh` for builds: it produces animated progress output that renders poorly in non-interactive environments.
+    - `nix build .#nixosConfigurations.navi.config.system.build.toplevel`
 - **Linting/Formatting:** Code is formatted with `nixfmt`.
     - `nixfmt .`
 - **Flake Validation:** To check the flake for correctness across all defined systems, use:
