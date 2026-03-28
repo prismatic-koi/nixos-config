@@ -48,10 +48,6 @@ jobs:
           swap-storage: false
           tool-cache: true
       - uses: actions/checkout@v6
-      - name: Download updated flake
-        uses: actions/download-artifact@v8
-        with:
-          name: updated-flake
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |-
@@ -62,8 +58,21 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: Build NixOS config for ${{ matrix.config }}
-        run: nix build --print-build-logs '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+      - name: Build NixOS config for ${{ matrix.config }} (before update)
+        run: nix build --no-print-build-logs --out-link result-before '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+      - name: Download updated flake
+        uses: actions/download-artifact@v8
+        with:
+          name: updated-flake
+      - name: Build NixOS config for ${{ matrix.config }} (after update)
+        run: nix build --no-print-build-logs --out-link result-after '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+      - name: Diff closures
+        run: nix store diff-closures ./result-before ./result-after > diff-${{ matrix.config }}.txt 2>&1 || true
+      - name: Upload diff
+        uses: actions/upload-artifact@v7
+        with:
+          name: diff-${{ matrix.config }}
+          path: diff-${{ matrix.config }}.txt
 
   create-pr:
     needs: [update-flakes, build-configs]
@@ -75,13 +84,40 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: updated-flake
+      - name: Download diff for navi
+        uses: actions/download-artifact@v8
+        with:
+          name: diff-navi
+      - name: Download diff for tui
+        uses: actions/download-artifact@v8
+        with:
+          name: diff-tui
+      - name: Build PR body
+        id: pr-body
+        run: |
+          {
+            echo 'body<<EOF'
+            echo '## Run report'
+            echo ''
+            echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo ''
+            echo '## Closure diff: navi'
+            echo ''
+            echo '```'
+            cat diff-navi.txt
+            echo '```'
+            echo ''
+            echo '## Closure diff: tui'
+            echo ''
+            echo '```'
+            cat diff-tui.txt
+            echo '```'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v8
         with:
-          body: |
-            ## Run report
-
-            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          body: ${{ steps.pr-body.outputs.body }}
           branch: flake-updates
           delete-branch: true
           title: Update flake.lock
