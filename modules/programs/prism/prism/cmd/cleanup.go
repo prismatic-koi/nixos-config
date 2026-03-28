@@ -343,16 +343,14 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		_ = tmux.RenameWindow("scratchpad:0", "term")
 	}
 
-	// Attempt to redirect any client attached to the target session before
-	// killing it. This is best-effort — the session may be headless.
-	client, _ := tmux.CurrentClient()
-	if client == "" {
-		client = tmux.CallerClient()
-	}
-	if client != "" {
-		_ = tmux.SwitchClient(client, "scratchpad")
-	} else {
-		_, _ = tmux.SwitchClientCurrent("scratchpad")
+	// Redirect only clients that are currently attached to the target session.
+	// We must not touch the orchestrator's own client.
+	if clients, err := tmux.ListClients(); err == nil {
+		for _, c := range clients {
+			if sess, err := tmux.ClientSession(c); err == nil && sess == session {
+				_ = tmux.SwitchClient(c, "scratchpad")
+			}
+		}
 	}
 
 	fmt.Printf("killing session %s\n", session)
