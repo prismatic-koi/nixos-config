@@ -15,7 +15,7 @@ in
   config = lib.mkIf config.nx.programs.nh.enable {
     programs.nh = {
       enable = true;
-      flake = "${homeDir}/code/nixos-config";
+      flake = "${homeDir}/code/nixos-config/main";
     };
   };
 }
