@@ -12,7 +12,7 @@ let
 
     local_hash=$(${pkgs.git}/bin/git -C "$REPO" log -1 --format="%H" -- flake.lock 2>/dev/null)
     remote_hash=$(${pkgs.curl}/bin/curl -sf \
-      "https://api.github.com/repos/lucidph3nx/nixos-config/commits?path=flake.lock&per_page=1" \
+      "https://api.github.com/repos/prismatic-koi/nixos-config/commits?path=flake.lock&per_page=1" \
       | ${pkgs.jq}/bin/jq -r '.[0].sha')
 
     [ -z "$local_hash" ] || [ -z "$remote_hash" ] && exit 0
