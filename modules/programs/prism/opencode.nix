@@ -363,16 +363,16 @@
                 # Lightweight built-in subagents — use a cheaper/faster model since these
                 # do simple, mechanical tasks that don't require deep reasoning.
                 explore = {
-                  model = "anthropic/claude-haiku-4-20250514";
+                  model = "anthropic/claude-haiku-4-5";
                 };
                 title = {
-                  model = "anthropic/claude-haiku-4-20250514";
+                  model = "anthropic/claude-haiku-4-5";
                 };
                 summary = {
-                  model = "anthropic/claude-haiku-4-20250514";
+                  model = "anthropic/claude-haiku-4-5";
                 };
                 compaction = {
-                  model = "anthropic/claude-haiku-4-20250514";
+                  model = "anthropic/claude-haiku-4-5";
                 };
               };
               mcp = {
