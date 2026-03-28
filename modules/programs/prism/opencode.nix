@@ -163,6 +163,10 @@
         "goimports *" = "allow";
         # Prism session management
         "prism spawn *" = "allow";
+        "prism checkin" = "allow";
+        "prism checkin *" = "allow";
+        "prism list-sessions" = "allow";
+        "prism prompt *" = "allow";
       };
 
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";

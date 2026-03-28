@@ -256,6 +256,55 @@ func Run(args ...string) (string, error) {
 	return run(args...)
 }
 
+// CapturePaneScreen captures the visible screen content of the agent window
+// in the named session. The raw tmux output is cleaned up for readability:
+// leading ┃ borders, trailing whitespace, scrollbar columns (█), and blank
+// lines are stripped, leaving just the conversation text, todos, active tools,
+// and any permission dialogs.
+func CapturePaneScreen(session string) (string, error) {
+	target := session + ":agent"
+	raw, err := run("capture-pane", "-t", target, "-p")
+	if err != nil {
+		return "", fmt.Errorf("capture-pane: %w", err)
+	}
+	return cleanCaptureOutput(raw), nil
+}
+
+// cleanCaptureOutput strips tmux TUI chrome from a raw capture-pane output,
+// producing clean plain text suitable for agent consumption.
+func cleanCaptureOutput(raw string) string {
+	lines := strings.Split(raw, "\n")
+	var out []string
+	for _, line := range lines {
+		// Strip trailing whitespace first.
+		line = strings.TrimRight(line, " \t")
+		// Drop lines that are nothing but scrollbar (█) and/or whitespace.
+		stripped := strings.TrimLeft(line, " \t")
+		if stripped == "" || strings.Trim(stripped, "█") == "" {
+			continue
+		}
+		// Strip leading ┃ border (opencode conversation pane left edge).
+		// ┃ is a 3-byte UTF-8 sequence; handle optional leading spaces.
+		if idx := strings.Index(line, "┃"); idx >= 0 && strings.TrimSpace(line[:idx]) == "" {
+			line = line[idx+len("┃"):]
+			// Remove one optional leading space after the border.
+			line = strings.TrimPrefix(line, " ")
+		}
+		// Truncate at the scrollbar column — everything to the right of █ is
+		// sidebar content that wraps badly; the sidebar summary in the header
+		// is sufficient.
+		if i := strings.Index(line, "█"); i >= 0 {
+			line = strings.TrimRight(line[:i], " \t")
+		}
+		// Skip if now empty.
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // ListClients returns the names of all attached tmux clients.
 func ListClients() ([]string, error) {
 	out, err := run("list-clients", "-F", "#{client_name}")

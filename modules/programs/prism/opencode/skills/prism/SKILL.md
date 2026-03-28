@@ -118,3 +118,31 @@ prism cleanup --yes --session "nixos-config@update-plex"
 - Kill the tmux session, redirecting any attached client to `scratchpad`
 
 Only call this after you have confirmed the PR is merged. If the branch is not yet merged, branch deletion is skipped automatically.
+
+## Checking in on a running session
+
+Use `prism list-sessions` to see all active agent sessions with their state and current task title:
+
+```bash
+prism list-sessions
+```
+
+Use `prism checkin <session>` to capture the live screen of a session's agent window. The output is cleaned up (borders and chrome stripped) and is suitable for reading directly:
+
+```bash
+prism checkin nixos-config@update-plex
+```
+
+With no argument, `prism checkin` lists available sessions and exits with a hint.
+
+These commands are useful when you need to know where a spawned agent is at without switching to its session.
+
+## Sending a follow-up prompt to a running session
+
+Use `prism prompt <session> --prompt <text>` to send a follow-up message to the opencode agent in a session that is already running (or has finished and is waiting for input):
+
+```bash
+prism prompt nixos-config@update-plex --prompt "looks good, go ahead and open a PR"
+```
+
+The prompt is delivered after a short delay (500 ms) to allow opencode to finish any in-flight operation before accepting the new input. The session must exist and have an agent window — use `prism list-sessions` to check first.
