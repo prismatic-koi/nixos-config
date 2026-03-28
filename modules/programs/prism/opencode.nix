@@ -360,6 +360,20 @@
                     // readOnlyBashCommands;
                   };
                 };
+                # Lightweight built-in subagents — use a cheaper/faster model since these
+                # do simple, mechanical tasks that don't require deep reasoning.
+                explore = {
+                  model = "anthropic/claude-haiku-4-20250514";
+                };
+                title = {
+                  model = "anthropic/claude-haiku-4-20250514";
+                };
+                summary = {
+                  model = "anthropic/claude-haiku-4-20250514";
+                };
+                compaction = {
+                  model = "anthropic/claude-haiku-4-20250514";
+                };
               };
               mcp = {
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
