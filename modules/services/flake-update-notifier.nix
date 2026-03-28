@@ -8,7 +8,7 @@ let
   cfg = config.nx.services.flakeUpdateNotifier;
 
   check-script = pkgs.writeShellScript "flake-update-notifier" ''
-    REPO="$HOME/code/nixos-config"
+    REPO="$HOME/code/nixos-config/main"
 
     local_hash=$(${pkgs.git}/bin/git -C "$REPO" log -1 --format="%H" -- flake.lock 2>/dev/null)
     remote_hash=$(${pkgs.curl}/bin/curl -sf \

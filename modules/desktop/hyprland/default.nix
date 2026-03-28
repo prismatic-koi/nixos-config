@@ -282,7 +282,7 @@ in
                 "ALT, l, exec, ${addtoshoppinglist}"
                 "ALT SHIFT, l, exec, ${openshoppinglist}"
                 "ALT, o, exec, ${prismLauncher} --path ${homeDir}/documents/obsidian"
-                "ALT, n, exec, ${prismLauncher} --path ${homeDir}/code/nixos-config"
+                "ALT, n, exec, ${prismLauncher} --path ${homeDir}/code/nixos-config/main"
                 "ALT, p, exec, ${prismLauncher}"
                 # media controls
                 ", XF86AudioMute, exec, ${toggleMute}"
