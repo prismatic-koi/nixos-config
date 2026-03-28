@@ -2,6 +2,17 @@
 
 This document provides guidance for AI agents on how to interact with this NixOS configuration repository.
 
+## Application Configuration Lives in This Repo
+
+Many applications — including opencode, prism, zsh, neovim, and others — are configured as Nix modules in this repository rather than having config files in `~/.config/` or other dotfile locations. **Before reading external config files or fetching docs to understand how an application is configured, search this repo first.**
+
+For example:
+- opencode configuration → `modules/programs/prism/opencode.nix`
+- Custom opencode agents → `modules/programs/prism/opencode/agents/`
+- opencode skills → `modules/programs/prism/opencode/skills/`
+
+If you need to understand how something is configured, `grep` or `glob` within the working directory before reaching outside it.
+
 ## Project Overview
 
 - **Primary Goal:** This repository manages the personal NixOS configurations for multiple machines, all intended for a single user (`prismatic-koi`).

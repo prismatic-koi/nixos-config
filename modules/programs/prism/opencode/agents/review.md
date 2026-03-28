@@ -18,6 +18,8 @@ You will be given a PR number. Use it to gather context:
 - Read the entire file(s) being modified — diffs alone are not enough. Code that looks wrong in isolation may be correct given surrounding logic, and vice versa.
 - Check for existing conventions files (AGENTS.md, .editorconfig, etc.)
 
+**Important:** Before making any `gh api` calls to fetch file contents, check whether the local working directory is already on the PR branch (`gh pr view <number> --json headRefName` and compare to `git branch --show-current`). If it matches, read files directly from disk — no remote calls needed.
+
 ---
 
 ## What to Look For
