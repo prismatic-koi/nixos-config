@@ -29,6 +29,13 @@ let
       allow_remote_control socket-only
     ''}
 
+    ${lib.optionalString isDarwin ''
+      # pass these through to Aerospace (they are bound as window manager shortcuts)
+      map cmd+n no_op
+      map cmd+o no_op
+      map cmd+p no_op
+    ''}
+
     foreground                 ${foreground}
     background                 ${background}
     selection_foreground       ${grey2}
