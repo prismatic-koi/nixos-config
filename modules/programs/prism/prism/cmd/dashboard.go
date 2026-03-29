@@ -455,7 +455,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.BlurMsg:
-		if !m.popup {
+		// Do not deactivate the cursor while the filter is open — the user
+		// must be able to see which session Enter will select at all times.
+		if !m.popup && !m.filterActive {
 			m.cursorActive = false
 		}
 
@@ -467,12 +469,17 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Do not re-read CallerSession() here — it may have changed if another
 		// client opened the dashboard. Use the value captured at init time.
 		if !m.cursorInitialised {
-			// Snap cursor to the current session on first load.
+			// Snap cursor to the current session on first load, but only when
+			// filter mode is not already active — the filter may have been
+			// opened before the first tick arrived, and the snap index into
+			// m.sessions would be silently clamped away by dashRefilter.
 			m.cursorInitialised = true
-			for i, s := range m.sessions {
-				if s.Name == m.currentSession {
-					m.cursor = i
-					break
+			if !m.filterActive {
+				for i, s := range m.sessions {
+					if s.Name == m.currentSession {
+						m.cursor = i
+						break
+					}
 				}
 			}
 		}
@@ -482,7 +489,11 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// In filter mode most keys are consumed by the filter input.
 		if m.filterActive {
 			switch msg.String() {
-			case "esc", "ctrl+c":
+			case "ctrl+c":
+				// Pass ctrl+c through to bubbletea so the TUI can quit.
+				return m, tea.Quit
+
+			case "esc":
 				// Cancel filter: restore full list, deactivate filter.
 				m.filterActive = false
 				m.filterText = ""
@@ -681,6 +692,7 @@ func (m dashModel) View() string {
 	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
+	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 
 	const stateW = 10
 	const dotW = 2
@@ -844,7 +856,6 @@ func (m dashModel) View() string {
 
 	// Filter prompt or help hint at the bottom.
 	if m.filterActive {
-		stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 		sb.WriteString("\n")
 		sb.WriteString(stylePrompt.Render(" / "))
 		sb.WriteString(m.filterText)

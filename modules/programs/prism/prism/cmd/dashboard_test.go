@@ -452,6 +452,118 @@ func TestDashFilterCursorStaysActiveOnTimeout(t *testing.T) {
 	}
 }
 
+// TestDashFilterBlurKeepsCursorActive verifies that a BlurMsg does not
+// deactivate the cursor while filter mode is open. Without this guard the
+// selection bar disappears on focus loss but the filter prompt remains, leaving
+// the user unable to see which session Enter will select.
+func TestDashFilterBlurKeepsCursorActive(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		filterActive: true,
+		cursorActive: true,
+		popup:        false, // persistent mode: BlurMsg normally deactivates cursor
+	}
+
+	m2, _ := m.Update(tea.BlurMsg{})
+	dm := m2.(dashModel)
+
+	if !dm.cursorActive {
+		t.Error("cursorActive must remain true when BlurMsg fires during filter mode")
+	}
+}
+
+// TestDashFilterCtrlCQuitsProgram verifies that ctrl+c in filter mode quits
+// the TUI rather than merely dismissing the filter. Previously ctrl+c and esc
+// were handled by the same case, so ctrl+c was consumed without quitting.
+func TestDashFilterCtrlCQuitsProgram(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:     []tmux.Session{{Name: "alpha"}},
+		displayed:    []tmux.Session{{Name: "alpha"}},
+		filterActive: true,
+		cursorActive: true,
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c in filter mode should return a non-nil quit command")
+	}
+	// Execute the command to confirm it produces a QuitMsg.
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("ctrl+c command produced %T, want tea.QuitMsg", msg)
+	}
+}
+
+// TestDashFilterEscCancelsNotQuits verifies that Esc in filter mode cancels
+// the filter (returning to normal mode) without quitting the TUI.
+func TestDashFilterEscCancelsNotQuits(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []tmux.Session{{Name: "alpha"}}, // narrowed
+		filterActive: true,
+		filterText:   "al",
+		cursorActive: true,
+	}
+
+	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	dm := m2.(dashModel)
+
+	if cmd != nil {
+		t.Error("Esc in filter mode should return nil cmd (no quit)")
+	}
+	if dm.filterActive {
+		t.Error("filterActive should be false after Esc")
+	}
+	if len(dm.displayed) != 2 {
+		t.Errorf("displayed len = %d, want 2 (full list restored)", len(dm.displayed))
+	}
+}
+
+// TestDashFilterSnapSkippedWhenFilterActive verifies that the cursor-snap-to-
+// currentSession logic in sessionsMsg is skipped when filter mode is already
+// active. The snap sets m.cursor to an index in m.sessions; dashRefilter then
+// clamps it against m.displayed which may be a different length, silently
+// placing the cursor on the wrong entry.
+func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
+	t.Parallel()
+
+	// Filter is already active and narrowed to "beta" only.
+	m := dashModel{
+		filterActive:      true,
+		filterText:        "bet",
+		cursorInitialised: false,
+		currentSession:    "alpha", // would snap cursor to index 0 in sessions
+		cursor:            0,
+	}
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	m.sessions = sessions
+	m.displayed = []tmux.Session{{Name: "beta"}} // pre-filtered
+
+	// Deliver a sessionsMsg (the first tick).
+	m2, _ := m.Update(sessionsMsg(sessions))
+	dm := m2.(dashModel)
+
+	if !dm.cursorInitialised {
+		t.Error("cursorInitialised should be true after first sessionsMsg")
+	}
+	// The snap should have been skipped; cursor must still point into the
+	// filtered list (at most index 0 since displayed has one entry).
+	if dm.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 — snap into sessions[] must not run during filter mode", dm.cursor)
+	}
+	// "beta" must still be the first displayed entry.
+	if len(dm.displayed) == 0 || dm.displayed[0].Name != "beta" {
+		t.Errorf("displayed[0] = %v, want {Name:beta}", dm.displayed)
+	}
+}
+
 // TestDashFilterCursorNavigation verifies that j/k move the cursor within the
 // filtered list while filter mode is active.
 func TestDashFilterCursorNavigation(t *testing.T) {
