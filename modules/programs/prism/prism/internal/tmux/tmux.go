@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // TmuxBin is the path to the tmux binary. Injected at build time via ldflags
@@ -336,13 +337,19 @@ func CapturePaneScreen(session string, height int) (CaptureResult, error) {
 	expanded := origW < CaptureWidth || origH < height
 	if expanded {
 		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", CaptureWidth), "-y", fmt.Sprintf("%d", height))
+		// Give opencode time to reflow its TUI to fill the new dimensions.
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	raw, captureErr := run("capture-pane", "-t", target, "-p")
 
 	// Restore original dimensions regardless of capture outcome.
+	// resize-window implicitly sets window-size to "manual", so we unset it
+	// afterwards to restore automatic sizing (inheriting the global default).
 	if expanded && origW > 0 && origH > 0 {
 		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", origW), "-y", fmt.Sprintf("%d", origH))
+		_, _ = run("set-window-option", "-t", target, "-u", "window-size")
+		_, _ = run("set-option", "-t", session, "-u", "window-size")
 	}
 
 	if captureErr != nil {
