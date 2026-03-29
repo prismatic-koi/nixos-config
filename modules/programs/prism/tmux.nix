@@ -147,7 +147,7 @@ in
               # (#{pane_current_path} is expanded by tmux for -d). The popup
               # pane then reports that same path via pane_current_path, so
               # prism's CurrentPanePath() fallback works without PRISM_SPAWN_PATH.
-              bind a display-popup -d "#{pane_current_path}" -w 60% -h 20% -b single \
+              bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single \
                 "${prism} spawn --attach"
 
               # opencode scrolling keybinds (only active when opencode is running)
