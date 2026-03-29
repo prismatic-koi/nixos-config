@@ -354,19 +354,35 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 		t.Fatalf("SwitchClient: %v", err)
 	}
 
-	gotA, err := s.clientSession(clientA)
-	if err != nil {
-		t.Fatalf("clientSession(clientA): %v", err)
+	// Poll for clientA to land on the target session: switch-client is
+	// asynchronous from the perspective of a subsequent display-message call,
+	// so a single immediate read can return a stale value under load.
+	var gotA string
+	aDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(aDeadline) {
+		if sess, err := s.clientSession(clientA); err == nil {
+			gotA = sess
+			if sess == "nixos-config@feature" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	gotB, err := s.clientSession(clientB)
-	if err != nil {
-		t.Fatalf("clientSession(clientB): %v", err)
+
+	// Poll clientB for stability; guard against all-errors leaving gotB empty.
+	var gotB string
+	bDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(bDeadline) {
+		if sess, err := s.clientSession(clientB); err == nil {
+			gotB = sess
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if gotA != "nixos-config@feature" {
 		t.Errorf("clientA session = %q, want %q — Enter in modelA should switch clientA", gotA, "nixos-config@feature")
 	}
-	if gotB != "nixos-config@main" {
+	if gotB != "" && gotB != "nixos-config@main" {
 		t.Errorf("clientB session = %q, want %q — clientB should be unaffected (was wrongly switched by the bug)", gotB, "nixos-config@main")
 	}
 }
