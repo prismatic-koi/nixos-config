@@ -31,6 +31,9 @@ import (
 // directory and returns the path to the resulting executable.
 func buildPrismBinary(t *testing.T) string {
 	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not found in PATH — skipping integration test")
+	}
 	// Module root is one directory above this file's package (cmd/ → prism/).
 	// In Go tests, the working directory is the package directory (cmd/), so
 	// the module root is one level up.

@@ -99,6 +99,9 @@ func setupMinimalBareRepo(t *testing.T) (bareRoot, worktreePath, branchName stri
 //     test server's socket and the binary can use tmux commands correctly.
 func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
 
 	prismBin := buildPrismBinary(t)
 
