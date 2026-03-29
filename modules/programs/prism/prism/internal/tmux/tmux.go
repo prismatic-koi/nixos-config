@@ -256,14 +256,50 @@ func Run(args ...string) (string, error) {
 	return run(args...)
 }
 
+// captureWidth and captureHeight are the dimensions used when temporarily
+// expanding a window for a richer screen capture.
+const captureWidth = 220
+const captureHeight = 50
+
 // CapturePaneScreen captures the visible screen content of the agent window
 // in the named session. The raw tmux output is cleaned up for readability:
 // leading ┃ borders, trailing whitespace, scrollbar columns (█), and blank
 // lines are stripped, leaving just the conversation text, todos, active tools,
 // and any permission dialogs.
+//
+// Before capturing, the window is temporarily resized to captureWidth×captureHeight
+// so that a small OS window does not truncate the output. The original
+// dimensions are restored afterwards.
 func CapturePaneScreen(session string) (string, error) {
 	target := session + ":agent"
+
+	// Read current dimensions so we can restore them.
+	wStr, err := run("display-message", "-t", target, "-p", "#{window_width}")
+	if err != nil {
+		return "", fmt.Errorf("read window width: %w", err)
+	}
+	hStr, err := run("display-message", "-t", target, "-p", "#{window_height}")
+	if err != nil {
+		return "", fmt.Errorf("read window height: %w", err)
+	}
+
+	var origW, origH int
+	fmt.Sscan(wStr, &origW)
+	fmt.Sscan(hStr, &origH)
+
+	// Expand to capture dimensions if the window is currently smaller.
+	expanded := origW < captureWidth || origH < captureHeight
+	if expanded {
+		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", captureWidth), "-y", fmt.Sprintf("%d", captureHeight))
+	}
+
 	raw, err := run("capture-pane", "-t", target, "-p")
+
+	// Restore original size before returning, regardless of capture outcome.
+	if expanded && origW > 0 && origH > 0 {
+		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", origW), "-y", fmt.Sprintf("%d", origH))
+	}
+
 	if err != nil {
 		return "", fmt.Errorf("capture-pane: %w", err)
 	}
