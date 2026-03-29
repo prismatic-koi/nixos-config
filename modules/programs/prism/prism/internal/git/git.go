@@ -479,14 +479,21 @@ func PRBranch(projectPath, prNumber string) (string, error) {
 	return branch, nil
 }
 
-// BareRoot walks up from worktreePath to find the parent with a .bare dir.
-// Returns empty string if not found.
+// BareRoot walks up from worktreePath to find the nearest ancestor with a
+// .bare subdirectory (the prism bare repo root). Returns empty string if not
+// found. Starts at the parent of worktreePath because the path itself is a
+// worktree directory, not the bare root.
 func BareRoot(worktreePath string) string {
 	p := filepath.Dir(worktreePath)
-	for _, candidate := range []string{p, filepath.Dir(p)} {
-		if IsBareRepo(candidate) {
-			return candidate
+	for {
+		if IsBareRepo(p) {
+			return p
 		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			break
+		}
+		p = parent
 	}
 	return ""
 }
