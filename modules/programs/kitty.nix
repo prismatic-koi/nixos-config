@@ -29,6 +29,13 @@ let
       allow_remote_control socket-only
     ''}
 
+    ${lib.optionalString isDarwin ''
+      # pass opt+n/o/p through to Aerospace (bound as alt-n/o/p window manager shortcuts)
+      map opt+n no_op
+      map opt+o no_op
+      map opt+p no_op
+    ''}
+
 
 
     foreground                 ${foreground}
