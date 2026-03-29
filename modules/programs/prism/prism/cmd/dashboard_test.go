@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,18 @@ func randCmdHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// scriptCmdArgs returns the argument list for the `script` command to run cmd
+// in a pseudo-terminal without a real display. Syntax differs by platform:
+//
+//   - Linux:  script -q -c '<cmd>' /dev/null
+//   - macOS:  script -q /dev/null <cmd>  (no -c flag; command is positional)
+func scriptCmdArgs(cmd string) []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"-q", "/dev/null", cmd}
+	}
+	return []string{"-q", "-c", cmd, "/dev/null"}
+}
+
 func (s *cmdTestServer) run(args ...string) error {
 	cmd := exec.Command(s.bin, append([]string{"-L", s.socket}, args...)...)
 	out, err := cmd.CombinedOutput()
@@ -114,10 +127,7 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 			beforeSet[c] = true
 		}
 	}
-	cmd := exec.Command("script", "-q", "-c",
-		s.bin+" -L "+s.socket+" attach-session -t "+targetSession,
-		"/dev/null",
-	)
+	cmd := exec.Command("script", scriptCmdArgs(s.bin+" -L "+s.socket+" attach-session -t "+targetSession)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}

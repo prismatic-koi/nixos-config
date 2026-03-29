@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -142,8 +143,20 @@ func (s *server) killSession(name string) error {
 	return s.run("kill-session", "-t", name)
 }
 
+// scriptArgs returns the argument list for the `script` command to run cmd in
+// a pseudo-terminal without a real display. The syntax differs by platform:
+//
+//   - Linux:  script -q -c '<cmd>' /dev/null
+//   - macOS:  script -q /dev/null <cmd>  (no -c flag; command is positional)
+func scriptArgs(cmd string) []string {
+	if runtime.GOOS == "darwin" {
+		return []string{"-q", "/dev/null", cmd}
+	}
+	return []string{"-q", "-c", cmd, "/dev/null"}
+}
+
 // attachClientToSession starts a real tmux client attached to the given session
-// using `script -q -c` to allocate a pseudo-terminal without a real display.
+// using `script` to allocate a pseudo-terminal without a real display.
 // Returns the tmux client name (e.g. /dev/pts/N). The process is killed via
 // t.Cleanup.
 func (s *server) attachClientToSession(t *testing.T, targetSession string) string {
@@ -159,10 +172,7 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 		}
 	}
 
-	cmd := exec.Command("script", "-q", "-c",
-		s.bin+" -L "+s.socket+" attach-session -t "+targetSession,
-		"/dev/null",
-	)
+	cmd := exec.Command("script", scriptArgs(s.bin+" -L "+s.socket+" attach-session -t "+targetSession)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}
