@@ -268,57 +268,21 @@ const CaptureWidth = 220
 // full effect when no client is attached.
 const DefaultCaptureHeight = 100
 
-// SessionClients returns the names of all clients currently attached to the
-// named session.
-func SessionClients(session string) ([]string, error) {
-	out, err := run("list-clients", "-t", session, "-F", "#{client_name}")
-	if err != nil {
-		// list-clients exits non-zero when no clients are attached — not an error.
-		return nil, nil
-	}
-	var clients []string
-	for _, c := range strings.Split(out, "\n") {
-		c = strings.TrimSpace(c)
-		if c != "" {
-			clients = append(clients, c)
-		}
-	}
-	return clients, nil
-}
-
-// KillSessionClients detaches all clients attached to the named session.
-func KillSessionClients(session string) error {
-	clients, err := SessionClients(session)
-	if err != nil {
-		return err
-	}
-	for _, c := range clients {
-		_, _ = run("detach-client", "-t", c)
-	}
-	return nil
-}
-
-// CaptureResult holds the output of CapturePaneScreen along with any advisory
-// warnings the caller should be aware of.
+// CaptureResult holds the output of CapturePaneScreen.
 type CaptureResult struct {
-	Screen          string
-	ClientsAttached []string // non-empty if clients were attached during capture
+	Screen string
 }
 
 // CapturePaneScreen captures the visible screen of the agent window in the
 // named session. opencode uses alternate screen mode (no scrollback), so the
 // only way to get more content is to make the window taller before capturing.
 //
-// The window is temporarily resized to CaptureWidth × height. When no clients
-// are attached tmux honours the full size and opencode reflows to fill it,
-// giving a much richer capture. When clients are attached their physical
-// terminal size constrains the window and the resize has little effect —
-// ClientsAttached will be non-empty as a warning to the caller.
-// Original dimensions are restored after capture.
+// The window is temporarily resized to CaptureWidth × height. opencode reflows
+// its TUI to fill the new dimensions, giving a richer capture. Use a larger
+// height value to see more conversation history. Original dimensions are
+// restored after capture.
 func CapturePaneScreen(session string, height int) (CaptureResult, error) {
 	target := session + ":agent"
-
-	clients, _ := SessionClients(session)
 
 	// Read current dimensions so we can restore them.
 	wStr, err := run("display-message", "-t", target, "-p", "#{window_width}")
@@ -356,8 +320,7 @@ func CapturePaneScreen(session string, height int) (CaptureResult, error) {
 		return CaptureResult{}, fmt.Errorf("capture-pane: %w", captureErr)
 	}
 	return CaptureResult{
-		Screen:          cleanCaptureOutput(raw),
-		ClientsAttached: clients,
+		Screen: cleanCaptureOutput(raw),
 	}, nil
 }
 
