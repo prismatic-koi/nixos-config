@@ -148,7 +148,7 @@ in
               # pane then reports that same path via pane_current_path, so
               # prism's CurrentPanePath() fallback works without PRISM_SPAWN_PATH.
               bind a display-popup -d "#{pane_current_path}" -w 60% -h 20% -b single \
-                "${prism} spawn"
+                "${prism} spawn --attach"
 
               # opencode scrolling keybinds (only active when opencode is running)
               # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
