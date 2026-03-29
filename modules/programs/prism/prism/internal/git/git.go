@@ -333,7 +333,7 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	gitdirFile := filepath.Join(worktreesDir, "gitdir")
 
 	if err := os.WriteFile(worktreeGitFile,
-		[]byte("gitdir: "+gitdirFile+"\n"), 0o644); err != nil {
+		[]byte("gitdir: "+worktreesDir+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write worktree .git: %w", err)
 	}
 	if err := os.WriteFile(gitdirFile,
