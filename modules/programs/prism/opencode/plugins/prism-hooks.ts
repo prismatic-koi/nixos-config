@@ -70,6 +70,15 @@ export const PrismHooks: Plugin = async ({ $ }) => {
         case "permission.replied":
           await notify("set-active");
           break;
+        // question.asked fires when the agent uses the question tool to ask
+        // the user something — treat identically to a permission wait.
+        case "question.asked":
+          await notify("set-waiting");
+          break;
+        case "question.replied":
+        case "question.rejected":
+          await notify("set-active");
+          break;
         case "session.error":
           await notify("set-error");
           break;
