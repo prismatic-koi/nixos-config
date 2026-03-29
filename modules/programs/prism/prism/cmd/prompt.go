@@ -43,7 +43,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	target := session + ":agent"
 
 	// Verify the agent window exists by attempting a dry capture.
-	if _, err := tmux.CapturePaneScreen(session); err != nil {
+	if _, err := tmux.CapturePaneScreen(session, tmux.DefaultCaptureHeight); err != nil {
 		return fmt.Errorf("session %q has no agent window: %w", session, err)
 	}
 

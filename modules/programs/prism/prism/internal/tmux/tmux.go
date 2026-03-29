@@ -256,54 +256,102 @@ func Run(args ...string) (string, error) {
 	return run(args...)
 }
 
-// captureWidth and captureHeight are the dimensions used when temporarily
-// expanding a window for a richer screen capture.
-const captureWidth = 220
-const captureHeight = 50
+// CaptureWidth is the fixed column width used when expanding a window for
+// screen capture. 220 columns is wider than most physical terminals, so the
+// full opencode layout is always visible.
+const CaptureWidth = 220
 
-// CapturePaneScreen captures the visible screen content of the agent window
-// in the named session. The raw tmux output is cleaned up for readability:
-// leading ┃ borders, trailing whitespace, scrollbar columns (█), and blank
-// lines are stripped, leaving just the conversation text, todos, active tools,
-// and any permission dialogs.
+// DefaultCaptureHeight is the number of rows the window is expanded to for a
+// normal checkin. opencode renders a fixed TUI (alternate screen mode — no
+// scrollback), so a taller window = more conversation visible. This only takes
+// full effect when no client is attached.
+const DefaultCaptureHeight = 100
+
+// SessionClients returns the names of all clients currently attached to the
+// named session.
+func SessionClients(session string) ([]string, error) {
+	out, err := run("list-clients", "-t", session, "-F", "#{client_name}")
+	if err != nil {
+		// list-clients exits non-zero when no clients are attached — not an error.
+		return nil, nil
+	}
+	var clients []string
+	for _, c := range strings.Split(out, "\n") {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			clients = append(clients, c)
+		}
+	}
+	return clients, nil
+}
+
+// KillSessionClients detaches all clients attached to the named session.
+func KillSessionClients(session string) error {
+	clients, err := SessionClients(session)
+	if err != nil {
+		return err
+	}
+	for _, c := range clients {
+		_, _ = run("detach-client", "-c", c)
+	}
+	return nil
+}
+
+// CaptureResult holds the output of CapturePaneScreen along with any advisory
+// warnings the caller should be aware of.
+type CaptureResult struct {
+	Screen          string
+	ClientsAttached []string // non-empty if clients were attached during capture
+}
+
+// CapturePaneScreen captures the visible screen of the agent window in the
+// named session. opencode uses alternate screen mode (no scrollback), so the
+// only way to get more content is to make the window taller before capturing.
 //
-// Before capturing, the window is temporarily resized to captureWidth×captureHeight
-// so that a small OS window does not truncate the output. The original
-// dimensions are restored afterwards.
-func CapturePaneScreen(session string) (string, error) {
+// The window is temporarily resized to CaptureWidth × height. When no clients
+// are attached tmux honours the full size and opencode reflows to fill it,
+// giving a much richer capture. When clients are attached their physical
+// terminal size constrains the window and the resize has little effect —
+// ClientsAttached will be non-empty as a warning to the caller.
+// Original dimensions are restored after capture.
+func CapturePaneScreen(session string, height int) (CaptureResult, error) {
 	target := session + ":agent"
+
+	clients, _ := SessionClients(session)
 
 	// Read current dimensions so we can restore them.
 	wStr, err := run("display-message", "-t", target, "-p", "#{window_width}")
 	if err != nil {
-		return "", fmt.Errorf("read window width: %w", err)
+		return CaptureResult{}, fmt.Errorf("read window width: %w", err)
 	}
 	hStr, err := run("display-message", "-t", target, "-p", "#{window_height}")
 	if err != nil {
-		return "", fmt.Errorf("read window height: %w", err)
+		return CaptureResult{}, fmt.Errorf("read window height: %w", err)
 	}
-
 	var origW, origH int
 	fmt.Sscan(wStr, &origW)
 	fmt.Sscan(hStr, &origH)
 
-	// Expand to capture dimensions if the window is currently smaller.
-	expanded := origW < captureWidth || origH < captureHeight
+	// Expand to capture dimensions.
+	expanded := origW < CaptureWidth || origH < height
 	if expanded {
-		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", captureWidth), "-y", fmt.Sprintf("%d", captureHeight))
+		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", CaptureWidth), "-y", fmt.Sprintf("%d", height))
 	}
 
-	raw, err := run("capture-pane", "-t", target, "-p")
+	raw, captureErr := run("capture-pane", "-t", target, "-p")
 
-	// Restore original size before returning, regardless of capture outcome.
+	// Restore original dimensions regardless of capture outcome.
 	if expanded && origW > 0 && origH > 0 {
 		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", origW), "-y", fmt.Sprintf("%d", origH))
 	}
 
-	if err != nil {
-		return "", fmt.Errorf("capture-pane: %w", err)
+	if captureErr != nil {
+		return CaptureResult{}, fmt.Errorf("capture-pane: %w", captureErr)
 	}
-	return cleanCaptureOutput(raw), nil
+	return CaptureResult{
+		Screen:          cleanCaptureOutput(raw),
+		ClientsAttached: clients,
+	}, nil
 }
 
 // cleanCaptureOutput strips tmux TUI chrome from a raw capture-pane output,
