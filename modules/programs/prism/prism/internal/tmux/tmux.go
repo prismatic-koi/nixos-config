@@ -292,7 +292,7 @@ func KillSessionClients(session string) error {
 		return err
 	}
 	for _, c := range clients {
-		_, _ = run("detach-client", "-c", c)
+		_, _ = run("detach-client", "-t", c)
 	}
 	return nil
 }
