@@ -30,12 +30,8 @@ let
     ''}
 
     ${lib.optionalString isDarwin ''
-      # treat left option as alt so opt+key mappings work and special chars are not produced
+      # treat left option as alt so special characters are not produced for opt+key combos
       macos_option_as_alt left
-      # pass opt+n/o/p through to Aerospace (bound as alt-n/o/p window manager shortcuts)
-      map opt+n no_op
-      map opt+o no_op
-      map opt+p no_op
     ''}
 
 
