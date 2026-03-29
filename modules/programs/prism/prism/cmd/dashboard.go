@@ -390,6 +390,11 @@ type dashModel struct {
 	ghOpenPRs         int
 	ghLoaded          bool // false = still fetching, show "…"
 	cursorActive      bool // true = show selection bar; false = passive watch mode
+	// filter mode: activated by '/', cancelled by esc/ctrl+c
+	filterActive bool
+	filterText   string
+	// displayed is the filtered (or full) sessions list used by View/cursor.
+	displayed []tmux.Session
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -407,7 +412,7 @@ func newDashModel(client string, popup bool) dashModel {
 	// only when caller session is NOT the dashboard.
 	inDashSession := currentSession == dashSession || currentSession == ""
 	isPopup := popup && !inDashSession
-	return dashModel{
+	m := dashModel{
 		client:         client,
 		callerClient:   callerClient,
 		popup:          isPopup,
@@ -415,6 +420,8 @@ func newDashModel(client string, popup bool) dashModel {
 		// Popup (C-w) always shows cursor. Persistent session starts passive.
 		cursorActive: isPopup,
 	}
+	m.displayed = m.sessions // empty at init; will be populated on first sessionsMsg
+	return m
 }
 
 func (m dashModel) Init() tea.Cmd {
@@ -467,11 +474,65 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if m.cursor >= len(m.sessions) {
-			m.cursor = max(0, len(m.sessions)-1)
-		}
+		m = dashRefilter(m)
 
 	case tea.KeyMsg:
+		// In filter mode most keys are consumed by the filter input.
+		if m.filterActive {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				// Cancel filter: restore full list, deactivate filter.
+				m.filterActive = false
+				m.filterText = ""
+				m = dashRefilter(m)
+				return m, nil
+
+			case "enter":
+				// Confirm selection: switch to highlighted session.
+				if len(m.displayed) == 0 {
+					return m, nil
+				}
+				selected := m.displayed[m.cursor]
+				m.filterActive = false
+				m.filterText = ""
+				return m, tea.Sequence(
+					func() tea.Msg {
+						_ = tmux.SelectAgentWindow(selected.Name)
+						if target := dashSwitchTarget(m.popup, m.client, m.callerClient); target != "" {
+							_ = tmux.SwitchClient(target, selected.Name)
+						}
+						return nil
+					},
+					tea.Quit,
+				)
+
+			case "backspace", "ctrl+h":
+				if len(m.filterText) > 0 {
+					runes := []rune(m.filterText)
+					m.filterText = string(runes[:len(runes)-1])
+					m = dashRefilter(m)
+				}
+
+			case "j", "down":
+				if m.cursor < len(m.displayed)-1 {
+					m.cursor++
+				}
+
+			case "k", "up":
+				if m.cursor > 0 {
+					m.cursor--
+				}
+
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.filterText += msg.String()
+					m = dashRefilter(m)
+				}
+			}
+			return m, nil
+		}
+
+		// Normal (non-filter) key handling.
 		switch msg.String() {
 		case "q", "esc":
 			if m.popup {
@@ -490,13 +551,21 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tea.Quit,
 			)
 
+		case "/":
+			// Activate inline fuzzy filter.
+			m.filterActive = true
+			m.filterText = ""
+			m.cursorActive = true
+			m = dashRefilter(m)
+			return m, cursorTimeoutCmd()
+
 		case "j", "down":
 			if !m.cursorActive {
 				// First keypress just activates the cursor without moving.
 				m.cursorActive = true
 				return m, cursorTimeoutCmd()
 			}
-			if m.cursor < len(m.sessions)-1 {
+			if m.cursor < len(m.displayed)-1 {
 				m.cursor++
 			}
 			return m, cursorTimeoutCmd()
@@ -522,10 +591,10 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, cursorTimeoutCmd()
 				}
 			}
-			if len(m.sessions) == 0 {
+			if len(m.displayed) == 0 {
 				return m, nil
 			}
-			selected := m.sessions[m.cursor]
+			selected := m.displayed[m.cursor]
 			return m, tea.Sequence(
 				func() tea.Msg {
 					_ = tmux.SelectAgentWindow(selected.Name)
@@ -552,6 +621,27 @@ func filterSessions(all []tmux.Session) []tmux.Session {
 		out = append(out, s)
 	}
 	return out
+}
+
+// dashRefilter recomputes m.displayed from m.sessions applying the active
+// fuzzy filter (if any). It also clamps the cursor so it never points out of
+// bounds. It returns the updated model.
+func dashRefilter(m dashModel) dashModel {
+	if !m.filterActive || m.filterText == "" {
+		m.displayed = m.sessions
+	} else {
+		var out []tmux.Session
+		for _, s := range m.sessions {
+			if fuzzyMatch(s.Name, m.filterText) {
+				out = append(out, s)
+			}
+		}
+		m.displayed = out
+	}
+	if m.cursor >= len(m.displayed) {
+		m.cursor = max(0, len(m.displayed)-1)
+	}
+	return m
 }
 
 // dashSwitchTarget returns the tmux client name that should receive a
@@ -633,12 +723,17 @@ func (m dashModel) View() string {
 	sb.WriteString(styleHeader.Render(header))
 	sb.WriteString("\n\n")
 
-	if len(m.sessions) == 0 {
-		sb.WriteString(styleDim.Render("  no active sessions"))
+	sessions := m.displayed
+	if len(sessions) == 0 {
+		if m.filterActive {
+			sb.WriteString(styleDim.Render("  no matches"))
+		} else {
+			sb.WriteString(styleDim.Render("  no active sessions"))
+		}
 		sb.WriteString("\n")
 	}
 
-	for i, s := range m.sessions {
+	for i, s := range sessions {
 		isHere := s.Name == m.currentSession
 		isSelected := i == m.cursor
 
@@ -744,7 +839,19 @@ func (m dashModel) View() string {
 		}
 	}
 
-	sb.WriteString("\n")
+	// Filter prompt or help hint at the bottom.
+	if m.filterActive {
+		stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+		sb.WriteString("\n")
+		sb.WriteString(stylePrompt.Render(" / "))
+		sb.WriteString(m.filterText)
+		sb.WriteString(styleDim.Render("█"))
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("\n")
+		sb.WriteString(styleDim.Render("  / filter  ↑↓/jk navigate  enter select  q quit"))
+		sb.WriteString("\n")
+	}
 
 	return sb.String()
 }

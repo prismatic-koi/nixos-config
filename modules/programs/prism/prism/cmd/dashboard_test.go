@@ -288,6 +288,234 @@ func TestDashModelCallerClientCapturedAtInit(t *testing.T) {
 	}
 }
 
+// ─── filter mode tests ────────────────────────────────────────────────────────
+
+// TestDashFilterActivation verifies that pressing '/' activates filter mode and
+// sets cursorActive.
+func TestDashFilterActivation(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		displayed: []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+	}
+	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	dm := updatedModel.(dashModel)
+
+	if !dm.filterActive {
+		t.Error("filterActive should be true after pressing '/'")
+	}
+	if !dm.cursorActive {
+		t.Error("cursorActive should be true after activating filter")
+	}
+	if dm.filterText != "" {
+		t.Errorf("filterText should be empty on activation, got %q", dm.filterText)
+	}
+}
+
+// TestDashFilterNarrowsList verifies that typing characters in filter mode
+// narrows m.displayed to only fuzzy-matching sessions.
+func TestDashFilterNarrowsList(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{
+		{Name: "alpha"},
+		{Name: "beta"},
+		{Name: "aleph"},
+	}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions,
+		filterActive: true,
+	}
+
+	// Type "al" — should match "alpha" and "aleph", not "beta".
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	dm := m2.(dashModel)
+	m3, _ := dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	dm = m3.(dashModel)
+
+	if len(dm.displayed) != 2 {
+		t.Errorf("displayed len = %d, want 2 (alpha + aleph)", len(dm.displayed))
+	}
+	for _, s := range dm.displayed {
+		if s.Name == "beta" {
+			t.Error("'beta' should not appear in filtered list for pattern 'al'")
+		}
+	}
+	if dm.filterText != "al" {
+		t.Errorf("filterText = %q, want %q", dm.filterText, "al")
+	}
+}
+
+// TestDashFilterBackspace verifies that backspace removes the last character
+// from filterText and re-expands the list.
+func TestDashFilterBackspace(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions,
+		filterActive: true,
+		filterText:   "al",
+	}
+	// Pre-narrow so displayed only has "alpha".
+	m = dashRefilter(m)
+	if len(m.displayed) != 1 {
+		t.Fatalf("setup: displayed len = %d, want 1", len(m.displayed))
+	}
+
+	// Backspace should remove 'l' and re-expand.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	dm := m2.(dashModel)
+
+	if dm.filterText != "a" {
+		t.Errorf("filterText = %q, want %q after backspace", dm.filterText, "a")
+	}
+	// "a" matches both "alpha" and "beta" (b-e-t-a has 'a').
+	if len(dm.displayed) == 0 {
+		t.Error("displayed should be non-empty after backspace")
+	}
+}
+
+// TestDashFilterEscapeCancels verifies that pressing Esc in filter mode
+// cancels the filter and restores the full session list.
+func TestDashFilterEscapeCancels(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions[:1], // narrowed
+		filterActive: true,
+		filterText:   "al",
+	}
+
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	dm := m2.(dashModel)
+
+	if dm.filterActive {
+		t.Error("filterActive should be false after Esc")
+	}
+	if dm.filterText != "" {
+		t.Errorf("filterText should be cleared, got %q", dm.filterText)
+	}
+	if len(dm.displayed) != len(sessions) {
+		t.Errorf("displayed len = %d after cancel, want %d (full list)", len(dm.displayed), len(sessions))
+	}
+}
+
+// TestDashFilterEnterSwitches verifies that pressing Enter in filter mode with
+// an active selection returns a non-nil switch command and exits filter mode.
+func TestDashFilterEnterSwitches(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions,
+		filterActive: true,
+		filterText:   "al",
+		cursor:       0,
+		popup:        true, // popup so we don't need callerClient
+	}
+	m = dashRefilter(m)
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Error("Enter in filter mode should return a non-nil switch command")
+	}
+}
+
+// TestDashFilterCursorNavigation verifies that j/k move the cursor within the
+// filtered list while filter mode is active.
+func TestDashFilterCursorNavigation(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "aleph"}}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions,
+		filterActive: true,
+		cursor:       0,
+	}
+
+	// Press 'j' to move down.
+	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	dm := m2.(dashModel)
+	if dm.cursor != 1 {
+		t.Errorf("cursor = %d after j, want 1", dm.cursor)
+	}
+
+	// Press 'k' to move back up.
+	m3, _ := dm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	dm = m3.(dashModel)
+	if dm.cursor != 0 {
+		t.Errorf("cursor = %d after k, want 0", dm.cursor)
+	}
+}
+
+// TestDashRefilterClampsOOBCursor verifies that dashRefilter clamps the cursor
+// when the filter reduces the list below the current cursor position.
+func TestDashRefilterClampsOOBCursor(t *testing.T) {
+	t.Parallel()
+
+	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	m := dashModel{
+		sessions:     sessions,
+		displayed:    sessions,
+		filterActive: true,
+		cursor:       2, // pointing at "gamma"
+		filterText:   "al",
+	}
+	m = dashRefilter(m) // "al" only matches "alpha"
+
+	if len(m.displayed) != 1 {
+		t.Fatalf("expected 1 match for 'al', got %d", len(m.displayed))
+	}
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d, want 0 (clamped to end of filtered list)", m.cursor)
+	}
+}
+
+// TestDashFilterViewShowsPrompt checks that the View output contains the
+// filter prompt when filterActive is true.
+func TestDashFilterViewShowsPrompt(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:     []tmux.Session{{Name: "alpha"}},
+		displayed:    []tmux.Session{{Name: "alpha"}},
+		filterActive: true,
+		filterText:   "alp",
+		width:        80,
+		height:       40,
+		cursorActive: true,
+	}
+	view := m.View()
+	if !strings.Contains(view, "alp") {
+		t.Error("View() should contain the filter text 'alp'")
+	}
+}
+
+// TestDashViewShowsHelpHint checks that the help hint mentions '/' when not in
+// filter mode.
+func TestDashViewShowsHelpHint(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []tmux.Session{{Name: "alpha"}},
+		displayed: []tmux.Session{{Name: "alpha"}},
+		width:     80,
+		height:    40,
+	}
+	view := m.View()
+	if !strings.Contains(view, "/ filter") {
+		t.Errorf("View() should mention '/ filter' in the help line, got:\n%s", view)
+	}
+}
+
 // TestDashModelEnterHandlerUsesCallerClient_PersistentMode is the end-to-end
 // regression test for the CallerClient bug.
 //
@@ -333,6 +561,7 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 
 	// Seed modelA with the sessions list so it can handle Enter.
 	modelA.sessions = []tmux.Session{{Name: "nixos-config@feature"}}
+	modelA.displayed = modelA.sessions // displayed must mirror sessions for Enter to fire
 	modelA.cursor = 0
 	modelA.cursorActive = true // activate cursor so Enter acts immediately
 
