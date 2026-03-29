@@ -29,10 +29,7 @@ let
       allow_remote_control socket-only
     ''}
 
-    ${lib.optionalString isDarwin ''
-      # treat left option as alt so special characters are not produced for opt+key combos
-      macos_option_as_alt left
-    ''}
+
 
 
 
