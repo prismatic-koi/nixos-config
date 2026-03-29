@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -105,9 +104,8 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	switchArgs := fmt.Sprintf("%s switch --path %s", prismBin, targetDir)
 	runInNewWindow(t, s, "home", "/tmp", switchArgs)
 
-	// Derive the expected session name: filepath.Base(targetDir) with dots
-	// replaced by underscores (ensureAndSwitchSession logic).
-	expectedSession := strings.ReplaceAll(filepath.Base(targetDir), ".", "_")
+	// Derive the expected session name via the same helper used by the binary.
+	expectedSession := sessionNameFor(targetDir, "")
 
 	// Poll until the client moves to the expected session.
 	deadline := time.Now().Add(10 * time.Second)
@@ -158,7 +156,7 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	switchArgs := fmt.Sprintf("%s switch --path %s", prismBin, targetDir)
 	runInNewWindow(t, s, "sessionA", "/tmp", switchArgs)
 
-	expectedSession := strings.ReplaceAll(filepath.Base(targetDir), ".", "_")
+	expectedSession := sessionNameFor(targetDir, "")
 
 	// Wait for clientA to land on the target session.
 	deadline := time.Now().Add(10 * time.Second)

@@ -463,6 +463,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// sessionNameFor derives the tmux session name for a given directory and
+// optional project root, applying the same dot-to-underscore substitution used
+// throughout the codebase.  dir must already be expanded (no ~).
+func sessionNameFor(dir, projectRoot string) string {
+	if projectRoot != "" {
+		projName := strings.ReplaceAll(filepath.Base(projectRoot), ".", "_")
+		wtName := strings.ReplaceAll(filepath.Base(dir), ".", "_")
+		return projName + "@" + wtName
+	}
+	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
+}
+
 func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
 	var sessionName string
 	var directory string
@@ -473,13 +485,7 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 		directory = home
 	} else {
 		directory = expandHome(path)
-		if projectRoot != "" {
-			projName := strings.ReplaceAll(filepath.Base(projectRoot), ".", "_")
-			wtName := strings.ReplaceAll(filepath.Base(directory), ".", "_")
-			sessionName = projName + "@" + wtName
-		} else {
-			sessionName = strings.ReplaceAll(filepath.Base(directory), ".", "_")
-		}
+		sessionName = sessionNameFor(directory, projectRoot)
 	}
 
 	if !tmux.HasSession(sessionName) {
