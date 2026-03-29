@@ -147,20 +147,35 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 		t.Fatalf("session %q still exists after cleanup (timed out)", targetSession)
 	}
 
-	// The target client should now be on "scratchpad".
-	gotTarget, err := s.clientSession(clientTarget)
-	if err != nil {
-		t.Fatalf("clientSession(clientTarget): %v", err)
+	// Poll until clientTarget lands on "scratchpad".  headlessCleanup calls
+	// SwitchClient before KillSession; we wait for the session to disappear
+	// above, but the switch-client may not yet be committed in tmux's state at
+	// that instant, so we poll rather than read once.
+	var gotTarget string
+	targetDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(targetDeadline) {
+		if sess, err := s.clientSession(clientTarget); err == nil {
+			gotTarget = sess
+			if sess == "scratchpad" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if gotTarget != "scratchpad" {
 		t.Errorf("clientTarget session = %q, want %q — client was not redirected to scratchpad",
 			gotTarget, "scratchpad")
 	}
 
-	// The bystander client should still be on "other".
-	gotOther, err := s.clientSession(clientOther)
-	if err != nil {
-		t.Fatalf("clientSession(clientOther): %v", err)
+	// The bystander client should still be on "other".  Poll briefly for
+	// stability rather than reading once.
+	var gotOther string
+	otherDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(otherDeadline) {
+		if sess, err := s.clientSession(clientOther); err == nil {
+			gotOther = sess
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if gotOther != "other" {
 		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",

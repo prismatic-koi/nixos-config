@@ -171,9 +171,16 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	gotB, err := s.clientSession(clientB)
-	if err != nil {
-		t.Fatalf("clientSession(clientB): %v", err)
+	// Poll clientB for a stability window: confirm it stays on "sessionB"
+	// rather than reading it once (a single read can return an error or stale
+	// value if the tmux server is momentarily busy).
+	var gotB string
+	bDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(bDeadline) {
+		if sess, err := s.clientSession(clientB); err == nil {
+			gotB = sess
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	if gotA != expectedSession {
