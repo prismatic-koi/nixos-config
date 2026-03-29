@@ -80,6 +80,10 @@
         "git -C * push *" = "ask";
         "git --git-dir* push" = "ask";
         "git --git-dir* push *" = "ask";
+        # cover `git send-pack` and `git receive-pack` (low-level push equivalents)
+        "git send-pack" = "ask";
+        "git send-pack *" = "ask";
+        "git receive-pack *" = "ask";
         # GitHub CLI read operations
         "gh issue view *" = "allow";
         "gh issue list *" = "allow";
@@ -137,6 +141,10 @@
         "git -C * push *" = "ask";
         "git --git-dir* push" = "ask";
         "git --git-dir* push *" = "ask";
+        # cover `git send-pack` and `git receive-pack` (low-level push equivalents)
+        "git send-pack" = "ask";
+        "git send-pack *" = "ask";
+        "git receive-pack *" = "ask";
         # file operations that modify
         "mkdir *" = "allow";
         "rm *" = "allow";
