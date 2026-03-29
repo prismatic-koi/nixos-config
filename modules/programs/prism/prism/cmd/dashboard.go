@@ -448,7 +448,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ghLoaded = true
 
 	case cursorTimeoutMsg:
-		if !m.popup {
+		// Do not deactivate the cursor while the filter is open — the selection
+		// bar must stay visible for the entire filter session.
+		if !m.popup && !m.filterActive {
 			m.cursorActive = false
 		}
 
@@ -552,12 +554,13 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			)
 
 		case "/":
-			// Activate inline fuzzy filter.
+			// Activate inline fuzzy filter. Keep cursorActive for the entire
+			// filter session — no timeout while filter mode is open.
 			m.filterActive = true
 			m.filterText = ""
 			m.cursorActive = true
 			m = dashRefilter(m)
-			return m, cursorTimeoutCmd()
+			return m, nil
 
 		case "j", "down":
 			if !m.cursorActive {

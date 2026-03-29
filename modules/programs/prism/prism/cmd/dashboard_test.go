@@ -428,6 +428,30 @@ func TestDashFilterEnterSwitches(t *testing.T) {
 	}
 }
 
+// TestDashFilterCursorStaysActiveOnTimeout verifies that a cursorTimeoutMsg
+// does not deactivate the cursor highlight while filter mode is active.
+// Without the fix, the selection bar would silently vanish 3 seconds after
+// pressing '/' even while the user is still typing.
+func TestDashFilterCursorStaysActiveOnTimeout(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		filterActive: true,
+		cursorActive: true,
+		popup:        false, // persistent mode: timeout normally deactivates cursor
+	}
+
+	// Fire the cursor timeout while filter mode is active.
+	m2, _ := m.Update(cursorTimeoutMsg{})
+	dm := m2.(dashModel)
+
+	if !dm.cursorActive {
+		t.Error("cursorActive must remain true when cursorTimeoutMsg fires during filter mode")
+	}
+}
+
 // TestDashFilterCursorNavigation verifies that j/k move the cursor within the
 // filtered list while filter mode is active.
 func TestDashFilterCursorNavigation(t *testing.T) {
