@@ -692,6 +692,9 @@ var switchCmd = &cobra.Command{
 				}
 				return ensureAndSwitchSession(worktrees[0], p, sessionOpts{})
 			}
+			if bareRoot := git.BareRoot(p); bareRoot != "" {
+				return ensureAndSwitchSession(p, bareRoot, sessionOpts{})
+			}
 			return ensureAndSwitchSession(p, "", sessionOpts{})
 		}
 
