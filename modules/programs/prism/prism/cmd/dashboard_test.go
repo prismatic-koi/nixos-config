@@ -114,6 +114,10 @@ func (s *cmdTestServer) clientSession(client string) (string, error) {
 	return s.output("display-message", "-t", client, "-p", "#{session_name}")
 }
 
+func (s *cmdTestServer) hasSession(name string) bool {
+	return s.run("has-session", "-t", name) == nil
+}
+
 func (s *cmdTestServer) setGlobal(option, value string) {
 	_ = s.run("set-option", "-g", option, value)
 }
