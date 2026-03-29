@@ -143,12 +143,10 @@ in
               # spawn new timestamped worktree from current repo (prefix+a)
               # prism spawn infers the repo from the current pane path, creates
               # a zettelkasten-timestamped branch+worktree, and switches to it.
-              # pane_current_path is captured here (before the popup) and passed
-              # via --path because inside display-popup the path belongs to the
-              # popup's own pane, not the caller's pane.
+              # pane_current_path is captured in the shell-command string (which
+              # tmux format-expands) rather than via -e (which is passed raw).
               bind a display-popup -w 60% -h 20% -b single \
-                -e "PRISM_SPAWN_PATH=#{pane_current_path}" \
-                "${prism} spawn"
+                "PRISM_SPAWN_PATH=#{pane_current_path} ${prism} spawn"
 
               # opencode scrolling keybinds (only active when opencode is running)
               # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
