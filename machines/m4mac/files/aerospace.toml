@@ -50,7 +50,7 @@ outer.right =      5
 [exec]
 inherit-env-vars = true
 [exec.env-vars]
-PATH = '/opt/homebrew/bin:/etc/profiles/per-user/ben/bin:${PATH}'
+PATH = '/opt/homebrew/bin:/etc/profiles/per-user/bensherman/bin:${PATH}'
 
 # 'main' binding mode declaration
 # See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
