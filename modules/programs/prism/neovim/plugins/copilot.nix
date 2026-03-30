@@ -9,18 +9,19 @@
           # lua
           ''
             require("copilot").setup({
-            copilot_node_command = "${pkgs.nodejs_24}/bin/node";
+            	copilot_node_command = "${pkgs.nodejs_24}/bin/node",
             	panel = {
             		enabled = false,
             	},
             	suggestion = {
             		enabled = true,
             		auto_trigger = true,
-            		debounce = 75,
+            		hide_during_completion = true,
+            		debounce = 15,
             		keymap = {
             			accept = "<C-L>",
             			next = "<C-J>",
-            			prev = "<C-K",
+            			prev = "<C-K>",
             		},
             	},
             	filetypes = {
