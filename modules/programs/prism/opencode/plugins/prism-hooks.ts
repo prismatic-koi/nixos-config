@@ -69,6 +69,7 @@ export const PrismHooks: Plugin = async ({ $ }) => {
             permission: props.permission,
             patterns: props.patterns,
             metadata: props.metadata,
+            tool: props.tool,
           });
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           break;
