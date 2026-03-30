@@ -498,7 +498,12 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionsMsg:
 		m.sessions = filterSessions(msg.sessions)
-		m.gitStats = msg.gitStats
+		// Only replace git stats when the fetch succeeded (non-nil map).
+		// A nil gitStats indicates a transient tmux error; preserve the
+		// previous values so the UI does not blank out on a momentary hiccup.
+		if msg.gitStats != nil {
+			m.gitStats = msg.gitStats
+		}
 		// Do not re-read CallerSession() here — it may have changed if another
 		// client opened the dashboard. Use the value captured at init time.
 		if !m.cursorInitialised {
