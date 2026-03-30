@@ -5,11 +5,12 @@ package cmd
 //
 // Flags:
 //
-//	--branch <name>   use a specific branch name instead of a timestamp
-//	--repo <name>     target repo by folder name under ~/code (or full path)
-//	--pr <number>     check out the branch for a given PR number
-//	--prompt <text>   pass an initial prompt to opencode on launch
-//	--agent <name>    opencode agent to use (default: build)
+//	--branch <name>       use a specific branch name instead of a timestamp
+//	--repo <name>         target repo by folder name under ~/code (or full path)
+//	--pr <number>         check out the branch for a given PR number
+//	--prompt <text>       pass an initial prompt to opencode on launch
+//	--prompt-file <path>  read the initial prompt from a file
+//	--agent <name>        opencode agent to use (default: build)
 
 import (
 	"fmt"
@@ -33,7 +34,7 @@ func init() {
 	spawnCmd.Flags().String("branch", "", "Branch name (default: timestamped)")
 	spawnCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
-	spawnCmd.Flags().String("prompt", "", "Initial prompt passed to opencode on launch")
+	addPromptFlags(spawnCmd)
 	spawnCmd.Flags().String("agent", "", "Opencode agent to use (default: build)")
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	rootCmd.AddCommand(spawnCmd)
@@ -43,8 +44,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	repoFlag, _ := cmd.Flags().GetString("repo")
 	prFlag, _ := cmd.Flags().GetString("pr")
-	promptFlag, _ := cmd.Flags().GetString("prompt")
 	agentFlag, _ := cmd.Flags().GetString("agent")
+
+	promptFlag, err := resolvePrompt(cmd)
+	if err != nil {
+		return err
+	}
 
 	attachFlag, _ := cmd.Flags().GetBool("attach")
 	// headless when invoked from a shell/agent rather than the tmux keybinding.

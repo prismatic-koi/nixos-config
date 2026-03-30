@@ -5,6 +5,8 @@ package cmd
 // Usage:
 //
 //	prism prompt <session> --prompt <text>
+//	prism prompt <session> --prompt - < /tmp/prompt.txt
+//	prism prompt <session> --prompt-file /tmp/prompt.txt
 
 import (
 	"fmt"
@@ -27,14 +29,17 @@ idle and accepting input before the keys are sent.`,
 }
 
 func init() {
-	promptCmd.Flags().String("prompt", "", "Text to send to the agent (required)")
-	_ = promptCmd.MarkFlagRequired("prompt")
+	addPromptFlags(promptCmd)
 	rootCmd.AddCommand(promptCmd)
 }
 
 func runPrompt(cmd *cobra.Command, args []string) error {
 	session := args[0]
-	promptText, _ := cmd.Flags().GetString("prompt")
+
+	promptText, err := requirePromptInput(cmd)
+	if err != nil {
+		return err
+	}
 
 	if !tmux.HasSession(session) {
 		return fmt.Errorf("session %q not found\nrun `prism list-sessions` to see available sessions", session)

@@ -7,10 +7,11 @@ package cmd
 //
 // Additional flags mirror prism spawn:
 //
-//	--repo <name>     target repo by folder name under ~/code (or full path)
-//	--prompt <text>   pass an initial prompt to opencode on launch
-//	--agent <name>    opencode agent to use (default: build)
-//	--attach          switch the current tmux client to the new session
+//	--repo <name>         target repo by folder name under ~/code (or full path)
+//	--prompt <text>       pass an initial prompt to opencode on launch
+//	--prompt-file <path>  read the initial prompt from a file
+//	--agent <name>        opencode agent to use (default: build)
+//	--attach              switch the current tmux client to the new session
 
 import (
 	"fmt"
@@ -27,9 +28,13 @@ var prCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prNumber := args[0]
 		repoFlag, _ := cmd.Flags().GetString("repo")
-		promptFlag, _ := cmd.Flags().GetString("prompt")
 		agentFlag, _ := cmd.Flags().GetString("agent")
 		attachFlag, _ := cmd.Flags().GetBool("attach")
+
+		promptFlag, err := resolvePrompt(cmd)
+		if err != nil {
+			return err
+		}
 
 		bareRoot, err := resolveBareRoot(repoFlag)
 		if err != nil {
@@ -59,7 +64,7 @@ var prCmd = &cobra.Command{
 
 func init() {
 	prCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
-	prCmd.Flags().String("prompt", "", "Initial prompt passed to opencode on launch")
+	addPromptFlags(prCmd)
 	prCmd.Flags().String("agent", "", "Opencode agent to use (default: build)")
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	rootCmd.AddCommand(prCmd)
