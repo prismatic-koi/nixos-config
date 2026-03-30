@@ -47,6 +47,48 @@ prism spawn --repo nixos-config --pr 268 --prompt "review this PR"
 prism pr 268 --repo nixos-config --prompt "review this PR"
 ```
 
+## Passing prompts safely — shell escaping
+
+The `--prompt` value passes through the caller's shell before prism receives it.
+Shell metacharacters such as backticks, `$()`, `$VAR`, and double-quote contents
+are interpreted by the shell and silently corrupted if you are not careful.
+
+**Preferred approaches (safest first):**
+
+1. **`--prompt-file <path>`** — Write the prompt to a temp file; the shell never
+   touches its contents:
+   ```bash
+   printf 'run `gh pr view 42` and review the diff' > /tmp/prompt.txt
+   prism spawn --prompt-file /tmp/prompt.txt
+   ```
+
+2. **`--prompt -` (read from stdin)** — The literal value `-` is a reserved
+   sentinel that tells prism to read the prompt from stdin. Pipe or heredoc the
+   prompt in. Use a quoted heredoc delimiter (`<<'EOF'`) to prevent expansion
+   inside the body:
+   ```bash
+   prism spawn --prompt - <<'EOF'
+   run `gh pr view 42` and review the diff
+   EOF
+   ```
+   **Note:** because `-` is reserved, you cannot pass the literal string `-` as
+   a prompt via `--prompt`. Use `--prompt-file` or single quotes with a
+   different phrasing if your prompt content is literally a dash.
+
+3. **Single quotes** — Wrap the value in single quotes. Single quotes prevent
+   *all* shell interpolation in bash/zsh:
+   ```bash
+   prism spawn --prompt 'run `gh pr view 42` and review the diff'
+   ```
+   Single quotes cannot contain a literal `'`. For prompts with apostrophes,
+   prefer option 1 or 2 instead.
+
+**Do not** use double quotes around prompts containing backticks or `$`:
+```bash
+# BAD — the shell executes `gh pr view 42` and splices its output in
+prism spawn --prompt "run `gh pr view 42` and summarise"
+```
+
 ## All flags
 
 | Flag | Description |
@@ -54,7 +96,8 @@ prism pr 268 --repo nixos-config --prompt "review this PR"
 | `--repo <name>` | Repo folder name under `~/code`, or full path. Errors with a `prism clone` hint if not found. |
 | `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
-| `--prompt <text>` | Instruction passed to opencode on launch. |
+| `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
+| `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Opencode agent to use (`build` or `plan`). Defaults to `build`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
 
@@ -142,8 +185,21 @@ These commands are useful when you need to know where a spawned agent is at with
 Use `prism prompt <session> --prompt <text>` to send a follow-up message to the opencode agent in a session that is already running (or has finished and is waiting for input):
 
 ```bash
-prism prompt nixos-config@update-plex --prompt "looks good, go ahead and open a PR"
+# Simple prompt — single quotes prevent shell interpolation
+prism prompt nixos-config@update-plex --prompt 'looks good, go ahead and open a PR'
+
+# Prompt with backticks or complex content — use --prompt-file
+printf 'run `make test` and fix any failures' > /tmp/p.txt
+prism prompt nixos-config@update-plex --prompt-file /tmp/p.txt
+
+# Or via stdin
+prism prompt nixos-config@update-plex --prompt - <<'EOF'
+run `make test` and fix any failures
+EOF
 ```
+
+The same shell-escaping conventions that apply to `prism spawn` apply here —
+see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 
 The prompt is delivered after a short delay (500 ms) to allow opencode to finish any in-flight operation before accepting the new input. The session must exist and have an agent window — use `prism list-sessions` to check first.
 
