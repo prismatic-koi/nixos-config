@@ -71,16 +71,6 @@ Once both reviews pass:
 
 ---
 
-## This repo: nixos-config
-
-After merging any configuration change:
-
-- Run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to validate the build. This is a read-only check and should always be run after a merge.
-- For any change that affects system state (packages, services, activation scripts, module options): run `sudo nixos-rebuild switch --flake .` to apply it. You will be prompted to confirm before execution — that is expected and correct.
-- Include in your merge summary whether a switch was run and what changed.
-
----
-
 ## Escalation triggers
 
 Bring the user back in when:
