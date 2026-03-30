@@ -751,3 +751,84 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 		t.Errorf("clientB session = %q, want %q — clientB should be unaffected (was wrongly switched by the bug)", gotB, "nixos-config@main")
 	}
 }
+
+// ─── ensureDashSession tests ──────────────────────────────────────────────────
+
+// TestEnsureDashSessionUsesAbsolutePath verifies that ensureDashSession creates
+// the prism-dashboard session with the absolute path of the running binary in
+// the restart loop command, not the bare "prism" name.
+//
+// This is the regression test for the first-startup bug: when prism is
+// installed in the Nix store and invoked from a bare environment (e.g. launched
+// by a compositor), the session pane's shell may not have the Nix store path in
+// PATH. Using bare "prism" causes the restart loop to fail immediately on first
+// iteration (exit code != 0), leaving the session with an empty shell prompt
+// instead of the dashboard TUI. os.Executable() returns the absolute path of
+// the running binary, which is always valid regardless of PATH.
+func TestEnsureDashSessionUsesAbsolutePath(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+
+	if err := ensureDashSession(); err != nil {
+		t.Fatalf("ensureDashSession: %v", err)
+	}
+
+	if !s.hasSession(dashSession) {
+		t.Fatalf("session %q was not created", dashSession)
+	}
+
+	// Inspect the command running in the dashboard window. The pane's command
+	// should contain the absolute path of this test binary, not the bare
+	// "prism" name. We capture the window's session command via tmux
+	// list-windows, which exposes the pane command through pane_start_command.
+	windowInfo, err := s.output(
+		"list-windows", "-t", dashSession,
+		"-F", "#{window_name}|#{pane_start_command}",
+	)
+	if err != nil {
+		t.Fatalf("list-windows: %v", err)
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip("os.Executable() failed — cannot verify absolute path")
+	}
+
+	if !strings.Contains(windowInfo, self) {
+		t.Errorf("pane_start_command does not contain the absolute binary path %q\ngot: %s\n"+
+			"want the restart loop to use the absolute path so it works when PATH is stripped",
+			self, windowInfo)
+	}
+	if strings.Contains(windowInfo, `" prism "`) || strings.HasSuffix(windowInfo, " prism") {
+		t.Errorf("pane_start_command contains bare 'prism' — restart loop will fail when prism is not in PATH")
+	}
+}
+
+// TestEnsureDashSessionIdempotent verifies that calling ensureDashSession twice
+// does not return an error and does not create a second session.
+func TestEnsureDashSessionIdempotent(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+
+	if err := ensureDashSession(); err != nil {
+		t.Fatalf("first ensureDashSession: %v", err)
+	}
+	if err := ensureDashSession(); err != nil {
+		t.Fatalf("second ensureDashSession (idempotent): %v", err)
+	}
+
+	// Count sessions named prism-dashboard — there must be exactly one.
+	out, err := s.output("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		t.Fatalf("list-sessions: %v", err)
+	}
+	count := 0
+	for _, name := range strings.Split(out, "\n") {
+		if strings.TrimSpace(name) == dashSession {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 %q session, found %d", dashSession, count)
+	}
+}

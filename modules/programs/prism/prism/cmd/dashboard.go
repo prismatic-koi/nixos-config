@@ -917,12 +917,23 @@ const dashSession = "prism-dashboard"
 
 // ensureDashSession creates the prism-dashboard session if it doesn't exist.
 // The session command is a restart loop so it survives the TUI exiting.
+//
+// The restart loop uses the absolute path of the running prism binary
+// (os.Executable) rather than the bare name "prism", so the command works
+// even when the tmux pane shell does not have the Nix store path in PATH.
+// Similarly, tmux.TmuxBin is used instead of the bare "tmux" string so the
+// call respects the ldflags-injected binary path on NixOS.
 func ensureDashSession() error {
 	if tmux.HasSession(dashSession) {
 		return nil
 	}
-	c := exec.Command("tmux", "new-session", "-ds", dashSession, "-n", "dashboard",
-		"while prism dashboard --popup; do true; done")
+	self, err := os.Executable()
+	if err != nil {
+		// Fall back to "prism" if we cannot resolve our own path.
+		self = "prism"
+	}
+	loopCmd := "while " + self + " dashboard --popup; do true; done"
+	c := exec.Command(tmux.TmuxBin, "new-session", "-ds", dashSession, "-n", "dashboard", loopCmd)
 	return c.Run()
 }
 
@@ -964,12 +975,16 @@ var dashboardCmd = &cobra.Command{
 
 // syscallExecTmux replaces the current process with tmux attached to session
 // using syscall.Exec so no parent process remains.
+// Uses tmux.TmuxBin (ldflags-injected absolute path on NixOS) so the exec
+// succeeds even when "tmux" is not on the invoking shell's PATH.
 func syscallExecTmux(session string) error {
-	tmuxBin, err := exec.LookPath("tmux")
+	tmuxBin, err := exec.LookPath(tmux.TmuxBin)
 	if err != nil {
-		return err
+		// LookPath fails when TmuxBin is already an absolute path that
+		// doesn't exist in the PATH search; try using it directly.
+		tmuxBin = tmux.TmuxBin
 	}
-	return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", session}, os.Environ())
+	return syscall.Exec(tmuxBin, []string{tmuxBin, "attach-session", "-t", session}, os.Environ())
 }
 
 func init() {
