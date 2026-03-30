@@ -51,6 +51,7 @@ This is faster than a full nix build and should be the first check for any prism
     - `nixfmt .`
 - **Flake Validation:** To check the flake for correctness across all defined systems, use:
     - `nix flake check --all-systems`
+    - Note: this is slow and covers all systems. Do not run it routinely — reserve it for before major releases or flake input updates.
 - **Updating Inputs:** To update all flake inputs, use:
     - `nix flake update`
 - **Applying Configuration:** The user will typically handle applying the configuration manually. Do not attempt to apply changes unless explicitly asked.
@@ -192,6 +193,8 @@ nixfmt .
 ## Workflows
 
 ### PR workflow (build agents on branches)
+
+If the change touches prism Go source, run `go build ./...` and `go test ./...` from `modules/programs/prism/prism/` before committing. This is faster than a nix build and catches Go errors early.
 
 After committing and before opening a PR, run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the configuration builds. New files must be `git add`-ed first or nix will not see them.
 
