@@ -23,6 +23,26 @@ If you need to understand how something is configured, `grep` or `glob` within t
     - Secrets are managed with `sops-nix` and an age key.
     - The `unstable` channel is preferred for packages. Overlays are used to pin packages to `stable` or other versions only when necessary.
 
+## Prism
+
+Prism is a tmux-based AI development environment that is developed and configured within this repository. Its source code and configuration are located under `modules/programs/prism/`:
+
+- **Go CLI source**: `modules/programs/prism/prism/` — the `prism` binary (spawn, checkin, prompt, dashboard, etc.)
+- **Tmux configuration**: `modules/programs/prism/tmux.nix`
+- **Opencode configuration**: `modules/programs/prism/opencode.nix`
+- **Custom agents**: `modules/programs/prism/opencode/agents/`
+- **Skills**: `modules/programs/prism/opencode/skills/`
+
+When making changes to prism Go source, always build and test before committing:
+
+```bash
+# From modules/programs/prism/prism/
+go build ./...
+go test ./...
+```
+
+This is faster than a full nix build and should be the first check for any prism code change. Run the nix build as well if the change also touches `.nix` files.
+
 ## Common Commands
 
 - **Building/Testing Changes:** To validate configuration changes without applying them, use the native Nix build command. Avoid `nh` for builds: it produces animated progress output that renders poorly in non-interactive environments.
@@ -31,6 +51,7 @@ If you need to understand how something is configured, `grep` or `glob` within t
     - `nixfmt .`
 - **Flake Validation:** To check the flake for correctness across all defined systems, use:
     - `nix flake check --all-systems`
+    - Note: this is slow and covers all systems. Do not run it routinely — reserve it for before major releases or flake input updates.
 - **Updating Inputs:** To update all flake inputs, use:
     - `nix flake update`
 - **Applying Configuration:** The user will typically handle applying the configuration manually. Do not attempt to apply changes unless explicitly asked.
@@ -171,15 +192,23 @@ nixfmt .
 
 ## Workflows
 
-### Committing and Deploying Changes
+### PR workflow (build agents on branches)
 
-When changes are ready to be committed and deployed, follow this specific sequence:
+If the change touches prism Go source, run the Go build and tests first — see the [Prism](#prism) section for details.
 
-1.  **Commit:** Stage the changes and write a descriptive commit message.
-2.  **Build:** Verify the configuration builds successfully with `nix build .#nixosConfigurations.navi.config.system.build.toplevel`.
-3.  **Check:** Run the flake checker with `nix flake check --all-systems`.
-4.  **Switch:** Apply the new configuration with `nixos-rebuild switch --flake .`.
-5.  **Push:** If all previous steps succeed, push the changes with `git push`.
+After committing and before opening a PR, run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the configuration builds. New files must be `git add`-ed first or nix will not see them.
+
+If the build fails, fix it before opening the PR. A PR with a broken nix build should never be opened.
+
+Do NOT run `nixos-rebuild switch` on branches — that is a main-only operation.
+
+### Post-merge workflow (coordinator on main)
+
+After merging a PR to main, always run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the merged result builds.
+
+If the change affects system state (packages, services, activation scripts, module options, overlays): run `sudo nixos-rebuild switch --flake .` to apply it.
+
+If the change is limited to non-system files (opencode agents, opencode skills, Go source in prism, documentation): skip the switch — these do not affect the NixOS system.
 
 ### Temporary Testing Changes
 
