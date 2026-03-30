@@ -143,6 +143,22 @@ func (s *server) killSession(name string) error {
 	return s.run("kill-session", "-t", name)
 }
 
+// newWindow creates a new named window in a session.
+func (s *server) newWindow(session string, idx int, name string) {
+	_ = s.run("new-window", "-t", fmt.Sprintf("%s:%d", session, idx), "-n", name)
+}
+
+// setWindowOption sets a window option on a target window.
+func (s *server) setWindowOption(target, option, value string) {
+	_ = s.run("set-window-option", "-t", target, option, value)
+}
+
+// capturePane captures the visible pane contents for the given target.
+func (s *server) capturePane(target string) string {
+	out, _ := s.output("capture-pane", "-t", target, "-p")
+	return out
+}
+
 // scriptArgs returns the argument list for the `script` command to run cmd in
 // a pseudo-terminal without a real display. The syntax differs by platform:
 //
