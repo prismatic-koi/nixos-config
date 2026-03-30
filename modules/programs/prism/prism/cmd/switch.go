@@ -525,10 +525,15 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
 			// Work around opencode bug where --prompt is ignored on TUI launch.
-			// Instead, send the prompt as keystrokes after a delay for startup.
-			// https://github.com/anomalyco/opencode/issues/8850
+			// Instead, send the prompt as keystrokes once opencode signals that
+			// it is ready (i.e. @agent_state == "finished" on the agent window).
+			// A fixed delay is unreliable: opencode can take varying amounts of
+			// time to start up depending on LSP/MCP initialisation.
+			// See: https://github.com/anomalyco/opencode/issues/8850
+			//      https://github.com/anomalyco/opencode/issues/14349
 			if opts.prompt != "" {
-				_ = tmux.SendKeysDelayed(sessionName+":1", opts.prompt, 5000)
+				const readinessTimeoutSecs = 30
+				_ = tmux.SendKeysWhenReady(sessionName+":1", sessionName, opts.prompt, readinessTimeoutSecs)
 			}
 
 			// Window 2: term.
