@@ -4,9 +4,11 @@ agent: "coordinator"
 subtask: false
 ---
 
-Run `prism list-sessions` and identify all sessions for the current repository. To determine the repo name, run `git remote get-url origin | xargs basename -s .git` — this works correctly regardless of whether you are inside a worktree. Sessions for this repo will have names like `nixos-config@...`.
+Run `prism list-sessions` and identify all sessions for the current repository. If `prism list-sessions` returns an error or empty output, report that no sessions are available and stop.
 
-Exclude the session for the default branch (e.g. `@main` or `@master`) — that is the coordinator session, not a feature agent. The default branch can be identified by running `git remote show origin | grep 'HEAD branch'`, or by looking for the session whose branch matches the remote default.
+To determine the repo name, run `git remote get-url origin | xargs basename -s .git` — this works correctly regardless of whether you are inside a worktree. Sessions for this repo will have names like `nixos-config@...`.
+
+Exclude the coordinator session (the one for the default branch). Determine the default branch by running `git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null | sed 's|origin/||'`; if that returns nothing, fall back to `git remote show origin | grep 'HEAD branch' | awk '{print $NF}'`. The coordinator session will be `<repo>@<default-branch>` (e.g. `nixos-config@main`).
 
 For each feature agent session found:
 1. Run `prism checkin <session>` to capture its current state
