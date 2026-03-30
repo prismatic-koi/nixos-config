@@ -203,6 +203,12 @@ in
             WantedBy = [ "graphical-session.target" ];
           };
         };
+
+        home.persistence."/persist" = {
+          directories = [
+            ".local/state/prism"
+          ];
+        };
       };
   };
 }
