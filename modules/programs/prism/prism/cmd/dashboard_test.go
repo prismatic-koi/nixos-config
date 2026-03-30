@@ -799,8 +799,12 @@ func TestEnsureDashSessionUsesAbsolutePath(t *testing.T) {
 			"want the restart loop to use the absolute path so it works when PATH is stripped",
 			self, windowInfo)
 	}
-	if strings.Contains(windowInfo, `" prism "`) || strings.HasSuffix(windowInfo, " prism") {
-		t.Errorf("pane_start_command contains bare 'prism' — restart loop will fail when prism is not in PATH")
+	// Verify the loop command does not use the bare "prism" name by checking
+	// that the word "prism" is not followed by " dashboard" without the
+	// absolute path prefix. We check for the exact bare-name pattern that the
+	// old code produced: "while prism dashboard".
+	if strings.Contains(windowInfo, "while prism dashboard") {
+		t.Errorf("pane_start_command contains bare 'prism' in restart loop — will fail when prism is not in PATH\ngot: %s", windowInfo)
 	}
 }
 

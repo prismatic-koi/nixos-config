@@ -984,7 +984,7 @@ func syscallExecTmux(session string) error {
 		// doesn't exist in the PATH search; try using it directly.
 		tmuxBin = tmux.TmuxBin
 	}
-	return syscall.Exec(tmuxBin, []string{tmuxBin, "attach-session", "-t", session}, os.Environ())
+	return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", session}, os.Environ())
 }
 
 func init() {
