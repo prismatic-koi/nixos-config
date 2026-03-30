@@ -4,7 +4,7 @@ agent: "coordinator"
 subtask: false
 ---
 
-Run `prism list-sessions` and identify all sessions for the current repository. To determine the repo name, run `basename $(git rev-parse --show-toplevel)` from the repository root (not inside a worktree subdirectory — if `git rev-parse --show-toplevel` returns a path ending in a branch name, go one level up). Sessions for this repo will have names like `nixos-config@...`.
+Run `prism list-sessions` and identify all sessions for the current repository. To determine the repo name, run `git remote get-url origin | xargs basename -s .git` — this works correctly regardless of whether you are inside a worktree. Sessions for this repo will have names like `nixos-config@...`.
 
 Exclude the session for the default branch (e.g. `@main` or `@master`) — that is the coordinator session, not a feature agent. The default branch can be identified by running `git remote show origin | grep 'HEAD branch'`, or by looking for the session whose branch matches the remote default.
 
