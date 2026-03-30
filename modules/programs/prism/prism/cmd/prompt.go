@@ -40,14 +40,9 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session %q not found\nrun `prism list-sessions` to see available sessions", session)
 	}
 
-	target := session + ":agent"
-
-	// Verify the agent window exists by attempting a dry capture.
-	if _, err := tmux.CapturePaneScreen(session, tmux.DefaultCaptureHeight); err != nil {
-		return fmt.Errorf("session %q has no agent window: %w", session, err)
-	}
-
 	// Refuse to inject a prompt into a session that is waiting for the user.
+	// This check is done before CapturePaneScreen (which blocks for ~500 ms)
+	// so we fail fast without doing any expensive work.
 	// Sending keys while opencode is in waiting state would corrupt the input
 	// field rather than delivering a proper follow-up message.
 	if state := tmux.AgentStateOf(session); state == "waiting" {
@@ -60,6 +55,13 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 				"  (C-f or C-w)       — switch to the session in tmux",
 			session, session,
 		)
+	}
+
+	target := session + ":agent"
+
+	// Verify the agent window exists by attempting a dry capture.
+	if _, err := tmux.CapturePaneScreen(session, tmux.DefaultCaptureHeight); err != nil {
+		return fmt.Errorf("session %q has no agent window: %w", session, err)
 	}
 
 	// Send the prompt with a short delay — opencode is already running, we

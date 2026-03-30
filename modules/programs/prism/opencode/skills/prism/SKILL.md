@@ -159,4 +159,7 @@ session "nixos-config@update-plex" is waiting for user input
 The agent has paused and is expecting a direct response from the user.
 Please switch to that session and respond there, or escalate to the user
 so they can address it directly.
+
+  prism checkin nixos-config@update-plex   — inspect the current state
+  (C-f or C-w)                             — switch to the session in tmux
 ```
