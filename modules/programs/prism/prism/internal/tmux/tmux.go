@@ -170,8 +170,11 @@ func HasSession(name string) bool {
 // session. Returns an empty string if the session does not exist or has no
 // agent window.
 func AgentStateOf(name string) string {
-	state, _, _ := agentWindow(name)
-	return state
+	state, err := GetWindowOption(name+":agent", "@agent_state")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(state)
 }
 
 // NewSession creates a new detached session.
