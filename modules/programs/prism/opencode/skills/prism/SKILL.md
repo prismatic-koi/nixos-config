@@ -146,3 +146,20 @@ prism prompt nixos-config@update-plex --prompt "looks good, go ahead and open a 
 ```
 
 The prompt is delivered after a short delay (500 ms) to allow opencode to finish any in-flight operation before accepting the new input. The session must exist and have an agent window — use `prism list-sessions` to check first.
+
+### Waiting state guard
+
+`prism prompt` will **refuse** to send a prompt if the target session is in `waiting` state. A `waiting` agent has paused and is expecting direct input from the user — injecting a programmatic prompt would corrupt the input field.
+
+If you encounter this error, **escalate to the user**. Do not attempt to work around the guard. The user must switch to the session themselves (via `C-f` or `C-w`) and respond directly.
+
+```
+session "nixos-config@update-plex" is waiting for user input
+
+The agent has paused and is expecting a direct response from the user.
+Please switch to that session and respond there, or escalate to the user
+so they can address it directly.
+
+  prism checkin nixos-config@update-plex   — inspect the current state
+  (C-f or C-w)                             — switch to the session in tmux
+```

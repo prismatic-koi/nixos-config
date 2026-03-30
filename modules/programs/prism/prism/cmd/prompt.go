@@ -40,6 +40,23 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session %q not found\nrun `prism list-sessions` to see available sessions", session)
 	}
 
+	// Refuse to inject a prompt into a session that is waiting for the user.
+	// This check is done before CapturePaneScreen (which blocks for ~500 ms)
+	// so we fail fast without doing any expensive work.
+	// Sending keys while opencode is in waiting state would corrupt the input
+	// field rather than delivering a proper follow-up message.
+	if state := tmux.AgentStateOf(session); state == "waiting" {
+		return fmt.Errorf(
+			"session %q is waiting for user input\n\n"+
+				"The agent has paused and is expecting a direct response from the user.\n"+
+				"Please switch to that session and respond there, or escalate to the user\n"+
+				"so they can address it directly.\n\n"+
+				"  prism checkin %s   — inspect the current state\n"+
+				"  (C-f or C-w)       — switch to the session in tmux",
+			session, session,
+		)
+	}
+
 	target := session + ":agent"
 
 	// Verify the agent window exists by attempting a dry capture.
