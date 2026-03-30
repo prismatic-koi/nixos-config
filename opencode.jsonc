@@ -5,6 +5,10 @@
   // the remote will reject anything that hasn't gone through a PR. This reduces
   // friction for the build agent when landing work.
   "$schema": "https://opencode.ai/config.json",
+  // Agent-scoped permissions are merged with the global config and take precedence
+  // (per opencode docs: "Agent permissions are merged with the global config, and
+  // agent rules take precedence"). Overriding within `agent.build` is therefore
+  // sufficient to shadow the global `permission.bash` entries that set push to "ask".
   "agent": {
     "build": {
       "permission": {
