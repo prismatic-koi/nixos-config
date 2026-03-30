@@ -179,9 +179,9 @@
         "prism prompt *" = "allow";
       };
 
-      # Bash commands for the controller agent — inverted model: ask by default,
+      # Bash commands for the coordinator agent — inverted model: ask by default,
       # only specific read/orchestration ops allowed without prompting.
-      controllerBashCommands = {
+      coordinatorBashCommands = {
         # git: pull and read-only inspection only; everything else falls through to ask
         "git pull" = "allow";
         "git pull *" = "allow";
@@ -411,8 +411,8 @@
                     // readOnlyBashCommands;
                   };
                 };
-                controller = {
-                  description = "Repo controller — orchestrates agents, reviews PRs, merges work";
+                coordinator = {
+                  description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
                   mode = "primary";
                   color = config.theme.purple;
                   tools = {
@@ -433,14 +433,14 @@
                     // readOnlyBashCommands
                     // {
                       # override the broad "git *" = "allow" from readOnlyBashCommands —
-                      # controller only gets specific git read ops, not the full suite
+                      # coordinator only gets specific git read ops, not the full suite
                       "git *" = "ask";
-                      # override aws/playwright from readOnlyBashCommands — controller
+                      # override aws/playwright from readOnlyBashCommands — coordinator
                       # is orchestration-only, these are not in its remit
                       "aws *" = "ask";
                       "playwright-cli *" = "ask";
                     }
-                    // controllerBashCommands;
+                    // coordinatorBashCommands;
                   };
                 };
                 # Lightweight built-in subagents — use a cheaper/faster model since these
