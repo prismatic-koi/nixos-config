@@ -17,6 +17,10 @@
           "git -C * push *": "allow",
           "git --git-dir* push": "allow",
           "git --git-dir* push *": "allow",
+          // Low-level push equivalents (git send-pack / git receive-pack)
+          "git send-pack": "allow",
+          "git send-pack *": "allow",
+          "git receive-pack *": "allow",
 
           // Allow opening PRs — branch protection requires review before merging,
           // so auto-allowing pr create is low-risk and keeps the workflow smooth.
