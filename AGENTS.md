@@ -50,7 +50,7 @@ This repo targets both NixOS and Darwin. Use the appropriate build and switch co
 | | NixOS | Darwin |
 |---|---|---|
 | Build | `nix build .#nixosConfigurations.navi.config.system.build.toplevel` | `nix build .#darwinConfigurations.m4mac.config.system.build.toplevel` |
-| Switch | `sudo nixos-rebuild switch --flake .` | `darwin-rebuild switch --flake .` |
+| Switch | `sudo nixos-rebuild switch --flake .` | `sudo darwin-rebuild switch --flake .` |
 
 ## Common Commands
 
