@@ -266,6 +266,9 @@ func SendKeysWhenReady(target, session, keys string, timeoutSecs int) error {
 	//   <tmux> send-keys -t <target> Enter
 	//
 	// elapsed counts half-second ticks; timeout in ticks = timeoutSecs * 2.
+	// The final two send-keys calls are separated by ';' (not '&&') so that
+	// Enter is always sent even if the first send-keys call fails (e.g. because
+	// the pane briefly reported a non-zero exit for an unrelated reason).
 	timeoutTicks := timeoutSecs * 2
 	script := fmt.Sprintf(
 		"elapsed=0; "+
@@ -275,7 +278,7 @@ func SendKeysWhenReady(target, session, keys string, timeoutSecs int) error {
 			"sleep 0.5; "+
 			"elapsed=$((elapsed + 1)); "+
 			"done; "+
-			"sleep 0.5 && %s send-keys -t %s %s && sleep 0.5 && %s send-keys -t %s Enter",
+			"sleep 0.5; %s send-keys -t %s %s; sleep 0.5; %s send-keys -t %s Enter",
 		timeoutTicks,
 		TmuxBin, shellEscape(session+":agent"),
 		TmuxBin, shellEscape(target), shellEscape(keys),
