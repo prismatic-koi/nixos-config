@@ -194,7 +194,7 @@ nixfmt .
 
 ### PR workflow (build agents on branches)
 
-If the change touches prism Go source, run `go build ./...` and `go test ./...` from `modules/programs/prism/prism/` before committing. This is faster than a nix build and catches Go errors early.
+If the change touches prism Go source, run the Go build and tests first — see the [Prism](#prism) section for details.
 
 After committing and before opening a PR, run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the configuration builds. New files must be `git add`-ed first or nix will not see them.
 
@@ -209,8 +209,6 @@ After merging a PR to main, always run `nix build .#nixosConfigurations.navi.con
 If the change affects system state (packages, services, activation scripts, module options, overlays): run `sudo nixos-rebuild switch --flake .` to apply it.
 
 If the change is limited to non-system files (opencode agents, opencode skills, Go source in prism, documentation): skip the switch — these do not affect the NixOS system.
-
-`nix flake check --all-systems` is slow and covers all defined systems. Do not run it as part of routine commit/deploy work. Reserve it for before major releases or flake input updates.
 
 ### Temporary Testing Changes
 
