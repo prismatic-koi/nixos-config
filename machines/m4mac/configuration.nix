@@ -58,7 +58,6 @@ in
   environment.systemPackages = with pkgs; [
     arping
     gnutar
-    jankyborders
     mysql80
     podman # darwin doesn't use virtualisation.podman
     postgresql
@@ -169,6 +168,22 @@ in
       programs.chromium = {
         enable = false;
         package = pkgs.hello; # override Linux-only default so Darwin eval doesn't fail
+      };
+      # launchd user agent to supervise borders (jankyborders) with automatic restart
+      launchd.agents.jankyborders = {
+        enable = true;
+        config = {
+          ProgramArguments = [
+            "${pkgs.jankyborders}/bin/borders"
+            "active_color=0xffa7c080"
+            "inactive_color=0x00232a2e"
+            "width=10"
+          ];
+          KeepAlive = true;
+          RunAtLoad = true;
+          StandardOutPath = "/tmp/jankyborders.log";
+          StandardErrorPath = "/tmp/jankyborders.log";
+        };
       };
       home = {
         username = username;
