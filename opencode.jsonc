@@ -1,0 +1,29 @@
+{
+  // Project-level overrides for this nixos-config repo.
+  //
+  // Branch protection is enabled on main, so direct pushes are safe to auto-allow —
+  // the remote will reject anything that hasn't gone through a PR. This reduces
+  // friction for the build agent when landing work.
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "build": {
+      "permission": {
+        "bash": {
+          // Allow git push without prompting — branch protection on main acts as the
+          // safety net, so there is no risk of accidentally force-pushing to main.
+          "git push": "allow",
+          "git push *": "allow",
+          "git -C * push": "allow",
+          "git -C * push *": "allow",
+          "git --git-dir* push": "allow",
+          "git --git-dir* push *": "allow",
+
+          // Allow opening PRs — branch protection requires review before merging,
+          // so auto-allowing pr create is low-risk and keeps the workflow smooth.
+          "gh pr create": "allow",
+          "gh pr create *": "allow"
+        }
+      }
+    }
+  }
+}
