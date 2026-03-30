@@ -162,6 +162,16 @@ in
                   "break-pane -s 'edit.1' -n 'agent'" \
                   "join-pane -h -s 'agent.0' -t 'edit'"
 
+              # --- Session persistence ---
+
+              # Save the session list to disk after every status refresh
+              # (every status-interval seconds). Cheap write; survives sudden shutdowns.
+              set-hook -g after-refresh-client "run-shell -b '${prism} save'"
+
+              # Restore sessions when the tmux server first starts.
+              # Runs headlessly — no client switching, just recreates the windows.
+              set-hook -g server-started "run-shell -b '${prism} restore'"
+
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
               set-environment -r __HM_SESS_VARS_SOURCED
