@@ -179,6 +179,42 @@
         "prism prompt *" = "allow";
       };
 
+      # Bash commands for the controller agent — inverted model: ask by default,
+      # only specific read/orchestration ops allowed without prompting.
+      controllerBashCommands = {
+        # git: pull and read-only inspection only; everything else falls through to ask
+        "git pull" = "allow";
+        "git pull *" = "allow";
+        "git status" = "allow";
+        "git status *" = "allow";
+        "git log *" = "allow";
+        "git diff *" = "allow";
+        "git show *" = "allow";
+        "git branch" = "allow";
+        "git branch *" = "allow";
+        "git remote" = "allow";
+        "git remote *" = "allow";
+        # prism session management (full suite)
+        "prism spawn *" = "allow";
+        "prism checkin" = "allow";
+        "prism checkin *" = "allow";
+        "prism list-sessions" = "allow";
+        "prism prompt *" = "allow";
+        "prism cleanup *" = "allow";
+        "prism pr *" = "allow";
+        # GitHub: PR/issue lifecycle
+        "gh pr merge *" = "ask";
+        "gh pr edit *" = "allow";
+        "gh pr close *" = "allow";
+        "gh issue close *" = "allow";
+        "gh issue edit *" = "allow";
+        "gh issue comment *" = "allow";
+        # nix build validation (read-only result)
+        "nix build *" = "allow";
+        # system switch — requires sudo, will be caught by permission prompt
+        "sudo nixos-rebuild *" = "ask";
+      };
+
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
 
       awsSkill = /* markdown */ ''
@@ -373,6 +409,34 @@
                       "*" = "deny";
                     }
                     // readOnlyBashCommands;
+                  };
+                };
+                controller = {
+                  description = "Repo controller — orchestrates agents, reviews PRs, merges work";
+                  mode = "primary";
+                  color = config.theme.purple;
+                  tools = {
+                    read = true;
+                    grep = true;
+                    glob = true;
+                    list = true;
+                    webfetch = true;
+                    bash = true;
+                    write = false;
+                    edit = false;
+                  };
+                  permission = {
+                    bash = {
+                      # inverted model: everything not explicitly listed → ask
+                      "*" = "ask";
+                    }
+                    // readOnlyBashCommands
+                    // {
+                      # override the broad "git *" = "allow" from readOnlyBashCommands —
+                      # controller only gets specific git read ops, not the full suite
+                      "git *" = "ask";
+                    }
+                    // controllerBashCommands;
                   };
                 };
                 # Lightweight built-in subagents — use a cheaper/faster model since these
