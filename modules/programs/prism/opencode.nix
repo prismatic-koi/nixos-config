@@ -349,6 +349,10 @@
       # "primary" is the capable reasoning model used by main agents (build/plan/coordinator).
       # "lightweight" is the cheaper/faster model used by mechanical subagents
       # (explore, title, summary, compaction).
+      #
+      # Note: Anthropic uses hyphens as version separators (e.g. claude-sonnet-4-6),
+      # while GitHub Copilot uses dots (e.g. claude-sonnet-4.6). This is intentional —
+      # the two providers report different identifier formats from `opencode models`.
       providerModels = {
         anthropic = {
           primary = "anthropic/claude-sonnet-4-6";
@@ -555,7 +559,9 @@
                 // writeBashCommands;
               };
               plugin = [
-                # a plugin to use Gemini auth for LLM access
+                # Gemini auth is always loaded — it enables Google Gemini as an
+                # alternative provider regardless of which provider is the primary.
+                # It does not conflict with the provider-specific auth in authPlugins.
                 "opencode-gemini-auth@latest"
                 # tmux window status colours based on agent state
                 "./plugins/prism-hooks"
