@@ -168,10 +168,6 @@ in
               # (every status-interval seconds). Cheap write; survives sudden shutdowns.
               set-hook -g after-refresh-client "run-shell -b '${prism} save'"
 
-              # Restore sessions when the tmux server first starts.
-              # Runs headlessly — no client switching, just recreates the windows.
-              set-hook -g server-started "run-shell -b '${prism} restore'"
-
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
               set-environment -r __HM_SESS_VARS_SOURCED
@@ -184,6 +180,28 @@ in
               bind-key -T copy-mode-vi 'q' send -X cancel
               bind-key -T copy-mode-vi Escape send -X cancel
             '';
+        };
+
+        # Restore tmux sessions once after login.
+        # server-started fires before the config is sourced, so the hook
+        # registered in extraConfig is always too late. A systemd user service
+        # is the reliable alternative: it runs after graphical-session.target,
+        # at which point tmux will be started (or already running), and
+        # prism restore recreates any sessions not yet present.
+        systemd.user.services.prism-restore = {
+          Unit = {
+            Description = "Restore prism tmux sessions after login";
+            After = [ "graphical-session.target" ];
+          };
+          Service = {
+            Type = "oneshot";
+            # Give the desktop session a moment to settle before poking tmux.
+            ExecStartPre = "${pkgs.coreutils}/bin/sleep 2";
+            ExecStart = "${prismPkg}/bin/prism restore";
+          };
+          Install = {
+            WantedBy = [ "graphical-session.target" ];
+          };
         };
       };
   };

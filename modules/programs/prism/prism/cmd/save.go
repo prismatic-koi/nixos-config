@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -71,7 +72,7 @@ func runSave(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	var saved []SavedSession
+	saved := []SavedSession{}
 	for _, s := range sessions {
 		entry := sessionToSaved(s)
 		saved = append(saved, entry)
@@ -117,12 +118,16 @@ func writeSessions(sessions []SavedSession) error {
 		return fmt.Errorf("marshal sessions: %w", err)
 	}
 
-	// Write to a temp file then rename for atomicity.
-	tmp := path + ".tmp"
+	// Write to a per-PID temp file then rename for atomicity.
+	// Using the PID avoids a race when multiple clients trigger after-refresh-client
+	// concurrently: each process writes its own .tmp file, and the last rename wins
+	// cleanly without any process clobbering another's in-progress write.
+	tmp := path + "." + strconv.Itoa(os.Getpid()) + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // best-effort cleanup
 		return fmt.Errorf("rename: %w", err)
 	}
 	return nil

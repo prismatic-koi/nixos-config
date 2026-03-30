@@ -44,7 +44,10 @@ func runRestore(cmd *cobra.Command, _ []string) error {
 			// No snapshot yet — nothing to restore.
 			return nil
 		}
-		return fmt.Errorf("load sessions: %w", err)
+		// A corrupt snapshot (e.g. from a crash mid-write) should not prevent
+		// tmux from starting cleanly. Log and treat as empty.
+		fmt.Fprintf(os.Stderr, "prism restore: ignoring unreadable snapshot: %v\n", err)
+		return nil
 	}
 
 	if len(saved) == 0 {
