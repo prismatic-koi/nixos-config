@@ -110,9 +110,32 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 - The prompt is sent to opencode automatically after startup — no manual input needed.
 - Each spawned session gets its own worktree, so changes are isolated from other branches.
 
-## Example: delegating work to another repo
+## Delegating work to another repo
 
-See [Delegating work to another repo](#delegating-work-to-another-repo) for the correct convention. In short: route through the target repo's `@main` coordinator rather than spawning a feature branch directly.
+When you need to delegate work to a repo you are not the coordinator for, route it through that repo's `@main` coordinator session. The coordinator has full context about that repo's conventions, open work, and branch state.
+
+**Flow:**
+
+1. Run `prism list-sessions` and look for `<repo>@main`.
+2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
+3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. Do not attempt to work around the waiting state guard.
+4. **Not found:** you cannot spawn directly onto an existing `main` worktree — `prism spawn --branch main` will fail because git refuses to create a worktree for a branch that already has one. Escalate to the user and ask them to start a coordinator session for that repo.
+
+Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
+
+```bash
+# Check if the target repo has a coordinator session
+prism list-sessions
+
+# If home-ops@main exists and is not waiting:
+prism prompt home-ops@main --prompt 'Please update the plex image to the latest tag and open a PR'
+
+# If home-ops@main exists but IS in waiting state, escalate to the user
+
+# If home-ops@main does not exist, escalate to the user
+```
+
+## Example: delegating work to another repo
 
 If you are the coordinator for the target repo (or the user has instructed you to spawn directly), use `prism spawn`:
 
@@ -143,28 +166,6 @@ prism spawn \
   --repo home-ops \
   --branch PROJ-123 \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
-```
-
-## Delegating work to another repo
-
-When you need to delegate work to a repo you are not the coordinator for, route it through that repo's `@main` coordinator session. The coordinator has full context about that repo's conventions, open work, and branch state.
-
-**Flow:**
-
-1. Run `prism list-sessions` and look for `<repo>@main`.
-2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
-3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. Do not attempt to work around the waiting state guard.
-4. **Not found:** you cannot spawn directly onto an existing `main` worktree — `prism spawn --branch main` will fail because git refuses to create a worktree for a branch that already has one. Escalate to the user and ask them to start a coordinator session for that repo.
-5. Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
-
-```bash
-# Check if the target repo has a coordinator session
-prism list-sessions
-
-# If home-ops@main exists and is not waiting:
-prism prompt home-ops@main --prompt 'Please update the plex image to the latest tag and open a PR'
-
-# If home-ops@main does not exist, escalate to the user
 ```
 
 ## Lifecycle: cleaning up after a merge
