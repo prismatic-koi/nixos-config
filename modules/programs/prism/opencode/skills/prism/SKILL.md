@@ -119,7 +119,7 @@ When you need to delegate work to a repo you are not the coordinator for, route 
 1. Run `prism list-sessions` and look for `<repo>@main`.
 2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
 3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
-4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --branch main` will fail with a git error.
+4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --repo <repo> --branch main` will fail with a git error.
 
 Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
 
