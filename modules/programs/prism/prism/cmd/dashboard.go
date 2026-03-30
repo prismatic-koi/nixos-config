@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -131,7 +132,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	var nActive, nWaiting, nIdle, nFinished int
 	var totalIns, totalDel int
 	for _, s := range m.sessions {
-		stat := git.Stat(s.AgentPath)
+		stat := m.gitStats[s.AgentPath]
 		totalIns += stat.Insertions
 		totalDel += stat.Deletions
 		switch s.AgentState {
@@ -313,7 +314,10 @@ func stateLabel(state string) string {
 // ── messages ──────────────────────────────────────────────────────────────────
 
 type tickMsg time.Time
-type sessionsMsg []tmux.Session
+type sessionsMsg struct {
+	sessions []tmux.Session
+	gitStats map[string]git.DiffStat
+}
 type ghTickMsg time.Time
 type cursorTimeoutMsg struct{}
 type githubStatsMsg struct {
@@ -342,9 +346,36 @@ func cursorTimeoutCmd() tea.Cmd {
 func fetchSessions() tea.Msg {
 	sessions, err := tmux.Sessions()
 	if err != nil {
-		return sessionsMsg(nil)
+		return sessionsMsg{}
 	}
-	return sessionsMsg(sessions)
+
+	// Collect unique agent paths that need git stat computation.
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range sessions {
+		if s.AgentPath != "" && !seen[s.AgentPath] {
+			seen[s.AgentPath] = true
+			paths = append(paths, s.AgentPath)
+		}
+	}
+
+	// Run git.Stat for each unique path concurrently.
+	stats := make(map[string]git.DiffStat, len(paths))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range paths {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			stat := git.Stat(path)
+			mu.Lock()
+			stats[path] = stat
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+
+	return sessionsMsg{sessions: sessions, gitStats: stats}
 }
 
 // fetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
@@ -379,6 +410,7 @@ const cursorTimeout = 3 * time.Second
 
 type dashModel struct {
 	sessions          []tmux.Session
+	gitStats          map[string]git.DiffStat // keyed by AgentPath; populated on sessionsMsg
 	cursor            int
 	cursorInitialised bool // true once we've snapped cursor to currentSession
 	width             int
@@ -465,7 +497,16 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Focus regained — cursor stays hidden until user presses j/k.
 
 	case sessionsMsg:
-		m.sessions = filterSessions([]tmux.Session(msg))
+		// Only update when the fetch succeeded. fetchSessions returns a
+		// zero sessionsMsg (nil sessions, nil gitStats) on tmux error, so
+		// guarding on nil preserves the previous display during transient
+		// hiccups rather than blanking the session list and diff stats.
+		if msg.sessions != nil {
+			m.sessions = filterSessions(msg.sessions)
+		}
+		if msg.gitStats != nil {
+			m.gitStats = msg.gitStats
+		}
 		// Do not re-read CallerSession() here — it may have changed if another
 		// client opened the dashboard. Use the value captured at init time.
 		if !m.cursorInitialised {
@@ -768,7 +809,7 @@ func (m dashModel) View() string {
 			sessionDisplay = sessionDisplay[:sessionW-1] + "…"
 		}
 
-		stat := git.Stat(s.AgentPath)
+		stat := m.gitStats[s.AgentPath]
 		var statPlain string
 		if stat.Files == 0 {
 			statPlain = "—"

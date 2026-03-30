@@ -51,52 +51,61 @@ func clientsPerSession() map[string]int {
 }
 
 // Sessions returns all current tmux sessions.
+// It uses two bulk tmux calls (list-sessions + list-windows -a + list-clients)
+// regardless of the number of sessions, avoiding the previous O(N) per-session
+// list-windows subprocesses that caused slowdowns with many sessions.
 func Sessions() ([]Session, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}")
+	// Single call: all sessions.
+	sessOut, err := run("list-sessions", "-F", "#{session_name}")
 	if err != nil {
 		return nil, err
+	}
+
+	// Single call: all windows across all sessions.
+	winOut, _ := run(
+		"list-windows", "-a",
+		"-F", "#{session_name}|#{window_name}|#{@agent_state}|#{pane_current_path}|#{@agent_title}",
+	)
+
+	// Build a lookup: session → (state, path, title) from the agent window.
+	type agentInfo struct{ state, path, title string }
+	agentBySession := make(map[string]agentInfo)
+	for _, line := range strings.Split(winOut, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 5)
+		if len(parts) != 5 {
+			continue
+		}
+		if parts[1] == "agent" {
+			agentBySession[parts[0]] = agentInfo{
+				state: parts[2],
+				path:  parts[3],
+				title: parts[4],
+			}
+		}
 	}
 
 	clients := clientsPerSession()
 
 	var sessions []Session
-	for _, name := range strings.Split(out, "\n") {
+	for _, name := range strings.Split(sessOut, "\n") {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		state, path, title := agentWindow(name)
+		info := agentBySession[name]
 		sessions = append(sessions, Session{
 			Name:        name,
-			AgentState:  state,
-			AgentPath:   path,
-			AgentTitle:  title,
+			AgentState:  info.state,
+			AgentPath:   info.path,
+			AgentTitle:  info.title,
 			ClientCount: clients[name],
 		})
 	}
 	return sessions, nil
-}
-
-// agentWindow returns the @agent_state, pane_current_path, and @agent_title
-// for the agent window of a session.
-func agentWindow(session string) (state, path, title string) {
-	out, err := run(
-		"list-windows", "-t", session,
-		"-F", "#{window_name}|#{@agent_state}|#{pane_current_path}|#{@agent_title}",
-	)
-	if err != nil {
-		return "", "", ""
-	}
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 4)
-		if len(parts) != 4 {
-			continue
-		}
-		if parts[0] == "agent" {
-			return parts[1], parts[2], parts[3]
-		}
-	}
-	return "", "", ""
 }
 
 // SwitchClient switches the named client to the named session.

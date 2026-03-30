@@ -547,7 +547,7 @@ func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 	m.displayed = []tmux.Session{{Name: "beta"}} // pre-filtered
 
 	// Deliver a sessionsMsg (the first tick).
-	m2, _ := m.Update(sessionsMsg(sessions))
+	m2, _ := m.Update(sessionsMsg{sessions: sessions})
 	dm := m2.(dashModel)
 
 	if !dm.cursorInitialised {
