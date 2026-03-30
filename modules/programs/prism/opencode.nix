@@ -9,6 +9,20 @@
     nx.programs.prism.opencode.enable = lib.mkEnableOption "enables opencode" // {
       default = true;
     };
+    nx.programs.prism.opencode.provider = lib.mkOption {
+      type = lib.types.enum [
+        "anthropic"
+        "github-copilot"
+      ];
+      default = "anthropic";
+      description = ''
+        The LLM provider to use for opencode agents.
+        Switching providers updates the model strings, provider block,
+        and authentication plugins automatically.
+          - "anthropic"      — Claude via Anthropic API (opencode-claude-auth)
+          - "github-copilot" — Claude via GitHub Copilot (no extra auth plugin)
+      '';
+    };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
@@ -331,6 +345,50 @@
 
         Use podman, not docker.${lib.optionalString pkgs.stdenv.isDarwin " Before use, always run `podman machine start`"}
       '';
+      # Model identifiers for the selected provider.
+      # "primary" is the capable reasoning model used by main agents (build/plan/coordinator).
+      # "lightweight" is the cheaper/faster model used by mechanical subagents
+      # (explore, title, summary, compaction).
+      #
+      # Note: Anthropic uses hyphens as version separators (e.g. claude-sonnet-4-6),
+      # while GitHub Copilot uses dots (e.g. claude-sonnet-4.6). This is intentional —
+      # the two providers report different identifier formats from `opencode models`.
+      providerModels = {
+        anthropic = {
+          primary = "anthropic/claude-sonnet-4-6";
+          lightweight = "anthropic/claude-haiku-4-5";
+        };
+        github-copilot = {
+          primary = "github-copilot/claude-sonnet-4.6";
+          lightweight = "github-copilot/claude-haiku-4.5";
+        };
+      };
+      models = providerModels.${config.nx.programs.prism.opencode.provider};
+
+      # Authentication plugins — anthropic requires opencode-claude-auth; github-copilot
+      # uses the ambient GitHub token so no extra auth plugin is needed.
+      providerPlugins = {
+        anthropic = [
+          # use existing Claude Code credentials (via claude login OAuth)
+          # no separate proxy or API key needed
+          "opencode-claude-auth@latest"
+        ];
+        github-copilot = [ ];
+      };
+      authPlugins = providerPlugins.${config.nx.programs.prism.opencode.provider};
+
+      # Provider block passed to opencode settings.
+      # anthropic uses an empty config (relies on the auth plugin above).
+      # github-copilot likewise needs no extra options.
+      providerConfig = {
+        anthropic = {
+          anthropic = { };
+        };
+        github-copilot = {
+          github-copilot = { };
+        };
+      };
+      providerSettings = providerConfig.${config.nx.programs.prism.opencode.provider};
     in
     lib.mkMerge [
       # Common configuration for both platforms
@@ -373,7 +431,7 @@
           programs.opencode = {
             enable = true;
             settings = {
-              model = "anthropic/claude-sonnet-4-6";
+              model = models.primary;
               agent = {
                 build = {
                   description = "Default build agent with full tool access";
@@ -446,16 +504,16 @@
                 # Lightweight built-in subagents — use a cheaper/faster model since these
                 # do simple, mechanical tasks that don't require deep reasoning.
                 explore = {
-                  model = "anthropic/claude-haiku-4-5";
+                  model = models.lightweight;
                 };
                 title = {
-                  model = "anthropic/claude-haiku-4-5";
+                  model = models.lightweight;
                 };
                 summary = {
-                  model = "anthropic/claude-haiku-4-5";
+                  model = models.lightweight;
                 };
                 compaction = {
-                  model = "anthropic/claude-haiku-4-5";
+                  model = models.lightweight;
                 };
               };
               mcp = {
@@ -501,17 +559,15 @@
                 // writeBashCommands;
               };
               plugin = [
-                # a plugin to use Gemini auth for LLM access
+                # Gemini auth is always loaded — it enables Google Gemini as an
+                # alternative provider regardless of which provider is the primary.
+                # It does not conflict with the provider-specific auth in authPlugins.
                 "opencode-gemini-auth@latest"
                 # tmux window status colours based on agent state
                 "./plugins/prism-hooks"
-                # use existing Claude Code credentials (via claude login OAuth)
-                # no separate proxy or API key needed
-                "opencode-claude-auth@latest"
-              ];
-              provider = {
-                anthropic = { };
-              };
+              ]
+              ++ authPlugins;
+              provider = providerSettings;
             };
             rules = agentInstructions;
           };
