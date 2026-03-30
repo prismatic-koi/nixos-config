@@ -497,10 +497,13 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Focus regained — cursor stays hidden until user presses j/k.
 
 	case sessionsMsg:
-		m.sessions = filterSessions(msg.sessions)
-		// Only replace git stats when the fetch succeeded (non-nil map).
-		// A nil gitStats indicates a transient tmux error; preserve the
-		// previous values so the UI does not blank out on a momentary hiccup.
+		// Only update when the fetch succeeded. fetchSessions returns a
+		// zero sessionsMsg (nil sessions, nil gitStats) on tmux error, so
+		// guarding on nil preserves the previous display during transient
+		// hiccups rather than blanking the session list and diff stats.
+		if msg.sessions != nil {
+			m.sessions = filterSessions(msg.sessions)
+		}
 		if msg.gitStats != nil {
 			m.gitStats = msg.gitStats
 		}
