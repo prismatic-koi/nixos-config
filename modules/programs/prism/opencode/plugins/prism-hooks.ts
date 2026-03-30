@@ -111,11 +111,12 @@ export const PrismHooks: Plugin = async ({ $ }) => {
     // Inject the review reminder into the system prompt on the next LLM turn
     // after a git push. Cleared immediately so it only fires once.
     "experimental.chat.system.transform": async (_input, output) => {
-      if (!pendingReviewReminder) return;
+      if (!pendingReviewReminder) return output;
       pendingReviewReminder = false;
       output.system.push(
         "You just ran git push. If this was in the context of an open PR, invoke the @review subagent now so the updated changes are reviewed before the PR is merged.",
       );
+      return output;
     },
 
     // Fires before the LLM generates the compaction summary.
