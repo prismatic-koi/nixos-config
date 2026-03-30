@@ -165,6 +165,8 @@
         "helm *" = "allow";
         "kubectl *" = "allow";
         "helm dependency update" = "allow";
+        # OpenTofu/Terraform operations
+        "tofu fmt *" = "allow";
         # Go write operations
         "go run *" = "allow";
         "go install *" = "allow";
