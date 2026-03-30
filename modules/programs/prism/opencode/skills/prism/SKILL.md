@@ -62,13 +62,18 @@ are interpreted by the shell and silently corrupted if you are not careful.
    prism spawn --prompt-file /tmp/prompt.txt
    ```
 
-2. **`--prompt -` (read from stdin)** — Pipe or heredoc the prompt in. Use a
-   quoted heredoc delimiter (`<<'EOF'`) to prevent expansion inside the body:
+2. **`--prompt -` (read from stdin)** — The literal value `-` is a reserved
+   sentinel that tells prism to read the prompt from stdin. Pipe or heredoc the
+   prompt in. Use a quoted heredoc delimiter (`<<'EOF'`) to prevent expansion
+   inside the body:
    ```bash
    prism spawn --prompt - <<'EOF'
    run `gh pr view 42` and review the diff
    EOF
    ```
+   **Note:** because `-` is reserved, you cannot pass the literal string `-` as
+   a prompt via `--prompt`. Use `--prompt-file` or single quotes with a
+   different phrasing if your prompt content is literally a dash.
 
 3. **Single quotes** — Wrap the value in single quotes. Single quotes prevent
    *all* shell interpolation in bash/zsh:
@@ -91,8 +96,8 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 | `--repo <name>` | Repo folder name under `~/code`, or full path. Errors with a `prism clone` hint if not found. |
 | `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
-| `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. Use `--prompt -` to read from stdin. |
-| `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. |
+| `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
+| `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Opencode agent to use (`build` or `plan`). Defaults to `build`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
 

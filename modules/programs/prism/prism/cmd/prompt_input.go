@@ -17,6 +17,7 @@ import (
 
 // addPromptFlags registers --prompt and --prompt-file on cmd, with the
 // standard help text that documents the shell-escaping convention.
+// The two flags are declared mutually exclusive via cobra.
 // Commands where a prompt is mandatory should call requirePromptInput in their
 // RunE; optional-prompt commands call resolvePrompt directly.
 func addPromptFlags(cmd *cobra.Command) {
@@ -25,15 +26,17 @@ func addPromptFlags(cmd *cobra.Command) {
 		"Text to send to the agent.\n"+
 			"    Wrap values containing shell metacharacters in single quotes:\n"+
 			"      --prompt 'run `gh pr view 42` and review the diff'\n"+
-			"    Use --prompt - to read from stdin (safe for any content):\n"+
+			"    The literal value \"-\" is reserved: it reads the prompt from stdin.\n"+
 			"      echo 'my prompt' | prism ... --prompt -\n"+
-			"    Or use --prompt-file to read from a file (safest for complex prompts).",
+			"    Use --prompt-file to read from a file (safest for complex prompts).",
 	)
 	cmd.Flags().String(
 		"prompt-file", "",
 		"Path to a file containing the prompt text.\n"+
-			"    Mutually exclusive with --prompt. Newlines are preserved.",
+			"    Mutually exclusive with --prompt.\n"+
+			"    Internal newlines are preserved; a single trailing newline is stripped.",
 	)
+	cmd.MarkFlagsMutuallyExclusive("prompt", "prompt-file")
 }
 
 // requirePromptInput is used by commands where a prompt is mandatory (prism
@@ -59,22 +62,21 @@ func requirePromptInput(cmd *cobra.Command) (string, error) {
 //   - --prompt -            → read from stdin
 //   - --prompt <text>       → use text directly
 //
-// Returns an error if both --prompt and --prompt-file are specified, or if
-// reading the file/stdin fails.
+// Note: cobra enforces mutual exclusion of --prompt and --prompt-file before
+// RunE is called, so no manual check is needed here.
+// A single trailing newline is stripped from file/stdin input to match the
+// behaviour of most Unix text tools (editors append a final newline that is
+// not part of the intended content).
 func resolvePrompt(cmd *cobra.Command) (string, error) {
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	promptText, _ := cmd.Flags().GetString("prompt")
-
-	if promptFile != "" && promptText != "" {
-		return "", fmt.Errorf("--prompt and --prompt-file are mutually exclusive")
-	}
 
 	if promptFile != "" {
 		data, err := os.ReadFile(promptFile)
 		if err != nil {
 			return "", fmt.Errorf("read prompt file %q: %w", promptFile, err)
 		}
-		return strings.TrimRight(string(data), "\n"), nil
+		return strings.TrimSuffix(string(data), "\n"), nil
 	}
 
 	if promptText == "-" {
@@ -82,7 +84,7 @@ func resolvePrompt(cmd *cobra.Command) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read prompt from stdin: %w", err)
 		}
-		return strings.TrimRight(string(data), "\n"), nil
+		return strings.TrimSuffix(string(data), "\n"), nil
 	}
 
 	return promptText, nil
