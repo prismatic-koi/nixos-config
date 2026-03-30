@@ -43,10 +43,18 @@ go test ./...
 
 This is faster than a full nix build and should be the first check for any prism code change. Run the nix build as well if the change also touches `.nix` files.
 
+## Platform-Aware Commands
+
+This repo targets both NixOS and Darwin. Use the appropriate build and switch commands for your platform. Detect your platform with `uname -s` if unsure (`Linux` = NixOS, `Darwin` = macOS).
+
+| | NixOS | Darwin |
+|---|---|---|
+| Build | `nix build .#nixosConfigurations.navi.config.system.build.toplevel` | `nix build .#darwinConfigurations.m4mac.config.system.build.toplevel` |
+| Switch | `sudo nixos-rebuild switch --flake .` | `darwin-rebuild switch --flake .` |
+
 ## Common Commands
 
-- **Building/Testing Changes:** To validate configuration changes without applying them, use the native Nix build command. Avoid `nh` for builds: it produces animated progress output that renders poorly in non-interactive environments.
-    - `nix build .#nixosConfigurations.navi.config.system.build.toplevel`
+- **Building/Testing Changes:** To validate configuration changes without applying them, use the platform-appropriate build command from the table above. Avoid `nh` for builds: it produces animated progress output that renders poorly in non-interactive environments.
 - **Linting/Formatting:** Code is formatted with `nixfmt`.
     - `nixfmt .`
 - **Flake Validation:** To check the flake for correctness across all defined systems, use:
@@ -54,8 +62,7 @@ This is faster than a full nix build and should be the first check for any prism
     - Note: this is slow and covers all systems. Do not run it routinely — reserve it for before major releases or flake input updates.
 - **Updating Inputs:** To update all flake inputs, use:
     - `nix flake update`
-- **Applying Configuration:** The user will typically handle applying the configuration manually. Do not attempt to apply changes unless explicitly asked.
-    - `nixos-rebuild switch --flake .`
+- **Applying Configuration:** The user will typically handle applying the configuration manually. Do not attempt to apply changes unless explicitly asked. Use the platform-appropriate switch command from the table above.
 - **Editing Secrets:** Secrets are encrypted with `sops`. To edit a secret, use the `sops` command.
     - `sops <path/to/secret.sops.yaml>`
 
@@ -196,23 +203,23 @@ nixfmt .
 
 If the change touches prism Go source, run the Go build and tests first — see the [Prism](#prism) section for details.
 
-After committing and before opening a PR, run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the configuration builds. New files must be `git add`-ed first or nix will not see them.
+After committing and before opening a PR, run the platform-appropriate build command (see [Platform-Aware Commands](#platform-aware-commands)) to verify the configuration builds. New files must be `git add`-ed first or nix will not see them.
 
 If the build fails, fix it before opening the PR. A PR with a broken nix build should never be opened.
 
-Do NOT run `nixos-rebuild switch` on branches — that is a main-only operation.
+Do NOT run the switch command on branches — that is a main-only operation.
 
 ### Post-merge workflow (coordinator on main)
 
-After merging a PR to main, always run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to verify the merged result builds.
+After merging a PR to main, always run the platform-appropriate build command (see [Platform-Aware Commands](#platform-aware-commands)) to verify the merged result builds.
 
-If the change affects system state (packages, services, activation scripts, module options, overlays): run `sudo nixos-rebuild switch --flake .` to apply it.
+If the change affects system state (packages, services, activation scripts, module options, overlays): run the platform-appropriate switch command to apply it.
 
 If the change is limited to non-system files (opencode agents, opencode skills, Go source in prism, documentation): skip the switch — these do not affect the NixOS system.
 
 ### Temporary Testing Changes
 
-The user may request changes for testing purposes that should not be committed. In these cases, modify the necessary files and run `nixos-rebuild switch --flake .` to apply the changes, but do not stage or commit them.
+The user may request changes for testing purposes that should not be committed. In these cases, modify the necessary files and run the platform-appropriate switch command to apply the changes, but do not stage or commit them.
 
 ### General Workflow Principles
 

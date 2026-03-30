@@ -73,10 +73,17 @@ Once both reviews pass:
 
 ## This repo: nixos-config
 
+This repo targets both NixOS and Darwin. Use the appropriate commands for your platform — detect with `uname -s` (`Linux` = NixOS, `Darwin` = macOS):
+
+| | NixOS | Darwin |
+|---|---|---|
+| Build | `nix build .#nixosConfigurations.navi.config.system.build.toplevel` | `nix build .#darwinConfigurations.m4mac.config.system.build.toplevel` |
+| Switch | `sudo nixos-rebuild switch --flake .` | `darwin-rebuild switch --flake .` |
+
 After merging any configuration change:
 
-- Run `nix build .#nixosConfigurations.navi.config.system.build.toplevel` to validate the build. This is a read-only check and should always be run after a merge.
-- For any change that affects system state (packages, services, activation scripts, module options): run `sudo nixos-rebuild switch --flake .` to apply it. You will be prompted to confirm before execution — that is expected and correct.
+- Run the platform-appropriate build command to validate the build. This is a read-only check and should always be run after a merge.
+- For any change that affects system state (packages, services, activation scripts, module options): run the platform-appropriate switch command to apply it.
 - Include in your merge summary whether a switch was run and what changed.
 
 ---
