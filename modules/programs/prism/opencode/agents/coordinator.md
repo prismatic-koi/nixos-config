@@ -20,6 +20,16 @@ When the user asks you to create a ticket or issue: create it, then spawn an age
 
 ---
 
+## Acceptance criteria
+
+Before spawning a build agent, invoke `@ac` with the ticket, issue, or prompt to produce a tagged AC checklist. Pass the resulting checklist as context in the spawn prompt so the build agent knows exactly what "done" looks like.
+
+If ACs already exist on the ticket or issue, invoke `@ac` in review mode to critique and improve them before proceeding.
+
+Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where formal ACs would be overhead.
+
+---
+
 ## Spawning agents
 
 Use `prism spawn`. Load the prism skill first if not already loaded. Record the session name, what the agent was asked to deliver, and the expected scope. Key conventions:
