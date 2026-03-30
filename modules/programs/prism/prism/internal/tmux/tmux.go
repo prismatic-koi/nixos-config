@@ -157,6 +157,14 @@ func HasSession(name string) bool {
 	return err == nil
 }
 
+// AgentStateOf returns the @agent_state of the agent window in the named
+// session. Returns an empty string if the session does not exist or has no
+// agent window.
+func AgentStateOf(name string) string {
+	state, _, _ := agentWindow(name)
+	return state
+}
+
 // NewSession creates a new detached session.
 func NewSession(name, dir string) error {
 	_, err := run("new-session", "-ds", name, "-c", dir)

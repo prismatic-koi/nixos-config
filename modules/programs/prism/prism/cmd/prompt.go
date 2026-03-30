@@ -47,6 +47,21 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("session %q has no agent window: %w", session, err)
 	}
 
+	// Refuse to inject a prompt into a session that is waiting for the user.
+	// Sending keys while opencode is in waiting state would corrupt the input
+	// field rather than delivering a proper follow-up message.
+	if state := tmux.AgentStateOf(session); state == "waiting" {
+		return fmt.Errorf(
+			"session %q is waiting for user input\n\n"+
+				"The agent has paused and is expecting a direct response from the user.\n"+
+				"Please switch to that session and respond there, or escalate to the user\n"+
+				"so they can address it directly.\n\n"+
+				"  prism checkin %s   — inspect the current state\n"+
+				"  (C-f or C-w)       — switch to the session in tmux",
+			session, session,
+		)
+	}
+
 	// Send the prompt with a short delay — opencode is already running, we
 	// just need a moment for it to finish any current operation before the
 	// keys arrive.
