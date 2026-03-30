@@ -59,14 +59,16 @@ export const PrismHooks: Plugin = async ({ $ }) => {
         case "permission.asked": {
           // prism notify returns immediately (display-message runs async in Go).
           await notify("set-waiting");
-          // Log to JSONL for later analysis — permission.asked carries the
-          // full Permission object including tool type and command pattern.
+          // Log to JSONL for later analysis — permission.asked carries a
+          // PermissionRequest object with the permission type, patterns, and
+          // tool metadata.
+          const props = event.properties as any;
           const entry = JSON.stringify({
             time: new Date().toISOString(),
-            tool: (event.properties as any).type,
-            pattern: (event.properties as any).pattern,
-            title: (event.properties as any).title,
-            sessionID: (event.properties as any).sessionID,
+            sessionID: props.sessionID,
+            permission: props.permission,
+            patterns: props.patterns,
+            metadata: props.metadata,
           });
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           break;
