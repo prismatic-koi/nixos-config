@@ -3,6 +3,8 @@ name: prism
 description: Spawn isolated agent sessions in their own git worktrees using the prism tool. Use when the user asks to spawn an agent, delegate work to another session, run something in parallel, or work on a PR or different repo.
 ---
 
+> **Note:** The prism source code and this skill file live in the `nixos-config` repository under `modules/programs/prism/`. Changes to prism itself — the Go CLI, tmux config, opencode agents, and skills — are made there.
+
 # Spawning Agents with prism
 
 `prism spawn` creates a new git worktree, starts a tmux session in it, and launches opencode. Use it when work should be isolated, long-running, or in a different repo — rather than a subagent, which shares the current session context.
@@ -108,7 +110,36 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 - The prompt is sent to opencode automatically after startup — no manual input needed.
 - Each spawned session gets its own worktree, so changes are isolated from other branches.
 
-## Example: delegating work to another repo
+## Delegating work to another repo
+
+When you need to delegate work to a repo you are not the coordinator for, route it through that repo's `@main` coordinator session. The coordinator has full context about that repo's conventions, open work, and branch state.
+
+**Flow:**
+
+1. Run `prism list-sessions` and look for `<repo>@main`.
+2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
+3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
+4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --repo <repo> --branch main` will fail with a git error.
+
+Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
+
+```bash
+# Check if the target repo has a coordinator session
+prism list-sessions
+
+# If home-ops@main exists and is not waiting:
+prism prompt home-ops@main --prompt 'Please update the plex image to the latest tag and open a PR'
+
+# If home-ops@main exists but IS in waiting state:
+# escalate to the user — they need to switch to that session and unblock it
+
+# If home-ops@main does not exist:
+# escalate to the user — ask them to start a coordinator session for home-ops
+```
+
+### Example: spawning directly as coordinator
+
+If you **are** the coordinator for the target repo (or the user has explicitly instructed you to spawn directly), use `prism spawn`:
 
 ```bash
 prism spawn \
