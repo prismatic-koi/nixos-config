@@ -54,7 +54,7 @@ When a spawned agent opens a PR:
 Once both reviews pass:
 
 1. `gh pr merge <number>` — you will be prompted to confirm.
-2. `git pull` in `@main` to sync with the merged result.
+2. `git pull` to sync with the merged result. (`@main` is the primary prism session — run this in the session where you are working, not in the spawned agent's session.)
 3. `prism cleanup --yes --session <name>` to remove the worktree, branch, and tmux session.
 
 ---

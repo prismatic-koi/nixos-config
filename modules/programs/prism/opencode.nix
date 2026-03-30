@@ -435,6 +435,10 @@
                       # override the broad "git *" = "allow" from readOnlyBashCommands —
                       # controller only gets specific git read ops, not the full suite
                       "git *" = "ask";
+                      # override aws/playwright from readOnlyBashCommands — controller
+                      # is orchestration-only, these are not in its remit
+                      "aws *" = "ask";
+                      "playwright-cli *" = "ask";
                     }
                     // controllerBashCommands;
                   };
