@@ -4,7 +4,7 @@ agent: "coordinator"
 subtask: false
 ---
 
-Run `prism list-sessions`. The output has a `SESSION  STATE  TITLE` header row — skip it when parsing. If the command returns an error, or if there are no data rows after the header, report that no sessions are available and stop.
+Run `NO_COLOR=1 prism list-sessions` (the `NO_COLOR` flag suppresses ANSI escape sequences so the output can be parsed as plain text). The output has a `SESSION  STATE  TITLE` header row — skip it when parsing. If the command returns an error, if the output is the single line `no agent sessions found`, or if there are no data rows after the header, report that no sessions are available and stop.
 
 Determine the repo name by running `git remote get-url origin | xargs basename -s .git` (works correctly inside any worktree). Determine the default branch by running `git symbolic-ref refs/remotes/origin/HEAD --short 2>/dev/null | sed 's|origin/||'`; if that returns nothing, fall back to `git remote show origin | grep 'HEAD branch' | awk '{print $NF}'`.
 
