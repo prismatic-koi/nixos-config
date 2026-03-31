@@ -53,14 +53,10 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
-		// Propagate .pre-commit-config.yaml if it exists as a symlink in main.
-		_ = git.PropagatePreCommitConfig(bareRoot, worktreePath)
-
 		opts := sessionOpts{
 			prompt:   promptFlag,
 			agent:    agentFlag,
 			headless: !attachFlag,
-			fresh:    true,
 		}
 		return ensureAndSwitchSession(worktreePath, bareRoot, opts)
 	},

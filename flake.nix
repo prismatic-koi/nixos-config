@@ -33,10 +33,6 @@
       url = "github:lnl7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -45,7 +41,6 @@
       nixpkgs,
       home-manager,
       darwin,
-      pre-commit-hooks,
       ...
     }@inputs:
     let
@@ -146,32 +141,10 @@
         };
       };
 
-      checks = forEachSystem (pkgs: {
-        pre-commit-check = pre-commit-hooks.lib.${pkgs.stdenv.hostPlatform.system}.run {
-          src = ./.;
-          hooks = {
-            nixfmt.enable = true;
-            sops-check = {
-              enable = true;
-              name = "sops-check";
-              description = "Check if secret files are encrypted";
-              entry = "bash -c 'for f in \"$@\"; do ${pkgs.gnugrep}/bin/grep -q \"ENC\\[AES256_GCM\" \"$f\" || { echo \"$f is not encrypted\"; exit 1; }; done' --";
-              # Only check files that end in .sops or .sops.yaml, or are inside a secrets/ directory AND end in .yaml
-              files = ".*\\.sops.*|.*/secrets/.*\\.yaml$";
-              pass_filenames = true;
-            };
-
-          };
-        };
-      });
-
       devShells = forEachSystem (pkgs: {
         default = pkgs.mkShell {
-          inherit (self.checks.${pkgs.stdenv.hostPlatform.system}.pre-commit-check) shellHook;
           buildInputs = [
             pkgs.sops
-            pkgs.gnugrep
-            pkgs.nixfmt
           ];
         };
       });

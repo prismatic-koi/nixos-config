@@ -465,26 +465,8 @@
               playwright-cli
             ];
           programs.zsh.shellAliases = {
-            # set environment variables for opencode and manage sessions/--continue
-            opencode = ''
-              if [[ -n "$TMUX" ]]; then
-                S=$(tmux display-message -p '#S')
-                if [[ "$S" == *"@"* ]]; then
-                  wt=''${S#*@}
-                  if [[ "$wt" == "main" ]]; then
-                    ${envPrefix} opencode --continue "$@"
-                  else
-                    ${envPrefix} opencode --session "$S" "$@"
-                  fi
-                elif [[ "$S" == "scratchpad" ]]; then
-                  ${envPrefix} opencode --continue "$@"
-                else
-                  ${envPrefix} opencode "$@"
-                fi
-              else
-                ${envPrefix} opencode "$@"
-              fi
-            '';
+            # set environment variables for opencode
+            opencode = "${envPrefix} opencode";
           };
           programs.neovim.initLua =
             lib.mkAfter
