@@ -477,6 +477,22 @@ func sessionNameFor(dir, projectRoot string) string {
 	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
 }
 
+// defaultAgent returns the agent to use for the given directory.
+// If explicit is non-empty it is returned unchanged.
+// Otherwise "coordinator" is returned for the "main" worktree and "build" for
+// everything else (including the scratchpad, which resolves to the home dir).
+// Only an exact match on "main" triggers coordinator — case variants and
+// substrings (e.g. "Main", "maintain") resolve to "build".
+func defaultAgent(directory, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if filepath.Base(directory) == "main" {
+		return "coordinator"
+	}
+	return "build"
+}
+
 func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
 	var sessionName string
 	var directory string
@@ -490,15 +506,8 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 		sessionName = sessionNameFor(directory, projectRoot)
 	}
 
-	// Default agent based on worktree name: coordinator for "main", build otherwise.
-	// An explicit opts.agent value is never overridden.
-	if opts.agent == "" {
-		if filepath.Base(directory) == "main" {
-			opts.agent = "coordinator"
-		} else {
-			opts.agent = "build"
-		}
-	}
+	// Default agent based on worktree name; an explicit value is never overridden.
+	opts.agent = defaultAgent(directory, opts.agent)
 
 	if !tmux.HasSession(sessionName) {
 		if err := tmux.NewSessionDetached(sessionName, directory); err != nil {

@@ -5,26 +5,14 @@ import (
 	"testing"
 )
 
-// resolveAgent mirrors the agent-defaulting logic in ensureAndSwitchSession so
-// it can be tested independently of the tmux plumbing.
-func resolveAgent(directory, explicitAgent string) string {
-	if explicitAgent != "" {
-		return explicitAgent
-	}
-	if filepath.Base(directory) == "main" {
-		return "coordinator"
-	}
-	return "build"
-}
-
-func TestResolveAgent_DefaultsToCoordinatorForMain(t *testing.T) {
-	got := resolveAgent("/home/user/repos/project/main", "")
+func TestDefaultAgent_CoordinatorForMain(t *testing.T) {
+	got := defaultAgent("/home/user/repos/project/main", "")
 	if got != "coordinator" {
-		t.Errorf("resolveAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
+		t.Errorf("defaultAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
 	}
 }
 
-func TestResolveAgent_DefaultsToBuildForNonMain(t *testing.T) {
+func TestDefaultAgent_BuildForNonMain(t *testing.T) {
 	cases := []string{
 		"/home/user/repos/project/feature-foo",
 		"/home/user/repos/project/maintain",
@@ -35,15 +23,15 @@ func TestResolveAgent_DefaultsToBuildForNonMain(t *testing.T) {
 	}
 	for _, dir := range cases {
 		t.Run(filepath.Base(dir), func(t *testing.T) {
-			got := resolveAgent(dir, "")
+			got := defaultAgent(dir, "")
 			if got != "build" {
-				t.Errorf("resolveAgent(%q, %q) = %q, want %q", dir, "", got, "build")
+				t.Errorf("defaultAgent(%q, %q) = %q, want %q", dir, "", got, "build")
 			}
 		})
 	}
 }
 
-func TestResolveAgent_ExplicitAgentOverridesDefault(t *testing.T) {
+func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 	cases := []struct {
 		dir   string
 		agent string
@@ -53,9 +41,9 @@ func TestResolveAgent_ExplicitAgentOverridesDefault(t *testing.T) {
 		{"/home/user/repos/project/main", "build"},
 	}
 	for _, tc := range cases {
-		got := resolveAgent(tc.dir, tc.agent)
+		got := defaultAgent(tc.dir, tc.agent)
 		if got != tc.agent {
-			t.Errorf("resolveAgent(%q, %q) = %q, want %q", tc.dir, tc.agent, got, tc.agent)
+			t.Errorf("defaultAgent(%q, %q) = %q, want %q", tc.dir, tc.agent, got, tc.agent)
 		}
 	}
 }
