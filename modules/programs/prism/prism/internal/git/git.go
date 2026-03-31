@@ -3,6 +3,7 @@ package git
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -577,5 +578,51 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	}
 
 	progress("done — " + targetDir + "/" + defaultBranch)
+	return nil
+}
+
+// PropagatePreCommitConfig checks if the default-branch worktree has a
+// .pre-commit-config.yaml symlink. If it does, it creates an identical symlink
+// in the new worktree at targetPath. Errors are returned but should generally
+// be treated as non-fatal by callers.
+func PropagatePreCommitConfig(projectPath, targetPath string) error {
+	worktrees := Worktrees(projectPath)
+	if len(worktrees) == 0 {
+		return nil
+	}
+	// Default-branch worktree is the first entry.
+	mainWorktree := worktrees[0]
+	sourceFile := filepath.Join(mainWorktree, ".pre-commit-config.yaml")
+
+	// Check if the source file is a symlink.
+	info, err := os.Lstat(sourceFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No config to propagate.
+		}
+		return fmt.Errorf("lstat source: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return nil // Not a symlink, skip.
+	}
+
+	// Read the symlink target.
+	target, err := os.Readlink(sourceFile)
+	if err != nil {
+		return fmt.Errorf("readlink: %w", err)
+	}
+
+	// Create the same symlink in the new worktree.
+	destFile := filepath.Join(targetPath, ".pre-commit-config.yaml")
+	// Check if destination already exists.
+	if _, err := os.Stat(destFile); err == nil {
+		return nil // Already exists, skip.
+	}
+
+	if err := os.Symlink(target, destFile); err != nil {
+		return fmt.Errorf("create symlink: %w", err)
+	}
+
+	log.Printf("propagated .pre-commit-config.yaml to %s", targetPath)
 	return nil
 }
