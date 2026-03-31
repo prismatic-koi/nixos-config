@@ -112,8 +112,8 @@ in
               bind-key X kill-window
               # close pane without confirmation
               bind-key x kill-pane
-              # kill current session with confirmation
-              bind-key q display-popup -E -w 40% -h 3 -b single "read -p 'Kill session? (y/N) ' yn; [ \"$$yn\" = 'y' ] && tmux kill-session"
+              # kill current session
+              bind-key q kill-session
               # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
               bind-key W display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # easy config reload
