@@ -189,7 +189,7 @@
                 name = "sops-check";
                 description = "Check if .sops.yaml files are encrypted";
                 entry = "${pkgs.gnugrep}/bin/grep -q 'ENC\\[AES256_GCM' ";
-                types = [ "yaml" ];
+                files = "\\.sops\\.yaml$";
                 pass_filenames = true;
               };
             };
