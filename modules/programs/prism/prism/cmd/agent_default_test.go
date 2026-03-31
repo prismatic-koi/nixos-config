@@ -53,11 +53,13 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		opts sessionOpts
 		want string
 	}{
-		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator"},
-		{sessionOpts{agent: "build"}, "opencode --agent build"},
-		{sessionOpts{agent: "custom"}, "opencode --agent custom"},
+		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator --continue"},
+		{sessionOpts{agent: "build"}, "opencode --agent build --continue"},
+		{sessionOpts{agent: "custom"}, "opencode --agent custom --continue"},
 		// Safety-net fallback: empty agent still yields "build".
-		{sessionOpts{}, "opencode --agent build"},
+		{sessionOpts{}, "opencode --agent build --continue"},
+		// Fresh start
+		{sessionOpts{agent: "build", fresh: true}, "opencode --agent build"},
 	}
 	for _, tc := range cases {
 		got := buildOpencodeCmd(tc.opts)
