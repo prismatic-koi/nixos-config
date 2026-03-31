@@ -58,12 +58,21 @@ func runCheckinSession(session string, height int) error {
 		return fmt.Errorf("checkin %s: %w", session, err)
 	}
 
+	state := tmux.AgentStateOf(session)
+	if state == "" {
+		state = "idle"
+	}
+
 	styleBold := lipgloss.NewStyle().Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleState := stateStyle(state)
 
 	fmt.Printf("%s %s\n\n", styleBold.Render("checkin:"), session)
-	fmt.Println(result.Screen)
-	fmt.Println()
+	fmt.Printf("state: %s\n\n", styleState.Render(state))
+	if result.Screen != "" {
+		fmt.Println(result.Screen)
+		fmt.Println()
+	}
 	fmt.Println(styleDim.Render("── end of screen capture ──"))
 	return nil
 }
