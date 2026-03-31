@@ -61,7 +61,7 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		// Safety-net fallback: empty agent still yields "build".
 		{sessionOpts{}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent build --continue"},
 		// Fresh start
-		{sessionOpts{agent: "build", fresh: true}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent build --session nixos-config@main"},
+		{sessionOpts{agent: "build", fresh: true}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent build --continue"},
 	}
 	for _, tc := range cases {
 		got := buildOpencodeCmd(tc.opts, tc.sessionName, tc.directory)

@@ -16,4 +16,3 @@ Does anybody even read the readme for nix repos? The code speaks for itself.
 - A homespun theming system usually using [everforest](https://github.com/sainnhe/everforest)
 - A dynamic wallpaper based on theme, created from a svg with theme colours inserted at build time.
 - Due to the above, I am able to do remote installs using [nixos-anywhere](https://github.com/nix-community/nixos-anywhere)
-- Automated pre-commit hooks for SOPS encryption: run `nix develop` to install them locally.

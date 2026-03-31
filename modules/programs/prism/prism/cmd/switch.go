@@ -460,7 +460,8 @@ func buildOpencodeCmd(opts sessionOpts, sessionName, directory string) string {
 	}
 	cmd := "opencode --agent " + agent
 	isMain := filepath.Base(directory) == "main"
-	if isMain && !opts.fresh {
+	// fresh is ignored
+	if isMain {
 		cmd += " --continue"
 	} else {
 		cmd += " --session " + sessionName
@@ -711,8 +712,7 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
-		fresh, _ := cmd.Flags().GetBool("fresh")
-		opts := sessionOpts{fresh: fresh}
+		opts := sessionOpts{}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -779,6 +779,5 @@ var switchCmd = &cobra.Command{
 
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
-	switchCmd.Flags().Bool("fresh", false, "Start a new session without --continue")
 	rootCmd.AddCommand(switchCmd)
 }
