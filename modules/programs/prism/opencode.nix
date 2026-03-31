@@ -238,7 +238,8 @@
         "tmux rename-window" = "deny";
         "tmux respawn-window" = "deny";
         "tmux new-window" = "deny";
-        "tmux *" = "deny";
+        "tmux attach-session *" = "deny";
+        "tmux switch-client *" = "deny";
       };
 
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
