@@ -155,11 +155,12 @@
               enable = true;
               name = "sops-check";
               description = "Check if secret files are encrypted";
-              entry = "${pkgs.gnugrep}/bin/grep -q 'ENC\\[AES256_GCM' ";
+              entry = "bash -c 'for f in \"$@\"; do ${pkgs.gnugrep}/bin/grep -q \"ENC\\[AES256_GCM\" \"$f\" || { echo \"$f is not encrypted\"; exit 1; }; done' --";
               # Catch .sops, .sops.yaml, and any file in a secrets directory
               files = ".*\\.sops.*|.*/secrets/.*";
               pass_filenames = true;
             };
+
           };
         };
       });
