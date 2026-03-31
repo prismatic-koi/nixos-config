@@ -37,7 +37,10 @@ func init() {
 
 func runRestore(cmd *cobra.Command, _ []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	return Restore(dryRun)
+}
 
+func Restore(dryRun bool) error {
 	saved, err := loadSessions()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
