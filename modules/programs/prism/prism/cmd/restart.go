@@ -23,7 +23,7 @@ func init() {
 func runRestart(_ *cobra.Command, _ []string) error {
 	// 1. Save state
 	if err := runSave(nil, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "prism restart: failed to save state: %v\n", err)
+		return fmt.Errorf("failed to save state: %w", err)
 	}
 
 	// 2. Kill tmux server
