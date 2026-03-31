@@ -83,9 +83,10 @@ in
               # window switching
               bind -r p previous-window
               bind -r n next-window
-              # window splitting — unbound (used by accident more than intentionally)
+              # window splitting / detach — unbound (used by accident more than intentionally)
               unbind v
               unbind b
+              unbind d
               # open current repo in browser (prefix+b)
               bind-key b run-shell -b '\
                 dir="$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}")"; \
@@ -111,6 +112,8 @@ in
               bind-key X kill-window
               # close pane without confirmation
               bind-key x kill-pane
+              # kill current session with confirmation
+              bind-key q display-popup -E -w 40% -h 3 -b single "read -p 'Kill session? (y/N) ' yn; [ \"$$yn\" = 'y' ] && tmux kill-session"
               # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
               bind-key W display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # easy config reload
