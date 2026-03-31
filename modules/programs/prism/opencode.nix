@@ -397,6 +397,8 @@
         };
         # Flash for primary is a deliberate cost/capability tradeoff for the Google tier —
         # Gemini Flash is capable enough for coordinator/plan while remaining cost-effective.
+        # Note: gemini-3-flash-preview and gemini-3.1-flash-lite-preview are distinct model
+        # families; there is no gemini-3.1-flash-preview available via opencode models.
         google = {
           primary = "google/gemini-3-flash-preview";
           secondary = "google/gemini-3.1-flash-lite-preview";
