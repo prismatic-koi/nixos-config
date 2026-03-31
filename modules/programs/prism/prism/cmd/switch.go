@@ -440,7 +440,7 @@ func promptBranchInput(prompt string) string {
 // sessionOpts carries optional parameters for agent launch when creating a new session.
 type sessionOpts struct {
 	prompt   string // passed as opencode --prompt "..."
-	agent    string // passed as opencode --agent <name>; defaults to "build"
+	agent    string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
 	headless bool   // if true, create the session but don't switch any client to it
 }
 
@@ -453,6 +453,8 @@ type sessionOpts struct {
 func buildOpencodeCmd(opts sessionOpts) string {
 	agent := opts.agent
 	if agent == "" {
+		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
+		// before calling here.
 		agent = "build"
 	}
 	return "opencode --agent " + agent
@@ -486,6 +488,16 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 	} else {
 		directory = expandHome(path)
 		sessionName = sessionNameFor(directory, projectRoot)
+	}
+
+	// Default agent based on worktree name: coordinator for "main", build otherwise.
+	// An explicit opts.agent value is never overridden.
+	if opts.agent == "" {
+		if filepath.Base(directory) == "main" {
+			opts.agent = "coordinator"
+		} else {
+			opts.agent = "build"
+		}
 	}
 
 	if !tmux.HasSession(sessionName) {
