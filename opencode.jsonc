@@ -35,6 +35,19 @@
           "gh pr create *": "allow"
         }
       }
+    },
+    "coordinator": {
+      "permission": {
+        "external_directory": {
+          "/Users/bensherman/code/nixos-config/**": "allow"
+        },
+        "edit": {
+          "/Users/bensherman/code/nixos-config/**": "deny"
+        },
+        "write": {
+          "/Users/bensherman/code/nixos-config/**": "deny"
+        }
+      }
     }
   }
 }
