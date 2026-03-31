@@ -395,6 +395,8 @@
           secondary = "github-copilot/claude-sonnet-4.6";
           lightweight = "github-copilot/claude-haiku-4.5";
         };
+        # Flash for primary is a deliberate cost/capability tradeoff for the Google tier —
+        # Gemini Flash is capable enough for coordinator/plan while remaining cost-effective.
         google = {
           primary = "google/gemini-3-flash-preview";
           secondary = "google/gemini-3.1-flash-lite-preview";
