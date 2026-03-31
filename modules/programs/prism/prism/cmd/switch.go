@@ -451,7 +451,7 @@ type sessionOpts struct {
 // See: https://github.com/anomalyco/opencode/issues/8850
 //
 //	https://github.com/anomalyco/opencode/issues/14349
-func buildOpencodeCmd(opts sessionOpts) string {
+func buildOpencodeCmd(opts sessionOpts, sessionName, directory string) string {
 	agent := opts.agent
 	if agent == "" {
 		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
@@ -459,8 +459,11 @@ func buildOpencodeCmd(opts sessionOpts) string {
 		agent = "build"
 	}
 	cmd := "opencode --agent " + agent
-	if !opts.fresh {
+	isMain := filepath.Base(directory) == "main"
+	if isMain && !opts.fresh {
 		cmd += " --continue"
+	} else {
+		cmd += " --session " + sessionName
 	}
 	return cmd
 }
@@ -549,7 +552,7 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
-			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
+			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts, sessionName, directory))
 			// Work around opencode bug where --prompt is ignored on TUI launch.
 			// Instead, send the prompt as keystrokes once opencode signals that
 			// it is ready (i.e. @agent_state == "finished" on the agent window).
