@@ -440,7 +440,7 @@ func promptBranchInput(prompt string) string {
 // sessionOpts carries optional parameters for agent launch when creating a new session.
 type sessionOpts struct {
 	prompt   string // passed as opencode --prompt "..."
-	agent    string // passed as opencode --agent <name>; defaults to "build"
+	agent    string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
 	headless bool   // if true, create the session but don't switch any client to it
 }
 
@@ -453,6 +453,8 @@ type sessionOpts struct {
 func buildOpencodeCmd(opts sessionOpts) string {
 	agent := opts.agent
 	if agent == "" {
+		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
+		// before calling here.
 		agent = "build"
 	}
 	return "opencode --agent " + agent
@@ -475,6 +477,22 @@ func sessionNameFor(dir, projectRoot string) string {
 	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
 }
 
+// defaultAgent returns the agent to use for the given directory.
+// If explicit is non-empty it is returned unchanged.
+// Otherwise "coordinator" is returned for the "main" worktree and "build" for
+// everything else (including the scratchpad, which resolves to the home dir).
+// Only an exact match on "main" triggers coordinator — case variants and
+// substrings (e.g. "Main", "maintain") resolve to "build".
+func defaultAgent(directory, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if filepath.Base(directory) == "main" {
+		return "coordinator"
+	}
+	return "build"
+}
+
 func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
 	var sessionName string
 	var directory string
@@ -487,6 +505,9 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 		directory = expandHome(path)
 		sessionName = sessionNameFor(directory, projectRoot)
 	}
+
+	// Default agent based on worktree name; an explicit value is never overridden.
+	opts.agent = defaultAgent(directory, opts.agent)
 
 	if !tmux.HasSession(sessionName) {
 		if err := tmux.NewSessionDetached(sessionName, directory); err != nil {
