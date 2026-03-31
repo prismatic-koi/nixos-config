@@ -78,6 +78,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
 	}
+	// Propagate .pre-commit-config.yaml if it exists as a symlink in main.
+	_ = git.PropagatePreCommitConfig(bareRoot, worktreePath)
 
 	return ensureAndSwitchSession(worktreePath, bareRoot, opts)
 }
