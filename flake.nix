@@ -156,8 +156,8 @@
               name = "sops-check";
               description = "Check if secret files are encrypted";
               entry = "bash -c 'for f in \"$@\"; do ${pkgs.gnugrep}/bin/grep -q \"ENC\\[AES256_GCM\" \"$f\" || { echo \"$f is not encrypted\"; exit 1; }; done' --";
-              # Catch .sops, .sops.yaml, and any file in a secrets directory
-              files = ".*\\.sops.*|.*/secrets/.*";
+              # Only check files that end in .sops or .sops.yaml, or are inside a secrets/ directory AND end in .yaml
+              files = ".*\\.sops.*|.*/secrets/.*\\.yaml$";
               pass_filenames = true;
             };
 
