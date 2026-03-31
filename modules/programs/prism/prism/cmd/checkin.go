@@ -69,8 +69,10 @@ func runCheckinSession(session string, height int) error {
 
 	fmt.Printf("%s %s\n\n", styleBold.Render("checkin:"), session)
 	fmt.Printf("state: %s\n\n", styleState.Render(state))
-	fmt.Println(result.Screen)
-	fmt.Println()
+	if result.Screen != "" {
+		fmt.Println(result.Screen)
+		fmt.Println()
+	}
 	fmt.Println(styleDim.Render("── end of screen capture ──"))
 	return nil
 }
