@@ -26,6 +26,7 @@
       wallpaper.variant = "enso-6colour";
     };
     programs = {
+      prism.opencode.provider = "anthropic";
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
       corectrl.enable = true;
