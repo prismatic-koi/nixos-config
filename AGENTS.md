@@ -10,6 +10,7 @@ For example:
 - opencode configuration → `modules/programs/prism/opencode.nix`
 - Custom opencode agents → `modules/programs/prism/opencode/agents/`
 - opencode skills → `modules/programs/prism/opencode/skills/`
+- Global opencode agent instructions (`~/.config/opencode/AGENTS.md`) → `modules/programs/prism/opencode.nix` (the `agentInstructions` string, rendered via `programs.opencode.rules`) — **never edit the file at `~/.config` directly, it is overwritten on every switch**
 
 If you need to understand how something is configured, `grep` or `glob` within the working directory before reaching outside it.
 
