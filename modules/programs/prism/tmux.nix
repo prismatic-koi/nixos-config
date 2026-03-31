@@ -114,6 +114,8 @@ in
               bind-key x kill-pane
               # kill current session
               bind-key q kill-session
+              # restart prism (prefix+R)
+              bind-key R run-shell '${prism} restart'
               # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
               bind-key W display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # easy config reload
