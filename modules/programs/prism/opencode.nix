@@ -228,6 +228,20 @@
         "sudo nixos-rebuild *" = "ask";
       };
 
+      # tmux deny commands to prevent bypassing UI permission guards
+      tmuxDenyCommands = {
+        "tmux send-keys *" = "deny";
+        "tmux run-shell *" = "deny";
+        "tmux kill-session" = "deny";
+        "tmux kill-server" = "deny";
+        "tmux select-window" = "deny";
+        "tmux rename-window" = "deny";
+        "tmux respawn-window" = "deny";
+        "tmux new-window" = "deny";
+        "tmux attach-session *" = "deny";
+        "tmux switch-client *" = "deny";
+      };
+
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
 
       awsSkill = /* markdown */ ''
@@ -488,7 +502,8 @@
                       "*" = "ask";
                     }
                     // readOnlyBashCommands
-                    // writeBashCommands;
+                    // writeBashCommands
+                    // tmuxDenyCommands;
                   };
                 };
                 plan = {
@@ -512,7 +527,8 @@
                       # Default deny everything else for plan agent (MUST be first - last match wins)
                       "*" = "deny";
                     }
-                    // readOnlyBashCommands;
+                    // readOnlyBashCommands
+                    // tmuxDenyCommands;
                   };
                 };
                 coordinator = {
@@ -545,7 +561,8 @@
                       "aws *" = "ask";
                       "playwright-cli *" = "ask";
                     }
-                    // coordinatorBashCommands;
+                    // coordinatorBashCommands
+                    // tmuxDenyCommands;
                   };
                 };
                 review = {
@@ -609,7 +626,8 @@
                   "*" = "ask";
                 }
                 // readOnlyBashCommands
-                // writeBashCommands;
+                // writeBashCommands
+                // tmuxDenyCommands;
               };
               plugin = [
                 # Gemini auth is always loaded — it enables Google Gemini as an
