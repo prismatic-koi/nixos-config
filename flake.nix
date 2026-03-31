@@ -43,6 +43,11 @@
       url = "github:lnl7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    pre-commit-hooks = {
+      url = "github:cachix/pre-commit-hooks.nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -51,6 +56,7 @@
       nixpkgs,
       home-manager,
       darwin,
+      pre-commit-hooks,
       ...
     }@inputs:
     let
@@ -164,5 +170,49 @@
           configFile = "m4mac";
         };
       };
+
+      checks =
+        let
+          systems = [
+            "x86_64-linux"
+            "aarch64-darwin"
+          ];
+          forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+        in
+        forEachSystem (pkgs: {
+          pre-commit-check = pre-commit-hooks.lib.${pkgs.stdenv.hostPlatform.system}.run {
+            src = ./.;
+            hooks = {
+              nixfmt.enable = true;
+              sops-check = {
+                enable = true;
+                name = "sops-check";
+                description = "Check if .sops.yaml files are encrypted";
+                entry = "${pkgs.gnugrep}/bin/grep -q 'ENC\\[AES256_GCM' ";
+                types = [ "yaml" ];
+                pass_filenames = true;
+              };
+            };
+          };
+        });
+
+      devShells =
+        let
+          systems = [
+            "x86_64-linux"
+            "aarch64-darwin"
+          ];
+          forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+        in
+        forEachSystem (pkgs: {
+          default = pkgs.mkShell {
+            inherit (self.checks.${pkgs.stdenv.hostPlatform.system}.pre-commit-check) shellHook;
+            buildInputs = [
+              pkgs.sops
+              pkgs.gnugrep
+              pkgs.nixfmt
+            ];
+          };
+        });
     };
 }
