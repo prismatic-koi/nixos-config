@@ -63,21 +63,9 @@ func runCheckinSession(session string, height int) error {
 		state = "idle"
 	}
 
-	var stateColour string
-	switch state {
-	case "active":
-		stateColour = ColorPurple
-	case "waiting":
-		stateColour = ColorYellow
-	case "finished":
-		stateColour = ColorGreen
-	default:
-		stateColour = ColorSecondary
-	}
-
 	styleBold := lipgloss.NewStyle().Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	styleState := lipgloss.NewStyle().Foreground(lipgloss.Color(stateColour))
+	styleState := stateStyle(state)
 
 	fmt.Printf("%s %s\n\n", styleBold.Render("checkin:"), session)
 	fmt.Printf("state: %s\n\n", styleState.Render(state))
