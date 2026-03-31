@@ -59,6 +59,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		prompt:   promptFlag,
 		agent:    agentFlag,
 		headless: !fromKeybind && !attachFlag,
+		fresh:    true,
 	}
 
 	// Resolve the bare repo root.

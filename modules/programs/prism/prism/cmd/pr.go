@@ -60,6 +60,7 @@ var prCmd = &cobra.Command{
 			prompt:   promptFlag,
 			agent:    agentFlag,
 			headless: !attachFlag,
+			fresh:    true,
 		}
 		return ensureAndSwitchSession(worktreePath, bareRoot, opts)
 	},
