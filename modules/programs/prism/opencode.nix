@@ -13,14 +13,13 @@
       type = lib.types.enum [
         "anthropic"
         "github-copilot"
+        "google"
       ];
       default = "anthropic";
       description = ''
         The LLM provider to use for opencode agents.
         Switching providers updates the model strings, provider block,
         and authentication plugins automatically.
-          - "anthropic"      — Claude via Anthropic API (opencode-claude-auth)
-          - "github-copilot" — Claude via GitHub Copilot (no extra auth plugin)
       '';
     };
   };
@@ -376,9 +375,11 @@
         - Never use Te Reo as decoration or performance – only where it fits naturally.
       '';
       # Model identifiers for the selected provider.
-      # "primary" is the capable reasoning model used by main agents (build/plan/coordinator).
-      # "lightweight" is the cheaper/faster model used by mechanical subagents
-      # (explore, title, summary, compaction).
+      # "primary"     — capable reasoning model for coordinator and plan agents.
+      # "secondary"   — capable model for build, review, and ac agents (= primary for
+      #                 Anthropic/Copilot so there is zero behaviour change on those machines).
+      # "lightweight" — cheaper/faster model for mechanical subagents
+      #                 (explore, title, summary, compaction).
       #
       # Note: Anthropic uses hyphens as version separators (e.g. claude-sonnet-4-6),
       # while GitHub Copilot uses dots (e.g. claude-sonnet-4.6). This is intentional —
@@ -386,17 +387,28 @@
       providerModels = {
         anthropic = {
           primary = "anthropic/claude-sonnet-4-6";
+          secondary = "anthropic/claude-sonnet-4-6";
           lightweight = "anthropic/claude-haiku-4-5";
         };
         github-copilot = {
           primary = "github-copilot/claude-sonnet-4.6";
+          secondary = "github-copilot/claude-sonnet-4.6";
           lightweight = "github-copilot/claude-haiku-4.5";
+        };
+        # Flash for primary is a deliberate cost/capability tradeoff for the Google tier —
+        # Gemini Flash is capable enough for coordinator/plan while remaining cost-effective.
+        # Note: gemini-3-flash-preview and gemini-3.1-flash-lite-preview are distinct model
+        # families; there is no gemini-3.1-flash-preview available via opencode models.
+        google = {
+          primary = "google/gemini-3-flash-preview";
+          secondary = "google/gemini-3.1-flash-lite-preview";
+          lightweight = "google/gemini-3.1-flash-lite-preview";
         };
       };
       models = providerModels.${config.nx.programs.prism.opencode.provider};
 
-      # Authentication plugins — anthropic requires opencode-claude-auth; github-copilot
-      # uses the ambient GitHub token so no extra auth plugin is needed.
+      # Authentication plugins — provider-specific plugins loaded in addition to the
+      # unconditionally-loaded plugins below.
       providerPlugins = {
         anthropic = [
           # use existing Claude Code credentials (via claude login OAuth)
@@ -404,18 +416,20 @@
           "opencode-claude-auth@latest"
         ];
         github-copilot = [ ];
+        google = [ ];
       };
       authPlugins = providerPlugins.${config.nx.programs.prism.opencode.provider};
 
       # Provider block passed to opencode settings.
-      # anthropic uses an empty config (relies on the auth plugin above).
-      # github-copilot likewise needs no extra options.
       providerConfig = {
         anthropic = {
           anthropic = { };
         };
         github-copilot = {
           github-copilot = { };
+        };
+        google = {
+          google = { };
         };
       };
       providerSettings = providerConfig.${config.nx.programs.prism.opencode.provider};
@@ -464,6 +478,7 @@
               model = models.primary;
               agent = {
                 build = {
+                  model = models.secondary;
                   description = "Default build agent with full tool access";
                   mode = "primary";
                   color = config.theme.red;
@@ -477,6 +492,7 @@
                   };
                 };
                 plan = {
+                  model = models.primary;
                   description = "Planning and analysis agent with read-only access";
                   mode = "primary";
                   color = config.theme.blue;
@@ -500,6 +516,7 @@
                   };
                 };
                 coordinator = {
+                  model = models.primary;
                   description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
                   mode = "primary";
                   color = config.theme.purple;
@@ -530,6 +547,12 @@
                     }
                     // coordinatorBashCommands;
                   };
+                };
+                review = {
+                  model = models.secondary;
+                };
+                ac = {
+                  model = models.secondary;
                 };
                 # Lightweight built-in subagents — use a cheaper/faster model since these
                 # do simple, mechanical tasks that don't require deep reasoning.
