@@ -581,46 +581,75 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	return nil
 }
 
-// PropagatePreCommitConfig checks if the default-branch worktree has a
-// .pre-commit-config.yaml symlink. If it does, it creates an identical symlink
-// in the new worktree at targetPath. Errors are returned but should generally
-// be treated as non-fatal by callers.
+// PropagatePreCommitConfig searches for a .pre-commit-config.yaml in the current
+// working directory or any existing worktree of the project. If found, it
+// propagates it (as a symlink or file copy) to targetPath. Errors are returned
+// but should generally be treated as non-fatal by callers.
 func PropagatePreCommitConfig(projectPath, targetPath string) error {
-	worktrees := Worktrees(projectPath)
-	if len(worktrees) == 0 {
+	var sourceFile string
+
+	// 1. Check current working directory if it's in the same project.
+	if wd, err := os.Getwd(); err == nil {
+		absProject, _ := filepath.Abs(projectPath)
+		absWd, _ := filepath.Abs(wd)
+		if strings.HasPrefix(absWd, absProject) {
+			cand := filepath.Join(wd, ".pre-commit-config.yaml")
+			if _, err := os.Stat(cand); err == nil {
+				sourceFile = cand
+			}
+		}
+	}
+
+	// 2. Iterate through all worktrees if not found yet.
+	if sourceFile == "" {
+		for _, wt := range Worktrees(projectPath) {
+			cand := filepath.Join(wt, ".pre-commit-config.yaml")
+			if _, err := os.Stat(cand); err == nil {
+				sourceFile = cand
+				break
+			}
+		}
+	}
+
+	if sourceFile == "" {
+		return nil // No config found to propagate.
+	}
+
+	destFile := filepath.Join(targetPath, ".pre-commit-config.yaml")
+	if sourceFile == destFile {
 		return nil
 	}
-	// Default-branch worktree is the first entry.
-	mainWorktree := worktrees[0]
-	sourceFile := filepath.Join(mainWorktree, ".pre-commit-config.yaml")
+
+	// Check if destination already exists.
+	if _, err := os.Lstat(destFile); err == nil {
+		return nil // Already exists, skip.
+	}
 
 	// Check if the source file is a symlink.
 	info, err := os.Lstat(sourceFile)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No config to propagate.
-		}
 		return fmt.Errorf("lstat source: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return nil // Not a symlink, skip.
-	}
 
-	// Read the symlink target.
-	target, err := os.Readlink(sourceFile)
-	if err != nil {
-		return fmt.Errorf("readlink: %w", err)
-	}
-
-	// Create the same symlink in the new worktree.
-	destFile := filepath.Join(targetPath, ".pre-commit-config.yaml")
-	// Check if destination already exists.
-	if _, err := os.Stat(destFile); err == nil {
-		return nil // Already exists, skip.
-	}
-
-	if err := os.Symlink(target, destFile); err != nil {
-		return fmt.Errorf("create symlink: %w", err)
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Read the symlink target.
+		target, err := os.Readlink(sourceFile)
+		if err != nil {
+			return fmt.Errorf("readlink: %w", err)
+		}
+		// Create the same symlink in the new worktree.
+		if err := os.Symlink(target, destFile); err != nil {
+			return fmt.Errorf("create symlink: %w", err)
+		}
+	} else {
+		// Regular file - copy content.
+		data, err := os.ReadFile(sourceFile)
+		if err != nil {
+			return fmt.Errorf("read file: %w", err)
+		}
+		if err := os.WriteFile(destFile, data, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("write file: %w", err)
+		}
 	}
 
 	log.Printf("propagated .pre-commit-config.yaml to %s", targetPath)
