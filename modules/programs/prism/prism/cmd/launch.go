@@ -79,9 +79,7 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
-		if err := Restore(false); err != nil {
-			return err
-		}
+		Restore(false)
 		if _, err := tmux.SwitchClientCurrent("scratchpad"); err != nil {
 			return err
 		}
@@ -94,9 +92,7 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
-		if err := Restore(false); err != nil {
-			return err
-		}
+		Restore(false)
 		// Set a one-shot hook that opens the switcher as soon as the client attaches.
 		_, _ = tmux.Run("set-hook", "-t", "scratchpad", "client-attached",
 			"run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E '"+switcherCmd+"' ; set-hook -u client-attached",
@@ -121,6 +117,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 			";", "run-shell", "sleep 0.2",
 			";", "display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd,
 		)
+		// Restore() is not called here: this path hands off to a kitty subprocess
+		// and the tmux server is not yet established when we'd call it. The
+		// login/reboot scenario is covered by prism-restore.service instead.
 		return cmd.Start()
 	}
 }
