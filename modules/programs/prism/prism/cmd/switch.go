@@ -439,10 +439,11 @@ func promptBranchInput(prompt string) string {
 
 // sessionOpts carries optional parameters for agent launch when creating a new session.
 type sessionOpts struct {
-	prompt   string // passed as opencode --prompt "..."
-	agent    string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
-	headless bool   // if true, create the session but don't switch any client to it
-	fresh    bool   // if true, do not pass --continue to opencode
+	prompt          string // passed as opencode --prompt "..."
+	agent           string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
+	headless        bool   // if true, create the session but don't switch any client to it
+	fresh           bool   // if true, skip the stored opencode session ID and start fresh
+	opencodeSession string // opencode session ID to resume; "" means fresh start
 }
 
 // buildOpencodeCmd returns the opencode launch command string (without prompt).
@@ -459,13 +460,10 @@ func buildOpencodeCmd(opts sessionOpts, sessionName, directory string) string {
 		agent = "build"
 	}
 	cmd := "opencode --agent " + agent
-	isMain := filepath.Base(directory) == "main"
-	// fresh is ignored
-	if isMain {
-		cmd += " --continue"
-	} else {
-		cmd += " --session " + sessionName
+	if opts.opencodeSession != "" && !opts.fresh {
+		cmd += " -s " + opts.opencodeSession
 	}
+	// otherwise: no flag → opencode starts a new session
 	return cmd
 }
 
@@ -712,7 +710,8 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
-		opts := sessionOpts{}
+		fresh, _ := cmd.Flags().GetBool("fresh")
+		opts := sessionOpts{fresh: fresh}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -779,5 +778,6 @@ var switchCmd = &cobra.Command{
 
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
+	switchCmd.Flags().Bool("fresh", false, "Start a fresh opencode session, ignoring any stored session ID")
 	rootCmd.AddCommand(switchCmd)
 }

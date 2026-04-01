@@ -105,6 +105,9 @@ func restoreSession(s SavedSession) error {
 		}
 		// Recreate the full worktree session (edit/agent/term windows).
 		// headless=true so no client is switched.
-		return ensureAndSwitchSession(s.Dir, s.BareRoot, sessionOpts{headless: true})
+		return ensureAndSwitchSession(s.Dir, s.BareRoot, sessionOpts{
+			headless:        true,
+			opencodeSession: s.OpenCodeSession,
+		})
 	}
 }

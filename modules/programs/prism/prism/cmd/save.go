@@ -29,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/opencode"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -43,6 +44,10 @@ type SavedSession struct {
 	// BareRoot is the parent bare-repo directory, e.g. "/home/ben/code/nixos-config".
 	// Empty for sessions that are not inside a prism bare repo.
 	BareRoot string `json:"bare_root,omitempty"`
+	// OpenCodeSession is the opencode session ID most recently active in this
+	// worktree, as queried from the opencode database at save time.
+	// Empty for scratchpad, prism-dashboard, and sessions with no opencode history.
+	OpenCodeSession string `json:"opencode_session,omitempty"`
 }
 
 // saveStatePath returns the path to the sessions snapshot file.
@@ -100,9 +105,10 @@ func sessionToSaved(s tmux.Session) SavedSession {
 
 	bareRoot := git.BareRoot(dir)
 	return SavedSession{
-		Name:     s.Name,
-		Dir:      dir,
-		BareRoot: bareRoot,
+		Name:            s.Name,
+		Dir:             dir,
+		BareRoot:        bareRoot,
+		OpenCodeSession: opencode.LatestSessionForDir(dir),
 	}
 }
 

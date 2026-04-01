@@ -27,8 +27,7 @@ buildGoModule {
 
   src = ../modules/programs/prism/prism;
 
-  # vendor/ directory is committed, so buildGoModule uses it directly
-  vendorHash = null;
+  vendorHash = "sha256-tU+rnXKz3ALl7pJx7GYTo1hdr3CFMQS4Ih3UYLr4v54=";
 
   ldflags = [
     "-s"
