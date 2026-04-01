@@ -56,6 +56,8 @@ func runRestart(_ *cobra.Command, _ []string) error {
 	}
 
 	// 3. Restore sessions
+	// Restore() bootstraps the server itself by creating the scratchpad session
+	// as its first action, so no explicit bootstrap is needed here.
 	if err := Restore(false); err != nil {
 		return fmt.Errorf("failed to restore sessions: %w", err)
 	}

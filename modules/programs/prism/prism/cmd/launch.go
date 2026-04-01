@@ -76,6 +76,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 	switch {
 	case inTmux:
 		// Already inside tmux: switch to scratchpad then open the popup.
+		// Restore() is not called here: prism restart handles restore before
+		// re-execing into launch, and prism-restore.service covers the login/reboot
+		// scenario. runLaunch itself never restores.
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
@@ -88,6 +91,7 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 
 	case launchInTerminal:
 		// In a terminal but not in tmux: attach in-place, fire switcher once attached.
+		// Restore() is not called here for the same reason as the inTmux branch above.
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
@@ -115,6 +119,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 			";", "run-shell", "sleep 0.2",
 			";", "display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd,
 		)
+		// Restore() is not called here: prism restart handles restore before
+		// re-execing into launch, and prism-restore.service covers the login/reboot
+		// scenario. runLaunch itself never restores.
 		return cmd.Start()
 	}
 }
