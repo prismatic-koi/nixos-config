@@ -173,6 +173,13 @@ in
               # (every status-interval seconds). Cheap write; survives sudden shutdowns.
               set-hook -g after-refresh-client "run-shell -b '${prism} save'"
 
+              # --- DB lifecycle hooks ---
+
+              # Write tmux_session_start event when a new session is created.
+              set-hook -g session-created "run-shell '${prism} event tmux-session-start --session #{session_name} --worktree #{pane_current_path}'"
+              # Write tmux_session_end event when a session is closed.
+              set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{session_name}'"
+
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
               set-environment -r __HM_SESS_VARS_SOURCED
