@@ -710,7 +710,8 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
-		opts := sessionOpts{}
+		fresh, _ := cmd.Flags().GetBool("fresh")
+		opts := sessionOpts{fresh: fresh}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -777,5 +778,6 @@ var switchCmd = &cobra.Command{
 
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
+	switchCmd.Flags().Bool("fresh", false, "Start a fresh opencode session, ignoring any stored session ID")
 	rootCmd.AddCommand(switchCmd)
 }
