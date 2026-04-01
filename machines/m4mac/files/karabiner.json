@@ -19,7 +19,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ā" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type A" }],
                 "type": "basic"
               },
               {
@@ -32,7 +32,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ē" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type E" }],
                 "type": "basic"
               },
               {
@@ -45,7 +45,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ī" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type I" }],
                 "type": "basic"
               },
               {
@@ -58,7 +58,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ō" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type O" }],
                 "type": "basic"
               },
               {
@@ -71,7 +71,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ū" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type U" }],
                 "type": "basic"
               },
               {
@@ -83,7 +83,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ā" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type a" }],
                 "type": "basic"
               },
               {
@@ -95,7 +95,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ē" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type e" }],
                 "type": "basic"
               },
               {
@@ -107,7 +107,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ī" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type i" }],
                 "type": "basic"
               },
               {
@@ -119,7 +119,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ō" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type o" }],
                 "type": "basic"
               },
               {
@@ -131,7 +131,7 @@
                     ]
                   }
                 },
-                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ū" }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type u" }],
                 "type": "basic"
               },
               {
