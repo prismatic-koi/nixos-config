@@ -119,8 +119,8 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 			";", "run-shell", "sleep 0.2",
 			";", "display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd,
 		)
-		// Restore() is not called here: this path hands off to a kitty subprocess
-		// and the tmux server is not yet established when we'd call it. The
+		// Restore() is not called here: (1) the tmux server does not exist yet —
+		// kitty will start it — so there is no server to talk to. (2) The
 		// login/reboot scenario is covered by prism-restore.service instead.
 		return cmd.Start()
 	}
