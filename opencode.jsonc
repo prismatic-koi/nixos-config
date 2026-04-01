@@ -5,9 +5,6 @@
   // the remote will reject anything that hasn't gone through a PR. This reduces
   // friction for the build agent when landing work.
   "$schema": "https://opencode.ai/config.json",
-  // Use coordinator as default agent for interactive sessions in this repo.
-  // (prism spawn already defaults spawned agents to "build" via its own --agent flag.)
-  "default_agent": "coordinator",
   // Agent-scoped permissions are merged with the global config and take precedence
   // (per opencode docs: "Agent permissions are merged with the global config, and
   // agent rules take precedence"). Overriding within `agent.build` is therefore

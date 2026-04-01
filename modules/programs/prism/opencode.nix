@@ -464,6 +464,10 @@
               # playwright-cli depends on chromium which is Linux-only
               playwright-cli
             ];
+          home.sessionVariables = lib.mkIf (config.nx.programs.prism.opencode.provider == "anthropic") {
+            ANTHROPIC_API_KEY = "dummy";
+            ANTHROPIC_BASE_URL = "http://127.0.0.1:3456";
+          };
           programs.zsh.shellAliases = {
             # set environment variables for opencode
             opencode = "${envPrefix} opencode";

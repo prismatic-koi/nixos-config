@@ -451,7 +451,7 @@ type sessionOpts struct {
 // See: https://github.com/anomalyco/opencode/issues/8850
 //
 //	https://github.com/anomalyco/opencode/issues/14349
-func buildOpencodeCmd(opts sessionOpts) string {
+func buildOpencodeCmd(opts sessionOpts, sessionName, directory string) string {
 	agent := opts.agent
 	if agent == "" {
 		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
@@ -459,8 +459,12 @@ func buildOpencodeCmd(opts sessionOpts) string {
 		agent = "build"
 	}
 	cmd := "opencode --agent " + agent
-	if !opts.fresh {
+	isMain := filepath.Base(directory) == "main"
+	// fresh is ignored
+	if isMain {
 		cmd += " --continue"
+	} else {
+		cmd += " --session " + sessionName
 	}
 	return cmd
 }
@@ -549,7 +553,7 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
-			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
+			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts, sessionName, directory))
 			// Work around opencode bug where --prompt is ignored on TUI launch.
 			// Instead, send the prompt as keystrokes once opencode signals that
 			// it is ready (i.e. @agent_state == "finished" on the agent window).
@@ -708,8 +712,7 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
-		fresh, _ := cmd.Flags().GetBool("fresh")
-		opts := sessionOpts{fresh: fresh}
+		opts := sessionOpts{}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -776,6 +779,5 @@ var switchCmd = &cobra.Command{
 
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
-	switchCmd.Flags().Bool("fresh", false, "Start a new session without --continue")
 	rootCmd.AddCommand(switchCmd)
 }

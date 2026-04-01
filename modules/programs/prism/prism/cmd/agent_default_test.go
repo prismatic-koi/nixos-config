@@ -50,21 +50,23 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 
 func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	cases := []struct {
-		opts sessionOpts
-		want string
+		opts        sessionOpts
+		sessionName string
+		directory   string
+		want        string
 	}{
-		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator --continue"},
-		{sessionOpts{agent: "build"}, "opencode --agent build --continue"},
-		{sessionOpts{agent: "custom"}, "opencode --agent custom --continue"},
+		{sessionOpts{agent: "coordinator"}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent coordinator --continue"},
+		{sessionOpts{agent: "build"}, "nixos-config@feature-foo", "/home/user/repos/nixos-config/feature-foo", "opencode --agent build --session nixos-config@feature-foo"},
+		{sessionOpts{agent: "custom"}, "nixos-config@custom", "/home/user/repos/nixos-config/custom", "opencode --agent custom --session nixos-config@custom"},
 		// Safety-net fallback: empty agent still yields "build".
-		{sessionOpts{}, "opencode --agent build --continue"},
+		{sessionOpts{}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent build --continue"},
 		// Fresh start
-		{sessionOpts{agent: "build", fresh: true}, "opencode --agent build"},
+		{sessionOpts{agent: "build", fresh: true}, "nixos-config@main", "/home/user/repos/nixos-config/main", "opencode --agent build --continue"},
 	}
 	for _, tc := range cases {
-		got := buildOpencodeCmd(tc.opts)
+		got := buildOpencodeCmd(tc.opts, tc.sessionName, tc.directory)
 		if got != tc.want {
-			t.Errorf("buildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
+			t.Errorf("buildOpencodeCmd(%+v, %q, %q) = %q, want %q", tc.opts, tc.sessionName, tc.directory, got, tc.want)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,7 +30,15 @@ func runRestart(_ *cobra.Command, _ []string) error {
 	// 2. Kill tmux server
 	_, _ = tmux.Run("kill-server")
 
-	// 3. Re-exec
+	// Wait for server to die (kill-server is async).
+	time.Sleep(500 * time.Millisecond)
+
+	// 3. Restore sessions
+	if err := Restore(false); err != nil {
+		return fmt.Errorf("failed to restore sessions: %w", err)
+	}
+
+	// 4. Re-exec
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %w", err)
