@@ -56,17 +56,20 @@ in
   };
 
   # Darwin-specific packages not in shared modules
-  environment.systemPackages = with pkgs; [
-    arping
-    gnutar
-    mysql80
-    podman # darwin doesn't use virtualisation.podman
-    postgresql
-    rustup
-    tree
-    tridactyl-native
-    utm
-  ];
+  environment.systemPackages =
+    with pkgs;
+    [
+      arping
+      gnutar
+      mysql80
+      podman # darwin doesn't use virtualisation.podman
+      postgresql
+      rustup
+      tree
+      tridactyl-native
+      utm
+    ]
+    ++ [ macron-type ];
 
   security.sudo.extraConfig = ''
     ${username} ALL=(ALL:ALL) NOPASSWD: ALL
