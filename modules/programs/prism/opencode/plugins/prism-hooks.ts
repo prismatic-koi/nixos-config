@@ -1,11 +1,46 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { appendFileSync } from "fs";
+import * as path from "path";
+import * as fs from "fs";
+import { Database } from "bun:sqlite";
+import { homedir } from "os";
 
 const PERMISSION_LOG =
   (process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`) +
   "/opencode/permission-asks.jsonl";
 
-export const PrismHooks: Plugin = async ({ $ }) => {
+function deriveSessionName(worktree: string): string | null {
+  // Walk up to find .bare marker
+  let dir = worktree;
+  let bareRoot: string | null = null;
+  while (true) {
+    if (fs.existsSync(path.join(dir, ".bare"))) {
+      bareRoot = dir;
+      break;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+  if (!bareRoot) {
+    console.warn("[prism-hooks] no .bare marker found — DB writes disabled");
+    return null;
+  }
+
+  let repo = path.basename(bareRoot);
+  if (repo.endsWith(".git")) repo = repo.slice(0, -4);
+
+  const result = Bun.spawnSync(["git", "-C", worktree, "symbolic-ref", "HEAD"]);
+  if (result.exitCode !== 0) {
+    console.warn("[prism-hooks] git symbolic-ref failed — DB writes disabled");
+    return null;
+  }
+  const ref = new TextDecoder().decode(result.stdout).trim();
+  const branch = ref.replace("refs/heads/", "").replaceAll("/", "--");
+  return `${repo}@${branch}`;
+}
+
+export const PrismHooks: Plugin = async ({ $, worktree }) => {
   const notify = (state: string) =>
     $`echo '{}' | prism notify ${state}`.quiet().nothrow();
 
@@ -26,36 +61,177 @@ export const PrismHooks: Plugin = async ({ $ }) => {
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
 
+  // Derive session name from worktree
+  const sessionName = deriveSessionName(worktree);
+
+  // Open DB
+  const stateHome = process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local/state");
+  const dbPath = path.join(stateHome, "prism", "prism.db");
+
+  let db: Database | null = null;
+  if (sessionName) {
+    try {
+      if (fs.existsSync(dbPath)) {
+        db = new Database(dbPath, { create: false });
+      } else {
+        console.warn("[prism-hooks] prism.db not found — DB writes disabled");
+      }
+    } catch (e) {
+      console.error("[prism-hooks] failed to open prism.db:", e);
+    }
+  }
+
+  // Prepared statements (only if db is open)
+  const upsertStatus = db?.prepare(`
+    INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_name) DO UPDATE SET
+      state        = excluded.state,
+      title        = COALESCE(excluded.title, title),
+      opencode_sid = COALESCE(excluded.opencode_sid, opencode_sid),
+      last_seen    = excluded.last_seen
+  `);
+
+  const updateTitleSid = db?.prepare(`
+    UPDATE agent_status SET
+      title        = COALESCE(?, title),
+      opencode_sid = COALESCE(?, opencode_sid),
+      last_seen    = ?
+    WHERE session_name = ?
+  `);
+
+  const insertEvent = db?.prepare(`
+    INSERT INTO agent_events (id, session_name, repo, worktree, opencode_sid, type, payload, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertBusMsg = db?.prepare(`
+    INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+  `);
+
+  const getStatus = db?.prepare(`SELECT state FROM agent_status WHERE session_name = ?`);
+
+  const activeCoord = db?.prepare(`
+    SELECT session_name FROM agent_status
+    WHERE session_name = ? AND ended_at IS NULL AND last_seen > ?
+  `);
+
+  // Helpers (closed over db, sessionName, worktree)
+  const repo = sessionName ? sessionName.split("@")[0]! : "";
+
+  function writeEvent(type: string, payload: unknown, opencodeSid?: string | null): void {
+    if (!db || !sessionName || !insertEvent) return;
+    try {
+      insertEvent.run(
+        crypto.randomUUID(), sessionName, repo, worktree,
+        opencodeSid ?? null, type, JSON.stringify(payload), Date.now()
+      );
+    } catch (e) { console.error("[prism-hooks] writeEvent failed:", e); }
+  }
+
+  function upsertAgentStatus(state: string, title?: string | null, opencodeSid?: string | null): void {
+    if (!db || !sessionName || !upsertStatus) return;
+    try {
+      upsertStatus.run(sessionName, repo, worktree, state, title ?? null, opencodeSid ?? null, Date.now());
+    } catch (e) { console.error("[prism-hooks] upsertStatus failed:", e); }
+  }
+
+  function notifyCoordinator(message: string): void {
+    if (!db || !sessionName || !activeCoord || !insertBusMsg) return;
+    try {
+      const coordName = `${repo}@main`;
+      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+      const coord = activeCoord.get(coordName, fiveMinutesAgo) as { session_name: string } | undefined;
+      if (coord) {
+        insertBusMsg.run(crypto.randomUUID(), sessionName, coordName, repo, message, "normal", Date.now());
+      }
+    } catch (e) { console.error("[prism-hooks] notifyCoordinator failed:", e); }
+  }
+
   return {
     event: async ({ event }) => {
       switch (event.type) {
         case "session.status":
           if (event.properties.status.type === "busy") {
             // Don't overwrite compacting state with active.
-            if (!compacting) await notify("set-active");
-          } else if (event.properties.status.type === "retry")
+            if (!compacting) {
+              await notify("set-active");
+              // DB
+              upsertAgentStatus("active");
+              writeEvent("state_change", { state: "active" });
+            }
+          } else if (event.properties.status.type === "retry") {
             await notify("set-error");
-          else if (event.properties.status.type === "idle")
+            // DB
+            upsertAgentStatus("error");
+            writeEvent("state_change", { state: "error" });
+          } else if (event.properties.status.type === "idle") {
             await notify("set-finished");
+          }
           break;
-        case "session.idle":
+
+        case "session.idle": {
           await notify("set-finished");
-          break;
-        case "session.created":
-        case "session.updated": {
-          const info = event.properties.info;
-          if (info.title) await setTitle(info.title);
-          // session.updated fires with info.compacting set when compaction starts.
-          if (info.compacting) {
-            compacting = true;
-            await notify("set-compacting");
+          // DB
+          let prevState: string | null = null;
+          if (db && sessionName && getStatus) {
+            try {
+              const row = getStatus.get(sessionName) as { state: string } | undefined;
+              prevState = row?.state ?? null;
+            } catch (e) { console.error("[prism-hooks] getStatus failed:", e); }
+          }
+          upsertAgentStatus("finished");
+          writeEvent("state_change", { state: "finished" });
+          if (prevState === "active") {
+            notifyCoordinator(`Agent ${sessionName} has finished its current task`);
           }
           break;
         }
-        case "session.deleted":
+
+        case "session.created": {
+          const info = event.properties.info;
+          if (info.title) await setTitle(info.title);
+          // DB
+          upsertAgentStatus("active", info.title || null, info.id);
+          writeEvent("state_change", { state: "active" }, info.id);
+          break;
+        }
+
+        case "session.updated": {
+          const info = event.properties.info;
+          if (info.title) await setTitle(info.title);
+          if (info.time.compacting != null) {
+            compacting = true;
+            await notify("set-compacting");
+            // DB
+            writeEvent("compaction", { note: "compaction started" }, info.id);
+            upsertAgentStatus("compacting", null, info.id);
+          } else {
+            // DB: only update metadata, don't overwrite state
+            if (db && sessionName && updateTitleSid) {
+              try {
+                updateTitleSid.run(info.title || null, info.id, Date.now(), sessionName);
+              } catch (e) { console.error("[prism-hooks] updateTitleSid failed:", e); }
+            }
+          }
+          break;
+        }
+
+        case "session.deleted": {
           await notify("clear");
           await clearTitle();
+          // DB
+          const info = event.properties.info;
+          if (db && sessionName) {
+            try {
+              db.run("UPDATE agent_status SET ended_at = ? WHERE session_name = ?", Date.now(), sessionName);
+            } catch (e) { console.error("[prism-hooks] setEnded failed:", e); }
+          }
+          writeEvent("state_change", { state: "deleted" }, info.id);
           break;
+        }
+
         case "permission.asked": {
           // prism notify returns immediately (display-message runs async in Go).
           await notify("set-waiting");
@@ -72,28 +248,75 @@ export const PrismHooks: Plugin = async ({ $ }) => {
             tool: props.tool,
           });
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
+          // DB
+          upsertAgentStatus("waiting");
+          writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns });
           break;
         }
+
         case "permission.replied":
           await notify("set-active");
+          // DB
+          upsertAgentStatus("active");
+          writeEvent("state_change", { state: "active" });
           break;
+
         // question.asked fires when the agent uses the question tool to ask
         // the user something — treat identically to a permission wait.
         case "question.asked":
           await notify("set-waiting");
+          // DB
+          upsertAgentStatus("waiting");
+          writeEvent("state_change", { state: "waiting" });
           break;
+
         case "question.replied":
         case "question.rejected":
           await notify("set-active");
+          // DB
+          upsertAgentStatus("active");
+          writeEvent("state_change", { state: "active" });
           break;
+
         case "session.error":
           await notify("set-error");
+          // DB
+          upsertAgentStatus("error");
+          writeEvent("error", { note: "session error" });
           break;
+
         case "session.compacted":
           // Compaction done — agent returns to idle.
           compacting = false;
           await notify("set-finished");
+          // DB
+          upsertAgentStatus("finished");
+          writeEvent("compaction", { note: "compaction complete" });
+          notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
           break;
+
+        case "message.updated": {
+          const info = event.properties.info as any;
+          if (info.role === "user") {
+            writeEvent("msg_user", { messageId: info.id });
+          } else if (info.role === "assistant") {
+            writeEvent("msg_assistant", { messageId: info.id });
+          }
+          break;
+        }
+
+        case "message.part.updated": {
+          const part = (event.properties as any).part;
+          if (part.type === "tool" && part.state?.status === "completed") {
+            const args = JSON.stringify(part.state.input ?? {}).slice(0, 500);
+            const result = String(part.state.output ?? "").slice(0, 500);
+            writeEvent("tool_call",   { tool: part.tool, args,   messageId: part.messageID });
+            writeEvent("tool_result", { tool: part.tool, result, messageId: part.messageID });
+          } else if (part.type === "reasoning") {
+            writeEvent("thinking", { text: String(part.text ?? "").slice(0, 500), messageId: part.messageID });
+          }
+          break;
+        }
       }
     },
 
