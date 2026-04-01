@@ -69,10 +69,7 @@ in
       tridactyl-native
       utm
     ]
-    ++ [
-      macron-type
-      macron-send
-    ];
+    ++ [ macron-send ];
 
   security.sudo.extraConfig = ''
     ${username} ALL=(ALL:ALL) NOPASSWD: ALL

@@ -18,9 +18,10 @@ let macrons: [Character: UniChar] = [
 ]
 
 func postMacron(_ key: Character) {
-    guard let uchar = macrons[key] else { return }
-    var keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
-    var keyUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)!
+    guard let uchar = macrons[key],
+          var keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+          var keyUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+    else { return }
     keyDown.keyboardSetUnicodeString(stringLength: 1, unicodeString: [uchar])
     keyUp.keyboardSetUnicodeString(stringLength: 1,  unicodeString: [uchar])
     keyDown.post(tap: .cgSessionEventTap)

@@ -44,6 +44,8 @@ let
 
     src = ../modules/programs/macron-type;
 
+    nativeBuildInputs = [ stdenv.cc ];
+
     buildPhase = ''
       runHook preBuild
       cc -o macron-send macron-send.c

@@ -31,7 +31,11 @@ int main(int argc, char *argv[]) {
     }
 
     char c = argv[1][0];
-    write(fd, &c, 1);
+    if (write(fd, &c, 1) != 1) {
+        perror("macron-send: write");
+        close(fd);
+        return 1;
+    }
     close(fd);
     return 0;
 }
