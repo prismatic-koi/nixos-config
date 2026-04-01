@@ -69,7 +69,7 @@ in
       tridactyl-native
       utm
     ]
-    ++ lib.optional stdenv.isDarwin macron-type;
+    ++ [ macron-type ];
 
   security.sudo.extraConfig = ''
     ${username} ALL=(ALL:ALL) NOPASSWD: ALL
