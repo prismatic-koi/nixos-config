@@ -30,13 +30,27 @@ function deriveSessionName(worktree: string): string | null {
   let repo = path.basename(bareRoot);
   if (repo.endsWith(".git")) repo = repo.slice(0, -4);
 
-  const result = Bun.spawnSync(["git", "-C", worktree, "symbolic-ref", "HEAD"]);
-  if (result.exitCode !== 0) {
-    console.warn("[prism-hooks] git symbolic-ref failed — DB writes disabled");
-    return null;
+  // Derive branch component — mirrors worktreeBranchComponent() in cmd/switch.go.
+  let branch: string;
+  const symResult = Bun.spawnSync(["git", "-C", worktree, "symbolic-ref", "HEAD"]);
+  if (symResult.exitCode === 0) {
+    const ref = new TextDecoder().decode(symResult.stdout).trim();
+    const stripped = ref.replace(/^refs\/heads\//, "");
+    // The "--" substitution for "/" is for tmux session name compatibility only.
+    // tmux does not allow "/" in session names. If tmux is ever removed in favour
+    // of a custom TUI, restore full branch names with "/" here and in the plugin.
+    branch = stripped.replaceAll("/", "--");
+  } else {
+    // Detached HEAD — fall back to short commit hash.
+    const hashResult = Bun.spawnSync(["git", "-C", worktree, "rev-parse", "--short", "HEAD"]);
+    if (hashResult.exitCode === 0) {
+      branch = new TextDecoder().decode(hashResult.stdout).trim();
+    } else {
+      // Not a git repo or both commands failed — fall back to directory basename.
+      branch = path.basename(worktree).replaceAll(".", "_");
+    }
   }
-  const ref = new TextDecoder().decode(result.stdout).trim();
-  const branch = ref.replace("refs/heads/", "").replaceAll("/", "--");
+
   return `${repo}@${branch}`;
 }
 
