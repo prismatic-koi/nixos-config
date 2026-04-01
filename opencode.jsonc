@@ -35,6 +35,12 @@
     },
     "coordinator": {
       "permission": {
+        // Allow the coordinator to read files across all worktrees of this repo
+        // (e.g. to review a peer agent's branch locally without gh API calls).
+        // external_directory must be explicitly allowed for paths outside the
+        // session's working directory; it defaults to "ask".
+        // The edit/write denies layer on top to enforce read-only access —
+        // this is the documented pattern from opencode.ai/docs/permissions/#external-directories.
         "external_directory": {
           "~/code/nixos-config/**": "allow"
         },
