@@ -205,7 +205,7 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
         case "session.updated": {
           const info = event.properties.info;
           if (info.title) await setTitle(info.title);
-          if (info.time.compacting != null) {
+          if (info.time?.compacting != null) {
             compacting = true;
             await notify("set-compacting");
             // DB
@@ -289,15 +289,25 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
           writeEvent("error", { note: "session error" });
           break;
 
-        case "session.compacted":
+        case "session.compacted": {
           // Compaction done — agent returns to idle.
           compacting = false;
           await notify("set-finished");
           // DB
+          let prevStateCompact: string | null = null;
+          if (db && sessionName && getStatus) {
+            try {
+              const row = getStatus.get(sessionName) as { state: string } | undefined;
+              prevStateCompact = row?.state ?? null;
+            } catch (e) { console.error("[prism-hooks] getStatus failed:", e); }
+          }
           upsertAgentStatus("finished");
           writeEvent("compaction", { note: "compaction complete" });
-          notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
+          if (prevStateCompact === "active" || prevStateCompact === "compacting") {
+            notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
+          }
           break;
+        }
 
         case "message.updated": {
           const info = event.properties.info as any;
@@ -319,7 +329,8 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
             const result = String(part.state.output ?? "").slice(0, 500);
             writeEvent("tool_call",   { tool: part.tool, args,   messageId: part.messageID });
             writeEvent("tool_result", { tool: part.tool, result, messageId: part.messageID });
-          } else if (part.type === "reasoning") {
+          } else if (part.type === "reasoning" && part.time?.end != null) {
+            // Only write when the reasoning block is complete to avoid one row per token.
             writeEvent("thinking", { text: String(part.text ?? "").slice(0, 500), messageId: part.messageID });
           }
           break;
