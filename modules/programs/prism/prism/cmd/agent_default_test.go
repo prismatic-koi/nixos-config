@@ -50,63 +50,25 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 
 func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	cases := []struct {
-		opts        sessionOpts
-		sessionName string
-		directory   string
-		want        string
+		opts sessionOpts
+		want string
 	}{
 		// With a stored opencode session ID — should use -s <id>.
-		{
-			sessionOpts{agent: "coordinator", opencodeSession: "ses_abc123"},
-			"nixos-config@main",
-			"/home/user/repos/nixos-config/main",
-			"opencode --agent coordinator -s ses_abc123",
-		},
-		{
-			sessionOpts{agent: "build", opencodeSession: "ses_xyz789"},
-			"nixos-config@feature-foo",
-			"/home/user/repos/nixos-config/feature-foo",
-			"opencode --agent build -s ses_xyz789",
-		},
+		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc123"}, "opencode --agent coordinator -s ses_abc123"},
+		{sessionOpts{agent: "build", opencodeSession: "ses_xyz789"}, "opencode --agent build -s ses_xyz789"},
 		// No stored session — no session flag.
-		{
-			sessionOpts{agent: "coordinator"},
-			"nixos-config@main",
-			"/home/user/repos/nixos-config/main",
-			"opencode --agent coordinator",
-		},
-		{
-			sessionOpts{agent: "build"},
-			"nixos-config@feature-foo",
-			"/home/user/repos/nixos-config/feature-foo",
-			"opencode --agent build",
-		},
+		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator"},
+		{sessionOpts{agent: "build"}, "opencode --agent build"},
 		// fresh=true suppresses the stored session ID even if set.
-		{
-			sessionOpts{agent: "build", fresh: true, opencodeSession: "ses_abc123"},
-			"nixos-config@main",
-			"/home/user/repos/nixos-config/main",
-			"opencode --agent build",
-		},
+		{sessionOpts{agent: "build", fresh: true, opencodeSession: "ses_abc123"}, "opencode --agent build"},
 		// Safety-net fallback: empty agent still yields "build".
-		{
-			sessionOpts{opencodeSession: "ses_abc123"},
-			"nixos-config@main",
-			"/home/user/repos/nixos-config/main",
-			"opencode --agent build -s ses_abc123",
-		},
-		// Safety-net fallback with no session and empty agent.
-		{
-			sessionOpts{},
-			"nixos-config@main",
-			"/home/user/repos/nixos-config/main",
-			"opencode --agent build",
-		},
+		{sessionOpts{opencodeSession: "ses_abc123"}, "opencode --agent build -s ses_abc123"},
+		{sessionOpts{}, "opencode --agent build"},
 	}
 	for _, tc := range cases {
-		got := buildOpencodeCmd(tc.opts, tc.sessionName, tc.directory)
+		got := buildOpencodeCmd(tc.opts)
 		if got != tc.want {
-			t.Errorf("buildOpencodeCmd(%+v, %q, %q) = %q, want %q", tc.opts, tc.sessionName, tc.directory, got, tc.want)
+			t.Errorf("buildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
 		}
 	}
 }
