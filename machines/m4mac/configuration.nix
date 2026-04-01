@@ -69,7 +69,7 @@ in
       tridactyl-native
       utm
     ]
-    ++ [ macron-type ];
+    ++ [ macron-send ];
 
   security.sudo.extraConfig = ''
     ${username} ALL=(ALL:ALL) NOPASSWD: ALL
@@ -187,6 +187,18 @@ in
           RunAtLoad = true;
           StandardOutPath = "/tmp/jankyborders.log";
           StandardErrorPath = "/tmp/jankyborders.log";
+        };
+      };
+      # launchd user agent to run macron-type socket server in the GUI session
+      # so CGEventPost has the correct session context
+      launchd.agents.macron-type = {
+        enable = true;
+        config = {
+          ProgramArguments = [ "${pkgs.macron-type}/bin/macron-type" ];
+          KeepAlive = true;
+          RunAtLoad = true;
+          StandardOutPath = "/tmp/macron-type.log";
+          StandardErrorPath = "/tmp/macron-type.log";
         };
       };
       home = {

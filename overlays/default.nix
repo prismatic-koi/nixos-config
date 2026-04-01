@@ -37,7 +37,10 @@ rec {
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
-      macron-type = if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
+      _macronTypePkg =
+        if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
+      macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;
+      macron-send = if final.stdenv.isDarwin then final._macronTypePkg.client else null;
 
     };
 }
