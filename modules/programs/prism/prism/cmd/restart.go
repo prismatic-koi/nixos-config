@@ -1,0 +1,49 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/tmux"
+)
+
+var restartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Save sessions, kill tmux, and re-launch",
+	RunE:  runRestart,
+}
+
+func init() {
+	rootCmd.AddCommand(restartCmd)
+}
+
+func runRestart(_ *cobra.Command, _ []string) error {
+	// 1. Save state
+	if err := runSave(nil, nil); err != nil {
+		return fmt.Errorf("failed to save state: %w", err)
+	}
+
+	// 2. Kill tmux server
+	_, _ = tmux.Run("kill-server")
+
+	// Wait for server to die (kill-server is async).
+	time.Sleep(500 * time.Millisecond)
+
+	// 3. Restore sessions
+	if err := Restore(false); err != nil {
+		return fmt.Errorf("failed to restore sessions: %w", err)
+	}
+
+	// 4. Re-exec
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("could not determine executable path: %w", err)
+	}
+
+	// Re-exec with "launch"
+	return syscall.Exec(executable, []string{executable, "launch"}, os.Environ())
+}

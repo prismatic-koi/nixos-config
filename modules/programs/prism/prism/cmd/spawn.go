@@ -10,7 +10,7 @@ package cmd
 //	--pr <number>         check out the branch for a given PR number
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
-//	--agent <name>        opencode agent to use (default: build)
+//	--agent <name>        opencode agent to use (default: "coordinator" on main, "build" otherwise)
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ func init() {
 	spawnCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
 	addPromptFlags(spawnCmd)
-	spawnCmd.Flags().String("agent", "", "Opencode agent to use (default: build)")
+	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "build" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	rootCmd.AddCommand(spawnCmd)
 }

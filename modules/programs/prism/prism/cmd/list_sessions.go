@@ -47,19 +47,7 @@ var listSessionsCmd = &cobra.Command{
 				title = title[:57] + "..."
 			}
 			// Colour the state field.
-			var stateColour string
-			switch state {
-			case "active":
-				stateColour = ColorPurple
-			case "waiting":
-				stateColour = ColorYellow
-			case "finished":
-				stateColour = ColorGreen
-			default:
-				stateColour = ColorSecondary
-			}
-			stateStyled := lipgloss.NewStyle().Foreground(lipgloss.Color(stateColour)).
-				Render(fmt.Sprintf("%-8s", state))
+			stateStyled := stateStyle(state).Render(fmt.Sprintf("%-8s", state))
 
 			// Only bold worktree sessions (project@branch).
 			nameStyle := styleTitle

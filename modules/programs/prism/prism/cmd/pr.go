@@ -10,7 +10,7 @@ package cmd
 //	--repo <name>         target repo by folder name under ~/code (or full path)
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
-//	--agent <name>        opencode agent to use (default: build)
+//	--agent <name>        opencode agent to use (default: "coordinator" on main, "build" otherwise)
 //	--attach              switch the current tmux client to the new session
 
 import (
@@ -65,7 +65,7 @@ var prCmd = &cobra.Command{
 func init() {
 	prCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
 	addPromptFlags(prCmd)
-	prCmd.Flags().String("agent", "", "Opencode agent to use (default: build)")
+	prCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "build" otherwise)`)
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	rootCmd.AddCommand(prCmd)
 }

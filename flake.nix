@@ -1,7 +1,6 @@
 {
   description = "Nixos config flake";
 
-  # Cache
   nixConfig = {
     extra-substituters = [
       "https://nix-community.cachix.org"
@@ -15,30 +14,21 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-
-    # specific versions of nixpkgs for use in overlays
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.11";
     nixpkgs-master.url = "github:nixos/nixpkgs/master";
-
-    # disk formatting
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     impermanence.url = "github:nix-community/impermanence";
-
-    # sops
     sops-nix = {
       url = "github:mic92/sops-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
     home-manager = {
       url = "github:nix-community/home-manager/master";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-
-    # Darwin support
     darwin = {
       url = "github:lnl7/nix-darwin";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -55,7 +45,12 @@
     }@inputs:
     let
       inherit (self) outputs;
-      # Reusable function for creating system configurations
+      systems = [
+        "x86_64-linux"
+        "aarch64-darwin"
+      ];
+      forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+
       mkSystem =
         {
           system,
@@ -64,7 +59,7 @@
           extraConfig ? { },
         }:
         let
-          lib = nixpkgs.lib; # Inherit lib from nixpkgs
+          lib = nixpkgs.lib;
         in
         nixpkgs.lib.nixosSystem {
           inherit system;
@@ -72,7 +67,7 @@
             inherit system;
             config = lib.mkMerge [
               { allowUnfree = true; }
-              extraConfig # Merge any extra configuration like rocmSupport
+              extraConfig
             ];
             overlays = [ self.overlays.modifications ];
           };
@@ -80,20 +75,14 @@
             inherit inputs outputs;
             isLinux = true;
           };
-          modules =
-            let
-              defaults = { pkgs, ... }: { };
-            in
-            [
-              defaults
-              ./machines/${configFile}/configuration.nix
-              home-manager.nixosModules.default
-              inputs.impermanence.nixosModules.impermanence
-            ]
-            ++ extraModules;
+          modules = [
+            ./machines/${configFile}/configuration.nix
+            home-manager.nixosModules.default
+            inputs.impermanence.nixosModules.impermanence
+          ]
+          ++ extraModules;
         };
 
-      # Reusable function for creating Darwin system configurations
       mkDarwinSystem =
         {
           system,
@@ -102,7 +91,7 @@
           extraConfig ? { },
         }:
         let
-          lib = nixpkgs.lib; # Inherit lib from nixpkgs
+          lib = nixpkgs.lib;
         in
         darwin.lib.darwinSystem {
           inherit system;
@@ -111,9 +100,9 @@
             config = lib.mkMerge [
               {
                 allowUnfree = true;
-                allowUnsupportedSystem = true; # needed for packages with linux-only meta.platforms evaluated on darwin
+                allowUnsupportedSystem = true;
               }
-              extraConfig # Merge any extra configuration
+              extraConfig
             ];
             overlays = [ self.overlays.modifications ];
           };
@@ -121,31 +110,18 @@
             inherit inputs outputs;
             isLinux = false;
           };
-          modules =
-            let
-              defaults = { pkgs, ... }: { };
-            in
-            [
-              defaults
-              ./machines/${configFile}/configuration.nix
-              home-manager.darwinModules.home-manager
-              # Explicitly imported here - modules/darwin is NOT imported anywhere else.
-              # Do not remove thinking it's a duplicate; it provides Darwin stubs for
-              # Linux-only options (boot, environment.persistence, systemd, etc.) that
-              # shared modules reference, allowing them to evaluate on Darwin without errors.
-              ./modules/darwin/impermanence-stub.nix
-            ]
-            ++ extraModules;
+          modules = [
+            ./machines/${configFile}/configuration.nix
+            home-manager.darwinModules.home-manager
+            ./modules/darwin/impermanence-stub.nix
+          ]
+          ++ extraModules;
         };
     in
     {
       overlays = import ./overlays { inherit inputs outputs; };
 
-      # Formatter for nix fmt
-      formatter = {
-        x86_64-linux = nixpkgs.legacyPackages.x86_64-linux.nixfmt;
-        aarch64-darwin = nixpkgs.legacyPackages.aarch64-darwin.nixfmt;
-      };
+      formatter = forEachSystem (pkgs: pkgs.nixfmt);
 
       nixosConfigurations = {
         navi = mkSystem {
@@ -164,5 +140,13 @@
           configFile = "m4mac";
         };
       };
+
+      devShells = forEachSystem (pkgs: {
+        default = pkgs.mkShell {
+          buildInputs = [
+            pkgs.sops
+          ];
+        };
+      });
     };
 }

@@ -440,8 +440,9 @@ func promptBranchInput(prompt string) string {
 // sessionOpts carries optional parameters for agent launch when creating a new session.
 type sessionOpts struct {
 	prompt   string // passed as opencode --prompt "..."
-	agent    string // passed as opencode --agent <name>; defaults to "build"
+	agent    string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
 	headless bool   // if true, create the session but don't switch any client to it
+	fresh    bool   // if true, do not pass --continue to opencode
 }
 
 // buildOpencodeCmd returns the opencode launch command string (without prompt).
@@ -450,12 +451,22 @@ type sessionOpts struct {
 // See: https://github.com/anomalyco/opencode/issues/8850
 //
 //	https://github.com/anomalyco/opencode/issues/14349
-func buildOpencodeCmd(opts sessionOpts) string {
+func buildOpencodeCmd(opts sessionOpts, sessionName, directory string) string {
 	agent := opts.agent
 	if agent == "" {
+		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
+		// before calling here.
 		agent = "build"
 	}
-	return "opencode --agent " + agent
+	cmd := "opencode --agent " + agent
+	isMain := filepath.Base(directory) == "main"
+	// fresh is ignored
+	if isMain {
+		cmd += " --continue"
+	} else {
+		cmd += " --session " + sessionName
+	}
+	return cmd
 }
 
 // shellQuote wraps s in single quotes, escaping any single quotes within.
@@ -475,6 +486,22 @@ func sessionNameFor(dir, projectRoot string) string {
 	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
 }
 
+// defaultAgent returns the agent to use for the given directory.
+// If explicit is non-empty it is returned unchanged.
+// Otherwise "coordinator" is returned for the "main" worktree and "build" for
+// everything else (including the scratchpad, which resolves to the home dir).
+// Only an exact match on "main" triggers coordinator — case variants and
+// substrings (e.g. "Main", "maintain") resolve to "build".
+func defaultAgent(directory, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if filepath.Base(directory) == "main" {
+		return "coordinator"
+	}
+	return "build"
+}
+
 func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
 	var sessionName string
 	var directory string
@@ -487,6 +514,9 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 		directory = expandHome(path)
 		sessionName = sessionNameFor(directory, projectRoot)
 	}
+
+	// Default agent based on worktree name; an explicit value is never overridden.
+	opts.agent = defaultAgent(directory, opts.agent)
 
 	if !tmux.HasSession(sessionName) {
 		if err := tmux.NewSessionDetached(sessionName, directory); err != nil {
@@ -523,7 +553,7 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
-			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
+			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts, sessionName, directory))
 			// Work around opencode bug where --prompt is ignored on TUI launch.
 			// Instead, send the prompt as keystrokes once opencode signals that
 			// it is ready (i.e. @agent_state == "finished" on the agent window).
@@ -569,7 +599,7 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string) error {
+func handleBareRepo(projectPath string, opts sessionOpts) error {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -597,16 +627,16 @@ func handleBareRepo(projectPath string) error {
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-		return ensureAndSwitchSession(worktreePath, projectPath, sessionOpts{})
+		return ensureAndSwitchSession(worktreePath, projectPath, opts)
 	}
 
-	return ensureAndSwitchSession(chosen.path, projectPath, sessionOpts{})
+	return ensureAndSwitchSession(chosen.path, projectPath, opts)
 }
 
-func handleRegularRepo(path string) error {
+func handleRegularRepo(path string, opts sessionOpts) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
-		return ensureAndSwitchSession(path, "", sessionOpts{})
+		return ensureAndSwitchSession(path, "", opts)
 	}
 
 	openDirect := "[open directly (no worktrees)]"
@@ -621,17 +651,17 @@ func handleRegularRepo(path string) error {
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
-			return ensureAndSwitchSession(path, "", sessionOpts{})
+			return ensureAndSwitchSession(path, "", opts)
 		}
-		return ensureAndSwitchSession(worktreePath, path, sessionOpts{})
+		return ensureAndSwitchSession(worktreePath, path, opts)
 	default:
-		return ensureAndSwitchSession(path, "", sessionOpts{})
+		return ensureAndSwitchSession(path, "", opts)
 	}
 }
 
 // ── clone repo ────────────────────────────────────────────────────────────────
 
-func handleCloneRepo() error {
+func handleCloneRepo(opts sessionOpts) error {
 	repoURL := promptInput("clone url> ")
 	if repoURL == "" {
 		return nil
@@ -662,7 +692,7 @@ func handleCloneRepo() error {
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
 	}
-	return ensureAndSwitchSession(worktrees[0], targetDir, sessionOpts{})
+	return ensureAndSwitchSession(worktrees[0], targetDir, opts)
 }
 
 // ── ensure dashboard session ──────────────────────────────────────────────────
@@ -682,6 +712,7 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
+		opts := sessionOpts{}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -695,12 +726,12 @@ var switchCmd = &cobra.Command{
 				if len(worktrees) == 0 {
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
-				return ensureAndSwitchSession(worktrees[0], p, sessionOpts{})
+				return ensureAndSwitchSession(worktrees[0], p, opts)
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
-				return ensureAndSwitchSession(p, bareRoot, sessionOpts{})
+				return ensureAndSwitchSession(p, bareRoot, opts)
 			}
-			return ensureAndSwitchSession(p, "", sessionOpts{})
+			return ensureAndSwitchSession(p, "", opts)
 		}
 
 		// Ensure dashboard exists in background.
@@ -727,20 +758,20 @@ var switchCmd = &cobra.Command{
 			return err
 
 		case "[scratchpad]":
-			return ensureAndSwitchSession("[scratchpad]", "", sessionOpts{})
+			return ensureAndSwitchSession("[scratchpad]", "", opts)
 
 		case "[+ clone repo]":
-			return handleCloneRepo()
+			return handleCloneRepo(opts)
 
 		default:
 			p := chosen.path
 			switch {
 			case git.IsBareRepo(p):
-				return handleBareRepo(p)
+				return handleBareRepo(p, opts)
 			case git.IsRegularRepo(p):
-				return handleRegularRepo(p)
+				return handleRegularRepo(p, opts)
 			default:
-				return ensureAndSwitchSession(p, "", sessionOpts{})
+				return ensureAndSwitchSession(p, "", opts)
 			}
 		}
 	},

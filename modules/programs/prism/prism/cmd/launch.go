@@ -31,11 +31,13 @@ func init() {
 	rootCmd.AddCommand(launchCmd)
 	launchCmd.Flags().BoolVar(&launchInTerminal, "in-terminal", false, "attach in the current terminal")
 	launchCmd.Flags().StringVar(&launchPath, "path", "", "open a specific directory directly")
+	launchCmd.Flags().BoolVar(&launchFresh, "fresh", false, "start a new session without --continue")
 }
 
 var (
 	launchInTerminal bool
 	launchPath       string
+	launchFresh      bool
 )
 
 var launchCmd = &cobra.Command{
@@ -48,7 +50,10 @@ var launchCmd = &cobra.Command{
 func runLaunch(_ *cobra.Command, _ []string) error {
 	switcherCmd := "prism switch"
 	if launchPath != "" {
-		switcherCmd = "prism switch --path " + launchPath
+		switcherCmd += " --path " + launchPath
+	}
+	if launchFresh {
+		switcherCmd += " --fresh"
 	}
 
 	inTmux := os.Getenv("TMUX") != ""
