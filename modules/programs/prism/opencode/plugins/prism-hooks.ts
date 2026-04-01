@@ -29,6 +29,9 @@ function deriveSessionName(worktree: string): string | null {
 
   let repo = path.basename(bareRoot);
   if (repo.endsWith(".git")) repo = repo.slice(0, -4);
+  // Match Go's strings.ReplaceAll(filepath.Base(projectRoot), ".", "_") so
+  // both sides produce the same repo component in the session name.
+  repo = repo.replaceAll(".", "_");
 
   // Derive branch component — mirrors worktreeBranchComponent() in cmd/switch.go.
   let branch: string;
