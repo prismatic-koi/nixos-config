@@ -11,7 +11,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// waitForTmuxServerDead polls until tmux list-sessions fails (server gone) or
+// waitForTmuxServerDead polls until tmux info fails (server gone) or
 // the deadline is exceeded. Returns true if the server died within the timeout.
 func waitForTmuxServerDead(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
@@ -49,7 +49,7 @@ func runRestart(_ *cobra.Command, _ []string) error {
 	_, _ = tmux.Run("kill-server")
 
 	// Wait for the server to actually die before restoring. kill-server is
-	// asynchronous, so we poll until list-sessions fails rather than sleeping
+	// asynchronous, so we poll until tmux info fails rather than sleeping
 	// a fixed amount.
 	if !waitForTmuxServerDead(3 * time.Second) {
 		return fmt.Errorf("tmux server did not stop within timeout")
