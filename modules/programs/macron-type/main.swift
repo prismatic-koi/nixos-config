@@ -8,6 +8,11 @@ else {
     exit(1)
 }
 
+guard scalar.value <= 0xFFFF else {
+    fputs("error: character must be in the Basic Multilingual Plane (U+0000–U+FFFF)\n", stderr)
+    exit(1)
+}
+
 let uchar = UniChar(scalar.value)
 var keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
 var keyUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)!

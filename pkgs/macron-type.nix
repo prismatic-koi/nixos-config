@@ -12,14 +12,18 @@ swiftPackages.stdenv.mkDerivation {
   nativeBuildInputs = [ swiftPackages.swift ];
 
   buildPhase = ''
+    runHook preBuild
     swiftc main.swift -o macron-type \
       -framework CoreGraphics \
       -framework Foundation
+    runHook postBuild
   '';
 
   installPhase = ''
+    runHook preInstall
     mkdir -p $out/bin
     cp macron-type $out/bin/
+    runHook postInstall
   '';
 
   meta = {
