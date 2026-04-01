@@ -117,6 +117,10 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
     WHERE session_name = ? AND ended_at IS NULL AND last_seen > ?
   `);
 
+  const setEnded = db?.prepare(`
+    UPDATE agent_status SET ended_at = ? WHERE session_name = ?
+  `);
+
   // Helpers (closed over db, sessionName, worktree)
   const repo = sessionName ? sessionName.split("@")[0]! : "";
 
@@ -223,9 +227,9 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
           await clearTitle();
           // DB
           const info = event.properties.info;
-          if (db && sessionName) {
+          if (db && sessionName && setEnded) {
             try {
-              db.run("UPDATE agent_status SET ended_at = ? WHERE session_name = ?", Date.now(), sessionName);
+              setEnded.run(Date.now(), sessionName);
             } catch (e) { console.error("[prism-hooks] setEnded failed:", e); }
           }
           writeEvent("state_change", { state: "deleted" }, info.id);
@@ -298,8 +302,11 @@ export const PrismHooks: Plugin = async ({ $, worktree }) => {
         case "message.updated": {
           const info = event.properties.info as any;
           if (info.role === "user") {
+            // User messages are atomic — write on every update.
             writeEvent("msg_user", { messageId: info.id });
-          } else if (info.role === "assistant") {
+          } else if (info.role === "assistant" && info.time?.completed != null) {
+            // Only write when the assistant message is fully complete to avoid
+            // one row per streaming token.
             writeEvent("msg_assistant", { messageId: info.id });
           }
           break;
