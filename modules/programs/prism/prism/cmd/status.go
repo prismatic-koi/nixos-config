@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/prismatic-koi/prism/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -21,16 +20,22 @@ suitable for embedding in status-right.`,
 		waitingOnly, _ := cmd.Flags().GetBool("waiting")
 		tmuxFormat, _ := cmd.Flags().GetBool("tmux-format")
 
-		sessions, err := tmux.Sessions()
+		d, err := openDB()
 		if err != nil {
 			// Silently produce no output — status bar should not show errors.
 			return nil
 		}
-		sessions = filterStatusSessions(sessions)
+		defer d.Close()
+
+		statuses, err := d.AllActiveStatus()
+		if err != nil {
+			// Silently produce no output — status bar should not show errors.
+			return nil
+		}
 
 		var nActive, nWaiting, nFinished, nIdle int
-		for _, s := range sessions {
-			switch s.AgentState {
+		for _, s := range statuses {
+			switch s.State {
 			case "active":
 				nActive++
 			case "waiting":
@@ -87,18 +92,6 @@ suitable for embedding in status-right.`,
 		}
 		return nil
 	},
-}
-
-// filterStatusSessions excludes infrastructure sessions from status counts.
-func filterStatusSessions(all []tmux.Session) []tmux.Session {
-	var out []tmux.Session
-	for _, s := range all {
-		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
 }
 
 func init() {

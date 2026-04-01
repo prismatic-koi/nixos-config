@@ -1,30 +1,80 @@
 package cmd
 
-// prism list-sessions — print all agent sessions (excluding infrastructure
-// sessions like scratchpad and prism-dashboard) in a human-readable table.
-// Useful for scripting and as a standalone companion to `prism checkin`.
+// prism list-sessions — print agent sessions (from DB) in a human-readable
+// table. By default shows only sessions for the current repo. Use --all / -A
+// to list sessions across all repos.
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/tmux"
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
 var listSessionsCmd = &cobra.Command{
 	Use:   "list-sessions",
 	Short: "List agent sessions with their state and title",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		sessions, err := tmux.Sessions()
-		if err != nil {
-			return err
-		}
-		sessions = filterStatusSessions(sessions)
+		showAll, _ := cmd.Flags().GetBool("all")
 
-		if len(sessions) == 0 {
+		// Derive currentRepo from the working directory using the same
+		// normalisation as deriveRepo() so the filter matches the repo column
+		// written at session-start time.
+		currentRepo := ""
+		cwd, err := os.Getwd()
+		if err != nil {
+			cwd = os.Getenv("PRISM_SPAWN_PATH")
+		}
+		if cwd != "" {
+			currentRepo = deriveRepo(cwd)
+		}
+
+		// If repo detection failed and --all was not requested, refuse to
+		// silently show all sessions — that would violate the scoped-by-default
+		// contract. Direct the user to --all instead.
+		if !showAll && currentRepo == "" {
+			if cwd == "" {
+				return fmt.Errorf("list-sessions: CWD unavailable and PRISM_SPAWN_PATH not set; use --all to list all sessions")
+			}
+			return fmt.Errorf("list-sessions: %q is not inside a prism worktree; use --all to list all sessions", cwd)
+		}
+
+		d, err := openDB()
+		if err != nil {
+			return fmt.Errorf("list-sessions: open db: %w", err)
+		}
+		defer d.Close()
+
+		type row struct {
+			name  string
+			state string
+			title string
+		}
+
+		var ss []db.Status
+		if showAll {
+			ss, err = d.AllActiveStatus()
+		} else {
+			ss, err = d.AllActiveStatusForRepo(currentRepo)
+		}
+		if err != nil {
+			return fmt.Errorf("list-sessions: query db: %w", err)
+		}
+
+		var rows []row
+		for _, s := range ss {
+			title := "—"
+			if s.Title != nil && *s.Title != "" {
+				title = *s.Title
+			}
+			rows = append(rows, row{name: s.SessionName, state: s.State, title: title})
+		}
+
+		if len(rows) == 0 {
 			fmt.Println("no agent sessions found")
 			return nil
 		}
@@ -34,29 +84,26 @@ var listSessionsCmd = &cobra.Command{
 		styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
 		fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %s", "SESSION", "STATE", "TITLE")))
-		for _, s := range sessions {
-			state := s.AgentState
+		for _, r := range rows {
+			state := r.state
 			if state == "" {
 				state = "idle"
 			}
-			title := s.AgentTitle
-			if title == "" {
-				title = "—"
-			}
-			if len(title) > 60 {
-				title = title[:57] + "..."
+			title := r.title
+			if runes := []rune(title); len(runes) > 60 {
+				title = string(runes[:57]) + "..."
 			}
 			// Colour the state field.
 			stateStyled := stateStyle(state).Render(fmt.Sprintf("%-8s", state))
 
 			// Only bold worktree sessions (project@branch).
 			nameStyle := styleTitle
-			if strings.Contains(s.Name, "@") {
+			if strings.Contains(r.name, "@") {
 				nameStyle = styleName
 			}
 
 			fmt.Printf("%s  %s  %s\n",
-				nameStyle.Render(fmt.Sprintf("%-40s", s.Name)),
+				nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
 				stateStyled,
 				styleTitle.Render(title),
 			)
@@ -66,5 +113,6 @@ var listSessionsCmd = &cobra.Command{
 }
 
 func init() {
+	listSessionsCmd.Flags().BoolP("all", "A", false, "List all sessions across all repos")
 	rootCmd.AddCommand(listSessionsCmd)
 }

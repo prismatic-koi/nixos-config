@@ -1,6 +1,7 @@
 {
   lib,
   buildGoModule,
+  git,
   tmux,
   kitty,
   # Theme colours injected so the binary matches the user's active theme.
@@ -48,6 +49,15 @@ buildGoModule {
     "-X github.com/prismatic-koi/prism/internal/tmux.TmuxBin=${tmux}/bin/tmux"
     "-X github.com/prismatic-koi/prism/cmd.LaunchKittyBin=${kitty}/bin/kitty"
   ];
+
+  nativeCheckInputs = [ git ];
+
+  preCheck = ''
+    export GIT_CONFIG_NOSYSTEM=1
+    export HOME=$(mktemp -d)
+    git config --global user.email "test@test.com"
+    git config --global user.name "Test"
+  '';
 
   meta = {
     description = "Prism — tmux-based AI development environment TUI";
