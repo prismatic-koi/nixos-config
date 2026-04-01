@@ -79,6 +79,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
+		if err := Restore(false); err != nil {
+			return err
+		}
 		if _, err := tmux.SwitchClientCurrent("scratchpad"); err != nil {
 			return err
 		}
@@ -89,6 +92,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 	case launchInTerminal:
 		// In a terminal but not in tmux: attach in-place, fire switcher once attached.
 		if err := ensureScratchpad(); err != nil {
+			return err
+		}
+		if err := Restore(false); err != nil {
 			return err
 		}
 		// Set a one-shot hook that opens the switcher as soon as the client attaches.
