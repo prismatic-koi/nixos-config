@@ -10,136 +10,72 @@
             "description": "Right Command + vowel → macron vowel (Te Reo Māori)",
             "manipulators": [
               {
-                "from": {
-                  "key_code": "a",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command",
-                      "shift"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "a", "modifiers": { "mandatory": ["shift"], "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type A" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "e",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command",
-                      "shift"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "e", "modifiers": { "mandatory": ["shift"], "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type E" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "i",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command",
-                      "shift"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "i", "modifiers": { "mandatory": ["shift"], "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type I" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "o",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command",
-                      "shift"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "o", "modifiers": { "mandatory": ["shift"], "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type O" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "u",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command",
-                      "shift"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "u", "modifiers": { "mandatory": ["shift"], "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type U" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "a",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "a", "modifiers": { "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type a" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "e",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "e", "modifiers": { "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type e" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "i",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "i", "modifiers": { "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type i" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "o",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "o", "modifiers": { "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type o" }],
                 "type": "basic"
               },
               {
-                "from": {
-                  "key_code": "u",
-                  "modifiers": {
-                    "mandatory": [
-                      "right_command"
-                    ]
-                  }
-                },
+                "conditions": [{ "type": "variable_if", "name": "rcmd_mode", "value": 1 }],
+                "from": { "key_code": "u", "modifiers": { "optional": ["any"] } },
                 "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type u" }],
                 "type": "basic"
               },
               {
                 "from": {
-                  "any": "key_code",
-                  "modifiers": { "mandatory": ["right_command"], "optional": ["any"] }
+                  "key_code": "right_command",
+                  "modifiers": { "optional": ["any"] }
                 },
-                "to": [],
+                "to": [{ "set_variable": { "name": "rcmd_mode", "value": 1 } }],
+                "to_after_key_up": [{ "set_variable": { "name": "rcmd_mode", "value": 0 } }],
                 "type": "basic"
               }
             ]
