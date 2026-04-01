@@ -506,6 +506,19 @@ func DefaultBranchFromBareRoot(bareRoot string) string {
 	return DefaultBranch(bareRoot)
 }
 
+// SymbolicRef returns the symbolic ref HEAD points to in worktree (e.g.
+// "refs/heads/feat/my-thing"). Returns an error if HEAD is detached or the
+// directory is not a git repo.
+func SymbolicRef(worktree string) (string, error) {
+	return runGit("-C", worktree, "symbolic-ref", "HEAD")
+}
+
+// ShortHash returns the abbreviated commit hash for HEAD in worktree.
+// Returns an error if the directory is not a git repo.
+func ShortHash(worktree string) (string, error) {
+	return runGit("-C", worktree, "rev-parse", "--short", "HEAD")
+}
+
 // CloneWorktree clones repoURL into targetDir using the prism bare+worktree layout.
 // progress receives human-readable step messages.
 func CloneWorktree(repoURL, targetDir string, progress func(string)) error {

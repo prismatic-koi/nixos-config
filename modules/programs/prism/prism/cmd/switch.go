@@ -473,15 +473,50 @@ func shellQuote(s string) string {
 }
 
 // sessionNameFor derives the tmux session name for a given directory and
-// optional project root, applying the same dot-to-underscore substitution used
-// throughout the codebase.  dir must already be expanded (no ~).
+// optional project root.  dir must already be expanded (no ~).
+//
+// When projectRoot is set (prism bare+worktree layout), the session name is
+// "<repo>@<branch>" where branch is the full branch name with "/" replaced by
+// "--" for tmux compatibility:
+//
+//  1. git symbolic-ref HEAD → "refs/heads/feat/my-thing"
+//  2. Strip "refs/heads/" → "feat/my-thing"
+//  3. Replace "/" with "--" → "feat--my-thing"
+//
+// Falls back to the short commit hash for detached HEAD, and to filepath.Base
+// of the worktree directory when git is not available.
 func sessionNameFor(dir, projectRoot string) string {
 	if projectRoot != "" {
 		projName := strings.ReplaceAll(filepath.Base(projectRoot), ".", "_")
-		wtName := strings.ReplaceAll(filepath.Base(dir), ".", "_")
-		return projName + "@" + wtName
+		branch := worktreeBranchComponent(dir)
+		return projName + "@" + branch
 	}
 	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
+}
+
+// worktreeBranchComponent returns the branch component of a session name for
+// the worktree at dir.  It runs git symbolic-ref HEAD, strips the
+// "refs/heads/" prefix, and replaces "/" with "--".  Falls back to the short
+// commit hash for detached HEAD, and to filepath.Base(dir) if git fails.
+func worktreeBranchComponent(dir string) string {
+	ref, err := git.SymbolicRef(dir)
+	if err == nil {
+		branch := strings.TrimPrefix(ref, "refs/heads/")
+		// The "--" substitution for "/" is for tmux session name compatibility only.
+		// tmux does not allow "/" in session names. If tmux is ever removed in favour
+		// of a custom TUI, restore full branch names with "/" here and in the plugin.
+		return strings.ReplaceAll(branch, "/", "--")
+	}
+	// Detached HEAD — fall back to short commit hash.
+	if hash, err := git.ShortHash(dir); err == nil {
+		return hash
+	}
+	// Not a git repo or both commands failed — fall back to directory basename.
+	// No dot substitution here: dots are valid in tmux session names and
+	// branch names may contain dots (e.g. fix/v1.2-issue); the git-derived
+	// path above doesn't sanitise dots either, so we keep the two paths
+	// consistent.
+	return filepath.Base(dir)
 }
 
 // defaultAgent returns the agent to use for the given directory.
