@@ -55,7 +55,16 @@ func runRestart(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("tmux server did not stop within timeout")
 	}
 
-	// 3. Re-exec
+	// 3. Restore sessions
+	// Bootstrap a minimal tmux server so Restore() has a live server to talk to.
+	// new-session -d starts a detached scratchpad session, which also starts the
+	// server. Restore() will skip scratchpad if it already exists.
+	_, _ = tmux.Run("new-session", "-d", "-s", "scratchpad")
+	if err := Restore(false); err != nil {
+		return fmt.Errorf("failed to restore sessions: %w", err)
+	}
+
+	// 4. Re-exec
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %w", err)
