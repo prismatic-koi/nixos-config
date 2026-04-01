@@ -32,6 +32,19 @@
           "gh pr create *": "allow"
         }
       }
+    },
+    "coordinator": {
+      "permission": {
+        "external_directory": {
+          "~/code/nixos-config/**": "allow"
+        },
+        "edit": {
+          "~/code/nixos-config/**": "deny"
+        },
+        "write": {
+          "~/code/nixos-config/**": "deny"
+        }
+      }
     }
   }
 }
