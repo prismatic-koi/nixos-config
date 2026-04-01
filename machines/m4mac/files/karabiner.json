@@ -19,11 +19,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"Ā\"'"
-                  }
-                ],
+                "to": [{ "key_code": 256 }],
                 "type": "basic"
               },
               {
@@ -36,11 +32,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"Ē\"'"
-                  }
-                ],
+                "to": [{ "key_code": 274 }],
                 "type": "basic"
               },
               {
@@ -53,11 +45,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"Ī\"'"
-                  }
-                ],
+                "to": [{ "key_code": 298 }],
                 "type": "basic"
               },
               {
@@ -70,11 +58,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"Ō\"'"
-                  }
-                ],
+                "to": [{ "key_code": 332 }],
                 "type": "basic"
               },
               {
@@ -87,11 +71,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"Ū\"'"
-                  }
-                ],
+                "to": [{ "key_code": 362 }],
                 "type": "basic"
               },
               {
@@ -103,11 +83,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"ā\"'"
-                  }
-                ],
+                "to": [{ "key_code": 257 }],
                 "type": "basic"
               },
               {
@@ -119,11 +95,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"ē\"'"
-                  }
-                ],
+                "to": [{ "key_code": 275 }],
                 "type": "basic"
               },
               {
@@ -135,11 +107,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"ī\"'"
-                  }
-                ],
+                "to": [{ "key_code": 299 }],
                 "type": "basic"
               },
               {
@@ -151,11 +119,7 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"ō\"'"
-                  }
-                ],
+                "to": [{ "key_code": 333 }],
                 "type": "basic"
               },
               {
@@ -167,11 +131,15 @@
                     ]
                   }
                 },
-                "to": [
-                  {
-                    "shell_command": "osascript -e 'tell application \"System Events\" to keystroke \"ū\"'"
-                  }
-                ],
+                "to": [{ "key_code": 363 }],
+                "type": "basic"
+              },
+              {
+                "from": {
+                  "any": "key_code",
+                  "modifiers": { "mandatory": ["right_command"], "optional": ["any"] }
+                },
+                "to": [],
                 "type": "basic"
               }
             ]
