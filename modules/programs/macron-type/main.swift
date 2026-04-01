@@ -18,5 +18,5 @@ var keyDown = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)!
 var keyUp   = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)!
 keyDown.keyboardSetUnicodeString(stringLength: 1, unicodeString: [uchar])
 keyUp.keyboardSetUnicodeString(stringLength: 1,  unicodeString: [uchar])
-keyDown.post(tap: CGEventTapLocation(rawValue: 0)!)
-keyUp.post(tap: CGEventTapLocation(rawValue: 0)!)
+keyDown.post(tap: CGEventTapLocation(rawValue: 1)!)
+keyUp.post(tap: CGEventTapLocation(rawValue: 1)!)
