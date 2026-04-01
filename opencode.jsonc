@@ -53,6 +53,20 @@
           "~/code/nixos-config/**": "deny"
         }
       }
+    },
+    "review": {
+      "permission": {
+        // Allow review agents to read files across all worktrees of this repo.
+        // Review agents are typically spawned by the coordinator to inspect a
+        // peer agent's branch; they need the same external_directory access.
+        // edit is denied to enforce read-only access (same pattern as coordinator).
+        "external_directory": {
+          "~/code/nixos-config/**": "allow"
+        },
+        "edit": {
+          "~/code/nixos-config/**": "deny"
+        }
+      }
     }
   }
 }
