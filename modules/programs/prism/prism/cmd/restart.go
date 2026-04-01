@@ -16,7 +16,10 @@ import (
 func waitForTmuxServerDead(timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		_, err := tmux.Run("list-sessions")
+		// "tmux info" fails only when no server is reachable on the socket,
+		// unlike "list-sessions" which also fails when the server is running
+		// but has no sessions.
+		_, err := tmux.Run("info")
 		if err != nil {
 			// Server is gone.
 			return true
