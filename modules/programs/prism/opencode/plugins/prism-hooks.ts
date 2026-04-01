@@ -60,7 +60,11 @@ function deriveSessionName(worktree: string): string | null {
   return `${repo}@${branch}`;
 }
 
-export const PrismHooks: Plugin = async ({ $, worktree }) => {
+export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
+  // worktree is defined in the PluginInput types but is NOT passed by opencode
+  // at runtime — it arrives as undefined. Fall back to process.cwd() so that
+  // deriveSessionName always receives a valid path.
+  const worktree = _worktree ?? process.cwd();
   const notify = (state: string) =>
     $`echo '{}' | prism notify ${state}`.quiet().nothrow();
 
