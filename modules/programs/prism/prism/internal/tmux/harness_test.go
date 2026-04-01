@@ -72,8 +72,10 @@ func randHex(n int) string {
 }
 
 // run executes a tmux command against this server's socket.
+// -f /dev/null suppresses the user's tmux.conf so no hooks (e.g.
+// session-created → prism event tmux-session-start) fire against the live DB.
 func (s *server) run(args ...string) error {
-	cmd := exec.Command(s.bin, append([]string{"-L", s.socket}, args...)...)
+	cmd := exec.Command(s.bin, append([]string{"-L", s.socket, "-f", "/dev/null"}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tmux %v: %w\n%s", args, err, out)
@@ -82,8 +84,9 @@ func (s *server) run(args ...string) error {
 }
 
 // output executes a tmux command and returns trimmed stdout.
+// -f /dev/null suppresses the user's tmux.conf so no hooks fire.
 func (s *server) output(args ...string) (string, error) {
-	cmd := exec.Command(s.bin, append([]string{"-L", s.socket}, args...)...)
+	cmd := exec.Command(s.bin, append([]string{"-L", s.socket, "-f", "/dev/null"}, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("tmux %v: %w", args, err)
@@ -188,7 +191,7 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 		}
 	}
 
-	cmd := exec.Command("script", scriptArgs(s.bin+" -L "+s.socket+" attach-session -t "+targetSession)...)
+	cmd := exec.Command("script", scriptArgs(s.bin+" -L "+s.socket+" -f /dev/null attach-session -t "+targetSession)...)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}
@@ -235,7 +238,10 @@ func withServer(t *testing.T, s *server) {
 
 	orig := tmux.TmuxBin
 	wrapperPath := t.TempDir() + "/tmux"
-	script := "#!/bin/sh\nexec " + s.bin + " -L " + s.socket + " \"$@\"\n"
+	// -f /dev/null suppresses the user's tmux.conf so no hooks fire against the
+	// live DB when the package-level tmux.* functions create sessions on this
+	// isolated server.
+	script := "#!/bin/sh\nexec " + s.bin + " -L " + s.socket + " -f /dev/null \"$@\"\n"
 	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write tmux wrapper: %v", err)
 	}
