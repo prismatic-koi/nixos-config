@@ -47,7 +47,10 @@ function deriveSessionName(worktree: string): string | null {
       branch = new TextDecoder().decode(hashResult.stdout).trim();
     } else {
       // Not a git repo or both commands failed — fall back to directory basename.
-      branch = path.basename(worktree).replaceAll(".", "_");
+      // No dot substitution: dots are valid in tmux session names and branch
+      // names may contain dots; the git-derived path above doesn't sanitise
+      // dots, so keep both paths consistent.
+      branch = path.basename(worktree);
     }
   }
 

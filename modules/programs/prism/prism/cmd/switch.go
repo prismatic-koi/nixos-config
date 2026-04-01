@@ -512,7 +512,11 @@ func worktreeBranchComponent(dir string) string {
 		return hash
 	}
 	// Not a git repo or both commands failed — fall back to directory basename.
-	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
+	// No dot substitution here: dots are valid in tmux session names and
+	// branch names may contain dots (e.g. fix/v1.2-issue); the git-derived
+	// path above doesn't sanitise dots either, so we keep the two paths
+	// consistent.
+	return filepath.Base(dir)
 }
 
 // defaultAgent returns the agent to use for the given directory.
