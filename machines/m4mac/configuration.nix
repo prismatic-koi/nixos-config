@@ -59,6 +59,7 @@ in
   environment.systemPackages = with pkgs; [
     arping
     gnutar
+    macron-type
     mysql80
     podman # darwin doesn't use virtualisation.podman
     postgresql

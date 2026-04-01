@@ -19,7 +19,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 256 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ā" }],
                 "type": "basic"
               },
               {
@@ -32,7 +32,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 274 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ē" }],
                 "type": "basic"
               },
               {
@@ -45,7 +45,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 298 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ī" }],
                 "type": "basic"
               },
               {
@@ -58,7 +58,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 332 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ō" }],
                 "type": "basic"
               },
               {
@@ -71,7 +71,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 362 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type Ū" }],
                 "type": "basic"
               },
               {
@@ -83,7 +83,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 257 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ā" }],
                 "type": "basic"
               },
               {
@@ -95,7 +95,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 275 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ē" }],
                 "type": "basic"
               },
               {
@@ -107,7 +107,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 299 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ī" }],
                 "type": "basic"
               },
               {
@@ -119,7 +119,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 333 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ō" }],
                 "type": "basic"
               },
               {
@@ -131,7 +131,7 @@
                     ]
                   }
                 },
-                "to": [{ "key_code": 363 }],
+                "to": [{ "shell_command": "/run/current-system/sw/bin/macron-type ū" }],
                 "type": "basic"
               },
               {
