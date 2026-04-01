@@ -77,6 +77,19 @@ func runCheckinSession(session string, height int) error {
 	return nil
 }
 
+// filterStatusSessions excludes infrastructure sessions from status counts.
+// Used by checkin (no-arg) until Stage 5 replaces checkin with DB queries.
+func filterStatusSessions(all []tmux.Session) []tmux.Session {
+	var out []tmux.Session
+	for _, s := range all {
+		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 func runCheckinNoArg() error {
 	sessions, err := tmux.Sessions()
 	if err != nil {

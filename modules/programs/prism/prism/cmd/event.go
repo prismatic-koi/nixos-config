@@ -23,16 +23,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// dbPath returns the path to prism.db, honouring $XDG_STATE_HOME.
-func dbPath() string {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, _ := os.UserHomeDir()
-		stateHome = filepath.Join(home, ".local", "state")
-	}
-	return filepath.Join(stateHome, "prism", "prism.db")
-}
-
 // deriveBareRoot walks parent directories from worktree until it finds a
 // directory containing a file named ".bare". Returns the bare root path, or
 // an empty string if none is found.
@@ -62,11 +52,6 @@ func deriveRepo(worktree string) string {
 	name := filepath.Base(bareRoot)
 	name = strings.TrimSuffix(name, ".git")
 	return name
-}
-
-// openDB opens prism.db, returning it or an error.
-func openDB() (*db.DB, error) {
-	return db.Open(dbPath())
 }
 
 var eventCmd = &cobra.Command{
