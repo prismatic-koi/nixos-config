@@ -210,6 +210,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 // created_at ASC. before and after are event IDs used for cursor-based
 // pagination — pass nil for open-ended queries. types filters by event type;
 // pass nil to return all types.
+//
+// When limit > 0 and neither before nor after is set (a plain "last N" query),
+// the most-recent N events are returned (newest first in the DB query, then
+// reversed to produce chronological ASC order in the result).
+// When after is set (forward pagination from a cursor), events are fetched
+// ASC from that point. When before is set (backward pagination), events are
+// fetched DESC up to the cursor then reversed to chronological order.
 func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, types []string) ([]Event, error) {
 	args := []any{sessionName}
 	var conditions []string
@@ -254,11 +261,26 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 		conditions = append(conditions, "type IN ("+strings.Join(placeholders, ",")+")")
 	}
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events"
+	where := ""
 	if len(conditions) > 0 {
-		q += " WHERE " + strings.Join(conditions, " AND ")
+		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
-	q += " ORDER BY created_at ASC"
+
+	// Choose ordering strategy:
+	//   - "last N" (no cursor): fetch newest N rows with DESC, then reverse.
+	//   - forward pagination (after cursor): fetch ASC from cursor.
+	//   - backward pagination (before cursor): fetch DESC up to cursor, then reverse.
+	//   - no limit: fetch all ASC.
+	reverseResult := false
+	orderDir := "ASC"
+	if limit > 0 && after == nil {
+		// Covers both the plain "last N" case and the --before cursor case.
+		orderDir = "DESC"
+		reverseResult = true
+	}
+
+	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+		where + " ORDER BY created_at " + orderDir
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
 	}
@@ -282,6 +304,13 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("db: iterate events: %w", err)
 	}
+
+	if reverseResult {
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
+
 	return events, nil
 }
 

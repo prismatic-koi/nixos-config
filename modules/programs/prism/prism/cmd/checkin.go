@@ -42,7 +42,7 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of events to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to show (default: msg_user,msg_assistant)")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to show (default: msg_user,msg_assistant,tool_call,tool_result,permission_ask)")
 	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
@@ -87,6 +87,9 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // if the DB is unavailable or has no rows for this session.
 func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
 	// Default event types when none explicitly requested.
+	// The user-visible default is msg_user and msg_assistant; tool_call,
+	// tool_result, and permission_ask are included so they can be rendered
+	// inline under assistant messages.
 	queryTypes := types
 	if len(queryTypes) == 0 {
 		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask"}
@@ -251,16 +254,19 @@ func runCheckinNoArg(showAll bool) error {
 	if dbErr == nil {
 		defer d.Close()
 
-		var ss []db.Status
+		var (
+			ss       []db.Status
+			queryErr error
+		)
 		if showAll {
-			ss, err = d.AllActiveStatus()
+			ss, queryErr = d.AllActiveStatus()
 		} else if currentRepo != "" {
-			ss, err = d.AllActiveStatusForRepo(currentRepo)
+			ss, queryErr = d.AllActiveStatusForRepo(currentRepo)
 		} else {
-			ss, err = d.AllActiveStatus()
+			ss, queryErr = d.AllActiveStatus()
 		}
 
-		if err == nil {
+		if queryErr == nil {
 			return printSessionTable(ss)
 		}
 	}
