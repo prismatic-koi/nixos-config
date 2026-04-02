@@ -16,7 +16,9 @@ const STATE_WAITING = "waiting";
 const STATE_FINISHED = "finished";
 const STATE_COMPACTING = "compacting";
 const STATE_ERROR = "error";
-const STATE_IDLE = "idle";
+// STATE_IDLE is declared for parity with Go constants; the plugin never writes
+// idle directly (tmux-session-start handles idle on the Go side).
+const STATE_IDLE = "idle"; // eslint-disable-line @typescript-eslint/no-unused-vars
 const STATE_INTERRUPTED = "interrupted";
 const STATE_DELETED = "deleted";
 
@@ -366,7 +368,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // active (mid-task turn boundary).
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             // Don't overwrite compacting state with active.
-			if (!compacting) {
+            if (!compacting) {
               // DB
               upsertAgentStatus(STATE_ACTIVE);
               writeStateChange(STATE_ACTIVE);
