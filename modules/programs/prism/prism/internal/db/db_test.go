@@ -434,13 +434,25 @@ func TestPurgeBusMessages(t *testing.T) {
 		t.Fatalf("PurgeBusMessages: %v", err)
 	}
 
-	// After purge, pending messages for target must be empty.
+	// After purge, pending messages for target must be empty (to_session path).
 	pending, err := d.PendingMessages(target, "normal")
 	if err != nil {
 		t.Fatalf("PendingMessages(target): %v", err)
 	}
 	if len(pending) != 0 {
 		t.Errorf("pending messages for target after purge: got %d, want 0", len(pending))
+	}
+
+	// Explicitly verify the from_session row was also deleted (PendingMessages
+	// only queries to_session, so we must check via a direct row count).
+	var fromCount int
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE id = ?", "from-target-undelivered",
+	).Scan(&fromCount); err != nil {
+		t.Fatalf("count from-target-undelivered: %v", err)
+	}
+	if fromCount != 0 {
+		t.Errorf("from-target-undelivered row still present after purge: got %d, want 0", fromCount)
 	}
 
 	// Pending messages for other sessions must be unaffected.
