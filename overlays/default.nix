@@ -38,7 +38,13 @@ rec {
       prism = final.callPackage ../pkgs/prism.nix { };
 
       forgecode =
-        if final.stdenv.isLinux || final.stdenv.isDarwin then
+        let
+          supported = [
+            "x86_64-linux"
+            "aarch64-darwin"
+          ];
+        in
+        if builtins.elem final.stdenv.hostPlatform.system supported then
           final.callPackage ../pkgs/forgecode.nix { }
         else
           null;
