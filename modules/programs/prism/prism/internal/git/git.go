@@ -359,8 +359,14 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	worktreeGitFile := filepath.Join(worktreePath, ".git")
 	gitdirFile := filepath.Join(worktreesDir, "gitdir")
 
+	// Write a relative gitdir pointer so the worktree remains functional if the
+	// repo root is moved or accessed through a different path.
+	relWorktreesDir, err := filepath.Rel(worktreePath, worktreesDir)
+	if err != nil {
+		return "", fmt.Errorf("compute worktree gitdir rel path: %w", err)
+	}
 	if err := os.WriteFile(worktreeGitFile,
-		[]byte("gitdir: "+worktreesDir+"\n"), 0o644); err != nil {
+		[]byte("gitdir: "+relWorktreesDir+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write worktree .git: %w", err)
 	}
 	if err := os.WriteFile(gitdirFile,

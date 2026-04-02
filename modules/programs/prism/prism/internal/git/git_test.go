@@ -162,7 +162,7 @@ func initRepoWithRemote(t *testing.T, dir, remoteDir, branchName string) {
 	run("git", "branch", "--set-upstream-to", "origin/"+branchName, branchName)
 }
 
-// runInDir runs a git command in dir and returns trimmed stdout, or fatals.
+// runGitIn runs a git command in dir and returns trimmed stdout, or fatals.
 func runGitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	c := exec.Command("git", args...)
