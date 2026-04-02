@@ -64,6 +64,14 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		// Safety-net fallback: empty agent still yields "build".
 		{sessionOpts{opencodeSession: "ses_abc123"}, "opencode --agent build -s ses_abc123"},
 		{sessionOpts{}, "opencode --agent build"},
+		// Prompt with no special characters.
+		{sessionOpts{agent: "build", prompt: "fix the login bug"}, "opencode --agent build --prompt 'fix the login bug'"},
+		// Prompt containing a single quote — exercises shellQuote escaping.
+		{sessionOpts{agent: "build", prompt: "it's broken"}, "opencode --agent build --prompt 'it'\\''s broken'"},
+		// Prompt with shell metacharacters that are safe inside single quotes.
+		{sessionOpts{agent: "build", prompt: "run `make test` and fix $ERRORS"}, "opencode --agent build --prompt 'run `make test` and fix $ERRORS'"},
+		// Prompt + session ID — both flags present.
+		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc", prompt: "review pr"}, "opencode --agent coordinator -s ses_abc --prompt 'review pr'"},
 	}
 	for _, tc := range cases {
 		got := buildOpencodeCmd(tc.opts)

@@ -14,14 +14,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -450,10 +447,9 @@ type sessionOpts struct {
 	opencodeSession string // opencode session ID to resume; "" means fresh start
 }
 
-// buildOpencodeCmd returns the opencode launch command string (without prompt).
-// The prompt is NOT passed as a flag here — it is written to bus_messages and
-// delivered by the opencode plugin on the first session.idle after
-// session.created fires.
+// buildOpencodeCmd returns the opencode launch command string.
+// When opts.prompt is non-empty it is passed via --prompt so that opencode
+// receives it at startup with no delivery timing dependency.
 func buildOpencodeCmd(opts sessionOpts) string {
 	agent := opts.agent
 	if agent == "" {
@@ -464,6 +460,9 @@ func buildOpencodeCmd(opts sessionOpts) string {
 	cmd := "opencode --agent " + agent
 	if opts.opencodeSession != "" && !opts.fresh {
 		cmd += " -s " + opts.opencodeSession
+	}
+	if opts.prompt != "" {
+		cmd += " --prompt " + shellQuote(opts.prompt)
 	}
 	// otherwise: no flag → opencode starts a new session
 	return cmd
@@ -590,11 +589,11 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
 
-			// Seed agent_status before writing the bus message so that
-			// WriteBusMessage finds the row and succeeds. The tmux hook fires
-			// too late (wrong pane path at that point) and cannot be relied
-			// upon here. Call tmux-session-start explicitly now; the hook
-			// remains as a fallback for sessions created outside this path.
+			// Seed agent_status so that post-spawn `prism prompt` bus delivery
+			// finds the row and succeeds. The tmux hook fires too late (wrong
+			// pane path at that point) and cannot be relied upon here; call
+			// tmux-session-start explicitly now. The hook remains as a fallback
+			// for sessions created outside this path.
 			//
 			// Use os.Executable() rather than "prism" so that the correct
 			// binary is found in Nix-managed environments where the store
@@ -607,34 +606,6 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 				"--session", sessionName,
 				"--worktree", directory).Run(); err != nil {
 				return fmt.Errorf("seed agent_status: %w", err)
-			}
-
-			// Deliver the initial spawn prompt via the bus rather than keystroke
-			// injection. The plugin delivers it on the first session.idle after
-			// session.created fires.
-			if opts.prompt != "" {
-				fromSession := deriveSessionNameFromCWD(directory)
-				repo := deriveRepo(directory)
-				msg := db.BusMessage{
-					ID:          uuid.New().String(),
-					FromSession: fromSession,
-					ToSession:   sessionName,
-					Repo:        repo,
-					Text:        opts.prompt,
-					Urgency:     "normal",
-					SentAt:      time.Now(),
-				}
-				if database, dbErr := openDB(); dbErr == nil {
-					if writeErr := database.WriteBusMessage(msg); writeErr != nil {
-						database.Close()
-						return fmt.Errorf("queue spawn prompt: %w", writeErr)
-					}
-					database.Close()
-				} else {
-					return fmt.Errorf("open DB to queue spawn prompt: %w", dbErr)
-				}
-				// Touch sentinel file for the Stage 8 dashboard watcher.
-				_ = touchBusSentinel(sessionName)
 			}
 
 			// Window 2: term.
