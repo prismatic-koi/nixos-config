@@ -520,7 +520,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           // and coordinator notification directly below, so the timer would
           // double-fire notify and upsert if allowed to run.
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-          await notify("set-finished");
           // DB
           let prevStateCompact: string | null = null;
           if (db && sessionName && getStatus) {
@@ -529,6 +528,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               prevStateCompact = row?.state ?? null;
             } catch (e) { console.error("[prism-hooks] getStatus failed:", e); }
           }
+          // If the session was already marked interrupted (pane-died hook
+          // fired concurrently), leave the interrupted state intact and skip
+          // coordinator notification.
+          if (prevStateCompact === "interrupted") {
+            break;
+          }
+          await notify("set-finished");
           upsertAgentStatus("finished");
           writeEvent("compaction", { note: "compaction complete" });
           if (prevStateCompact === "active" || prevStateCompact === "compacting") {

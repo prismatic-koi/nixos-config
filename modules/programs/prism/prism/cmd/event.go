@@ -22,6 +22,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // deriveBareRoot walks parent directories from worktree until it finds a
@@ -140,6 +141,18 @@ var eventPaneDiedCmd = &cobra.Command{
 			// Already finished / interrupted / deleted — nothing to do.
 			return nil
 		}
+
+		// Update the tmux @agent_state window option so the dashboard can
+		// read the interrupted state via list-windows. The pane-died hook
+		// runs outside the opencode process (no TMUX_PANE), so we target the
+		// agent window directly by session name.
+		agentWindow := session + ":agent"
+		_ = tmux.SetWindowOption(agentWindow, "@agent_state", "interrupted")
+		// Also update the window-status-format so the status bar reflects the
+		// interrupted state in red.
+		statusFmt := fmt.Sprintf("#[fg=%s]#I:#W#{?window_flags,#{window_flags}, }", ColorRed)
+		_ = tmux.SetWindowOption(agentWindow, "window-status-format", statusFmt)
+		_ = tmux.SetWindowOption(agentWindow, "window-status-current-format", statusFmt)
 
 		e := db.Event{
 			ID:          uuid.New().String(),
