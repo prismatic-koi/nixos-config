@@ -589,11 +589,11 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
 
-			// Seed agent_status before writing the bus message so that
-			// WriteBusMessage finds the row and succeeds. The tmux hook fires
-			// too late (wrong pane path at that point) and cannot be relied
-			// upon here. Call tmux-session-start explicitly now; the hook
-			// remains as a fallback for sessions created outside this path.
+			// Seed agent_status so that post-spawn `prism prompt` bus delivery
+			// finds the row and succeeds. The tmux hook fires too late (wrong
+			// pane path at that point) and cannot be relied upon here; call
+			// tmux-session-start explicitly now. The hook remains as a fallback
+			// for sessions created outside this path.
 			//
 			// Use os.Executable() rather than "prism" so that the correct
 			// binary is found in Nix-managed environments where the store
