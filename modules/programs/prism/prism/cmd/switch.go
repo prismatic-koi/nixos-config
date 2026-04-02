@@ -11,6 +11,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -588,6 +589,26 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
+
+			// Seed agent_status before writing the bus message so that
+			// WriteBusMessage finds the row and succeeds. The tmux hook fires
+			// too late (wrong pane path at that point) and cannot be relied
+			// upon here. Call tmux-session-start explicitly now; the hook
+			// remains as a fallback for sessions created outside this path.
+			//
+			// Use os.Executable() rather than "prism" so that the correct
+			// binary is found in Nix-managed environments where the store
+			// path may not be on $PATH (e.g. tmux hooks, daemon contexts).
+			self, selfErr := os.Executable()
+			if selfErr != nil {
+				return fmt.Errorf("resolve prism binary: %w", selfErr)
+			}
+			if err := exec.Command(self, "event", "tmux-session-start",
+				"--session", sessionName,
+				"--worktree", directory).Run(); err != nil {
+				return fmt.Errorf("seed agent_status: %w", err)
+			}
+
 			// Deliver the initial spawn prompt via the bus rather than keystroke
 			// injection. The plugin delivers it on the first session.idle after
 			// session.created fires.
@@ -604,12 +625,13 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 					SentAt:      time.Now(),
 				}
 				if database, dbErr := openDB(); dbErr == nil {
-					if err := database.WriteBusMessage(msg); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: could not queue spawn prompt: %v\n", err)
+					if writeErr := database.WriteBusMessage(msg); writeErr != nil {
+						database.Close()
+						return fmt.Errorf("queue spawn prompt: %w", writeErr)
 					}
 					database.Close()
 				} else {
-					fmt.Fprintf(os.Stderr, "warning: could not open DB to queue spawn prompt: %v\n", dbErr)
+					return fmt.Errorf("open DB to queue spawn prompt: %w", dbErr)
 				}
 				// Touch sentinel file for the Stage 8 dashboard watcher.
 				_ = touchBusSentinel(sessionName)
