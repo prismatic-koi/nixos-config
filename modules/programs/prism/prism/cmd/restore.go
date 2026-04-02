@@ -22,7 +22,7 @@ import (
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
-	Short: "Recreate tmux sessions from the last saved snapshot",
+	Short: "Recreate tmux sessions from prism.db",
 	RunE:  runRestore,
 }
 
@@ -39,9 +39,7 @@ func runRestore(cmd *cobra.Command, _ []string) error {
 func Restore(dryRun bool) error {
 	d, err := openDB()
 	if err != nil {
-		// No DB yet (first boot before any session has been created) — nothing to restore.
-		fmt.Fprintf(os.Stderr, "prism restore: cannot open DB, nothing to restore: %v\n", err)
-		return nil
+		return fmt.Errorf("prism restore: cannot open DB: %w", err)
 	}
 	defer d.Close()
 
