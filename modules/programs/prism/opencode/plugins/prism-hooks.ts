@@ -230,6 +230,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     if (!db || !sessionName || !activeCoord || !insertBusMsg) return;
     try {
       const coordName = `${repo}@main`;
+      if (sessionName === coordName) return;
       const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
       const coord = activeCoord.get(coordName, fiveMinutesAgo) as { session_name: string } | undefined;
       if (coord) {
