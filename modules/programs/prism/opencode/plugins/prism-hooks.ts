@@ -101,7 +101,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   if (sessionName) {
     try {
       if (fs.existsSync(dbPath)) {
-        db = new Database(dbPath, { create: false });
+        db = new Database(dbPath);
       } else {
         console.warn("[prism-hooks] prism.db not found — DB writes disabled");
       }
