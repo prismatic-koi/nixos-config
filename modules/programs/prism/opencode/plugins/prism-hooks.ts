@@ -460,6 +460,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           // DB
           upsertAgentStatus("waiting");
+          writeStateChange("waiting");
           writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns, messageId: props.permission?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
           if (props.permission?.id) {
@@ -511,6 +512,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         case "session.error":
           // DB
           upsertAgentStatus("error");
+          writeStateChange("error");
           writeEvent("error", { note: "session error" });
           break;
 
@@ -537,6 +539,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           }
           await notify("set-finished");
           upsertAgentStatus("finished");
+          writeStateChange("finished");
           writeEvent("compaction", { note: "compaction complete" });
           if (prevStateCompact === "active" || prevStateCompact === "compacting") {
             notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
