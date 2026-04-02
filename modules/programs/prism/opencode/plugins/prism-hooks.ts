@@ -121,11 +121,26 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
       last_seen    = excluded.last_seen
   `);
 
-  const updateTitleSid = db?.prepare(`
+  // Two-step helpers for session.updated (resumed sessions).
+  //
+  // Step 1: INSERT OR IGNORE — inserts with state='active' only if no row
+  // exists yet.  Statement.run() returns { changes, lastInsertRowid };
+  // changes === 1 means a genuine insert (i.e. the session was resumed with
+  // no prior row).
+  const insertResumedSession = db?.prepare(`
+    INSERT OR IGNORE INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  // Step 2: UPDATE metadata only — does not touch state so an already-active
+  // session keeps its current state.  Also clears ended_at so a previously-
+  // closed session that is resumed becomes visible again to dashboard queries
+  // (which filter WHERE ended_at IS NULL).
+  const updateResumedMetadata = db?.prepare(`
     UPDATE agent_status SET
       title        = COALESCE(?, title),
       opencode_sid = COALESCE(?, opencode_sid),
-      last_seen    = ?
+      last_seen    = ?,
+      ended_at     = NULL
     WHERE session_name = ?
   `);
 
@@ -241,11 +256,26 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             writeEvent("compaction", { note: "compaction started" }, info.id);
             upsertAgentStatus("compacting", null, info.id);
           } else {
-            // DB: only update metadata, don't overwrite state
-            if (db && sessionName && updateTitleSid) {
+            // Two-step so we can detect a genuine resume (new row inserted).
+            // Step 1: insert with state='active' if no row exists yet.
+            let wasInserted = false;
+            if (db && sessionName && insertResumedSession) {
               try {
-                updateTitleSid.run(info.title || null, info.id, Date.now(), sessionName);
-              } catch (e) { console.error("[prism-hooks] updateTitleSid failed:", e); }
+                const result = insertResumedSession.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
+                wasInserted = result.changes === 1;
+              } catch (e) { console.error("[prism-hooks] insertResumedSession failed:", e); }
+            }
+            // Step 2: update metadata (title, opencode_sid, last_seen, ended_at)
+            // on the existing row — no-op if we just inserted it.
+            if (db && sessionName && updateResumedMetadata) {
+              try {
+                updateResumedMetadata.run(info.title || null, info.id, Date.now(), sessionName);
+              } catch (e) { console.error("[prism-hooks] updateResumedMetadata failed:", e); }
+            }
+            // Only emit a state_change event when a new row was inserted —
+            // i.e. a genuine resume of a session with no prior DB entry.
+            if (wasInserted) {
+              writeEvent("state_change", { state: "active" }, info.id);
             }
           }
           break;
