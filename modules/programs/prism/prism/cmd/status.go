@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/agent"
 )
 
 var statusCmd = &cobra.Command{
@@ -35,12 +37,12 @@ suitable for embedding in status-right.`,
 
 		var nActive, nWaiting, nFinished, nIdle int
 		for _, s := range statuses {
-			switch s.State {
-			case "active":
+			switch agent.AgentState(s.State) {
+			case agent.StateActive:
 				nActive++
-			case "waiting":
+			case agent.StateWaiting:
 				nWaiting++
-			case "finished":
+			case agent.StateFinished:
 				nFinished++
 			default:
 				nIdle++

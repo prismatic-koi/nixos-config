@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -139,7 +140,7 @@ func renderCheckinTurns(session string, d *db.DB, userEvents []db.Event, verbose
 		state = tmux.AgentStateOf(session)
 	}
 	if state == "" {
-		state = "idle"
+		state = string(agent.StateIdle)
 	}
 
 	fmt.Printf("checkin: %s\n\n", session)
@@ -334,7 +335,7 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 		state = tmux.AgentStateOf(session)
 	}
 	if state == "" {
-		state = "idle"
+		state = string(agent.StateIdle)
 	}
 
 	fmt.Printf("checkin: %s\n\n", session)
@@ -465,7 +466,7 @@ func runCheckinSessionLegacy(session string, height int) error {
 
 	state := tmux.AgentStateOf(session)
 	if state == "" {
-		state = "idle"
+		state = string(agent.StateIdle)
 	}
 
 	styleBold := lipgloss.NewStyle().Bold(true)
@@ -534,7 +535,7 @@ func runCheckinNoArg(showAll bool) error {
 		}
 		state := s.AgentState
 		if state == "" {
-			state = "idle"
+			state = string(agent.StateIdle)
 		}
 		title := s.AgentTitle
 		st := db.Status{
@@ -566,7 +567,7 @@ func printSessionTable(ss []db.Status) error {
 	for _, s := range ss {
 		state := s.State
 		if state == "" {
-			state = "idle"
+			state = string(agent.StateIdle)
 		}
 		title := "—"
 		if s.Title != nil && *s.Title != "" {

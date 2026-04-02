@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -87,7 +88,7 @@ var listSessionsCmd = &cobra.Command{
 		for _, r := range rows {
 			state := r.state
 			if state == "" {
-				state = "idle"
+				state = string(agent.StateIdle)
 			}
 			title := r.title
 			if runes := []rune(title); len(runes) > 60 {
