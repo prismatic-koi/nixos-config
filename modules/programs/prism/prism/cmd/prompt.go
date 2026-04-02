@@ -63,14 +63,21 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("check session status: %w", err)
 	}
 
-	if status != nil && status.EndedAt != nil {
+	if status == nil {
+		return fmt.Errorf(
+			"session %q not found in DB\nrun `prism list-sessions` to see available sessions",
+			session,
+		)
+	}
+
+	if status.EndedAt != nil {
 		return fmt.Errorf(
 			"session %q has ended — escalate to user to restart if needed",
 			session,
 		)
 	}
 
-	if status != nil && status.State == "waiting" {
+	if status.State == "waiting" {
 		return fmt.Errorf(
 			"session %q is waiting for user input\n\n"+
 				"The agent has paused and is expecting a direct response from the user.\n"+
@@ -164,7 +171,9 @@ func touchBusSentinel(sessionName string) error {
 	if err != nil {
 		return err
 	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	now := time.Now()
-	_ = os.Chtimes(sentinelPath, now, now)
-	return f.Close()
+	return os.Chtimes(sentinelPath, now, now)
 }

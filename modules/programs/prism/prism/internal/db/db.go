@@ -130,6 +130,13 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: set WAL mode: %w", err)
 	}
 
+	// Wait up to 5 seconds before returning SQLITE_BUSY when the DB is locked
+	// by another process (e.g. the plugin writing concurrently).
+	if _, err := conn.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("db: set busy timeout: %w", err)
+	}
+
 	// Create all tables.
 	if _, err := conn.Exec(schema); err != nil {
 		conn.Close()

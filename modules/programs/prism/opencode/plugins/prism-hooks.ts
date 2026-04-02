@@ -125,6 +125,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     try {
       if (fs.existsSync(dbPath)) {
         db = new Database(dbPath);
+        db.run("PRAGMA busy_timeout = 5000");
       } else {
         console.warn("[prism-hooks] prism.db not found — DB writes disabled");
       }
@@ -258,8 +259,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             path: { id: currentOpencodeSID },
             body: { parts: [{ type: "text", text: msg.text }] },
           });
-        } catch { /* promptAsync failure is non-fatal */ }
-        markDelivered.run(Date.now(), msg.id);
+          markDelivered.run(Date.now(), msg.id);
+        } catch (e) { console.error("[prism-hooks] interrupt promptAsync failed:", e); }
       }
     } catch (e) { console.error("[prism-hooks] interrupt delivery failed:", e); }
   }, 2000);
@@ -312,8 +313,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
                     path: { id: currentOpencodeSID },
                     body: { parts: [{ type: "text", text: msg.text }] },
                   });
-                } catch { /* promptAsync failure is non-fatal */ }
-                markDelivered.run(Date.now(), msg.id);
+                  markDelivered.run(Date.now(), msg.id);
+                } catch (e) { console.error("[prism-hooks] normal promptAsync failed:", e); }
               }
             } catch (e) { console.error("[prism-hooks] bus delivery failed:", e); }
           }
