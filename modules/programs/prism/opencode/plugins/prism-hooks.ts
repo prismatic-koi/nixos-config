@@ -252,6 +252,12 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // Interrupt-urgency delivery: poll every 2 seconds and deliver any pending
   // interrupt messages via client.session.promptAsync. This fires regardless of
   // agent state, delivering within ~2 seconds of the message being written.
+  //
+  // Normal-urgency delivery when already idle: if the coordinator is already in
+  // the "finished" state (i.e. it went idle before the bus message arrived and
+  // session.idle will never fire again), also deliver pending normal-urgency
+  // messages here. This ensures they are delivered within ~2 seconds rather
+  // than waiting for a session.idle that may never come.
   setInterval(async () => {
     if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
     try {
@@ -274,6 +280,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         } catch (e) { console.error("[prism-hooks] interrupt promptAsync failed:", e); }
       }
     } catch (e) { console.error("[prism-hooks] interrupt delivery failed:", e); }
+
+    // Normal-urgency: deliver pending messages if the coordinator is already idle.
+    if (lastWrittenState === "finished") {
+      try {
+        const normal = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
+        for (const msg of normal) {
+          try {
+            await client.session.promptAsync({
+              path: { id: currentOpencodeSID! },
+              body: { parts: [{ type: "text", text: msg.text }] },
+            });
+            markDelivered.run(Date.now(), msg.id);
+          } catch (e) { console.error("[prism-hooks] normal (idle-poll) promptAsync failed:", e); }
+        }
+      } catch (e) { console.error("[prism-hooks] normal idle-poll delivery failed:", e); }
+    }
   }, 2000);
 
   return {
