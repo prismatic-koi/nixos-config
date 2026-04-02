@@ -115,6 +115,13 @@ var eventPaneDiedCmd = &cobra.Command{
 	Short: "Transition an active session to interrupted when its pane dies",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
+		window, _ := cmd.Flags().GetString("window")
+
+		// Only the agent window exit is meaningful — exits from term, edit,
+		// or any other window should not mark the session as interrupted.
+		if window != "agent" {
+			return nil
+		}
 
 		d, err := openDB()
 		if err != nil {
@@ -384,7 +391,9 @@ func init() {
 
 	// pane-died flags
 	eventPaneDiedCmd.Flags().String("session", "", "tmux session name")
+	eventPaneDiedCmd.Flags().String("window", "", "tmux window name")
 	_ = eventPaneDiedCmd.MarkFlagRequired("session")
+	_ = eventPaneDiedCmd.MarkFlagRequired("window")
 
 	// tmux-session-start flags
 	eventTmuxSessionStartCmd.Flags().String("session", "", "tmux session name")
