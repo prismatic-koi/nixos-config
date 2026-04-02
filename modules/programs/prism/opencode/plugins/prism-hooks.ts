@@ -344,6 +344,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             // User messages are atomic — write on every update.
             const text = textByMessageId.get(info.id) ?? "";
             writeEvent("msg_user", { messageId: info.id, text });
+            // Clean up to avoid unbounded growth of the map.
+            textByMessageId.delete(info.id);
           } else if (info.role === "assistant" && info.time?.completed != null) {
             // Only write when the assistant message is fully complete to avoid
             // one row per streaming token.

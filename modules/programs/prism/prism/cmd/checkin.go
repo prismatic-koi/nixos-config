@@ -42,7 +42,7 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of events to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to show (default: msg_user,msg_assistant,tool_call,tool_result,permission_ask)")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask)")
 	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
@@ -87,9 +87,12 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // if the DB is unavailable or has no rows for this session.
 func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
 	// Default event types when none explicitly requested.
-	// The user-visible default is msg_user and msg_assistant; tool_call,
-	// tool_result, and permission_ask are included so they can be rendered
-	// inline under assistant messages.
+	// The spec describes the user-facing default as ["msg_user","msg_assistant"],
+	// but inline rendering of tool calls and permission prompts under assistant
+	// messages requires those types to also be present in the query result.
+	// We therefore extend the internal default to include them. When --types is
+	// set explicitly by the user, only the requested types are fetched (tool_call
+	// etc. are excluded unless specified, so inline rendering is suppressed).
 	queryTypes := types
 	if len(queryTypes) == 0 {
 		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask"}
@@ -310,10 +313,8 @@ func runCheckinNoArg(showAll bool) error {
 func printSessionTable(ss []db.Status) error {
 	if len(ss) == 0 {
 		fmt.Println("no agent sessions found")
-		return fmt.Errorf("no session specified")
+		return nil
 	}
-	// Sessions were printed successfully — return nil so callers don't see a
-	// spurious non-zero exit when the table is displayed.
 
 	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleName := lipgloss.NewStyle().Bold(true)
