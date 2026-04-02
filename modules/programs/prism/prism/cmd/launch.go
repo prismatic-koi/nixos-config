@@ -2,8 +2,10 @@ package cmd
 
 // prism launch — replaces cli.prism.launch
 //
-// Launches Prism: ensures the scratchpad tmux session exists, then opens the
-// context switcher (prism switch) in a display-popup.
+// Launches Prism: ensures the scratchpad session and the prism-dashboard
+// session both exist, then attaches to the dashboard as the default landing
+// point. The C-f context-switcher popup is no longer opened on startup; the
+// dashboard is the primary navigation surface.
 //
 // Flags:
 //
@@ -17,8 +19,6 @@ package cmd
 import (
 	"os"
 	"os/exec"
-	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -42,20 +42,12 @@ var (
 
 var launchCmd = &cobra.Command{
 	Use:   "launch",
-	Short: "Launch Prism scratchpad + context switcher",
+	Short: "Launch Prism dashboard (default landing point)",
 	Args:  cobra.NoArgs,
 	RunE:  runLaunch,
 }
 
 func runLaunch(_ *cobra.Command, _ []string) error {
-	switcherCmd := "prism switch"
-	if launchPath != "" {
-		switcherCmd += " --path " + launchPath
-	}
-	if launchFresh {
-		switcherCmd += " --fresh"
-	}
-
 	inTmux := os.Getenv("TMUX") != ""
 
 	ensureScratchpad := func() error {
@@ -68,56 +60,53 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		return tmux.RenameWindow("scratchpad:0", "term")
 	}
 
-	openSwitcher := func() error {
-		_, err := tmux.Run("display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd)
-		return err
-	}
-
 	switch {
 	case inTmux:
-		// Already inside tmux: switch to scratchpad then open the popup.
-		// Restore() is not called here: prism restart handles restore before
-		// re-execing into launch, and prism-restore.service covers the login/reboot
-		// scenario. runLaunch itself never restores.
+		// Already inside tmux: ensure both the scratchpad (shell fallback) and
+		// the dashboard session exist, then switch to the dashboard.
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
-		if _, err := tmux.SwitchClientCurrent("scratchpad"); err != nil {
+		if err := ensureDashSession(); err != nil {
 			return err
 		}
-		// Small delay to let the session settle before the popup.
-		time.Sleep(100 * time.Millisecond)
-		return openSwitcher()
+		client, _ := tmux.CurrentClient()
+		return tmux.SwitchClient(client, dashSession)
 
 	case launchInTerminal:
-		// In a terminal but not in tmux: attach in-place, fire switcher once attached.
-		// Restore() is not called here for the same reason as the inTmux branch above.
+		// In a terminal but not in tmux: attach to the dashboard in-place.
 		if err := ensureScratchpad(); err != nil {
 			return err
 		}
-		// Set a one-shot hook that opens the switcher as soon as the client attaches.
-		_, _ = tmux.Run("set-hook", "-t", "scratchpad", "client-attached",
-			"run-shell 'sleep 0.1' ; display-popup -w 80% -h 80% -E '"+switcherCmd+"' ; set-hook -u client-attached",
-		)
-		// Replace this process with tmux attach (new-session -As reuses existing).
-		tmuxBin, err := exec.LookPath(tmux.TmuxBin)
-		if err != nil {
-			tmuxBin = tmux.TmuxBin
+		if err := ensureDashSession(); err != nil {
+			return err
 		}
-		return syscall.Exec(tmuxBin, []string{tmux.TmuxBin, "new-session", "-As", "scratchpad"}, os.Environ())
+		// Replace this process with tmux attach so no parent process remains.
+		return syscallExecTmux(dashSession)
 
 	default:
-		// Outside tmux entirely: spawn a new kitty window.
+		// Outside tmux entirely: spawn a new kitty window attached to the
+		// dashboard session. The scratchpad is created in the background so it
+		// is ready for use as a shell without being the initial focus.
 		kittyBin, err := exec.LookPath(LaunchKittyBin)
 		if err != nil {
 			kittyBin = LaunchKittyBin
 		}
+		// Build the startup command sequence:
+		//   1. Create (or reuse) the scratchpad session in the background.
+		//   2. Create (or reuse) the prism-dashboard session.
+		//   3. Attach the new kitty window to the dashboard.
+		self, err := os.Executable()
+		if err != nil {
+			self = "prism"
+		}
+		loopCmd := "while " + self + " dashboard --popup; do true; done"
 		cmd := exec.Command(kittyBin,
 			"--title", "Prism",
 			tmux.TmuxBin, "new-session", "-As", "scratchpad", "-c", os.Getenv("HOME"),
 			";", "rename-window", "-t", "scratchpad:0", "term",
-			";", "run-shell", "sleep 0.2",
-			";", "display-popup", "-w", "80%", "-h", "80%", "-E", switcherCmd,
+			";", "new-session", "-ds", dashSession, "-n", "dashboard", loopCmd,
+			";", "switch-client", "-t", dashSession,
 		)
 		// Restore() is not called here: prism restart handles restore before
 		// re-execing into launch, and prism-restore.service covers the login/reboot

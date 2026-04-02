@@ -333,6 +333,7 @@ type agentSession struct {
 	AgentState  string // active | waiting | finished | compacting | error | idle | ""
 	AgentPath   string // worktree path — used for git diff stats
 	AgentTitle  string // current session title from agent_status.title
+	AgentName   string // coordinator | build | "" — from agent_status.agent_name
 	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
 }
 
@@ -343,12 +344,106 @@ func statusToAgentSession(s db.Status, clientCounts map[string]int) agentSession
 	if s.Title != nil {
 		title = *s.Title
 	}
+	agentName := ""
+	if s.AgentName != nil {
+		agentName = *s.AgentName
+	}
 	return agentSession{
 		Name:        s.SessionName,
 		AgentState:  s.State,
 		AgentPath:   s.Worktree,
 		AgentTitle:  title,
+		AgentName:   agentName,
 		ClientCount: clientCounts[s.SessionName],
+	}
+}
+
+// sessionRepo extracts the repo prefix from a session name.
+// Session names are of the form "repo@branch"; for names without "@" the whole
+// name is used as the repo key (handles scratchpad, prism-dashboard, etc.).
+func sessionRepo(name string) string {
+	if idx := strings.Index(name, "@"); idx >= 0 {
+		return name[:idx]
+	}
+	return name
+}
+
+// sessionBranch extracts the branch suffix from a session name (the part after
+// the first "@"). Returns the full name when there is no "@".
+func sessionBranch(name string) string {
+	if idx := strings.Index(name, "@"); idx >= 0 {
+		return name[idx:] // keeps the "@" prefix, e.g. "@main"
+	}
+	return name
+}
+
+// repoGroup is a single repo bucket used when building the grouped view.
+type repoGroup struct {
+	repo     string
+	sessions []agentSession // @main first, then remaining sorted by name
+}
+
+// groupSessions partitions sessions into repo groups sorted alphabetically by
+// repo name. Within each group @main always comes first; remaining sessions are
+// kept in their original order (callers may pre-sort by last_seen).
+func groupSessions(sessions []agentSession) []repoGroup {
+	order := []string{}
+	buckets := map[string][]agentSession{}
+
+	for _, s := range sessions {
+		repo := sessionRepo(s.Name)
+		if _, ok := buckets[repo]; !ok {
+			order = append(order, repo)
+		}
+		buckets[repo] = append(buckets[repo], s)
+	}
+
+	// Sort repo names alphabetically.
+	sortStrings(order)
+
+	groups := make([]repoGroup, 0, len(order))
+	for _, repo := range order {
+		slist := buckets[repo]
+		// Promote @main to the front of the group.
+		mainIdx := -1
+		for i, s := range slist {
+			if sessionBranch(s.Name) == "@main" {
+				mainIdx = i
+				break
+			}
+		}
+		if mainIdx > 0 {
+			slist[0], slist[mainIdx] = slist[mainIdx], slist[0]
+		}
+		groups = append(groups, repoGroup{repo: repo, sessions: slist})
+	}
+	return groups
+}
+
+// sortStrings sorts a string slice in-place using insertion sort (no stdlib
+// import needed for small N; avoids adding "sort" to the import block if it
+// is not already there).
+func sortStrings(ss []string) {
+	for i := 1; i < len(ss); i++ {
+		key := ss[i]
+		j := i - 1
+		for j >= 0 && ss[j] > key {
+			ss[j+1] = ss[j]
+			j--
+		}
+		ss[j+1] = key
+	}
+}
+
+// agentTypeLabel returns a short display label for the agent_name value.
+func agentTypeLabel(agentName string) string {
+	switch agentName {
+	case "coordinator":
+		return "coord"
+	case "build":
+		return "build"
+	default:
+		return ""
 	}
 }
 
@@ -819,7 +914,14 @@ func (m dashModel) View() string {
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
 	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+	styleGroup := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorBlue)).Bold(true)
+	styleAgentType := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
+	// ── column widths ────────────────────────────────────────────────────────
+	// Tree prefix for worktree rows: "  ├── " or "  └── " (6 chars).
+	// Group header rows use no prefix.
+	const treePrefixW = 6
+	const agentTypeW = 6 // "coord " or "build " or "      "
 	const stateW = 10
 	const dotW = 2
 	const sessionWMax = 28
@@ -827,7 +929,8 @@ func (m dashModel) View() string {
 	const statWFull = 22    // "2 files +122 -14"
 	const statWCompact = 10 // "+122 -14"
 	// Try full layout first; compress stat then session if too narrow.
-	fixedOther := 1 + dotW + 2 + stateW + 2 + 2 // dot+session gap+state gap+stat gap
+	// Layout per row: 1(leading space) + dotW + treePrefixW + sessionW + 2 + agentTypeW + 2 + stateW + 2 + statW
+	fixedOther := 1 + dotW + treePrefixW + 2 + agentTypeW + 2 + stateW + 2
 	titleW := m.width - (fixedOther + sessionWMax + statWFull)
 	statW := statWFull
 	sessionW := sessionWMax
@@ -857,7 +960,15 @@ func (m dashModel) View() string {
 	if statW == statWCompact {
 		changesHeader = "+/-"
 	}
-	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s", dotW, "", sessionW, "session", stateW, "state", statW, changesHeader)
+	// Column header accounts for the extra treePrefixW and agentTypeW columns.
+	header := fmt.Sprintf(" %-*s%-*s%-*s  %-*s  %-*s  %-*s",
+		dotW, "",
+		treePrefixW, "",
+		sessionW, "session",
+		agentTypeW, "type",
+		stateW, "state",
+		statW, changesHeader,
+	)
 	if titleW > 0 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
@@ -872,111 +983,39 @@ func (m dashModel) View() string {
 			sb.WriteString(styleDim.Render("  no active sessions"))
 		}
 		sb.WriteString("\n")
-	}
-
-	for i, s := range sessions {
-		isHere := s.Name == m.currentSession
-		isSelected := i == m.cursor
-
-		// dot: ◆ = you are here, ● = someone else attached, space = unattached
-		var dot string
-		switch {
-		case isHere:
-			dot = "◆ "
-		case s.ClientCount > 0:
-			dot = "● "
-		default:
-			dot = "  "
+	} else if m.filterActive {
+		// Flat list while filter is active (no grouping — easier to scan).
+		for i, s := range sessions {
+			sb.WriteString(m.renderSessionRow(s, i, "" /*treePrefix*/, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
 		}
-
-		sessionDisplay := s.Name
-		if len(sessionDisplay) > sessionW {
-			sessionDisplay = sessionDisplay[:sessionW-1] + "…"
+	} else {
+		// Grouped view: repo headers with ASCII tree connectors.
+		groups := groupSessions(sessions)
+		// Build a cursor-index map from session name → index in m.displayed so
+		// we can check isSelected without an O(n) scan per group entry.
+		displayIdx := map[string]int{}
+		for i, s := range sessions {
+			displayIdx[s.Name] = i
 		}
-
-		stat := m.gitStats[s.AgentPath]
-		var statPlain string
-		if stat.Files == 0 {
-			statPlain = "—"
-		} else if statW == statWCompact {
-			statPlain = fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions)
-		} else {
-			fileWord := "files"
-			if stat.Files == 1 {
-				fileWord = "file "
+		for gi, g := range groups {
+			// Group header (repo name), preceded by a blank line except the first.
+			if gi > 0 {
+				sb.WriteString("\n")
 			}
-			statPlain = fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
-		}
+			sb.WriteString(styleGroup.Render("  " + g.repo))
+			sb.WriteString("\n")
 
-		title := s.AgentTitle
-		if titleW > 0 && len(title) > titleW {
-			title = title[:titleW-1] + "…"
-		}
-
-		if isSelected && m.cursorActive {
-			// Bar colour: state colour for active states, primary for idle/finished.
-			barBg := lipgloss.Color(ColorPrimary)
-			switch agent.AgentState(s.AgentState) {
-			case agent.StateActive, agent.StateWaiting, agent.StateCompacting, agent.StateError, agent.StateInterrupted:
-				if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
-					barBg = c
+			for j, s := range g.sessions {
+				isLast := j == len(g.sessions)-1
+				var treePrefix string
+				if isLast {
+					treePrefix = "  └── "
+				} else {
+					treePrefix = "  ├── "
 				}
+				idx := displayIdx[s.Name]
+				sb.WriteString(m.renderSessionRow(s, idx, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
 			}
-
-			plain := fmt.Sprintf(" %s%-*s  %-*s  %-*s",
-				dot, sessionW, sessionDisplay, stateW, stateLabel(s.AgentState), statW, statPlain)
-			if titleW > 0 {
-				plain += fmt.Sprintf("  %s", title)
-			}
-			row := lipgloss.NewStyle().
-				Foreground(lipgloss.Color(ColorBg0)).
-				Background(barBg).
-				Bold(true).
-				Width(m.width).
-				Render(plain)
-			sb.WriteString(row + "\n")
-		} else {
-			// Unselected: coloured state + coloured diff, normal fg for the rest.
-			stateStr := lipgloss.NewStyle().
-				Foreground(stateStyle(s.AgentState).GetForeground()).
-				Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
-
-			var statStr string
-			if stat.Files == 0 {
-				statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
-			} else if statW == statWCompact {
-				// Compact: just +N -N coloured, no file count.
-				coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-					" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-				rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
-				pad := statW - rawLen
-				if pad < 0 {
-					pad = 0
-				}
-				statStr = coloured + strings.Repeat(" ", pad)
-			} else {
-				fileWord := "files"
-				if stat.Files == 1 {
-					fileWord = "file "
-				}
-				// Build plain portion then pad, append coloured +/- separately.
-				plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
-				coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-					" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-				rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
-				pad := statW - len(rawStat)
-				if pad < 0 {
-					pad = 0
-				}
-				statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
-			}
-
-			prefix := styleFg.Render(fmt.Sprintf(" %s%-*s  ", dot, sessionW, sessionDisplay))
-			row := prefix + stateStr + styleFg.Render("  ") + statStr
-			if titleW > 0 && title != "" {
-				row += styleDim.Render("  " + title)
-			}
-			sb.WriteString(row + "\n")
 		}
 	}
 
@@ -994,6 +1033,143 @@ func (m dashModel) View() string {
 	}
 
 	return sb.String()
+}
+
+// renderSessionRow renders a single session row (selected or unselected).
+// treePrefix is the ASCII tree connector string (e.g. "  ├── "); pass "" for
+// flat-list rendering (filter mode).
+func (m dashModel) renderSessionRow(
+	s agentSession,
+	cursorIdx int,
+	treePrefix string,
+	styleDim, styleIns, styleDel, styleFg, styleAgentType lipgloss.Style,
+	sessionW, agentTypeW, stateW, statW, statWCompact, titleW int,
+) string {
+	isHere := s.Name == m.currentSession
+	isSelected := cursorIdx == m.cursor
+
+	// dot: ◆ = you are here, ● = someone else attached, space = unattached
+	var dot string
+	switch {
+	case isHere:
+		dot = "◆ "
+	case s.ClientCount > 0:
+		dot = "● "
+	default:
+		dot = "  "
+	}
+
+	// For grouped view, show only the branch portion (e.g. "@main").
+	// For flat-list (filter mode, treePrefix=""), show the full name.
+	sessionDisplay := s.Name
+	if treePrefix != "" {
+		sessionDisplay = sessionBranch(s.Name)
+	}
+	if len(sessionDisplay) > sessionW {
+		sessionDisplay = sessionDisplay[:sessionW-1] + "…"
+	}
+
+	// treePrefixW is always 6; pad treePrefix to that width.
+	const treePrefixW = 6
+	paddedPrefix := treePrefix
+	if len(paddedPrefix) < treePrefixW {
+		paddedPrefix += strings.Repeat(" ", treePrefixW-len(paddedPrefix))
+	}
+
+	agentLabel := agentTypeLabel(s.AgentName)
+	paddedAgentLabel := fmt.Sprintf("%-*s", agentTypeW, agentLabel)
+
+	stat := m.gitStats[s.AgentPath]
+	var statPlain string
+	if stat.Files == 0 {
+		statPlain = "—"
+	} else if statW == statWCompact {
+		statPlain = fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions)
+	} else {
+		fileWord := "files"
+		if stat.Files == 1 {
+			fileWord = "file "
+		}
+		statPlain = fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+	}
+
+	title := s.AgentTitle
+	if titleW > 0 && len(title) > titleW {
+		title = title[:titleW-1] + "…"
+	}
+
+	if isSelected && m.cursorActive {
+		// Bar colour: state colour for active states, primary for idle/finished.
+		barBg := lipgloss.Color(ColorPrimary)
+		switch agent.AgentState(s.AgentState) {
+		case agent.StateActive, agent.StateWaiting, agent.StateCompacting, agent.StateError, agent.StateInterrupted:
+			if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
+				barBg = c
+			}
+		}
+
+		plain := fmt.Sprintf(" %s%s%-*s  %-*s  %-*s  %-*s",
+			dot, paddedPrefix,
+			sessionW, sessionDisplay,
+			agentTypeW, agentLabel,
+			stateW, stateLabel(s.AgentState),
+			statW, statPlain,
+		)
+		if titleW > 0 {
+			plain += fmt.Sprintf("  %s", title)
+		}
+		row := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(ColorBg0)).
+			Background(barBg).
+			Bold(true).
+			Width(m.width).
+			Render(plain)
+		return row + "\n"
+	}
+
+	// Unselected: coloured state + coloured diff + dimmed agent type, normal fg for the rest.
+	stateStr := lipgloss.NewStyle().
+		Foreground(stateStyle(s.AgentState).GetForeground()).
+		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
+
+	agentTypeStr := styleAgentType.Render(paddedAgentLabel)
+
+	var statStr string
+	if stat.Files == 0 {
+		statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
+	} else if statW == statWCompact {
+		// Compact: just +N -N coloured, no file count.
+		coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+			" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+		rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
+		pad := statW - rawLen
+		if pad < 0 {
+			pad = 0
+		}
+		statStr = coloured + strings.Repeat(" ", pad)
+	} else {
+		fileWord := "files"
+		if stat.Files == 1 {
+			fileWord = "file "
+		}
+		// Build plain portion then pad, append coloured +/- separately.
+		plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
+		coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+			" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+		rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+		pad := statW - len(rawStat)
+		if pad < 0 {
+			pad = 0
+		}
+		statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
+	}
+
+	prefix := styleFg.Render(fmt.Sprintf(" %s%s%-*s  ", dot, paddedPrefix, sessionW, sessionDisplay))
+	row := prefix + agentTypeStr + styleFg.Render("  ") + stateStr + styleFg.Render("  ") + statStr
+	if titleW > 0 && title != "" {
+		row += styleDim.Render("  " + title)
+	}
+	return row + "\n"
 }
 
 // skeletonView renders a minimal loading frame shown before the first DB fetch
