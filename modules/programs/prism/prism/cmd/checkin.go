@@ -42,7 +42,7 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of events to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask)")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask, permission_denied)")
 	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
@@ -95,7 +95,7 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 	// etc. are excluded unless specified, so inline rendering is suppressed).
 	queryTypes := types
 	if len(queryTypes) == 0 {
-		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask"}
+		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask", "permission_denied"}
 	}
 
 	d, err := openDB()
@@ -129,10 +129,28 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 	fmt.Printf("checkin: %s\n\n", session)
 	fmt.Printf("state: %s\n\n", state)
 
-	// Walk events. tool_call and tool_result are rendered inline under the
-	// preceding msg_assistant, so we iterate with index awareness.
-	for i := 0; i < len(events); i++ {
-		e := events[i]
+	// Build a map from messageId → inline events (tool_call, tool_result,
+	// permission_ask, permission_denied) so that we can render them under
+	// the correct msg_assistant row regardless of event ordering in the DB.
+	// The plugin writes msg_assistant only when message.updated fires with
+	// completed != null, which happens AFTER tool_call/permission_ask rows
+	// have already been inserted — so proximity-based association is wrong.
+	type inlineEvent struct {
+		eventType string
+		payload   string
+	}
+	inlineByMsgID := make(map[string][]inlineEvent)
+	for _, e := range events {
+		switch e.Type {
+		case "tool_call", "tool_result", "permission_ask", "permission_denied":
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" {
+				inlineByMsgID[msgID] = append(inlineByMsgID[msgID], inlineEvent{e.Type, e.Payload})
+			}
+		}
+	}
+
+	for _, e := range events {
 		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
 
 		switch e.Type {
@@ -144,44 +162,42 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			text := payloadText(e.Payload)
 			fmt.Printf("[%s] assistant\n%s\n", ts, text)
 
-			// Render immediately following tool_call / tool_result / permission_ask
-			// events that share the same messageId.
+			// Render tool_call / tool_result / permission_ask / permission_denied
+			// events that belong to this message, looked up by messageId.
 			msgID := payloadMessageID(e.Payload)
-			for i+1 < len(events) {
-				next := events[i+1]
-				switch next.Type {
-				case "tool_call":
-					if msgID == "" || payloadMessageID(next.Payload) == msgID {
-						tool, args := payloadToolCall(next.Payload)
+			if msgID != "" {
+				for _, ie := range inlineByMsgID[msgID] {
+					switch ie.eventType {
+					case "tool_call":
+						tool, args := payloadToolCall(ie.payload)
 						if !verbose && len(args) > 80 {
 							args = args[:80] + "..."
 						}
 						fmt.Printf("  → %s: %s\n", tool, args)
-						i++
-						continue
-					}
-				case "tool_result":
-					if msgID == "" || payloadMessageID(next.Payload) == msgID {
-						result := payloadToolResult(next.Payload)
+					case "tool_result":
+						result := payloadToolResult(ie.payload)
 						if !verbose && len(result) > 80 {
 							result = result[:80] + "..."
 						}
 						fmt.Printf("  → result: %s\n", result)
-						i++
-						continue
+					case "permission_ask":
+						tool, patterns := payloadPermissionAsk(ie.payload)
+						fmt.Printf("  [⏳ waiting for approval: %s — %s]\n", tool, patterns)
+					case "permission_denied":
+						tool := payloadPermissionDeniedTool(ie.payload)
+						fmt.Printf("  [❌ denied: %s]\n", tool)
 					}
-				case "permission_ask":
-					tool, patterns := payloadPermissionAsk(next.Payload)
-					fmt.Printf("[⏳ waiting for approval: %s — %s]\n", tool, patterns)
-					i++
-					continue
 				}
-				break
 			}
 			fmt.Println()
 
 		case "tool_call":
-			// Standalone tool_call (not already consumed above).
+			// Standalone tool_call — skip if it belongs to a known msg_assistant
+			// (will be/was rendered inline), regardless of ordering in the slice.
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+				continue
+			}
 			tool, args := payloadToolCall(e.Payload)
 			if !verbose && len(args) > 80 {
 				args = args[:80] + "..."
@@ -189,6 +205,10 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			fmt.Printf("  → %s: %s\n", tool, args)
 
 		case "tool_result":
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+				continue
+			}
 			result := payloadToolResult(e.Payload)
 			if !verbose && len(result) > 80 {
 				result = result[:80] + "..."
@@ -196,8 +216,20 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			fmt.Printf("  → result: %s\n", result)
 
 		case "permission_ask":
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+				continue
+			}
 			tool, patterns := payloadPermissionAsk(e.Payload)
 			fmt.Printf("[⏳ waiting for approval: %s — %s]\n", tool, patterns)
+
+		case "permission_denied":
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+				continue
+			}
+			tool := payloadPermissionDeniedTool(e.Payload)
+			fmt.Printf("[❌ denied: %s]\n", tool)
 
 		default:
 			// state_change, compaction, error, etc. — shown when explicitly
@@ -417,4 +449,18 @@ func payloadPermissionAsk(raw string) (tool, patterns string) {
 		return "unknown", raw
 	}
 	return p.Tool, strings.Join(p.Patterns, ", ")
+}
+
+// payloadPermissionDeniedTool extracts the tool name from a permission_denied payload.
+func payloadPermissionDeniedTool(raw string) string {
+	var p struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return "unknown"
+	}
+	if p.Tool == "" {
+		return "unknown"
+	}
+	return p.Tool
 }
