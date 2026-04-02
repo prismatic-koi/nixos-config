@@ -124,13 +124,16 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // Like upsertStatus but intentionally does NOT update state — used for
   // session.updated on resumed sessions so we insert a row (state='active') if
   // none exists, but leave state alone if a row is already present.
+  // ended_at is cleared on conflict so that a previously-closed session that is
+  // resumed becomes visible again to dashboard queries (which filter ended_at IS NULL).
   const upsertStatusKeepState = db?.prepare(`
     INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(session_name) DO UPDATE SET
       title        = COALESCE(excluded.title, title),
       opencode_sid = COALESCE(excluded.opencode_sid, opencode_sid),
-      last_seen    = excluded.last_seen
+      last_seen    = excluded.last_seen,
+      ended_at     = NULL
   `);
 
   const insertEvent = db?.prepare(`
@@ -254,6 +257,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
                 upsertStatusKeepState.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
               } catch (e) { console.error("[prism-hooks] upsertStatusKeepState failed:", e); }
             }
+            writeEvent("state_change", { state: "active" }, info.id);
           }
           break;
         }
