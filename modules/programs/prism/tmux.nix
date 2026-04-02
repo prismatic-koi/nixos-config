@@ -176,7 +176,7 @@ in
               # Transition to interrupted when a pane dies unexpectedly mid-session.
               # This fires for every pane exit; prism event pane-died is a no-op for
               # non-project sessions and for sessions already in a terminal state.
-              set-hook -g window-pane-exited "run-shell '${prism} event pane-died --session #{session_name}'"
+              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{session_name}'"
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
