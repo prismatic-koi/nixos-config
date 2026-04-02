@@ -145,7 +145,11 @@ prism spawn \
 ## Example: reviewing a PR
 
 ```bash
+# PR in the current repo
 prism pr 268 --prompt "review this PR and summarise the changes"
+
+# PR in a different repo (--repo is supported on prism pr)
+prism pr 268 --repo nixos-config --prompt "review this PR and summarise the changes"
 ```
 
 ## Example: create a ticket then spawn an agent to action it
