@@ -573,13 +573,13 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 				}
 				switch {
 				case len(files) == 1:
-					nvimCmd = "nvim '" + files[0] + "'"
+					nvimCmd = "nvim " + shellQuote(files[0])
 				case strings.Contains(directory, "obsidian"):
 					nvimCmd = "nvim +'Obsidian today'"
 				default:
 					readme := filepath.Join(directory, "README.md")
 					if _, err := os.Stat(readme); err == nil {
-						nvimCmd = "nvim '" + readme + "'"
+						nvimCmd = "nvim " + shellQuote(readme)
 					}
 				}
 			}
