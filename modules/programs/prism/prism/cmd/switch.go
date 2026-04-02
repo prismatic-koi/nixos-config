@@ -450,11 +450,9 @@ type sessionOpts struct {
 }
 
 // buildOpencodeCmd returns the opencode launch command string (without prompt).
-// The prompt is sent separately via a delayed send-keys to work around a known
-// opencode bug where --prompt is ignored on TUI launch.
-// See: https://github.com/anomalyco/opencode/issues/8850
-//
-//	https://github.com/anomalyco/opencode/issues/14349
+// The prompt is NOT passed as a flag here — it is written to bus_messages and
+// delivered by the opencode plugin on the first session.idle after
+// session.created fires.
 func buildOpencodeCmd(opts sessionOpts) string {
 	agent := opts.agent
 	if agent == "" {
@@ -606,8 +604,12 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 					SentAt:      time.Now(),
 				}
 				if database, dbErr := openDB(); dbErr == nil {
-					_ = database.WriteBusMessage(msg)
+					if err := database.WriteBusMessage(msg); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not queue spawn prompt: %v\n", err)
+					}
 					database.Close()
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: could not open DB to queue spawn prompt: %v\n", dbErr)
 				}
 				// Touch sentinel file for the Stage 8 dashboard watcher.
 				_ = touchBusSentinel(sessionName)
