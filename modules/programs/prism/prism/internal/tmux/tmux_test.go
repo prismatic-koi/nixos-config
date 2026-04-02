@@ -12,9 +12,7 @@
 package tmux_test
 
 import (
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -572,48 +570,5 @@ func TestAPI_TwoClientsGlobalStampIsolation(t *testing.T) {
 	}
 	if gotB != "nixos-config@main" {
 		t.Errorf("clientB session = %q, want %q (should be unaffected)", gotB, "nixos-config@main")
-	}
-}
-
-// ─── SendKeysWhenReady tests ──────────────────────────────────────────────────
-// These tests exercise SendKeysWhenReady against a real tmux server.
-// They use withServer() and are intentionally sequential (no t.Parallel).
-//
-// Setup for each test:
-//   - A session named "myrepo@feat" with an "agent" window that runs `cat`
-//     (a simple command that accepts and echoes stdin — stands in for opencode).
-//   - SendKeysWhenReady is called targeting that window.
-//   - The test manipulates @agent_state to simulate opencode becoming ready,
-//     then checks that the typed text appears in the pane.
-
-// waitForPaneContent polls capture-pane on the given target until the pane
-// content contains the expected substring, or the deadline is exceeded.
-// Returns true if the content was found.
-func waitForPaneContent(s *server, target, want string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(s.capturePane(target), want) {
-			return true
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return false
-}
-
-// TestSendKeysWhenReady_Retired verifies that SendKeysWhenReady returns an
-// error (it was retired in Stage 7 in favour of bus_messages).
-func TestSendKeysWhenReady_Retired(t *testing.T) {
-	err := tmux.SendKeysWhenReady("target:agent", "target", "hello", 10)
-	if err == nil {
-		t.Fatal("expected SendKeysWhenReady to return an error (retired in Stage 7)")
-	}
-}
-
-// TestSendKeysDelayed_Retired verifies that SendKeysDelayed returns an error
-// (it was retired in Stage 7 in favour of bus_messages).
-func TestSendKeysDelayed_Retired(t *testing.T) {
-	err := tmux.SendKeysDelayed("target:agent", "hello", 500)
-	if err == nil {
-		t.Fatal("expected SendKeysDelayed to return an error (retired in Stage 7)")
 	}
 }

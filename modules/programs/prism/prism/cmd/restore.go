@@ -5,8 +5,6 @@ package cmd
 // Reads agent_status rows where ended_at IS NULL and recreates any sessions
 // that are no longer present in the running tmux server. Sessions that already
 // exist are skipped silently — safe to call more than once.
-//
-// Replaces the old sessions.json file-based approach (retired in Stage 6).
 
 import (
 	"fmt"

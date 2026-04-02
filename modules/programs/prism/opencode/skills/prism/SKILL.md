@@ -14,7 +14,6 @@ description: Spawn isolated agent sessions in their own git worktrees using the 
 | Situation | Use |
 |---|---|
 | User says "spawn an agent" or "use prism" | `prism spawn` |
-| Work is in a different repo | `prism spawn --repo` |
 | Work is on a PR branch | `prism spawn --pr` or `prism pr` |
 | Task is long-running / should outlive this session | `prism spawn` |
 | Quick research or analysis within this repo | subagent (`@explore`, `@general`) |
@@ -37,16 +36,13 @@ This converts a regular git clone to the prism bare+worktree layout in-place. Th
 # Spawn in the current repo with a timestamped branch
 prism spawn --prompt "go implement feature X and open a PR"
 
-# Spawn in a different repo (shorthand name under ~/code)
-prism spawn --repo home-ops --prompt "update the plex image to the latest tag and open a PR"
-
 # Spawn on a named branch
-prism spawn --repo home-ops --branch update-plex --prompt "..."
+prism spawn --branch update-plex --prompt "..."
 
 # Check out a PR branch and spawn a session on it
-prism spawn --repo nixos-config --pr 268 --prompt "review this PR"
+prism spawn --pr 268 --prompt "review this PR"
 # or shorthand:
-prism pr 268 --repo nixos-config --prompt "review this PR"
+prism pr 268 --prompt "review this PR"
 ```
 
 ## Passing prompts safely — shell escaping
@@ -95,7 +91,6 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--repo <name>` | Repo folder name under `~/code`, or full path. Errors with a `prism clone` hint if not found. |
 | `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
@@ -119,7 +114,7 @@ When you need to delegate work to a repo you are not the coordinator for, route 
 1. Run `prism list-sessions` and look for `<repo>@main`.
 2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
 3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
-4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --repo <repo> --branch main` will fail with a git error.
+4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --branch main` will fail with a git error.
 
 Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
 
@@ -143,7 +138,6 @@ If you **are** the coordinator for the target repo (or the user has explicitly i
 
 ```bash
 prism spawn \
-  --repo home-ops \
   --branch update-plex \
   --prompt "find the plex container image in this repo and update it to the latest tag from dockerhub, then open a PR"
 ```
@@ -151,7 +145,7 @@ prism spawn \
 ## Example: reviewing a PR
 
 ```bash
-prism pr 268 --repo nixos-config --prompt "review this PR and summarise the changes"
+prism pr 268 --prompt "review this PR and summarise the changes"
 ```
 
 ## Example: create a ticket then spawn an agent to action it
@@ -165,7 +159,6 @@ When the user asks you to create a ticket (e.g. Jira) and then spawn an agent to
 ```bash
 # After creating ticket PROJ-123:
 prism spawn \
-  --repo home-ops \
   --branch PROJ-123 \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
@@ -201,13 +194,40 @@ Use `prism list-sessions` to see all active agent sessions with their state and 
 prism list-sessions
 ```
 
-Use `prism checkin <session>` to capture the live screen of a session's agent window. The output is cleaned up (borders and chrome stripped) and is suitable for reading directly:
+Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. Output is structured as message turns (user and assistant pairs) with tool calls, tool results, and permission events rendered inline under their parent assistant message:
 
 ```bash
 prism checkin nixos-config@update-plex
 ```
 
+```
+checkin: nixos-config@update-plex
+
+state: active
+
+[2026-04-03 14:22:01] user
+implement the feature and open a PR
+
+[2026-04-03 14:22:05] assistant
+I'll implement this now.
+  → Bash: ls src/
+  → result: main.go utils.go
+
+── end of event log ──
+```
+
 With no argument, `prism checkin` lists available sessions and exits with a hint.
+
+### `prism checkin` flags
+
+| Flag | Description |
+|---|---|
+| `--last <N>` | Number of message turns to show (default 10) |
+| `--from <id>` | Show N events forward from this event ID |
+| `--before <id>` | Show N events backward from this event ID |
+| `--types <list>` | Comma-separated event types to filter (default: `msg_user,msg_assistant,tool_call,tool_result,permission_ask,permission_denied`) |
+| `--verbose` | Show full tool args/results without truncation |
+| `--all` | (no-arg mode only) List all sessions across all repos |
 
 These commands are useful when you need to know where a spawned agent is at without switching to its session.
 
@@ -227,12 +247,23 @@ prism prompt nixos-config@update-plex --prompt-file /tmp/p.txt
 prism prompt nixos-config@update-plex --prompt - <<'EOF'
 run `make test` and fix any failures
 EOF
+
+# Urgent delivery — interrupt the agent within ~2 seconds
+prism prompt nixos-config@update-plex --urgent --prompt 'stop what you are doing and open the PR now'
 ```
 
 The same shell-escaping conventions that apply to `prism spawn` apply here —
 see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 
-The prompt is delivered after a short delay (500 ms) to allow opencode to finish any in-flight operation before accepting the new input. The session must exist and have an agent window — use `prism list-sessions` to check first.
+### `prism prompt` flags
+
+| Flag | Description |
+|---|---|
+| `--prompt <text>` | Prompt text to send. Supports `-` to read from stdin. |
+| `--prompt-file <path>` | Read prompt from a file. Mutually exclusive with `--prompt`. |
+| `--urgent` | Deliver within ~2 seconds via interrupt polling instead of waiting for the next idle event. |
+
+The prompt is written to the message bus and delivered by the opencode plugin. The session must exist and have an agent window — use `prism list-sessions` to check first.
 
 ### Waiting state guard
 

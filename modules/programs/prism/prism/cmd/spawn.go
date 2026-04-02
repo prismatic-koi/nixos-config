@@ -6,7 +6,6 @@ package cmd
 // Flags:
 //
 //	--branch <name>       use a specific branch name instead of a timestamp
-//	--repo <name>         target repo by folder name under ~/code (or full path)
 //	--pr <number>         check out the branch for a given PR number
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
@@ -32,7 +31,6 @@ var spawnCmd = &cobra.Command{
 
 func init() {
 	spawnCmd.Flags().String("branch", "", "Branch name (default: timestamped)")
-	spawnCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
 	addPromptFlags(spawnCmd)
 	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "build" otherwise)`)
@@ -42,7 +40,6 @@ func init() {
 
 func runSpawn(cmd *cobra.Command, args []string) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
-	repoFlag, _ := cmd.Flags().GetString("repo")
 	prFlag, _ := cmd.Flags().GetString("pr")
 	agentFlag, _ := cmd.Flags().GetString("agent")
 
@@ -61,8 +58,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		headless: !fromKeybind && !attachFlag,
 	}
 
-	// Resolve the bare repo root.
-	bareRoot, err := resolveBareRoot(repoFlag)
+	// Resolve the bare repo root from the current pane path.
+	bareRoot, err := resolveBareRoot("")
 	if err != nil {
 		return err
 	}
@@ -85,6 +82,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
 // full path. If not set, the current pane path is used (existing behaviour).
+// repoFlag is currently only used by prism pr.
 func resolveBareRoot(repoFlag string) (string, error) {
 	if repoFlag != "" {
 		return resolveRepo(repoFlag)
