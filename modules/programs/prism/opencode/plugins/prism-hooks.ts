@@ -229,6 +229,41 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // Helpers (closed over db, sessionName, worktree)
   const repo = sessionName ? sessionName.split("@")[0]! : "";
 
+  // Register signal handlers so that a Ctrl-C (SIGINT) or termination
+  // (SIGTERM) immediately writes "interrupted" and cancels the idle debounce
+  // timer.  Without this, opencode catches the signal first and fires
+  // session.idle, which starts the 2-second debounce.  The debounce fires
+  // "finished" before the tmux pane-died hook can write "interrupted", leaving
+  // the session recorded as finished even though it was interrupted.
+  //
+  // The Bun SQLite run() call is synchronous at the C level, so the write
+  // completes before control returns to opencode's own signal handler.  Layer 2
+  // (pane-died with --exit-code) is the safety net for cases where the write
+  // cannot complete in time (SIGKILL, crash).
+  //
+  // The pane-died hook and the idle timer callback both already guard against
+  // clobbering "interrupted", so it is safe for multiple paths to write it.
+  function handleShutdownSignal(): void {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    // Write interrupted unless the session is already in a terminal state.
+    // Notably, we also write when lastWrittenState === null (plugin never saw
+    // a session event — interrupted before session.created fired): the
+    // pane-died fallback relies on a DB row existing, but the plugin can still
+    // write one here via upsertAgentStatus.
+    if (
+      lastWrittenState !== STATE_FINISHED &&
+      lastWrittenState !== STATE_DELETED &&
+      lastWrittenState !== STATE_INTERRUPTED
+    ) {
+      upsertAgentStatus(STATE_INTERRUPTED);
+      writeStateChange(STATE_INTERRUPTED);
+    }
+    // Do not call process.exit() here — let opencode's own signal handling
+    // proceed normally.  We only need to ensure the DB write happens first.
+  }
+  process.on("SIGINT", handleShutdownSignal);
+  process.on("SIGTERM", handleShutdownSignal);
+
   function writeEvent(type: string, payload: unknown, opencodeSid?: string | null): void {
     if (!db || !sessionName || !insertEvent) return;
     try {

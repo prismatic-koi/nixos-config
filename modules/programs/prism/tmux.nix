@@ -177,7 +177,9 @@ in
               # Only the agent window exit is relevant; prism event pane-died
               # ignores exits from other windows (term, edit) and is a no-op for
               # non-project sessions and sessions already in a terminal state.
-              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{session_name} --window #{window_name}'"
+              # #{pane_dead_status} is passed so pane-died can override a prior
+              # "finished" state when the exit was non-zero (signal/crash).
+              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{session_name} --window #{window_name} --exit-code #{pane_dead_status}'"
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN

@@ -410,6 +410,91 @@ func TestUpsertStatusIfNotTerminal(t *testing.T) {
 	}
 }
 
+// TestUpsertStatusInterruptedOverrideFinished verifies that the method
+// overrides "finished" with "interrupted" (unlike UpsertStatusIfNotTerminal
+// which treats "finished" as a terminal no-op).
+func TestUpsertStatusInterruptedOverrideFinished(t *testing.T) {
+	d := openTestDB(t)
+
+	// Should update a non-terminal state (active → interrupted).
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	updated, err := d.UpsertStatusInterruptedOverrideFinished("repo@main")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (active): %v", err)
+	}
+	if !updated {
+		t.Error("UpsertStatusInterruptedOverrideFinished (active): got updated=false, want true")
+	}
+	s, _ := d.CurrentStatus("repo@main")
+	if s.State != "interrupted" {
+		t.Errorf("State after active update: got %q, want \"interrupted\"", s.State)
+	}
+
+	// Key difference from UpsertStatusIfNotTerminal: "finished" should be
+	// overridden (this is the fix for the pane-died / idle-debounce race).
+	if err := d.UpsertStatus("repo@feat", "repo", "/code/repo/feat", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (finished): %v", err)
+	}
+	updated2, err := d.UpsertStatusInterruptedOverrideFinished("repo@feat")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (finished): %v", err)
+	}
+	if !updated2 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (finished): got updated=false, want true (override)")
+	}
+	sf, _ := d.CurrentStatus("repo@feat")
+	if sf.State != "interrupted" {
+		t.Errorf("State after finished override: got %q, want \"interrupted\"", sf.State)
+	}
+
+	// "interrupted" should be a no-op (already in target state).
+	updated3, err := d.UpsertStatusInterruptedOverrideFinished("repo@main")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (interrupted): %v", err)
+	}
+	if updated3 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (interrupted): got updated=true, want false (no-op)")
+	}
+
+	// "deleted" should be a no-op — do not resurrect deleted sessions.
+	if err := d.UpsertStatus("repo@old", "repo", "/code/repo/old", "deleted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (deleted): %v", err)
+	}
+	updated4, err := d.UpsertStatusInterruptedOverrideFinished("repo@old")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (deleted): %v", err)
+	}
+	if updated4 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (deleted): got updated=true, want false (no-op)")
+	}
+
+	// Sessions with ended_at set should be a no-op.
+	if err := d.UpsertStatus("repo@ended", "repo", "/code/repo/ended", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (ended): %v", err)
+	}
+	if err := d.SetEnded("repo@ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	updated5, err := d.UpsertStatusInterruptedOverrideFinished("repo@ended")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (ended): %v", err)
+	}
+	if updated5 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (ended): got updated=true, want false (no-op)")
+	}
+
+	// Non-existent session should be a no-op.
+	updated6, err := d.UpsertStatusInterruptedOverrideFinished("repo@nonexistent")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (nonexistent): %v", err)
+	}
+	if updated6 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (nonexistent): got updated=true, want false (no-op)")
+	}
+}
+
 // TestAllActiveStatusForRepo verifies that AllActiveStatusForRepo filters by repo.
 func TestAllActiveStatusForRepo(t *testing.T) {
 	d := openTestDB(t)

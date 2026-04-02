@@ -126,10 +126,14 @@ var eventStateChangeCmd = &cobra.Command{
 
 // --- pane-died ---
 //
-// Called by the tmux pane-died hook when the opencode pane exits. If the
+// Called by the tmux pane-exited hook when the opencode pane exits. If the
 // session is currently in an active (non-terminal) state, this transitions it
-// to "interrupted". Sessions already in finished, interrupted, or deleted state
-// are left unchanged — this guards against stale hook fires after a clean exit.
+// to "interrupted". Sessions already in interrupted or deleted state are left
+// unchanged — this guards against stale hook fires after a clean exit.
+//
+// When exitCode is non-zero (signal-based exit or crash), "finished" is also
+// overridden with "interrupted" — a non-zero exit means the process did not
+// complete cleanly regardless of what the plugin wrote to the DB before dying.
 
 var eventPaneDiedCmd = &cobra.Command{
 	Use:   "pane-died",
@@ -137,6 +141,7 @@ var eventPaneDiedCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
 		window, _ := cmd.Flags().GetString("window")
+		exitCode, _ := cmd.Flags().GetInt("exit-code")
 
 		// Only the agent window exit is meaningful — exits from term, edit,
 		// or any other window should not mark the session as interrupted.
@@ -160,13 +165,26 @@ var eventPaneDiedCmd = &cobra.Command{
 			return nil
 		}
 
-		// Transition to interrupted only if not already in a terminal state.
-		updated, err := d.UpsertStatusIfNotTerminal(session, string(agent.StateInterrupted))
+		var updated bool
+		if exitCode != 0 {
+			// Non-zero exit: the process was killed or crashed.  Override even
+			// a prior "finished" state — the session was not completed cleanly.
+			// This is the primary fix for the race where the plugin writes
+			// "finished" via the idle debounce before the pane-died hook fires.
+			updated, err = d.UpsertStatusInterruptedOverrideFinished(session)
+		} else {
+			// Clean exit (exit code 0): only transition if not already in a
+			// terminal state.  A zero exit after "finished" means the session
+			// completed cleanly; leave "finished" intact.
+			updated, err = d.UpsertStatusIfNotTerminal(session, string(agent.StateInterrupted))
+		}
 		if err != nil {
 			return fmt.Errorf("event pane-died: %w", err)
 		}
 		if !updated {
-			// Already finished / interrupted / deleted — nothing to do.
+			// No update applied.
+			// exitCode == 0 path: session was already finished/interrupted/deleted.
+			// exitCode != 0 path: session was already interrupted/deleted or ended_at is set.
 			return nil
 		}
 
@@ -413,6 +431,7 @@ func init() {
 	// pane-died flags
 	eventPaneDiedCmd.Flags().String("session", "", "tmux session name")
 	eventPaneDiedCmd.Flags().String("window", "", "tmux window name")
+	eventPaneDiedCmd.Flags().Int("exit-code", 0, "pane exit code (#{pane_dead_status}); non-zero overrides finished→interrupted")
 	_ = eventPaneDiedCmd.MarkFlagRequired("session")
 	_ = eventPaneDiedCmd.MarkFlagRequired("window")
 

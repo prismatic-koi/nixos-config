@@ -251,6 +251,37 @@ WHERE session_name = ?
 	return n > 0, nil
 }
 
+// UpsertStatusInterruptedOverrideFinished transitions the session to
+// "interrupted", allowing it to override a "finished" state in addition to the
+// active states that UpsertStatusIfNotTerminal covers.  This is used by the
+// pane-died hook when the pane exited with a non-zero exit code: a non-zero
+// exit means the process was killed or crashed, so even a prior "finished" that
+// the plugin wrote should be corrected to "interrupted".
+//
+// "deleted" is still left intact — a deleted session should not be resurrected.
+// "interrupted" is also left alone to avoid a no-op double-write.
+//
+// Returns (true, nil) if the update was applied, (false, nil) if the row did
+// not exist, was already interrupted or deleted, or has ended_at set.
+func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
+	now := time.Now().UnixMilli()
+	const q = `
+UPDATE agent_status
+SET state = 'interrupted', last_seen = ?
+WHERE session_name = ?
+  AND ended_at IS NULL
+  AND state NOT IN ('interrupted', 'deleted')`
+	res, err := d.conn.Exec(q, now, sessionName)
+	if err != nil {
+		return false, fmt.Errorf("db: upsert status interrupted override finished: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: upsert status interrupted override finished: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SetEnded marks the session as ended by setting ended_at to now.
 func (d *DB) SetEnded(sessionName string) error {
 	now := time.Now().UnixMilli()
