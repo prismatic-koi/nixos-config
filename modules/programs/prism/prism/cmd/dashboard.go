@@ -129,7 +129,7 @@ func rainbowLineWidth(line string, totalWidth int) string {
 // When the terminal is too short, a compact 2-line header is used instead.
 func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) string {
 	// ── compute stats ────────────────────────────────────────────────────────
-	var nActive, nWaiting, nIdle, nFinished int
+	var nActive, nWaiting, nIdle, nFinished, nInterrupted int
 	var totalIns, totalDel int
 	for _, s := range m.sessions {
 		stat := m.gitStats[s.AgentPath]
@@ -142,6 +142,8 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 			nWaiting++
 		case "finished":
 			nFinished++
+		case "interrupted":
+			nInterrupted++
 		default:
 			nIdle++
 		}
@@ -156,6 +158,9 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	}
 	if nFinished > 0 {
 		stateParts = append(stateParts, fmt.Sprintf("%d done", nFinished))
+	}
+	if nInterrupted > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("%d interrupted", nInterrupted))
 	}
 	if nIdle > 0 || len(stateParts) == 0 {
 		stateParts = append(stateParts, fmt.Sprintf("%d idle", nIdle))
@@ -288,6 +293,8 @@ func stateStyle(state string) lipgloss.Style {
 		color = ColorYellow
 	case "finished":
 		color = ColorGreen
+	case "interrupted":
+		color = ColorRed
 	case "compacting":
 		color = ColorBlue
 	case "error":
@@ -298,12 +305,13 @@ func stateStyle(state string) lipgloss.Style {
 
 func stateLabel(state string) string {
 	labels := map[string]string{
-		"active":     "active",
-		"waiting":    "waiting",
-		"finished":   "finished",
-		"compacting": "compacting",
-		"error":      "error",
-		"":           "idle",
+		"active":      "active",
+		"waiting":     "waiting",
+		"finished":    "finished",
+		"interrupted": "interrupted",
+		"compacting":  "compacting",
+		"error":       "error",
+		"":            "idle",
 	}
 	if l, ok := labels[state]; ok {
 		return l
@@ -832,7 +840,7 @@ func (m dashModel) View() string {
 			// Bar colour: state colour for active states, primary for idle/finished.
 			barBg := lipgloss.Color(ColorPrimary)
 			switch s.AgentState {
-			case "active", "waiting", "compacting", "error":
+			case "active", "waiting", "compacting", "error", "interrupted":
 				if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
 					barBg = c
 				}

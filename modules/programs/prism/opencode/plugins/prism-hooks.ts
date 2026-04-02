@@ -342,6 +342,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             idleTimer = null;
+            // Check current DB state: if the session was already marked
+            // interrupted by the pane-died hook (Ctrl+C or unexpected exit),
+            // do not overwrite that state with finished and do not notify the
+            // coordinator — the task was not completed cleanly.
+            let currentState: string | null = null;
+            if (db && sessionName && getStatus) {
+              try {
+                const row = getStatus.get(sessionName) as { state: string } | undefined;
+                currentState = row?.state ?? null;
+              } catch (e) { console.error("[prism-hooks] getStatus (timer) failed:", e); }
+            }
+            if (currentState === "interrupted") {
+              // Session was interrupted — leave the interrupted state intact
+              // and skip coordinator notification.
+              return;
+            }
             notify("set-finished").catch(() => { /* best-effort */ });
             upsertAgentStatus("finished");
             writeStateChange("finished");

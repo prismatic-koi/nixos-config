@@ -4,11 +4,12 @@ package cmd
 //
 // Sub-subcommands:
 //
-//	state-change      --session <name> --state <state> --worktree <path>
+//	state-change       --session <name> --state <state> --worktree <path>
+//	pane-died          --session <name>
 //	tmux-session-start --session <name> --worktree <path>
-//	tmux-session-end  --session <name>
-//	compaction        --session <name>
-//	error             --session <name> --message <text>
+//	tmux-session-end   --session <name>
+//	compaction         --session <name>
+//	error              --session <name> --message <text>
 
 import (
 	"fmt"
@@ -96,6 +97,61 @@ var eventStateChangeCmd = &cobra.Command{
 		}
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event state-change: write event: %w", err)
+		}
+		return nil
+	},
+}
+
+// --- pane-died ---
+//
+// Called by the tmux pane-died hook when the opencode pane exits. If the
+// session is currently in an active (non-terminal) state, this transitions it
+// to "interrupted". Sessions already in finished, interrupted, or deleted state
+// are left unchanged — this guards against stale hook fires after a clean exit.
+
+var eventPaneDiedCmd = &cobra.Command{
+	Use:   "pane-died",
+	Short: "Transition an active session to interrupted when its pane dies",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		session, _ := cmd.Flags().GetString("session")
+
+		d, err := openDB()
+		if err != nil {
+			return fmt.Errorf("event pane-died: %w", err)
+		}
+		defer d.Close()
+
+		// Look up session metadata to get repo/worktree for the event row.
+		s, err := d.CurrentStatus(session)
+		if err != nil {
+			return fmt.Errorf("event pane-died: current status: %w", err)
+		}
+		if s == nil {
+			// No DB record — non-project session; exit silently.
+			return nil
+		}
+
+		// Transition to interrupted only if not already in a terminal state.
+		updated, err := d.UpsertStatusIfNotTerminal(session, "interrupted")
+		if err != nil {
+			return fmt.Errorf("event pane-died: %w", err)
+		}
+		if !updated {
+			// Already finished / interrupted / deleted — nothing to do.
+			return nil
+		}
+
+		e := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: session,
+			Repo:        s.Repo,
+			Worktree:    s.Worktree,
+			Type:        "state_change",
+			Payload:     `{"state":"interrupted"}`,
+			CreatedAt:   time.Now(),
+		}
+		if err := d.WriteEvent(e); err != nil {
+			return fmt.Errorf("event pane-died: write event: %w", err)
 		}
 		return nil
 	},
@@ -313,6 +369,10 @@ func init() {
 	_ = eventStateChangeCmd.MarkFlagRequired("state")
 	_ = eventStateChangeCmd.MarkFlagRequired("worktree")
 
+	// pane-died flags
+	eventPaneDiedCmd.Flags().String("session", "", "tmux session name")
+	_ = eventPaneDiedCmd.MarkFlagRequired("session")
+
 	// tmux-session-start flags
 	eventTmuxSessionStartCmd.Flags().String("session", "", "tmux session name")
 	eventTmuxSessionStartCmd.Flags().String("worktree", "", "worktree path")
@@ -334,6 +394,7 @@ func init() {
 	_ = eventErrorCmd.MarkFlagRequired("message")
 
 	eventCmd.AddCommand(eventStateChangeCmd)
+	eventCmd.AddCommand(eventPaneDiedCmd)
 	eventCmd.AddCommand(eventTmuxSessionStartCmd)
 	eventCmd.AddCommand(eventTmuxSessionEndCmd)
 	eventCmd.AddCommand(eventCompactionCmd)

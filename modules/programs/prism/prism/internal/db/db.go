@@ -184,6 +184,32 @@ ON CONFLICT(session_name) DO UPDATE SET
 	return nil
 }
 
+// UpsertStatusIfNotTerminal upserts the state for sessionName only when the
+// current state is not already a terminal state (finished, interrupted, or
+// deleted). Returns (true, nil) if the update was applied, (false, nil) if the
+// session was already in a terminal state or did not exist, or (false, err) on
+// a database error.
+//
+// This is used by the pane-died hook to transition active sessions to
+// "interrupted" without clobbering a clean "finished" that was written first.
+func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
+	now := time.Now().UnixMilli()
+	const q = `
+UPDATE agent_status
+SET state = ?, last_seen = ?
+WHERE session_name = ?
+  AND state NOT IN ('finished', 'interrupted', 'deleted')`
+	res, err := d.conn.Exec(q, state, now, sessionName)
+	if err != nil {
+		return false, fmt.Errorf("db: upsert status if not terminal: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: upsert status if not terminal: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SetEnded marks the session as ended by setting ended_at to now.
 func (d *DB) SetEnded(sessionName string) error {
 	now := time.Now().UnixMilli()
