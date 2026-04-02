@@ -133,3 +133,228 @@ func TestShortHash_NonGitDir(t *testing.T) {
 		t.Error("ShortHash in non-git dir should return an error")
 	}
 }
+
+// initRepoWithRemote creates a regular git repo at dir with one commit on
+// branchName and a bare repo at remoteDir configured as "origin". The caller
+// is responsible for creating both directories via t.TempDir().
+func initRepoWithRemote(t *testing.T, dir, remoteDir, branchName string) {
+	t.Helper()
+
+	// Create the working repo with a commit.
+	initRepo(t, dir, branchName)
+
+	// Create a bare clone to act as origin.
+	if out, err := exec.Command("git", "clone", "--bare", dir, remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("bare clone for remote: %v\n%s", err, out)
+	}
+
+	// Point the working repo's origin at the bare clone.
+	run := func(args ...string) {
+		t.Helper()
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+	run("git", "remote", "add", "origin", remoteDir)
+	run("git", "fetch", "origin")
+	run("git", "branch", "--set-upstream-to", "origin/"+branchName, branchName)
+}
+
+// runGitIn runs a git command in dir and returns trimmed stdout, or fatals.
+func runGitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	out, err := c.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestConvertToBare(t *testing.T) {
+	dir := t.TempDir()
+	remoteDir := t.TempDir()
+	initRepoWithRemote(t, dir, remoteDir, "main")
+
+	var progress []string
+	worktreePath, err := ConvertToBare(dir, func(msg string) { progress = append(progress, msg) })
+	if err != nil {
+		t.Fatalf("ConvertToBare: %v", err)
+	}
+	if worktreePath == "" {
+		t.Fatal("ConvertToBare returned empty worktree path")
+	}
+
+	// worktree path must exist as a directory.
+	if info, err := os.Stat(worktreePath); err != nil || !info.IsDir() {
+		t.Fatalf("worktree path %s does not exist or is not a directory: %v", worktreePath, err)
+	}
+
+	barePath := filepath.Join(dir, ".bare")
+
+	// git worktree list --porcelain must list exactly one worktree entry whose
+	// worktree field is the path returned by ConvertToBare.
+	wtList := runGitIn(t, dir, "--git-dir", barePath, "worktree", "list", "--porcelain")
+	var worktreePaths []string
+	for _, line := range strings.Split(wtList, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			p := strings.TrimPrefix(line, "worktree ")
+			// Skip the bare repo entry itself.
+			if p != barePath {
+				worktreePaths = append(worktreePaths, p)
+			}
+		}
+	}
+	if len(worktreePaths) != 1 {
+		t.Fatalf("expected exactly 1 non-bare worktree, got %d: %v\nworktree list output:\n%s",
+			len(worktreePaths), worktreePaths, wtList)
+	}
+	if worktreePaths[0] != worktreePath {
+		t.Errorf("worktree list path = %q, want %q", worktreePaths[0], worktreePath)
+	}
+
+	// git status in worktree must exit 0 and report nothing to commit.
+	statusOut := runGitIn(t, worktreePath, "status")
+	if !strings.Contains(statusOut, "nothing to commit") {
+		t.Errorf("git status output does not contain 'nothing to commit':\n%s", statusOut)
+	}
+
+	// git log in worktree must return a non-empty line with "init".
+	logOut := runGitIn(t, worktreePath, "log", "--oneline", "-1")
+	if logOut == "" {
+		t.Error("git log --oneline -1 returned empty output")
+	}
+	if !strings.Contains(logOut, "init") {
+		t.Errorf("git log --oneline -1 = %q, want it to contain 'init'", logOut)
+	}
+
+	// worktree/.git must exist and begin with "gitdir:".
+	worktreeGitFile := filepath.Join(worktreePath, ".git")
+	gitFileContent, err := os.ReadFile(worktreeGitFile)
+	if err != nil {
+		t.Fatalf("read worktree .git: %v", err)
+	}
+	if !strings.HasPrefix(string(gitFileContent), "gitdir:") {
+		t.Errorf("worktree .git content = %q, want prefix 'gitdir:'", string(gitFileContent))
+	}
+
+	// .bare/worktrees/<branch>/ must contain all four registration files.
+	worktreesDir := filepath.Join(barePath, "worktrees", "main")
+	for _, name := range []string{"gitdir", "commondir", "HEAD", "index"} {
+		p := filepath.Join(worktreesDir, name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("registration file %s missing: %v", p, err)
+		}
+	}
+}
+
+func TestConvertToBare_SlashBranch(t *testing.T) {
+	dir := t.TempDir()
+	remoteDir := t.TempDir()
+	branchName := "feat/foo"
+	initRepoWithRemote(t, dir, remoteDir, branchName)
+
+	worktreePath, err := ConvertToBare(dir, func(string) {})
+	if err != nil {
+		t.Fatalf("ConvertToBare: %v", err)
+	}
+
+	// The returned path must end with the full branch name (slash preserved).
+	expectedPath := filepath.Join(dir, branchName)
+	if worktreePath != expectedPath {
+		t.Errorf("worktreePath = %q, want %q", worktreePath, expectedPath)
+	}
+
+	// Git uses the last path component as the worktrees entry name (matching
+	// the behaviour of `git worktree add` with slash branch names).
+	// i.e. "feat/foo" → worktrees/foo
+	barePath := filepath.Join(dir, ".bare")
+	worktreeEntryName := filepath.Base(branchName) // "foo"
+	worktreesDir := filepath.Join(barePath, "worktrees", worktreeEntryName)
+	for _, name := range []string{"gitdir", "commondir", "HEAD", "index"} {
+		p := filepath.Join(worktreesDir, name)
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("registration file %s missing: %v", p, err)
+		}
+	}
+
+	// git status must show nothing to commit.
+	statusOut := runGitIn(t, worktreePath, "status")
+	if !strings.Contains(statusOut, "nothing to commit") {
+		t.Errorf("git status does not contain 'nothing to commit':\n%s", statusOut)
+	}
+}
+
+func TestConvertToBare_PreexistingFiles(t *testing.T) {
+	dir := t.TempDir()
+	remoteDir := t.TempDir()
+	initRepoWithRemote(t, dir, remoteDir, "main")
+
+	// Add extra files and a subdirectory.
+	extraFile := filepath.Join(dir, "extra.txt")
+	if err := os.WriteFile(extraFile, []byte("extra\n"), 0o644); err != nil {
+		t.Fatalf("write extra.txt: %v", err)
+	}
+	subDir := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subDir, "nested.txt"), []byte("nested\n"), 0o644); err != nil {
+		t.Fatalf("write nested.txt: %v", err)
+	}
+
+	worktreePath, err := ConvertToBare(dir, func(string) {})
+	if err != nil {
+		t.Fatalf("ConvertToBare: %v", err)
+	}
+
+	// All extra files must be inside the worktree directory.
+	if _, err := os.Stat(filepath.Join(worktreePath, "extra.txt")); err != nil {
+		t.Errorf("extra.txt not found inside worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreePath, "subdir", "nested.txt")); err != nil {
+		t.Errorf("subdir/nested.txt not found inside worktree: %v", err)
+	}
+
+	// Extra files must not exist at the root any more.
+	if _, err := os.Stat(filepath.Join(dir, "extra.txt")); err == nil {
+		t.Error("extra.txt still present at repo root after conversion")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "subdir")); err == nil {
+		t.Error("subdir still present at repo root after conversion")
+	}
+}
+
+func TestConvertToBare_NoRemote(t *testing.T) {
+	dir := t.TempDir()
+	// initRepo creates a repo with no remote.
+	initRepo(t, dir, "main")
+
+	// Capture the original .git directory content to verify rollback.
+	origGitDir := filepath.Join(dir, ".git")
+	if _, err := os.Stat(origGitDir); err != nil {
+		t.Fatalf(".git not present before conversion: %v", err)
+	}
+
+	_, err := ConvertToBare(dir, func(string) {})
+	if err == nil {
+		t.Fatal("ConvertToBare on repo with no remote should return an error")
+	}
+
+	// .bare/ must not exist (no partial state left behind).
+	if _, err := os.Stat(filepath.Join(dir, ".bare")); err == nil {
+		t.Error(".bare directory exists after failed conversion — partial state not cleaned up")
+	}
+
+	// .git must be restored as a directory (rollback).
+	gitInfo, err := os.Stat(origGitDir)
+	if err != nil {
+		t.Fatalf(".git missing after rollback: %v", err)
+	}
+	if !gitInfo.IsDir() {
+		t.Errorf(".git is not a directory after rollback (got %v)", gitInfo.Mode())
+	}
+}
