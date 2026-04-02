@@ -13,11 +13,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -447,11 +450,9 @@ type sessionOpts struct {
 }
 
 // buildOpencodeCmd returns the opencode launch command string (without prompt).
-// The prompt is sent separately via a delayed send-keys to work around a known
-// opencode bug where --prompt is ignored on TUI launch.
-// See: https://github.com/anomalyco/opencode/issues/8850
-//
-//	https://github.com/anomalyco/opencode/issues/14349
+// The prompt is NOT passed as a flag here — it is written to bus_messages and
+// delivered by the opencode plugin on the first session.idle after
+// session.created fires.
 func buildOpencodeCmd(opts sessionOpts) string {
 	agent := opts.agent
 	if agent == "" {
@@ -587,16 +588,31 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			// Window 1: agent.
 			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
-			// Work around opencode bug where --prompt is ignored on TUI launch.
-			// Instead, send the prompt as keystrokes once opencode signals that
-			// it is ready (i.e. @agent_state == "finished" on the agent window).
-			// A fixed delay is unreliable: opencode can take varying amounts of
-			// time to start up depending on LSP/MCP initialisation.
-			// See: https://github.com/anomalyco/opencode/issues/8850
-			//      https://github.com/anomalyco/opencode/issues/14349
+			// Deliver the initial spawn prompt via the bus rather than keystroke
+			// injection. The plugin delivers it on the first session.idle after
+			// session.created fires.
 			if opts.prompt != "" {
-				const readinessTimeoutSecs = 30
-				_ = tmux.SendKeysWhenReady(sessionName+":1", sessionName, opts.prompt, readinessTimeoutSecs)
+				fromSession := deriveSessionNameFromCWD(directory)
+				repo := deriveRepo(directory)
+				msg := db.BusMessage{
+					ID:          uuid.New().String(),
+					FromSession: fromSession,
+					ToSession:   sessionName,
+					Repo:        repo,
+					Text:        opts.prompt,
+					Urgency:     "normal",
+					SentAt:      time.Now(),
+				}
+				if database, dbErr := openDB(); dbErr == nil {
+					if err := database.WriteBusMessage(msg); err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not queue spawn prompt: %v\n", err)
+					}
+					database.Close()
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: could not open DB to queue spawn prompt: %v\n", dbErr)
+				}
+				// Touch sentinel file for the Stage 8 dashboard watcher.
+				_ = touchBusSentinel(sessionName)
 			}
 
 			// Window 2: term.
