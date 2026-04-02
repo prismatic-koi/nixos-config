@@ -26,7 +26,6 @@ with config.theme;
           colorRed = red;
           colorForeground = foreground;
           colorBg0 = bg0;
-          colorBg1 = bg1;
           worktreeExclude = config.nx.programs.prism._internal.worktreeExcludeList;
           projectLocations = config.nx.programs.prism._internal.projectLocationsList;
           projectSpecific = config.nx.programs.prism._internal.projectSpecificList;
