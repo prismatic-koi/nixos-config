@@ -595,9 +595,19 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			// too late (wrong pane path at that point) and cannot be relied
 			// upon here. Call tmux-session-start explicitly now; the hook
 			// remains as a fallback for sessions created outside this path.
-			_ = exec.Command("prism", "event", "tmux-session-start",
+			//
+			// Use os.Executable() rather than "prism" so that the correct
+			// binary is found in Nix-managed environments where the store
+			// path may not be on $PATH (e.g. tmux hooks, daemon contexts).
+			self, selfErr := os.Executable()
+			if selfErr != nil {
+				return fmt.Errorf("resolve prism binary: %w", selfErr)
+			}
+			if err := exec.Command(self, "event", "tmux-session-start",
 				"--session", sessionName,
-				"--worktree", directory).Run()
+				"--worktree", directory).Run(); err != nil {
+				return fmt.Errorf("seed agent_status: %w", err)
+			}
 
 			// Deliver the initial spawn prompt via the bus rather than keystroke
 			// injection. The plugin delivers it on the first session.idle after
