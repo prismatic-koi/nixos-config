@@ -205,6 +205,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		_ = tmux.KillSession(m.session)
 		if d, err := openDB(); err == nil {
 			_ = d.SetEnded(m.session)
+			_ = d.PurgeBusMessages(m.session)
 			d.Close()
 		}
 
@@ -367,6 +368,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	_ = tmux.KillSession(session)
 	if d, err := openDB(); err == nil {
 		_ = d.SetEnded(session)
+		_ = d.PurgeBusMessages(session)
 		d.Close()
 	}
 	fmt.Println("done")
