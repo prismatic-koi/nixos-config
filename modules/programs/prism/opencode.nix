@@ -18,9 +18,9 @@
       default = "anthropic";
       description = ''
         The LLM provider to use for opencode agents.
-        Switching providers updates the model strings and authentication
-        plugins. All provider config blocks are always present in the
-        generated config to allow manual model overrides mid-session.
+        Switching providers updates the model strings only. All provider
+        auth plugins and config blocks are always present so any provider
+        can be used mid-session.
       '';
     };
   };
@@ -422,8 +422,9 @@
       };
       models = providerModels.${config.nx.programs.prism.opencode.provider};
 
-      # Authentication plugins — provider-specific plugins loaded in addition to the
-      # unconditionally-loaded plugins below.
+      # Authentication plugins — all provider auth plugins are always loaded so
+      # any provider can be used mid-session regardless of which provider is the
+      # active default. This mirrors what was done for providerSettings in #370.
       providerPlugins = {
         anthropic = [
           # use existing Claude Code credentials (via claude login OAuth)
@@ -433,11 +434,11 @@
         github-copilot = [ ];
         google = [ ];
       };
-      authPlugins = providerPlugins.${config.nx.programs.prism.opencode.provider};
+      authPlugins = lib.lists.unique (lib.concatLists (lib.attrValues providerPlugins));
 
       # All three provider blocks are always present so that models from any
       # provider can be used manually regardless of which provider is the
-      # active default (which controls only model strings and auth plugins).
+      # active default (which controls only model strings).
       providerSettings = {
         anthropic = { };
         github-copilot = { };
