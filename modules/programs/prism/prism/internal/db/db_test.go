@@ -317,6 +317,97 @@ func TestUpsertStatus_CoalesceTitle(t *testing.T) {
 	}
 }
 
+// TestUpsertStatusIfNotTerminal verifies the conditional state-update semantics.
+func TestUpsertStatusIfNotTerminal(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Should update a non-terminal state (active → interrupted).
+	updated, err := d.UpsertStatusIfNotTerminal("repo@main", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (active): %v", err)
+	}
+	if !updated {
+		t.Error("UpsertStatusIfNotTerminal (active): got updated=false, want true")
+	}
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.State != "interrupted" {
+		t.Errorf("State after update: got %q, want \"interrupted\"", s.State)
+	}
+
+	// Should be a no-op when already in "interrupted" (terminal state).
+	updated2, err := d.UpsertStatusIfNotTerminal("repo@main", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (interrupted): %v", err)
+	}
+	if updated2 {
+		t.Error("UpsertStatusIfNotTerminal (interrupted): got updated=true, want false (no-op)")
+	}
+
+	// Should be a no-op when already in "finished" (terminal state).
+	if err := d.UpsertStatus("repo@feat", "repo", "/code/repo/feat", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (finished): %v", err)
+	}
+	updated3, err := d.UpsertStatusIfNotTerminal("repo@feat", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (finished): %v", err)
+	}
+	if updated3 {
+		t.Error("UpsertStatusIfNotTerminal (finished): got updated=true, want false (no-op)")
+	}
+	sf, _ := d.CurrentStatus("repo@feat")
+	if sf.State != "finished" {
+		t.Errorf("State after no-op: got %q, want \"finished\"", sf.State)
+	}
+
+	// Should be a no-op for a non-existent session.
+	updated4, err := d.UpsertStatusIfNotTerminal("repo@nonexistent", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (nonexistent): %v", err)
+	}
+	if updated4 {
+		t.Error("UpsertStatusIfNotTerminal (nonexistent): got updated=true, want false (no-op)")
+	}
+
+	// Should be a no-op when already in "deleted" (terminal state).
+	if err := d.UpsertStatus("repo@old", "repo", "/code/repo/old", "deleted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (deleted): %v", err)
+	}
+	updated5, err := d.UpsertStatusIfNotTerminal("repo@old", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (deleted): %v", err)
+	}
+	if updated5 {
+		t.Error("UpsertStatusIfNotTerminal (deleted): got updated=true, want false (no-op)")
+	}
+
+	// Should be a no-op when ended_at is set — covers the cleanup race where
+	// KillSession fires pane-exited before SetEnded, but SetEnded runs first.
+	if err := d.UpsertStatus("repo@ended", "repo", "/code/repo/ended", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (ended): %v", err)
+	}
+	if err := d.SetEnded("repo@ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	updated6, err := d.UpsertStatusIfNotTerminal("repo@ended", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (ended): %v", err)
+	}
+	if updated6 {
+		t.Error("UpsertStatusIfNotTerminal (ended): got updated=true, want false (no-op for ended session)")
+	}
+	sEnded, _ := d.CurrentStatus("repo@ended")
+	if sEnded.State != "active" {
+		t.Errorf("State after ended no-op: got %q, want \"active\" (unchanged)", sEnded.State)
+	}
+}
+
 // TestAllActiveStatusForRepo verifies that AllActiveStatusForRepo filters by repo.
 func TestAllActiveStatusForRepo(t *testing.T) {
 	d := openTestDB(t)

@@ -173,6 +173,11 @@ in
               set-hook -g session-created "run-shell '${prism} event tmux-session-start --session #{session_name} --worktree #{pane_current_path}'"
               # Write tmux_session_end event when a session is closed.
               set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{session_name}'"
+              # Transition to interrupted when a pane dies unexpectedly mid-session.
+              # Only the agent window exit is relevant; prism event pane-died
+              # ignores exits from other windows (term, edit) and is a no-op for
+              # non-project sessions and sessions already in a terminal state.
+              set-hook -g pane-exited "run-shell '${prism} event pane-died --session #{session_name} --window #{window_name}'"
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
