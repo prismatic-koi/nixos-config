@@ -150,6 +150,21 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 		}
 	}
 
+	// Track which messageIds actually have a msg_assistant event in the
+	// result set. Tool/permission events are only suppressed (rendered
+	// inline under their parent assistant message) when that parent is
+	// present. Without this, --last N returning only tail tool events
+	// would suppress everything and produce empty output.
+	assistantMsgIDs := make(map[string]bool)
+	for _, e := range events {
+		if e.Type == "msg_assistant" {
+			msgID := payloadMessageID(e.Payload)
+			if msgID != "" {
+				assistantMsgIDs[msgID] = true
+			}
+		}
+	}
+
 	for _, e := range events {
 		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
 
@@ -192,10 +207,10 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			fmt.Println()
 
 		case "tool_call":
-			// Standalone tool_call — skip if it belongs to a known msg_assistant
-			// (will be/was rendered inline), regardless of ordering in the slice.
+			// Standalone tool_call — skip if its parent msg_assistant is in the
+			// result set (it will be rendered inline under that message).
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
 			tool, args := payloadToolCall(e.Payload)
@@ -206,7 +221,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "tool_result":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
 			result := payloadToolResult(e.Payload)
@@ -217,7 +232,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "permission_ask":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
 			tool, patterns := payloadPermissionAsk(e.Payload)
@@ -225,7 +240,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "permission_denied":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
+			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
 			tool := payloadPermissionDeniedTool(e.Payload)

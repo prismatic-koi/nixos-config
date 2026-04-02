@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +16,7 @@ import (
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -319,11 +322,42 @@ func stateLabel(state string) string {
 	return state
 }
 
+// ── session model ─────────────────────────────────────────────────────────────
+
+// agentSession is the dashboard's view of a session. It is derived from
+// db.Status (the authoritative source) with client attachment count added from
+// a tmux query.
+type agentSession struct {
+	Name        string
+	AgentState  string // active | waiting | finished | compacting | error | idle | ""
+	AgentPath   string // worktree path — used for git diff stats
+	AgentTitle  string // current session title from agent_status.title
+	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
+}
+
+// statusToAgentSession converts a db.Status into an agentSession.
+// clientCounts is a map from session name → client count (from tmux).
+func statusToAgentSession(s db.Status, clientCounts map[string]int) agentSession {
+	title := ""
+	if s.Title != nil {
+		title = *s.Title
+	}
+	return agentSession{
+		Name:        s.SessionName,
+		AgentState:  s.State,
+		AgentPath:   s.Worktree,
+		AgentTitle:  title,
+		ClientCount: clientCounts[s.SessionName],
+	}
+}
+
 // ── messages ──────────────────────────────────────────────────────────────────
 
-type tickMsg time.Time
+// RefreshMsg is sent by the sentinel watcher goroutine to trigger a DB re-fetch.
+type RefreshMsg struct{}
+
 type sessionsMsg struct {
-	sessions []tmux.Session
+	sessions []agentSession
 	gitStats map[string]git.DiffStat
 }
 type ghTickMsg time.Time
@@ -331,12 +365,6 @@ type cursorTimeoutMsg struct{}
 type githubStatsMsg struct {
 	openPRs int
 	err     bool // true = fetch failed, keep showing previous value
-}
-
-func tick() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
 }
 
 func ghTick() tea.Cmd {
@@ -351,11 +379,31 @@ func cursorTimeoutCmd() tea.Cmd {
 	})
 }
 
-func fetchSessions() tea.Msg {
-	sessions, err := tmux.Sessions()
+// fetchSessionsFromDB queries agent_status for all active sessions and
+// enriches them with git diff stats.
+func fetchSessionsFromDB() tea.Msg {
+	d, err := openDB()
+	if err != nil {
+		// DB unavailable — return empty list rather than crashing.
+		return sessionsMsg{}
+	}
+	defer d.Close()
+
+	statuses, err := d.AllActiveStatus()
 	if err != nil {
 		return sessionsMsg{}
 	}
+
+	// Get client counts from tmux for the attachment dot indicator.
+	clientCounts := tmuxClientCounts()
+
+	sessions := make([]agentSession, 0, len(statuses))
+	for _, s := range statuses {
+		sessions = append(sessions, statusToAgentSession(s, clientCounts))
+	}
+
+	// Filter out internal sessions (scratchpad, prism-dashboard).
+	sessions = filterAgentSessions(sessions)
 
 	// Collect unique agent paths that need git stat computation.
 	seen := map[string]bool{}
@@ -384,6 +432,23 @@ func fetchSessions() tea.Msg {
 	wg.Wait()
 
 	return sessionsMsg{sessions: sessions, gitStats: stats}
+}
+
+// tmuxClientCounts returns a map of session name → number of attached clients.
+// Returns an empty map on error (attachment count is best-effort).
+func tmuxClientCounts() map[string]int {
+	counts := map[string]int{}
+	out, err := tmux.Run("list-clients", "-F", "#{session_name}")
+	if err != nil {
+		return counts
+	}
+	for _, name := range strings.Split(out, "\n") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			counts[name]++
+		}
+	}
+	return counts
 }
 
 // fetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
@@ -417,7 +482,7 @@ func fetchGitHubStats() tea.Msg {
 const cursorTimeout = 3 * time.Second
 
 type dashModel struct {
-	sessions          []tmux.Session
+	sessions          []agentSession
 	gitStats          map[string]git.DiffStat // keyed by AgentPath; populated on sessionsMsg
 	cursor            int
 	cursorInitialised bool // true once we've snapped cursor to currentSession
@@ -430,11 +495,12 @@ type dashModel struct {
 	ghOpenPRs         int
 	ghLoaded          bool // false = still fetching, show "…"
 	cursorActive      bool // true = show selection bar; false = passive watch mode
+	loading           bool // true = first fetch not yet returned; show skeleton
 	// filter mode: activated by '/', cancelled by esc/ctrl+c
 	filterActive bool
 	filterText   string
 	// displayed is the filtered (or full) sessions list used by View/cursor.
-	displayed []tmux.Session
+	displayed []agentSession
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -459,13 +525,14 @@ func newDashModel(client string, popup bool) dashModel {
 		currentSession: currentSession,
 		// Popup (C-w) always shows cursor. Persistent session starts passive.
 		cursorActive: isPopup,
+		loading:      true, // show skeleton until first fetch completes
 	}
 	m.displayed = m.sessions // empty at init; will be populated on first sessionsMsg
 	return m
 }
 
 func (m dashModel) Init() tea.Cmd {
-	return tea.Batch(fetchSessions, tick(), fetchGitHubStats, ghTick())
+	return tea.Batch(fetchSessionsFromDB, fetchGitHubStats, ghTick())
 }
 
 func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -475,8 +542,9 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-	case tickMsg:
-		return m, tea.Batch(fetchSessions, tick())
+	case RefreshMsg:
+		// Sentinel watcher triggered a refresh — re-fetch from DB.
+		return m, fetchSessionsFromDB
 
 	case ghTickMsg:
 		return m, tea.Batch(fetchGitHubStats, ghTick())
@@ -505,12 +573,14 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Focus regained — cursor stays hidden until user presses j/k.
 
 	case sessionsMsg:
-		// Only update when the fetch succeeded. fetchSessions returns a
-		// zero sessionsMsg (nil sessions, nil gitStats) on tmux error, so
+		// Mark loading complete on first sessionsMsg regardless of content.
+		m.loading = false
+		// Only update when the fetch succeeded. fetchSessionsFromDB returns a
+		// zero sessionsMsg (nil sessions, nil gitStats) on DB error, so
 		// guarding on nil preserves the previous display during transient
 		// hiccups rather than blanking the session list and diff stats.
 		if msg.sessions != nil {
-			m.sessions = filterSessions(msg.sessions)
+			m.sessions = msg.sessions
 		}
 		if msg.gitStats != nil {
 			m.gitStats = msg.gitStats
@@ -675,8 +745,8 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func filterSessions(all []tmux.Session) []tmux.Session {
-	var out []tmux.Session
+func filterAgentSessions(all []agentSession) []agentSession {
+	var out []agentSession
 	for _, s := range all {
 		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
 			continue
@@ -693,7 +763,7 @@ func dashRefilter(m dashModel) dashModel {
 	if !m.filterActive || m.filterText == "" {
 		m.displayed = m.sessions
 	} else {
-		var out []tmux.Session
+		var out []agentSession
 		for _, s := range m.sessions {
 			if fuzzyMatch(s.Name, m.filterText) {
 				out = append(out, s)
@@ -733,7 +803,13 @@ func dashSwitchTarget(popup bool, client, callerClient string) string {
 
 func (m dashModel) View() string {
 	if m.width == 0 {
-		return ""
+		// Before WindowSizeMsg: render a minimal skeleton so the first frame
+		// is never blank. Use a fixed width so the output is deterministic.
+		return skeletonView(80)
+	}
+
+	if m.loading {
+		return skeletonView(m.width)
 	}
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -919,6 +995,83 @@ func (m dashModel) View() string {
 	return sb.String()
 }
 
+// skeletonView renders a minimal loading frame shown before the first DB fetch
+// completes. This prevents the blank-frame-before-first-render bug.
+func skeletonView(width int) string {
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
+
+	var sb strings.Builder
+
+	// Compact header: just the wordmark line.
+	wordmark := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true).Render("PRISM")
+	pad := width - 5
+	if pad < 0 {
+		pad = 0
+	}
+	sb.WriteString(strings.Repeat(" ", pad))
+	sb.WriteString(wordmark)
+	sb.WriteString("\n\n")
+
+	// Separator.
+	if width > 0 {
+		sb.WriteString(rainbowLineWidth(strings.Repeat("─", width), width))
+	}
+	sb.WriteString("\n")
+
+	// Column header.
+	sb.WriteString(styleHeader.Render(" session"))
+	sb.WriteString("\n\n")
+
+	// Loading placeholder.
+	sb.WriteString(styleDim.Render("  loading…"))
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
+// ── sentinel watcher ──────────────────────────────────────────────────────────
+
+// dashSentinelPath returns the path to the dashboard sentinel file.
+func dashSentinelPath() string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, _ := os.UserHomeDir()
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "prism", "bus", ".dashboard.signal")
+}
+
+// watchDashboardSentinel starts a goroutine that polls the dashboard sentinel
+// file for changes and sends a RefreshMsg to the Bubble Tea program when a
+// change is detected. The goroutine exits when ctx is cancelled (call the
+// returned cancel function after p.Run() returns to stop it cleanly).
+//
+// Uses a stat-poll rather than inotify/fsnotify to avoid adding a dependency.
+// The poll interval is 200ms — well under the 1-second target from the spec.
+func watchDashboardSentinel(ctx context.Context, p *tea.Program) {
+	sentinelPath := dashSentinelPath()
+	var lastMod time.Time
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			info, err := os.Stat(sentinelPath)
+			if err == nil {
+				mod := info.ModTime()
+				if !mod.Equal(lastMod) {
+					lastMod = mod
+					p.Send(RefreshMsg{})
+				}
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+}
+
 // ── cobra command ─────────────────────────────────────────────────────────────
 
 const dashSession = "prism-dashboard"
@@ -957,7 +1110,10 @@ var dashboardCmd = &cobra.Command{
 			client, _ := tmux.CurrentClient()
 			m := newDashModel(client, popup)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
+			ctx, cancel := context.WithCancel(context.Background())
+			watchDashboardSentinel(ctx, p)
 			_, err := p.Run()
+			cancel() // stop the sentinel watcher goroutine
 			return err
 		}
 

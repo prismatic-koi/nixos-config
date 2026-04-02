@@ -103,9 +103,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
   // deriveSessionName always receives a valid path.
   const worktree = _worktree ?? process.cwd();
-  const notify = (state: string) =>
-    $`echo '{}' | prism notify ${state}`.quiet().nothrow();
-
   const pane = process.env.TMUX_PANE ?? "";
 
   const setTitle = (title: string) =>
@@ -223,10 +220,25 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     } catch (e) { console.error("[prism-hooks] writeEvent failed:", e); }
   }
 
+  function touchDashboardSentinel(): void {
+    const sentinelPath = path.join(stateHome, "prism", "bus", ".dashboard.signal");
+    try {
+      fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+      const now = new Date();
+      try {
+        fs.utimesSync(sentinelPath, now, now);
+      } catch {
+        // File doesn't exist yet — create it.
+        fs.closeSync(fs.openSync(sentinelPath, "a"));
+      }
+    } catch { /* best-effort */ }
+  }
+
   function writeStateChange(state: string, opencodeSid?: string | null): void {
     if (state === lastWrittenState) return; // deduplicate same-state transitions
     writeEvent("state_change", { state }, opencodeSid);
     lastWrittenState = state;
+    touchDashboardSentinel();
   }
 
   function upsertAgentStatus(state: string, title?: string | null, opencodeSid?: string | null): void {
@@ -308,13 +320,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             // Don't overwrite compacting state with active.
             if (!compacting) {
-              await notify("set-active");
               // DB
               upsertAgentStatus("active");
               writeStateChange("active");
             }
           } else if (event.properties.status.type === "retry") {
-            await notify("set-error");
             // DB
             upsertAgentStatus("error");
             writeStateChange("error");
@@ -358,7 +368,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               // and skip coordinator notification.
               return;
             }
-            notify("set-finished").catch(() => { /* best-effort */ });
             upsertAgentStatus("finished");
             writeStateChange("finished");
             if (prevState === "active") {
@@ -391,7 +400,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           if (info.title) await setTitle(info.title);
           if (info.time?.compacting != null) {
             compacting = true;
-            await notify("set-compacting");
             // DB
             writeEvent("compaction", { note: "compaction started" }, info.id);
             upsertAgentStatus("compacting", null, info.id);
@@ -424,7 +432,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         }
 
         case "session.deleted": {
-          await notify("clear");
           await clearTitle();
           // DB
           const info = event.properties.info;
@@ -438,8 +445,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         }
 
         case "permission.asked": {
-          // prism notify returns immediately (display-message runs async in Go).
-          await notify("set-waiting");
           // Log to JSONL for later analysis — permission.asked carries a
           // PermissionRequest object with the permission type, patterns, and
           // tool metadata.
@@ -455,6 +460,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           // DB
           upsertAgentStatus("waiting");
+          writeStateChange("waiting");
           writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns, messageId: props.permission?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
           if (props.permission?.id) {
@@ -482,7 +488,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // Approved — clean up tracking entry.
             pendingPermissions.delete(permID);
           }
-          await notify("set-active");
           // DB
           upsertAgentStatus("active");
           writeStateChange("active");
@@ -492,7 +497,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         // question.asked fires when the agent uses the question tool to ask
         // the user something — treat identically to a permission wait.
         case "question.asked":
-          await notify("set-waiting");
           // DB
           upsertAgentStatus("waiting");
           writeStateChange("waiting");
@@ -500,16 +504,15 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
 
         case "question.replied":
         case "question.rejected":
-          await notify("set-active");
           // DB
           upsertAgentStatus("active");
           writeStateChange("active");
           break;
 
         case "session.error":
-          await notify("set-error");
           // DB
           upsertAgentStatus("error");
+          writeStateChange("error");
           writeEvent("error", { note: "session error" });
           break;
 
@@ -518,7 +521,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           compacting = false;
           // Cancel any pending idle debounce: compaction handles finished state
           // and coordinator notification directly below, so the timer would
-          // double-fire notify and upsert if allowed to run.
+          // double-fire upsert if allowed to run.
           if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           // DB
           let prevStateCompact: string | null = null;
@@ -536,6 +539,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           }
           await notify("set-finished");
           upsertAgentStatus("finished");
+          writeStateChange("finished");
           writeEvent("compaction", { note: "compaction complete" });
           if (prevStateCompact === "active" || prevStateCompact === "compacting") {
             notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
@@ -622,7 +626,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     // Set flag so concurrent busy events don't override the compacting state.
     "experimental.session.compacting": async (_input, output) => {
       compacting = true;
-      await notify("set-compacting");
       return output;
     },
   };
