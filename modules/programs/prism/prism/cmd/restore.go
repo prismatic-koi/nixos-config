@@ -52,10 +52,6 @@ func Restore(dryRun bool) error {
 		return fmt.Errorf("prism restore: query sessions: %w", err)
 	}
 
-	if len(statuses) == 0 {
-		return nil
-	}
-
 	for _, s := range statuses {
 		if dryRun {
 			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)
@@ -65,6 +61,17 @@ func Restore(dryRun bool) error {
 			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, err)
 		}
 	}
+
+	// Ensure the persistent dashboard session exists after restoring project
+	// sessions. This is skipped in dry-run mode since no sessions are created.
+	if !dryRun {
+		if err := ensureDashSession(); err != nil {
+			// Non-fatal: log and continue. The user can open the dashboard
+			// manually via prefix+D or prism dashboard.
+			fmt.Fprintf(os.Stderr, "prism restore: ensure dashboard session: %v\n", err)
+		}
+	}
+
 	return nil
 }
 

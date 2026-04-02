@@ -10,6 +10,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1069,11 +1070,13 @@ func (m dashModel) renderSessionRow(
 		sessionDisplay = sessionDisplay[:sessionW-1] + "…"
 	}
 
-	// treePrefixW is always 6; pad treePrefix to that width.
+	// treePrefixW is always 6 runes; pad treePrefix to that width using rune
+	// count (not byte count) since tree connector chars are multi-byte in UTF-8.
 	const treePrefixW = 6
 	paddedPrefix := treePrefix
-	if len(paddedPrefix) < treePrefixW {
-		paddedPrefix += strings.Repeat(" ", treePrefixW-len(paddedPrefix))
+	runeCount := utf8.RuneCountInString(paddedPrefix)
+	if runeCount < treePrefixW {
+		paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
 	}
 
 	agentLabel := agentTypeLabel(s.AgentName)
