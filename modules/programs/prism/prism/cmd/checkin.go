@@ -6,7 +6,7 @@ package cmd
 // Usage:
 //
 //	prism checkin [<session>]
-//	prism checkin <session> --last N          show last N events (default 10)
+//	prism checkin <session> --last N          show last N turns (default 10)
 //	prism checkin <session> --from <id>       show N events forward from event ID
 //	prism checkin <session> --before <id>     show N events backward from event ID
 //	prism checkin <session> --types <list>    comma-separated event types
@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -39,7 +40,7 @@ for all repos).`,
 }
 
 func init() {
-	checkinCmd.Flags().Int("last", 10, "Number of events to show")
+	checkinCmd.Flags().Int("last", 10, "Number of conversation turns to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
 	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask, permission_denied)")
@@ -69,7 +70,7 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 		beforePtr = &beforeID
 	}
 
-	// Parse types; nil means "use default" (msg_user, msg_assistant).
+	// Parse types; nil means "use default" (message-turn-centric mode).
 	var types []string
 	if typesRaw != "" {
 		for _, t := range strings.Split(typesRaw, ",") {
@@ -85,25 +86,25 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 
 // runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
 // if the DB is unavailable or has no rows for this session.
+//
+// When no explicit types are requested, this uses the message-turn-centric
+// rendering mode: --last N means N user message turns, not N raw events.
+// For each turn it fetches all associated tool/permission/thinking events via
+// a secondary query keyed by messageId.
 func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
-	// Default event types when none explicitly requested.
-	// The spec describes the user-facing default as ["msg_user","msg_assistant"],
-	// but inline rendering of tool calls and permission prompts under assistant
-	// messages requires those types to also be present in the query result.
-	// We therefore extend the internal default to include them. When --types is
-	// set explicitly by the user, only the requested types are fetched (tool_call
-	// etc. are excluded unless specified, so inline rendering is suppressed).
-	queryTypes := types
-	if len(queryTypes) == 0 {
-		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask", "permission_denied"}
+	// When --types is explicitly set, use the old raw-event query path.
+	// The new message-turn-centric path only applies to the default view.
+	if len(types) > 0 {
+		return runCheckinSessionRaw(session, limit, before, after, types, verbose)
 	}
 
 	d, err := openDB()
 	if err == nil {
 		defer d.Close()
-		events, qerr := d.QueryEvents(session, limit, before, after, queryTypes)
-		if qerr == nil && len(events) > 0 {
-			return renderCheckinEvents(session, d, events, verbose)
+		// Primary query: fetch last N msg_user events to get N conversation turns.
+		userEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_user"})
+		if qerr == nil && len(userEvents) > 0 {
+			return renderCheckinTurns(session, d, userEvents, verbose)
 		}
 	}
 
@@ -111,8 +112,218 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 	return runCheckinSessionLegacy(session, 100)
 }
 
-// renderCheckinEvents prints the DB-sourced event log to stdout.
-func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bool) error {
+// runCheckinSessionRaw is the legacy raw-event query path, used when --types
+// is explicitly specified. It returns raw events without turn grouping.
+func runCheckinSessionRaw(session string, limit int, before, after *string, types []string, verbose bool) error {
+	d, err := openDB()
+	if err == nil {
+		defer d.Close()
+		events, qerr := d.QueryEvents(session, limit, before, after, types)
+		if qerr == nil && len(events) > 0 {
+			return renderCheckinEventsRaw(session, d, events, verbose)
+		}
+	}
+	return runCheckinSessionLegacy(session, 100)
+}
+
+// renderCheckinTurns renders conversation turns using the message-turn-centric
+// approach: one turn = one user message + its assistant reply + child events.
+func renderCheckinTurns(session string, d *db.DB, userEvents []db.Event, verbose bool) error {
+	// Fetch state from DB; fall back to tmux if not found.
+	state := ""
+	status, err := d.CurrentStatus(session)
+	if err == nil && status != nil {
+		state = status.State
+	}
+	if state == "" {
+		state = tmux.AgentStateOf(session)
+	}
+	if state == "" {
+		state = "idle"
+	}
+
+	fmt.Printf("checkin: %s\n\n", session)
+	fmt.Printf("state: %s\n\n", state)
+
+	// Collect all messageIds from the user events.
+	messageIDs := make([]string, 0, len(userEvents))
+	for _, e := range userEvents {
+		msgID := extractMessageID(e.Payload)
+		if msgID != "" {
+			messageIDs = append(messageIDs, msgID)
+		}
+	}
+
+	// Secondary query: fetch all related events (assistant reply, tool calls,
+	// tool results, permission events, thinking) for these messageIds.
+	secondaryTypes := []string{"msg_assistant", "tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
+	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, secondaryTypes)
+
+	// Organise secondary events by messageId and type.
+	assistantByMsgID := make(map[string]db.Event)
+	type childEvent struct {
+		eventType string
+		payload   string
+	}
+	childrenByMsgID := make(map[string][]childEvent)
+
+	if serr == nil {
+		for _, e := range secondary {
+			msgID := extractMessageID(e.Payload)
+			if msgID == "" {
+				continue
+			}
+			switch e.Type {
+			case "msg_assistant":
+				assistantByMsgID[msgID] = e
+			case "tool_call", "tool_result", "permission_ask", "permission_denied", "thinking":
+				childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEvent{e.Type, e.Payload})
+			}
+		}
+	}
+
+	// Render each turn in the order they appeared (userEvents is already ASC).
+	for _, ue := range userEvents {
+		msgID := extractMessageID(ue.Payload)
+
+		// --- User turn header ---
+		var up payload.MsgUser
+		if jerr := json.Unmarshal([]byte(ue.Payload), &up); jerr != nil {
+			up.Text = ue.Payload
+		}
+		ts := ue.CreatedAt.Local().Format("2006-01-02 15:04:05")
+		label := turnLabel(up.Agent, up.Model)
+		if label != "" {
+			fmt.Printf("[%s] user  [%s]\n", ts, label)
+		} else {
+			fmt.Printf("[%s] user\n", ts)
+		}
+		text := up.Text
+		if text == "" {
+			text = "(no text)"
+		}
+		fmt.Printf("%s\n\n", text)
+
+		// --- Assistant turn (if present) ---
+		if ae, ok := assistantByMsgID[msgID]; ok {
+			var ap payload.MsgAssistant
+			if jerr := json.Unmarshal([]byte(ae.Payload), &ap); jerr != nil {
+				ap.Text = ae.Payload
+			}
+			ats := ae.CreatedAt.Local().Format("2006-01-02 15:04:05")
+			alabel := turnLabel(ap.Agent, ap.Model)
+			if alabel != "" {
+				fmt.Printf("[%s] assistant  [%s]\n", ats, alabel)
+			} else {
+				fmt.Printf("[%s] assistant\n", ats)
+			}
+			atext := ap.Text
+			if atext == "" {
+				atext = "(no text)"
+			}
+			fmt.Printf("%s\n", atext)
+
+			// Render children (tool calls, results, permissions, thinking).
+			for _, child := range childrenByMsgID[msgID] {
+				renderChildEvent(child.eventType, child.payload, verbose)
+			}
+			fmt.Println()
+		}
+	}
+
+	fmt.Println("── end of event log ──")
+	return nil
+}
+
+// turnLabel builds the "[agent · model]" label for a turn header.
+// Returns an empty string when both agent and model are absent.
+func turnLabel(agent, model string) string {
+	if agent == "" && model == "" {
+		return ""
+	}
+	if agent == "" {
+		return model
+	}
+	if model == "" {
+		return agent
+	}
+	return agent + " · " + model
+}
+
+// renderChildEvent prints a single child event (tool call, result, permission,
+// or thinking) indented under its parent assistant turn.
+func renderChildEvent(eventType, rawPayload string, verbose bool) {
+	switch eventType {
+	case "tool_call":
+		var p payload.ToolCall
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("  → (tool_call parse error)\n")
+			return
+		}
+		args := p.Args
+		if !verbose && len(args) > 80 {
+			args = args[:80] + "..."
+		}
+		fmt.Printf("  → %s: %s [✓]\n", p.Tool, args)
+
+	case "tool_result":
+		var p payload.ToolResult
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("  → (tool_result parse error)\n")
+			return
+		}
+		result := p.Result
+		if !verbose && len(result) > 80 {
+			result = result[:80] + "..."
+		}
+		fmt.Printf("  → result: %s\n", result)
+
+	case "permission_ask":
+		var p payload.PermissionAsk
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("  [⏳ waiting for approval: (parse error)]\n")
+			return
+		}
+		fmt.Printf("  [⏳ waiting for approval: %s — %s]\n", p.Tool, strings.Join(p.Patterns, ", "))
+
+	case "permission_denied":
+		var p payload.PermissionDenied
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("  [❌ denied: (parse error)]\n")
+			return
+		}
+		tool := p.Tool
+		if tool == "" {
+			tool = "unknown"
+		}
+		fmt.Printf("  [❌ denied: %s]\n", tool)
+
+	case "thinking":
+		var p payload.Thinking
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			return
+		}
+		if p.Text != "" {
+			t := p.Text
+			if !verbose && len(t) > 120 {
+				t = t[:120] + "..."
+			}
+			fmt.Printf("  [thinking: %s]\n", t)
+		}
+	}
+}
+
+// extractMessageID returns the messageId field from a payload JSON string.
+func extractMessageID(raw string) string {
+	var p payload.MsgUser // any struct with MessageID works here
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return ""
+	}
+	return p.MessageID
+}
+
+// renderCheckinEventsRaw prints raw events (used when --types is explicit).
+func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose bool) error {
 	// Fetch state from DB; fall back to tmux if not found.
 	state := ""
 	status, err := d.CurrentStatus(session)
@@ -132,9 +343,6 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 	// Build a map from messageId → inline events (tool_call, tool_result,
 	// permission_ask, permission_denied) so that we can render them under
 	// the correct msg_assistant row regardless of event ordering in the DB.
-	// The plugin writes msg_assistant only when message.updated fires with
-	// completed != null, which happens AFTER tool_call/permission_ask rows
-	// have already been inserted — so proximity-based association is wrong.
 	type inlineEvent struct {
 		eventType string
 		payload   string
@@ -143,22 +351,18 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 	for _, e := range events {
 		switch e.Type {
 		case "tool_call", "tool_result", "permission_ask", "permission_denied":
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" {
 				inlineByMsgID[msgID] = append(inlineByMsgID[msgID], inlineEvent{e.Type, e.Payload})
 			}
 		}
 	}
 
-	// Track which messageIds actually have a msg_assistant event in the
-	// result set. Tool/permission events are only suppressed (rendered
-	// inline under their parent assistant message) when that parent is
-	// present. Without this, --last N returning only tail tool events
-	// would suppress everything and produce empty output.
+	// Track which messageIds actually have a msg_assistant event in the result set.
 	assistantMsgIDs := make(map[string]bool)
 	for _, e := range events {
 		if e.Type == "msg_assistant" {
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" {
 				assistantMsgIDs[msgID] = true
 			}
@@ -170,85 +374,76 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		switch e.Type {
 		case "msg_user":
-			text := payloadText(e.Payload)
-			fmt.Printf("[%s] user\n%s\n\n", ts, text)
+			var up payload.MsgUser
+			if err := json.Unmarshal([]byte(e.Payload), &up); err != nil {
+				up.Text = e.Payload
+			}
+			text := up.Text
+			if text == "" {
+				text = "(no text)"
+			}
+			label := turnLabel(up.Agent, up.Model)
+			if label != "" {
+				fmt.Printf("[%s] user  [%s]\n%s\n\n", ts, label, text)
+			} else {
+				fmt.Printf("[%s] user\n%s\n\n", ts, text)
+			}
 
 		case "msg_assistant":
-			text := payloadText(e.Payload)
-			fmt.Printf("[%s] assistant\n%s\n", ts, text)
+			var ap payload.MsgAssistant
+			if err := json.Unmarshal([]byte(e.Payload), &ap); err != nil {
+				ap.Text = e.Payload
+			}
+			text := ap.Text
+			if text == "" {
+				text = "(no text)"
+			}
+			label := turnLabel(ap.Agent, ap.Model)
+			if label != "" {
+				fmt.Printf("[%s] assistant  [%s]\n%s\n", ts, label, text)
+			} else {
+				fmt.Printf("[%s] assistant\n%s\n", ts, text)
+			}
 
-			// Render tool_call / tool_result / permission_ask / permission_denied
-			// events that belong to this message, looked up by messageId.
-			msgID := payloadMessageID(e.Payload)
+			// Render inline children.
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" {
 				for _, ie := range inlineByMsgID[msgID] {
-					switch ie.eventType {
-					case "tool_call":
-						tool, args := payloadToolCall(ie.payload)
-						if !verbose && len(args) > 80 {
-							args = args[:80] + "..."
-						}
-						fmt.Printf("  → %s: %s\n", tool, args)
-					case "tool_result":
-						result := payloadToolResult(ie.payload)
-						if !verbose && len(result) > 80 {
-							result = result[:80] + "..."
-						}
-						fmt.Printf("  → result: %s\n", result)
-					case "permission_ask":
-						tool, patterns := payloadPermissionAsk(ie.payload)
-						fmt.Printf("  [⏳ waiting for approval: %s — %s]\n", tool, patterns)
-					case "permission_denied":
-						tool := payloadPermissionDeniedTool(ie.payload)
-						fmt.Printf("  [❌ denied: %s]\n", tool)
-					}
+					renderChildEvent(ie.eventType, ie.payload, verbose)
 				}
 			}
 			fmt.Println()
 
 		case "tool_call":
-			// Standalone tool_call — skip if its parent msg_assistant is in the
-			// result set (it will be rendered inline under that message).
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			tool, args := payloadToolCall(e.Payload)
-			if !verbose && len(args) > 80 {
-				args = args[:80] + "..."
-			}
-			fmt.Printf("  → %s: %s\n", tool, args)
+			renderChildEvent("tool_call", e.Payload, verbose)
 
 		case "tool_result":
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			result := payloadToolResult(e.Payload)
-			if !verbose && len(result) > 80 {
-				result = result[:80] + "..."
-			}
-			fmt.Printf("  → result: %s\n", result)
+			renderChildEvent("tool_result", e.Payload, verbose)
 
 		case "permission_ask":
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			tool, patterns := payloadPermissionAsk(e.Payload)
-			fmt.Printf("[⏳ waiting for approval: %s — %s]\n", tool, patterns)
+			renderChildEvent("permission_ask", e.Payload, verbose)
 
 		case "permission_denied":
-			msgID := payloadMessageID(e.Payload)
+			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			tool := payloadPermissionDeniedTool(e.Payload)
-			fmt.Printf("[❌ denied: %s]\n", tool)
+			renderChildEvent("permission_denied", e.Payload, verbose)
 
 		default:
-			// state_change, compaction, error, etc. — shown when explicitly
-			// included via --types.
+			// state_change, compaction, error, etc.
 			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
 		}
 	}
@@ -397,85 +592,4 @@ func printSessionTable(ss []db.Status) error {
 	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Render(hint))
 
 	return nil
-}
-
-// --- payload parsing helpers ---
-
-// payloadText extracts the "text" field from a msg_user / msg_assistant payload.
-// Falls back to "(message <messageId>)" if text is absent.
-func payloadText(raw string) string {
-	var p struct {
-		Text      string `json:"text"`
-		MessageID string `json:"messageId"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return raw
-	}
-	if p.Text != "" {
-		return p.Text
-	}
-	if p.MessageID != "" {
-		return fmt.Sprintf("(message %s)", p.MessageID)
-	}
-	return raw
-}
-
-// payloadMessageID returns the messageId from a payload, or empty string.
-func payloadMessageID(raw string) string {
-	var p struct {
-		MessageID string `json:"messageId"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return ""
-	}
-	return p.MessageID
-}
-
-// payloadToolCall extracts tool name and args from a tool_call payload.
-func payloadToolCall(raw string) (tool, args string) {
-	var p struct {
-		Tool string `json:"tool"`
-		Args string `json:"args"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return "unknown", raw
-	}
-	return p.Tool, p.Args
-}
-
-// payloadToolResult extracts the result string from a tool_result payload.
-func payloadToolResult(raw string) string {
-	var p struct {
-		Result string `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return raw
-	}
-	return p.Result
-}
-
-// payloadPermissionAsk extracts tool and patterns from a permission_ask payload.
-func payloadPermissionAsk(raw string) (tool, patterns string) {
-	var p struct {
-		Tool     string   `json:"tool"`
-		Patterns []string `json:"patterns"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return "unknown", raw
-	}
-	return p.Tool, strings.Join(p.Patterns, ", ")
-}
-
-// payloadPermissionDeniedTool extracts the tool name from a permission_denied payload.
-func payloadPermissionDeniedTool(raw string) string {
-	var p struct {
-		Tool string `json:"tool"`
-	}
-	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return "unknown"
-	}
-	if p.Tool == "" {
-		return "unknown"
-	}
-	return p.Tool
 }
