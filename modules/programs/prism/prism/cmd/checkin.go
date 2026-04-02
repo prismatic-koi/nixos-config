@@ -88,13 +88,14 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
 // if the DB is unavailable or has no rows for this session.
 //
-// When no explicit types are requested, this uses the message-turn-centric
-// rendering mode: --last N means N user message turns, not N raw events.
+// When no explicit types are requested, this uses the assistant-turn-centric
+// rendering mode: --last N means N assistant turns, not N raw events.
 // For each turn it fetches all associated tool/permission/thinking events via
-// a secondary query keyed by messageId.
+// a secondary query keyed by messageId. msg_user events within the time window
+// of the fetched assistant turns are also included.
 func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
 	// When --types is explicitly set, use the old raw-event query path.
-	// The new message-turn-centric path only applies to the default view.
+	// The new assistant-turn-centric path only applies to the default view.
 	if len(types) > 0 {
 		return runCheckinSessionRaw(session, limit, before, after, types, verbose)
 	}
@@ -102,10 +103,20 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 	d, err := openDB()
 	if err == nil {
 		defer d.Close()
-		// Primary query: fetch last N msg_user events to get N conversation turns.
-		userEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_user"})
-		if qerr == nil && len(userEvents) > 0 {
-			return renderCheckinTurns(session, d, userEvents, verbose)
+		// Primary query: fetch last N msg_assistant events to get N assistant turns.
+		assistantEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_assistant"})
+		if qerr == nil && len(assistantEvents) > 0 {
+			return renderCheckinTurns(session, d, assistantEvents, verbose)
+		}
+		// If DB is open but no msg_assistant rows exist, check whether there are
+		// any events at all (e.g. a session with only msg_user). In that case show
+		// just the header+footer rather than falling back to the screen-scrape.
+		if qerr == nil {
+			anyEvents, aerr := d.QueryEvents(session, 1, nil, nil, nil)
+			if aerr == nil && len(anyEvents) > 0 {
+				// Session has events but no assistant turns yet — render header only.
+				return renderCheckinTurns(session, d, nil, verbose)
+			}
 		}
 	}
 
@@ -127,9 +138,15 @@ func runCheckinSessionRaw(session string, limit int, before, after *string, type
 	return runCheckinSessionLegacy(session, 100)
 }
 
-// renderCheckinTurns renders conversation turns using the message-turn-centric
-// approach: one turn = one user message + its assistant reply + child events.
-func renderCheckinTurns(session string, d *db.DB, userEvents []db.Event, verbose bool) error {
+// renderCheckinTurns renders conversation turns using the assistant-turn-centric
+// approach: one turn = one assistant message + its tool/permission/thinking children.
+// msg_user events whose created_at falls within the time window of the fetched
+// assistant turns are also rendered, immediately before the assistant turn that
+// follows them in the timeline.
+//
+// assistantEvents may be nil (session has events but no assistant turns yet);
+// in that case only the header and footer are rendered.
+func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, verbose bool) error {
 	// Fetch state from DB; fall back to tmux if not found.
 	state := ""
 	status, err := d.CurrentStatus(session)
@@ -146,90 +163,131 @@ func renderCheckinTurns(session string, d *db.DB, userEvents []db.Event, verbose
 	fmt.Printf("checkin: %s\n\n", session)
 	fmt.Printf("state: %s\n\n", state)
 
-	// Collect all messageIds from the user events.
-	messageIDs := make([]string, 0, len(userEvents))
-	for _, e := range userEvents {
+	if len(assistantEvents) == 0 {
+		fmt.Println("── end of event log ──")
+		return nil
+	}
+
+	// Collect all messageIds from the assistant events.
+	messageIDs := make([]string, 0, len(assistantEvents))
+	for _, e := range assistantEvents {
 		msgID := extractMessageID(e.Payload)
 		if msgID != "" {
 			messageIDs = append(messageIDs, msgID)
 		}
 	}
 
-	// Secondary query: fetch all related events (assistant reply, tool calls,
-	// tool results, permission events, thinking) for these messageIds.
-	secondaryTypes := []string{"msg_assistant", "tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
-	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, secondaryTypes)
+	// Secondary query: fetch tool calls, results, permission events, and
+	// thinking events that share a messageId with one of the assistant events.
+	childTypes := []string{"tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
+	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
-	// Organise secondary events by messageId and type.
-	assistantByMsgID := make(map[string]db.Event)
+	// Organise children by messageId.
 	type childEvent struct {
 		eventType string
 		payload   string
 	}
 	childrenByMsgID := make(map[string][]childEvent)
-
 	if serr == nil {
 		for _, e := range secondary {
 			msgID := extractMessageID(e.Payload)
 			if msgID == "" {
 				continue
 			}
-			switch e.Type {
-			case "msg_assistant":
-				assistantByMsgID[msgID] = e
-			case "tool_call", "tool_result", "permission_ask", "permission_denied", "thinking":
-				childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEvent{e.Type, e.Payload})
-			}
+			childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEvent{e.Type, e.Payload})
 		}
 	}
 
-	// Render each turn in the order they appeared (userEvents is already ASC).
-	for _, ue := range userEvents {
-		msgID := extractMessageID(ue.Payload)
+	// Determine the time window spanned by the fetched assistant turns so that
+	// we can include msg_user events that fall within it.
+	earliest := assistantEvents[0].CreatedAt
+	latest := assistantEvents[len(assistantEvents)-1].CreatedAt
+	for _, ae := range assistantEvents {
+		if ae.CreatedAt.Before(earliest) {
+			earliest = ae.CreatedAt
+		}
+		if ae.CreatedAt.After(latest) {
+			latest = ae.CreatedAt
+		}
+	}
 
-		// --- User turn header ---
-		var up payload.MsgUser
-		if jerr := json.Unmarshal([]byte(ue.Payload), &up); jerr != nil {
-			up.Text = ue.Payload
+	// Fetch msg_user events within [earliest, latest] (inclusive).
+	// We use QueryEventsByMessageIDs with no messageID filter — instead we do a
+	// plain QueryEvents for msg_user and filter by timestamp in Go.
+	userEventsAll, _ := d.QueryEvents(session, 0, nil, nil, []string{"msg_user"})
+	var userEventsInWindow []db.Event
+	for _, ue := range userEventsAll {
+		if !ue.CreatedAt.Before(earliest) && !ue.CreatedAt.After(latest) {
+			userEventsInWindow = append(userEventsInWindow, ue)
 		}
-		ts := ue.CreatedAt.Local().Format("2006-01-02 15:04:05")
-		label := turnLabel(up.Agent, up.Model)
-		if label != "" {
-			fmt.Printf("[%s] user  [%s]\n", ts, label)
-		} else {
-			fmt.Printf("[%s] user\n", ts)
-		}
-		text := up.Text
-		if text == "" {
-			text = "(no text)"
-		}
-		fmt.Printf("%s\n\n", text)
+	}
 
-		// --- Assistant turn (if present) ---
-		if ae, ok := assistantByMsgID[msgID]; ok {
-			var ap payload.MsgAssistant
-			if jerr := json.Unmarshal([]byte(ae.Payload), &ap); jerr != nil {
-				ap.Text = ae.Payload
+	// Merge assistant events and user events into a single timeline sorted ASC.
+	// assistantEvents is already ASC from QueryEvents; userEventsInWindow is also ASC.
+	type timelineEntry struct {
+		isUser bool
+		event  db.Event
+	}
+	timeline := make([]timelineEntry, 0, len(assistantEvents)+len(userEventsInWindow))
+	for _, ae := range assistantEvents {
+		timeline = append(timeline, timelineEntry{isUser: false, event: ae})
+	}
+	for _, ue := range userEventsInWindow {
+		timeline = append(timeline, timelineEntry{isUser: true, event: ue})
+	}
+	// Sort by created_at ASC (stable, preserving insertion order for ties).
+	for i := 1; i < len(timeline); i++ {
+		for j := i; j > 0 && timeline[j].event.CreatedAt.Before(timeline[j-1].event.CreatedAt); j-- {
+			timeline[j], timeline[j-1] = timeline[j-1], timeline[j]
+		}
+	}
+
+	// Render the merged timeline.
+	for _, entry := range timeline {
+		e := entry.event
+		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
+
+		if entry.isUser {
+			var up payload.MsgUser
+			if jerr := json.Unmarshal([]byte(e.Payload), &up); jerr != nil {
+				up.Text = e.Payload
 			}
-			ats := ae.CreatedAt.Local().Format("2006-01-02 15:04:05")
-			alabel := turnLabel(ap.Agent, ap.Model)
-			if alabel != "" {
-				fmt.Printf("[%s] assistant  [%s]\n", ats, alabel)
+			text := up.Text
+			if text == "" {
+				text = "(no text)"
+			}
+			label := turnLabel(up.Agent, up.Model)
+			if label != "" {
+				fmt.Printf("[%s] user  [%s]\n", ts, label)
 			} else {
-				fmt.Printf("[%s] assistant\n", ats)
+				fmt.Printf("[%s] user\n", ts)
 			}
-			atext := ap.Text
-			if atext == "" {
-				atext = "(no text)"
-			}
-			fmt.Printf("%s\n", atext)
-
-			// Render children (tool calls, results, permissions, thinking).
-			for _, child := range childrenByMsgID[msgID] {
-				renderChildEvent(child.eventType, child.payload, verbose)
-			}
-			fmt.Println()
+			fmt.Printf("%s\n\n", text)
+			continue
 		}
+
+		// Assistant event.
+		var ap payload.MsgAssistant
+		if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr != nil {
+			ap.Text = e.Payload
+		}
+		alabel := turnLabel(ap.Agent, ap.Model)
+		if alabel != "" {
+			fmt.Printf("[%s] assistant  [%s]\n", ts, alabel)
+		} else {
+			fmt.Printf("[%s] assistant\n", ts)
+		}
+		atext := ap.Text
+		if atext == "" {
+			atext = "(no text)"
+		}
+		fmt.Printf("%s\n", atext)
+
+		msgID := extractMessageID(e.Payload)
+		for _, child := range childrenByMsgID[msgID] {
+			renderChildEvent(child.eventType, child.payload, verbose)
+		}
+		fmt.Println()
 	}
 
 	fmt.Println("── end of event log ──")
