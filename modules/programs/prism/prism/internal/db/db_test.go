@@ -340,6 +340,56 @@ func TestAllActiveStatusForRepo(t *testing.T) {
 	}
 }
 
+// TestQueryEvents_LastN verifies that QueryEvents with a limit returns the most-recent
+// N events in chronological (ASC) order, not the oldest N.
+func TestQueryEvents_LastN(t *testing.T) {
+	d := openTestDB(t)
+
+	// Write 5 events with distinct, spaced timestamps so ordering is unambiguous.
+	base := time.Now().Truncate(time.Second)
+	ids := make([]string, 5)
+	for i := range ids {
+		ids[i] = uuid.New().String()
+		e := db.Event{
+			ID:          ids[i],
+			SessionName: "repo@main",
+			Repo:        "repo",
+			Worktree:    "/code/repo/main",
+			Type:        "state_change",
+			Payload:     `{}`,
+			CreatedAt:   base.Add(time.Duration(i) * time.Second),
+		}
+		if err := d.WriteEvent(e); err != nil {
+			t.Fatalf("WriteEvent[%d]: %v", i, err)
+		}
+	}
+
+	// Query with limit=3 — should return the 3 newest events (ids[2], ids[3], ids[4]).
+	events, err := d.QueryEvents("repo@main", 3, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("result count: got %d, want 3", len(events))
+	}
+
+	// Must be the 3 newest, in chronological (ASC) order.
+	wantIDs := []string{ids[2], ids[3], ids[4]}
+	for i, e := range events {
+		if e.ID != wantIDs[i] {
+			t.Errorf("events[%d].ID: got %q, want %q", i, e.ID, wantIDs[i])
+		}
+	}
+
+	// Verify chronological order: each event must be no earlier than the previous.
+	for i := 1; i < len(events); i++ {
+		if events[i].CreatedAt.Before(events[i-1].CreatedAt) {
+			t.Errorf("events not in chronological order: events[%d] (%v) < events[%d] (%v)",
+				i, events[i].CreatedAt, i-1, events[i-1].CreatedAt)
+		}
+	}
+}
+
 // TestWriteBusMessage_PendingMessages_MarkDelivered tests the full bus message lifecycle.
 func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
 	d := openTestDB(t)

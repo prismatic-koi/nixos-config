@@ -1,54 +1,217 @@
 package cmd
 
-// prism checkin — capture the live screen of a session's agent window and
-// print it as clean plain text, suitable for reading by another agent.
+// prism checkin — show recent conversation events for a session from DB,
+// falling back to tmux screen-scrape when the session has no DB rows.
 //
 // Usage:
 //
-//	prism checkin <session>                       capture with default height (100 rows)
-//	prism checkin <session> --height N            capture with N rows
-//	prism checkin                                 list available sessions and exit with a hint
+//	prism checkin [<session>]
+//	prism checkin <session> --last N          show last N events (default 10)
+//	prism checkin <session> --from <id>       show N events forward from event ID
+//	prism checkin <session> --before <id>     show N events backward from event ID
+//	prism checkin <session> --types <list>    comma-separated event types
+//	prism checkin <session> --verbose         full tool args/results (no truncation)
+//	prism checkin --all                       (no-arg) list all sessions across all repos
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 var checkinCmd = &cobra.Command{
 	Use:   "checkin [session]",
-	Short: "Capture the live screen of a session's agent window",
-	Long: `Capture and print the current screen of the agent window in the named
-tmux session. Output is cleaned up (borders, scrollbar chrome stripped) so
-it can be read directly by another agent.
+	Short: "Show recent conversation events for a session",
+	Long: `Show the recent conversation history for a named session, read from the
+prism DB. Falls back to tmux screen-scrape for sessions that have no DB rows.
 
-The window is temporarily expanded to --height rows before capturing.
-opencode reflows its TUI to fill the new height, giving a richer capture.
-Use a larger --height value to see more conversation history.
-
-With no argument, lists available sessions so you can pick one.`,
+With no argument, lists available sessions for the current repo (use --all
+for all repos).`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runCheckin,
 }
 
 func init() {
-	checkinCmd.Flags().Int("height", tmux.DefaultCaptureHeight, "Number of rows to expand the window to before capturing (default 100)")
+	checkinCmd.Flags().Int("last", 10, "Number of events to show")
+	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
+	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask)")
+	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
+	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
 }
 
 func runCheckin(cmd *cobra.Command, args []string) error {
-	height, _ := cmd.Flags().GetInt("height")
 	if len(args) == 0 {
-		return runCheckinNoArg()
+		showAll, _ := cmd.Flags().GetBool("all")
+		return runCheckinNoArg(showAll)
 	}
-	return runCheckinSession(args[0], height)
+
+	last, _ := cmd.Flags().GetInt("last")
+	fromID, _ := cmd.Flags().GetString("from")
+	beforeID, _ := cmd.Flags().GetString("before")
+	typesRaw, _ := cmd.Flags().GetString("types")
+	verbose, _ := cmd.Flags().GetBool("verbose")
+
+	var afterPtr *string
+	if fromID != "" {
+		afterPtr = &fromID
+	}
+	var beforePtr *string
+	if beforeID != "" {
+		beforePtr = &beforeID
+	}
+
+	// Parse types; nil means "use default" (msg_user, msg_assistant).
+	var types []string
+	if typesRaw != "" {
+		for _, t := range strings.Split(typesRaw, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				types = append(types, t)
+			}
+		}
+	}
+
+	return runCheckinSession(args[0], last, beforePtr, afterPtr, types, verbose)
 }
 
-func runCheckinSession(session string, height int) error {
+// runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
+// if the DB is unavailable or has no rows for this session.
+func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
+	// Default event types when none explicitly requested.
+	// The spec describes the user-facing default as ["msg_user","msg_assistant"],
+	// but inline rendering of tool calls and permission prompts under assistant
+	// messages requires those types to also be present in the query result.
+	// We therefore extend the internal default to include them. When --types is
+	// set explicitly by the user, only the requested types are fetched (tool_call
+	// etc. are excluded unless specified, so inline rendering is suppressed).
+	queryTypes := types
+	if len(queryTypes) == 0 {
+		queryTypes = []string{"msg_user", "msg_assistant", "tool_call", "tool_result", "permission_ask"}
+	}
+
+	d, err := openDB()
+	if err == nil {
+		defer d.Close()
+		events, qerr := d.QueryEvents(session, limit, before, after, queryTypes)
+		if qerr == nil && len(events) > 0 {
+			return renderCheckinEvents(session, d, events, verbose)
+		}
+	}
+
+	// No DB rows (or DB unavailable) — fall back to screen capture.
+	return runCheckinSessionLegacy(session, 100)
+}
+
+// renderCheckinEvents prints the DB-sourced event log to stdout.
+func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bool) error {
+	// Fetch state from DB; fall back to tmux if not found.
+	state := ""
+	status, err := d.CurrentStatus(session)
+	if err == nil && status != nil {
+		state = status.State
+	}
+	if state == "" {
+		state = tmux.AgentStateOf(session)
+	}
+	if state == "" {
+		state = "idle"
+	}
+
+	fmt.Printf("checkin: %s\n\n", session)
+	fmt.Printf("state: %s\n\n", state)
+
+	// Walk events. tool_call and tool_result are rendered inline under the
+	// preceding msg_assistant, so we iterate with index awareness.
+	for i := 0; i < len(events); i++ {
+		e := events[i]
+		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
+
+		switch e.Type {
+		case "msg_user":
+			text := payloadText(e.Payload)
+			fmt.Printf("[%s] user\n%s\n\n", ts, text)
+
+		case "msg_assistant":
+			text := payloadText(e.Payload)
+			fmt.Printf("[%s] assistant\n%s\n", ts, text)
+
+			// Render immediately following tool_call / tool_result / permission_ask
+			// events that share the same messageId.
+			msgID := payloadMessageID(e.Payload)
+			for i+1 < len(events) {
+				next := events[i+1]
+				switch next.Type {
+				case "tool_call":
+					if msgID == "" || payloadMessageID(next.Payload) == msgID {
+						tool, args := payloadToolCall(next.Payload)
+						if !verbose && len(args) > 80 {
+							args = args[:80] + "..."
+						}
+						fmt.Printf("  → %s: %s\n", tool, args)
+						i++
+						continue
+					}
+				case "tool_result":
+					if msgID == "" || payloadMessageID(next.Payload) == msgID {
+						result := payloadToolResult(next.Payload)
+						if !verbose && len(result) > 80 {
+							result = result[:80] + "..."
+						}
+						fmt.Printf("  → result: %s\n", result)
+						i++
+						continue
+					}
+				case "permission_ask":
+					tool, patterns := payloadPermissionAsk(next.Payload)
+					fmt.Printf("[⏳ waiting for approval: %s — %s]\n", tool, patterns)
+					i++
+					continue
+				}
+				break
+			}
+			fmt.Println()
+
+		case "tool_call":
+			// Standalone tool_call (not already consumed above).
+			tool, args := payloadToolCall(e.Payload)
+			if !verbose && len(args) > 80 {
+				args = args[:80] + "..."
+			}
+			fmt.Printf("  → %s: %s\n", tool, args)
+
+		case "tool_result":
+			result := payloadToolResult(e.Payload)
+			if !verbose && len(result) > 80 {
+				result = result[:80] + "..."
+			}
+			fmt.Printf("  → result: %s\n", result)
+
+		case "permission_ask":
+			tool, patterns := payloadPermissionAsk(e.Payload)
+			fmt.Printf("[⏳ waiting for approval: %s — %s]\n", tool, patterns)
+
+		default:
+			// state_change, compaction, error, etc. — shown when explicitly
+			// included via --types.
+			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
+		}
+	}
+
+	fmt.Println("── end of event log ──")
+	return nil
+}
+
+// runCheckinSessionLegacy is the old screen-scrape path, kept as a fallback.
+func runCheckinSessionLegacy(session string, height int) error {
 	if !tmux.HasSession(session) {
 		return fmt.Errorf("session %q not found\nrun `prism list-sessions` to see available sessions", session)
 	}
@@ -77,51 +240,107 @@ func runCheckinSession(session string, height int) error {
 	return nil
 }
 
-// filterStatusSessions excludes infrastructure sessions from status counts.
-// Used by checkin (no-arg) until Stage 5 replaces checkin with DB queries.
-func filterStatusSessions(all []tmux.Session) []tmux.Session {
-	var out []tmux.Session
-	for _, s := range all {
-		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-func runCheckinNoArg() error {
-	sessions, err := tmux.Sessions()
+// runCheckinNoArg lists sessions from the DB (scoped to the current repo by
+// default), falling back to tmux.Sessions() if the DB is unavailable.
+func runCheckinNoArg(showAll bool) error {
+	// Derive currentRepo from CWD using same logic as list-sessions.
+	currentRepo := ""
+	cwd, err := os.Getwd()
 	if err != nil {
-		return err
+		cwd = os.Getenv("PRISM_SPAWN_PATH")
 	}
-	sessions = filterStatusSessions(sessions)
+	if cwd != "" {
+		currentRepo = deriveRepo(cwd)
+	}
+
+	d, dbErr := openDB()
+	if dbErr == nil {
+		defer d.Close()
+
+		var (
+			ss       []db.Status
+			queryErr error
+		)
+		if showAll {
+			ss, queryErr = d.AllActiveStatus()
+		} else if currentRepo != "" {
+			ss, queryErr = d.AllActiveStatusForRepo(currentRepo)
+		} else {
+			ss, queryErr = d.AllActiveStatus()
+		}
+
+		if queryErr == nil {
+			return printSessionTable(ss)
+		}
+	}
+
+	// DB unavailable — fall back to tmux.
+	sessions, terr := tmux.Sessions()
+	if terr != nil {
+		return terr
+	}
 
 	if len(sessions) == 0 {
 		return fmt.Errorf("no agent sessions found")
 	}
 
-	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
-	styleName := lipgloss.NewStyle().Bold(true)
-	styleState := lipgloss.NewStyle()
-	styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-
-	fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %s", "SESSION", "STATE", "TITLE")))
+	// Convert tmux sessions to a minimal Status slice for the shared renderer.
+	var ss []db.Status
 	for _, s := range sessions {
+		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
+			continue
+		}
 		state := s.AgentState
 		if state == "" {
 			state = "idle"
 		}
 		title := s.AgentTitle
-		if title == "" {
-			title = "—"
+		st := db.Status{
+			SessionName: s.Name,
+			State:       state,
 		}
-		if len(title) > 60 {
-			title = title[:57] + "..."
+		if title != "" {
+			st.Title = &title
+		}
+		ss = append(ss, st)
+	}
+
+	return printSessionTable(ss)
+}
+
+// printSessionTable renders a SESSION/STATE/TITLE table and a hint line.
+// Returns an error only when the list is empty (to guide the user).
+func printSessionTable(ss []db.Status) error {
+	if len(ss) == 0 {
+		fmt.Println("no agent sessions found")
+		return nil
+	}
+
+	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
+	styleName := lipgloss.NewStyle().Bold(true)
+	styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %s", "SESSION", "STATE", "TITLE")))
+	for _, s := range ss {
+		state := s.State
+		if state == "" {
+			state = "idle"
+		}
+		title := "—"
+		if s.Title != nil && *s.Title != "" {
+			title = *s.Title
+		}
+		if runes := []rune(title); len(runes) > 60 {
+			title = string(runes[:57]) + "..."
+		}
+		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-8s", state))
+		nameStyle := styleTitle
+		if strings.Contains(s.SessionName, "@") {
+			nameStyle = styleName
 		}
 		fmt.Printf("%s  %s  %s\n",
-			styleName.Render(fmt.Sprintf("%-40s", s.Name)),
-			styleState.Render(fmt.Sprintf("%-8s", state)),
+			nameStyle.Render(fmt.Sprintf("%-40s", s.SessionName)),
+			stateStyled,
 			styleTitle.Render(title),
 		)
 	}
@@ -130,16 +349,72 @@ func runCheckinNoArg() error {
 	hint := "run `prism checkin <session>` to inspect a session"
 	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Render(hint))
 
-	var worktreeSessions []string
-	for _, s := range sessions {
-		if strings.Contains(s.Name, "@") {
-			worktreeSessions = append(worktreeSessions, s.Name)
-		}
-	}
-	if len(worktreeSessions) == 0 {
-		fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).
-			Render("hint: checkin works on project@branch sessions spawned by `prism spawn`"))
-	}
+	return nil
+}
 
-	return fmt.Errorf("no session specified")
+// --- payload parsing helpers ---
+
+// payloadText extracts the "text" field from a msg_user / msg_assistant payload.
+// Falls back to "(message <messageId>)" if text is absent.
+func payloadText(raw string) string {
+	var p struct {
+		Text      string `json:"text"`
+		MessageID string `json:"messageId"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return raw
+	}
+	if p.Text != "" {
+		return p.Text
+	}
+	if p.MessageID != "" {
+		return fmt.Sprintf("(message %s)", p.MessageID)
+	}
+	return raw
+}
+
+// payloadMessageID returns the messageId from a payload, or empty string.
+func payloadMessageID(raw string) string {
+	var p struct {
+		MessageID string `json:"messageId"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return ""
+	}
+	return p.MessageID
+}
+
+// payloadToolCall extracts tool name and args from a tool_call payload.
+func payloadToolCall(raw string) (tool, args string) {
+	var p struct {
+		Tool string `json:"tool"`
+		Args string `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return "unknown", raw
+	}
+	return p.Tool, p.Args
+}
+
+// payloadToolResult extracts the result string from a tool_result payload.
+func payloadToolResult(raw string) string {
+	var p struct {
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return raw
+	}
+	return p.Result
+}
+
+// payloadPermissionAsk extracts tool and patterns from a permission_ask payload.
+func payloadPermissionAsk(raw string) (tool, patterns string) {
+	var p struct {
+		Tool     string   `json:"tool"`
+		Patterns []string `json:"patterns"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return "unknown", raw
+	}
+	return p.Tool, strings.Join(p.Patterns, ", ")
 }
