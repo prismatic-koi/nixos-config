@@ -241,7 +241,7 @@ func TestDashModelEnterCursorActivation(t *testing.T) {
 	m := dashModel{
 		popup:        false,
 		cursorActive: false,
-		sessions:     []tmux.Session{{Name: "some-session"}},
+		sessions:     []agentSession{{Name: "some-session"}},
 	}
 
 	updatedModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -302,8 +302,8 @@ func TestDashFilterActivation(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
-		displayed: []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		sessions:  []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		displayed: []agentSession{{Name: "alpha"}, {Name: "beta"}},
 	}
 	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	dm := updatedModel.(dashModel)
@@ -324,7 +324,7 @@ func TestDashFilterActivation(t *testing.T) {
 func TestDashFilterNarrowsList(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{
+	sessions := []agentSession{
 		{Name: "alpha"},
 		{Name: "beta"},
 		{Name: "aleph"},
@@ -359,7 +359,7 @@ func TestDashFilterNarrowsList(t *testing.T) {
 func TestDashFilterBackspace(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
 	m := dashModel{
 		sessions:     sessions,
 		displayed:    sessions,
@@ -390,7 +390,7 @@ func TestDashFilterBackspace(t *testing.T) {
 func TestDashFilterEscapeCancels(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
 	m := dashModel{
 		sessions:     sessions,
 		displayed:    sessions[:1], // narrowed
@@ -417,7 +417,7 @@ func TestDashFilterEscapeCancels(t *testing.T) {
 func TestDashFilterEnterSwitches(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
 	m := dashModel{
 		sessions:     sessions,
 		displayed:    sessions,
@@ -442,8 +442,8 @@ func TestDashFilterCursorStaysActiveOnTimeout(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
 		filterActive: true,
 		cursorActive: true,
 		popup:        false, // persistent mode: timeout normally deactivates cursor
@@ -466,8 +466,8 @@ func TestDashFilterBlurKeepsCursorActive(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
+		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
 		filterActive: true,
 		cursorActive: true,
 		popup:        false, // persistent mode: BlurMsg normally deactivates cursor
@@ -488,8 +488,8 @@ func TestDashFilterCtrlCQuitsProgram(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []tmux.Session{{Name: "alpha"}},
-		displayed:    []tmux.Session{{Name: "alpha"}},
+		sessions:     []agentSession{{Name: "alpha"}},
+		displayed:    []agentSession{{Name: "alpha"}},
 		filterActive: true,
 		cursorActive: true,
 	}
@@ -511,8 +511,8 @@ func TestDashFilterEscCancelsNotQuits(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []tmux.Session{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []tmux.Session{{Name: "alpha"}}, // narrowed
+		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		displayed:    []agentSession{{Name: "alpha"}}, // narrowed
 		filterActive: true,
 		filterText:   "al",
 		cursorActive: true,
@@ -548,9 +548,9 @@ func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 		currentSession:    "alpha", // would snap cursor to index 0 in sessions
 		cursor:            0,
 	}
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
 	m.sessions = sessions
-	m.displayed = []tmux.Session{{Name: "beta"}} // pre-filtered
+	m.displayed = []agentSession{{Name: "beta"}} // pre-filtered
 
 	// Deliver a sessionsMsg (the first tick).
 	m2, _ := m.Update(sessionsMsg{sessions: sessions})
@@ -575,7 +575,7 @@ func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 func TestDashFilterCursorNavigation(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "aleph"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "aleph"}}
 	m := dashModel{
 		sessions:     sessions,
 		displayed:    sessions,
@@ -603,7 +603,7 @@ func TestDashFilterCursorNavigation(t *testing.T) {
 func TestDashRefilterClampsOOBCursor(t *testing.T) {
 	t.Parallel()
 
-	sessions := []tmux.Session{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
 	m := dashModel{
 		sessions:     sessions,
 		displayed:    sessions,
@@ -627,8 +627,8 @@ func TestDashFilterViewShowsPrompt(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []tmux.Session{{Name: "alpha"}},
-		displayed:    []tmux.Session{{Name: "alpha"}},
+		sessions:     []agentSession{{Name: "alpha"}},
+		displayed:    []agentSession{{Name: "alpha"}},
 		filterActive: true,
 		filterText:   "alp",
 		width:        80,
@@ -647,8 +647,8 @@ func TestDashViewShowsHelpHint(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []tmux.Session{{Name: "alpha"}},
-		displayed: []tmux.Session{{Name: "alpha"}},
+		sessions:  []agentSession{{Name: "alpha"}},
+		displayed: []agentSession{{Name: "alpha"}},
 		width:     80,
 		height:    40,
 	}
@@ -702,7 +702,7 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 	}
 
 	// Seed modelA with the sessions list so it can handle Enter.
-	modelA.sessions = []tmux.Session{{Name: "nixos-config@feature"}}
+	modelA.sessions = []agentSession{{Name: "nixos-config@feature"}}
 	modelA.displayed = modelA.sessions // displayed must mirror sessions for Enter to fire
 	modelA.cursor = 0
 	modelA.cursorActive = true // activate cursor so Enter acts immediately
@@ -719,7 +719,6 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 	if target != clientA {
 		t.Fatalf("dashSwitchTarget() = %q, want clientA=%q — wrong client would be switched", target, clientA)
 	}
-
 	// Execute the actual tmux switch-client to confirm the full path works.
 	if err := tmux.SwitchClient(target, "nixos-config@feature"); err != nil {
 		t.Fatalf("SwitchClient: %v", err)

@@ -25,6 +25,32 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
+// touchDashboardSentinel creates or updates the modification time of the
+// dashboard sentinel file, which causes the dashboard's watcher goroutine to
+// send a RefreshMsg and re-fetch session state from the DB.
+//
+// Errors are silently ignored — the sentinel touch is best-effort. If the
+// dashboard is not running or the file cannot be created, the event write
+// already succeeded and the dashboard will refresh on its next poll anyway.
+func touchDashboardSentinel() {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, _ := os.UserHomeDir()
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	busDir := filepath.Join(stateHome, "prism", "bus")
+	_ = os.MkdirAll(busDir, 0o755)
+	sentinel := filepath.Join(busDir, ".dashboard.signal")
+	now := time.Now()
+	if err := os.Chtimes(sentinel, now, now); err != nil {
+		// File doesn't exist yet — create it.
+		f, err := os.OpenFile(sentinel, os.O_CREATE|os.O_WRONLY, 0o644)
+		if err == nil {
+			_ = f.Close()
+		}
+	}
+}
+
 // deriveBareRoot walks parent directories from worktree until it finds a
 // directory containing a file named ".bare". Returns the bare root path, or
 // an empty string if none is found.
@@ -99,6 +125,7 @@ var eventStateChangeCmd = &cobra.Command{
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event state-change: write event: %w", err)
 		}
+		touchDashboardSentinel()
 		return nil
 	},
 }
@@ -221,6 +248,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event tmux-session-start: write event: %w", err)
 		}
+		touchDashboardSentinel()
 
 		// Prune old data once per new session (at most once per tmux server start).
 		if err := d.Prune(90 * 24 * time.Hour); err != nil {
@@ -288,6 +316,7 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event tmux-session-end: write event: %w", err)
 		}
+		touchDashboardSentinel()
 
 		return nil
 	},
@@ -335,6 +364,7 @@ var eventCompactionCmd = &cobra.Command{
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event compaction: write event: %w", err)
 		}
+		touchDashboardSentinel()
 
 		return nil
 	},
@@ -384,6 +414,7 @@ var eventErrorCmd = &cobra.Command{
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event error: write event: %w", err)
 		}
+		touchDashboardSentinel()
 
 		return nil
 	},
