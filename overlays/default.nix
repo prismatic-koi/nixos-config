@@ -37,7 +37,11 @@ rec {
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
-      forgecode = final.callPackage ../pkgs/forgecode.nix { };
+      forgecode =
+        if final.stdenv.isLinux || final.stdenv.isDarwin then
+          final.callPackage ../pkgs/forgecode.nix { }
+        else
+          null;
 
       _macronTypePkg =
         if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
