@@ -121,12 +121,16 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
       last_seen    = excluded.last_seen
   `);
 
-  const updateTitleSid = db?.prepare(`
-    UPDATE agent_status SET
-      title        = COALESCE(?, title),
-      opencode_sid = COALESCE(?, opencode_sid),
-      last_seen    = ?
-    WHERE session_name = ?
+  // Like upsertStatus but intentionally does NOT update state — used for
+  // session.updated on resumed sessions so we insert a row (state='active') if
+  // none exists, but leave state alone if a row is already present.
+  const upsertStatusKeepState = db?.prepare(`
+    INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_name) DO UPDATE SET
+      title        = COALESCE(excluded.title, title),
+      opencode_sid = COALESCE(excluded.opencode_sid, opencode_sid),
+      last_seen    = excluded.last_seen
   `);
 
   const insertEvent = db?.prepare(`
@@ -241,11 +245,14 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             writeEvent("compaction", { note: "compaction started" }, info.id);
             upsertAgentStatus("compacting", null, info.id);
           } else {
-            // DB: only update metadata, don't overwrite state
-            if (db && sessionName && updateTitleSid) {
+            // Upsert with state='active' so resumed sessions (opencode -s <id>)
+            // that have no existing agent_status row get inserted. If a row
+            // already exists, only metadata (title, opencode_sid, last_seen) is
+            // updated — state is intentionally preserved.
+            if (db && sessionName && upsertStatusKeepState) {
               try {
-                updateTitleSid.run(info.title || null, info.id, Date.now(), sessionName);
-              } catch (e) { console.error("[prism-hooks] updateTitleSid failed:", e); }
+                upsertStatusKeepState.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
+              } catch (e) { console.error("[prism-hooks] upsertStatusKeepState failed:", e); }
             }
           }
           break;
