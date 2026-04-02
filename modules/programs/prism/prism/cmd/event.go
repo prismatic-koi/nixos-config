@@ -154,6 +154,12 @@ var eventPaneDiedCmd = &cobra.Command{
 		// runs outside the opencode process (no TMUX_PANE), so we target the
 		// agent window directly by session name.
 		agentWindow := session + ":agent"
+		// Read previous @agent_state before overwriting it so we can
+		// decrement the waiting counter if the pane died mid-permission-prompt.
+		prevState, _ := tmux.GetWindowOption(agentWindow, "@agent_state")
+		if strings.TrimSpace(prevState) == "waiting" {
+			adjustWaitingCount(-1)
+		}
 		_ = tmux.SetWindowOption(agentWindow, "@agent_state", "interrupted")
 		// Also update the window-status-format so the status bar reflects the
 		// interrupted state in red.

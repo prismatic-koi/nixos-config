@@ -64,12 +64,11 @@ func runNotify(cmd *cobra.Command, args []string) error {
 	}
 
 	specs := map[string]stateSpec{
-		"set-active":      {"active", ColorPurple},
-		"set-waiting":     {"waiting", ColorYellow},
-		"set-finished":    {"finished", ColorGreen},
-		"set-interrupted": {"interrupted", ColorRed},
-		"set-compacting":  {"compacting", ColorBlue},
-		"set-error":       {"error", ColorRed},
+		"set-active":     {"active", ColorPurple},
+		"set-waiting":    {"waiting", ColorYellow},
+		"set-finished":   {"finished", ColorGreen},
+		"set-compacting": {"compacting", ColorBlue},
+		"set-error":      {"error", ColorRed},
 	}
 
 	if state == "clear" {

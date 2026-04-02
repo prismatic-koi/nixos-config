@@ -386,6 +386,26 @@ func TestUpsertStatusIfNotTerminal(t *testing.T) {
 	if updated5 {
 		t.Error("UpsertStatusIfNotTerminal (deleted): got updated=true, want false (no-op)")
 	}
+
+	// Should be a no-op when ended_at is set — covers the cleanup race where
+	// KillSession fires pane-exited before SetEnded, but SetEnded runs first.
+	if err := d.UpsertStatus("repo@ended", "repo", "/code/repo/ended", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (ended): %v", err)
+	}
+	if err := d.SetEnded("repo@ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	updated6, err := d.UpsertStatusIfNotTerminal("repo@ended", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (ended): %v", err)
+	}
+	if updated6 {
+		t.Error("UpsertStatusIfNotTerminal (ended): got updated=true, want false (no-op for ended session)")
+	}
+	sEnded, _ := d.CurrentStatus("repo@ended")
+	if sEnded.State != "active" {
+		t.Errorf("State after ended no-op: got %q, want \"active\" (unchanged)", sEnded.State)
+	}
 }
 
 // TestAllActiveStatusForRepo verifies that AllActiveStatusForRepo filters by repo.
