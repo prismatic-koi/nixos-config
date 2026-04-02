@@ -18,9 +18,9 @@
       default = "anthropic";
       description = ''
         The LLM provider to use for opencode agents.
-        Switching providers updates the model strings and authentication
-        plugins. All provider config blocks are always present in the
-        generated config to allow manual model overrides mid-session.
+        Switching providers updates the model strings only. All provider
+        auth plugins and config blocks are always present so any provider
+        can be used mid-session.
       '';
     };
   };
