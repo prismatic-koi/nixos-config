@@ -60,6 +60,27 @@ function deriveSessionName(worktree: string): string | null {
   return `${repo}@${branch}`;
 }
 
+// Accumulate text parts by messageId so that msg_user / msg_assistant events
+// can include the actual text content. Text arrives via message.part.updated
+// (TextPart); the final write happens when message.updated fires.
+const textByMessageId = new Map<string, string>();
+
+// Track which messageIds have already been written to avoid duplicate events.
+// message.updated fires multiple times per message (once per partial update)
+// so without this guard each message would produce several DB rows.
+//
+// This Set grows with the number of messages in a session but is never
+// pruned — entries need to persist for the plugin lifetime to guard against
+// late re-fires of message.updated after the text map has been cleared.
+// Sessions are short-lived (restarted regularly), so unbounded growth within
+// a session is acceptable; the tradeoff is intentional.
+const writtenMessageIds = new Set<string>();
+
+// Track the last state_change value written so we only emit an event when
+// the state actually transitions.  session.status busy fires multiple times
+// per turn; without this guard each turn produces 4+ state_change rows.
+let lastWrittenState: string | null = null;
+
 export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
@@ -80,27 +101,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
 
   // Flag to suppress busy→active transitions while compaction is in progress.
   let compacting = false;
-
-  // Accumulate text parts by messageId so that msg_user / msg_assistant events
-  // can include the actual text content. Text arrives via message.part.updated
-  // (TextPart); the final write happens when message.updated fires.
-  const textByMessageId = new Map<string, string>();
-
-  // Track which messageIds have already been written to avoid duplicate events.
-  // message.updated fires multiple times per message (once per partial update)
-  // so without this guard each message would produce several DB rows.
-  //
-  // This Set grows with the number of messages in a session but is never
-  // pruned — entries need to persist for the plugin lifetime to guard against
-  // late re-fires of message.updated after the text map has been cleared.
-  // Sessions are short-lived (restarted regularly), so unbounded growth within
-  // a session is acceptable; the tradeoff is intentional.
-  const writtenMessageIds = new Set<string>();
-
-  // Track the last state_change value written so we only emit an event when
-  // the state actually transitions.  session.status busy fires multiple times
-  // per turn; without this guard each turn produces 4+ state_change rows.
-  let lastWrittenState: string | null = null;
 
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
