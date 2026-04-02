@@ -31,7 +31,7 @@ func waitForTmuxServerDead(timeout time.Duration) bool {
 
 var restartCmd = &cobra.Command{
 	Use:   "restart",
-	Short: "Save sessions, kill tmux, and re-launch",
+	Short: "Kill tmux and re-launch",
 	RunE:  runRestart,
 }
 
@@ -40,12 +40,7 @@ func init() {
 }
 
 func runRestart(_ *cobra.Command, _ []string) error {
-	// 1. Save state
-	if err := runSave(nil, nil); err != nil {
-		return fmt.Errorf("failed to save state: %w", err)
-	}
-
-	// 2. Kill tmux server
+	// 1. Kill tmux server
 	_, _ = tmux.Run("kill-server")
 
 	// Wait for the server to actually die before restoring. kill-server is
@@ -55,14 +50,14 @@ func runRestart(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("tmux server did not stop within timeout")
 	}
 
-	// 3. Restore sessions
+	// 2. Restore sessions
 	// Restore() bootstraps the server itself by creating the scratchpad session
 	// as its first action, so no explicit bootstrap is needed here.
 	if err := Restore(false); err != nil {
 		return fmt.Errorf("failed to restore sessions: %w", err)
 	}
 
-	// 4. Re-exec
+	// 3. Re-exec
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("could not determine executable path: %w", err)

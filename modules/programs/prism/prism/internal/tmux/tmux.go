@@ -215,18 +215,6 @@ func SendKeys(target, keys string) error {
 	return err
 }
 
-// SendKeysDelayed is retired in Stage 7. Use bus_messages + sentinel instead.
-// Callers must be updated to write a bus_messages row and touch the sentinel file.
-func SendKeysDelayed(target, keys string, delayMs int) error {
-	return fmt.Errorf("SendKeysDelayed: retired in Stage 7, use bus_messages instead")
-}
-
-// SendKeysWhenReady is retired in Stage 7. Use bus_messages + sentinel instead.
-// Callers must be updated to write a bus_messages row and touch the sentinel file.
-func SendKeysWhenReady(target, session, keys string, timeoutSecs int) error {
-	return fmt.Errorf("SendKeysWhenReady: retired in Stage 7, use bus_messages instead")
-}
-
 // shellEscape wraps s in single quotes, escaping any single quotes within.
 // Used for building shell one-liners passed to sh -c.
 func shellEscape(s string) string {
