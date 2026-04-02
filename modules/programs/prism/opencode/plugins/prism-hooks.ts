@@ -124,8 +124,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // Two-step helpers for session.updated (resumed sessions).
   //
   // Step 1: INSERT OR IGNORE — inserts with state='active' only if no row
-  // exists yet.  db.changes === 1 after this call means a genuine insert
-  // (i.e. the session was resumed with no prior row).
+  // exists yet.  Statement.run() returns { changes, lastInsertRowid };
+  // changes === 1 means a genuine insert (i.e. the session was resumed with
+  // no prior row).
   const insertResumedSession = db?.prepare(`
     INSERT OR IGNORE INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -260,8 +261,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             let wasInserted = false;
             if (db && sessionName && insertResumedSession) {
               try {
-                insertResumedSession.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
-                wasInserted = db.changes === 1;
+                const result = insertResumedSession.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
+                wasInserted = result.changes === 1;
               } catch (e) { console.error("[prism-hooks] insertResumedSession failed:", e); }
             }
             // Step 2: update metadata (title, opencode_sid, last_seen, ended_at)
