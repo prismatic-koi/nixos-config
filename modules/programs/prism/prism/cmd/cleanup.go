@@ -203,6 +203,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			_, _ = tmux.SwitchClientCurrent("scratchpad")
 		}
 		_ = tmux.KillSession(m.session)
+		if d, err := openDB(); err == nil {
+			_ = d.SetEnded(m.session)
+			d.Close()
+		}
 
 		return cleanupDoneMsg{}
 	}
@@ -361,6 +365,10 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
+	if d, err := openDB(); err == nil {
+		_ = d.SetEnded(session)
+		d.Close()
+	}
 	fmt.Println("done")
 	return nil
 }
