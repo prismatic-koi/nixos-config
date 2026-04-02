@@ -42,7 +42,7 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of events to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask)")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask, permission_denied)")
 	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
@@ -150,10 +150,6 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 		}
 	}
 
-	// Track which messageIds have already been rendered inline so that any
-	// remaining standalone events are not double-printed.
-	renderedInline := make(map[string]bool)
-
 	for _, e := range events {
 		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
 
@@ -171,7 +167,6 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			msgID := payloadMessageID(e.Payload)
 			if msgID != "" {
 				for _, ie := range inlineByMsgID[msgID] {
-					renderedInline[msgID] = true
 					switch ie.eventType {
 					case "tool_call":
 						tool, args := payloadToolCall(ie.payload)
@@ -197,9 +192,10 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 			fmt.Println()
 
 		case "tool_call":
-			// Standalone tool_call — only printed when not already rendered inline.
+			// Standalone tool_call — skip if it belongs to a known msg_assistant
+			// (will be/was rendered inline), regardless of ordering in the slice.
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && renderedInline[msgID] {
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
 				continue
 			}
 			tool, args := payloadToolCall(e.Payload)
@@ -210,7 +206,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "tool_result":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && renderedInline[msgID] {
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
 				continue
 			}
 			result := payloadToolResult(e.Payload)
@@ -221,7 +217,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "permission_ask":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && renderedInline[msgID] {
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
 				continue
 			}
 			tool, patterns := payloadPermissionAsk(e.Payload)
@@ -229,7 +225,7 @@ func renderCheckinEvents(session string, d *db.DB, events []db.Event, verbose bo
 
 		case "permission_denied":
 			msgID := payloadMessageID(e.Payload)
-			if msgID != "" && renderedInline[msgID] {
+			if msgID != "" && len(inlineByMsgID[msgID]) > 0 {
 				continue
 			}
 			tool := payloadPermissionDeniedTool(e.Payload)
