@@ -36,16 +36,15 @@ This converts a regular git clone to the prism bare+worktree layout in-place. Th
 # Spawn in the current repo with a timestamped branch
 prism spawn --prompt "go implement feature X and open a PR"
 
-# Spawn in a different repo (shorthand name under ~/code)
-prism spawn --repo home-ops --prompt "update the plex image to the latest tag and open a PR"
-
 # Spawn on a named branch — use a short descriptive kebab-case name, not an issue number
-prism spawn --repo home-ops --branch update-plex-image --prompt "..."
+prism spawn --branch update-plex-image --prompt "..."
 
-# Check out a PR branch and spawn a session on it
-prism spawn --pr 268 --prompt "review this PR"
-# or shorthand:
+# To work in a different repo, delegate via its coordinator (see "Delegating work to another repo")
+prism prompt home-ops@main --prompt 'update the plex image to the latest tag and open a PR'
+
+# Check out a PR branch and spawn a session on it (--repo is supported on prism pr)
 prism pr 268 --prompt "review this PR"
+prism pr 268 --repo nixos-config --prompt "review this PR"
 ```
 
 ## Passing prompts safely — shell escaping
@@ -94,7 +93,6 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--repo <name>` | Repo folder name under `~/code`, or full path. Errors with a `prism clone` hint if not found. |
 | `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism list-sessions` and the tmux picker without looking anything up. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
@@ -167,7 +165,6 @@ When the user asks you to create a ticket (e.g. Jira) and then spawn an agent to
 ```bash
 # After creating ticket PROJ-123 ("Update plex image to latest tag"):
 prism spawn \
-  --repo home-ops \
   --branch update-plex-image \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
