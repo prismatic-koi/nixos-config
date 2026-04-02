@@ -81,6 +81,16 @@ const writtenMessageIds = new Set<string>();
 // per turn; without this guard each turn produces 4+ state_change rows.
 let lastWrittenState: string | null = null;
 
+// Debounce timer for session.idle: only mark finished and notify the
+// coordinator after 2 seconds of inactivity.  If session.status busy fires
+// within the window (mid-task turn boundary) the timer is cancelled so no
+// spurious finished state or coordinator notification is written.
+// Module-level (same as writtenMessageIds) because opencode instantiates the
+// plugin twice and both instances share this timer.  This assumes one active
+// session per plugin process — which matches the single-user prism design
+// where each tmux window runs an independent opencode process.
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
 // Map from permissionID → { tool, messageID } so that permission.replied can
 // correlate a denial back to the tool that was asked about.
 const pendingPermissions = new Map<string, { tool: string; messageID: string }>();
@@ -271,6 +281,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
       switch (event.type) {
         case "session.status":
           if (event.properties.status.type === "busy") {
+            // Cancel any pending idle→finished debounce: the agent is still
+            // active (mid-task turn boundary).
+            if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             // Don't overwrite compacting state with active.
             if (!compacting) {
               await notify("set-active");
@@ -283,14 +296,16 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // DB
             upsertAgentStatus("error");
             writeStateChange("error");
-          } else if (event.properties.status.type === "idle") {
-            await notify("set-finished");
           }
+          // session.status idle is intentionally not handled here.
+          // session.idle fires shortly after and starts the debounce timer;
+          // handling idle status here would fire notify("set-finished")
+          // immediately on every turn boundary, defeating the debounce entirely.
           break;
 
         case "session.idle": {
-          await notify("set-finished");
-          // DB
+          // Read prevState immediately (before the timer fires) so we capture
+          // the state at the point the agent went idle, not 2 seconds later.
           let prevState: string | null = null;
           if (db && sessionName && getStatus) {
             try {
@@ -298,27 +313,36 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               prevState = row?.state ?? null;
             } catch (e) { console.error("[prism-hooks] getStatus failed:", e); }
           }
-          upsertAgentStatus("finished");
-          writeStateChange("finished");
-          if (prevState === "active") {
-            notifyCoordinator(`Agent ${sessionName} has finished its current task`);
-          }
-          // Normal-urgency bus delivery: deliver any pending normal messages now
-          // that the agent has reached idle state.
-          if (db && sessionName && currentOpencodeSID && pendingMsgs && markDelivered) {
-            try {
-              const pending = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
-              for (const msg of pending) {
-                try {
-                  await client.session.promptAsync({
-                    path: { id: currentOpencodeSID },
+          // Debounce: wait 2 seconds before committing finished state and
+          // notifying the coordinator.  If session.status busy fires within
+          // that window (mid-task turn boundary) the timer is cancelled and no
+          // finished state, UI notification, or coordinator message is written.
+          if (idleTimer) clearTimeout(idleTimer);
+          idleTimer = setTimeout(() => {
+            idleTimer = null;
+            notify("set-finished").catch(() => { /* best-effort */ });
+            upsertAgentStatus("finished");
+            writeStateChange("finished");
+            if (prevState === "active") {
+              notifyCoordinator(`Agent ${sessionName} has finished its current task`);
+            }
+            // Normal-urgency bus delivery: deliver any pending normal messages
+            // now that the agent has genuinely reached idle state.
+            if (db && sessionName && currentOpencodeSID && pendingMsgs && markDelivered) {
+              try {
+                const pending = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
+                for (const msg of pending) {
+                  client.session.promptAsync({
+                    path: { id: currentOpencodeSID! },
                     body: { parts: [{ type: "text", text: msg.text }] },
-                  });
-                  markDelivered.run(Date.now(), msg.id);
-                } catch (e) { console.error("[prism-hooks] normal promptAsync failed:", e); }
-              }
-            } catch (e) { console.error("[prism-hooks] bus delivery failed:", e); }
-          }
+                  }).then(() => {
+                    try { markDelivered!.run(Date.now(), msg.id); }
+                    catch (e) { console.error("[prism-hooks] markDelivered failed:", e); }
+                  }).catch((e: unknown) => { console.error("[prism-hooks] normal promptAsync failed:", e); });
+                }
+              } catch (e) { console.error("[prism-hooks] bus delivery failed:", e); }
+            }
+          }, 2000);
           break;
         }
 
@@ -463,6 +487,10 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         case "session.compacted": {
           // Compaction done — agent returns to idle.
           compacting = false;
+          // Cancel any pending idle debounce: compaction handles finished state
+          // and coordinator notification directly below, so the timer would
+          // double-fire notify and upsert if allowed to run.
+          if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
           await notify("set-finished");
           // DB
           let prevStateCompact: string | null = null;
