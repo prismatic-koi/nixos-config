@@ -390,6 +390,128 @@ func TestQueryEvents_LastN(t *testing.T) {
 	}
 }
 
+// TestPurgeBusMessages verifies the PurgeBusMessages helper.
+func TestPurgeBusMessages(t *testing.T) {
+	d := openTestDB(t)
+
+	writeMsg := func(id, from, to string, delivered bool) {
+		t.Helper()
+		msg := db.BusMessage{
+			ID:          id,
+			FromSession: from,
+			ToSession:   to,
+			Repo:        "repo",
+			Text:        "test",
+			Urgency:     "normal",
+			SentAt:      time.Now(),
+		}
+		if err := d.WriteBusMessage(msg); err != nil {
+			t.Fatalf("WriteBusMessage %s: %v", id, err)
+		}
+		if delivered {
+			if err := d.MarkDelivered(id); err != nil {
+				t.Fatalf("MarkDelivered %s: %v", id, err)
+			}
+		}
+	}
+
+	// Session under test.
+	const target = "repo@feature"
+	const other = "repo@main"
+
+	// Undelivered messages involving target (should be deleted).
+	writeMsg("to-target-undelivered", other, target, false)
+	writeMsg("from-target-undelivered", target, other, false)
+
+	// Delivered messages involving target (must NOT be deleted).
+	writeMsg("to-target-delivered", other, target, true)
+	writeMsg("from-target-delivered", target, other, true)
+
+	// Undelivered message between two other sessions (must NOT be deleted).
+	writeMsg("other-undelivered", other, "repo@third", false)
+
+	if err := d.PurgeBusMessages(target); err != nil {
+		t.Fatalf("PurgeBusMessages: %v", err)
+	}
+
+	// After purge, pending messages for target must be empty (to_session path).
+	pending, err := d.PendingMessages(target, "normal")
+	if err != nil {
+		t.Fatalf("PendingMessages(target): %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending messages for target after purge: got %d, want 0", len(pending))
+	}
+
+	// Explicitly verify the from_session row was also deleted (PendingMessages
+	// only queries to_session, so we must check via a direct row count).
+	var fromCount int
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE id = ?", "from-target-undelivered",
+	).Scan(&fromCount); err != nil {
+		t.Fatalf("count from-target-undelivered: %v", err)
+	}
+	if fromCount != 0 {
+		t.Errorf("from-target-undelivered row still present after purge: got %d, want 0", fromCount)
+	}
+
+	// Pending messages for other sessions must be unaffected.
+	pendingOther, err := d.PendingMessages("repo@third", "normal")
+	if err != nil {
+		t.Fatalf("PendingMessages(other): %v", err)
+	}
+	if len(pendingOther) != 1 {
+		t.Errorf("pending messages for other after purge: got %d, want 1", len(pendingOther))
+	}
+}
+
+// TestPurgeBusMessages_NoRows verifies that PurgeBusMessages is a no-op when
+// there are no matching rows (no error, no panic).
+func TestPurgeBusMessages_NoRows(t *testing.T) {
+	d := openTestDB(t)
+
+	// No rows at all — must not error.
+	if err := d.PurgeBusMessages("repo@nonexistent"); err != nil {
+		t.Fatalf("PurgeBusMessages (no rows): %v", err)
+	}
+}
+
+// TestPurgeBusMessages_PreservesDelivered verifies that messages with
+// delivered_at set are not removed by PurgeBusMessages.
+func TestPurgeBusMessages_PreservesDelivered(t *testing.T) {
+	d := openTestDB(t)
+
+	msgID := uuid.New().String()
+	msg := db.BusMessage{
+		ID:          msgID,
+		FromSession: "repo@other",
+		ToSession:   "repo@target",
+		Repo:        "repo",
+		Text:        "already delivered",
+		Urgency:     "normal",
+		SentAt:      time.Now(),
+	}
+	if err := d.WriteBusMessage(msg); err != nil {
+		t.Fatalf("WriteBusMessage: %v", err)
+	}
+	if err := d.MarkDelivered(msgID); err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+
+	if err := d.PurgeBusMessages("repo@target"); err != nil {
+		t.Fatalf("PurgeBusMessages: %v", err)
+	}
+
+	// The delivered row should still be present.
+	var count int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE id = ?", msgID).Scan(&count); err != nil {
+		t.Fatalf("count delivered: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("delivered row count after purge: got %d, want 1", count)
+	}
+}
+
 // TestWriteBusMessage_PendingMessages_MarkDelivered tests the full bus message lifecycle.
 func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
 	d := openTestDB(t)

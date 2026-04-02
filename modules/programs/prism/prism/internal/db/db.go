@@ -407,6 +407,21 @@ func (d *DB) MarkDelivered(messageID string) error {
 	return nil
 }
 
+// PurgeBusMessages deletes all undelivered bus_messages rows where
+// from_session or to_session matches sessionName. Delivered messages
+// (delivered_at IS NOT NULL) are left untouched. It is safe to call when no
+// matching rows exist — the operation is a no-op and returns nil.
+func (d *DB) PurgeBusMessages(sessionName string) error {
+	const q = `
+DELETE FROM bus_messages
+WHERE delivered_at IS NULL
+  AND (from_session = ? OR to_session = ?)`
+	if _, err := d.conn.Exec(q, sessionName, sessionName); err != nil {
+		return fmt.Errorf("db: purge bus messages: %w", err)
+	}
+	return nil
+}
+
 // WriteBusMessage inserts a new row into bus_messages with delivered_at=NULL.
 func (d *DB) WriteBusMessage(msg BusMessage) error {
 	var sentAt int64

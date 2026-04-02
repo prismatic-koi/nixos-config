@@ -177,6 +177,9 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		if err := d.SetEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
 		}
+		if err := d.PurgeBusMessages(session); err != nil {
+			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)
+		}
 
 		// Delete sentinel file if it exists.
 		stateHome := os.Getenv("XDG_STATE_HOME")
