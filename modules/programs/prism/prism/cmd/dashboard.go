@@ -16,6 +16,7 @@ import (
 	colorful "github.com/lucasb-eyer/go-colorful"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -138,14 +139,14 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		stat := m.gitStats[s.AgentPath]
 		totalIns += stat.Insertions
 		totalDel += stat.Deletions
-		switch s.AgentState {
-		case "active":
+		switch agent.AgentState(s.AgentState) {
+		case agent.StateActive:
 			nActive++
-		case "waiting":
+		case agent.StateWaiting:
 			nWaiting++
-		case "finished":
+		case agent.StateFinished:
 			nFinished++
-		case "interrupted":
+		case agent.StateInterrupted:
 			nInterrupted++
 		default:
 			nIdle++
@@ -289,34 +290,34 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 func stateStyle(state string) lipgloss.Style {
 	color := ColorSecondary
-	switch state {
-	case "active":
+	switch agent.AgentState(state) {
+	case agent.StateActive:
 		color = ColorPurple
-	case "waiting":
+	case agent.StateWaiting:
 		color = ColorYellow
-	case "finished":
+	case agent.StateFinished:
 		color = ColorGreen
-	case "interrupted":
+	case agent.StateInterrupted:
 		color = ColorRed
-	case "compacting":
+	case agent.StateCompacting:
 		color = ColorBlue
-	case "error":
+	case agent.StateError:
 		color = ColorRed
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
 
 func stateLabel(state string) string {
-	labels := map[string]string{
-		"active":      "active",
-		"waiting":     "waiting",
-		"finished":    "finished",
-		"interrupted": "interrupted",
-		"compacting":  "compacting",
-		"error":       "error",
-		"":            "idle",
+	labels := map[agent.AgentState]string{
+		agent.StateActive:      "active",
+		agent.StateWaiting:     "waiting",
+		agent.StateFinished:    "finished",
+		agent.StateInterrupted: "interrupted",
+		agent.StateCompacting:  "compacting",
+		agent.StateError:       "error",
+		"":                     "idle",
 	}
-	if l, ok := labels[state]; ok {
+	if l, ok := labels[agent.AgentState(state)]; ok {
 		return l
 	}
 	return state
@@ -915,8 +916,8 @@ func (m dashModel) View() string {
 		if isSelected && m.cursorActive {
 			// Bar colour: state colour for active states, primary for idle/finished.
 			barBg := lipgloss.Color(ColorPrimary)
-			switch s.AgentState {
-			case "active", "waiting", "compacting", "error", "interrupted":
+			switch agent.AgentState(s.AgentState) {
+			case agent.StateActive, agent.StateWaiting, agent.StateCompacting, agent.StateError, agent.StateInterrupted:
 				if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
 					barBg = c
 				}

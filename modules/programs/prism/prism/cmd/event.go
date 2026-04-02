@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -160,7 +161,7 @@ var eventPaneDiedCmd = &cobra.Command{
 		}
 
 		// Transition to interrupted only if not already in a terminal state.
-		updated, err := d.UpsertStatusIfNotTerminal(session, "interrupted")
+		updated, err := d.UpsertStatusIfNotTerminal(session, string(agent.StateInterrupted))
 		if err != nil {
 			return fmt.Errorf("event pane-died: %w", err)
 		}
@@ -175,7 +176,7 @@ var eventPaneDiedCmd = &cobra.Command{
 			Repo:        s.Repo,
 			Worktree:    s.Worktree,
 			Type:        "state_change",
-			Payload:     `{"state":"interrupted"}`,
+			Payload:     fmt.Sprintf(`{"state":%q}`, string(agent.StateInterrupted)),
 			CreatedAt:   time.Now(),
 		}
 		if err := d.WriteEvent(e); err != nil {
@@ -207,7 +208,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		}
 		defer d.Close()
 
-		if err := d.UpsertStatus(session, repo, worktree, "idle", nil, nil); err != nil {
+		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateIdle), nil, nil); err != nil {
 			return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
 		}
 
@@ -328,7 +329,7 @@ var eventCompactionCmd = &cobra.Command{
 			worktree = s.Worktree
 		}
 
-		if err := d.UpsertStatus(session, repo, worktree, "compacting", nil, nil); err != nil {
+		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateCompacting), nil, nil); err != nil {
 			return fmt.Errorf("event compaction: upsert status: %w", err)
 		}
 
@@ -377,7 +378,7 @@ var eventErrorCmd = &cobra.Command{
 			worktree = s.Worktree
 		}
 
-		if err := d.UpsertStatus(session, repo, worktree, "error", nil, nil); err != nil {
+		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateError), nil, nil); err != nil {
 			return fmt.Errorf("event error: upsert status: %w", err)
 		}
 

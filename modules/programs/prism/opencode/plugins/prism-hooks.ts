@@ -9,6 +9,19 @@ const PERMISSION_LOG =
   (process.env.XDG_DATA_HOME ?? `${process.env.HOME}/.local/share`) +
   "/opencode/permission-asks.jsonl";
 
+// Agent state constants — must match the Go AgentState constants in
+// internal/agent/agent.go. Any change here must be mirrored there.
+const STATE_ACTIVE = "active";
+const STATE_WAITING = "waiting";
+const STATE_FINISHED = "finished";
+const STATE_COMPACTING = "compacting";
+const STATE_ERROR = "error";
+// STATE_IDLE is declared for parity with Go constants; the plugin never writes
+// idle directly (tmux-session-start handles idle on the Go side).
+const STATE_IDLE = "idle"; // eslint-disable-line @typescript-eslint/no-unused-vars
+const STATE_INTERRUPTED = "interrupted";
+const STATE_DELETED = "deleted";
+
 function deriveSessionName(worktree: string): string | null {
   // Walk up to find .bare marker
   let dir = worktree;
@@ -330,7 +343,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     } catch (e) { console.error("[prism-hooks] interrupt delivery failed:", e); }
 
     // Normal-urgency: deliver pending messages if the coordinator is already idle.
-    if (lastWrittenState === "finished") {
+    if (lastWrittenState === STATE_FINISHED) {
       try {
         const normal = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
         for (const msg of normal) {
@@ -357,13 +370,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // Don't overwrite compacting state with active.
             if (!compacting) {
               // DB
-              upsertAgentStatus("active");
-              writeStateChange("active");
+              upsertAgentStatus(STATE_ACTIVE);
+              writeStateChange(STATE_ACTIVE);
             }
           } else if (event.properties.status.type === "retry") {
             // DB
-            upsertAgentStatus("error");
-            writeStateChange("error");
+            upsertAgentStatus(STATE_ERROR);
+            writeStateChange(STATE_ERROR);
           }
           // session.status idle is intentionally not handled here.
           // session.idle fires shortly after and starts the debounce timer;
@@ -399,14 +412,14 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
                 currentState = row?.state ?? null;
               } catch (e) { console.error("[prism-hooks] getStatus (timer) failed:", e); }
             }
-            if (currentState === "interrupted") {
+            if (currentState === STATE_INTERRUPTED) {
               // Session was interrupted — leave the interrupted state intact
               // and skip coordinator notification.
               return;
             }
-            upsertAgentStatus("finished");
-            writeStateChange("finished");
-            if (prevState === "active") {
+            upsertAgentStatus(STATE_FINISHED);
+            writeStateChange(STATE_FINISHED);
+            if (prevState === STATE_ACTIVE) {
               notifyCoordinator(`Agent ${sessionName} has finished its current task`);
             }
             // Normal-urgency bus delivery is intentionally NOT done here.
@@ -426,8 +439,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           // Track current opencode session ID for bus delivery.
           currentOpencodeSID = info.id;
           // DB
-          upsertAgentStatus("active", info.title || null, info.id);
-          writeStateChange("active", info.id);
+          upsertAgentStatus(STATE_ACTIVE, info.title || null, info.id);
+          writeStateChange(STATE_ACTIVE, info.id);
           break;
         }
 
@@ -438,7 +451,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             compacting = true;
             // DB
             writeEvent("compaction", { note: "compaction started" }, info.id);
-            upsertAgentStatus("compacting", null, info.id);
+            upsertAgentStatus(STATE_COMPACTING, null, info.id);
           } else {
             // Track current opencode session ID for bus delivery.
             currentOpencodeSID = info.id;
@@ -447,7 +460,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             let wasInserted = false;
             if (db && sessionName && insertResumedSession) {
               try {
-                const result = insertResumedSession.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
+                const result = insertResumedSession.run(sessionName, repo, worktree, STATE_ACTIVE, info.title || null, info.id, Date.now());
                 wasInserted = result.changes === 1;
               } catch (e) { console.error("[prism-hooks] insertResumedSession failed:", e); }
             }
@@ -461,7 +474,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // Only emit a state_change event when a new row was inserted —
             // i.e. a genuine resume of a session with no prior DB entry.
             if (wasInserted) {
-              writeStateChange("active", info.id);
+              writeStateChange(STATE_ACTIVE, info.id);
             }
           }
           break;
@@ -476,7 +489,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               setEnded.run(Date.now(), sessionName);
             } catch (e) { console.error("[prism-hooks] setEnded failed:", e); }
           }
-          writeStateChange("deleted", info.id);
+          writeStateChange(STATE_DELETED, info.id);
           break;
         }
 
@@ -495,8 +508,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           });
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           // DB
-          upsertAgentStatus("waiting");
-          writeStateChange("waiting");
+          upsertAgentStatus(STATE_WAITING);
+          writeStateChange(STATE_WAITING);
           writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns, messageId: props.permission?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
           if (props.permission?.id) {
@@ -525,8 +538,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             pendingPermissions.delete(permID);
           }
           // DB
-          upsertAgentStatus("active");
-          writeStateChange("active");
+          upsertAgentStatus(STATE_ACTIVE);
+          writeStateChange(STATE_ACTIVE);
           break;
         }
 
@@ -534,21 +547,21 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         // the user something — treat identically to a permission wait.
         case "question.asked":
           // DB
-          upsertAgentStatus("waiting");
-          writeStateChange("waiting");
+          upsertAgentStatus(STATE_WAITING);
+          writeStateChange(STATE_WAITING);
           break;
 
         case "question.replied":
         case "question.rejected":
           // DB
-          upsertAgentStatus("active");
-          writeStateChange("active");
+          upsertAgentStatus(STATE_ACTIVE);
+          writeStateChange(STATE_ACTIVE);
           break;
 
         case "session.error":
           // DB
-          upsertAgentStatus("error");
-          writeStateChange("error");
+          upsertAgentStatus(STATE_ERROR);
+          writeStateChange(STATE_ERROR);
           writeEvent("error", { note: "session error" });
           break;
 
@@ -570,14 +583,14 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           // If the session was already marked interrupted (pane-died hook
           // fired concurrently), leave the interrupted state intact and skip
           // coordinator notification.
-          if (prevStateCompact === "interrupted") {
+          if (prevStateCompact === STATE_INTERRUPTED) {
             break;
           }
           await notify("set-finished");
-          upsertAgentStatus("finished");
-          writeStateChange("finished");
+          upsertAgentStatus(STATE_FINISHED);
+          writeStateChange(STATE_FINISHED);
           writeEvent("compaction", { note: "compaction complete" });
-          if (prevStateCompact === "active" || prevStateCompact === "compacting") {
+          if (prevStateCompact === STATE_ACTIVE || prevStateCompact === STATE_COMPACTING) {
             notifyCoordinator(`Agent ${sessionName} context was compacted — check in to verify current state`);
           }
           break;
