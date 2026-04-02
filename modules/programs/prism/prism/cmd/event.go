@@ -5,7 +5,7 @@ package cmd
 // Sub-subcommands:
 //
 //	state-change       --session <name> --state <state> --worktree <path>
-//	pane-died          --session <name>
+//	pane-died          --session <name> --window <name>
 //	tmux-session-start --session <name> --worktree <path>
 //	tmux-session-end   --session <name>
 //	compaction         --session <name>
