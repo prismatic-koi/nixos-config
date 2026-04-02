@@ -350,20 +350,27 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             }
             // Normal-urgency bus delivery: deliver any pending normal messages
             // now that the agent has genuinely reached idle state.
-            if (db && sessionName && currentOpencodeSID && pendingMsgs && markDelivered) {
+            // Use an async IIFE and await each promptAsync before calling
+            // markDelivered so the mark-delivered write is synchronous with
+            // respect to the promise resolution.  This prevents the setInterval
+            // poll (which also delivers normal messages when state=finished)
+            // from seeing the same message as undelivered on the next tick and
+            // double-delivering it.
+            (async () => {
+              if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
               try {
                 const pending = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
                 for (const msg of pending) {
-                  client.session.promptAsync({
-                    path: { id: currentOpencodeSID! },
-                    body: { parts: [{ type: "text", text: msg.text }] },
-                  }).then(() => {
-                    try { markDelivered!.run(Date.now(), msg.id); }
-                    catch (e) { console.error("[prism-hooks] markDelivered failed:", e); }
-                  }).catch((e: unknown) => { console.error("[prism-hooks] normal promptAsync failed:", e); });
+                  try {
+                    await client.session.promptAsync({
+                      path: { id: currentOpencodeSID! },
+                      body: { parts: [{ type: "text", text: msg.text }] },
+                    });
+                    markDelivered.run(Date.now(), msg.id);
+                  } catch (e) { console.error("[prism-hooks] normal (idle-timer) promptAsync failed:", e); }
                 }
-              } catch (e) { console.error("[prism-hooks] bus delivery failed:", e); }
-            }
+              } catch (e) { console.error("[prism-hooks] bus delivery (idle-timer) failed:", e); }
+            })();
           }, 2000);
           break;
         }
