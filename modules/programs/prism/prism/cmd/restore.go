@@ -51,8 +51,7 @@ func Restore(dryRun bool) error {
 
 	statuses, err := d.AllActiveStatus()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "prism restore: query sessions: %v\n", err)
-		return nil
+		return fmt.Errorf("prism restore: query sessions: %w", err)
 	}
 
 	if len(statuses) == 0 {
@@ -80,10 +79,15 @@ func restoreSession(s db.Status) error {
 
 	switch s.SessionName {
 	case "prism-dashboard":
-		// Let the tmux binding create it on demand; skip here.
+		// Defensive guard — prism-dashboard is a non-project session and is
+		// never written to agent_status by prism event tmux-session-start (which
+		// exits silently when no .bare marker is found). This case cannot fire in
+		// practice under normal operation.
 		return nil
 
 	case "scratchpad":
+		// Defensive guard — same reasoning as prism-dashboard above: scratchpad
+		// has no .bare ancestor and will never appear in agent_status.
 		return ensureAndSwitchSession("[scratchpad]", "", sessionOpts{headless: true})
 
 	default:
