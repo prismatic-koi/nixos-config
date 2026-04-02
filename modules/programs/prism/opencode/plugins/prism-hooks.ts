@@ -348,29 +348,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             if (prevState === "active") {
               notifyCoordinator(`Agent ${sessionName} has finished its current task`);
             }
-            // Normal-urgency bus delivery: deliver any pending normal messages
-            // now that the agent has genuinely reached idle state.
-            // Use an async IIFE and await each promptAsync before calling
-            // markDelivered so the mark-delivered write is synchronous with
-            // respect to the promise resolution.  This prevents the setInterval
-            // poll (which also delivers normal messages when state=finished)
-            // from seeing the same message as undelivered on the next tick and
-            // double-delivering it.
-            (async () => {
-              if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
-              try {
-                const pending = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
-                for (const msg of pending) {
-                  try {
-                    await client.session.promptAsync({
-                      path: { id: currentOpencodeSID! },
-                      body: { parts: [{ type: "text", text: msg.text }] },
-                    });
-                    markDelivered.run(Date.now(), msg.id);
-                  } catch (e) { console.error("[prism-hooks] normal (idle-timer) promptAsync failed:", e); }
-                }
-              } catch (e) { console.error("[prism-hooks] bus delivery (idle-timer) failed:", e); }
-            })();
+            // Normal-urgency bus delivery is intentionally NOT done here.
+            // The setInterval polling loop delivers pending normal-urgency
+            // messages whenever lastWrittenState === "finished" (set above via
+            // writeStateChange), so delivery happens within ~2 seconds of this
+            // timer firing without any additional code here.  Delivering in both
+            // places would require cross-path coordination to avoid double-
+            // delivery, since both run on independent async timers.
           }, 2000);
           break;
         }
