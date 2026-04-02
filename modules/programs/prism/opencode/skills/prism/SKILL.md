@@ -36,8 +36,11 @@ This converts a regular git clone to the prism bare+worktree layout in-place. Th
 # Spawn in the current repo with a timestamped branch
 prism spawn --prompt "go implement feature X and open a PR"
 
-# Spawn on a named branch
-prism spawn --branch update-plex --prompt "..."
+# Spawn in a different repo (shorthand name under ~/code)
+prism spawn --repo home-ops --prompt "update the plex image to the latest tag and open a PR"
+
+# Spawn on a named branch — use a short descriptive kebab-case name, not an issue number
+prism spawn --repo home-ops --branch update-plex-image --prompt "..."
 
 # Check out a PR branch and spawn a session on it
 prism spawn --pr 268 --prompt "review this PR"
@@ -91,7 +94,8 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. |
+| `--repo <name>` | Repo folder name under `~/code`, or full path. Errors with a `prism clone` hint if not found. |
+| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism list-sessions` and the tmux picker without looking anything up. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
@@ -138,7 +142,7 @@ If you **are** the coordinator for the target repo (or the user has explicitly i
 
 ```bash
 prism spawn \
-  --branch update-plex \
+  --branch update-plex-image \
   --prompt "find the plex container image in this repo and update it to the latest tag from dockerhub, then open a PR"
 ```
 
@@ -157,13 +161,14 @@ prism pr 268 --repo nixos-config --prompt "review this PR and summarise the chan
 When the user asks you to create a ticket (e.g. Jira) and then spawn an agent to work on it:
 
 1. Create the ticket using the appropriate MCP tool and capture the ticket ID (e.g. `PROJ-123`)
-2. Use the ticket ID as the branch name
-3. Spawn the agent — it has the Atlassian MCP available and can read the ticket itself
+2. Derive a short, descriptive kebab-case branch name from the ticket title — not the ticket ID
+3. Spawn the agent — pass the ticket ID in the prompt so the agent can look it up; the Atlassian MCP is available in the spawned session
 
 ```bash
-# After creating ticket PROJ-123:
+# After creating ticket PROJ-123 ("Update plex image to latest tag"):
 prism spawn \
-  --branch PROJ-123 \
+  --repo home-ops \
+  --branch update-plex-image \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
 
