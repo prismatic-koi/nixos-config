@@ -33,14 +33,8 @@ import (
 // dashboard is not running or the file cannot be created, the event write
 // already succeeded and the dashboard will refresh on its next poll anyway.
 func touchDashboardSentinel() {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, _ := os.UserHomeDir()
-		stateHome = filepath.Join(home, ".local", "state")
-	}
-	busDir := filepath.Join(stateHome, "prism", "bus")
-	_ = os.MkdirAll(busDir, 0o755)
-	sentinel := filepath.Join(busDir, ".dashboard.signal")
+	sentinel := dashSentinelPath()
+	_ = os.MkdirAll(filepath.Dir(sentinel), 0o755)
 	now := time.Now()
 	if err := os.Chtimes(sentinel, now, now); err != nil {
 		// File doesn't exist yet — create it.
@@ -291,7 +285,12 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)
 		}
 
-		// Delete sentinel file if it exists.
+		// Clean up the per-session bus sentinel written by `prism prompt`
+		// (Stage 7). This file is named <session>.signal and is separate from
+		// the shared .dashboard.signal used by Stage 8. Removing it here
+		// prevents stale sentinel files accumulating after a session ends.
+		// The removal is best-effort — the file may not exist if Stage 7 was
+		// never exercised.
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, _ := os.UserHomeDir()

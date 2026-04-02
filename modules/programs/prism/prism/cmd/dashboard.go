@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1043,16 +1044,21 @@ func dashSentinelPath() string {
 
 // watchDashboardSentinel starts a goroutine that polls the dashboard sentinel
 // file for changes and sends a RefreshMsg to the Bubble Tea program when a
-// change is detected. The goroutine exits when the program exits (it runs
-// detached and will be GC'd when the process terminates).
+// change is detected. The goroutine exits when ctx is cancelled (call the
+// returned cancel function after p.Run() returns to stop it cleanly).
 //
 // Uses a stat-poll rather than inotify/fsnotify to avoid adding a dependency.
 // The poll interval is 200ms — well under the 1-second target from the spec.
-func watchDashboardSentinel(p *tea.Program) {
+func watchDashboardSentinel(ctx context.Context, p *tea.Program) {
 	sentinelPath := dashSentinelPath()
 	var lastMod time.Time
 	go func() {
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			info, err := os.Stat(sentinelPath)
 			if err == nil {
 				mod := info.ModTime()
@@ -1104,8 +1110,10 @@ var dashboardCmd = &cobra.Command{
 			client, _ := tmux.CurrentClient()
 			m := newDashModel(client, popup)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
-			watchDashboardSentinel(p)
+			ctx, cancel := context.WithCancel(context.Background())
+			watchDashboardSentinel(ctx, p)
 			_, err := p.Run()
+			cancel() // stop the sentinel watcher goroutine
 			return err
 		}
 
