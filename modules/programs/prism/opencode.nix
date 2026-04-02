@@ -434,19 +434,14 @@
       };
       authPlugins = providerPlugins.${config.nx.programs.prism.opencode.provider};
 
-      # Provider block passed to opencode settings.
-      providerConfig = {
-        anthropic = {
-          anthropic = { };
-        };
-        github-copilot = {
-          github-copilot = { };
-        };
-        google = {
-          google = { };
-        };
+      # All three provider blocks are always present so that models from any
+      # provider can be used manually regardless of which provider is the
+      # active default (which controls only model strings and auth plugins).
+      providerSettings = {
+        anthropic = { };
+        github-copilot = { };
+        google = { };
       };
-      providerSettings = providerConfig.${config.nx.programs.prism.opencode.provider};
     in
     lib.mkMerge [
       # Common configuration for both platforms
