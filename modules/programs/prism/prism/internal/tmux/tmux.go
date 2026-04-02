@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -216,77 +215,16 @@ func SendKeys(target, keys string) error {
 	return err
 }
 
-// SendKeysDelayed sends keystrokes to a target pane after a delay (milliseconds),
-// followed by a separate Enter keypress 500ms later.
-// Forks a detached child process so it survives after the parent exits.
+// SendKeysDelayed is retired in Stage 7. Use bus_messages + sentinel instead.
+// Callers must be updated to write a bus_messages row and touch the sentinel file.
 func SendKeysDelayed(target, keys string, delayMs int) error {
-	script := fmt.Sprintf(
-		"sleep %.1f && %s send-keys -t %s %s && sleep 0.5 && %s send-keys -t %s Enter",
-		float64(delayMs)/1000.0,
-		TmuxBin, shellEscape(target), shellEscape(keys),
-		TmuxBin, shellEscape(target),
-	)
-	cmd := exec.Command("sh", "-c", script)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd.Start() // Start (not Run) — don't wait for it
+	return fmt.Errorf("SendKeysDelayed: retired in Stage 7, use bus_messages instead")
 }
 
-// SendKeysWhenReady sends keystrokes to a pane once the opencode agent in the
-// given session reports that it is ready (i.e. @agent_state == "finished").
-//
-// It forks a detached background process that polls the @agent_state window
-// option on the session's agent window every 500 ms until:
-//   - the state becomes "finished" (opencode reached its first idle state), or
-//   - timeoutSecs seconds have elapsed (best-effort fallback — sends anyway).
-//
-// Once ready, it waits an additional 500 ms for the TUI to settle, then sends
-// the keystrokes followed by Enter.
-//
-// Use this instead of SendKeysDelayed when opencode is starting up and the
-// exact ready time is unknown. The target argument is the pane to type into
-// (e.g. "mysession:agent"); session is the tmux session name used to read the
-// @agent_state window option.
+// SendKeysWhenReady is retired in Stage 7. Use bus_messages + sentinel instead.
+// Callers must be updated to write a bus_messages row and touch the sentinel file.
 func SendKeysWhenReady(target, session, keys string, timeoutSecs int) error {
-	// Poll @agent_state on the agent window of the session.
-	// When it equals "finished", opencode has reached its first idle state and
-	// the input field is ready. Fall back to sending after timeoutSecs.
-	//
-	// Shell script (runs as a detached child):
-	//
-	//   elapsed=0
-	//   while [ $elapsed -lt <timeout> ]; do
-	//     state=$(<tmux> show-window-options -t <session>:agent -v @agent_state 2>/dev/null)
-	//     [ "$state" = "finished" ] && break
-	//     sleep 0.5
-	//     elapsed=$((elapsed + 1))
-	//   done
-	//   sleep 0.5
-	//   <tmux> send-keys -t <target> <keys>
-	//   sleep 0.5
-	//   <tmux> send-keys -t <target> Enter
-	//
-	// elapsed counts half-second ticks; timeout in ticks = timeoutSecs * 2.
-	// The final two send-keys calls are separated by ';' (not '&&') so that
-	// Enter is always sent even if the first send-keys call fails (e.g. because
-	// the pane briefly reported a non-zero exit for an unrelated reason).
-	timeoutTicks := timeoutSecs * 2
-	script := fmt.Sprintf(
-		"elapsed=0; "+
-			"while [ $elapsed -lt %d ]; do "+
-			"state=$(%s show-window-options -t %s -v @agent_state 2>/dev/null); "+
-			"[ \"$state\" = \"finished\" ] && break; "+
-			"sleep 0.5; "+
-			"elapsed=$((elapsed + 1)); "+
-			"done; "+
-			"sleep 0.5; %s send-keys -t %s %s; sleep 0.5; %s send-keys -t %s Enter",
-		timeoutTicks,
-		TmuxBin, shellEscape(session+":agent"),
-		TmuxBin, shellEscape(target), shellEscape(keys),
-		TmuxBin, shellEscape(target),
-	)
-	cmd := exec.Command("sh", "-c", script)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	return cmd.Start() // Start (not Run) — don't wait for it
+	return fmt.Errorf("SendKeysWhenReady: retired in Stage 7, use bus_messages instead")
 }
 
 // shellEscape wraps s in single quotes, escaping any single quotes within.

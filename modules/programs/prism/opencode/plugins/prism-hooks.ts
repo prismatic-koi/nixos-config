@@ -85,7 +85,10 @@ let lastWrittenState: string | null = null;
 // correlate a denial back to the tool that was asked about.
 const pendingPermissions = new Map<string, { tool: string; messageID: string }>();
 
-export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
+// Track the current opencode session ID so bus delivery can call session.prompt.
+let currentOpencodeSID: string | null = null;
+
+export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
   // deriveSessionName always receives a valid path.
@@ -176,6 +179,17 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
 
   const getStatus = db?.prepare(`SELECT state FROM agent_status WHERE session_name = ?`);
 
+  const pendingMsgs = db?.prepare(`
+    SELECT id, from_session, to_session, repo, text, urgency, sent_at, delivered_at
+    FROM bus_messages
+    WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL
+    ORDER BY sent_at ASC
+  `);
+
+  const markDelivered = db?.prepare(`
+    UPDATE bus_messages SET delivered_at = ? WHERE id = ?
+  `);
+
   const activeCoord = db?.prepare(`
     SELECT session_name FROM agent_status
     WHERE session_name = ? AND ended_at IS NULL AND last_seen > ?
@@ -223,6 +237,33 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
     } catch (e) { console.error("[prism-hooks] notifyCoordinator failed:", e); }
   }
 
+  // Interrupt-urgency delivery: poll every 2 seconds and deliver any pending
+  // interrupt messages via client.session.promptAsync. This fires regardless of
+  // agent state, delivering within ~2 seconds of the message being written.
+  setInterval(async () => {
+    if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
+    try {
+      const urgent = pendingMsgs.all(sessionName, "interrupt") as Array<{ id: string; text: string; from_session: string }>;
+      for (const msg of urgent) {
+        try {
+          await client.tui.showToast({
+            body: {
+              message: `Urgent from ${msg.from_session}: ${msg.text.slice(0, 100)}`,
+              variant: "warning",
+            },
+          });
+        } catch { /* toast is best-effort */ }
+        try {
+          await client.session.promptAsync({
+            path: { id: currentOpencodeSID },
+            body: { parts: [{ type: "text", text: msg.text }] },
+          });
+        } catch { /* promptAsync failure is non-fatal */ }
+        markDelivered.run(Date.now(), msg.id);
+      }
+    } catch (e) { console.error("[prism-hooks] interrupt delivery failed:", e); }
+  }, 2000);
+
   return {
     event: async ({ event }) => {
       switch (event.type) {
@@ -260,12 +301,30 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           if (prevState === "active") {
             notifyCoordinator(`Agent ${sessionName} has finished its current task`);
           }
+          // Normal-urgency bus delivery: deliver any pending normal messages now
+          // that the agent has reached idle state.
+          if (db && sessionName && currentOpencodeSID && pendingMsgs && markDelivered) {
+            try {
+              const pending = pendingMsgs.all(sessionName, "normal") as Array<{ id: string; text: string }>;
+              for (const msg of pending) {
+                try {
+                  await client.session.promptAsync({
+                    path: { id: currentOpencodeSID },
+                    body: { parts: [{ type: "text", text: msg.text }] },
+                  });
+                } catch { /* promptAsync failure is non-fatal */ }
+                markDelivered.run(Date.now(), msg.id);
+              }
+            } catch (e) { console.error("[prism-hooks] bus delivery failed:", e); }
+          }
           break;
         }
 
         case "session.created": {
           const info = event.properties.info;
           if (info.title) await setTitle(info.title);
+          // Track current opencode session ID for bus delivery.
+          currentOpencodeSID = info.id;
           // DB
           upsertAgentStatus("active", info.title || null, info.id);
           writeStateChange("active", info.id);
@@ -282,6 +341,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             writeEvent("compaction", { note: "compaction started" }, info.id);
             upsertAgentStatus("compacting", null, info.id);
           } else {
+            // Track current opencode session ID for bus delivery.
+            currentOpencodeSID = info.id;
             // Two-step so we can detect a genuine resume (new row inserted).
             // Step 1: insert with state='active' if no row exists yet.
             let wasInserted = false;

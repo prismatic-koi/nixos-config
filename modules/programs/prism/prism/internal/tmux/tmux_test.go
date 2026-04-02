@@ -600,92 +600,20 @@ func waitForPaneContent(s *server, target, want string, timeout time.Duration) b
 	return false
 }
 
-// TestSendKeysWhenReady_ImmediateReady verifies that when @agent_state is
-// already "finished" before SendKeysWhenReady is called, the prompt arrives
-// in the pane within a reasonable time (poll exits immediately).
-func TestSendKeysWhenReady_ImmediateReady(t *testing.T) {
-	s := newServer(t)
-	withServer(t, s)
-
-	const session = "myrepo@feat"
-	s.newSession(session)
-	// Create the "agent" window running cat so send-keys output is echoed.
-	s.newWindow(session, 1, "agent")
-	if err := s.run("send-keys", "-t", session+":agent", "cat", "Enter"); err != nil {
-		t.Fatalf("start cat: %v", err)
-	}
-	// Pre-set @agent_state to "finished" — opencode is already ready.
-	s.setWindowOption(session+":agent", "@agent_state", "finished")
-
-	if err := tmux.SendKeysWhenReady(session+":agent", session, "hello-immediate", 10); err != nil {
-		t.Fatalf("SendKeysWhenReady: %v", err)
-	}
-
-	// The prompt should appear within a few seconds (poll loop exits immediately,
-	// then there is a 500 ms settle before sending).
-	const timeout = 5 * time.Second
-	if !waitForPaneContent(s, session+":agent", "hello-immediate", timeout) {
-		t.Errorf("pane did not receive 'hello-immediate' within %v\npane content:\n%s",
-			timeout, s.capturePane(session+":agent"))
+// TestSendKeysWhenReady_Retired verifies that SendKeysWhenReady returns an
+// error (it was retired in Stage 7 in favour of bus_messages).
+func TestSendKeysWhenReady_Retired(t *testing.T) {
+	err := tmux.SendKeysWhenReady("target:agent", "target", "hello", 10)
+	if err == nil {
+		t.Fatal("expected SendKeysWhenReady to return an error (retired in Stage 7)")
 	}
 }
 
-// TestSendKeysWhenReady_DelayedReady verifies that when @agent_state is not
-// yet "finished" at call time but becomes "finished" shortly afterwards, the
-// prompt is still delivered (the poll loop picks up the state change).
-func TestSendKeysWhenReady_DelayedReady(t *testing.T) {
-	s := newServer(t)
-	withServer(t, s)
-
-	const session = "myrepo@feat-delayed"
-	s.newSession(session)
-	s.newWindow(session, 1, "agent")
-	if err := s.run("send-keys", "-t", session+":agent", "cat", "Enter"); err != nil {
-		t.Fatalf("start cat: %v", err)
-	}
-
-	// Do NOT set @agent_state yet — simulate opencode still starting up.
-	if err := tmux.SendKeysWhenReady(session+":agent", session, "hello-delayed", 15); err != nil {
-		t.Fatalf("SendKeysWhenReady: %v", err)
-	}
-
-	// Set the state to "finished" after a short delay to simulate opencode
-	// completing its initialisation.
-	time.Sleep(1 * time.Second)
-	s.setWindowOption(session+":agent", "@agent_state", "finished")
-
-	// The prompt should arrive within a few seconds of the state being set.
-	const timeout = 5 * time.Second
-	if !waitForPaneContent(s, session+":agent", "hello-delayed", timeout) {
-		t.Errorf("pane did not receive 'hello-delayed' within %v after state set\npane content:\n%s",
-			timeout, s.capturePane(session+":agent"))
-	}
-}
-
-// TestSendKeysWhenReady_TimeoutFallback verifies that when @agent_state never
-// becomes "finished", the prompt is still sent after the timeout expires.
-func TestSendKeysWhenReady_TimeoutFallback(t *testing.T) {
-	s := newServer(t)
-	withServer(t, s)
-
-	const session = "myrepo@feat-timeout"
-	s.newSession(session)
-	s.newWindow(session, 1, "agent")
-	if err := s.run("send-keys", "-t", session+":agent", "cat", "Enter"); err != nil {
-		t.Fatalf("start cat: %v", err)
-	}
-
-	// Never set @agent_state — the poll loop should time out after timeoutSecs
-	// and send the prompt anyway.
-	const timeoutSecs = 3 // short timeout so the test finishes quickly
-	if err := tmux.SendKeysWhenReady(session+":agent", session, "hello-timeout", timeoutSecs); err != nil {
-		t.Fatalf("SendKeysWhenReady: %v", err)
-	}
-
-	// The prompt should arrive after the timeout (3 s) + settle (0.5 s) + margin.
-	const waitFor = 6 * time.Second
-	if !waitForPaneContent(s, session+":agent", "hello-timeout", waitFor) {
-		t.Errorf("pane did not receive 'hello-timeout' within %v (expected after %ds timeout)\npane content:\n%s",
-			waitFor, timeoutSecs, s.capturePane(session+":agent"))
+// TestSendKeysDelayed_Retired verifies that SendKeysDelayed returns an error
+// (it was retired in Stage 7 in favour of bus_messages).
+func TestSendKeysDelayed_Retired(t *testing.T) {
+	err := tmux.SendKeysDelayed("target:agent", "hello", 500)
+	if err == nil {
+		t.Fatal("expected SendKeysDelayed to return an error (retired in Stage 7)")
 	}
 }
