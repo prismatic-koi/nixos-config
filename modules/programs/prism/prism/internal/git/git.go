@@ -333,9 +333,9 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	//
 	//   worktree/.git     – a gitfile whose content is "gitdir: <worktreesDir>",
 	//                       telling git where this worktree's private state lives.
-	//   worktrees/<b>/gitdir     – the path back to the worktree's .git file,
-	//                              used by git to locate the working tree from the
-	//                              bare repo side.
+	//   worktrees/<b>/gitdir     – a relative path back to the worktree's .git
+	//                              file, used by git to locate the working tree
+	//                              from the bare repo side.
 	//   worktrees/<b>/commondir  – contains "..", pointing at the bare repo so
 	//                              the worktree shares objects, refs, and config.
 	//   worktrees/<b>/HEAD       – the symbolic ref for the branch checked out in
@@ -369,8 +369,14 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		[]byte("gitdir: "+relWorktreesDir+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write worktree .git: %w", err)
 	}
+	// Write a relative back-pointer from worktreesDir to the worktree .git file,
+	// keeping the registration relocatable.
+	relWorktreeGitFile, err := filepath.Rel(worktreesDir, worktreeGitFile)
+	if err != nil {
+		return "", fmt.Errorf("compute gitdir rel path: %w", err)
+	}
 	if err := os.WriteFile(gitdirFile,
-		[]byte(worktreeGitFile+"\n"), 0o644); err != nil {
+		[]byte(relWorktreeGitFile+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write gitdir: %w", err)
 	}
 	// commondir must be a relative path from worktreesDir back to barePath.
