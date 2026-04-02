@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
@@ -330,8 +331,11 @@ func TestRestoreSession_EmptyWorktree(t *testing.T) {
 }
 
 // TestRestoreSession_OpencodeSessionResumed verifies that when a stored
-// OpencodeSID is present, the opencode launch command in the agent window
+// OpencodeSID is present, the opencode launch command sent to the agent window
 // includes the session ID (-s flag).
+//
+// It captures the actual text typed into the agent pane (window 1) via
+// capture-pane and asserts the session ID appears in the captured output.
 func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	s := newCmdTestServer(t)
@@ -352,35 +356,25 @@ func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Verify the agent window (index 1) has the opencode session ID in its
-	// pane start command. We capture it via pane_start_command.
-	paneCmd, err := s.output("list-panes", "-t", sessionName+":1", "-F", "#{pane_start_command}")
-	if err != nil {
-		// list-panes may not show the command if keys were sent rather than
-		// pane_start_command; fall back to capturing the pane content.
-		paneCmd = ""
-	}
-	// The send-keys approach doesn't set pane_start_command, so we verify
-	// the window exists with the right name (agent) as a proxy.
-	windows := windowNames(t, s, sessionName)
-	agentWindowFound := false
-	for _, w := range windows {
-		if w == "agent" {
-			agentWindowFound = true
-			break
+	// Poll the agent window (index 1) until the session ID appears in the pane
+	// content. send-keys is asynchronous so we allow up to 3 seconds for the
+	// text to land in the shell's input buffer / history.
+	deadline := time.Now().Add(3 * time.Second)
+	var paneContent string
+	for time.Now().Before(deadline) {
+		out, err := s.output("capture-pane", "-t", sessionName+":1", "-p")
+		if err == nil {
+			paneContent = out
+			if strings.Contains(paneContent, "-s "+sid) {
+				break
+			}
 		}
-	}
-	if !agentWindowFound {
-		t.Errorf("agent window not found in session %q; windows: %v", sessionName, windows)
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Secondary check: buildOpencodeCmd with the stored SID must include "-s".
-	opts := sessionOpts{opencodeSession: sid, agent: "build"}
-	cmd := buildOpencodeCmd(opts)
-	if !strings.Contains(cmd, "-s "+sid) {
-		t.Errorf("buildOpencodeCmd did not include session ID: %q", cmd)
+	if !strings.Contains(paneContent, "-s "+sid) {
+		t.Errorf("agent pane does not contain '-s %s'; captured output:\n%s", sid, paneContent)
 	}
-	_ = paneCmd // suppress unused warning
 }
 
 // TestRestoreSession_AllThreeWindows is a table-driven test confirming that

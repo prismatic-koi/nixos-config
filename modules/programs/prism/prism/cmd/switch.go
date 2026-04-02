@@ -590,10 +590,11 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
 
 			// Seed agent_status so that post-spawn `prism prompt` bus delivery
-			// finds the row and succeeds. The tmux hook fires too late (wrong
-			// pane path at that point) and cannot be relied upon here; call
-			// tmux-session-start explicitly now. The hook remains as a fallback
-			// for sessions created outside this path.
+			// finds the row and succeeds. The session-created tmux hook has been
+			// removed (see issue #380) because its #{pane_current_path} raced
+			// the new session's first pane path from display-popup contexts,
+			// permanently corrupting the worktree field. This explicit call is
+			// now the sole seed path for sessions created via prism switch/spawn.
 			//
 			// Use os.Executable() rather than "prism" so that the correct
 			// binary is found in Nix-managed environments where the store

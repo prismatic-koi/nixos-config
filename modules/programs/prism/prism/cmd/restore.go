@@ -13,8 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -144,17 +146,46 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		}
 		switch {
 		case len(files) == 1:
-			nvimCmd = "nvim '" + files[0] + "'"
+			nvimCmd = "nvim " + shellQuote(files[0])
 		case strings.Contains(directory, "obsidian"):
 			nvimCmd = "nvim +'Obsidian today'"
 		default:
 			readme := filepath.Join(directory, "README.md")
 			if _, err := os.Stat(readme); err == nil {
-				nvimCmd = "nvim '" + readme + "'"
+				nvimCmd = "nvim " + shellQuote(readme)
 			}
 		}
 	}
 	_ = tmux.SendKeys(s.SessionName+":0", nvimCmd)
+
+	// Seed agent_status with a current last_seen and idle state so that
+	// post-restore operations (e.g. prism prompt bus delivery, pane-died hook
+	// transitions) find a fresh row rather than acting on pre-reboot state.
+	//
+	// We write directly via the open DB handle rather than exec-ing a
+	// subprocess to avoid depending on os.Executable() returning the real
+	// prism binary (which it does not in test binaries).
+	if s.Repo != "" {
+		if err := d.UpsertStatus(s.SessionName, s.Repo, directory, string(agent.StateIdle), nil, nil); err != nil {
+			// Non-fatal: the session is created; a stale DB row is preferable
+			// to aborting the rest of the restore.
+			fmt.Fprintf(os.Stderr, "restore %q: seed agent_status: %v\n", s.SessionName, err)
+		} else {
+			e := db.Event{
+				ID:          uuid.New().String(),
+				SessionName: s.SessionName,
+				Repo:        s.Repo,
+				Worktree:    directory,
+				Type:        "tmux_session_start",
+				Payload:     `{}`,
+				CreatedAt:   time.Now(),
+			}
+			if err := d.WriteEvent(e); err != nil {
+				// Non-fatal.
+				fmt.Fprintf(os.Stderr, "restore %q: write event: %v\n", s.SessionName, err)
+			}
+		}
+	}
 
 	// Window 1: agent — launch opencode resuming the stored session ID.
 	_ = tmux.NewWindow(s.SessionName, 1, "agent", directory)
