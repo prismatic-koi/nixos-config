@@ -436,11 +436,39 @@ func sortStrings(ss []string) {
 	}
 }
 
-// agentTypeLabel returns a short display label for the agent_name value.
+// sortDisplayed sorts a session slice in-place to match the flat visual render
+// order: alphabetical by repo name, @main first within each repo, then other
+// branches alphabetically. Uses insertion sort like sortStrings.
+func sortDisplayed(ss []agentSession) {
+	// sessionKey returns a sort key for a session: "repo\x00" for @main and
+	// sessions without @, so they sort before any branch, or "repo\x01branch"
+	// for other worktree branches.
+	sessionKey := func(s agentSession) string {
+		repo := sessionRepo(s.Name)
+		branch := sessionBranch(s.Name)
+		if branch == s.Name || branch == "@main" {
+			// No "@" (plain session) or @main — sorts first within repo.
+			return repo + "\x00" + s.Name
+		}
+		return repo + "\x01" + branch
+	}
+	for i := 1; i < len(ss); i++ {
+		key := ss[i]
+		keyStr := sessionKey(key)
+		j := i - 1
+		for j >= 0 && sessionKey(ss[j]) > keyStr {
+			ss[j+1] = ss[j]
+			j--
+		}
+		ss[j+1] = key
+	}
+}
+
+// agentTypeLabel returns a display label for the agent_name value.
 func agentTypeLabel(agentName string) string {
 	switch agentName {
 	case "coordinator":
-		return "coord"
+		return "coordinator"
 	case "build":
 		return "build"
 	default:
@@ -858,7 +886,8 @@ func filterAgentSessions(all []agentSession) []agentSession {
 // bounds. It returns the updated model.
 func dashRefilter(m dashModel) dashModel {
 	if !m.filterActive || m.filterText == "" {
-		m.displayed = m.sessions
+		m.displayed = make([]agentSession, len(m.sessions))
+		copy(m.displayed, m.sessions)
 	} else {
 		var out []agentSession
 		for _, s := range m.sessions {
@@ -868,6 +897,10 @@ func dashRefilter(m dashModel) dashModel {
 		}
 		m.displayed = out
 	}
+	// Sort displayed to match visual render order so m.cursor indexes
+	// correctly: alphabetical by repo, @main first within each repo,
+	// then other branches alphabetically.
+	sortDisplayed(m.displayed)
 	if m.cursor >= len(m.displayed) {
 		m.cursor = max(0, len(m.displayed)-1)
 	}
@@ -915,22 +948,21 @@ func (m dashModel) View() string {
 	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
 	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	styleGroup := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorBlue)).Bold(true)
 	styleAgentType := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
 	// ── column widths ────────────────────────────────────────────────────────
-	// Tree prefix for worktree rows: "  ├── " or "  └── " (6 chars).
-	// Group header rows use no prefix.
+	// Tree prefix for worktree child rows: "  ├── " or "  └── " (6 chars).
+	// Top-level rows use no prefix; their name is padded to treePrefixW+sessionW.
 	const treePrefixW = 6
-	const agentTypeW = 6 // "coord " or "build " or "      "
+	const agentTypeW = 12 // "coordinator " or "build       " or "            "
 	const stateW = 10
 	const dotW = 2
-	const sessionWMax = 28
+	const sessionWMax = 20
 	const sessionWMin = 14
 	const statWFull = 22    // "2 files +122 -14"
 	const statWCompact = 10 // "+122 -14"
-	// Try full layout first; compress stat then session if too narrow.
-	// Layout per row: 1(leading space) + dotW + treePrefixW + sessionW + 2 + agentTypeW + 2 + stateW + 2 + statW
+	// Layout per row: 1(leading space) + dotW + (treePrefixW+sessionW) + 2 + agentTypeW + 2 + stateW + 2 + statW
+	// treePrefixW is absorbed into the session column total width.
 	fixedOther := 1 + dotW + treePrefixW + 2 + agentTypeW + 2 + stateW + 2
 	titleW := m.width - (fixedOther + sessionWMax + statWFull)
 	statW := statWFull
@@ -961,11 +993,11 @@ func (m dashModel) View() string {
 	if statW == statWCompact {
 		changesHeader = "+/-"
 	}
-	// Column header accounts for the extra treePrefixW and agentTypeW columns.
-	header := fmt.Sprintf(" %-*s%-*s%-*s  %-*s  %-*s  %-*s",
+	// Column header: top-level rows have no tree prefix gap, so session column
+	// spans treePrefixW+sessionW total (same total width as all data rows).
+	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s  %-*s",
 		dotW, "",
-		treePrefixW, "",
-		sessionW, "session",
+		treePrefixW+sessionW, "session",
 		agentTypeW, "type",
 		stateW, "state",
 		statW, changesHeader,
@@ -990,33 +1022,40 @@ func (m dashModel) View() string {
 			sb.WriteString(m.renderSessionRow(s, i, "" /*treePrefix*/, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
 		}
 	} else {
-		// Grouped view: repo headers with ASCII tree connectors.
-		groups := groupSessions(sessions)
-		// Build a cursor-index map from session name → index in m.displayed so
-		// we can check isSelected without an O(n) scan per group entry.
-		displayIdx := map[string]int{}
+		// Flat view with inline child detection via look-ahead.
+		// A session is a "child" if it shares a repo with the immediately
+		// preceding session AND is not @main (or a no-@ solo session).
 		for i, s := range sessions {
-			displayIdx[s.Name] = i
-		}
-		for gi, g := range groups {
-			// Group header (repo name), preceded by a blank line except the first.
-			if gi > 0 {
-				sb.WriteString("\n")
+			isChild := false
+			if i > 0 {
+				prevRepo := sessionRepo(sessions[i-1].Name)
+				thisRepo := sessionRepo(s.Name)
+				thisBranch := sessionBranch(s.Name)
+				isChild = prevRepo == thisRepo && thisBranch != s.Name && thisBranch != "@main"
 			}
-			sb.WriteString(styleGroup.Render("  " + g.repo))
-			sb.WriteString("\n")
-
-			for j, s := range g.sessions {
-				isLast := j == len(g.sessions)-1
-				var treePrefix string
-				if isLast {
+			var treePrefix string
+			if isChild {
+				// Look ahead to determine if this is the last child in the group.
+				isLastChild := true
+				thisRepo := sessionRepo(s.Name)
+				for j := i + 1; j < len(sessions); j++ {
+					nextRepo := sessionRepo(sessions[j].Name)
+					nextBranch := sessionBranch(sessions[j].Name)
+					if nextRepo == thisRepo && nextBranch != sessions[j].Name && nextBranch != "@main" {
+						isLastChild = false
+						break
+					}
+					if nextRepo != thisRepo {
+						break
+					}
+				}
+				if isLastChild {
 					treePrefix = "  └── "
 				} else {
 					treePrefix = "  ├── "
 				}
-				idx := displayIdx[s.Name]
-				sb.WriteString(m.renderSessionRow(s, idx, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
 			}
+			sb.WriteString(m.renderSessionRow(s, i, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
 		}
 	}
 
@@ -1037,8 +1076,10 @@ func (m dashModel) View() string {
 }
 
 // renderSessionRow renders a single session row (selected or unselected).
-// treePrefix is the ASCII tree connector string (e.g. "  ├── "); pass "" for
-// flat-list rendering (filter mode).
+// treePrefix is the ASCII tree connector string (e.g. "  ├── ") for child rows;
+// pass "" for top-level rows. Top-level rows display the full session name
+// padded to treePrefixW+sessionW; child rows display the tree prefix plus the
+// branch name padded to the same total width.
 func (m dashModel) renderSessionRow(
 	s agentSession,
 	cursorIdx int,
@@ -1060,23 +1101,34 @@ func (m dashModel) renderSessionRow(
 		dot = "  "
 	}
 
-	// For grouped view, show only the branch portion (e.g. "@main").
-	// For flat-list (filter mode, treePrefix=""), show the full name.
-	sessionDisplay := s.Name
-	if treePrefix != "" {
-		sessionDisplay = sessionBranch(s.Name)
-	}
-	if len(sessionDisplay) > sessionW {
-		sessionDisplay = sessionDisplay[:sessionW-1] + "…"
-	}
-
 	// treePrefixW is always 6 runes; pad treePrefix to that width using rune
 	// count (not byte count) since tree connector chars are multi-byte in UTF-8.
 	const treePrefixW = 6
-	paddedPrefix := treePrefix
-	runeCount := utf8.RuneCountInString(paddedPrefix)
-	if runeCount < treePrefixW {
-		paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
+
+	// Build the session display area (treePrefixW+sessionW total width):
+	// - Top-level (treePrefix=""): full session name padded to treePrefixW+sessionW.
+	// - Child (treePrefix non-empty): tree prefix (6 runes) + branch name padded to sessionW.
+	var sessionArea string
+	totalSessionW := treePrefixW + sessionW
+	if treePrefix == "" {
+		// Top-level row: full session name padded to totalSessionW.
+		name := s.Name
+		if len(name) > totalSessionW {
+			name = name[:totalSessionW-1] + "…"
+		}
+		sessionArea = fmt.Sprintf("%-*s", totalSessionW, name)
+	} else {
+		// Child row: pad treePrefix to treePrefixW then branch name padded to sessionW.
+		paddedPrefix := treePrefix
+		runeCount := utf8.RuneCountInString(paddedPrefix)
+		if runeCount < treePrefixW {
+			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
+		}
+		branch := sessionBranch(s.Name)
+		if len(branch) > sessionW {
+			branch = branch[:sessionW-1] + "…"
+		}
+		sessionArea = paddedPrefix + fmt.Sprintf("%-*s", sessionW, branch)
 	}
 
 	agentLabel := agentTypeLabel(s.AgentName)
@@ -1111,9 +1163,8 @@ func (m dashModel) renderSessionRow(
 			}
 		}
 
-		plain := fmt.Sprintf(" %s%s%-*s  %-*s  %-*s  %-*s",
-			dot, paddedPrefix,
-			sessionW, sessionDisplay,
+		plain := fmt.Sprintf(" %s%s  %-*s  %-*s  %-*s",
+			dot, sessionArea,
 			agentTypeW, agentLabel,
 			stateW, stateLabel(s.AgentState),
 			statW, statPlain,
@@ -1167,7 +1218,7 @@ func (m dashModel) renderSessionRow(
 		statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
 	}
 
-	prefix := styleFg.Render(fmt.Sprintf(" %s%s%-*s  ", dot, paddedPrefix, sessionW, sessionDisplay))
+	prefix := styleFg.Render(fmt.Sprintf(" %s%s  ", dot, sessionArea))
 	row := prefix + agentTypeStr + styleFg.Render("  ") + stateStr + styleFg.Render("  ") + statStr
 	if titleW > 0 && title != "" {
 		row += styleDim.Render("  " + title)
