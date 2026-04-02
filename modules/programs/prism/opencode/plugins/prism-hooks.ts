@@ -86,6 +86,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // (TextPart); the final write happens when message.updated fires.
   const textByMessageId = new Map<string, string>();
 
+  // Track which messageIds have already been written to avoid duplicate events.
+  // message.updated fires multiple times per message (once per partial update)
+  // so without this guard each message would produce several DB rows.
+  //
+  // This Set grows with the number of messages in a session but is never
+  // pruned — entries need to persist for the plugin lifetime to guard against
+  // late re-fires of message.updated after the text map has been cleared.
+  // Sessions are short-lived (restarted regularly), so unbounded growth within
+  // a session is acceptable; the tradeoff is intentional.
+  const writtenMessageIds = new Set<string>();
+
+  // Track the last state_change value written so we only emit an event when
+  // the state actually transitions.  session.status busy fires multiple times
+  // per turn; without this guard each turn produces 4+ state_change rows.
+  let lastWrittenState: string | null = null;
+
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
@@ -178,6 +194,12 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
     } catch (e) { console.error("[prism-hooks] writeEvent failed:", e); }
   }
 
+  function writeStateChange(state: string, opencodeSid?: string | null): void {
+    if (state === lastWrittenState) return; // deduplicate same-state transitions
+    writeEvent("state_change", { state }, opencodeSid);
+    lastWrittenState = state;
+  }
+
   function upsertAgentStatus(state: string, title?: string | null, opencodeSid?: string | null): void {
     if (!db || !sessionName || !upsertStatus) return;
     try {
@@ -207,13 +229,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
               await notify("set-active");
               // DB
               upsertAgentStatus("active");
-              writeEvent("state_change", { state: "active" });
+              writeStateChange("active");
             }
           } else if (event.properties.status.type === "retry") {
             await notify("set-error");
             // DB
             upsertAgentStatus("error");
-            writeEvent("state_change", { state: "error" });
+            writeStateChange("error");
           } else if (event.properties.status.type === "idle") {
             await notify("set-finished");
           }
@@ -230,7 +252,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             } catch (e) { console.error("[prism-hooks] getStatus failed:", e); }
           }
           upsertAgentStatus("finished");
-          writeEvent("state_change", { state: "finished" });
+          writeStateChange("finished");
           if (prevState === "active") {
             notifyCoordinator(`Agent ${sessionName} has finished its current task`);
           }
@@ -242,7 +264,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           if (info.title) await setTitle(info.title);
           // DB
           upsertAgentStatus("active", info.title || null, info.id);
-          writeEvent("state_change", { state: "active" }, info.id);
+          writeStateChange("active", info.id);
           break;
         }
 
@@ -275,7 +297,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             // Only emit a state_change event when a new row was inserted —
             // i.e. a genuine resume of a session with no prior DB entry.
             if (wasInserted) {
-              writeEvent("state_change", { state: "active" }, info.id);
+              writeStateChange("active", info.id);
             }
           }
           break;
@@ -291,7 +313,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
               setEnded.run(Date.now(), sessionName);
             } catch (e) { console.error("[prism-hooks] setEnded failed:", e); }
           }
-          writeEvent("state_change", { state: "deleted" }, info.id);
+          writeStateChange("deleted", info.id);
           break;
         }
 
@@ -321,7 +343,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           await notify("set-active");
           // DB
           upsertAgentStatus("active");
-          writeEvent("state_change", { state: "active" });
+          writeStateChange("active");
           break;
 
         // question.asked fires when the agent uses the question tool to ask
@@ -330,7 +352,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           await notify("set-waiting");
           // DB
           upsertAgentStatus("waiting");
-          writeEvent("state_change", { state: "waiting" });
+          writeStateChange("waiting");
           break;
 
         case "question.replied":
@@ -338,7 +360,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           await notify("set-active");
           // DB
           upsertAgentStatus("active");
-          writeEvent("state_change", { state: "active" });
+          writeStateChange("active");
           break;
 
         case "session.error":
@@ -371,16 +393,23 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
         case "message.updated": {
           const info = event.properties.info as any;
           if (info.role === "user") {
-            // User messages are atomic — write on every update.
             const text = textByMessageId.get(info.id) ?? "";
+            // Skip if already written for this messageId.
+            if (writtenMessageIds.has(info.id)) break;
+            // Skip empty user messages — these are tool result messages sent by
+            // opencode internally, or message.updated fires before text has
+            // accumulated.  Real human messages always have text content.
+            if (!text) break;
             writeEvent("msg_user", { messageId: info.id, text });
-            // Clean up to avoid unbounded growth of the map.
+            writtenMessageIds.add(info.id);
             textByMessageId.delete(info.id);
           } else if (info.role === "assistant" && info.time?.completed != null) {
             // Only write when the assistant message is fully complete to avoid
             // one row per streaming token.
+            if (writtenMessageIds.has(info.id)) break;
             const text = textByMessageId.get(info.id) ?? "";
             writeEvent("msg_assistant", { messageId: info.id, text });
+            writtenMessageIds.add(info.id);
             // Clean up accumulated text now that the message is complete.
             textByMessageId.delete(info.id);
           }
