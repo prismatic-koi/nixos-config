@@ -19,7 +19,68 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/db"
 )
+
+// TestWorktreePathFromSession_DBFallback verifies that worktreePathFromSession
+// falls back to the DB when tmux has no record of the session (dead session).
+//
+// It seeds a temp DB with a status row containing a real filesystem path, then
+// calls worktreePathFromSession with a session name that does not exist in tmux.
+// The function should return the DB-stored path when it exists on disk, and ""
+// when it does not.
+func TestWorktreePathFromSession_DBFallback(t *testing.T) {
+	// Create a real directory to act as the worktree path.
+	existingPath := t.TempDir()
+	nonExistentPath := filepath.Join(t.TempDir(), "gone")
+
+	// Seed a temp DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	sessionDead := "myrepo@dead-branch"
+	sessionStale := "myrepo@stale-branch"
+
+	if err := d.UpsertStatus(sessionDead, "myrepo", existingPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus dead: %v", err)
+	}
+	if err := d.UpsertStatus(sessionStale, "myrepo", nonExistentPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus stale: %v", err)
+	}
+	d.Close()
+
+	// Point openDB at the temp DB for this test.
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Neither session exists in tmux (no TMUX env, no server), so the tmux
+	// path always returns "" — the function must fall back to the DB.
+
+	t.Run("existing path returned from DB", func(t *testing.T) {
+		got := worktreePathFromSession(sessionDead)
+		if got != existingPath {
+			t.Errorf("got %q, want %q", got, existingPath)
+		}
+	})
+
+	t.Run("stale path (not on disk) returns empty", func(t *testing.T) {
+		got := worktreePathFromSession(sessionStale)
+		if got != "" {
+			t.Errorf("got %q, want empty string (path does not exist)", got)
+		}
+	})
+
+	t.Run("unknown session returns empty", func(t *testing.T) {
+		got := worktreePathFromSession("myrepo@unknown")
+		if got != "" {
+			t.Errorf("got %q, want empty string (no DB row)", got)
+		}
+	})
+}
 
 // setupMinimalBareRepo creates a minimal bare+worktree git repository layout
 // under baseDir with the following structure:
