@@ -81,6 +81,10 @@ const writtenMessageIds = new Set<string>();
 // per turn; without this guard each turn produces 4+ state_change rows.
 let lastWrittenState: string | null = null;
 
+// Map from permissionID → { tool, messageID } so that permission.replied can
+// correlate a denial back to the tool that was asked about.
+const pendingPermissions = new Map<string, { tool: string; messageID: string }>();
+
 export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
@@ -335,16 +339,39 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           try { appendFileSync(PERMISSION_LOG, entry + "\n"); } catch { }
           // DB
           upsertAgentStatus("waiting");
-          writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns });
+          writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns, messageId: props.permission?.messageID });
+          // Track this permission so we can correlate a denial in permission.replied.
+          if (props.permission?.id) {
+            pendingPermissions.set(props.permission.id, {
+              tool: props.tool ?? "unknown",
+              messageID: props.permission.messageID ?? "",
+            });
+          }
           break;
         }
 
-        case "permission.replied":
+        case "permission.replied": {
+          const repliedProps = event.properties as any;
+          const permID: string = repliedProps.permissionID ?? "";
+          const response: string = repliedProps.response ?? "";
+          if (response === "reject") {
+            // Permission was denied — record it so checkin can surface it.
+            const pending = pendingPermissions.get(permID);
+            writeEvent("permission_denied", {
+              tool: pending?.tool ?? "unknown",
+              messageId: pending?.messageID ?? "",
+            });
+            pendingPermissions.delete(permID);
+          } else {
+            // Approved — clean up tracking entry.
+            pendingPermissions.delete(permID);
+          }
           await notify("set-active");
           // DB
           upsertAgentStatus("active");
           writeStateChange("active");
           break;
+        }
 
         // question.asked fires when the agent uses the question tool to ask
         // the user something — treat identically to a permission wait.
@@ -408,6 +435,10 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             // one row per streaming token.
             if (writtenMessageIds.has(info.id)) break;
             const text = textByMessageId.get(info.id) ?? "";
+            // Skip messages with no text content — these occur when opencode
+            // fires message.updated with completed set but no text parts have
+            // accumulated (e.g. tool-only turns). Mirrors the msg_user guard.
+            if (!text) break;
             writeEvent("msg_assistant", { messageId: info.id, text });
             writtenMessageIds.add(info.id);
             // Clean up accumulated text now that the message is complete.
