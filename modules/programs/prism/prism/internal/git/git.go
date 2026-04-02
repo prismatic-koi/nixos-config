@@ -297,9 +297,10 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		"--set-upstream-to", "origin/"+defaultBranch, defaultBranch).Run()
 
 	// Move working tree contents into <defaultBranch>/.
+	// MkdirAll is used because the branch name may contain slashes (e.g. "feat/foo").
 	progress("  moving working tree into " + defaultBranch + "/...")
 	worktreePath := filepath.Join(dir, defaultBranch)
-	if err := os.Mkdir(worktreePath, 0o755); err != nil {
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
 		rollback()
 		return "", fmt.Errorf("mkdir worktree: %w", err)
 	}
@@ -309,7 +310,11 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		rollback()
 		return "", fmt.Errorf("readdir: %w", err)
 	}
-	skip := map[string]bool{".bare": true, ".git": true, ".git.orig": true, defaultBranch: true}
+	// topLevelBranchComponent is the first path segment of the branch name.
+	// When the branch is "feat/foo", os.ReadDir returns "feat" as the entry
+	// name (not "feat/foo"), so we skip based on that top-level segment.
+	topLevelBranchComponent := strings.SplitN(defaultBranch, "/", 2)[0]
+	skip := map[string]bool{".bare": true, ".git": true, ".git.orig": true, topLevelBranchComponent: true}
 	for _, e := range entries {
 		if skip[e.Name()] {
 			continue
@@ -322,9 +327,31 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		}
 	}
 
-	// Manually register the worktree (git worktree add --force refuses non-empty dirs).
+	// Manually register the worktree instead of using `git worktree add --force`.
+	// `git worktree add --force` refuses to adopt a directory that already contains
+	// files, so we write the four worktree bookkeeping files by hand:
+	//
+	//   worktree/.git     – a gitfile whose content is "gitdir: <worktreesDir>",
+	//                       telling git where this worktree's private state lives.
+	//   worktrees/<b>/gitdir     – the path back to the worktree's .git file,
+	//                              used by git to locate the working tree from the
+	//                              bare repo side.
+	//   worktrees/<b>/commondir  – contains "..", pointing at the bare repo so
+	//                              the worktree shares objects, refs, and config.
+	//   worktrees/<b>/HEAD       – the symbolic ref for the branch checked out in
+	//                              this worktree (e.g. "ref: refs/heads/main").
+	//
+	// Git's internal worktrees directory uses the last path component of the branch
+	// name as the directory name (i.e. "feat/foo" → worktrees/foo), matching the
+	// behaviour of `git worktree add`. This is required: git worktree prune treats
+	// any entry with a slash in its name as stale and removes it.
+	//
+	// This format has been validated against git 2.39, 2.43, and 2.47.
 	progress("  registering worktree...")
-	worktreesDir := filepath.Join(barePath, "worktrees", defaultBranch)
+	// Use the last path component as the worktrees entry name, matching git's own
+	// naming convention for `git worktree add` with slash-containing branch names.
+	worktreeEntryName := filepath.Base(defaultBranch)
+	worktreesDir := filepath.Join(barePath, "worktrees", worktreeEntryName)
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir worktrees dir: %w", err)
 	}
@@ -340,8 +367,15 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		[]byte(worktreeGitFile+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write gitdir: %w", err)
 	}
+	// commondir must be a relative path from worktreesDir back to barePath.
+	// Since worktreesDir is always exactly one level under barePath/worktrees/,
+	// this is always "../.." regardless of slashes in the branch name.
+	commondirRel, err := filepath.Rel(worktreesDir, barePath)
+	if err != nil {
+		return "", fmt.Errorf("compute commondir rel path: %w", err)
+	}
 	if err := os.WriteFile(filepath.Join(worktreesDir, "commondir"),
-		[]byte("../..\n"), 0o644); err != nil {
+		[]byte(commondirRel+"\n"), 0o644); err != nil {
 		return "", fmt.Errorf("write commondir: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(worktreesDir, "HEAD"),
