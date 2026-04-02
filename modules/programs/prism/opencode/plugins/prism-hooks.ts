@@ -81,6 +81,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // Flag to suppress busy→active transitions while compaction is in progress.
   let compacting = false;
 
+  // Accumulate text parts by messageId so that msg_user / msg_assistant events
+  // can include the actual text content. Text arrives via message.part.updated
+  // (TextPart); the final write happens when message.updated fires.
+  const textByMessageId = new Map<string, string>();
+
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
@@ -337,18 +342,26 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
           const info = event.properties.info as any;
           if (info.role === "user") {
             // User messages are atomic — write on every update.
-            writeEvent("msg_user", { messageId: info.id });
+            const text = textByMessageId.get(info.id) ?? "";
+            writeEvent("msg_user", { messageId: info.id, text });
           } else if (info.role === "assistant" && info.time?.completed != null) {
             // Only write when the assistant message is fully complete to avoid
             // one row per streaming token.
-            writeEvent("msg_assistant", { messageId: info.id });
+            const text = textByMessageId.get(info.id) ?? "";
+            writeEvent("msg_assistant", { messageId: info.id, text });
+            // Clean up accumulated text now that the message is complete.
+            textByMessageId.delete(info.id);
           }
           break;
         }
 
         case "message.part.updated": {
           const part = (event.properties as any).part;
-          if (part.type === "tool" && part.state?.status === "completed") {
+          if (part.type === "text" && part.text) {
+            // Accumulate text parts — the message.updated handler uses this
+            // to write the full text into the msg_user / msg_assistant payload.
+            textByMessageId.set(part.messageID, String(part.text));
+          } else if (part.type === "tool" && part.state?.status === "completed") {
             const args = JSON.stringify(part.state.input ?? {}).slice(0, 500);
             const result = String(part.state.output ?? "").slice(0, 500);
             writeEvent("tool_call",   { tool: part.tool, args,   messageId: part.messageID });

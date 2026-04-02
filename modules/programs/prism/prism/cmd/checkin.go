@@ -306,11 +306,14 @@ func runCheckinNoArg(showAll bool) error {
 }
 
 // printSessionTable renders a SESSION/STATE/TITLE table and a hint line.
+// Returns an error only when the list is empty (to guide the user).
 func printSessionTable(ss []db.Status) error {
 	if len(ss) == 0 {
 		fmt.Println("no agent sessions found")
 		return fmt.Errorf("no session specified")
 	}
+	// Sessions were printed successfully — return nil so callers don't see a
+	// spurious non-zero exit when the table is displayed.
 
 	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleName := lipgloss.NewStyle().Bold(true)
@@ -345,7 +348,7 @@ func printSessionTable(ss []db.Status) error {
 	hint := "run `prism checkin <session>` to inspect a session"
 	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Render(hint))
 
-	return fmt.Errorf("no session specified")
+	return nil
 }
 
 // --- payload parsing helpers ---
