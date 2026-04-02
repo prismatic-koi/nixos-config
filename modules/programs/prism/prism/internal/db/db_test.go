@@ -1,11 +1,13 @@
 package db_test
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	_ "modernc.org/sqlite"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
@@ -37,13 +39,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=1.
+	// Verify schema_version=2 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 1 {
-		t.Errorf("schema_version: got %d, want 1", version)
+	if version != 2 {
+		t.Errorf("schema_version: got %d, want 2", version)
 	}
 
 	// Verify WAL mode.
@@ -649,5 +651,182 @@ func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
 	}
 	if len(pending2) != 0 {
 		t.Errorf("pending count after deliver: got %d, want 0", len(pending2))
+	}
+}
+
+// TestMigration_V1ToV2 verifies that Open applies the v1→v2 migration to an
+// existing DB that was created at schema_version=1 (no agent_name/model_id).
+func TestMigration_V1ToV2(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v1.db")
+
+	// Seed a v1 DB directly via raw sql.Open (no agent_name/model_id columns).
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (1);
+		INSERT INTO agent_status (session_name, repo, worktree, state, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v1 db: %v", err)
+	}
+
+	// Open via db.Open — should apply the v1→v2 migration.
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v1 db: %v", err)
+	}
+	defer d.Close()
+
+	// Verify schema_version=2.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 2 {
+		t.Errorf("schema_version after migration: got %d, want 2", version)
+	}
+
+	// Verify the new columns exist and the existing row is preserved.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	if s.AgentName != nil {
+		t.Errorf("AgentName: got %v, want nil (newly added column)", s.AgentName)
+	}
+	if s.ModelID != nil {
+		t.Errorf("ModelID: got %v, want nil (newly added column)", s.ModelID)
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestUpsertStatusWithAgent verifies that agent_name and model_id are written
+// and that COALESCE prevents nil values from overwriting existing ones.
+func TestUpsertStatusWithAgent(t *testing.T) {
+	d := openTestDB(t)
+
+	agentName := strPtr("build")
+	modelID := strPtr("github-copilot/claude-sonnet-4.6")
+
+	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, agentName, modelID); err != nil {
+		t.Fatalf("UpsertStatusWithAgent: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.AgentName == nil || *s.AgentName != "build" {
+		t.Errorf("AgentName: got %v, want \"build\"", s.AgentName)
+	}
+	if s.ModelID == nil || *s.ModelID != "github-copilot/claude-sonnet-4.6" {
+		t.Errorf("ModelID: got %v, want \"github-copilot/claude-sonnet-4.6\"", s.ModelID)
+	}
+
+	// Second upsert with nil agent/model must not clobber the existing values.
+	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/code/repo/main", "finished", nil, nil, nil, nil); err != nil {
+		t.Fatalf("second UpsertStatusWithAgent: %v", err)
+	}
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (2): %v", err)
+	}
+	if s2.AgentName == nil || *s2.AgentName != "build" {
+		t.Errorf("AgentName after nil upsert: got %v, want preserved \"build\"", s2.AgentName)
+	}
+	if s2.ModelID == nil || *s2.ModelID != "github-copilot/claude-sonnet-4.6" {
+		t.Errorf("ModelID after nil upsert: got %v, want preserved value", s2.ModelID)
+	}
+}
+
+// TestQueryEventsByMessageIDs verifies the secondary query fetches events
+// keyed by messageId JSON field, filtered by type.
+func TestQueryEventsByMessageIDs(t *testing.T) {
+	d := openTestDB(t)
+
+	base := time.Now().Truncate(time.Second)
+
+	writeE := func(id, typ, msgID string, offset time.Duration) {
+		t.Helper()
+		payload := `{"messageId":"` + msgID + `","tool":"bash","args":"go test","result":"ok"}`
+		e := db.Event{
+			ID:          id,
+			SessionName: "repo@main",
+			Repo:        "repo",
+			Worktree:    "/code/repo/main",
+			Type:        typ,
+			Payload:     payload,
+			CreatedAt:   base.Add(offset),
+		}
+		if err := d.WriteEvent(e); err != nil {
+			t.Fatalf("WriteEvent %s: %v", id, err)
+		}
+	}
+
+	// Two message IDs, each with a tool_call and a tool_result.
+	writeE("e1", "tool_call", "msg-A", 0)
+	writeE("e2", "tool_result", "msg-A", time.Second)
+	writeE("e3", "tool_call", "msg-B", 2*time.Second)
+	writeE("e4", "tool_result", "msg-B", 3*time.Second)
+	// An event for a different messageId (should NOT be returned).
+	writeE("e5", "tool_call", "msg-C", 4*time.Second)
+
+	results, err := d.QueryEventsByMessageIDs("repo@main", []string{"msg-A", "msg-B"}, []string{"tool_call", "tool_result"})
+	if err != nil {
+		t.Fatalf("QueryEventsByMessageIDs: %v", err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("result count: got %d, want 4", len(results))
+	}
+
+	// Verify order is chronological ASC.
+	wantIDs := []string{"e1", "e2", "e3", "e4"}
+	for i, e := range results {
+		if e.ID != wantIDs[i] {
+			t.Errorf("results[%d].ID: got %q, want %q", i, e.ID, wantIDs[i])
+		}
+	}
+
+	// Query with only one messageId.
+	results2, err := d.QueryEventsByMessageIDs("repo@main", []string{"msg-B"}, nil)
+	if err != nil {
+		t.Fatalf("QueryEventsByMessageIDs (single): %v", err)
+	}
+	if len(results2) != 2 {
+		t.Fatalf("single result count: got %d, want 2", len(results2))
+	}
+
+	// Empty messageIds should return nil, not error.
+	results3, err := d.QueryEventsByMessageIDs("repo@main", nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEventsByMessageIDs (empty): %v", err)
+	}
+	if results3 != nil {
+		t.Errorf("empty result: got %v, want nil", results3)
 	}
 }

@@ -180,12 +180,18 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  const updateAgentModel = db?.prepare(`
+    UPDATE agent_status SET agent_name = ?, model_id = ? WHERE session_name = ?
+  `);
+
   const insertBusMsg = db?.prepare(`
     INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
   `);
 
   const getStatus = db?.prepare(`SELECT state FROM agent_status WHERE session_name = ?`);
+
+  const getAgentModel = db?.prepare(`SELECT agent_name, model_id FROM agent_status WHERE session_name = ?`);
 
   const pendingMsgs = db?.prepare(`
     SELECT id, from_session, to_session, repo, text, urgency, sent_at, delivered_at
@@ -272,6 +278,36 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // than waiting for a session.idle that may never come.
   setInterval(async () => {
     if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
+
+    // Read agent_name and model_id from agent_status for this session.
+    // If non-null, pass them to promptAsync to prevent the session from being
+    // reset to the default agent on every bus delivery (fixes #367).
+    let agentName: string | null = null;
+    let modelId: string | null = null;
+    if (getAgentModel) {
+      try {
+        const row = getAgentModel.get(sessionName) as { agent_name: string | null; model_id: string | null } | undefined;
+        agentName = row?.agent_name ?? null;
+        modelId = row?.model_id ?? null;
+      } catch (e) { /* best-effort */ }
+    }
+
+    // Build the promptAsync body. When agent_name and model_id are known,
+    // pass them explicitly so the session keeps using its current agent/model.
+    // When unknown (pre-migration or no messages yet), call without those fields
+    // (current fallback behaviour, acceptable for new sessions).
+    function buildPromptBody(text: string): Parameters<typeof client.session.promptAsync>[0]["body"] {
+      const base = { parts: [{ type: "text" as const, text }] };
+      if (agentName && modelId) {
+        // Split model_id on the first "/" to get providerID and modelID.
+        const slashIdx = modelId.indexOf("/");
+        const providerID = slashIdx >= 0 ? modelId.slice(0, slashIdx) : modelId;
+        const modelID = slashIdx >= 0 ? modelId.slice(slashIdx + 1) : "";
+        return { ...base, agent: agentName, model: { providerID, modelID } };
+      }
+      return base;
+    }
+
     try {
       const urgent = pendingMsgs.all(sessionName, "interrupt") as Array<{ id: string; text: string; from_session: string }>;
       for (const msg of urgent) {
@@ -286,7 +322,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
         try {
           await client.session.promptAsync({
             path: { id: currentOpencodeSID },
-            body: { parts: [{ type: "text", text: msg.text }] },
+            body: buildPromptBody(msg.text),
           });
           markDelivered.run(Date.now(), msg.id);
         } catch (e) { console.error("[prism-hooks] interrupt promptAsync failed:", e); }
@@ -301,7 +337,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           try {
             await client.session.promptAsync({
               path: { id: currentOpencodeSID! },
-              body: { parts: [{ type: "text", text: msg.text }] },
+              body: buildPromptBody(msg.text),
             });
             markDelivered.run(Date.now(), msg.id);
           } catch (e) { console.error("[prism-hooks] normal (idle-poll) promptAsync failed:", e); }
@@ -557,9 +593,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // opencode internally, or message.updated fires before text has
             // accumulated.  Real human messages always have text content.
             if (!text) break;
-            writeEvent("msg_user", { messageId: info.id, text });
+            // Extract agent and model from the message.updated event info.
+            // For user messages: info.agent (string) and info.model.providerID + "/" + info.model.modelID.
+            const agent: string = info.agent ?? "";
+            const model: string = info.model
+              ? `${info.model.providerID ?? ""}/${info.model.modelID ?? ""}`
+              : "";
+            writeEvent("msg_user", { messageId: info.id, text, agent, model });
             writtenMessageIds.add(info.id);
             textByMessageId.delete(info.id);
+            // Persist agent and model into agent_status so the bus delivery
+            // loop can pass them to promptAsync (fixes #367).
+            if (agent && model && db && sessionName && updateAgentModel) {
+              try {
+                updateAgentModel.run(agent, model, sessionName);
+              } catch (e) { console.error("[prism-hooks] updateAgentModel failed:", e); }
+            }
           } else if (info.role === "assistant" && info.time?.completed != null) {
             // Only write when the assistant message is fully complete to avoid
             // one row per streaming token.
@@ -569,7 +618,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // fires message.updated with completed set but no text parts have
             // accumulated (e.g. tool-only turns). Mirrors the msg_user guard.
             if (!text) break;
-            writeEvent("msg_assistant", { messageId: info.id, text });
+            // Extract agent and model from the message.updated event info.
+            // For assistant messages: info.agent and info.providerID + "/" + info.modelID.
+            const asst_agent: string = info.agent ?? "";
+            const asst_model: string = (info.providerID && info.modelID)
+              ? `${info.providerID}/${info.modelID}`
+              : "";
+            writeEvent("msg_assistant", { messageId: info.id, text, agent: asst_agent, model: asst_model });
             writtenMessageIds.add(info.id);
             // Clean up accumulated text now that the message is complete.
             textByMessageId.delete(info.id);

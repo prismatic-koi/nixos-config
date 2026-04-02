@@ -52,6 +52,8 @@ type Status struct {
 	State       string
 	Title       *string
 	OpencodeSID *string
+	AgentName   *string
+	ModelID     *string
 	LastSeen    time.Time
 	EndedAt     *time.Time
 }
@@ -113,7 +115,9 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=1 if the table is empty.
+// schema, and sets schema_version=1 if the table is empty. If the DB is at
+// version 1, it applies the v2 migration (adding agent_name and model_id
+// columns to agent_status) and bumps schema_version to 2.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -156,6 +160,27 @@ func Open(path string) (*DB, error) {
 		}
 	}
 
+	// Apply pending migrations.
+	var version int
+	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("db: read schema_version: %w", err)
+	}
+	if version == 1 {
+		// Migration v1 → v2: add agent_name and model_id to agent_status.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN agent_name TEXT",
+			"ALTER TABLE agent_status ADD COLUMN model_id TEXT",
+			"UPDATE schema_version SET version = 2",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v1→v2: %w", err)
+			}
+		}
+	}
+
 	return &DB{conn: conn, path: path}, nil
 }
 
@@ -166,18 +191,28 @@ func (d *DB) Close() error {
 
 // UpsertStatus inserts or updates the agent_status row for sessionName.
 // repo and worktree are only set on initial insert — they do not change on
-// conflict. title and opencodeSID are updated only when non-nil (COALESCE).
+// conflict. title, opencodeSID, agentName, and modelID are updated only when
+// non-nil (COALESCE).
 func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *string, opencodeSID *string) error {
+	return d.UpsertStatusWithAgent(sessionName, repo, worktree, state, title, opencodeSID, nil, nil)
+}
+
+// UpsertStatusWithAgent is like UpsertStatus but also accepts agentName and
+// modelID, which are written to agent_status.agent_name and agent_status.model_id
+// using COALESCE (only overwriting when non-nil).
+func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state        = excluded.state,
   title        = COALESCE(excluded.title, title),
   opencode_sid = COALESCE(excluded.opencode_sid, opencode_sid),
+  agent_name   = COALESCE(excluded.agent_name, agent_name),
+  model_id     = COALESCE(excluded.model_id, model_id),
   last_seen    = excluded.last_seen`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, now)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, now)
 	if err != nil {
 		return fmt.Errorf("db: upsert status: %w", err)
 	}
@@ -350,10 +385,69 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 	return events, nil
 }
 
+// QueryEventsByMessageIDs returns all events for sessionName whose payload
+// contains a "messageId" field matching one of the provided IDs. Only events
+// of the specified types are returned; pass nil for types to return all types.
+// Results are ordered by created_at ASC.
+//
+// This is used by checkin's secondary query to fetch tool_call, tool_result,
+// permission_ask, permission_denied, and thinking events that belong to a set
+// of user message turns retrieved by the primary query.
+func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, types []string) ([]Event, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+
+	args := []any{sessionName}
+	conditions := []string{"session_name = ?"}
+
+	// Build the IN clause for messageIds using JSON_EXTRACT.
+	idPlaceholders := make([]string, len(messageIDs))
+	for i, id := range messageIDs {
+		idPlaceholders[i] = "?"
+		args = append(args, id)
+	}
+	conditions = append(conditions, "JSON_EXTRACT(payload, '$.messageId') IN ("+strings.Join(idPlaceholders, ",")+")")
+
+	if len(types) > 0 {
+		typePlaceholders := make([]string, len(types))
+		for i, t := range types {
+			typePlaceholders[i] = "?"
+			args = append(args, t)
+		}
+		conditions = append(conditions, "type IN ("+strings.Join(typePlaceholders, ",")+")")
+	}
+
+	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+		" WHERE " + strings.Join(conditions, " AND ") +
+		" ORDER BY created_at ASC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query events by message IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("db: scan event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate events by message IDs: %w", err)
+	}
+	return events, nil
+}
+
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -370,7 +464,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -379,7 +473,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -523,7 +617,7 @@ func scanStatus(s scanner) (*Status, error) {
 	var endedAt sql.NullInt64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
-		&st.Title, &st.OpencodeSID, &lastSeen, &endedAt,
+		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID, &lastSeen, &endedAt,
 	)
 	if err != nil {
 		return nil, err
