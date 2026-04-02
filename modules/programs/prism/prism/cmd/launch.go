@@ -25,6 +25,7 @@ package cmd
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -115,7 +116,7 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		if err != nil {
 			self = "prism"
 		}
-		loopCmd := "while " + self + " dashboard --popup; do true; done"
+		loopCmd := "while '" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard --popup; do true; done"
 		cmd := exec.Command(kittyBin,
 			"--title", "Prism",
 			tmux.TmuxBin, "new-session", "-As", "scratchpad", "-c", os.Getenv("HOME"),

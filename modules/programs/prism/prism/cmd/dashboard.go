@@ -1273,7 +1273,7 @@ func ensureDashSession() error {
 		// Fall back to "prism" if we cannot resolve our own path.
 		self = "prism"
 	}
-	loopCmd := "while " + self + " dashboard --popup; do true; done"
+	loopCmd := "while '" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard --popup; do true; done"
 	c := exec.Command(tmux.TmuxBin, "new-session", "-ds", dashSession, "-n", "dashboard", loopCmd)
 	return c.Run()
 }
