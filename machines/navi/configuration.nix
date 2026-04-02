@@ -27,6 +27,7 @@
     };
     programs = {
       prism.opencode.provider = "anthropic";
+      prism.forgecode.enable = true;
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
       corectrl.enable = true;

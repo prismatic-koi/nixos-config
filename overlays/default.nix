@@ -37,6 +37,18 @@ rec {
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
+      forgecode =
+        let
+          supported = [
+            "x86_64-linux"
+            "aarch64-darwin"
+          ];
+        in
+        if builtins.elem final.stdenv.hostPlatform.system supported then
+          final.callPackage ../pkgs/forgecode.nix { }
+        else
+          null;
+
       _macronTypePkg =
         if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;
