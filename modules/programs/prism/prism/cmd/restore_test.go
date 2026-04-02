@@ -57,8 +57,8 @@ func seedStatus(t *testing.T, d *db.DB, sessionName, worktree string, opencodeSe
 	panic("unreachable")
 }
 
-// windowNames returns the sorted window names for the given session, using
-// list-windows.
+// windowNames returns the window names for the given session in creation order,
+// using list-windows.
 func windowNames(t *testing.T, s *cmdTestServer, session string) []string {
 	t.Helper()
 	out, err := s.output("list-windows", "-t", session, "-F", "#{window_name}")

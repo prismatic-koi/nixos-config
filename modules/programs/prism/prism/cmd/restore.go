@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -158,18 +157,23 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	}
 	_ = tmux.SendKeys(s.SessionName+":0", nvimCmd)
 
-	// Seed agent_status with a current last_seen and idle state so that
-	// post-restore operations (e.g. prism prompt bus delivery, pane-died hook
-	// transitions) find a fresh row rather than acting on pre-reboot state.
+	// Refresh agent_status with the verified worktree path, idle state, and a
+	// current last_seen so that post-restore operations find a fresh row.
+	//
+	// RefreshWorktree is used instead of UpsertStatus because UpsertStatus only
+	// writes repo/worktree on the initial INSERT (ON CONFLICT does not update
+	// them). If the row was previously corrupted by the session-created hook
+	// race (issue #380), UpsertStatus would silently leave the stale path.
+	// RefreshWorktree corrects repo and worktree unconditionally.
 	//
 	// We write directly via the open DB handle rather than exec-ing a
 	// subprocess to avoid depending on os.Executable() returning the real
 	// prism binary (which it does not in test binaries).
 	if s.Repo != "" {
-		if err := d.UpsertStatus(s.SessionName, s.Repo, directory, string(agent.StateIdle), nil, nil); err != nil {
+		if err := d.RefreshWorktree(s.SessionName, s.Repo, directory); err != nil {
 			// Non-fatal: the session is created; a stale DB row is preferable
 			// to aborting the rest of the restore.
-			fmt.Fprintf(os.Stderr, "restore %q: seed agent_status: %v\n", s.SessionName, err)
+			fmt.Fprintf(os.Stderr, "restore %q: refresh agent_status: %v\n", s.SessionName, err)
 		} else {
 			e := db.Event{
 				ID:          uuid.New().String(),
