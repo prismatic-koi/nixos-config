@@ -267,7 +267,8 @@ var cleanupCmd = &cobra.Command{
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		sessionFlag, _ := cmd.Flags().GetString("session")
 
-		if os.Getenv("TMUX") == "" {
+		// Only require tmux when we need to auto-detect the current session.
+		if sessionFlag == "" && os.Getenv("TMUX") == "" {
 			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+W)")
 		}
 
@@ -292,7 +293,7 @@ var cleanupCmd = &cobra.Command{
 		// Find worktree path from agent window.
 		worktreePath := worktreePathFromSession(session)
 		if worktreePath == "" {
-			return fmt.Errorf("could not determine worktree path from session windows")
+			return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 		}
 
 		bareRoot := git.BareRoot(worktreePath)
@@ -308,6 +309,11 @@ var cleanupCmd = &cobra.Command{
 		// Non-interactive path: --yes skips all prompts and runs headlessly.
 		if yesFlag {
 			return headlessCleanup(session, worktreeName, worktreePath, bareRoot)
+		}
+
+		// Interactive TUI requires tmux (bubbletea needs a real TTY).
+		if os.Getenv("TMUX") == "" {
+			return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
 		}
 
 		m := newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr)
@@ -378,26 +384,46 @@ func (w cleanupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func worktreePathFromSession(session string) string {
+	// Try tmux first (works when the session is still alive).
 	out, err := tmux.ListWindows(session)
+	if err == nil && out != "" {
+		// Prefer agent window, fall back to term.
+		term := ""
+		for _, line := range strings.Split(out, "\n") {
+			parts := strings.SplitN(line, "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			name, path := parts[0], parts[1]
+			if name == "agent" {
+				return path
+			}
+			if name == "term" {
+				term = path
+			}
+		}
+		if term != "" {
+			return term
+		}
+	}
+	// Fall back to DB (works when the session no longer exists in tmux).
+	d, err := openDB()
 	if err != nil {
 		return ""
 	}
-	// Prefer agent window, fall back to term.
-	term := ""
-	for _, line := range strings.Split(out, "\n") {
-		parts := strings.SplitN(line, "|", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		name, path := parts[0], parts[1]
-		if name == "agent" {
-			return path
-		}
-		if name == "term" {
-			term = path
+	defer d.Close()
+	status, err := d.CurrentStatus(session)
+	if err != nil || status == nil {
+		return ""
+	}
+	// Only return the DB path if it still exists on disk; a stale path would
+	// produce a confusing git error later rather than a clear "not found" here.
+	if status.Worktree != "" {
+		if _, statErr := os.Stat(status.Worktree); statErr == nil {
+			return status.Worktree
 		}
 	}
-	return term
+	return ""
 }
 
 func init() {
