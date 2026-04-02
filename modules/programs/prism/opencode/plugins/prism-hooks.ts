@@ -220,10 +220,25 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     } catch (e) { console.error("[prism-hooks] writeEvent failed:", e); }
   }
 
+  function touchDashboardSentinel(): void {
+    const sentinelPath = path.join(stateHome, "prism", "bus", ".dashboard.signal");
+    try {
+      fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+      const now = new Date();
+      try {
+        fs.utimesSync(sentinelPath, now, now);
+      } catch {
+        // File doesn't exist yet — create it.
+        fs.closeSync(fs.openSync(sentinelPath, "a"));
+      }
+    } catch { /* best-effort */ }
+  }
+
   function writeStateChange(state: string, opencodeSid?: string | null): void {
     if (state === lastWrittenState) return; // deduplicate same-state transitions
     writeEvent("state_change", { state }, opencodeSid);
     lastWrittenState = state;
+    touchDashboardSentinel();
   }
 
   function upsertAgentStatus(state: string, title?: string | null, opencodeSid?: string | null): void {
