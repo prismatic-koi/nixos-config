@@ -147,12 +147,10 @@ func renderCheckinTurns(session string, d *db.DB, userEvents []db.Event, verbose
 
 	// Collect all messageIds from the user events.
 	messageIDs := make([]string, 0, len(userEvents))
-	userByMsgID := make(map[string]db.Event)
 	for _, e := range userEvents {
 		msgID := extractMessageID(e.Payload)
 		if msgID != "" {
 			messageIDs = append(messageIDs, msgID)
-			userByMsgID[msgID] = e
 		}
 	}
 

@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS agent_status (
   state        TEXT NOT NULL,
   title        TEXT,
   opencode_sid TEXT,
+  agent_name   TEXT,
+  model_id     TEXT,
   last_seen    INTEGER NOT NULL,
   ended_at     INTEGER
 );
@@ -147,14 +149,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=1 if the table is empty.
+	// Set schema_version=2 if the table is empty (fresh database already has
+	// all columns including the v2 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (1)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (2)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
