@@ -121,19 +121,26 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
       last_seen    = excluded.last_seen
   `);
 
-  // Like upsertStatus but intentionally does NOT update state — used for
-  // session.updated on resumed sessions so we insert a row (state='active') if
-  // none exists, but leave state alone if a row is already present.
-  // ended_at is cleared on conflict so that a previously-closed session that is
-  // resumed becomes visible again to dashboard queries (which filter ended_at IS NULL).
-  const upsertStatusKeepState = db?.prepare(`
-    INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
+  // Two-step helpers for session.updated (resumed sessions).
+  //
+  // Step 1: INSERT OR IGNORE — inserts with state='active' only if no row
+  // exists yet.  db.changes === 1 after this call means a genuine insert
+  // (i.e. the session was resumed with no prior row).
+  const insertResumedSession = db?.prepare(`
+    INSERT OR IGNORE INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, last_seen)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(session_name) DO UPDATE SET
-      title        = COALESCE(excluded.title, title),
-      opencode_sid = COALESCE(excluded.opencode_sid, opencode_sid),
-      last_seen    = excluded.last_seen,
+  `);
+  // Step 2: UPDATE metadata only — does not touch state so an already-active
+  // session keeps its current state.  Also clears ended_at so a previously-
+  // closed session that is resumed becomes visible again to dashboard queries
+  // (which filter WHERE ended_at IS NULL).
+  const updateResumedMetadata = db?.prepare(`
+    UPDATE agent_status SET
+      title        = COALESCE(?, title),
+      opencode_sid = COALESCE(?, opencode_sid),
+      last_seen    = ?,
       ended_at     = NULL
+    WHERE session_name = ?
   `);
 
   const insertEvent = db?.prepare(`
@@ -248,16 +255,27 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
             writeEvent("compaction", { note: "compaction started" }, info.id);
             upsertAgentStatus("compacting", null, info.id);
           } else {
-            // Upsert with state='active' so resumed sessions (opencode -s <id>)
-            // that have no existing agent_status row get inserted. If a row
-            // already exists, only metadata (title, opencode_sid, last_seen) is
-            // updated — state is intentionally preserved.
-            if (db && sessionName && upsertStatusKeepState) {
+            // Two-step so we can detect a genuine resume (new row inserted).
+            // Step 1: insert with state='active' if no row exists yet.
+            let wasInserted = false;
+            if (db && sessionName && insertResumedSession) {
               try {
-                upsertStatusKeepState.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
-              } catch (e) { console.error("[prism-hooks] upsertStatusKeepState failed:", e); }
+                insertResumedSession.run(sessionName, repo, worktree, "active", info.title || null, info.id, Date.now());
+                wasInserted = db.changes === 1;
+              } catch (e) { console.error("[prism-hooks] insertResumedSession failed:", e); }
             }
-            writeEvent("state_change", { state: "active" }, info.id);
+            // Step 2: update metadata (title, opencode_sid, last_seen, ended_at)
+            // on the existing row — no-op if we just inserted it.
+            if (db && sessionName && updateResumedMetadata) {
+              try {
+                updateResumedMetadata.run(info.title || null, info.id, Date.now(), sessionName);
+              } catch (e) { console.error("[prism-hooks] updateResumedMetadata failed:", e); }
+            }
+            // Only emit a state_change event when a new row was inserted —
+            // i.e. a genuine resume of a session with no prior DB entry.
+            if (wasInserted) {
+              writeEvent("state_change", { state: "active" }, info.id);
+            }
           }
           break;
         }
