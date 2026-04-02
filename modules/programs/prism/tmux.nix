@@ -167,12 +167,6 @@ in
                   "break-pane -s 'edit.1' -n 'agent'" \
                   "join-pane -h -s 'agent.0' -t 'edit'"
 
-              # --- Session persistence ---
-
-              # Save the session list to disk after every status refresh
-              # (every status-interval seconds). Cheap write; survives sudden shutdowns.
-              set-hook -g after-refresh-client "run-shell -b '${prism} save'"
-
               # --- DB lifecycle hooks ---
 
               # Write tmux_session_start event when a new session is created.

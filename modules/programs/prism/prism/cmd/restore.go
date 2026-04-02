@@ -1,26 +1,22 @@
 package cmd
 
-// prism restore — recreate tmux sessions from the snapshot written by prism save.
+// prism restore — recreate tmux sessions from prism.db.
 //
-// Intended to be called once when a new tmux server starts (via the
-// server-started hook in tmux.conf).  Sessions that already exist are skipped
-// silently so it is safe to call more than once.
+// Reads agent_status rows where ended_at IS NULL and recreates any sessions
+// that are no longer present in the running tmux server. Sessions that already
+// exist are skipped silently — safe to call more than once.
 //
-// For each saved session:
-//   - scratchpad        → plain session in $HOME, term window
-//   - prism-dashboard   → skipped (self-creates on first C-w / prefix+D)
-//   - project@worktree  → full three-window session (edit / agent / term)
-//     with opencode launched in the agent window, headless (no client switch)
-//   - any other session → recreated as a bare session in Dir (best-effort)
+// Replaces the old sessions.json file-based approach (retired in Stage 6).
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -41,56 +37,50 @@ func runRestore(cmd *cobra.Command, _ []string) error {
 }
 
 func Restore(dryRun bool) error {
-	saved, err := loadSessions()
+	d, err := openDB()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// No snapshot yet — nothing to restore.
-			return nil
-		}
-		// A corrupt snapshot (e.g. from a crash mid-write) should not prevent
-		// tmux from starting cleanly. Log and treat as empty.
-		fmt.Fprintf(os.Stderr, "prism restore: ignoring unreadable snapshot: %v\n", err)
+		// No DB yet (first boot before any session has been created) — nothing to restore.
+		fmt.Fprintf(os.Stderr, "prism restore: cannot open DB, nothing to restore: %v\n", err)
+		return nil
+	}
+	defer d.Close()
+
+	// Prune old events/messages once at restore time.
+	if err := d.Prune(90 * 24 * time.Hour); err != nil {
+		fmt.Fprintf(os.Stderr, "prism restore: prune: %v\n", err)
+		// Non-fatal — continue with restore.
+	}
+
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "prism restore: query sessions: %v\n", err)
 		return nil
 	}
 
-	if len(saved) == 0 {
+	if len(statuses) == 0 {
 		return nil
 	}
 
-	for _, s := range saved {
+	for _, s := range statuses {
 		if dryRun {
-			fmt.Printf("would restore: %s (dir=%s bare=%s)\n", s.Name, s.Dir, s.BareRoot)
+			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)
 			continue
 		}
 		if err := restoreSession(s); err != nil {
-			// Log but continue — a single failure should not abort the rest.
-			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.Name, err)
+			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, err)
 		}
 	}
 	return nil
 }
 
-// loadSessions reads the snapshot file and returns the saved session list.
-func loadSessions() ([]SavedSession, error) {
-	data, err := os.ReadFile(saveStatePath())
-	if err != nil {
-		return nil, err
-	}
-	var sessions []SavedSession
-	if err := json.Unmarshal(data, &sessions); err != nil {
-		return nil, fmt.Errorf("parse snapshot: %w", err)
-	}
-	return sessions, nil
-}
-
-// restoreSession recreates a single session.  Already-existing sessions are
+// restoreSession recreates a single session. Already-existing sessions are
 // skipped silently.
-func restoreSession(s SavedSession) error {
-	if tmux.HasSession(s.Name) {
+func restoreSession(s db.Status) error {
+	if tmux.HasSession(s.SessionName) {
 		return nil
 	}
 
-	switch s.Name {
+	switch s.SessionName {
 	case "prism-dashboard":
 		// Let the tmux binding create it on demand; skip here.
 		return nil
@@ -99,15 +89,18 @@ func restoreSession(s SavedSession) error {
 		return ensureAndSwitchSession("[scratchpad]", "", sessionOpts{headless: true})
 
 	default:
-		if s.Dir == "" {
+		if s.Worktree == "" {
 			// No directory info — create a minimal bare session.
-			return tmux.NewSessionDetached(s.Name, "")
+			return tmux.NewSessionDetached(s.SessionName, "")
 		}
-		// Recreate the full worktree session (edit/agent/term windows).
-		// headless=true so no client is switched.
-		return ensureAndSwitchSession(s.Dir, s.BareRoot, sessionOpts{
+		opencodeSession := ""
+		if s.OpencodeSID != nil {
+			opencodeSession = *s.OpencodeSID
+		}
+		bareRoot := git.BareRoot(s.Worktree)
+		return ensureAndSwitchSession(s.Worktree, bareRoot, sessionOpts{
 			headless:        true,
-			opencodeSession: s.OpenCodeSession,
+			opencodeSession: opencodeSession,
 		})
 	}
 }
