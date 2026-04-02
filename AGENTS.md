@@ -218,6 +218,22 @@ If the change affects system state (packages, services, activation scripts, modu
 
 If the change is limited to non-system files (opencode agents, opencode skills, Go source in prism, documentation): skip the switch — these do not affect the NixOS system.
 
+### GitHub repository rules
+
+Direct push to `main` is blocked by the repository ruleset. All changes must go through a pull request. Never attempt to push directly to main.
+
+**Merge method:** The only allowed merge method is squash merge. Coordinators merging a PR must use:
+
+```bash
+gh pr merge <number> --squash
+```
+
+Never use `--merge` (creates a merge commit, rejected by the ruleset) or `--rebase` (creates individual commits rather than a squash, also rejected by the ruleset).
+
+**Branch deletion:** Do not pass `--delete-branch` to `gh pr merge`. Branch deletion after merge is handled automatically by GitHub (`delete_branch_on_merge` is enabled at the repo level). Passing `--delete-branch` may cause an API error if the branch is already gone.
+
+**Build agents:** If you are working on a feature branch, open the PR with `gh pr create` and do not attempt to merge it. The coordinator on `@main` handles merging.
+
 ### Temporary Testing Changes
 
 The user may request changes for testing purposes that should not be committed. In these cases, modify the necessary files and run the platform-appropriate switch command to apply the changes, but do not stage or commit them.
