@@ -96,10 +96,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	// Derive repo from the target session's agent_status, fallback to from_session.
-	repo := ""
-	if status != nil {
-		repo = status.Repo
-	}
+	repo := status.Repo
 	if repo == "" && fromSession != "" {
 		// best-effort: extract repo component from from_session (format: "repo@branch")
 		for i, c := range fromSession {
