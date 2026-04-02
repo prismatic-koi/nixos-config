@@ -89,6 +89,12 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
   // Track which messageIds have already been written to avoid duplicate events.
   // message.updated fires multiple times per message (once per partial update)
   // so without this guard each message would produce several DB rows.
+  //
+  // This Set grows with the number of messages in a session but is never
+  // pruned — entries need to persist for the plugin lifetime to guard against
+  // late re-fires of message.updated after the text map has been cleared.
+  // Sessions are short-lived (restarted regularly), so unbounded growth within
+  // a session is acceptable; the tradeoff is intentional.
   const writtenMessageIds = new Set<string>();
 
   // Track the last state_change value written so we only emit an event when
@@ -190,8 +196,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree }) => {
 
   function writeStateChange(state: string, opencodeSid?: string | null): void {
     if (state === lastWrittenState) return; // deduplicate same-state transitions
-    lastWrittenState = state;
     writeEvent("state_change", { state }, opencodeSid);
+    lastWrittenState = state;
   }
 
   function upsertAgentStatus(state: string, title?: string | null, opencodeSid?: string | null): void {
