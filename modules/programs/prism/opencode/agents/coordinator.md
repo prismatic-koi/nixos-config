@@ -75,6 +75,7 @@ Check-ins are an exception path, not the default:
 
 - **Verifying direction early on a long-running task** — a single check-in shortly after spawn to confirm the agent has understood the task and is heading in the right direction. Do this once, not repeatedly.
 - **Diagnosing a stuck or confused agent** — after a finish signal that looks wrong (e.g. a PR was not opened, the summary is incoherent, or the scope looks wrong), use `prism checkin <session>` to read the agent's current screen before deciding how to respond.
+- **After an escalation trigger fires** — if an escalation trigger (e.g. build failure after merge, repeated review-cycle divergence) points to a confused or misdirected agent, use a check-in to diagnose the state before deciding whether to redirect or escalate to the user.
 
 ### Redirecting an agent
 
@@ -121,7 +122,7 @@ Once both reviews pass:
 
 Bring the user back in when:
 
-- An agent remains blocked or confused across two diagnostic check-ins
+- An agent is blocked or confused across two check-ins
 - The PR review cycle exceeds three iterations without convergence
 - The build fails after merge
 - The implementation diverges significantly from the original request and targeted prompts have not corrected it
