@@ -165,24 +165,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
       last_seen    = excluded.last_seen
   `);
 
-  // upsertStatusWithRootAgent: sets agent_name, model_id, and — on the initial
-  // INSERT — root_agent_name and root_model_id. On conflict the root fields are
-  // preserved (COALESCE(root_agent_name, excluded.root_agent_name)), so calling
-  // this on an already-existing row will never overwrite the root context.
-  const upsertStatusWithRootAgent = db?.prepare(`
-    INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(session_name) DO UPDATE SET
-      state           = excluded.state,
-      title           = COALESCE(excluded.title, title),
-      opencode_sid    = COALESCE(excluded.opencode_sid, opencode_sid),
-      agent_name      = COALESCE(excluded.agent_name, agent_name),
-      model_id        = COALESCE(excluded.model_id, model_id),
-      root_agent_name = COALESCE(root_agent_name, excluded.root_agent_name),
-      root_model_id   = COALESCE(root_model_id, excluded.root_model_id),
-      last_seen       = excluded.last_seen
-  `);
-
   // Two-step helpers for session.updated (resumed sessions).
   //
   // Step 1: INSERT OR IGNORE — inserts with state='active' only if no row

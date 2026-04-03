@@ -593,6 +593,259 @@ func TestRunCheckinSession_TypesRoutesToRaw(t *testing.T) {
 	}
 }
 
+// assistantPayloadWithAgent returns a msg_assistant JSON payload that includes an agent name.
+func assistantPayloadWithAgent(msgID, text, agent string) string {
+	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":%q}`, msgID, text, agent)
+}
+
+// userPayloadWithAgent returns a msg_user JSON payload that includes an agent name.
+func userPayloadWithAgent(msgID, text, agent string) string {
+	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":%q}`, msgID, text, agent)
+}
+
+// setRootAgent writes an agent_status row with a root_agent_name set.
+func setRootAgent(t *testing.T, d *db.DB, session, agentName string) {
+	t.Helper()
+	an := agentName
+	if err := d.UpsertStatusWithRootAgent(session, "repo", "/code/repo/main", "active", nil, nil, &an, nil); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
+	}
+}
+
+// TestRenderCheckinTurns_SubagentCollapsedDefault verifies that consecutive
+// subagent turns are collapsed into a single summary line in default mode.
+func TestRenderCheckinTurns_SubagentCollapsedDefault(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	// Root agent turn at t=0.
+	rootMsgID := "msg-root"
+	rootEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(rootMsgID, "root turn", rootAgent), base)
+
+	// Two subagent turns at t=1s and t=3s.
+	sub1ID := "msg-sub1"
+	sub2ID := "msg-sub2"
+	sub1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub1ID, "sub turn 1", subAgent), base.Add(time.Second))
+	sub2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub2ID, "sub turn 2", subAgent), base.Add(3*time.Second))
+
+	// Three tool calls across the two subagent turns.
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(sub1ID, "bash", "echo 1"), base.Add(time.Second+100*time.Millisecond))
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(sub1ID, "bash", "echo 2"), base.Add(time.Second+200*time.Millisecond))
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(sub2ID, "read_file", "main.go"), base.Add(3*time.Second+100*time.Millisecond))
+
+	assistantEvents := []db.Event{rootEvent, sub1, sub2}
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, assistantEvents, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// Root turn must appear inline.
+	if !strings.Contains(out, "root turn") {
+		t.Errorf("output missing 'root turn'\ngot:\n%s", out)
+	}
+
+	// Subagent turns must NOT appear as separate inline turns.
+	if strings.Contains(out, "sub turn 1") || strings.Contains(out, "sub turn 2") {
+		t.Errorf("subagent text should be collapsed but appeared inline\ngot:\n%s", out)
+	}
+
+	// A summary line mentioning the subagent name and tool count must appear.
+	if !strings.Contains(out, "└─ review") {
+		t.Errorf("output missing subagent summary line with '└─ review'\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "3 tool calls") {
+		t.Errorf("output missing '3 tool calls' in summary line\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_SubagentVerboseExpanded verifies that in verbose mode
+// subagent turns appear inline with the │ prefix.
+func TestRenderCheckinTurns_SubagentVerboseExpanded(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	// Root agent turn.
+	rootMsgID := "msg-root"
+	rootEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(rootMsgID, "root turn", rootAgent), base)
+
+	// Two subagent turns.
+	sub1ID := "msg-sub1"
+	sub2ID := "msg-sub2"
+	sub1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub1ID, "sub turn 1", subAgent), base.Add(time.Second))
+	sub2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub2ID, "sub turn 2", subAgent), base.Add(2*time.Second))
+
+	assistantEvents := []db.Event{rootEvent, sub1, sub2}
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, assistantEvents, true); err != nil {
+			t.Errorf("renderCheckinTurns (verbose): %v", err)
+		}
+	})
+
+	// Subagent turns must appear inline.
+	if !strings.Contains(out, "sub turn 1") {
+		t.Errorf("verbose: output missing 'sub turn 1'\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "sub turn 2") {
+		t.Errorf("verbose: output missing 'sub turn 2'\ngot:\n%s", out)
+	}
+
+	// Each subagent line must carry the │ prefix.
+	if !strings.Contains(out, "  │ ") {
+		t.Errorf("verbose: output missing '  │ ' prefix\ngot:\n%s", out)
+	}
+
+	// No collapsed summary line in verbose mode.
+	if strings.Contains(out, "└─") {
+		t.Errorf("verbose: output unexpectedly contains collapsed summary '└─'\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_SubagentSingleToolCall verifies the singular "tool call"
+// (not "tool calls") label when exactly one tool call is present.
+func TestRenderCheckinTurns_SubagentSingleToolCall(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	subMsgID := "msg-sub"
+	subEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(subMsgID, "sub turn", subAgent), base)
+
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(subMsgID, "bash", "ls"), base.Add(100*time.Millisecond))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{subEvent}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "1 tool call") {
+		t.Errorf("output missing '1 tool call' (singular)\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "1 tool calls") {
+		t.Errorf("output incorrectly uses plural '1 tool calls'\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_SubagentNoToolCalls verifies the summary line format
+// when a subagent run has zero tool calls.
+func TestRenderCheckinTurns_SubagentNoToolCalls(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	subMsgID := "msg-sub"
+	subEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(subMsgID, "sub turn", subAgent), base)
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{subEvent}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// Summary line should exist without a tool count phrase.
+	if !strings.Contains(out, "└─ review") {
+		t.Errorf("output missing subagent summary line\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "tool call") {
+		t.Errorf("output should not mention tool calls when count is 0\ngot:\n%s", out)
+	}
+}
+
+// TestFormatDuration verifies formatDuration edge cases.
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "<1s"},
+		{500 * time.Millisecond, "<1s"},
+		{999 * time.Millisecond, "<1s"},
+		{time.Second, "1s"},
+		{30 * time.Second, "30s"},
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m 0s"},
+		{90 * time.Second, "1m 30s"},
+		{86 * time.Second, "1m 26s"},
+	}
+	for _, tc := range cases {
+		got := formatDuration(tc.d)
+		if got != tc.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// TestRenderCheckinTurns_PreMigrationNoRootAgent verifies that when no
+// root_agent_name is set (pre-migration rows), all turns render inline
+// without collapsing.
+func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// Do NOT call setRootAgent — simulate a pre-migration session with
+	// no root_agent_name in agent_status.
+
+	// Two turns that have different agent fields in payload.
+	msg1ID := "msg-1"
+	msg2ID := "msg-2"
+	ae1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(msg1ID, "turn one", "opencode"), base)
+	ae2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(msg2ID, "turn two", "review"), base.Add(time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae1, ae2}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// Both turns must appear inline — no collapsing without root_agent_name.
+	if !strings.Contains(out, "turn one") {
+		t.Errorf("pre-migration: output missing 'turn one'\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "turn two") {
+		t.Errorf("pre-migration: output missing 'turn two'\ngot:\n%s", out)
+	}
+	// No collapsed summary lines.
+	if strings.Contains(out, "└─") {
+		t.Errorf("pre-migration: output unexpectedly collapsed turns\ngot:\n%s", out)
+	}
+}
+
 // TestRunCheckinSession_LegacyFallbackNoAssistantNoUser verifies AC-13:
 // when no DB rows exist at all for the session, falls back to legacy
 // (which will error because tmux is unavailable in tests — that's acceptable;
