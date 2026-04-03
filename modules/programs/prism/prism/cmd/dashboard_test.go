@@ -170,55 +170,18 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 	return clientName
 }
 
-// ─── dashSwitchTarget unit tests ──────────────────────────────────────────────
+// ─── persistentModel.switchTarget unit test ───────────────────────────────────
 
-// TestDashSwitchTarget exercises all branches of the dashSwitchTarget helper,
-// which encapsulates the client-selection logic for persistent mode.
-//
-// This is the primary regression test for the CallerClient bug: the old code
-// called tmux.CallerClient() live inside the handler, which returned the global
-// stamp that could be overwritten by a concurrent dashboard open. The fix
-// extracts the logic into dashSwitchTarget, which operates on immutable values
-// captured at model-init time (from the --caller-client flag).
-//
-// In the new split architecture:
-//   - Persistent mode: uses dashSwitchTarget(callerClient, client) — callerClient
-//     wins if non-empty, falls back to client.
-//   - Popup mode: always uses m.client directly (the popup runs inside the
-//     caller's own tmux client, so no callerClient indirection is needed).
-func TestDashSwitchTarget(t *testing.T) {
+// TestPersistentSwitchTarget verifies that persistentModel.switchTarget() always
+// returns m.client (the client currently viewing the dashboard). In the new
+// architecture, persistent mode no longer has a callerClient field; it operates
+// directly on the viewing client for both Enter navigation and q/esc return.
+func TestPersistentSwitchTarget(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name         string
-		callerClient string
-		client       string
-		want         string
-	}{
-		{
-			name:         "persistent mode uses callerClient when set",
-			callerClient: "caller-client",
-			client:       "process-client",
-			want:         "caller-client",
-		},
-		{
-			name:         "persistent mode falls back to client when callerClient empty",
-			callerClient: "",
-			client:       "process-client",
-			want:         "process-client",
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := dashSwitchTarget(tc.callerClient, tc.client)
-			if got != tc.want {
-				t.Errorf("dashSwitchTarget(%q, %q) = %q, want %q",
-					tc.callerClient, tc.client, got, tc.want)
-			}
-		})
+	m := newPersistentModel("viewing-client", "some-session")
+	if got := m.switchTarget(); got != "viewing-client" {
+		t.Errorf("persistentModel.switchTarget() = %q, want %q", got, "viewing-client")
 	}
 }
 

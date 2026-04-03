@@ -1021,28 +1021,6 @@ func (m persistentModel) View() string {
 	return dashView(m.dashShared, m.currentSession, m.cursorActive)
 }
 
-// ── shared switch-target helper ───────────────────────────────────────────────
-
-// dashSwitchTarget returns the tmux client name that should receive a
-// switch-client command when the user selects a session in the persistent
-// dashboard.
-//
-// In persistent mode the dashboard runs in a background session; the viewer's
-// client is identified by the callerClient stamp that was captured at model-init
-// time from the --caller-client flag. Use that value if non-empty, otherwise
-// fall back to client.
-//
-// Callers must NOT pass tmux.CallerClient() live — that reads a server-wide
-// global that gets overwritten whenever any client opens the dashboard, causing
-// the wrong client to be switched (the original bug). The per-instance
-// callerClient value is captured once at startup from the --caller-client flag.
-func dashSwitchTarget(callerClient, client string) string {
-	if callerClient != "" {
-		return callerClient
-	}
-	return client
-}
-
 // ── helpers shared between models ────────────────────────────────────────────
 
 // dashRefilter recomputes m.displayed from m.sessions applying the active
