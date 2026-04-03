@@ -708,15 +708,12 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.filterActive = false
 				m.filterText = ""
 				target := dashSwitchTarget(m.popup, m.client, m.callerClient)
-				return m, tea.Sequence(
-					func() tea.Msg {
-						if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
-							return dashStatusMsg(errMsg)
-						}
-						return nil
-					},
-					tea.Quit,
-				)
+				return m, func() tea.Msg {
+					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+						return dashStatusMsg(errMsg)
+					}
+					return tea.QuitMsg{}
+				}
 
 			case "backspace", "ctrl+h":
 				if len(m.filterText) > 0 {
@@ -809,15 +806,12 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			selected := m.displayed[m.cursor]
 			target := dashSwitchTarget(m.popup, m.client, m.callerClient)
-			return m, tea.Sequence(
-				func() tea.Msg {
-					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
-						return dashStatusMsg(errMsg)
-					}
-					return nil
-				},
-				tea.Quit,
-			)
+			return m, func() tea.Msg {
+				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					return dashStatusMsg(errMsg)
+				}
+				return tea.QuitMsg{}
+			}
 		}
 	}
 	return m, nil
