@@ -43,9 +43,11 @@ so problems are caught early.
 
 When your work is complete and quality gates pass:
 
-1. Open a PR with `gh pr create` — never merge it yourself; the coordinator
+1. Follow the session-completion checklist in `AGENTS.md` (close the originating
+   issue, verify push).
+2. Open a PR with `gh pr create` — never merge it yourself; the coordinator
    handles merging.
-2. Never push to `main` — direct push is blocked by repository rules.
-3. Invoke the `@review` subagent with your PR number. Fix any issues it raises
+3. Never push to `main` — direct push is blocked by repository rules.
+4. Invoke the `@review` subagent with your PR number. Fix any issues it raises
    and re-invoke `@review` until the review passes.
-4. Provide a clear handoff summary so the coordinator has full context.
+5. Provide a clear handoff summary so the coordinator has full context.
