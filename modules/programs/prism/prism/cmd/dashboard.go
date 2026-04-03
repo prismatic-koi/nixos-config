@@ -701,25 +701,22 @@ func dashRefilterShared(d dashShared) dashShared {
 // Lifecycle: the popup is short-lived. Pressing q/esc causes tea.Quit, which
 // terminates the process; display-popup -E then closes the popup frame.
 //
-// Focus management: callerClient is captured from the --caller-client flag at
-// startup (set by the tmux keybinding before spawning the popup). This is
-// per-process state — not a shared global — so concurrent popup instances do
-// not interfere with each other.
+// Focus management: the popup runs inside the caller's own tmux client, so
+// m.client is always the right switch-client target. No global tmux option
+// reads are required.
 type popupModel struct {
 	dashShared
 	client         string // tmux client running this popup (from CurrentClient())
-	callerClient   string // captured from --caller-client flag (immutable after init)
 	currentSession string // caller's current session (from --caller-session flag)
 	cursorActive   bool   // always true in popup mode
 }
 
-func newPopupModel(client, callerClient, callerSession string) popupModel {
+func newPopupModel(client, callerSession string) popupModel {
 	m := popupModel{
 		dashShared: dashShared{
 			loading: true,
 		},
 		client:         client,
-		callerClient:   callerClient,
 		currentSession: callerSession,
 		cursorActive:   true, // popup always shows cursor
 	}
@@ -839,29 +836,27 @@ func (m popupModel) View() string {
 // persistentModel is the Bubble Tea model for the long-running persistent
 // dashboard session (`prism-dashboard`).
 //
-// Lifecycle: the process runs indefinitely. Pressing q/esc switches the caller
-// client back to their previous session but does NOT quit the TUI — the process
-// stays running in passive watch mode. The session is kept alive by the tmux
-// session itself, not by a restart loop.
+// Lifecycle: the process runs indefinitely. Pressing q/esc switches the current
+// client back to its previous session (switch-client -l) and returns to passive
+// watch mode. The session is kept alive by the tmux session itself, not by a
+// restart loop.
 //
-// Focus management: callerClient is passed via the --caller-client flag at
-// startup (set by the tmux keybinding before switching to the session). This is
-// per-invocation state captured at init time.
+// Focus management: m.client is the only client identity needed — it is the
+// client currently viewing the persistent dashboard. q/esc and Enter both
+// operate on m.client (no caller state required).
 type persistentModel struct {
 	dashShared
 	client         string // tmux client of the process (from CurrentClient())
-	callerClient   string // captured from --caller-client flag at startup (immutable)
-	currentSession string // caller's session (from --caller-session flag)
+	currentSession string // caller's session (from --caller-session flag; for "you are here")
 	cursorActive   bool   // false = passive watch; true = selection mode
 }
 
-func newPersistentModel(client, callerClient, callerSession string) persistentModel {
+func newPersistentModel(client, callerSession string) persistentModel {
 	m := persistentModel{
 		dashShared: dashShared{
 			loading: true,
 		},
 		client:         client,
-		callerClient:   callerClient,
 		currentSession: callerSession,
 		cursorActive:   false, // persistent starts in passive watch mode
 	}
@@ -925,16 +920,17 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.dashShared, exitFilter, cmd = m.dashShared.handleFilterKey(msg)
 			if exitFilter {
-				// Confirm selection: switch to highlighted session.
+				// Confirm selection: switch the viewing client to the selected
+				// session and return to passive watch mode. The process does NOT
+				// quit — the dashboard stays alive for the next visitor.
 				selected := m.displayed[m.cursor]
-				callerClient := m.callerClient
 				client := m.client
+				m.cursorActive = false
 				return m, func() tea.Msg {
-					target := dashSwitchTarget(callerClient, client)
-					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 						return dashStatusMsg(errMsg)
 					}
-					return tea.QuitMsg{}
+					return nil
 				}
 			}
 			return m, cmd
@@ -999,14 +995,15 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.displayed[m.cursor]
-			callerClient := m.callerClient
 			client := m.client
+			m.cursorActive = false
 			return m, func() tea.Msg {
-				target := dashSwitchTarget(callerClient, client)
-				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+				// Switch the viewing client to the selected session, then return
+				// to passive watch mode. The TUI stays alive.
+				if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 					return dashStatusMsg(errMsg)
 				}
-				return tea.QuitMsg{}
+				return nil
 			}
 		}
 	}
@@ -1014,9 +1011,10 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // switchTarget returns the tmux client that should receive switch-client when
-// the user selects a session in persistent mode.
+// the user selects a session in persistent mode. Always m.client — the client
+// currently viewing the dashboard.
 func (m persistentModel) switchTarget() string {
-	return dashSwitchTarget(m.callerClient, m.client)
+	return m.client
 }
 
 func (m persistentModel) View() string {
@@ -1674,15 +1672,15 @@ var dashboardCmd = &cobra.Command{
 	Short: "Live agent status dashboard",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		popup, _ := cmd.Flags().GetBool("popup")
-		callerClient, _ := cmd.Flags().GetString("caller-client")
 		callerSession, _ := cmd.Flags().GetString("caller-session")
 
 		if popup {
 			// Popup mode (C-w): run the TUI directly inside a display-popup frame.
-			// callerClient and callerSession are passed via flags by the tmux
-			// keybinding — each popup instance owns its own captured values.
+			// callerSession is passed via --caller-session flag so the "you are here"
+			// indicator and initial cursor snap work correctly. The popup runs inside
+			// the caller's own client (m.client), so no --caller-client flag is needed.
 			client, _ := tmux.CurrentClient()
-			m := newPopupModel(client, callerClient, callerSession)
+			m := newPopupModel(client, callerSession)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
 			ctx, cancel := context.WithCancel(context.Background())
 			watchDashboardSentinel(ctx, p)
@@ -1699,8 +1697,10 @@ var dashboardCmd = &cobra.Command{
 			currentSess, _ := tmux.CurrentSession()
 			if currentSess == dashSession {
 				// Already in the dashboard session — run the persistent TUI.
+				// callerSession is passed for the "you are here" indicator on
+				// first load; it is optional (empty is fine).
 				client, _ := tmux.CurrentClient()
-				m := newPersistentModel(client, callerClient, callerSession)
+				m := newPersistentModel(client, callerSession)
 				p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
 				ctx, cancel := context.WithCancel(context.Background())
 				watchDashboardSentinel(ctx, p)
@@ -1742,7 +1742,6 @@ func syscallExecTmux(session string) error {
 
 func init() {
 	dashboardCmd.Flags().Bool("popup", false, "Run as ephemeral popup (spawned by C-w keybinding)")
-	dashboardCmd.Flags().String("caller-client", "", "Tmux client name of the invoking client (for focus return)")
 	dashboardCmd.Flags().String("caller-session", "", "Tmux session name of the invoking client (for 'you are here' indicator)")
 	rootCmd.AddCommand(dashboardCmd)
 }

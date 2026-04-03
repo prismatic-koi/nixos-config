@@ -228,8 +228,7 @@ func TestPopupSwitchTarget(t *testing.T) {
 	t.Parallel()
 
 	m := popupModel{
-		client:       "popup-client",
-		callerClient: "stale-caller", // ignored in popup mode
+		client: "popup-client",
 	}
 	if got := m.switchTarget(); got != "popup-client" {
 		t.Errorf("popupModel.switchTarget() = %q, want %q", got, "popup-client")
@@ -693,98 +692,112 @@ func TestDashViewShowsHelpHint(t *testing.T) {
 	}
 }
 
-// TestDashModelEnterHandlerUsesCallerClient_PersistentMode is the end-to-end
-// regression test for the CallerClient bug.
+// TestPersistentModelEnterSwitchesClient verifies that Enter in persistent mode
+// switches m.client (the viewing client) to the selected session and stays
+// alive — the TUI does NOT quit (no tea.QuitMsg returned).
 //
-// It verifies that when two clients have dashboards open (two persistentModel
-// instances with different callerClient values), pressing Enter in modelA
-// results in clientA being switched — not clientB — even though the global
-// @prism_caller_client stamp points to clientB at handler time.
-//
-// The test verifies both layers of the fix:
-//  1. Update(Enter) returns a non-nil cmd (the handler fired), and
-//     dashSwitchTarget(modelA.callerClient, modelA.client)
-//     returns clientA (the correct target per the model's immutable snapshot).
-//  2. Calling SwitchClient with that target moves clientA to the new session
-//     while clientB remains unaffected.
-//
-// The new architecture captures callerClient from the --caller-client flag (not
-// from the global @prism_caller_client stamp), so concurrent instances never
-// share or overwrite each other's state.
-func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
+// The persistent dashboard no longer has a callerClient field; it always
+// operates on m.client, the client that is currently attached to the session.
+func TestPersistentModelEnterSwitchesClient(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
 
-	clientA := s.attachClientToSession(t, "nixos-config@main")
-	clientB := s.attachClientToSession(t, "nixos-config@main")
+	client := s.attachClientToSession(t, "nixos-config@main")
 
-	// Build two persistentModel instances with different callerClient values,
-	// simulating two concurrent clients that opened the dashboard independently.
-	// In the new architecture, callerClient comes from the --caller-client flag
-	// (per-process), not from a shared global tmux option.
-	modelA := newPersistentModel("process-client-A", clientA, "nixos-config@main")
-	_ = newPersistentModel("process-client-B", clientB, "nixos-config@main")
+	// Build a persistentModel whose m.client is the real attached client.
+	model := newPersistentModel(client, "nixos-config@main")
+	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
+	model.displayed = model.sessions
+	model.cursor = 0
+	model.cursorActive = true // cursor active so Enter fires immediately
 
-	// modelA holds clientA as its callerClient (set at construction from flag).
-	if modelA.callerClient != clientA {
-		t.Fatalf("modelA.callerClient = %q, want clientA=%q", modelA.callerClient, clientA)
-	}
-
-	// Seed modelA with the sessions list so it can handle Enter.
-	modelA.sessions = []agentSession{{Name: "nixos-config@feature"}}
-	modelA.displayed = modelA.sessions // displayed must mirror sessions for Enter to fire
-	modelA.cursor = 0
-	modelA.cursorActive = true // activate cursor so Enter acts immediately
-
-	// Verify the handler fires (returns a cmd).
-	_, seqCmd := modelA.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if seqCmd == nil {
+	// Verify Update(Enter) returns a non-nil cmd.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
 		t.Fatal("Update(Enter) returned nil cmd — handler did not fire")
 	}
-
-	// Verify dashSwitchTarget (the target-selection helper called by the handler)
-	// resolves to clientA — not clientB.
-	target := dashSwitchTarget(modelA.callerClient, modelA.client)
-	if target != clientA {
-		t.Fatalf("dashSwitchTarget() = %q, want clientA=%q — wrong client would be switched", target, clientA)
-	}
-	// Execute the actual tmux switch-client to confirm the full path works.
-	if err := tmux.SwitchClient(target, "nixos-config@feature"); err != nil {
-		t.Fatalf("SwitchClient: %v", err)
+	pm := updatedModel.(persistentModel)
+	// Cursor should be deactivated after Enter (returning to passive watch mode).
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after Enter in persistent mode (returns to passive watch)")
 	}
 
-	// Poll for clientA to land on the target session: switch-client is
-	// asynchronous from the perspective of a subsequent display-message call,
-	// so a single immediate read can return a stale value under load.
-	var gotA string
-	aDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(aDeadline) {
-		if sess, err := s.clientSession(clientA); err == nil {
-			gotA = sess
+	// Execute the cmd to perform the actual switch.
+	resultMsg := cmd()
+	if resultMsg != nil {
+		// A non-nil result indicates an error message was returned.
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client to land on the target session.
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(client); err == nil {
+			got = sess
 			if sess == "nixos-config@feature" {
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	if got != "nixos-config@feature" {
+		t.Errorf("client session = %q after Enter, want %q", got, "nixos-config@feature")
+	}
+}
 
-	// Poll clientB for stability; guard against all-errors leaving gotB empty.
-	var gotB string
-	bDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(bDeadline) {
-		if sess, err := s.clientSession(clientB); err == nil {
-			gotB = sess
+// TestPersistentModelQuitSwitchesClientLast verifies that q in persistent mode
+// calls SwitchClientLast (switch-client -l) on m.client to return it to its
+// previous session, and does NOT quit the TUI.
+func TestPersistentModelQuitSwitchesClientLast(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+
+	client := s.attachClientToSession(t, "nixos-config@main")
+
+	// Switch the client to feature (so "last" = main).
+	if err := tmux.SwitchClient(client, "nixos-config@feature"); err != nil {
+		t.Fatalf("setup SwitchClient: %v", err)
+	}
+
+	// Build a persistentModel with m.client set to the real attached client.
+	model := newPersistentModel(client, "nixos-config@feature")
+	model.cursorActive = true // cursor must be active for q to fire the switch
+
+	// Send 'q' — should return a non-nil cmd and not quit.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("Update('q') returned nil cmd — handler did not fire")
+	}
+	pm := updatedModel.(persistentModel)
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after q (passive watch mode)")
+	}
+
+	// Execute the cmd.
+	resultMsg := cmd()
+	if resultMsg != nil {
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client to return to main (the "last" session before feature).
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(client); err == nil {
+			got = sess
+			if sess == "nixos-config@main" {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	if gotA != "nixos-config@feature" {
-		t.Errorf("clientA session = %q, want %q — Enter in modelA should switch clientA", gotA, "nixos-config@feature")
-	}
-	if gotB != "" && gotB != "nixos-config@main" {
-		t.Errorf("clientB session = %q, want %q — clientB should be unaffected (was wrongly switched by the bug)", gotB, "nixos-config@main")
+	if got != "nixos-config@main" {
+		t.Errorf("client session = %q after q, want %q (switch-client -l should return to previous)", got, "nixos-config@main")
 	}
 }
 

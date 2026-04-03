@@ -13,6 +13,7 @@ package tmux_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -501,6 +502,44 @@ func TestAPI_SwitchClient(t *testing.T) {
 	}
 	if got != "session-beta" {
 		t.Fatalf("after switch: got %q, want %q", got, "session-beta")
+	}
+}
+
+// TestAPI_SwitchClientLast verifies that SwitchClientLast returns a client to
+// its previously-viewed session (equivalent to switch-client -l).
+func TestAPI_SwitchClientLast(t *testing.T) {
+	s := newServer(t)
+	withServer(t, s)
+
+	s.newSession("session-origin")
+	s.newSession("session-dest")
+
+	clientName := s.attachClientToSession(t, "session-origin")
+
+	// Move to session-dest so that "last" = session-origin.
+	if err := tmux.SwitchClient(clientName, "session-dest"); err != nil {
+		t.Fatalf("SwitchClient to dest: %v", err)
+	}
+
+	// Switch back to last session via SwitchClientLast.
+	if err := tmux.SwitchClientLast(clientName); err != nil {
+		t.Fatalf("SwitchClientLast: %v", err)
+	}
+
+	// Poll for the client to land back on session-origin.
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := tmux.ClientSession(clientName); err == nil {
+			got = sess
+			if sess == "session-origin" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got != "session-origin" {
+		t.Errorf("after SwitchClientLast: session = %q, want %q", got, "session-origin")
 	}
 }
 

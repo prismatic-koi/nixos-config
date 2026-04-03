@@ -112,12 +112,12 @@ in
               bind -n C-f display-popup -E -w 80% -h 80% -b single "${prism} switch"
 
               # C-w: run a fresh dashboard process directly in a popup.
-              # Passes --caller-client and --caller-session as flags so the popup
-              # owns its own captured caller state — no global tmux options written,
-              # so concurrent popup instances never interfere with each other.
+              # Passes --caller-session so the "you are here" indicator works
+              # correctly. The popup runs inside the caller's own client, so no
+              # --caller-client flag is needed — no global tmux options written.
               # q/esc closes the popup via -E; no session involved.
               bind -n C-w display-popup -E -w 80% -h 60% -b single \
-                "${prism} dashboard --popup --caller-client \"$(${pkgs.tmux}/bin/tmux display-message -p '#{client_name}')\" --caller-session \"$(${pkgs.tmux}/bin/tmux display-message -p '#S')\""
+                "${prism} dashboard --popup --caller-session \"$(${pkgs.tmux}/bin/tmux display-message -p '#S')\""
               # prefix+D: switch to the persistent prism-dashboard session.
               # The session runs `prism dashboard` directly — no restart loop.
               # q/esc in that session uses switch-client -l to return the client
