@@ -32,17 +32,19 @@ func (d DiffStat) String() string {
 }
 
 // Stat returns a DiffStat for the given directory, combining unstaged and
-// staged changes relative to HEAD. Returns a zero DiffStat on error or if
-// the directory is not a git repo.
-func Stat(dir string) DiffStat {
+// staged changes relative to HEAD. Returns an error if dir is empty, does not
+// exist, or is not a git repository, or if any underlying git command fails.
+// A nil error with a zero DiffStat means the worktree is clean.
+func Stat(dir string) (DiffStat, error) {
 	if dir == "" {
-		return DiffStat{}
+		return DiffStat{}, fmt.Errorf("empty directory path")
 	}
 
 	// --numstat gives machine-readable "added\tdeleted\tfile" lines.
 	// Collect both unstaged and staged, deduplicating by filename.
 	seen := map[string]bool{}
 	var total DiffStat
+	var firstErr error
 
 	for _, args := range [][]string{
 		{"-C", dir, "diff", "--numstat", "HEAD"},
@@ -50,6 +52,9 @@ func Stat(dir string) DiffStat {
 	} {
 		out, err := exec.Command("git", args...).Output()
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -72,7 +77,13 @@ func Stat(dir string) DiffStat {
 			}
 		}
 	}
-	return total
+	// Both commands must succeed for a valid result. If either failed, the stat
+	// is unreliable — return the error so callers can distinguish "clean" from
+	// "unknown".
+	if firstErr != nil {
+		return DiffStat{}, firstErr
+	}
+	return total, nil
 }
 
 // IsBareRepo returns true if dir contains a .bare entry (prism bare layout).

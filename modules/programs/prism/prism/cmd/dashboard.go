@@ -123,9 +123,11 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	var nActive, nWaiting, nIdle, nFinished, nInterrupted int
 	var totalIns, totalDel int
 	for _, s := range m.sessions {
-		stat := m.gitStats[s.AgentPath]
-		totalIns += stat.Insertions
-		totalDel += stat.Deletions
+		result := m.gitStats[s.AgentPath]
+		if result.Ok {
+			totalIns += result.Stat.Insertions
+			totalDel += result.Stat.Deletions
+		}
 		switch agent.AgentState(s.AgentState) {
 		case agent.StateActive:
 			nActive++
@@ -419,9 +421,17 @@ type RefreshMsg struct{}
 // dashStatusMsg carries a transient status/error message to display in the dashboard.
 type dashStatusMsg string
 
+// gitStatResult holds the outcome of a git.Stat call for a single worktree.
+// Ok is false when the git command failed; in that case Stat is zero and the
+// caller should render "?" rather than "—".
+type gitStatResult struct {
+	Stat git.DiffStat
+	Ok   bool
+}
+
 type sessionsMsg struct {
 	sessions []agentSession
-	gitStats map[string]git.DiffStat
+	gitStats map[string]gitStatResult
 }
 type ghTickMsg time.Time
 type cursorTimeoutMsg struct{}
@@ -479,16 +489,17 @@ func fetchSessionsFromDB() tea.Msg {
 	}
 
 	// Run git.Stat for each unique path concurrently.
-	stats := make(map[string]git.DiffStat, len(paths))
+	stats := make(map[string]gitStatResult, len(paths))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, p := range paths {
 		wg.Add(1)
 		go func(path string) {
 			defer wg.Done()
-			stat := git.Stat(path)
+			diffStat, err := git.Stat(path)
+			result := gitStatResult{Stat: diffStat, Ok: err == nil}
 			mu.Lock()
-			stats[path] = stat
+			stats[path] = result
 			mu.Unlock()
 		}(p)
 	}
@@ -546,7 +557,7 @@ const cursorTimeout = 3 * time.Second
 
 type dashModel struct {
 	sessions          []agentSession
-	gitStats          map[string]git.DiffStat // keyed by AgentPath; populated on sessionsMsg
+	gitStats          map[string]gitStatResult // keyed by AgentPath; populated on sessionsMsg
 	cursor            int
 	cursorInitialised bool // true once we've snapped cursor to currentSession
 	width             int
@@ -1244,18 +1255,20 @@ func (m dashModel) renderSessionRow(
 	}
 	paddedModelLabel := fmt.Sprintf("%-*s", modelW, modelLabel)
 
-	stat := m.gitStats[s.AgentPath]
+	result := m.gitStats[s.AgentPath]
 	var statPlain string
-	if stat.Files == 0 {
+	if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
 		statPlain = "—"
+	} else if !result.Ok {
+		statPlain = "?"
 	} else if statW == statWCompact {
-		statPlain = fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions)
+		statPlain = fmt.Sprintf("+%d -%d", result.Stat.Insertions, result.Stat.Deletions)
 	} else {
 		fileWord := "files"
-		if stat.Files == 1 {
+		if result.Stat.Files == 1 {
 			fileWord = "file "
 		}
-		statPlain = fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+		statPlain = fmt.Sprintf("%d %s +%d -%d", result.Stat.Files, fileWord, result.Stat.Insertions, result.Stat.Deletions)
 	}
 
 	title := s.AgentTitle
@@ -1306,12 +1319,14 @@ func (m dashModel) renderSessionRow(
 
 	var statStr string
 	if showStat {
-		if stat.Files == 0 {
+		if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
 			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
+		} else if !result.Ok {
+			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "?"))
 		} else if statW == statWCompact {
-			coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-				" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-			rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
+			coloured := styleIns.Render(fmt.Sprintf("+%d", result.Stat.Insertions)) +
+				" " + styleDel.Render(fmt.Sprintf("-%d", result.Stat.Deletions))
+			rawLen := len(fmt.Sprintf("+%d -%d", result.Stat.Insertions, result.Stat.Deletions))
 			pad := statW - rawLen
 			if pad < 0 {
 				pad = 0
@@ -1319,13 +1334,13 @@ func (m dashModel) renderSessionRow(
 			statStr = coloured + strings.Repeat(" ", pad)
 		} else {
 			fileWord := "files"
-			if stat.Files == 1 {
+			if result.Stat.Files == 1 {
 				fileWord = "file "
 			}
-			plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
-			coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-				" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-			rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+			plain := fmt.Sprintf("%d %s ", result.Stat.Files, fileWord)
+			coloured := styleIns.Render(fmt.Sprintf("+%d", result.Stat.Insertions)) +
+				" " + styleDel.Render(fmt.Sprintf("-%d", result.Stat.Deletions))
+			rawStat := fmt.Sprintf("%d %s +%d -%d", result.Stat.Files, fileWord, result.Stat.Insertions, result.Stat.Deletions)
 			pad := statW - len(rawStat)
 			if pad < 0 {
 				pad = 0
