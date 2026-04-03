@@ -378,49 +378,6 @@ func sessionBranch(name string) string {
 	return name
 }
 
-// repoGroup is a single repo bucket used when building the grouped view.
-type repoGroup struct {
-	repo     string
-	sessions []agentSession // @main first, then remaining sorted by name
-}
-
-// groupSessions partitions sessions into repo groups sorted alphabetically by
-// repo name. Within each group @main always comes first; remaining sessions are
-// kept in their original order (callers may pre-sort by last_seen).
-func groupSessions(sessions []agentSession) []repoGroup {
-	order := []string{}
-	buckets := map[string][]agentSession{}
-
-	for _, s := range sessions {
-		repo := sessionRepo(s.Name)
-		if _, ok := buckets[repo]; !ok {
-			order = append(order, repo)
-		}
-		buckets[repo] = append(buckets[repo], s)
-	}
-
-	// Sort repo names alphabetically.
-	sortStrings(order)
-
-	groups := make([]repoGroup, 0, len(order))
-	for _, repo := range order {
-		slist := buckets[repo]
-		// Promote @main to the front of the group.
-		mainIdx := -1
-		for i, s := range slist {
-			if sessionBranch(s.Name) == "@main" {
-				mainIdx = i
-				break
-			}
-		}
-		if mainIdx > 0 {
-			slist[0], slist[mainIdx] = slist[mainIdx], slist[0]
-		}
-		groups = append(groups, repoGroup{repo: repo, sessions: slist})
-	}
-	return groups
-}
-
 // sortStrings sorts a string slice in-place using insertion sort (no stdlib
 // import needed for small N; avoids adding "sort" to the import block if it
 // is not already there).
@@ -712,22 +669,25 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Do not re-read CallerSession() here — it may have changed if another
 		// client opened the dashboard. Use the value captured at init time.
+		needsSnap := !m.cursorInitialised && !m.filterActive
 		if !m.cursorInitialised {
-			// Snap cursor to the current session on first load, but only when
-			// filter mode is not already active — the filter may have been
-			// opened before the first tick arrived, and the snap index into
-			// m.sessions would be silently clamped away by dashRefilter.
+			// Mark initialised before calling dashRefilter — we snap into
+			// m.displayed (the sorted list) below, not m.sessions (DB order).
+			// Setting this early also covers the filter-active case so we don't
+			// attempt a snap on a later tick after the filter is cleared.
 			m.cursorInitialised = true
-			if !m.filterActive {
-				for i, s := range m.sessions {
-					if s.Name == m.currentSession {
-						m.cursor = i
-						break
-					}
+		}
+		m = dashRefilter(m)
+		// Snap cursor to the current session on first load, using m.displayed
+		// (now sorted by sortDisplayed) so the cursor index is correct.
+		if needsSnap {
+			for i, s := range m.displayed {
+				if s.Name == m.currentSession {
+					m.cursor = i
+					break
 				}
 			}
 		}
-		m = dashRefilter(m)
 
 	case tea.KeyMsg:
 		// In filter mode most keys are consumed by the filter input.
@@ -1023,15 +983,22 @@ func (m dashModel) View() string {
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
-		// A session is a "child" if it shares a repo with the immediately
-		// preceding session AND is not @main (or a no-@ solo session).
+		// A session is a "child" if the immediately preceding session is the
+		// top-level row for the same repo (i.e. @main or a plain no-@ session)
+		// AND this session is not @main itself. This prevents sibling branches
+		// from being rendered as children of each other when @main is absent.
+		isTopLevel := func(name string) bool {
+			branch := sessionBranch(name)
+			return branch == name || branch == "@main"
+		}
 		for i, s := range sessions {
 			isChild := false
 			if i > 0 {
-				prevRepo := sessionRepo(sessions[i-1].Name)
+				prevName := sessions[i-1].Name
+				prevRepo := sessionRepo(prevName)
 				thisRepo := sessionRepo(s.Name)
 				thisBranch := sessionBranch(s.Name)
-				isChild = prevRepo == thisRepo && thisBranch != s.Name && thisBranch != "@main"
+				isChild = prevRepo == thisRepo && isTopLevel(prevName) && thisBranch != s.Name && thisBranch != "@main"
 			}
 			var treePrefix string
 			if isChild {
