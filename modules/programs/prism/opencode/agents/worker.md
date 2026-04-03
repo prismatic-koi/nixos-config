@@ -133,6 +133,8 @@ This is a prism bare+worktree repository. Key points:
 
 ## Session completion ("landing the plane")
 
+**Note: the "NEVER commit unless asked" instruction above is overridden for prism workers.** Committing and pushing your work is a mandatory part of completing a task in this repo — not optional. The coordinator expects a PR to review; don't wait to be asked to commit.
+
 The repo `AGENTS.md` contains the full mandatory session-completion checklist. Follow it. The critical points:
 
 1. Close the GitHub issue when work is done.
