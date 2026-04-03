@@ -18,40 +18,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/agent"
-	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
-
-// ── theme colours ─────────────────────────────────────────────────────────────
-// Loaded at startup from the runtime config file (~/.config/prism/config.json).
-// Defaults are gruvbox-dark fallbacks used when no config file is present.
-// Populated by initColors() called from init().
-var (
-	ColorPrimary    string
-	ColorSecondary  string
-	ColorPurple     string
-	ColorYellow     string
-	ColorGreen      string
-	ColorBlue       string
-	ColorRed        string
-	ColorForeground string
-	ColorBg0        string
-)
-
-func initColors() {
-	cfg := config.Load()
-	ColorPrimary = cfg.ColorPrimary
-	ColorSecondary = cfg.ColorSecondary
-	ColorPurple = cfg.ColorPurple
-	ColorYellow = cfg.ColorYellow
-	ColorGreen = cfg.ColorGreen
-	ColorBlue = cfg.ColorBlue
-	ColorRed = cfg.ColorRed
-	ColorForeground = cfg.ColorForeground
-	ColorBg0 = cfg.ColorBg0
-}
 
 // ── header art ────────────────────────────────────────────────────────────────
 
@@ -1416,7 +1386,6 @@ func syscallExecTmux(session string) error {
 }
 
 func init() {
-	initColors()
 	dashboardCmd.Flags().Bool("popup", false, "Running inside a tmux display-popup")
 	rootCmd.AddCommand(dashboardCmd)
 }

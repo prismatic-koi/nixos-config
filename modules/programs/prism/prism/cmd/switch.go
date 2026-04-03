@@ -2,11 +2,8 @@ package cmd
 
 // prism switch — context switcher (replaces cli.tmux.contextSwitcher)
 //
-// Injected at build time via ldflags:
-//
-//	SwitchWorktreeExclude  colon-separated repo names to skip bare conversion
-//	SwitchProjectLocations colon-separated dirs whose subdirs become entries
-//	SwitchProjectSpecific  colon-separated dirs shown as direct entries
+// Project layout is read at runtime from ~/.config/prism/config.json
+// (or $PRISM_CONFIG_FILE) via the internal/config package.
 
 import (
 	"fmt"
