@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 var promptCmd = &cobra.Command{
@@ -144,7 +145,7 @@ func deriveSessionNameFromCWD(cwd string) string {
 	if bareRoot == "" {
 		return ""
 	}
-	return sessionNameFor(cwd, bareRoot)
+	return session.NameFor(cwd, bareRoot)
 }
 
 // touchBusSentinel creates/updates the sentinel file at

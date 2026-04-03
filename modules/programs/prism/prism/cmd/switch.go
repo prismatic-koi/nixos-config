@@ -8,7 +8,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +17,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -416,105 +416,9 @@ func promptBranchInput(prompt string) string {
 
 // ── session management ────────────────────────────────────────────────────────
 
-// sessionOpts carries optional parameters for agent launch when creating a new session.
-type sessionOpts struct {
-	prompt          string // passed as opencode --prompt "..."
-	agent           string // passed as opencode --agent <name>; defaults to "coordinator" for main, "worker" otherwise
-	headless        bool   // if true, create the session but don't switch any client to it
-	fresh           bool   // if true, skip the stored opencode session ID and start fresh
-	opencodeSession string // opencode session ID to resume; "" means fresh start
-}
-
-// buildOpencodeCmd returns the opencode launch command string.
-// When opts.prompt is non-empty it is passed via --prompt so that opencode
-// receives it at startup with no delivery timing dependency.
-func buildOpencodeCmd(opts sessionOpts) string {
-	agent := opts.agent
-	if agent == "" {
-		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
-		// before calling here.
-		agent = "worker"
-	}
-	cmd := "opencode --agent " + agent
-	if opts.opencodeSession != "" && !opts.fresh {
-		cmd += " -s " + opts.opencodeSession
-	}
-	if opts.prompt != "" {
-		cmd += " --prompt " + shellQuote(opts.prompt)
-	}
-	// otherwise: no flag → opencode starts a new session
-	return cmd
-}
-
-// shellQuote wraps s in single quotes, escaping any single quotes within.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// sessionNameFor derives the tmux session name for a given directory and
-// optional project root.  dir must already be expanded (no ~).
-//
-// When projectRoot is set (prism bare+worktree layout), the session name is
-// "<repo>@<branch>" where branch is the full branch name with "/" replaced by
-// "--" for tmux compatibility:
-//
-//  1. git symbolic-ref HEAD → "refs/heads/feat/my-thing"
-//  2. Strip "refs/heads/" → "feat/my-thing"
-//  3. Replace "/" with "--" → "feat--my-thing"
-//
-// Falls back to the short commit hash for detached HEAD, and to filepath.Base
-// of the worktree directory when git is not available.
-func sessionNameFor(dir, projectRoot string) string {
-	if projectRoot != "" {
-		projName := strings.ReplaceAll(filepath.Base(projectRoot), ".", "_")
-		branch := worktreeBranchComponent(dir)
-		return projName + "@" + branch
-	}
-	return strings.ReplaceAll(filepath.Base(dir), ".", "_")
-}
-
-// worktreeBranchComponent returns the branch component of a session name for
-// the worktree at dir.  It runs git symbolic-ref HEAD, strips the
-// "refs/heads/" prefix, and replaces "/" with "--".  Falls back to the short
-// commit hash for detached HEAD, and to filepath.Base(dir) if git fails.
-func worktreeBranchComponent(dir string) string {
-	ref, err := git.SymbolicRef(dir)
-	if err == nil {
-		branch := strings.TrimPrefix(ref, "refs/heads/")
-		// The "--" substitution for "/" is for tmux session name compatibility only.
-		// tmux does not allow "/" in session names. If tmux is ever removed in favour
-		// of a custom TUI, restore full branch names with "/" here and in the plugin.
-		return strings.ReplaceAll(branch, "/", "--")
-	}
-	// Detached HEAD — fall back to short commit hash.
-	if hash, err := git.ShortHash(dir); err == nil {
-		return hash
-	}
-	// Not a git repo or both commands failed — fall back to directory basename.
-	// No dot substitution here: dots are valid in tmux session names and
-	// branch names may contain dots (e.g. fix/v1.2-issue); the git-derived
-	// path above doesn't sanitise dots either, so we keep the two paths
-	// consistent.
-	return filepath.Base(dir)
-}
-
-// defaultAgent returns the agent to use for the given directory.
-// If explicit is non-empty it is returned unchanged.
-// Otherwise "coordinator" is returned for the "main" worktree and "worker" for
-// everything else (including the scratchpad, which resolves to the home dir).
-// Only an exact match on "main" triggers coordinator — case variants and
-// substrings (e.g. "Main", "maintain") resolve to "worker".
-func defaultAgent(directory, explicit string) string {
-	if explicit != "" {
-		return explicit
-	}
-	if filepath.Base(directory) == "main" {
-		return "coordinator"
-	}
-	return "worker"
-}
-
-func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {
+// ensureAndSwitch creates the session if it doesn't exist (with the appropriate
+// layout) and then switches the current client to it, unless opts.Headless is set.
+func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	var sessionName string
 	var directory string
 
@@ -522,105 +426,30 @@ func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) e
 		sessionName = "scratchpad"
 		home, _ := os.UserHomeDir()
 		directory = home
+		opts.Layout = session.LayoutScratchpad
 	} else {
 		directory = expandHome(path)
-		sessionName = sessionNameFor(directory, projectRoot)
+		sessionName = session.NameFor(directory, projectRoot)
+		opts.Layout = session.LayoutFull
 	}
 
-	// Default agent based on worktree name; an explicit value is never overridden.
-	opts.agent = defaultAgent(directory, opts.agent)
+	opts.Agent = session.DefaultAgent(directory, opts.Agent)
 
-	if !tmux.HasSession(sessionName) {
-		if err := tmux.NewSessionDetached(sessionName, directory); err != nil {
-			return fmt.Errorf("new-session: %w", err)
-		}
-
-		if path == "[scratchpad]" {
-			_ = tmux.RenameWindow(sessionName+":0", "term")
-		} else {
-			_ = tmux.RenameWindow(sessionName+":0", "edit")
-
-			// Auto-open nvim on an obvious file.
-			nvimCmd := "nvim"
-			if des, err := os.ReadDir(directory); err == nil {
-				var files []string
-				for _, de := range des {
-					if !de.IsDir() {
-						files = append(files, filepath.Join(directory, de.Name()))
-					}
-				}
-				switch {
-				case len(files) == 1:
-					nvimCmd = "nvim " + shellQuote(files[0])
-				case strings.Contains(directory, "obsidian"):
-					nvimCmd = "nvim +'Obsidian today'"
-				default:
-					readme := filepath.Join(directory, "README.md")
-					if _, err := os.Stat(readme); err == nil {
-						nvimCmd = "nvim " + shellQuote(readme)
-					}
-				}
-			}
-			_ = tmux.SendKeys(sessionName+":0", nvimCmd)
-
-			// Window 1: agent.
-			_ = tmux.NewWindow(sessionName, 1, "agent", directory)
-			_ = tmux.SendKeys(sessionName+":1", buildOpencodeCmd(opts))
-
-			// Seed agent_status so that post-spawn `prism prompt` bus delivery
-			// finds the row and succeeds. The session-created tmux hook has been
-			// removed (see issue #380) because its #{pane_current_path} raced
-			// the new session's first pane path from display-popup contexts,
-			// permanently corrupting the worktree field. This explicit call is
-			// now the sole seed path for sessions created via prism switch/spawn.
-			//
-			// Use os.Executable() rather than "prism" so that the correct
-			// binary is found in Nix-managed environments where the store
-			// path may not be on $PATH (e.g. tmux hooks, daemon contexts).
-			self, selfErr := os.Executable()
-			if selfErr != nil {
-				return fmt.Errorf("resolve prism binary: %w", selfErr)
-			}
-			if err := exec.Command(self, "event", "tmux-session-start",
-				"--session", sessionName,
-				"--worktree", directory).Run(); err != nil {
-				return fmt.Errorf("seed agent_status: %w", err)
-			}
-
-			// Window 2: term.
-			_ = tmux.NewWindow(sessionName, 2, "term", directory)
-
-			// Focus: obsidian → edit (0), else → agent (1).
-			focusIdx := 1
-			if strings.Contains(directory, "obsidian") {
-				focusIdx = 0
-			}
-			_ = tmux.SelectWindow(sessionName, focusIdx)
-		}
+	if err := session.Create(sessionName, directory, opts); err != nil {
+		return err
 	}
 
-	if opts.headless {
+	if opts.Headless {
 		fmt.Printf("session %q created\n", sessionName)
 		return nil
 	}
 
-	// Outside tmux entirely — attach in this terminal directly.
-	if os.Getenv("TMUX") == "" {
-		return tmux.AttachSession(sessionName)
-	}
-
-	// Inside tmux — switch only the current client, never any other.
-	client, _ := tmux.CurrentClient()
-	if client != "" {
-		return tmux.SwitchClient(client, sessionName)
-	}
-	_, err := tmux.SwitchClientCurrent(sessionName)
-	return err
+	return session.Attach(sessionName)
 }
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string, opts sessionOpts) error {
+func handleBareRepo(projectPath string, opts session.Opts) error {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -648,16 +477,16 @@ func handleBareRepo(projectPath string, opts sessionOpts) error {
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-		return ensureAndSwitchSession(worktreePath, projectPath, opts)
+		return ensureAndSwitch(worktreePath, projectPath, opts)
 	}
 
-	return ensureAndSwitchSession(chosen.path, projectPath, opts)
+	return ensureAndSwitch(chosen.path, projectPath, opts)
 }
 
-func handleRegularRepo(path string, opts sessionOpts) error {
+func handleRegularRepo(path string, opts session.Opts) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
-		return ensureAndSwitchSession(path, "", opts)
+		return ensureAndSwitch(path, "", opts)
 	}
 
 	openDirect := "[open directly (no worktrees)]"
@@ -672,17 +501,17 @@ func handleRegularRepo(path string, opts sessionOpts) error {
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
-			return ensureAndSwitchSession(path, "", opts)
+			return ensureAndSwitch(path, "", opts)
 		}
-		return ensureAndSwitchSession(worktreePath, path, opts)
+		return ensureAndSwitch(worktreePath, path, opts)
 	default:
-		return ensureAndSwitchSession(path, "", opts)
+		return ensureAndSwitch(path, "", opts)
 	}
 }
 
 // ── clone repo ────────────────────────────────────────────────────────────────
 
-func handleCloneRepo(opts sessionOpts) error {
+func handleCloneRepo(opts session.Opts) error {
 	repoURL := promptInput("clone url> ")
 	if repoURL == "" {
 		return nil
@@ -713,7 +542,7 @@ func handleCloneRepo(opts sessionOpts) error {
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
 	}
-	return ensureAndSwitchSession(worktrees[0], targetDir, opts)
+	return ensureAndSwitch(worktrees[0], targetDir, opts)
 }
 
 // ── ensure dashboard session ──────────────────────────────────────────────────
@@ -734,7 +563,7 @@ var switchCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
 		fresh, _ := cmd.Flags().GetBool("fresh")
-		opts := sessionOpts{fresh: fresh}
+		opts := session.Opts{Fresh: fresh}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -748,12 +577,12 @@ var switchCmd = &cobra.Command{
 				if len(worktrees) == 0 {
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
-				return ensureAndSwitchSession(worktrees[0], p, opts)
+				return ensureAndSwitch(worktrees[0], p, opts)
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
-				return ensureAndSwitchSession(p, bareRoot, opts)
+				return ensureAndSwitch(p, bareRoot, opts)
 			}
-			return ensureAndSwitchSession(p, "", opts)
+			return ensureAndSwitch(p, "", opts)
 		}
 
 		// Ensure dashboard exists in background.
@@ -780,7 +609,7 @@ var switchCmd = &cobra.Command{
 			return err
 
 		case "[scratchpad]":
-			return ensureAndSwitchSession("[scratchpad]", "", opts)
+			return ensureAndSwitch("[scratchpad]", "", opts)
 
 		case "[+ clone repo]":
 			return handleCloneRepo(opts)
@@ -793,7 +622,7 @@ var switchCmd = &cobra.Command{
 			case git.IsRegularRepo(p):
 				return handleRegularRepo(p, opts)
 			default:
-				return ensureAndSwitchSession(p, "", opts)
+				return ensureAndSwitch(p, "", opts)
 			}
 		}
 	},

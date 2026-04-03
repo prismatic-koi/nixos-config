@@ -9,7 +9,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -101,7 +101,7 @@ func restoreSession(d *db.DB, s db.Status) error {
 	case "scratchpad":
 		// Defensive guard — same reasoning as prism-dashboard above: scratchpad
 		// has no .bare ancestor and will never appear in agent_status.
-		return ensureAndSwitchSession("[scratchpad]", "", sessionOpts{headless: true})
+		return ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
 
 	default:
 		return restoreProjectSession(d, s)
@@ -132,30 +132,9 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		return fmt.Errorf("new-session: %w", err)
 	}
 
-	// Window 0: edit — open nvim, mirroring ensureAndSwitchSession behaviour.
+	// Window 0: edit — open nvim, mirroring the full layout behaviour.
 	_ = tmux.RenameWindow(s.SessionName+":0", "edit")
-
-	nvimCmd := "nvim"
-	if des, err := os.ReadDir(directory); err == nil {
-		var files []string
-		for _, de := range des {
-			if !de.IsDir() {
-				files = append(files, filepath.Join(directory, de.Name()))
-			}
-		}
-		switch {
-		case len(files) == 1:
-			nvimCmd = "nvim " + shellQuote(files[0])
-		case strings.Contains(directory, "obsidian"):
-			nvimCmd = "nvim +'Obsidian today'"
-		default:
-			readme := filepath.Join(directory, "README.md")
-			if _, err := os.Stat(readme); err == nil {
-				nvimCmd = "nvim " + shellQuote(readme)
-			}
-		}
-	}
-	_ = tmux.SendKeys(s.SessionName+":0", nvimCmd)
+	_ = tmux.SendKeys(s.SessionName+":0", session.NvimCmd(directory))
 
 	// Refresh agent_status with the verified worktree path, idle state, and a
 	// current last_seen so that post-restore operations find a fresh row.
@@ -197,12 +176,12 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	if s.OpencodeSID != nil {
 		opencodeSession = *s.OpencodeSID
 	}
-	opts := sessionOpts{
-		headless:        true,
-		opencodeSession: opencodeSession,
-		agent:           defaultAgent(directory, ""),
+	opts := session.Opts{
+		Headless:        true,
+		OpencodeSession: opencodeSession,
+		Agent:           session.DefaultAgent(directory, ""),
 	}
-	_ = tmux.SendKeys(s.SessionName+":1", buildOpencodeCmd(opts))
+	_ = tmux.SendKeys(s.SessionName+":1", session.BuildOpencodeCmd(opts))
 
 	// Window 2: term.
 	_ = tmux.NewWindow(s.SessionName, 2, "term", directory)
