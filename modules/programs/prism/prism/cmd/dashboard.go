@@ -1209,7 +1209,7 @@ func (m dashModel) renderSessionRow(
 			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
 		}
 		branch := sessionBranch(s.Name)
-		if utf8.RuneCountInString(branch) > sessionW {
+		if sessionW > 0 && utf8.RuneCountInString(branch) > sessionW {
 			branch = string([]rune(branch)[:sessionW-1]) + "…"
 		}
 		sessionArea = paddedPrefix + fmt.Sprintf("%-*s", sessionW, branch)
