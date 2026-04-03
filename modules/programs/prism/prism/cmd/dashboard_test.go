@@ -981,3 +981,26 @@ func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
 		t.Errorf("View() should contain '?' for the failed session, got:\n%s", view)
 	}
 }
+
+// TestDashViewStatEmptyAgentPath verifies that a session with an empty
+// AgentPath renders "—" (no stat available), not "?" (which would imply a
+// git error). Sessions with no worktree path are not stat-failed; they simply
+// have no path to stat.
+func TestDashViewStatEmptyAgentPath(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
+		displayed: []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
+		gitStats:  map[string]gitStatResult{}, // no entry for empty path
+		width:     80,
+		height:    40,
+	}
+	view := m.View()
+	if strings.Contains(view, "?") {
+		t.Errorf("View() should NOT contain '?' for a session with empty AgentPath, got:\n%s", view)
+	}
+	if !strings.Contains(view, "—") {
+		t.Errorf("View() should contain '—' for a session with empty AgentPath, got:\n%s", view)
+	}
+}

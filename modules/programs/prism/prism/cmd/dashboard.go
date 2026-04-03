@@ -422,7 +422,7 @@ type RefreshMsg struct{}
 type dashStatusMsg string
 
 // gitStatResult holds the outcome of a git.Stat call for a single worktree.
-// ok is false when the git command failed; in that case Stat is zero and the
+// Ok is false when the git command failed; in that case Stat is zero and the
 // caller should render "?" rather than "—".
 type gitStatResult struct {
 	Stat git.DiffStat
@@ -1257,10 +1257,10 @@ func (m dashModel) renderSessionRow(
 
 	result := m.gitStats[s.AgentPath]
 	var statPlain string
-	if !result.Ok {
-		statPlain = "?"
-	} else if result.Stat.Files == 0 {
+	if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
 		statPlain = "—"
+	} else if !result.Ok {
+		statPlain = "?"
 	} else if statW == statWCompact {
 		statPlain = fmt.Sprintf("+%d -%d", result.Stat.Insertions, result.Stat.Deletions)
 	} else {
@@ -1319,10 +1319,10 @@ func (m dashModel) renderSessionRow(
 
 	var statStr string
 	if showStat {
-		if !result.Ok {
-			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "?"))
-		} else if result.Stat.Files == 0 {
+		if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
 			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
+		} else if !result.Ok {
+			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "?"))
 		} else if statW == statWCompact {
 			coloured := styleIns.Render(fmt.Sprintf("+%d", result.Stat.Insertions)) +
 				" " + styleDel.Render(fmt.Sprintf("-%d", result.Stat.Deletions))
