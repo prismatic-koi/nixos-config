@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,8 +19,11 @@ func TestDefaults(t *testing.T) {
 	if cfg.KittyBin != "kitty" {
 		t.Errorf("KittyBin: got %q, want %q", cfg.KittyBin, "kitty")
 	}
-	if cfg.ProjectLocations != "~/code" {
-		t.Errorf("ProjectLocations: got %q, want %q", cfg.ProjectLocations, "~/code")
+	if len(cfg.ProjectLocations) != 1 || cfg.ProjectLocations[0] != "~/code" {
+		t.Errorf("ProjectLocations: got %v, want [~/code]", cfg.ProjectLocations)
+	}
+	if len(cfg.WorktreeExclude) != 1 || cfg.WorktreeExclude[0] != "obsidian" {
+		t.Errorf("WorktreeExclude: got %v, want [obsidian]", cfg.WorktreeExclude)
 	}
 }
 
@@ -29,16 +31,12 @@ func TestLoadFromFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 
-	data := config.Config{
-		ColorPrimary:     "#ff0000",
-		KittyBin:         "/nix/store/abc/bin/kitty",
-		ProjectLocations: "~/projects:~/work",
-	}
-	b, err := json.Marshal(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(cfgPath, b, 0o644); err != nil {
+	raw := `{
+		"color_primary": "#ff0000",
+		"kitty_bin": "/nix/store/abc/bin/kitty",
+		"project_locations": ["~/projects", "~/work"]
+	}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,35 +50,54 @@ func TestLoadFromFile(t *testing.T) {
 	if cfg.KittyBin != "/nix/store/abc/bin/kitty" {
 		t.Errorf("KittyBin: got %q, want %q", cfg.KittyBin, "/nix/store/abc/bin/kitty")
 	}
-	if cfg.ProjectLocations != "~/projects:~/work" {
-		t.Errorf("ProjectLocations: got %q, want %q", cfg.ProjectLocations, "~/projects:~/work")
+	if len(cfg.ProjectLocations) != 2 || cfg.ProjectLocations[0] != "~/projects" || cfg.ProjectLocations[1] != "~/work" {
+		t.Errorf("ProjectLocations: got %v, want [~/projects ~/work]", cfg.ProjectLocations)
 	}
-	// Unset fields should fall back to defaults.
 	if cfg.ColorSecondary != "#a89984" {
 		t.Errorf("ColorSecondary: got %q, want %q (should be default)", cfg.ColorSecondary, "#a89984")
 	}
 }
 
-func TestSplitColon(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{"", nil},
-		{"a", []string{"a"}},
-		{"a:b:c", []string{"a", "b", "c"}},
-		{"a::b", []string{"a", "b"}},
+func TestEmptyArrayClearsDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"worktree_exclude": [], "project_specific": []}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		got := config.SplitColon(c.in)
-		if len(got) != len(c.want) {
-			t.Errorf("SplitColon(%q): got %v, want %v", c.in, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("SplitColon(%q)[%d]: got %q, want %q", c.in, i, got[i], c.want[i])
-			}
-		}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if len(cfg.WorktreeExclude) != 0 {
+		t.Errorf("WorktreeExclude: got %v, want [] (explicit empty should clear default)", cfg.WorktreeExclude)
+	}
+	if len(cfg.ProjectSpecific) != 0 {
+		t.Errorf("ProjectSpecific: got %v, want [] (explicit empty should clear default)", cfg.ProjectSpecific)
+	}
+	if len(cfg.ProjectLocations) != 1 || cfg.ProjectLocations[0] != "~/code" {
+		t.Errorf("ProjectLocations: got %v, want [~/code] (absent key should keep default)", cfg.ProjectLocations)
+	}
+}
+
+func TestMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	if err := os.WriteFile(cfgPath, []byte(`{not valid json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.ColorPrimary != "#d4be98" {
+		t.Errorf("ColorPrimary: got %q, want default %q", cfg.ColorPrimary, "#d4be98")
+	}
+	if len(cfg.ProjectLocations) != 1 || cfg.ProjectLocations[0] != "~/code" {
+		t.Errorf("ProjectLocations: got %v, want default [~/code]", cfg.ProjectLocations)
 	}
 }

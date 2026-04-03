@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -31,10 +30,28 @@ type Config struct {
 	// Binary paths.
 	KittyBin string `json:"kitty_bin"`
 
-	// Project layout (colon-separated).
-	WorktreeExclude  string `json:"worktree_exclude"`
-	ProjectLocations string `json:"project_locations"`
-	ProjectSpecific  string `json:"project_specific"`
+	// Project layout (JSON arrays).
+	WorktreeExclude  []string `json:"worktree_exclude"`
+	ProjectLocations []string `json:"project_locations"`
+	ProjectSpecific  []string `json:"project_specific"`
+}
+
+// parsedConfig mirrors Config but uses pointer slices so that a JSON null or
+// absent key is distinguishable from an explicit empty array [].
+type parsedConfig struct {
+	ColorPrimary     string    `json:"color_primary"`
+	ColorSecondary   string    `json:"color_secondary"`
+	ColorPurple      string    `json:"color_purple"`
+	ColorYellow      string    `json:"color_yellow"`
+	ColorGreen       string    `json:"color_green"`
+	ColorBlue        string    `json:"color_blue"`
+	ColorRed         string    `json:"color_red"`
+	ColorForeground  string    `json:"color_foreground"`
+	ColorBg0         string    `json:"color_bg0"`
+	KittyBin         string    `json:"kitty_bin"`
+	WorktreeExclude  *[]string `json:"worktree_exclude"`
+	ProjectLocations *[]string `json:"project_locations"`
+	ProjectSpecific  *[]string `json:"project_specific"`
 }
 
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
@@ -51,9 +68,9 @@ func defaults() Config {
 		ColorForeground:  "#d3c6aa",
 		ColorBg0:         "#2d353b",
 		KittyBin:         "kitty",
-		WorktreeExclude:  "obsidian",
-		ProjectLocations: "~/code",
-		ProjectSpecific:  "~/documents/obsidian",
+		WorktreeExclude:  []string{"obsidian"},
+		ProjectLocations: []string{"~/code"},
+		ProjectSpecific:  []string{"~/documents/obsidian"},
 	}
 }
 
@@ -92,12 +109,12 @@ func load() Config {
 		return cfg
 	}
 
-	var parsed Config
+	var parsed parsedConfig
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return cfg
 	}
 
-	// Merge: use parsed value when non-empty, otherwise keep default.
+	// Merge: use parsed value when non-empty string, otherwise keep default.
 	if parsed.ColorPrimary != "" {
 		cfg.ColorPrimary = parsed.ColorPrimary
 	}
@@ -128,14 +145,17 @@ func load() Config {
 	if parsed.KittyBin != "" {
 		cfg.KittyBin = parsed.KittyBin
 	}
-	if parsed.WorktreeExclude != "" {
-		cfg.WorktreeExclude = parsed.WorktreeExclude
+
+	// For slice fields: nil pointer means absent (keep default); non-nil
+	// pointer (including pointer to empty slice) means use the parsed value.
+	if parsed.WorktreeExclude != nil {
+		cfg.WorktreeExclude = *parsed.WorktreeExclude
 	}
-	if parsed.ProjectLocations != "" {
-		cfg.ProjectLocations = parsed.ProjectLocations
+	if parsed.ProjectLocations != nil {
+		cfg.ProjectLocations = *parsed.ProjectLocations
 	}
-	if parsed.ProjectSpecific != "" {
-		cfg.ProjectSpecific = parsed.ProjectSpecific
+	if parsed.ProjectSpecific != nil {
+		cfg.ProjectSpecific = *parsed.ProjectSpecific
 	}
 
 	return cfg
@@ -156,16 +176,4 @@ func configFilePath() string {
 		configHome = filepath.Join(home, ".config")
 	}
 	return filepath.Join(configHome, "prism", "config.json")
-}
-
-// SplitColon splits a colon-separated string into non-empty fields.
-// Convenience helper for WorktreeExclude, ProjectLocations, ProjectSpecific.
-func SplitColon(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ":") {
-		if part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }

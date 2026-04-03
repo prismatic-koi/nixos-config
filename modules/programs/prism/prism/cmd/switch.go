@@ -25,18 +25,18 @@ import (
 
 func switchWorktreeExcludeSet() map[string]bool {
 	m := map[string]bool{}
-	for _, s := range config.SplitColon(config.Load().WorktreeExclude) {
+	for _, s := range config.Load().WorktreeExclude {
 		m[s] = true
 	}
 	return m
 }
 
 func switchProjectLocations() []string {
-	return config.SplitColon(config.Load().ProjectLocations)
+	return config.Load().ProjectLocations
 }
 
 func switchProjectSpecific() []string {
-	return config.SplitColon(config.Load().ProjectSpecific)
+	return config.Load().ProjectSpecific
 }
 
 // ── project list ──────────────────────────────────────────────────────────────

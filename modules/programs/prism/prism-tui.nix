@@ -17,9 +17,9 @@ let
     color_foreground = foreground;
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
-    worktree_exclude = lib.concatStringsSep ":" config.nx.programs.prism.worktreeExclude;
-    project_locations = lib.concatStringsSep ":" config.nx.programs.prism.projects.locations;
-    project_specific = lib.concatStringsSep ":" config.nx.programs.prism.projects.specific;
+    worktree_exclude = config.nx.programs.prism.worktreeExclude;
+    project_locations = config.nx.programs.prism.projects.locations;
+    project_specific = config.nx.programs.prism.projects.specific;
   };
 in
 {
