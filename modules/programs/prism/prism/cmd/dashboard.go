@@ -1029,7 +1029,7 @@ func (m dashModel) View() string {
 		// Let session grow into freed space; guard against underflow on very
 		// narrow terminals (avail could be 0 or negative).
 		avail := m.width - fixedCore
-		if avail > sessionWMin {
+		if avail >= sessionWMin {
 			sessionW = avail
 		}
 	}
