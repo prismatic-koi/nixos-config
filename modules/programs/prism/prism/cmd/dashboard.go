@@ -433,7 +433,12 @@ type gitStatResult struct {
 // querying which tmux client just attached to the session. It updates m.client
 // so that Enter and q/esc operate on the correct client even when the model was
 // initialised without a client (detached new-session startup).
-type focusClientMsg struct{ client string }
+// currentSession is the session that client was in before switching here; it is
+// used to restore the "you are here" ◆ indicator for the visiting client.
+type focusClientMsg struct {
+	client         string
+	currentSession string
+}
 
 type sessionsMsg struct {
 	sessions []agentSession
@@ -453,11 +458,26 @@ func ghTick() tea.Cmd {
 }
 
 // fetchCurrentClient queries tmux for the currently-attached client name and
-// returns a focusClientMsg. Called as a tea.Cmd from the FocusMsg handler in
+// the session that client was last in (before switching to the dashboard).
+// Returns a focusClientMsg. Called as a tea.Cmd from the FocusMsg handler in
 // persistentModel so the I/O runs off the main update loop.
 func fetchCurrentClient() tea.Msg {
 	client, _ := tmux.CurrentClient()
-	return focusClientMsg{client: client}
+	// Also fetch the session the client came from so the "you are here" ◆
+	// indicator can be shown for the visiting client.
+	var currentSession string
+	if client != "" {
+		currentSession, _ = tmux.ClientSession(client)
+		// ClientSession returns the session the client is *currently* in,
+		// which at this point is already prism-dashboard. We need the previous
+		// session. Use SwitchClientLast to peek is not possible without side
+		// effects, so leave currentSession empty — the ◆ indicator is not
+		// supported in persistent mode (the user is already in the dashboard).
+		if currentSession == dashSession {
+			currentSession = ""
+		}
+	}
+	return focusClientMsg{client: client, currentSession: currentSession}
 }
 
 func cursorTimeoutCmd() tea.Cmd {
@@ -768,6 +788,11 @@ func (m popupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsMsg:
 		m.dashShared, _ = m.dashShared.applySessionsMsg(msg, m.currentSession)
 
+	case cursorTimeoutMsg:
+		// Popup mode always shows the cursor (cursorActive is always true);
+		// cursor-timeout messages are no-ops here, but handled explicitly to
+		// self-document the intent.
+
 	case tea.KeyMsg:
 		m.statusMsg = ""
 
@@ -918,24 +943,33 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.filterActive {
 			m.cursorActive = false
 		}
-		// Client detached — clear m.client so stale identity is never used.
+		// Client detached — clear m.client and m.currentSession unconditionally,
+		// even if filterActive is true. The detached client is truly gone: any
+		// pending action that uses m.client will hit the belt-and-suspenders
+		// tmux.CurrentClient() inline fallback and still work correctly.
+		// Clearing eagerly avoids using a stale client identity for a new visitor.
 		m.client = ""
 		m.currentSession = ""
 
 	case tea.FocusMsg:
 		// A tmux client just attached to this session. Query the client name
-		// asynchronously so Enter/q/esc have the right target. Also clear the
-		// stale currentSession from the previous visitor (the "you are here"
-		// indicator will be blank until a new caller session is known, which
-		// is acceptable for the persistent dashboard).
+		// asynchronously so Enter/q/esc have the right target. Clear any stale
+		// client and session state from the previous visitor while the async
+		// query is in-flight; they will be repopulated by focusClientMsg.
+		m.client = ""
 		m.currentSession = ""
 		return m, fetchCurrentClient
 
 	case focusClientMsg:
-		// Received the client name queried after focus was gained.
+		// Received the client name (and originating session) queried after focus
+		// was gained.
 		if msg.client != "" {
 			m.client = msg.client
 		}
+		// currentSession is empty for clients arriving via prefix+D because
+		// ClientSession returns prism-dashboard (they are already here); in that
+		// case the ◆ indicator stays blank, which is intentional.
+		m.currentSession = msg.currentSession
 
 	case sessionsMsg:
 		m.dashShared, _ = m.dashShared.applySessionsMsg(msg, m.currentSession)
