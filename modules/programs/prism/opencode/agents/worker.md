@@ -43,8 +43,9 @@ so problems are caught early.
 
 When your work is complete and quality gates pass:
 
-1. Follow the session-completion checklist in `AGENTS.md` (close the originating
-   issue, verify push).
+1. Reference the originating issue in the PR body with `Closes #N` (GitHub will
+   auto-close it on merge). Never close issues or tickets manually — the
+   coordinator handles that.
 2. Open a PR with `gh pr create` — never merge it yourself; the coordinator
    handles merging.
 3. Never push to `main` — direct push is blocked by repository rules.
