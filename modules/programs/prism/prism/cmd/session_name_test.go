@@ -59,8 +59,6 @@ func detachHead(t *testing.T, dir string) {
 	}
 }
 
-// ── worktreeBranchComponent ──────────────────────────────────────────────────
-
 // ── worktreeBranchComponent (via NameFor with a project root) ─────────────────
 
 func TestWorktreeBranchComponent_SimpleBranch(t *testing.T) {

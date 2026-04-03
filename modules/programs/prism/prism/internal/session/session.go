@@ -35,16 +35,18 @@ type Opts struct {
 type Layout int
 
 const (
-	// LayoutFull sets up the standard three-window layout:
-	// window 0 "edit" (nvim), window 1 "agent" (opencode), window 2 "term".
-	LayoutFull Layout = iota
+	// LayoutBare sets up a minimal session with only the default shell window.
+	// Used by the dashboard dead-session recovery path.
+	// This is the zero value; an uninitialised Opts{} will never accidentally
+	// trigger the full three-window layout.
+	LayoutBare Layout = iota
 
 	// LayoutScratchpad sets up a single "term" window with no agent or editor.
 	LayoutScratchpad
 
-	// LayoutBare sets up a minimal session with only the default shell window.
-	// Used by the dashboard dead-session recovery path.
-	LayoutBare
+	// LayoutFull sets up the standard three-window layout:
+	// window 0 "edit" (nvim), window 1 "agent" (opencode), window 2 "term".
+	LayoutFull
 )
 
 // DefaultAgent returns the agent to use for the given directory.
@@ -96,16 +98,17 @@ func Create(name, directory string, opts Opts) error {
 	}
 
 	switch opts.Layout {
-	case LayoutScratchpad:
-		_ = tmux.RenameWindow(name+":0", "term")
-
-	case LayoutBare:
-		// No extra setup — leave the default shell window as-is.
-
-	default:
+	case LayoutFull:
 		if err := setupFullLayout(name, directory, opts); err != nil {
 			return err
 		}
+
+	case LayoutScratchpad:
+		_ = tmux.RenameWindow(name+":0", "term")
+
+	default:
+		// LayoutBare (and any unknown value): no extra setup — leave the
+		// default shell window as-is.
 	}
 
 	return nil
@@ -183,22 +186,6 @@ func Attach(name string) error {
 	}
 	_, err := tmux.SwitchClientCurrent(name)
 	return err
-}
-
-// AttachClient switches a specific tmux client to the named session.
-func AttachClient(client, name string) error {
-	return tmux.SwitchClient(client, name)
-}
-
-// SendPrompt delivers a prompt to the opencode agent running in the named session.
-// This is a placeholder for future prompt-delivery logic.
-func SendPrompt(name, prompt string) error {
-	return tmux.SendKeys(name+":agent", prompt)
-}
-
-// Destroy kills the named tmux session.
-func Destroy(name string) error {
-	return tmux.KillSession(name)
 }
 
 // NameFor derives the tmux session name for a given directory and optional
