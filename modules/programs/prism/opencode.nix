@@ -121,6 +121,7 @@
         "nix flake metadata*" = "allow";
         "nix build *" = "allow";
         "nix flake check *" = "allow";
+        "nix eval *" = "allow";
         # Go operations
         "go version*" = "allow";
         "go env*" = "allow";
@@ -140,6 +141,8 @@
         "playwright-cli *" = "allow";
         # pdf text extraction
         "pdftotext *" = "allow";
+        # manual pages
+        "man *" = "allow";
       };
 
       # Additional write operations for build agent
@@ -488,9 +491,9 @@
             settings = {
               model = models.primary;
               agent = {
-                build = {
+                worker = {
                   model = models.secondary;
-                  description = "Default build agent with full tool access";
+                  description = "Default worker agent with full tool access";
                   mode = "primary";
                   color = config.theme.red;
                   permission = {

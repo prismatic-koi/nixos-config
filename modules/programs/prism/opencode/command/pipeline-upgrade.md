@@ -1,6 +1,6 @@
 ---
 description: Upgrade this project to use the new unified build github actions workflow
-agent: "build"
+agent: "worker"
 subtask: false
 ---
 

@@ -3,17 +3,17 @@
   //
   // Branch protection is enabled on main, so direct pushes are safe to auto-allow —
   // the remote will reject anything that hasn't gone through a PR. This reduces
-  // friction for the build agent when landing work.
+  // friction for the worker agent when landing work.
   "$schema": "https://opencode.ai/config.json",
   // Use coordinator as default agent for interactive sessions in this repo.
-  // (prism spawn already defaults spawned agents to "build" via its own --agent flag.)
+  // (prism spawn already defaults spawned agents to "worker" via its own --agent flag.)
   "default_agent": "coordinator",
   // Agent-scoped permissions are merged with the global config and take precedence
   // (per opencode docs: "Agent permissions are merged with the global config, and
-  // agent rules take precedence"). Overriding within `agent.build` is therefore
+  // agent rules take precedence"). Overriding within `agent.worker` is therefore
   // sufficient to shadow the global `permission.bash` entries that set push to "ask".
   "agent": {
-    "build": {
+    "worker": {
       "permission": {
         "bash": {
           // Allow git push without prompting — branch protection on main acts as the

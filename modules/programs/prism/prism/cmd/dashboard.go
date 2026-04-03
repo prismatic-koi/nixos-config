@@ -334,7 +334,7 @@ type agentSession struct {
 	AgentState  string // active | waiting | finished | compacting | error | idle | ""
 	AgentPath   string // worktree path — used for git diff stats
 	AgentTitle  string // current session title from agent_status.title
-	AgentName   string // coordinator | build | "" — from agent_status.agent_name
+	AgentName   string // coordinator | worker | "" — from agent_status.agent_name
 	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
 }
 
@@ -412,8 +412,8 @@ func agentTypeLabel(agentName string) string {
 	switch agentName {
 	case "coordinator":
 		return "coordinator"
-	case "build":
-		return "build"
+	case "worker":
+		return "worker"
 	default:
 		return ""
 	}
@@ -900,7 +900,7 @@ func (m dashModel) View() string {
 	// Tree prefix for worktree child rows: "  ├── " or "  └── " (6 chars).
 	// Top-level rows use no prefix; their name is padded to treePrefixW+sessionW.
 	const treePrefixW = 6
-	const agentTypeW = 12 // "coordinator " or "build       " or "            "
+	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
 	const dotW = 2
 	const sessionWMax = 20

@@ -12,7 +12,7 @@ func TestDefaultAgent_CoordinatorForMain(t *testing.T) {
 	}
 }
 
-func TestDefaultAgent_BuildForNonMain(t *testing.T) {
+func TestDefaultAgent_WorkerForNonMain(t *testing.T) {
 	cases := []string{
 		"/home/user/repos/project/feature-foo",
 		"/home/user/repos/project/maintain",
@@ -24,8 +24,8 @@ func TestDefaultAgent_BuildForNonMain(t *testing.T) {
 	for _, dir := range cases {
 		t.Run(filepath.Base(dir), func(t *testing.T) {
 			got := defaultAgent(dir, "")
-			if got != "build" {
-				t.Errorf("defaultAgent(%q, %q) = %q, want %q", dir, "", got, "build")
+			if got != "worker" {
+				t.Errorf("defaultAgent(%q, %q) = %q, want %q", dir, "", got, "worker")
 			}
 		})
 	}
@@ -38,7 +38,7 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 	}{
 		{"/home/user/repos/project/main", "custom-agent"},
 		{"/home/user/repos/project/feature", "custom-agent"},
-		{"/home/user/repos/project/main", "build"},
+		{"/home/user/repos/project/main", "worker"},
 	}
 	for _, tc := range cases {
 		got := defaultAgent(tc.dir, tc.agent)
@@ -55,21 +55,21 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	}{
 		// With a stored opencode session ID — should use -s <id>.
 		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc123"}, "opencode --agent coordinator -s ses_abc123"},
-		{sessionOpts{agent: "build", opencodeSession: "ses_xyz789"}, "opencode --agent build -s ses_xyz789"},
+		{sessionOpts{agent: "worker", opencodeSession: "ses_xyz789"}, "opencode --agent worker -s ses_xyz789"},
 		// No stored session — no session flag.
 		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator"},
-		{sessionOpts{agent: "build"}, "opencode --agent build"},
+		{sessionOpts{agent: "worker"}, "opencode --agent worker"},
 		// fresh=true suppresses the stored session ID even if set.
-		{sessionOpts{agent: "build", fresh: true, opencodeSession: "ses_abc123"}, "opencode --agent build"},
-		// Safety-net fallback: empty agent still yields "build".
-		{sessionOpts{opencodeSession: "ses_abc123"}, "opencode --agent build -s ses_abc123"},
-		{sessionOpts{}, "opencode --agent build"},
+		{sessionOpts{agent: "worker", fresh: true, opencodeSession: "ses_abc123"}, "opencode --agent worker"},
+		// Safety-net fallback: empty agent still yields "worker".
+		{sessionOpts{opencodeSession: "ses_abc123"}, "opencode --agent worker -s ses_abc123"},
+		{sessionOpts{}, "opencode --agent worker"},
 		// Prompt with no special characters.
-		{sessionOpts{agent: "build", prompt: "fix the login bug"}, "opencode --agent build --prompt 'fix the login bug'"},
+		{sessionOpts{agent: "worker", prompt: "fix the login bug"}, "opencode --agent worker --prompt 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.
-		{sessionOpts{agent: "build", prompt: "it's broken"}, "opencode --agent build --prompt 'it'\\''s broken'"},
+		{sessionOpts{agent: "worker", prompt: "it's broken"}, "opencode --agent worker --prompt 'it'\\''s broken'"},
 		// Prompt with shell metacharacters that are safe inside single quotes.
-		{sessionOpts{agent: "build", prompt: "run `make test` and fix $ERRORS"}, "opencode --agent build --prompt 'run `make test` and fix $ERRORS'"},
+		{sessionOpts{agent: "worker", prompt: "run `make test` and fix $ERRORS"}, "opencode --agent worker --prompt 'run `make test` and fix $ERRORS'"},
 		// Prompt + session ID — both flags present.
 		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc", prompt: "review pr"}, "opencode --agent coordinator -s ses_abc --prompt 'review pr'"},
 	}

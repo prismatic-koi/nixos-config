@@ -815,7 +815,7 @@ func TestMigration_V1ToV2(t *testing.T) {
 func TestUpsertStatusWithAgent(t *testing.T) {
 	d := openTestDB(t)
 
-	agentName := strPtr("build")
+	agentName := strPtr("worker")
 	modelID := strPtr("github-copilot/claude-sonnet-4.6")
 
 	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, agentName, modelID); err != nil {
@@ -826,8 +826,8 @@ func TestUpsertStatusWithAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus: %v", err)
 	}
-	if s.AgentName == nil || *s.AgentName != "build" {
-		t.Errorf("AgentName: got %v, want \"build\"", s.AgentName)
+	if s.AgentName == nil || *s.AgentName != "worker" {
+		t.Errorf("AgentName: got %v, want \"worker\"", s.AgentName)
 	}
 	if s.ModelID == nil || *s.ModelID != "github-copilot/claude-sonnet-4.6" {
 		t.Errorf("ModelID: got %v, want \"github-copilot/claude-sonnet-4.6\"", s.ModelID)
@@ -841,8 +841,8 @@ func TestUpsertStatusWithAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus (2): %v", err)
 	}
-	if s2.AgentName == nil || *s2.AgentName != "build" {
-		t.Errorf("AgentName after nil upsert: got %v, want preserved \"build\"", s2.AgentName)
+	if s2.AgentName == nil || *s2.AgentName != "worker" {
+		t.Errorf("AgentName after nil upsert: got %v, want preserved \"worker\"", s2.AgentName)
 	}
 	if s2.ModelID == nil || *s2.ModelID != "github-copilot/claude-sonnet-4.6" {
 		t.Errorf("ModelID after nil upsert: got %v, want preserved value", s2.ModelID)
