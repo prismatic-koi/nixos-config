@@ -846,6 +846,49 @@ func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
 	}
 }
 
+// TestRenderCheckinTurns_SubagentUserEventsCollapsed verifies that msg_user
+// events belonging to a subagent (agent != root) are also collapsed in default
+// mode alongside their surrounding subagent assistant turns.
+func TestRenderCheckinTurns_SubagentUserEventsCollapsed(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	// Subagent user message injected between two subagent assistant turns.
+	subUserMsgID := "umsg-sub"
+	writeEvent(t, d, uuid.New().String(), session, "msg_user",
+		userPayloadWithAgent(subUserMsgID, "subagent user message", subAgent),
+		base.Add(500*time.Millisecond))
+
+	subMsgID := "msg-sub"
+	subEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(subMsgID, "sub assistant reply", subAgent),
+		base.Add(time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{subEvent}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// Subagent text must not appear inline.
+	if strings.Contains(out, "sub assistant reply") {
+		t.Errorf("subagent assistant text should be collapsed\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "subagent user message") {
+		t.Errorf("subagent user message text should be collapsed\ngot:\n%s", out)
+	}
+
+	// Summary line must still appear.
+	if !strings.Contains(out, "└─ review") {
+		t.Errorf("output missing subagent summary line\ngot:\n%s", out)
+	}
+}
+
 // TestRunCheckinSession_LegacyFallbackNoAssistantNoUser verifies AC-13:
 // when no DB rows exist at all for the session, falls back to legacy
 // (which will error because tmux is unavailable in tests — that's acceptable;

@@ -245,8 +245,12 @@ ON CONFLICT(session_name) DO UPDATE SET
 // UpsertStatusWithRootAgent is like UpsertStatusWithAgent but also writes
 // root_agent_name and root_model_id on the initial INSERT. On conflict (update),
 // root_agent_name and root_model_id are preserved via COALESCE — once set, they
-// are never overwritten. This is used for session.created and the session.updated
-// insert path so the root agent is fixed at session creation time.
+// are never overwritten.
+//
+// Note: production root-agent tracking is performed by the TypeScript plugin via
+// the setRootAgentModelIfAbsent UPDATE statement on the first msg_user event.
+// This Go method is used in tests and is available for any future Go-side
+// session-creation paths that need to seed root_agent_name at INSERT time.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
 	now := time.Now().UnixMilli()
 	const q = `
