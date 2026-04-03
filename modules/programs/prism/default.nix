@@ -102,14 +102,6 @@
       agentEnvPrefix = lib.concatStringsSep " " (
         lib.mapAttrsToList (name: value: "${name}=${value}") config.nx.programs.prism.agent.envVars
       );
-      # Python list literal for use in generated scripts
-      worktreeExcludePyList = "[${
-        lib.concatStringsSep ", " (map (n: "\"${n}\"") config.nx.programs.prism.worktreeExclude)
-      }]";
-      # Colon-separated strings for Go ldflags
-      worktreeExcludeList = lib.concatStringsSep ":" config.nx.programs.prism.worktreeExclude;
-      projectLocationsList = lib.concatStringsSep ":" config.nx.programs.prism.projects.locations;
-      projectSpecificList = lib.concatStringsSep ":" config.nx.programs.prism.projects.specific;
     };
   };
 }

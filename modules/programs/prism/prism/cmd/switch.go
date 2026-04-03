@@ -2,11 +2,8 @@ package cmd
 
 // prism switch — context switcher (replaces cli.tmux.contextSwitcher)
 //
-// Injected at build time via ldflags:
-//
-//	SwitchWorktreeExclude  colon-separated repo names to skip bare conversion
-//	SwitchProjectLocations colon-separated dirs whose subdirs become entries
-//	SwitchProjectSpecific  colon-separated dirs shown as direct entries
+// Project layout is read at runtime from ~/.config/prism/config.json
+// (or $PRISM_CONFIG_FILE) via the internal/config package.
 
 import (
 	"fmt"
@@ -19,46 +16,27 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// ── build-time injected values ────────────────────────────────────────────────
-
-var (
-	SwitchWorktreeExclude  = "obsidian"
-	SwitchProjectLocations = "~/code"
-	SwitchProjectSpecific  = "~/documents/obsidian"
-)
+// ── runtime config values ─────────────────────────────────────────────────────
 
 func switchWorktreeExcludeSet() map[string]bool {
 	m := map[string]bool{}
-	for _, s := range strings.Split(SwitchWorktreeExclude, ":") {
-		if s != "" {
-			m[s] = true
-		}
+	for _, s := range config.Load().WorktreeExclude {
+		m[s] = true
 	}
 	return m
 }
 
 func switchProjectLocations() []string {
-	var out []string
-	for _, s := range strings.Split(SwitchProjectLocations, ":") {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	return config.Load().ProjectLocations
 }
 
 func switchProjectSpecific() []string {
-	var out []string
-	for _, s := range strings.Split(SwitchProjectSpecific, ":") {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	return config.Load().ProjectSpecific
 }
 
 // ── project list ──────────────────────────────────────────────────────────────

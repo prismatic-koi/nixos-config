@@ -1,0 +1,179 @@
+// Package config loads the prism runtime configuration from a JSON file.
+//
+// The config file is read from $PRISM_CONFIG_FILE if set, otherwise from
+// $XDG_CONFIG_HOME/prism/config.json, falling back to
+// $HOME/.config/prism/config.json. If the file is absent or unreadable the
+// package returns compiled-in defaults (gruvbox-dark colours, ~/code paths)
+// so that `go build` and `go test` work correctly without a Nix build.
+package config
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+)
+
+// Config holds all host-specific runtime configuration for prism.
+type Config struct {
+	// Theme colours (hex strings, e.g. "#d4be98").
+	ColorPrimary    string `json:"color_primary"`
+	ColorSecondary  string `json:"color_secondary"`
+	ColorPurple     string `json:"color_purple"`
+	ColorYellow     string `json:"color_yellow"`
+	ColorGreen      string `json:"color_green"`
+	ColorBlue       string `json:"color_blue"`
+	ColorRed        string `json:"color_red"`
+	ColorForeground string `json:"color_foreground"`
+	ColorBg0        string `json:"color_bg0"`
+
+	// Binary paths.
+	KittyBin string `json:"kitty_bin"`
+
+	// Project layout (JSON arrays).
+	WorktreeExclude  []string `json:"worktree_exclude"`
+	ProjectLocations []string `json:"project_locations"`
+	ProjectSpecific  []string `json:"project_specific"`
+}
+
+// parsedConfig mirrors Config but uses pointer slices so that a JSON null or
+// absent key is distinguishable from an explicit empty array [].
+type parsedConfig struct {
+	ColorPrimary     string    `json:"color_primary"`
+	ColorSecondary   string    `json:"color_secondary"`
+	ColorPurple      string    `json:"color_purple"`
+	ColorYellow      string    `json:"color_yellow"`
+	ColorGreen       string    `json:"color_green"`
+	ColorBlue        string    `json:"color_blue"`
+	ColorRed         string    `json:"color_red"`
+	ColorForeground  string    `json:"color_foreground"`
+	ColorBg0         string    `json:"color_bg0"`
+	KittyBin         string    `json:"kitty_bin"`
+	WorktreeExclude  *[]string `json:"worktree_exclude"`
+	ProjectLocations *[]string `json:"project_locations"`
+	ProjectSpecific  *[]string `json:"project_specific"`
+}
+
+// defaults returns the compiled-in fallback Config (gruvbox-dark palette,
+// standard paths). These values are used whenever no config file is found.
+func defaults() Config {
+	return Config{
+		ColorPrimary:     "#d4be98",
+		ColorSecondary:   "#a89984",
+		ColorPurple:      "#d3869b",
+		ColorYellow:      "#d8a657",
+		ColorGreen:       "#a9b665",
+		ColorBlue:        "#7daea3",
+		ColorRed:         "#ea6962",
+		ColorForeground:  "#d3c6aa",
+		ColorBg0:         "#2d353b",
+		KittyBin:         "kitty",
+		WorktreeExclude:  []string{"obsidian"},
+		ProjectLocations: []string{"~/code"},
+		ProjectSpecific:  []string{"~/documents/obsidian"},
+	}
+}
+
+var (
+	once   sync.Once
+	loaded Config
+)
+
+// Load returns the configuration, loading it on the first call and caching
+// the result for subsequent calls. Use LoadFresh for tests.
+func Load() Config {
+	once.Do(func() {
+		loaded = load()
+	})
+	return loaded
+}
+
+// LoadFresh loads the configuration without the singleton cache. Intended for
+// tests that need to exercise different config file paths.
+func LoadFresh() Config {
+	return load()
+}
+
+// load resolves the config file path, reads and parses it, filling any missing
+// fields with defaults.
+func load() Config {
+	cfg := defaults()
+
+	path := configFilePath()
+	if path == "" {
+		return cfg
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg
+	}
+
+	var parsed parsedConfig
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return cfg
+	}
+
+	// Merge: use parsed value when non-empty string, otherwise keep default.
+	if parsed.ColorPrimary != "" {
+		cfg.ColorPrimary = parsed.ColorPrimary
+	}
+	if parsed.ColorSecondary != "" {
+		cfg.ColorSecondary = parsed.ColorSecondary
+	}
+	if parsed.ColorPurple != "" {
+		cfg.ColorPurple = parsed.ColorPurple
+	}
+	if parsed.ColorYellow != "" {
+		cfg.ColorYellow = parsed.ColorYellow
+	}
+	if parsed.ColorGreen != "" {
+		cfg.ColorGreen = parsed.ColorGreen
+	}
+	if parsed.ColorBlue != "" {
+		cfg.ColorBlue = parsed.ColorBlue
+	}
+	if parsed.ColorRed != "" {
+		cfg.ColorRed = parsed.ColorRed
+	}
+	if parsed.ColorForeground != "" {
+		cfg.ColorForeground = parsed.ColorForeground
+	}
+	if parsed.ColorBg0 != "" {
+		cfg.ColorBg0 = parsed.ColorBg0
+	}
+	if parsed.KittyBin != "" {
+		cfg.KittyBin = parsed.KittyBin
+	}
+
+	// For slice fields: nil pointer means absent (keep default); non-nil
+	// pointer (including pointer to empty slice) means use the parsed value.
+	if parsed.WorktreeExclude != nil {
+		cfg.WorktreeExclude = *parsed.WorktreeExclude
+	}
+	if parsed.ProjectLocations != nil {
+		cfg.ProjectLocations = *parsed.ProjectLocations
+	}
+	if parsed.ProjectSpecific != nil {
+		cfg.ProjectSpecific = *parsed.ProjectSpecific
+	}
+
+	return cfg
+}
+
+// configFilePath returns the path to look for the config file.
+// Returns "" if no home directory is discoverable.
+func configFilePath() string {
+	if p := os.Getenv("PRISM_CONFIG_FILE"); p != "" {
+		return p
+	}
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "prism", "config.json")
+}

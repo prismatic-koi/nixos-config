@@ -3,22 +3,6 @@
   buildGoModule,
   git,
   tmux,
-  kitty,
-  # Theme colours injected so the binary matches the user's active theme.
-  # Each is a #rrggbb hex string.
-  colorPrimary ? "#d4be98",
-  colorSecondary ? "#a89984",
-  colorPurple ? "#d3869b",
-  colorYellow ? "#d8a657",
-  colorGreen ? "#a9b665",
-  colorBlue ? "#7daea3",
-  colorRed ? "#ea6962",
-  colorForeground ? "#d3c6aa",
-  colorBg0 ? "#2d353b",
-  # Project/worktree config (colon-separated strings).
-  worktreeExclude ? "obsidian",
-  projectLocations ? "~/code",
-  projectSpecific ? "~/documents/obsidian",
 }:
 
 buildGoModule {
@@ -32,20 +16,7 @@ buildGoModule {
   ldflags = [
     "-s"
     "-w"
-    "-X github.com/prismatic-koi/prism/cmd.ColorPrimary=${colorPrimary}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorSecondary=${colorSecondary}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorPurple=${colorPurple}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorYellow=${colorYellow}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorGreen=${colorGreen}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorBlue=${colorBlue}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorRed=${colorRed}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorForeground=${colorForeground}"
-    "-X github.com/prismatic-koi/prism/cmd.ColorBg0=${colorBg0}"
-    "-X github.com/prismatic-koi/prism/cmd.SwitchWorktreeExclude=${worktreeExclude}"
-    "-X github.com/prismatic-koi/prism/cmd.SwitchProjectLocations=${projectLocations}"
-    "-X github.com/prismatic-koi/prism/cmd.SwitchProjectSpecific=${projectSpecific}"
     "-X github.com/prismatic-koi/prism/internal/tmux.TmuxBin=${tmux}/bin/tmux"
-    "-X github.com/prismatic-koi/prism/cmd.LaunchKittyBin=${kitty}/bin/kitty"
   ];
 
   nativeCheckInputs = [ git ];

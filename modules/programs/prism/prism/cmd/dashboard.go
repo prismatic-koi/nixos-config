@@ -23,21 +23,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// ── theme colours ─────────────────────────────────────────────────────────────
-// Injected at build time via ldflags from the Nix module so they match the
-// user's active theme. Defaults are gruvbox-dark fallbacks.
-var (
-	ColorPrimary    = "#d4be98"
-	ColorSecondary  = "#a89984"
-	ColorPurple     = "#d3869b"
-	ColorYellow     = "#d8a657"
-	ColorGreen      = "#a9b665"
-	ColorBlue       = "#7daea3"
-	ColorRed        = "#ea6962"
-	ColorForeground = "#d3c6aa"
-	ColorBg0        = "#2d353b"
-)
-
 // ── header art ────────────────────────────────────────────────────────────────
 
 // artLines is the DSOTM-inspired prism header: small figlet "PRISM" with a

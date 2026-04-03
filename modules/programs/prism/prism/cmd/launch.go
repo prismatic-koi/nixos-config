@@ -17,10 +17,6 @@ package cmd
 //	--in-terminal  attach in the current terminal instead of spawning a new kitty window
 //	--path <dir>   open the context switcher targeted at this directory (bypasses dashboard)
 //	--fresh        start a new session without --continue (used with --path)
-//
-// Injected at build time via ldflags:
-//
-//	LaunchKittyBin  path to the kitty binary
 
 import (
 	"os"
@@ -31,17 +27,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
-
-var LaunchKittyBin = "kitty"
-
-func init() {
-	rootCmd.AddCommand(launchCmd)
-	launchCmd.Flags().BoolVar(&launchInTerminal, "in-terminal", false, "attach in the current terminal")
-	launchCmd.Flags().StringVar(&launchPath, "path", "", "open context switcher at this directory (bypasses dashboard)")
-	launchCmd.Flags().BoolVar(&launchFresh, "fresh", false, "start a new session without --continue")
-}
 
 var (
 	launchInTerminal bool
@@ -54,6 +42,13 @@ var launchCmd = &cobra.Command{
 	Short: "Launch Prism dashboard (default landing point)",
 	Args:  cobra.NoArgs,
 	RunE:  runLaunch,
+}
+
+func init() {
+	rootCmd.AddCommand(launchCmd)
+	launchCmd.Flags().BoolVar(&launchInTerminal, "in-terminal", false, "attach in the current terminal")
+	launchCmd.Flags().StringVar(&launchPath, "path", "", "open context switcher at this directory (bypasses dashboard)")
+	launchCmd.Flags().BoolVar(&launchFresh, "fresh", false, "start a new session without --continue")
 }
 
 func runLaunch(_ *cobra.Command, _ []string) error {
@@ -104,9 +99,9 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		// Outside tmux entirely: spawn a new kitty window attached to the
 		// dashboard session. The scratchpad is created in the background so it
 		// is ready for use as a shell without being the initial focus.
-		kittyBin, err := exec.LookPath(LaunchKittyBin)
-		if err != nil {
-			kittyBin = LaunchKittyBin
+		kittyBin := config.Load().KittyBin
+		if resolved, err := exec.LookPath(kittyBin); err == nil {
+			kittyBin = resolved
 		}
 		// Build the startup command sequence:
 		//   1. Create (or reuse) the scratchpad session in the background.
@@ -182,9 +177,9 @@ func runLaunchWithPath() error {
 		return syscall.Exec(tmuxBin, []string{tmux.TmuxBin, "new-session", "-As", "scratchpad"}, os.Environ())
 
 	default:
-		kittyBin, err := exec.LookPath(LaunchKittyBin)
-		if err != nil {
-			kittyBin = LaunchKittyBin
+		kittyBin := config.Load().KittyBin
+		if resolved, err := exec.LookPath(kittyBin); err == nil {
+			kittyBin = resolved
 		}
 		cmd := exec.Command(kittyBin,
 			"--title", "Prism",
