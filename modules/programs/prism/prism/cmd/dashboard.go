@@ -947,6 +947,14 @@ func (m dashModel) View() string {
 		return skeletonView(m.width)
 	}
 
+	// fixedCore (defined below) is the irreducible column overhead. At widths
+	// below that threshold the column-width math cannot produce a valid layout,
+	// so render a skeleton rather than overflowing rows.
+	const minUsableWidth = 21 // fixedCore = 1+dotW+treePrefixW+2+stateW
+	if m.width < minUsableWidth {
+		return skeletonView(m.width)
+	}
+
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
@@ -1014,11 +1022,11 @@ func (m dashModel) View() string {
 		return m.width - usedWidth() - 2
 	}
 
-	// growSession offers title-column space above the 2-char gap to sessionW
-	// (up to sessionWCap) before allocating the rest to titleW.  It leaves at
-	// least 2 chars in tw for the gap so that rows always fill the terminal
-	// when there is any positive surplus.  It modifies sessionW in place and
-	// returns the updated titleW.
+	// growSession offers surplus space to sessionW (up to sessionWCap) before
+	// allocating the rest to titleW.  It keeps tw >= 2 so that at least a 2-char
+	// title content slot remains after session growth; below that threshold the
+	// title section is suppressed by the titleW>=5 guard anyway.  It modifies
+	// sessionW in place and returns the updated titleW.
 	growSession := func(tw int) int {
 		if tw > 2 && sessionW < sessionWCap {
 			gain := min(tw-2, sessionWCap-sessionW)
