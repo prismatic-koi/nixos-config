@@ -5,6 +5,23 @@
   ...
 }:
 with config.theme;
+let
+  prismConfig = {
+    color_primary = primary;
+    color_secondary = secondary;
+    color_purple = purple;
+    color_yellow = yellow;
+    color_green = green;
+    color_blue = blue;
+    color_red = red;
+    color_foreground = foreground;
+    color_bg0 = bg0;
+    kitty_bin = "${pkgs.kitty}/bin/kitty";
+    worktree_exclude = lib.concatStringsSep ":" config.nx.programs.prism.worktreeExclude;
+    project_locations = lib.concatStringsSep ":" config.nx.programs.prism.projects.locations;
+    project_specific = lib.concatStringsSep ":" config.nx.programs.prism.projects.specific;
+  };
+in
 {
   options = {
     nx.programs.prism.tui.enable = lib.mkEnableOption "enables prism Go TUI binary" // {
@@ -15,22 +32,11 @@ with config.theme;
   config = lib.mkIf (config.nx.programs.prism.tui.enable && config.nx.programs.prism.enable) {
     home-manager.users.${config.nx.username} = {
       home.packages = [
-        # Build with theme colours and project config injected via ldflags
-        (pkgs.callPackage ../../../pkgs/prism.nix {
-          colorPrimary = primary;
-          colorSecondary = secondary;
-          colorPurple = purple;
-          colorYellow = yellow;
-          colorGreen = green;
-          colorBlue = blue;
-          colorRed = red;
-          colorForeground = foreground;
-          colorBg0 = bg0;
-          worktreeExclude = config.nx.programs.prism._internal.worktreeExcludeList;
-          projectLocations = config.nx.programs.prism._internal.projectLocationsList;
-          projectSpecific = config.nx.programs.prism._internal.projectSpecificList;
-        })
+        (pkgs.callPackage ../../../pkgs/prism.nix { })
       ];
+
+      xdg.configFile."prism/config.json".text = builtins.toJSON prismConfig;
+
       programs.zsh.shellAliases = {
         gwc = "prism clone";
       };

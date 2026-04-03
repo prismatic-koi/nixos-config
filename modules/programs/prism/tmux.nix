@@ -8,20 +8,7 @@ with config.theme;
 let
   background = if type == "dark" then bg0 else bg_dim;
   isDarwin = pkgs.stdenv.isDarwin;
-  prismPkg = pkgs.callPackage ../../../pkgs/prism.nix {
-    colorPrimary = primary;
-    colorSecondary = secondary;
-    colorPurple = purple;
-    colorYellow = yellow;
-    colorGreen = green;
-    colorBlue = blue;
-    colorRed = red;
-    colorForeground = foreground;
-    colorBg0 = bg0;
-    worktreeExclude = config.nx.programs.prism._internal.worktreeExcludeList;
-    projectLocations = config.nx.programs.prism._internal.projectLocationsList;
-    projectSpecific = config.nx.programs.prism._internal.projectSpecificList;
-  };
+  prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
 in
 {

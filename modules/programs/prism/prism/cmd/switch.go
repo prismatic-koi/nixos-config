@@ -19,46 +19,27 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// ── build-time injected values ────────────────────────────────────────────────
-
-var (
-	SwitchWorktreeExclude  = "obsidian"
-	SwitchProjectLocations = "~/code"
-	SwitchProjectSpecific  = "~/documents/obsidian"
-)
+// ── runtime config values ─────────────────────────────────────────────────────
 
 func switchWorktreeExcludeSet() map[string]bool {
 	m := map[string]bool{}
-	for _, s := range strings.Split(SwitchWorktreeExclude, ":") {
-		if s != "" {
-			m[s] = true
-		}
+	for _, s := range config.SplitColon(config.Load().WorktreeExclude) {
+		m[s] = true
 	}
 	return m
 }
 
 func switchProjectLocations() []string {
-	var out []string
-	for _, s := range strings.Split(SwitchProjectLocations, ":") {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	return config.SplitColon(config.Load().ProjectLocations)
 }
 
 func switchProjectSpecific() []string {
-	var out []string
-	for _, s := range strings.Split(SwitchProjectSpecific, ":") {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
+	return config.SplitColon(config.Load().ProjectSpecific)
 }
 
 // ── project list ──────────────────────────────────────────────────────────────
