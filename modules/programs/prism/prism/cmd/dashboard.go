@@ -1026,11 +1026,14 @@ func (m dashModel) View() string {
 	if titleW == 0 && !showStat {
 		// Drop type — only reached when stat and title are both gone.
 		showType = false
-		// Let session grow into freed space; guard against underflow on very
-		// narrow terminals (avail could be 0 or negative).
+		// Let session fill all remaining space. On very narrow terminals avail
+		// may be below sessionWMin or even negative; clamp to 0 so we never
+		// produce a negative width but always prevent row overflow.
 		avail := m.width - fixedCore
-		if avail >= sessionWMin {
+		if avail > 0 {
 			sessionW = avail
+		} else {
+			sessionW = 0
 		}
 	}
 
