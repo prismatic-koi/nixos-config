@@ -558,7 +558,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           // DB
           upsertAgentStatus(STATE_WAITING);
           writeStateChange(STATE_WAITING);
-          writeEvent("permission_ask", { tool: props.tool, patterns: props.patterns, messageId: props.permission?.messageID });
+          writeEvent("permission_ask", { tool: props.permission ?? "unknown", patterns: props.patterns, messageId: props.tool?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
           if (props.permission?.id) {
             pendingPermissions.set(props.permission.id, {

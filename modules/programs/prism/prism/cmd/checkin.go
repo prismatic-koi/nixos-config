@@ -452,7 +452,15 @@ func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string)
 			fmt.Printf("%s  [⏳ waiting for approval: (parse error)]\n", prefix)
 			return
 		}
-		fmt.Printf("%s  [⏳ waiting for approval: %s — %s]\n", prefix, p.Tool, strings.Join(p.Patterns, ", "))
+		tool := string(p.Tool)
+		if tool == "" {
+			tool = "unknown"
+		}
+		if len(p.Patterns) > 0 {
+			fmt.Printf("%s  [⏳ waiting for approval: %s — %s]\n", prefix, tool, strings.Join(p.Patterns, ", "))
+		} else {
+			fmt.Printf("%s  [⏳ waiting for approval: %s]\n", prefix, tool)
+		}
 
 	case "permission_denied":
 		var p payload.PermissionDenied
