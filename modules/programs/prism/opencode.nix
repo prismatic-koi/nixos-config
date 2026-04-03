@@ -145,7 +145,7 @@
         "man *" = "allow";
       };
 
-      # Additional write operations for build agent
+      # Additional write operations for worker agent
       writeBashCommands = {
         # git write operations
         "git *" = "allow";

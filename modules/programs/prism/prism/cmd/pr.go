@@ -10,7 +10,7 @@ package cmd
 //	--repo <name>         target repo by folder name under ~/code (or full path)
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
-// --agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
 //	--attach              switch the current tmux client to the new session
 
 import (
