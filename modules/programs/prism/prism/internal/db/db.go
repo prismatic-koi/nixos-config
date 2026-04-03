@@ -46,16 +46,18 @@ type Event struct {
 
 // Status represents a row in the agent_status table.
 type Status struct {
-	SessionName string
-	Repo        string
-	Worktree    string
-	State       string
-	Title       *string
-	OpencodeSID *string
-	AgentName   *string
-	ModelID     *string
-	LastSeen    time.Time
-	EndedAt     *time.Time
+	SessionName   string
+	Repo          string
+	Worktree      string
+	State         string
+	Title         *string
+	OpencodeSID   *string
+	AgentName     *string
+	ModelID       *string
+	RootAgentName *string
+	RootModelID   *string
+	LastSeen      time.Time
+	EndedAt       *time.Time
 }
 
 // BusMessage represents a row in the bus_messages table.
@@ -85,16 +87,18 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, crea
 CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_status (
-  session_name TEXT PRIMARY KEY,
-  repo         TEXT NOT NULL,
-  worktree     TEXT NOT NULL,
-  state        TEXT NOT NULL,
-  title        TEXT,
-  opencode_sid TEXT,
-  agent_name   TEXT,
-  model_id     TEXT,
-  last_seen    INTEGER NOT NULL,
-  ended_at     INTEGER
+  session_name    TEXT PRIMARY KEY,
+  repo            TEXT NOT NULL,
+  worktree        TEXT NOT NULL,
+  state           TEXT NOT NULL,
+  title           TEXT,
+  opencode_sid    TEXT,
+  agent_name      TEXT,
+  model_id        TEXT,
+  root_agent_name TEXT,
+  root_model_id   TEXT,
+  last_seen       INTEGER NOT NULL,
+  ended_at        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
@@ -117,9 +121,9 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=1 if the table is empty. If the DB is at
-// version 1, it applies the v2 migration (adding agent_name and model_id
-// columns to agent_status) and bumps schema_version to 2.
+// schema, and sets schema_version=3 if the table is empty. Pending migrations
+// are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
+// root_agent_name/root_model_id to agent_status.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -149,15 +153,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=2 if the table is empty (fresh database already has
-	// all columns including the v2 additions, so no migration is needed).
+	// Set schema_version=3 if the table is empty (fresh database already has
+	// all columns including the v2 and v3 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (2)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (3)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -182,6 +186,21 @@ func Open(path string) (*DB, error) {
 				return nil, fmt.Errorf("db: migration v1→v2: %w", err)
 			}
 		}
+		version = 2
+	}
+	if version == 2 {
+		// Migration v2 → v3: add root_agent_name and root_model_id to agent_status.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN root_agent_name TEXT",
+			"ALTER TABLE agent_status ADD COLUMN root_model_id TEXT",
+			"UPDATE schema_version SET version = 3",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v2→v3: %w", err)
+			}
+		}
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -202,7 +221,8 @@ func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *stri
 
 // UpsertStatusWithAgent is like UpsertStatus but also accepts agentName and
 // modelID, which are written to agent_status.agent_name and agent_status.model_id
-// using COALESCE (only overwriting when non-nil).
+// using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
+// are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
 func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
 	now := time.Now().UnixMilli()
 	const q = `
@@ -218,6 +238,32 @@ ON CONFLICT(session_name) DO UPDATE SET
 	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, now)
 	if err != nil {
 		return fmt.Errorf("db: upsert status: %w", err)
+	}
+	return nil
+}
+
+// UpsertStatusWithRootAgent is like UpsertStatusWithAgent but also writes
+// root_agent_name and root_model_id on the initial INSERT. On conflict (update),
+// root_agent_name and root_model_id are preserved via COALESCE — once set, they
+// are never overwritten. This is used for session.created and the session.updated
+// insert path so the root agent is fixed at session creation time.
+func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_name) DO UPDATE SET
+  state           = excluded.state,
+  title           = COALESCE(excluded.title, title),
+  opencode_sid    = COALESCE(excluded.opencode_sid, opencode_sid),
+  agent_name      = COALESCE(excluded.agent_name, agent_name),
+  model_id        = COALESCE(excluded.model_id, model_id),
+  root_agent_name = COALESCE(root_agent_name, excluded.root_agent_name),
+  root_model_id   = COALESCE(root_model_id, excluded.root_model_id),
+  last_seen       = excluded.last_seen`
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, agentName, modelID, now)
+	if err != nil {
+		return fmt.Errorf("db: upsert status with root agent: %w", err)
 	}
 	return nil
 }
@@ -502,7 +548,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -519,7 +565,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -528,7 +574,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -672,7 +718,8 @@ func scanStatus(s scanner) (*Status, error) {
 	var endedAt sql.NullInt64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
-		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID, &lastSeen, &endedAt,
+		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
+		&st.RootAgentName, &st.RootModelID, &lastSeen, &endedAt,
 	)
 	if err != nil {
 		return nil, err

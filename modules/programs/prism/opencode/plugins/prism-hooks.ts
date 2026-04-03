@@ -165,6 +165,24 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
       last_seen    = excluded.last_seen
   `);
 
+  // upsertStatusWithRootAgent: sets agent_name, model_id, and — on the initial
+  // INSERT — root_agent_name and root_model_id. On conflict the root fields are
+  // preserved (COALESCE(root_agent_name, excluded.root_agent_name)), so calling
+  // this on an already-existing row will never overwrite the root context.
+  const upsertStatusWithRootAgent = db?.prepare(`
+    INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_name) DO UPDATE SET
+      state           = excluded.state,
+      title           = COALESCE(excluded.title, title),
+      opencode_sid    = COALESCE(excluded.opencode_sid, opencode_sid),
+      agent_name      = COALESCE(excluded.agent_name, agent_name),
+      model_id        = COALESCE(excluded.model_id, model_id),
+      root_agent_name = COALESCE(root_agent_name, excluded.root_agent_name),
+      root_model_id   = COALESCE(root_model_id, excluded.root_model_id),
+      last_seen       = excluded.last_seen
+  `);
+
   // Two-step helpers for session.updated (resumed sessions).
   //
   // Step 1: INSERT OR IGNORE — inserts with state='active' only if no row
@@ -193,8 +211,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const updateAgentModel = db?.prepare(`
-    UPDATE agent_status SET agent_name = ?, model_id = ? WHERE session_name = ?
+  const setRootAgentModelIfAbsent = db?.prepare(`
+    UPDATE agent_status SET
+      agent_name      = ?,
+      model_id        = ?,
+      root_agent_name = COALESCE(root_agent_name, ?),
+      root_model_id   = COALESCE(root_model_id, ?)
+    WHERE session_name = ?
   `);
 
   const insertBusMsg = db?.prepare(`
@@ -204,7 +227,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
 
   const getStatus = db?.prepare(`SELECT state FROM agent_status WHERE session_name = ?`);
 
-  const getAgentModel = db?.prepare(`SELECT agent_name, model_id FROM agent_status WHERE session_name = ?`);
+  const getAgentModel = db?.prepare(`SELECT agent_name, model_id, root_agent_name, root_model_id FROM agent_status WHERE session_name = ?`);
 
   const pendingMsgs = db?.prepare(`
     SELECT id, from_session, to_session, repo, text, urgency, sent_at, delivered_at
@@ -332,16 +355,19 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   setInterval(async () => {
     if (!db || !sessionName || !currentOpencodeSID || !pendingMsgs || !markDelivered) return;
 
-    // Read agent_name and model_id from agent_status for this session.
-    // If non-null, pass them to promptAsync to prevent the session from being
-    // reset to the default agent on every bus delivery (fixes #367).
+    // Read root_agent_name and root_model_id from agent_status for this session.
+    // These are set at session creation and never overwritten by subagent messages,
+    // so using them ensures bus delivery always prompts under the root agent's
+    // permission context (fixes the permission bug from issue #404).
+    // Fall back to agent_name/model_id for sessions created before this migration
+    // (where root_agent_name/root_model_id will be NULL).
     let agentName: string | null = null;
     let modelId: string | null = null;
     if (getAgentModel) {
       try {
-        const row = getAgentModel.get(sessionName) as { agent_name: string | null; model_id: string | null } | undefined;
-        agentName = row?.agent_name ?? null;
-        modelId = row?.model_id ?? null;
+        const row = getAgentModel.get(sessionName) as { agent_name: string | null; model_id: string | null; root_agent_name: string | null; root_model_id: string | null } | undefined;
+        agentName = row?.root_agent_name ?? row?.agent_name ?? null;
+        modelId = row?.root_model_id ?? row?.model_id ?? null;
       } catch (e) { /* best-effort */ }
     }
 
@@ -669,12 +695,15 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             writeEvent("msg_user", { messageId: info.id, text, agent, model });
             writtenMessageIds.add(info.id);
             textByMessageId.delete(info.id);
-            // Persist agent and model into agent_status so the bus delivery
-            // loop can pass them to promptAsync (fixes #367).
-            if (agent && model && db && sessionName && updateAgentModel) {
+            // Persist agent and model into agent_status. For user messages,
+            // also set root_agent_name/root_model_id if not yet present —
+            // the first user message establishes the root agent context used
+            // by bus delivery (fixes #404). Subsequent subagent messages
+            // update agent_name/model_id but leave root fields intact.
+            if (agent && model && db && sessionName && setRootAgentModelIfAbsent) {
               try {
-                updateAgentModel.run(agent, model, sessionName);
-              } catch (e) { console.error("[prism-hooks] updateAgentModel failed:", e); }
+                setRootAgentModelIfAbsent.run(agent, model, agent, model, sessionName);
+              } catch (e) { console.error("[prism-hooks] setRootAgentModelIfAbsent failed:", e); }
             }
           } else if (info.role === "assistant" && info.time?.completed != null) {
             // Only write when the assistant message is fully complete to avoid
