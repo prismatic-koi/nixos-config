@@ -39,13 +39,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=2 (migrations are applied on Open).
+	// Verify schema_version=3 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("schema_version: got %d, want 2", version)
+	if version != 3 {
+		t.Errorf("schema_version: got %d, want 3", version)
 	}
 
 	// Verify WAL mode.
@@ -775,20 +775,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2 migration.
+	// Open via db.Open — should apply the v1→v2 and v2→v3 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=2.
+	// Verify schema_version=3.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 2 {
-		t.Errorf("schema_version after migration: got %d, want 2", version)
+	if version != 3 {
+		t.Errorf("schema_version after migration: got %d, want 3", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -805,8 +805,82 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if s.ModelID != nil {
 		t.Errorf("ModelID: got %v, want nil (newly added column)", s.ModelID)
 	}
+	if s.RootAgentName != nil {
+		t.Errorf("RootAgentName: got %v, want nil (newly added column)", s.RootAgentName)
+	}
+	if s.RootModelID != nil {
+		t.Errorf("RootModelID: got %v, want nil (newly added column)", s.RootModelID)
+	}
 	if s.State != "active" {
 		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestMigration_V2ToV3 verifies that Open applies the v2→v3 migration to an
+// existing DB that was created at schema_version=2 (no root_agent_name/root_model_id).
+func TestMigration_V2ToV3(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v2.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT,
+		  last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (2);
+		INSERT INTO agent_status (session_name, repo, worktree, state, agent_name, model_id, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'worker', 'github-copilot/claude-sonnet-4.6', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v2 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v2 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 3 {
+		t.Errorf("schema_version after migration: got %d, want 3", version)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	if s.AgentName == nil || *s.AgentName != "worker" {
+		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
+	}
+	if s.RootAgentName != nil {
+		t.Errorf("RootAgentName: got %v, want nil (migration does not back-fill)", s.RootAgentName)
+	}
+	if s.RootModelID != nil {
+		t.Errorf("RootModelID: got %v, want nil (migration does not back-fill)", s.RootModelID)
 	}
 }
 
@@ -846,6 +920,74 @@ func TestUpsertStatusWithAgent(t *testing.T) {
 	}
 	if s2.ModelID == nil || *s2.ModelID != "github-copilot/claude-sonnet-4.6" {
 		t.Errorf("ModelID after nil upsert: got %v, want preserved value", s2.ModelID)
+	}
+}
+
+// TestUpsertStatusWithRootAgent verifies that root_agent_name and root_model_id
+// are set on initial insert and never overwritten on subsequent upserts.
+func TestUpsertStatusWithRootAgent(t *testing.T) {
+	d := openTestDB(t)
+
+	agentName := strPtr("worker")
+	modelID := strPtr("github-copilot/claude-sonnet-4.6")
+
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, agentName, modelID); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.AgentName == nil || *s.AgentName != "worker" {
+		t.Errorf("AgentName: got %v, want \"worker\"", s.AgentName)
+	}
+	if s.ModelID == nil || *s.ModelID != "github-copilot/claude-sonnet-4.6" {
+		t.Errorf("ModelID: got %v, want \"github-copilot/claude-sonnet-4.6\"", s.ModelID)
+	}
+	if s.RootAgentName == nil || *s.RootAgentName != "worker" {
+		t.Errorf("RootAgentName: got %v, want \"worker\"", s.RootAgentName)
+	}
+	if s.RootModelID == nil || *s.RootModelID != "github-copilot/claude-sonnet-4.6" {
+		t.Errorf("RootModelID: got %v, want \"github-copilot/claude-sonnet-4.6\"", s.RootModelID)
+	}
+
+	// A subsequent upsert with a different agent (simulating a subagent message)
+	// must update agent_name/model_id but preserve root_agent_name/root_model_id.
+	reviewAgent := strPtr("review")
+	reviewModel := strPtr("github-copilot/gemini-2.5-pro")
+	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, reviewAgent, reviewModel); err != nil {
+		t.Fatalf("UpsertStatusWithAgent (subagent): %v", err)
+	}
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (subagent): %v", err)
+	}
+	if s2.AgentName == nil || *s2.AgentName != "review" {
+		t.Errorf("AgentName after subagent: got %v, want \"review\"", s2.AgentName)
+	}
+	if s2.RootAgentName == nil || *s2.RootAgentName != "worker" {
+		t.Errorf("RootAgentName after subagent: got %v, want preserved \"worker\"", s2.RootAgentName)
+	}
+	if s2.RootModelID == nil || *s2.RootModelID != "github-copilot/claude-sonnet-4.6" {
+		t.Errorf("RootModelID after subagent: got %v, want preserved original model", s2.RootModelID)
+	}
+
+	// UpsertStatusWithRootAgent on existing row must also not overwrite root fields.
+	newAgent := strPtr("coordinator")
+	newModel := strPtr("github-copilot/gpt-4o")
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, newAgent, newModel); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent (second call): %v", err)
+	}
+	s3, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (second root upsert): %v", err)
+	}
+	if s3.RootAgentName == nil || *s3.RootAgentName != "worker" {
+		t.Errorf("RootAgentName after second root upsert: got %v, want still \"worker\"", s3.RootAgentName)
+	}
+	if s3.AgentName == nil || *s3.AgentName != "coordinator" {
+		t.Errorf("AgentName after second root upsert: got %v, want \"coordinator\" (current agent updated)", s3.AgentName)
 	}
 }
 

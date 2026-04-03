@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
@@ -146,12 +147,20 @@ func runCheckinSessionRaw(session string, limit int, before, after *string, type
 //
 // assistantEvents may be nil (session has events but no assistant turns yet);
 // in that case only the header and footer are rendered.
+//
+// Subagent turns (where the agent field differs from the session's root agent)
+// are collapsed into a single summary line in default mode. In verbose mode they
+// are shown inline with a visual indent prefix.
 func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, verbose bool) error {
 	// Fetch state from DB; fall back to tmux if not found.
 	state := ""
+	var rootAgentName string
 	status, err := d.CurrentStatus(session)
 	if err == nil && status != nil {
 		state = status.State
+		if status.RootAgentName != nil {
+			rootAgentName = *status.RootAgentName
+		}
 	}
 	if state == "" {
 		state = tmux.AgentStateOf(session)
@@ -242,10 +251,93 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 	}
 
-	// Render the merged timeline.
-	for _, entry := range timeline {
+	// isSubagentEntry returns true when an entry's agent differs from the root
+	// agent, indicating it belongs to a subagent invocation. When rootAgentName
+	// is empty (pre-migration sessions), all entries are treated as root-agent
+	// entries to preserve current behaviour.
+	isSubagentEntry := func(entry timelineEntry) bool {
+		if rootAgentName == "" {
+			return false
+		}
+		var entryAgent string
+		if entry.isUser {
+			var up payload.MsgUser
+			if err := json.Unmarshal([]byte(entry.event.Payload), &up); err == nil {
+				entryAgent = up.Agent
+			}
+		} else {
+			var ap payload.MsgAssistant
+			if err := json.Unmarshal([]byte(entry.event.Payload), &ap); err == nil {
+				entryAgent = ap.Agent
+			}
+		}
+		return entryAgent != "" && entryAgent != rootAgentName
+	}
+
+	// Render the merged timeline, collapsing subagent runs in default mode.
+	i := 0
+	for i < len(timeline) {
+		entry := timeline[i]
+
+		if isSubagentEntry(entry) && !verbose {
+			// Collapse consecutive subagent turns into a single summary line.
+			// Count tool calls across all subagent entries in this run and
+			// measure the duration from first to last event.
+			runStart := entry.event.CreatedAt
+			runEnd := entry.event.CreatedAt
+			toolCalls := 0
+			subagentName := ""
+
+			j := i
+			for j < len(timeline) && isSubagentEntry(timeline[j]) {
+				e := timeline[j]
+				if e.event.CreatedAt.After(runEnd) {
+					runEnd = e.event.CreatedAt
+				}
+				if !e.isUser {
+					var ap payload.MsgAssistant
+					if err := json.Unmarshal([]byte(e.event.Payload), &ap); err == nil {
+						if subagentName == "" {
+							subagentName = ap.Agent
+						}
+					}
+					msgID := extractMessageID(e.event.Payload)
+					for _, child := range childrenByMsgID[msgID] {
+						if child.eventType == "tool_call" {
+							toolCalls++
+						}
+					}
+				}
+				j++
+			}
+
+			dur := runEnd.Sub(runStart)
+			label := subagentName
+			if label == "" {
+				label = "subagent"
+			}
+			durStr := formatDuration(dur)
+			if toolCalls > 0 {
+				fmt.Printf("  └─ %s — %d tool call", label, toolCalls)
+				if toolCalls != 1 {
+					fmt.Print("s")
+				}
+				fmt.Printf(" · %s\n\n", durStr)
+			} else {
+				fmt.Printf("  └─ %s · %s\n\n", label, durStr)
+			}
+			i = j
+			continue
+		}
+
 		e := entry.event
 		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
+
+		// In verbose mode, prefix subagent lines with an indent marker.
+		prefix := ""
+		if isSubagentEntry(entry) && verbose {
+			prefix = "  │ "
+		}
 
 		if entry.isUser {
 			var up payload.MsgUser
@@ -258,11 +350,12 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			}
 			label := turnLabel(up.Agent, up.Model)
 			if label != "" {
-				fmt.Printf("[%s] user  [%s]\n", ts, label)
+				fmt.Printf("%s[%s] user  [%s]\n", prefix, ts, label)
 			} else {
-				fmt.Printf("[%s] user\n", ts)
+				fmt.Printf("%s[%s] user\n", prefix, ts)
 			}
-			fmt.Printf("%s\n\n", text)
+			fmt.Printf("%s%s\n\n", prefix, text)
+			i++
 			continue
 		}
 
@@ -273,25 +366,40 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 		alabel := turnLabel(ap.Agent, ap.Model)
 		if alabel != "" {
-			fmt.Printf("[%s] assistant  [%s]\n", ts, alabel)
+			fmt.Printf("%s[%s] assistant  [%s]\n", prefix, ts, alabel)
 		} else {
-			fmt.Printf("[%s] assistant\n", ts)
+			fmt.Printf("%s[%s] assistant\n", prefix, ts)
 		}
 		atext := ap.Text
 		if atext == "" {
 			atext = "(no text)"
 		}
-		fmt.Printf("%s\n", atext)
+		fmt.Printf("%s%s\n", prefix, atext)
 
 		msgID := extractMessageID(e.Payload)
 		for _, child := range childrenByMsgID[msgID] {
-			renderChildEvent(child.eventType, child.payload, verbose)
+			renderChildEvent(child.eventType, child.payload, verbose, prefix)
 		}
 		fmt.Println()
+		i++
 	}
 
 	fmt.Println("── end of event log ──")
 	return nil
+}
+
+// formatDuration formats a duration as "Xm Ys" or "<1s".
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return "<1s"
+	}
+	secs := int(d.Seconds())
+	mins := secs / 60
+	secs = secs % 60
+	if mins > 0 {
+		return fmt.Sprintf("%dm %ds", mins, secs)
+	}
+	return fmt.Sprintf("%ds", secs)
 }
 
 // turnLabel builds the "[agent · model]" label for a turn header.
@@ -310,52 +418,53 @@ func turnLabel(agent, model string) string {
 }
 
 // renderChildEvent prints a single child event (tool call, result, permission,
-// or thinking) indented under its parent assistant turn.
-func renderChildEvent(eventType, rawPayload string, verbose bool) {
+// or thinking) indented under its parent assistant turn. prefix is prepended
+// before the leading spaces (used for verbose subagent indentation).
+func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string) {
 	switch eventType {
 	case "tool_call":
 		var p payload.ToolCall
 		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
-			fmt.Printf("  → (tool_call parse error)\n")
+			fmt.Printf("%s  → (tool_call parse error)\n", prefix)
 			return
 		}
 		args := p.Args
 		if !verbose && len(args) > 80 {
 			args = args[:80] + "..."
 		}
-		fmt.Printf("  → %s: %s [✓]\n", p.Tool, args)
+		fmt.Printf("%s  → %s: %s [✓]\n", prefix, p.Tool, args)
 
 	case "tool_result":
 		var p payload.ToolResult
 		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
-			fmt.Printf("  → (tool_result parse error)\n")
+			fmt.Printf("%s  → (tool_result parse error)\n", prefix)
 			return
 		}
 		result := p.Result
 		if !verbose && len(result) > 80 {
 			result = result[:80] + "..."
 		}
-		fmt.Printf("  → result: %s\n", result)
+		fmt.Printf("%s  → result: %s\n", prefix, result)
 
 	case "permission_ask":
 		var p payload.PermissionAsk
 		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
-			fmt.Printf("  [⏳ waiting for approval: (parse error)]\n")
+			fmt.Printf("%s  [⏳ waiting for approval: (parse error)]\n", prefix)
 			return
 		}
-		fmt.Printf("  [⏳ waiting for approval: %s — %s]\n", p.Tool, strings.Join(p.Patterns, ", "))
+		fmt.Printf("%s  [⏳ waiting for approval: %s — %s]\n", prefix, p.Tool, strings.Join(p.Patterns, ", "))
 
 	case "permission_denied":
 		var p payload.PermissionDenied
 		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
-			fmt.Printf("  [❌ denied: (parse error)]\n")
+			fmt.Printf("%s  [❌ denied: (parse error)]\n", prefix)
 			return
 		}
 		tool := p.Tool
 		if tool == "" {
 			tool = "unknown"
 		}
-		fmt.Printf("  [❌ denied: %s]\n", tool)
+		fmt.Printf("%s  [❌ denied: %s]\n", prefix, tool)
 
 	case "thinking":
 		var p payload.Thinking
@@ -367,7 +476,7 @@ func renderChildEvent(eventType, rawPayload string, verbose bool) {
 			if !verbose && len(t) > 120 {
 				t = t[:120] + "..."
 			}
-			fmt.Printf("  [thinking: %s]\n", t)
+			fmt.Printf("%s  [thinking: %s]\n", prefix, t)
 		}
 	}
 }
@@ -468,7 +577,7 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 			msgID := extractMessageID(e.Payload)
 			if msgID != "" {
 				for _, ie := range inlineByMsgID[msgID] {
-					renderChildEvent(ie.eventType, ie.payload, verbose)
+					renderChildEvent(ie.eventType, ie.payload, verbose, "")
 				}
 			}
 			fmt.Println()
@@ -478,28 +587,28 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			renderChildEvent("tool_call", e.Payload, verbose)
+			renderChildEvent("tool_call", e.Payload, verbose, "")
 
 		case "tool_result":
 			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			renderChildEvent("tool_result", e.Payload, verbose)
+			renderChildEvent("tool_result", e.Payload, verbose, "")
 
 		case "permission_ask":
 			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			renderChildEvent("permission_ask", e.Payload, verbose)
+			renderChildEvent("permission_ask", e.Payload, verbose, "")
 
 		case "permission_denied":
 			msgID := extractMessageID(e.Payload)
 			if msgID != "" && assistantMsgIDs[msgID] {
 				continue
 			}
-			renderChildEvent("permission_denied", e.Payload, verbose)
+			renderChildEvent("permission_denied", e.Payload, verbose, "")
 
 		default:
 			// state_change, compaction, error, etc.
