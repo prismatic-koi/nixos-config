@@ -948,9 +948,9 @@ func (m dashModel) View() string {
 	}
 
 	// fixedCore (defined below) is the irreducible column overhead. At widths
-	// below that threshold the column-width math cannot produce a valid layout,
-	// so render a skeleton rather than overflowing rows.
-	const minUsableWidth = 21 // fixedCore = 1+dotW+treePrefixW+2+stateW
+	// below fixedCore+1, the session header word "session" (7 chars) overflows
+	// its 6-char slot when sessionW=0, so render a skeleton instead.
+	const minUsableWidth = 22 // fixedCore+1
 	if m.width < minUsableWidth {
 		return skeletonView(m.width)
 	}
