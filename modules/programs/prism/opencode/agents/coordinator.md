@@ -65,12 +65,16 @@ prism checkin my-session   # …
 
 This wastes cycles and interrupts nothing useful. Spawn the agent, then wait for the finish notification.
 
+### Session overview
+
+Use `prism list-sessions` at any time for a lightweight overview of all active sessions and their state. This is not a check-in and does not involve reading agent output — it is safe to run freely.
+
 ### When check-ins ARE appropriate
 
 Check-ins are an exception path, not the default:
 
 - **Verifying direction early on a long-running task** — a single check-in shortly after spawn to confirm the agent has understood the task and is heading in the right direction. Do this once, not repeatedly.
-- **Diagnosing a stuck or confused agent** — after a finish signal that looks wrong, or after an escalation trigger fires, use `prism checkin <session>` to read the agent's current screen and understand the situation before deciding how to respond.
+- **Diagnosing a stuck or confused agent** — after a finish signal that looks wrong (e.g. a PR was not opened, the summary is incoherent, or the scope looks wrong), use `prism checkin <session>` to read the agent's current screen before deciding how to respond.
 
 ### Redirecting an agent
 
@@ -78,7 +82,7 @@ Use `prism prompt <session> --prompt "..."` to send a targeted correction withou
 
 ### Escalation
 
-If an agent is blocked, confused, or going in the wrong direction across two check-ins: escalate to the user. Do not keep prompting in circles.
+If an agent is blocked, confused, or going in the wrong direction across two diagnostic check-ins: escalate to the user. Do not keep prompting in circles.
 
 ---
 
@@ -117,7 +121,7 @@ Once both reviews pass:
 
 Bring the user back in when:
 
-- An agent is blocked or confused across two check-ins
+- An agent remains blocked or confused across two diagnostic check-ins
 - The PR review cycle exceeds three iterations without convergence
 - The build fails after merge
 - The implementation diverges significantly from the original request and targeted prompts have not corrected it
