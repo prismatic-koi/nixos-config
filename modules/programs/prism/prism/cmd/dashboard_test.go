@@ -841,3 +841,40 @@ func TestEnsureDashSessionIdempotent(t *testing.T) {
 		t.Errorf("expected exactly 1 %q session, found %d", dashSession, count)
 	}
 }
+
+// TestSortDisplayed verifies the sort order produced by sortDisplayed:
+//   - repos sort alphabetically
+//   - within a repo, @main and plain sessions (no @) sort before worktree branches
+//   - worktree branches sort alphabetically after @main
+func TestSortDisplayed(t *testing.T) {
+	t.Parallel()
+
+	input := []agentSession{
+		{Name: "repoB@branch-z"},
+		{Name: "repoA@branch-b"},
+		{Name: "repoA@main"},
+		{Name: "repoB@main"},
+		{Name: "repoA@branch-a"},
+		{Name: "plain-session"}, // no "@" — sorts first within its "repo"
+	}
+
+	sortDisplayed(input)
+
+	want := []string{
+		"plain-session",  // no "@" — "plain-session\x00plain-session"
+		"repoA@main",     // @main sorts first within repoA
+		"repoA@branch-a", // branches alphabetically after @main
+		"repoA@branch-b",
+		"repoB@main", // @main sorts first within repoB
+		"repoB@branch-z",
+	}
+
+	if len(input) != len(want) {
+		t.Fatalf("got %d sessions, want %d", len(input), len(want))
+	}
+	for i, s := range input {
+		if s.Name != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, s.Name, want[i])
+		}
+	}
+}

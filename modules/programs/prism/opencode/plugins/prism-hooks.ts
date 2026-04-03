@@ -217,6 +217,12 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     UPDATE bus_messages SET delivered_at = ? WHERE id = ?
   `);
 
+  // activeCoord: look up the coordinator for a given repo by session name.
+  // We only filter on ended_at IS NULL — not on last_seen. A coordinator is
+  // considered active as long as its tmux session has not ended (tmux-session-end
+  // writes ended_at). Filtering on last_seen would incorrectly exclude an idle
+  // coordinator (one waiting for a message) because idle coordinators don't
+  // update last_seen. This was the original bug in issue #390.
   const activeCoord = db?.prepare(`
     SELECT session_name FROM agent_status
     WHERE session_name = ? AND ended_at IS NULL
