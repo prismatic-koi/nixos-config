@@ -219,7 +219,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
 
   const activeCoord = db?.prepare(`
     SELECT session_name FROM agent_status
-    WHERE session_name = ? AND ended_at IS NULL AND last_seen > ?
+    WHERE session_name = ? AND ended_at IS NULL
   `);
 
   const setEnded = db?.prepare(`
@@ -307,8 +307,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
     try {
       const coordName = `${repo}@main`;
       if (sessionName === coordName) return;
-      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-      const coord = activeCoord.get(coordName, fiveMinutesAgo) as { session_name: string } | undefined;
+      const coord = activeCoord.get(coordName) as { session_name: string } | undefined;
       if (coord) {
         insertBusMsg.run(crypto.randomUUID(), sessionName, coordName, repo, message, "normal", Date.now());
       }
