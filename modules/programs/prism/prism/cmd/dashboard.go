@@ -964,7 +964,6 @@ func (m dashModel) View() string {
 	const dotW = 2
 	const sessionWStart = 20 // starting width; grows as columns are dropped
 	const sessionWCap = 40   // maximum session width before the rest goes to title
-	const sessionWMin = 14   // minimum in the session+state-only layout
 	const statWFull = 22     // "2 files +122 -14"
 	const statWCompact = 10  // "+122 -14"
 	const modelWFull = 22    // e.g. "claude-sonnet-4-6    "
@@ -1051,21 +1050,14 @@ func (m dashModel) View() string {
 	}
 	if titleW < 0 {
 		// Drop type.  After this only session + state remain; grow session to
-		// fill all available space, floored at sessionWMin when possible and
-		// clamped to 0 on extremely narrow terminals.
+		// fill all available space, clamped to 0 on extremely narrow terminals.
 		showType = false
 		avail := m.width - fixedCore
-		switch {
-		case avail >= sessionWMin:
+		if avail > 0 {
 			sessionW = avail
-		case avail > 0:
-			sessionW = avail
-		default:
+		} else {
 			sessionW = 0
 		}
-		titleW = 0
-	}
-	if titleW < 0 {
 		titleW = 0
 	}
 
@@ -1098,7 +1090,7 @@ func (m dashModel) View() string {
 	if showStat {
 		header += fmt.Sprintf("  %-*s", statW, changesHeader)
 	}
-	if titleW > 0 {
+	if titleW >= 5 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
 	sb.WriteString(styleHeader.Render(header))
