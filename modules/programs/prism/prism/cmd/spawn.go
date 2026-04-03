@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -52,10 +53,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
 	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
-	opts := sessionOpts{
-		prompt:   promptFlag,
-		agent:    agentFlag,
-		headless: !fromKeybind && !attachFlag,
+	opts := session.Opts{
+		Prompt:   promptFlag,
+		Agent:    agentFlag,
+		Headless: !fromKeybind && !attachFlag,
 	}
 
 	// Resolve the bare repo root from the current pane path.
@@ -76,7 +77,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	return ensureAndSwitchSession(worktreePath, bareRoot, opts)
+	return ensureAndSwitch(worktreePath, bareRoot, opts)
 }
 
 // resolveBareRoot returns the bare repo root to operate on.

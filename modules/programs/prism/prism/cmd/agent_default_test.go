@@ -3,12 +3,14 @@ package cmd
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 func TestDefaultAgent_CoordinatorForMain(t *testing.T) {
-	got := defaultAgent("/home/user/repos/project/main", "")
+	got := session.DefaultAgent("/home/user/repos/project/main", "")
 	if got != "coordinator" {
-		t.Errorf("defaultAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
+		t.Errorf("DefaultAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
 	}
 }
 
@@ -23,9 +25,9 @@ func TestDefaultAgent_WorkerForNonMain(t *testing.T) {
 	}
 	for _, dir := range cases {
 		t.Run(filepath.Base(dir), func(t *testing.T) {
-			got := defaultAgent(dir, "")
+			got := session.DefaultAgent(dir, "")
 			if got != "worker" {
-				t.Errorf("defaultAgent(%q, %q) = %q, want %q", dir, "", got, "worker")
+				t.Errorf("DefaultAgent(%q, %q) = %q, want %q", dir, "", got, "worker")
 			}
 		})
 	}
@@ -41,42 +43,42 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 		{"/home/user/repos/project/main", "worker"},
 	}
 	for _, tc := range cases {
-		got := defaultAgent(tc.dir, tc.agent)
+		got := session.DefaultAgent(tc.dir, tc.agent)
 		if got != tc.agent {
-			t.Errorf("defaultAgent(%q, %q) = %q, want %q", tc.dir, tc.agent, got, tc.agent)
+			t.Errorf("DefaultAgent(%q, %q) = %q, want %q", tc.dir, tc.agent, got, tc.agent)
 		}
 	}
 }
 
 func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	cases := []struct {
-		opts sessionOpts
+		opts session.Opts
 		want string
 	}{
 		// With a stored opencode session ID — should use -s <id>.
-		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc123"}, "opencode --agent coordinator -s ses_abc123"},
-		{sessionOpts{agent: "worker", opencodeSession: "ses_xyz789"}, "opencode --agent worker -s ses_xyz789"},
+		{session.Opts{Agent: "coordinator", OpencodeSession: "ses_abc123"}, "opencode --agent coordinator -s ses_abc123"},
+		{session.Opts{Agent: "worker", OpencodeSession: "ses_xyz789"}, "opencode --agent worker -s ses_xyz789"},
 		// No stored session — no session flag.
-		{sessionOpts{agent: "coordinator"}, "opencode --agent coordinator"},
-		{sessionOpts{agent: "worker"}, "opencode --agent worker"},
-		// fresh=true suppresses the stored session ID even if set.
-		{sessionOpts{agent: "worker", fresh: true, opencodeSession: "ses_abc123"}, "opencode --agent worker"},
+		{session.Opts{Agent: "coordinator"}, "opencode --agent coordinator"},
+		{session.Opts{Agent: "worker"}, "opencode --agent worker"},
+		// Fresh=true suppresses the stored session ID even if set.
+		{session.Opts{Agent: "worker", Fresh: true, OpencodeSession: "ses_abc123"}, "opencode --agent worker"},
 		// Safety-net fallback: empty agent still yields "worker".
-		{sessionOpts{opencodeSession: "ses_abc123"}, "opencode --agent worker -s ses_abc123"},
-		{sessionOpts{}, "opencode --agent worker"},
+		{session.Opts{OpencodeSession: "ses_abc123"}, "opencode --agent worker -s ses_abc123"},
+		{session.Opts{}, "opencode --agent worker"},
 		// Prompt with no special characters.
-		{sessionOpts{agent: "worker", prompt: "fix the login bug"}, "opencode --agent worker --prompt 'fix the login bug'"},
+		{session.Opts{Agent: "worker", Prompt: "fix the login bug"}, "opencode --agent worker --prompt 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.
-		{sessionOpts{agent: "worker", prompt: "it's broken"}, "opencode --agent worker --prompt 'it'\\''s broken'"},
+		{session.Opts{Agent: "worker", Prompt: "it's broken"}, "opencode --agent worker --prompt 'it'\\''s broken'"},
 		// Prompt with shell metacharacters that are safe inside single quotes.
-		{sessionOpts{agent: "worker", prompt: "run `make test` and fix $ERRORS"}, "opencode --agent worker --prompt 'run `make test` and fix $ERRORS'"},
+		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "opencode --agent worker --prompt 'run `make test` and fix $ERRORS'"},
 		// Prompt + session ID — both flags present.
-		{sessionOpts{agent: "coordinator", opencodeSession: "ses_abc", prompt: "review pr"}, "opencode --agent coordinator -s ses_abc --prompt 'review pr'"},
+		{session.Opts{Agent: "coordinator", OpencodeSession: "ses_abc", Prompt: "review pr"}, "opencode --agent coordinator -s ses_abc --prompt 'review pr'"},
 	}
 	for _, tc := range cases {
-		got := buildOpencodeCmd(tc.opts)
+		got := session.BuildOpencodeCmd(tc.opts)
 		if got != tc.want {
-			t.Errorf("buildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
+			t.Errorf("BuildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
 		}
 	}
 }

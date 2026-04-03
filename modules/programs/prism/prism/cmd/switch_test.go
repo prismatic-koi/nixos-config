@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // buildPrismBinary compiles the prism binary from the module root into a temp
@@ -105,7 +107,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	runInNewWindow(t, s, "home", "/tmp", switchArgs)
 
 	// Derive the expected session name via the same helper used by the binary.
-	expectedSession := sessionNameFor(targetDir, "")
+	expectedSession := session.NameFor(targetDir, "")
 
 	// Poll until the client moves to the expected session.
 	deadline := time.Now().Add(10 * time.Second)
@@ -156,7 +158,7 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	switchArgs := fmt.Sprintf("%s switch --path %s", prismBin, targetDir)
 	runInNewWindow(t, s, "sessionA", "/tmp", switchArgs)
 
-	expectedSession := sessionNameFor(targetDir, "")
+	expectedSession := session.NameFor(targetDir, "")
 
 	// Wait for clientA to land on the target session.
 	deadline := time.Now().Add(10 * time.Second)

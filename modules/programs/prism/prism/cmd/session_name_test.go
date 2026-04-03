@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // initGitRepo creates a minimal git repo in dir with one commit on branchName.
@@ -59,30 +61,35 @@ func detachHead(t *testing.T, dir string) {
 
 // ── worktreeBranchComponent ──────────────────────────────────────────────────
 
+// ── worktreeBranchComponent (via NameFor with a project root) ─────────────────
+
 func TestWorktreeBranchComponent_SimpleBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "main")
-	got := worktreeBranchComponent(dir)
-	if got != "main" {
-		t.Errorf("worktreeBranchComponent = %q, want %q", got, "main")
+	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+	got := session.NameFor(dir, projectRoot)
+	if got != "myrepo@main" {
+		t.Errorf("NameFor = %q, want %q", got, "myrepo@main")
 	}
 }
 
 func TestWorktreeBranchComponent_SlashInBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "feat/add-foo")
-	got := worktreeBranchComponent(dir)
-	if got != "feat--add-foo" {
-		t.Errorf("worktreeBranchComponent = %q, want %q", got, "feat--add-foo")
+	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+	got := session.NameFor(dir, projectRoot)
+	if got != "myrepo@feat--add-foo" {
+		t.Errorf("NameFor = %q, want %q", got, "myrepo@feat--add-foo")
 	}
 }
 
 func TestWorktreeBranchComponent_MultiSlashBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir, "users/alice/fix-login")
-	got := worktreeBranchComponent(dir)
-	if got != "users--alice--fix-login" {
-		t.Errorf("worktreeBranchComponent = %q, want %q", got, "users--alice--fix-login")
+	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+	got := session.NameFor(dir, projectRoot)
+	if got != "myrepo@users--alice--fix-login" {
+		t.Errorf("NameFor = %q, want %q", got, "myrepo@users--alice--fix-login")
 	}
 }
 
@@ -90,19 +97,20 @@ func TestWorktreeBranchComponent_DetachedHead(t *testing.T) {
 	dir := t.TempDir()
 	shortHash := initGitRepo(t, dir, "main")
 	detachHead(t, dir)
-	got := worktreeBranchComponent(dir)
-	if got != shortHash {
-		t.Errorf("worktreeBranchComponent (detached HEAD) = %q, want short hash %q", got, shortHash)
+	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+	got := session.NameFor(dir, projectRoot)
+	if got != "myrepo@"+shortHash {
+		t.Errorf("NameFor (detached HEAD) = %q, want myrepo@%q", got, shortHash)
 	}
 }
 
 func TestWorktreeBranchComponent_NonGitDir(t *testing.T) {
 	dir := t.TempDir()
-	// No git repo — both git commands fail.
-	got := worktreeBranchComponent(dir)
-	want := filepath.Base(dir)
+	projectRoot := filepath.Join(filepath.Dir(dir), "myrepo")
+	got := session.NameFor(dir, projectRoot)
+	want := "myrepo@" + filepath.Base(dir)
 	if got != want {
-		t.Errorf("worktreeBranchComponent (non-git) = %q, want filepath.Base %q", got, want)
+		t.Errorf("NameFor (non-git) = %q, want %q", got, want)
 	}
 }
 
@@ -116,17 +124,17 @@ func TestSessionNameFor_WithProjectRoot_SlashBranch(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	initGitRepo(t, worktree, "feat/add-foo")
-	got := sessionNameFor(worktree, projectRoot)
+	got := session.NameFor(worktree, projectRoot)
 	if got != "nixos-config@feat--add-foo" {
-		t.Errorf("sessionNameFor = %q, want %q", got, "nixos-config@feat--add-foo")
+		t.Errorf("NameFor = %q, want %q", got, "nixos-config@feat--add-foo")
 	}
 }
 
 func TestSessionNameFor_WithoutProjectRoot(t *testing.T) {
 	// No project root — falls straight through to filepath.Base path.
-	got := sessionNameFor("/home/user/obsidian", "")
+	got := session.NameFor("/home/user/obsidian", "")
 	if got != "obsidian" {
-		t.Errorf("sessionNameFor = %q, want %q", got, "obsidian")
+		t.Errorf("NameFor = %q, want %q", got, "obsidian")
 	}
 }
 
@@ -138,9 +146,9 @@ func TestSessionNameFor_DotInProjectRoot(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 	initGitRepo(t, worktree, "main")
-	got := sessionNameFor(worktree, projectRoot)
+	got := session.NameFor(worktree, projectRoot)
 	// Dots in project name are replaced with underscores.
 	if got != "my_repo@main" {
-		t.Errorf("sessionNameFor = %q, want %q", got, "my_repo@main")
+		t.Errorf("NameFor = %q, want %q", got, "my_repo@main")
 	}
 }

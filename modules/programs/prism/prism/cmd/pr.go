@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 var prCmd = &cobra.Command{
@@ -53,12 +54,12 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
-		opts := sessionOpts{
-			prompt:   promptFlag,
-			agent:    agentFlag,
-			headless: !attachFlag,
+		opts := session.Opts{
+			Prompt:   promptFlag,
+			Agent:    agentFlag,
+			Headless: !attachFlag,
 		}
-		return ensureAndSwitchSession(worktreePath, bareRoot, opts)
+		return ensureAndSwitch(worktreePath, bareRoot, opts)
 	},
 }
 

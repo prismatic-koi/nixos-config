@@ -20,6 +20,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -886,7 +887,7 @@ func ensureSessionAndSwitch(sessionName, target string) string {
 		return fmt.Sprintf("worktree directory not found: %s", worktreePath)
 	}
 
-	if err := tmux.NewSessionDetached(sessionName, worktreePath); err != nil {
+	if err := session.Create(sessionName, worktreePath, session.Opts{Layout: session.LayoutBare}); err != nil {
 		return fmt.Sprintf("could not recreate session: %v", err)
 	}
 
