@@ -18,6 +18,7 @@
           default = {
             KUBECONFIG = "$HOME/.config/kube/agents-config";
             AWS_CONFIG_FILE = "$HOME/.config/aws/readonly-config";
+            GIT_EDITOR = "true";
           };
           description = "Environment variables to set for the AI agent (opencode)";
         };

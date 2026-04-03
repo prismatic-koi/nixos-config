@@ -48,11 +48,42 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 
 ## Monitoring
 
-- `prism list-sessions` for an overview of all active sessions and their state.
-- `prism checkin <session>` to read the agent's current screen — non-invasive, does not interrupt.
-- `prism prompt <session> --prompt "..."` to redirect without switching sessions.
-- Calibrate check-in timing to the task: a small config change warrants a check-in after a few minutes; a multi-file refactor may need longer.
-- If an agent is blocked, confused, or going in the wrong direction across two check-ins: escalate to the user. Do not keep prompting in circles.
+### Primary signal: the finish notification
+
+The "has finished" notification (see [Worker notifications](#worker-notifications)) is the primary mechanism for knowing an agent has completed its work. **Wait for it.** Do not attempt to infer completion from a check-in. Do not begin your own PR review (`@review`, `gh pr diff`) until the finish notification has arrived.
+
+### Polling anti-pattern — prohibited
+
+Calling `prism checkin` repeatedly in a loop to watch for completion is an anti-pattern. Do not do this:
+
+```
+# BAD — polling loop
+prism checkin my-session   # not done yet, check again in a moment
+prism checkin my-session   # still going…
+prism checkin my-session   # …
+```
+
+This wastes cycles and interrupts nothing useful. Spawn the agent, then wait for the finish notification.
+
+### Session overview
+
+Use `prism list-sessions` at any time for a lightweight overview of all active sessions and their state. This is not a check-in and does not involve reading agent output — it is safe to run freely.
+
+### When check-ins ARE appropriate
+
+Check-ins are an exception path, not the default:
+
+- **Verifying direction early on a long-running task** — a single check-in shortly after spawn to confirm the agent has understood the task and is heading in the right direction. Do this once, not repeatedly.
+- **Diagnosing a stuck or confused agent** — after a finish signal that looks wrong (e.g. a PR was not opened, the summary is incoherent, or the scope looks wrong), use `prism checkin <session>` to read the agent's current screen before deciding how to respond.
+- **After an escalation trigger fires** — if an escalation trigger (e.g. build failure after merge, repeated review-cycle divergence) points to a confused or misdirected agent, use a check-in to diagnose the state before deciding whether to redirect or escalate to the user.
+
+### Redirecting an agent
+
+Use `prism prompt <session> --prompt "..."` to send a targeted correction without switching sessions.
+
+### Escalation
+
+If an agent is blocked, confused, or going in the wrong direction across two diagnostic check-ins: escalate to the user. Do not keep prompting in circles.
 
 ---
 
