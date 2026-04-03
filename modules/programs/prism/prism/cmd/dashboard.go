@@ -1073,8 +1073,8 @@ func (m dashModel) renderSessionRow(
 	if treePrefix == "" {
 		// Top-level row: full session name padded to totalSessionW.
 		name := s.Name
-		if len(name) > totalSessionW {
-			name = name[:totalSessionW-1] + "…"
+		if utf8.RuneCountInString(name) > totalSessionW {
+			name = string([]rune(name)[:totalSessionW-1]) + "…"
 		}
 		sessionArea = fmt.Sprintf("%-*s", totalSessionW, name)
 	} else {
@@ -1085,8 +1085,8 @@ func (m dashModel) renderSessionRow(
 			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
 		}
 		branch := sessionBranch(s.Name)
-		if len(branch) > sessionW {
-			branch = branch[:sessionW-1] + "…"
+		if utf8.RuneCountInString(branch) > sessionW {
+			branch = string([]rune(branch)[:sessionW-1]) + "…"
 		}
 		sessionArea = paddedPrefix + fmt.Sprintf("%-*s", sessionW, branch)
 	}
