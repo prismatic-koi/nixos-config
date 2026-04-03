@@ -121,6 +121,7 @@
         "nix flake metadata*" = "allow";
         "nix build *" = "allow";
         "nix flake check *" = "allow";
+        "nix eval *" = "allow";
         # Go operations
         "go version*" = "allow";
         "go env*" = "allow";
@@ -140,9 +141,11 @@
         "playwright-cli *" = "allow";
         # pdf text extraction
         "pdftotext *" = "allow";
+        # manual pages
+        "man *" = "allow";
       };
 
-      # Additional write operations for build agent
+      # Additional write operations for worker agent
       writeBashCommands = {
         # git write operations
         "git *" = "allow";
@@ -391,7 +394,7 @@
       '';
       # Model identifiers for the selected provider.
       # "primary"     — capable reasoning model for coordinator and plan agents.
-      # "secondary"   — capable model for build, review, and ac agents (= primary for
+      # "secondary"   — capable model for worker, review, and ac agents (= primary for
       #                 Anthropic/Copilot so there is zero behaviour change on those machines).
       # "lightweight" — cheaper/faster model for mechanical subagents
       #                 (explore, title, summary, compaction).
@@ -488,9 +491,9 @@
             settings = {
               model = models.primary;
               agent = {
-                build = {
+                worker = {
                   model = models.secondary;
-                  description = "Default build agent with full tool access";
+                  description = "Default worker agent with full tool access";
                   mode = "primary";
                   color = config.theme.red;
                   permission = {

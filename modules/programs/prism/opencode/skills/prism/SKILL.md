@@ -97,7 +97,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
-| `--agent <name>` | Opencode agent to use (`build` or `plan`). Defaults to `build`. |
+| `--agent <name>` | Opencode agent to use (`worker` or `plan`). Defaults to `worker`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
 
 ## Behaviour

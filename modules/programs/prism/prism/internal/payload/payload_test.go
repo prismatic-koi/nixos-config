@@ -34,7 +34,7 @@ func TestMsgUser_Roundtrip(t *testing.T) {
 	in := payload.MsgUser{
 		MessageID: "msg-abc123",
 		Text:      "fix the failing test",
-		Agent:     "build",
+		Agent:     "worker",
 		Model:     "github-copilot/claude-sonnet-4.6",
 	}
 	out := roundtrip(t, in)
@@ -68,7 +68,7 @@ func TestMsgAssistant_Roundtrip(t *testing.T) {
 	in := payload.MsgAssistant{
 		MessageID: "msg-def456",
 		Text:      "Let me look at the test...",
-		Agent:     "build",
+		Agent:     "worker",
 		Model:     "github-copilot/claude-opus-4-5",
 	}
 	out := roundtrip(t, in)
@@ -180,7 +180,7 @@ func TestErrorEvent_Roundtrip(t *testing.T) {
 func TestJSONFieldNames(t *testing.T) {
 	// Unmarshal a hand-crafted JSON blob that uses the exact field names the
 	// plugin writes. If any field name is wrong, the field will be zero.
-	raw := `{"messageId":"abc","text":"hello","agent":"build","model":"gh/claude"}`
+	raw := `{"messageId":"abc","text":"hello","agent":"worker","model":"gh/claude"}`
 	var mu payload.MsgUser
 	if err := json.Unmarshal([]byte(raw), &mu); err != nil {
 		t.Fatalf("unmarshal MsgUser: %v", err)
@@ -188,8 +188,8 @@ func TestJSONFieldNames(t *testing.T) {
 	if mu.MessageID != "abc" {
 		t.Errorf("MsgUser.MessageID: got %q, want \"abc\" (check json:\"messageId\" tag)", mu.MessageID)
 	}
-	if mu.Agent != "build" {
-		t.Errorf("MsgUser.Agent: got %q, want \"build\" (check json:\"agent\" tag)", mu.Agent)
+	if mu.Agent != "worker" {
+		t.Errorf("MsgUser.Agent: got %q, want \"worker\" (check json:\"agent\" tag)", mu.Agent)
 	}
 	if mu.Model != "gh/claude" {
 		t.Errorf("MsgUser.Model: got %q, want \"gh/claude\" (check json:\"model\" tag)", mu.Model)

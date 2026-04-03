@@ -441,7 +441,7 @@ func promptBranchInput(prompt string) string {
 // sessionOpts carries optional parameters for agent launch when creating a new session.
 type sessionOpts struct {
 	prompt          string // passed as opencode --prompt "..."
-	agent           string // passed as opencode --agent <name>; defaults to "coordinator" for main, "build" otherwise
+	agent           string // passed as opencode --agent <name>; defaults to "coordinator" for main, "worker" otherwise
 	headless        bool   // if true, create the session but don't switch any client to it
 	fresh           bool   // if true, skip the stored opencode session ID and start fresh
 	opencodeSession string // opencode session ID to resume; "" means fresh start
@@ -455,7 +455,7 @@ func buildOpencodeCmd(opts sessionOpts) string {
 	if agent == "" {
 		// Fallback safety net; ensureAndSwitchSession always sets opts.agent
 		// before calling here.
-		agent = "build"
+		agent = "worker"
 	}
 	cmd := "opencode --agent " + agent
 	if opts.opencodeSession != "" && !opts.fresh {
@@ -522,10 +522,10 @@ func worktreeBranchComponent(dir string) string {
 
 // defaultAgent returns the agent to use for the given directory.
 // If explicit is non-empty it is returned unchanged.
-// Otherwise "coordinator" is returned for the "main" worktree and "build" for
+// Otherwise "coordinator" is returned for the "main" worktree and "worker" for
 // everything else (including the scratchpad, which resolves to the home dir).
 // Only an exact match on "main" triggers coordinator — case variants and
-// substrings (e.g. "Main", "maintain") resolve to "build".
+// substrings (e.g. "Main", "maintain") resolve to "worker".
 func defaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -533,7 +533,7 @@ func defaultAgent(directory, explicit string) string {
 	if filepath.Base(directory) == "main" {
 		return "coordinator"
 	}
-	return "build"
+	return "worker"
 }
 
 func ensureAndSwitchSession(path string, projectRoot string, opts sessionOpts) error {

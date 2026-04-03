@@ -200,7 +200,7 @@ nixfmt .
 
 ## Workflows
 
-### PR workflow (build agents on branches)
+### PR workflow (worker agents on branches)
 
 If the change touches prism Go source, run the Go build and tests first — see the [Prism](#prism) section for details.
 
