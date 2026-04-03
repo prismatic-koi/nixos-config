@@ -983,36 +983,43 @@ func (m dashModel) View() string {
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
-		// A session is a "child" if the immediately preceding session is the
-		// top-level row for the same repo (i.e. @main or a plain no-@ session)
-		// AND this session is not @main itself. This prevents sibling branches
-		// from being rendered as children of each other when @main is absent.
+		// A session is a "child" if the sorted run for its repo has a top-level
+		// row (@main or plain no-@ session) and this session is not that row.
+		// This correctly handles: single repo with no @main (all top-level),
+		// @main + N branches (all N are children), and multi-repo lists.
 		isTopLevel := func(name string) bool {
 			branch := sessionBranch(name)
 			return branch == name || branch == "@main"
 		}
-		for i, s := range sessions {
-			isChild := false
-			if i > 0 {
-				prevName := sessions[i-1].Name
-				prevRepo := sessionRepo(prevName)
-				thisRepo := sessionRepo(s.Name)
-				thisBranch := sessionBranch(s.Name)
-				isChild = prevRepo == thisRepo && isTopLevel(prevName) && thisBranch != s.Name && thisBranch != "@main"
+		// groupHasTopLevel returns true if the contiguous run of same-repo
+		// sessions that includes sessions[i] contains at least one top-level row.
+		groupHasTopLevel := func(i int) bool {
+			thisRepo := sessionRepo(sessions[i].Name)
+			// Walk back to the start of this repo's run.
+			start := i
+			for start > 0 && sessionRepo(sessions[start-1].Name) == thisRepo {
+				start--
 			}
+			for k := start; k < len(sessions) && sessionRepo(sessions[k].Name) == thisRepo; k++ {
+				if isTopLevel(sessions[k].Name) {
+					return true
+				}
+			}
+			return false
+		}
+		for i, s := range sessions {
+			isChild := !isTopLevel(s.Name) && groupHasTopLevel(i)
 			var treePrefix string
 			if isChild {
 				// Look ahead to determine if this is the last child in the group.
 				isLastChild := true
 				thisRepo := sessionRepo(s.Name)
 				for j := i + 1; j < len(sessions); j++ {
-					nextRepo := sessionRepo(sessions[j].Name)
-					nextBranch := sessionBranch(sessions[j].Name)
-					if nextRepo == thisRepo && nextBranch != sessions[j].Name && nextBranch != "@main" {
-						isLastChild = false
+					if sessionRepo(sessions[j].Name) != thisRepo {
 						break
 					}
-					if nextRepo != thisRepo {
+					if !isTopLevel(sessions[j].Name) {
+						isLastChild = false
 						break
 					}
 				}
