@@ -274,7 +274,7 @@ var cleanupCmd = &cobra.Command{
 
 		// Only require tmux when we need to auto-detect the current session.
 		if sessionFlag == "" && os.Getenv("TMUX") == "" {
-			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+W)")
+			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+q)")
 		}
 
 		var session string
@@ -289,7 +289,7 @@ var cleanupCmd = &cobra.Command{
 		}
 
 		if !strings.Contains(session, "@") {
-			return fmt.Errorf("'%s' is not a worktree session\n  prefix+W only works in project@branch sessions", session)
+			return fmt.Errorf("'%s' is not a worktree session\n  prefix+q only works in project@branch sessions", session)
 		}
 
 		parts := strings.SplitN(session, "@", 2)

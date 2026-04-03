@@ -112,12 +112,10 @@ in
               bind-key X kill-window
               # close pane without confirmation
               bind-key x kill-pane
-              # kill current session
-              bind-key q kill-session
+              # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
+              bind-key q display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # restart prism (prefix+R)
               bind-key R run-shell '${prism} restart'
-              # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
-              bind-key W display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # easy config reload
               bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
 
