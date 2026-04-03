@@ -1017,18 +1017,21 @@ func (m dashModel) View() string {
 		showStat = false
 		titleW = m.width - usedWidth() - 2
 	}
-	if titleW < 10 {
-		// Drop title (too narrow to be useful).
+	// At this point all optional columns have been shed as needed. A small
+	// positive titleW (< 10) is still useful: it shows a truncated title.
+	// Only suppress title when it would be truly negative (layout overflow).
+	if titleW < 0 {
 		titleW = 0
 	}
 	if titleW == 0 && !showStat {
-		// Drop type.
+		// Drop type — only reached when stat and title are both gone.
 		showType = false
-		// Let session grow into freed space, but keep stateW intact.
-		// Available for session: m.width - fixedCore - stateW already included,
-		// recalculate: avail = m.width - (1 + dotW + treePrefixW + 2 + stateW)
+		// Let session grow into freed space; guard against underflow on very
+		// narrow terminals (avail could be 0 or negative).
 		avail := m.width - fixedCore
-		sessionW = max(sessionWMin, avail)
+		if avail > sessionWMin {
+			sessionW = avail
+		}
 	}
 
 	var sb strings.Builder
