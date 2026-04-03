@@ -1,7 +1,7 @@
-// Package cmd white-box tests for dashModel.
+// Package cmd white-box tests for dashModel, popupModel, and persistentModel.
 //
-// These tests access unexported dashModel fields and helpers directly to verify
-// that the CallerClient bug fix (capturing callerClient at init time and using
+// These tests access unexported fields and helpers directly to verify that the
+// CallerClient bug fix (capturing callerClient at init time and using
 // dashSwitchTarget to select the right client) is exercised by the actual model
 // code, not just by the underlying tmux primitives.
 package cmd
@@ -170,79 +170,46 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 	return clientName
 }
 
-// ─── dashSwitchTarget unit tests ──────────────────────────────────────────────
+// ─── persistentModel.switchTarget unit test ───────────────────────────────────
 
-// TestDashSwitchTarget exercises all branches of the dashSwitchTarget helper,
-// which encapsulates the client-selection logic from the Enter handler.
-//
-// This is the primary regression test for the CallerClient bug: the old code
-// called tmux.CallerClient() live inside the handler, which returned the global
-// stamp that could be overwritten by a concurrent dashboard open. The fix
-// extracts the logic into dashSwitchTarget, which operates on immutable values
-// captured at model-init time.
-func TestDashSwitchTarget(t *testing.T) {
+// TestPersistentSwitchTarget verifies that persistentModel.switchTarget() always
+// returns m.client (the client currently viewing the dashboard). In the new
+// architecture, persistent mode no longer has a callerClient field; it operates
+// directly on the viewing client for both Enter navigation and q/esc return.
+func TestPersistentSwitchTarget(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name         string
-		popup        bool
-		client       string
-		callerClient string
-		want         string
-	}{
-		{
-			name:         "persistent mode uses callerClient",
-			popup:        false,
-			client:       "process-client",
-			callerClient: "caller-client",
-			want:         "caller-client",
-		},
-		{
-			name:         "persistent mode falls back to client when callerClient empty",
-			popup:        false,
-			client:       "process-client",
-			callerClient: "",
-			want:         "process-client",
-		},
-		{
-			name:         "popup mode always uses client",
-			popup:        true,
-			client:       "popup-client",
-			callerClient: "stale-caller",
-			want:         "popup-client",
-		},
-		{
-			name:         "popup mode with empty callerClient uses client",
-			popup:        true,
-			client:       "popup-client",
-			callerClient: "",
-			want:         "popup-client",
-		},
-	}
-
-	for _, tc := range tests {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			got := dashSwitchTarget(tc.popup, tc.client, tc.callerClient)
-			if got != tc.want {
-				t.Errorf("dashSwitchTarget(%v, %q, %q) = %q, want %q",
-					tc.popup, tc.client, tc.callerClient, got, tc.want)
-			}
-		})
+	m := newPersistentModel("viewing-client", "some-session")
+	if got := m.switchTarget(); got != "viewing-client" {
+		t.Errorf("persistentModel.switchTarget() = %q, want %q", got, "viewing-client")
 	}
 }
 
-// TestDashModelEnterCursorActivation verifies that in persistent-session mode
-// (popup=false), pressing Enter when the cursor is inactive activates the
-// cursor without switching sessions — matching the j/k behaviour.
+// TestPopupSwitchTarget verifies that popup mode always uses m.client
+// (the popup runs inside the caller's own tmux client — no indirection needed).
+func TestPopupSwitchTarget(t *testing.T) {
+	t.Parallel()
+
+	m := popupModel{
+		client: "popup-client",
+	}
+	if got := m.switchTarget(); got != "popup-client" {
+		t.Errorf("popupModel.switchTarget() = %q, want %q", got, "popup-client")
+	}
+}
+
+// TestDashModelEnterCursorActivation verifies that in persistent-session mode,
+// pressing Enter when the cursor is inactive activates the cursor without
+// switching sessions — matching the j/k behaviour.
 func TestDashModelEnterCursorActivation(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
 		popup:        false,
 		cursorActive: false,
-		sessions:     []agentSession{{Name: "some-session"}},
+		dashShared: dashShared{
+			sessions: []agentSession{{Name: "some-session"}},
+		},
 	}
 
 	updatedModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -303,8 +270,10 @@ func TestDashFilterActivation(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		displayed: []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			displayed: []agentSession{{Name: "alpha"}, {Name: "beta"}},
+		},
 	}
 	updatedModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	dm := updatedModel.(dashModel)
@@ -331,9 +300,11 @@ func TestDashFilterNarrowsList(t *testing.T) {
 		{Name: "aleph"},
 	}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions,
-		filterActive: true,
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions,
+			filterActive: true,
+		},
 	}
 
 	// Type "al" — should match "alpha" and "aleph", not "beta".
@@ -362,10 +333,12 @@ func TestDashFilterBackspace(t *testing.T) {
 
 	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions,
-		filterActive: true,
-		filterText:   "al",
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions,
+			filterActive: true,
+			filterText:   "al",
+		},
 	}
 	// Pre-narrow so displayed only has "alpha".
 	m = dashRefilter(m)
@@ -393,10 +366,12 @@ func TestDashFilterEscapeCancels(t *testing.T) {
 
 	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions[:1], // narrowed
-		filterActive: true,
-		filterText:   "al",
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions[:1], // narrowed
+			filterActive: true,
+			filterText:   "al",
+		},
 	}
 
 	m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -420,12 +395,14 @@ func TestDashFilterEnterSwitches(t *testing.T) {
 
 	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions,
-		filterActive: true,
-		filterText:   "al",
-		cursor:       0,
-		popup:        true, // popup so we don't need callerClient
+		popup: true, // popup so we don't need callerClient
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions,
+			filterActive: true,
+			filterText:   "al",
+			cursor:       0,
+		},
 	}
 	m = dashRefilter(m)
 
@@ -443,11 +420,13 @@ func TestDashFilterCursorStaysActiveOnTimeout(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		filterActive: true,
-		cursorActive: true,
 		popup:        false, // persistent mode: timeout normally deactivates cursor
+		cursorActive: true,
+		dashShared: dashShared{
+			sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			filterActive: true,
+		},
 	}
 
 	// Fire the cursor timeout while filter mode is active.
@@ -467,11 +446,13 @@ func TestDashFilterBlurKeepsCursorActive(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		filterActive: true,
-		cursorActive: true,
 		popup:        false, // persistent mode: BlurMsg normally deactivates cursor
+		cursorActive: true,
+		dashShared: dashShared{
+			sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			displayed:    []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			filterActive: true,
+		},
 	}
 
 	m2, _ := m.Update(tea.BlurMsg{})
@@ -489,10 +470,12 @@ func TestDashFilterCtrlCQuitsProgram(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []agentSession{{Name: "alpha"}},
-		displayed:    []agentSession{{Name: "alpha"}},
-		filterActive: true,
 		cursorActive: true,
+		dashShared: dashShared{
+			sessions:     []agentSession{{Name: "alpha"}},
+			displayed:    []agentSession{{Name: "alpha"}},
+			filterActive: true,
+		},
 	}
 
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -512,11 +495,13 @@ func TestDashFilterEscCancelsNotQuits(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
-		displayed:    []agentSession{{Name: "alpha"}}, // narrowed
-		filterActive: true,
-		filterText:   "al",
 		cursorActive: true,
+		dashShared: dashShared{
+			sessions:     []agentSession{{Name: "alpha"}, {Name: "beta"}},
+			displayed:    []agentSession{{Name: "alpha"}}, // narrowed
+			filterActive: true,
+			filterText:   "al",
+		},
 	}
 
 	m2, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -541,17 +526,20 @@ func TestDashFilterEscCancelsNotQuits(t *testing.T) {
 func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 	t.Parallel()
 
+	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
+
 	// Filter is already active and narrowed to "beta" only.
 	m := dashModel{
-		filterActive:      true,
-		filterText:        "bet",
-		cursorInitialised: false,
-		currentSession:    "alpha", // would snap cursor to index 0 in sessions
-		cursor:            0,
+		currentSession: "alpha", // would snap cursor to index 0 in sessions
+		dashShared: dashShared{
+			filterActive:      true,
+			filterText:        "bet",
+			cursorInitialised: false,
+			cursor:            0,
+			sessions:          sessions,
+			displayed:         []agentSession{{Name: "beta"}}, // pre-filtered
+		},
 	}
-	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}}
-	m.sessions = sessions
-	m.displayed = []agentSession{{Name: "beta"}} // pre-filtered
 
 	// Deliver a sessionsMsg (the first tick).
 	m2, _ := m.Update(sessionsMsg{sessions: sessions})
@@ -578,10 +566,12 @@ func TestDashFilterCursorNavigation(t *testing.T) {
 
 	sessions := []agentSession{{Name: "alpha"}, {Name: "aleph"}}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions,
-		filterActive: true,
-		cursor:       0,
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions,
+			filterActive: true,
+			cursor:       0,
+		},
 	}
 
 	// Press 'j' to move down.
@@ -606,11 +596,13 @@ func TestDashRefilterClampsOOBCursor(t *testing.T) {
 
 	sessions := []agentSession{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}}
 	m := dashModel{
-		sessions:     sessions,
-		displayed:    sessions,
-		filterActive: true,
-		cursor:       2, // pointing at "gamma"
-		filterText:   "al",
+		dashShared: dashShared{
+			sessions:     sessions,
+			displayed:    sessions,
+			filterActive: true,
+			cursor:       2, // pointing at "gamma"
+			filterText:   "al",
+		},
 	}
 	m = dashRefilter(m) // "al" only matches "alpha"
 
@@ -628,13 +620,15 @@ func TestDashFilterViewShowsPrompt(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:     []agentSession{{Name: "alpha"}},
-		displayed:    []agentSession{{Name: "alpha"}},
-		filterActive: true,
-		filterText:   "alp",
-		width:        80,
-		height:       40,
 		cursorActive: true,
+		dashShared: dashShared{
+			sessions:     []agentSession{{Name: "alpha"}},
+			displayed:    []agentSession{{Name: "alpha"}},
+			filterActive: true,
+			filterText:   "alp",
+			width:        80,
+			height:       40,
+		},
 	}
 	view := m.View()
 	if !strings.Contains(view, "alp") {
@@ -648,10 +642,12 @@ func TestDashViewShowsHelpHint(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "alpha"}},
-		displayed: []agentSession{{Name: "alpha"}},
-		width:     80,
-		height:    40,
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "alpha"}},
+			displayed: []agentSession{{Name: "alpha"}},
+			width:     80,
+			height:    40,
+		},
 	}
 	view := m.View()
 	if !strings.Contains(view, "/ filter") {
@@ -659,102 +655,112 @@ func TestDashViewShowsHelpHint(t *testing.T) {
 	}
 }
 
-// TestDashModelEnterHandlerUsesCallerClient_PersistentMode is the end-to-end
-// regression test for the CallerClient bug.
+// TestPersistentModelEnterSwitchesClient verifies that Enter in persistent mode
+// switches m.client (the viewing client) to the selected session and stays
+// alive — the TUI does NOT quit (no tea.QuitMsg returned).
 //
-// It verifies that when two clients have dashboards open (two dashModel
-// instances with different callerClient values), pressing Enter in modelA
-// results in clientA being switched — not clientB — even though the global
-// @prism_caller_client stamp points to clientB at handler time.
-//
-// The test verifies both layers of the fix:
-//  1. Update(Enter) returns a non-nil cmd (the handler fired), and
-//     dashSwitchTarget(modelA.popup, modelA.client, modelA.callerClient)
-//     returns clientA (the correct target per the model's immutable snapshot).
-//  2. Calling SwitchClient with that target moves clientA to the new session
-//     while clientB remains unaffected.
-func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
+// The persistent dashboard no longer has a callerClient field; it always
+// operates on m.client, the client that is currently attached to the session.
+func TestPersistentModelEnterSwitchesClient(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
 	s.newSession("nixos-config@feature")
 
-	clientA := s.attachClientToSession(t, "nixos-config@main")
-	clientB := s.attachClientToSession(t, "nixos-config@main")
+	client := s.attachClientToSession(t, "nixos-config@main")
 
-	// Stamp @prism_caller_client to clientA, then build modelA.
-	s.setGlobal("@prism_caller_client", clientA)
-	s.setGlobal("@prism_caller", "nixos-config@main")
-	modelA := newDashModel("process-client-A", false) // persistent mode: popup=false
+	// Build a persistentModel whose m.client is the real attached client.
+	model := newPersistentModel(client, "nixos-config@main")
+	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
+	model.displayed = model.sessions
+	model.cursor = 0
+	model.cursorActive = true // cursor active so Enter fires immediately
 
-	// Now clientB opens the dashboard — overwrites the global stamp.
-	s.setGlobal("@prism_caller_client", clientB)
-	s.setGlobal("@prism_caller", "nixos-config@main")
-	_ = newDashModel("process-client-B", false) // stamp now points to B
-
-	// Verify the stamp is now clientB (what CallerClient() would return live).
-	if got := tmux.CallerClient(); got != clientB {
-		t.Fatalf("setup: @prism_caller_client = %q, want clientB=%q", got, clientB)
-	}
-
-	// modelA still holds clientA as its callerClient (captured at init).
-	if modelA.callerClient != clientA {
-		t.Fatalf("modelA.callerClient = %q, want clientA=%q", modelA.callerClient, clientA)
-	}
-
-	// Seed modelA with the sessions list so it can handle Enter.
-	modelA.sessions = []agentSession{{Name: "nixos-config@feature"}}
-	modelA.displayed = modelA.sessions // displayed must mirror sessions for Enter to fire
-	modelA.cursor = 0
-	modelA.cursorActive = true // activate cursor so Enter acts immediately
-
-	// Verify the handler fires (returns a cmd).
-	_, seqCmd := modelA.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if seqCmd == nil {
+	// Verify Update(Enter) returns a non-nil cmd.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
 		t.Fatal("Update(Enter) returned nil cmd — handler did not fire")
 	}
-
-	// Verify dashSwitchTarget (the target-selection helper called by the handler)
-	// resolves to clientA — not the stale global stamp (clientB).
-	target := dashSwitchTarget(modelA.popup, modelA.client, modelA.callerClient)
-	if target != clientA {
-		t.Fatalf("dashSwitchTarget() = %q, want clientA=%q — wrong client would be switched", target, clientA)
-	}
-	// Execute the actual tmux switch-client to confirm the full path works.
-	if err := tmux.SwitchClient(target, "nixos-config@feature"); err != nil {
-		t.Fatalf("SwitchClient: %v", err)
+	pm := updatedModel.(persistentModel)
+	// Cursor should be deactivated after Enter (returning to passive watch mode).
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after Enter in persistent mode (returns to passive watch)")
 	}
 
-	// Poll for clientA to land on the target session: switch-client is
-	// asynchronous from the perspective of a subsequent display-message call,
-	// so a single immediate read can return a stale value under load.
-	var gotA string
-	aDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(aDeadline) {
-		if sess, err := s.clientSession(clientA); err == nil {
-			gotA = sess
+	// Execute the cmd to perform the actual switch.
+	resultMsg := cmd()
+	if resultMsg != nil {
+		// A non-nil result indicates an error message was returned.
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client to land on the target session.
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(client); err == nil {
+			got = sess
 			if sess == "nixos-config@feature" {
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	if got != "nixos-config@feature" {
+		t.Errorf("client session = %q after Enter, want %q", got, "nixos-config@feature")
+	}
+}
 
-	// Poll clientB for stability; guard against all-errors leaving gotB empty.
-	var gotB string
-	bDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(bDeadline) {
-		if sess, err := s.clientSession(clientB); err == nil {
-			gotB = sess
+// TestPersistentModelQuitSwitchesClientLast verifies that q in persistent mode
+// calls SwitchClientLast (switch-client -l) on m.client to return it to its
+// previous session, and does NOT quit the TUI.
+func TestPersistentModelQuitSwitchesClientLast(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+
+	client := s.attachClientToSession(t, "nixos-config@main")
+
+	// Switch the client to feature (so "last" = main).
+	if err := tmux.SwitchClient(client, "nixos-config@feature"); err != nil {
+		t.Fatalf("setup SwitchClient: %v", err)
+	}
+
+	// Build a persistentModel with m.client set to the real attached client.
+	model := newPersistentModel(client, "nixos-config@feature")
+	model.cursorActive = true // cursor must be active for q to fire the switch
+
+	// Send 'q' — should return a non-nil cmd and not quit.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("Update('q') returned nil cmd — handler did not fire")
+	}
+	pm := updatedModel.(persistentModel)
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after q (passive watch mode)")
+	}
+
+	// Execute the cmd.
+	resultMsg := cmd()
+	if resultMsg != nil {
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client to return to main (the "last" session before feature).
+	var got string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(client); err == nil {
+			got = sess
+			if sess == "nixos-config@main" {
+				break
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-
-	if gotA != "nixos-config@feature" {
-		t.Errorf("clientA session = %q, want %q — Enter in modelA should switch clientA", gotA, "nixos-config@feature")
-	}
-	if gotB != "" && gotB != "nixos-config@main" {
-		t.Errorf("clientB session = %q, want %q — clientB should be unaffected (was wrongly switched by the bug)", gotB, "nixos-config@main")
+	if got != "nixos-config@main" {
+		t.Errorf("client session = %q after q, want %q (switch-client -l should return to previous)", got, "nixos-config@main")
 	}
 }
 
@@ -762,15 +768,21 @@ func TestDashModelEnterHandlerUsesCallerClient_PersistentMode(t *testing.T) {
 
 // TestEnsureDashSessionUsesAbsolutePath verifies that ensureDashSession creates
 // the prism-dashboard session with the absolute path of the running binary in
-// the restart loop command, not the bare "prism" name.
+// the dashboard command, not the bare "prism" name.
 //
 // This is the regression test for the first-startup bug: when prism is
 // installed in the Nix store and invoked from a bare environment (e.g. launched
 // by a compositor), the session pane's shell may not have the Nix store path in
-// PATH. Using bare "prism" causes the restart loop to fail immediately on first
-// iteration (exit code != 0), leaving the session with an empty shell prompt
-// instead of the dashboard TUI. os.Executable() returns the absolute path of
-// the running binary, which is always valid regardless of PATH.
+// PATH. Using bare "prism" causes the dashboard to fail immediately, leaving
+// the session with an empty shell prompt instead of the dashboard TUI.
+// os.Executable() returns the absolute path of the running binary, which is
+// always valid regardless of PATH.
+//
+// The new architecture runs `prism dashboard` directly (no restart loop), so
+// the command is simpler. This test verifies:
+//  1. The session is created.
+//  2. The pane command contains the absolute binary path.
+//  3. No restart loop ("while ... do") is present in the command.
 func TestEnsureDashSessionUsesAbsolutePath(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
@@ -802,13 +814,15 @@ func TestEnsureDashSessionUsesAbsolutePath(t *testing.T) {
 
 	if !strings.Contains(windowInfo, self) {
 		t.Errorf("pane_start_command does not contain the absolute binary path %q\ngot: %s\n"+
-			"want the restart loop to use the absolute path so it works when PATH is stripped",
+			"want the dashboard command to use the absolute path so it works when PATH is stripped",
 			self, windowInfo)
 	}
-	// Verify the loop command does not use the bare "prism" name by checking
-	// that the word "prism" is not followed by " dashboard" without the
-	// absolute path prefix. We check for the exact bare-name pattern that the
-	// old code produced: "while prism dashboard".
+	// Verify that no restart loop is present — the persistent dashboard keeps
+	// itself alive without a shell wrapper loop.
+	if strings.Contains(windowInfo, "while ") {
+		t.Errorf("pane_start_command contains a restart loop ('while ...') — this should be gone\ngot: %s", windowInfo)
+	}
+	// Also verify no bare "prism" (without absolute path) in the command.
 	if strings.Contains(windowInfo, "while prism dashboard") {
 		t.Errorf("pane_start_command contains bare 'prism' in restart loop — will fail when prism is not in PATH\ngot: %s", windowInfo)
 	}
@@ -888,13 +902,15 @@ func TestDashViewStatError(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		gitStats: map[string]gitStatResult{
-			"/some/path": {Ok: false}, // stat failed
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			gitStats: map[string]gitStatResult{
+				"/some/path": {Ok: false}, // stat failed
+			},
+			width:  80,
+			height: 40,
 		},
-		width:  80,
-		height: 40,
 	}
 	view := m.View()
 	if !strings.Contains(view, "?") {
@@ -908,13 +924,15 @@ func TestDashViewStatClean(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		gitStats: map[string]gitStatResult{
-			"/some/path": {Ok: true}, // stat succeeded, zero DiffStat = clean
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			gitStats: map[string]gitStatResult{
+				"/some/path": {Ok: true}, // stat succeeded, zero DiffStat = clean
+			},
+			width:  80,
+			height: 40,
 		},
-		width:  80,
-		height: 40,
 	}
 	view := m.View()
 	if !strings.Contains(view, "—") {
@@ -931,16 +949,18 @@ func TestDashViewStatDirty(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-		gitStats: map[string]gitStatResult{
-			"/some/path": {
-				Ok:   true,
-				Stat: git.DiffStat{Files: 3, Insertions: 42, Deletions: 7},
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+			gitStats: map[string]gitStatResult{
+				"/some/path": {
+					Ok:   true,
+					Stat: git.DiffStat{Files: 3, Insertions: 42, Deletions: 7},
+				},
 			},
+			width:  120,
+			height: 40,
 		},
-		width:  120,
-		height: 40,
 	}
 	view := m.View()
 	if !strings.Contains(view, "+42") {
@@ -961,14 +981,16 @@ func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
 		{Name: "repo@bad", AgentPath: "/bad/path"},
 	}
 	m := dashModel{
-		sessions:  sessions,
-		displayed: sessions,
-		gitStats: map[string]gitStatResult{
-			"/good/path": {Ok: true},  // clean
-			"/bad/path":  {Ok: false}, // stat failed
+		dashShared: dashShared{
+			sessions:  sessions,
+			displayed: sessions,
+			gitStats: map[string]gitStatResult{
+				"/good/path": {Ok: true},  // clean
+				"/bad/path":  {Ok: false}, // stat failed
+			},
+			width:  120,
+			height: 40,
 		},
-		width:  120,
-		height: 40,
 	}
 	view := m.View()
 
@@ -990,11 +1012,13 @@ func TestDashViewStatEmptyAgentPath(t *testing.T) {
 	t.Parallel()
 
 	m := dashModel{
-		sessions:  []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
-		displayed: []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
-		gitStats:  map[string]gitStatResult{}, // no entry for empty path
-		width:     80,
-		height:    40,
+		dashShared: dashShared{
+			sessions:  []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
+			displayed: []agentSession{{Name: "scratchpad-like", AgentPath: ""}},
+			gitStats:  map[string]gitStatResult{}, // no entry for empty path
+			width:     80,
+			height:    40,
+		},
 	}
 	view := m.View()
 	if strings.Contains(view, "?") {

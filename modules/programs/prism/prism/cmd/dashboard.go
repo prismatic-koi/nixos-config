@@ -118,12 +118,12 @@ func rainbowLineWidth(line string, totalWidth int) string {
 // renderHeader composites the stats panel (left) with the art block (right)
 // into a single header string that fills termWidth on each line.
 // When the terminal is too short, a compact 2-line header is used instead.
-func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) string {
+func renderHeader(d dashShared, styleDim, styleIns, styleDel lipgloss.Style) string {
 	// ── compute stats ────────────────────────────────────────────────────────
 	var nActive, nWaiting, nIdle, nFinished, nInterrupted int
 	var totalIns, totalDel int
-	for _, s := range m.sessions {
-		result := m.gitStats[s.AgentPath]
+	for _, s := range d.sessions {
+		result := d.gitStats[s.AgentPath]
 		if result.Ok {
 			totalIns += result.Stat.Insertions
 			totalDel += result.Stat.Deletions
@@ -177,15 +177,15 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 	// ── compact mode: terminal too short for full art block ──────────────────
 	// Full header needs: artHeight + separator(1) + col-header+blank(2) + sessions + bottom-blank(1)
-	fullHeaderNeeded := artHeight + 1 + 2 + len(m.sessions) + 1
-	if m.height > 0 && m.height < fullHeaderNeeded {
+	fullHeaderNeeded := artHeight + 1 + 2 + len(d.sessions) + 1
+	if d.height > 0 && d.height < fullHeaderNeeded {
 		// 2 lines: "N sessions  STATE_SUMMARY" left + PRISM right on line 1,
 		// blank line 2 for breathing room.
-		sessionCount := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
+		sessionCount := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.sessions)))
 		stateStr := styleStatDim.Render(stateLine)
 		leftContent := sessionCount + "  " + stateStr
 		leftW := lipgloss.Width(leftContent)
-		pad := m.width - leftW - wordmarkW
+		pad := d.width - leftW - wordmarkW
 		if pad < 1 {
 			pad = 1
 		}
@@ -199,10 +199,10 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 	// ── full mode ────────────────────────────────────────────────────────────
 	var prLine string
-	if !m.ghLoaded {
+	if !d.ghLoaded {
 		prLine = "↑ …"
 	} else {
-		prLine = fmt.Sprintf("↑ %d open PRs", m.ghOpenPRs)
+		prLine = fmt.Sprintf("↑ %d open PRs", d.ghOpenPRs)
 	}
 
 	var changesLine string
@@ -216,7 +216,7 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 
 	prRendered := styleStatDim.Render(prLine)
 	stateRendered := styleStatDim.Render(stateLine)
-	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(m.sessions)))
+	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.sessions)))
 
 	// Fixed column width — wide enough for worst-case state line (35 chars) + room.
 	const statsW = 37
@@ -234,11 +234,11 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 	}
 
 	// Only render art if there is enough horizontal room.
-	showArt := m.width >= statsW+artWidth
+	showArt := d.width >= statsW+artWidth
 
 	var sb strings.Builder
 	if showArt {
-		middle := strings.Repeat(" ", m.width-statsW-artWidth)
+		middle := strings.Repeat(" ", d.width-statsW-artWidth)
 		for i, artLine := range artLines {
 			stat := strings.Repeat(" ", statsW)
 			if i < len(statLines) {
@@ -253,11 +253,11 @@ func renderHeader(m dashModel, styleDim, styleIns, styleDel lipgloss.Style) stri
 		// Narrow: stats lines with PRISM wordmark right-aligned on first line.
 		for i, s := range statLines {
 			if i == 0 {
-				pad := m.width - statsW - wordmarkW
+				pad := d.width - statsW - wordmarkW
 				if pad < 0 {
 					trimmed := s
-					if len(trimmed) > m.width-wordmarkW {
-						trimmed = trimmed[:m.width-wordmarkW]
+					if len(trimmed) > d.width-wordmarkW {
+						trimmed = trimmed[:d.width-wordmarkW]
 					}
 					sb.WriteString(trimmed)
 					sb.WriteString(wordmark)
@@ -429,6 +429,17 @@ type gitStatResult struct {
 	Ok   bool
 }
 
+// focusClientMsg is sent by the persistent model's FocusMsg handler after
+// querying which tmux client just attached to the session. It updates m.client
+// so that Enter and q/esc operate on the correct client even when the model was
+// initialised without a client (detached new-session startup).
+// currentSession is the session that client was in before switching here; it is
+// used to restore the "you are here" ◆ indicator for the visiting client.
+type focusClientMsg struct {
+	client         string
+	currentSession string
+}
+
 type sessionsMsg struct {
 	sessions []agentSession
 	gitStats map[string]gitStatResult
@@ -444,6 +455,29 @@ func ghTick() tea.Cmd {
 	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return ghTickMsg(t)
 	})
+}
+
+// fetchCurrentClient queries tmux for the currently-attached client name and
+// the session that client was last in (before switching to the dashboard).
+// Returns a focusClientMsg. Called as a tea.Cmd from the FocusMsg handler in
+// persistentModel so the I/O runs off the main update loop.
+func fetchCurrentClient() tea.Msg {
+	client, _ := tmux.CurrentClient()
+	// Also fetch the session the client came from so the "you are here" ◆
+	// indicator can be shown for the visiting client.
+	var currentSession string
+	if client != "" {
+		currentSession, _ = tmux.ClientSession(client)
+		// ClientSession returns the session the client is *currently* in,
+		// which at this point is already prism-dashboard. We need the previous
+		// session. Use SwitchClientLast to peek is not possible without side
+		// effects, so leave currentSession empty — the ◆ indicator is not
+		// supported in persistent mode (the user is already in the dashboard).
+		if currentSession == dashSession {
+			currentSession = ""
+		}
+	}
+	return focusClientMsg{client: client, currentSession: currentSession}
 }
 
 func cursorTimeoutCmd() tea.Cmd {
@@ -549,26 +583,25 @@ func fetchGitHubStats() tea.Msg {
 	return githubStatsMsg{openPRs: n}
 }
 
-// ── model ─────────────────────────────────────────────────────────────────────
+// ── shared data model ─────────────────────────────────────────────────────────
 
 // cursorTimeout is how long the cursor bar stays visible after the last keypress
 // in persistent (non-popup) dashboard mode.
 const cursorTimeout = 3 * time.Second
 
-type dashModel struct {
+// dashShared is the data shared between popup and persistent dashboard modes.
+// It contains only data-layer state: sessions, filter, cursor position, display
+// geometry, and GitHub stats. It deliberately has no mode-specific fields
+// (no popup bool, no callerClient, no currentSession, no inDashSession).
+type dashShared struct {
 	sessions          []agentSession
 	gitStats          map[string]gitStatResult // keyed by AgentPath; populated on sessionsMsg
 	cursor            int
 	cursorInitialised bool // true once we've snapped cursor to currentSession
 	width             int
 	height            int
-	client            string
-	callerClient      string // @prism_caller_client captured at init time (immutable)
-	popup             bool
-	currentSession    string // session the viewing client is in
 	ghOpenPRs         int
 	ghLoaded          bool // false = still fetching, show "…"
-	cursorActive      bool // true = show selection bar; false = passive watch mode
 	loading           bool // true = first fetch not yet returned; show skeleton
 	// filter mode: activated by '/', cancelled by esc/ctrl+c
 	filterActive bool
@@ -579,39 +612,157 @@ type dashModel struct {
 	statusMsg string
 }
 
-func newDashModel(client string, popup bool) dashModel {
-	// CallerSession reads @prism_caller stamped by the tmux binding — the only
-	// reliable way to know which session the viewer came from.
-	currentSession := tmux.CallerSession()
-	// Capture CallerClient once at init time. The global stamp @prism_caller_client
-	// is overwritten each time any client opens the dashboard, so reading it
-	// inside a handler would return whatever client opened the dashboard most
-	// recently — not necessarily the one interacting with this model instance.
-	callerClient := tmux.CallerClient()
-	// inDashSession: we are the persistent prism-dashboard session itself.
-	// In this mode the flag `popup` passed via --popup is true (the restart
-	// loop calls `prism dashboard --popup`), so isPopup captures C-w popups
-	// only when caller session is NOT the dashboard.
-	inDashSession := currentSession == dashSession || currentSession == ""
-	isPopup := popup && !inDashSession
-	m := dashModel{
-		client:         client,
-		callerClient:   callerClient,
-		popup:          isPopup,
-		currentSession: currentSession,
-		// Popup (C-w) always shows cursor. Persistent session starts passive.
-		cursorActive: isPopup,
-		loading:      true, // show skeleton until first fetch completes
+// applySessionsMsg updates shared state when a sessionsMsg arrives.
+// snapSession is the session name to snap the cursor to on first load
+// (pass the currentSession value from the mode-specific model).
+// Returns the updated dashShared and whether a snap was performed.
+func (d dashShared) applySessionsMsg(msg sessionsMsg, snapSession string) (dashShared, bool) {
+	d.loading = false
+	if msg.sessions != nil {
+		d.sessions = msg.sessions
 	}
-	m.displayed = m.sessions // empty at init; will be populated on first sessionsMsg
+	if msg.gitStats != nil {
+		d.gitStats = msg.gitStats
+	}
+	needsSnap := !d.cursorInitialised && !d.filterActive
+	if !d.cursorInitialised {
+		d.cursorInitialised = true
+	}
+	d = dashRefilterShared(d)
+	if needsSnap {
+		for i, s := range d.displayed {
+			if s.Name == snapSession {
+				d.cursor = i
+				break
+			}
+		}
+	}
+	return d, needsSnap
+}
+
+// handleFilterKey handles a key press in filter mode. Returns the updated
+// dashShared and the tea.Cmd to run. A special tea.Cmd value of nil indicates
+// no command; the caller must also check the returned bool (exitFilter=true
+// means the filter was confirmed with Enter and the caller should switch
+// sessions using the current cursor position).
+func (d dashShared) handleFilterKey(msg tea.KeyMsg) (dashShared, bool /* exitFilter */, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return d, false, tea.Quit
+
+	case "esc":
+		d.filterActive = false
+		d.filterText = ""
+		d = dashRefilterShared(d)
+		return d, false, nil
+
+	case "enter":
+		if len(d.displayed) == 0 {
+			return d, false, nil
+		}
+		d.filterActive = false
+		d.filterText = ""
+		return d, true, nil
+
+	case "backspace", "ctrl+h":
+		if len(d.filterText) > 0 {
+			runes := []rune(d.filterText)
+			d.filterText = string(runes[:len(runes)-1])
+			d = dashRefilterShared(d)
+		}
+
+	case "j", "down":
+		if d.cursor < len(d.displayed)-1 {
+			d.cursor++
+		}
+
+	case "k", "up":
+		if d.cursor > 0 {
+			d.cursor--
+		}
+
+	default:
+		if msg.Type == tea.KeyRunes {
+			d.filterText += msg.String()
+			d = dashRefilterShared(d)
+		}
+	}
+	return d, false, nil
+}
+
+func filterAgentSessions(all []agentSession) []agentSession {
+	var out []agentSession
+	for _, s := range all {
+		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// dashRefilterShared recomputes d.displayed from d.sessions applying the active
+// fuzzy filter (if any). It also clamps the cursor so it never points out of
+// bounds. It returns the updated dashShared.
+func dashRefilterShared(d dashShared) dashShared {
+	if !d.filterActive || d.filterText == "" {
+		d.displayed = make([]agentSession, len(d.sessions))
+		copy(d.displayed, d.sessions)
+	} else {
+		var out []agentSession
+		for _, s := range d.sessions {
+			if fuzzyMatch(s.Name, d.filterText) {
+				out = append(out, s)
+			}
+		}
+		d.displayed = out
+	}
+	// Sort displayed to match visual render order so d.cursor indexes
+	// correctly: alphabetical by repo, @main first within each repo,
+	// then other branches alphabetically.
+	sortDisplayed(d.displayed)
+	if d.cursor >= len(d.displayed) {
+		d.cursor = max(0, len(d.displayed)-1)
+	}
+	return d
+}
+
+// ── popup dashboard model ─────────────────────────────────────────────────────
+
+// popupModel is the Bubble Tea model for the ephemeral popup dashboard
+// (spawned by C-w via `tmux display-popup -E`).
+//
+// Lifecycle: the popup is short-lived. Pressing q/esc causes tea.Quit, which
+// terminates the process; display-popup -E then closes the popup frame.
+//
+// Focus management: the popup runs inside the caller's own tmux client, so
+// m.client is always the right switch-client target. No global tmux option
+// reads are required.
+type popupModel struct {
+	dashShared
+	client         string // tmux client running this popup (from CurrentClient())
+	currentSession string // caller's current session (from --caller-session flag)
+	cursorActive   bool   // always true in popup mode
+}
+
+func newPopupModel(client, callerSession string) popupModel {
+	m := popupModel{
+		dashShared: dashShared{
+			loading: true,
+		},
+		client:         client,
+		currentSession: callerSession,
+		cursorActive:   true, // popup always shows cursor
+	}
+	m.displayed = m.sessions // empty at init; populated on first sessionsMsg
 	return m
 }
 
-func (m dashModel) Init() tea.Cmd {
+func (m popupModel) Init() tea.Cmd {
 	return tea.Batch(fetchSessionsFromDB, fetchGitHubStats, ghTick())
 }
 
-func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m popupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -619,7 +770,151 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case RefreshMsg:
-		// Sentinel watcher triggered a refresh — re-fetch from DB.
+		return m, fetchSessionsFromDB
+
+	case dashStatusMsg:
+		m.statusMsg = string(msg)
+		return m, nil
+
+	case ghTickMsg:
+		return m, tea.Batch(fetchGitHubStats, ghTick())
+
+	case githubStatsMsg:
+		if !msg.err {
+			m.ghOpenPRs = msg.openPRs
+		}
+		m.ghLoaded = true
+
+	case sessionsMsg:
+		m.dashShared, _ = m.dashShared.applySessionsMsg(msg, m.currentSession)
+
+	case cursorTimeoutMsg:
+		// Popup mode always shows the cursor (cursorActive is always true);
+		// cursor-timeout messages are no-ops here, but handled explicitly to
+		// self-document the intent.
+
+	case tea.KeyMsg:
+		m.statusMsg = ""
+
+		// In filter mode most keys are consumed by the filter input.
+		if m.filterActive {
+			var exitFilter bool
+			var cmd tea.Cmd
+			m.dashShared, exitFilter, cmd = m.dashShared.handleFilterKey(msg)
+			if exitFilter {
+				// Confirm selection: switch to highlighted session.
+				selected := m.displayed[m.cursor]
+				target := m.switchTarget()
+				return m, func() tea.Msg {
+					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+						return dashStatusMsg(errMsg)
+					}
+					return tea.QuitMsg{}
+				}
+			}
+			return m, cmd
+		}
+
+		// Normal (non-filter) key handling.
+		switch msg.String() {
+		case "q", "esc":
+			// Popup mode: just quit — display-popup -E closes the frame.
+			return m, tea.Quit
+
+		case "/":
+			m.filterActive = true
+			m.filterText = ""
+			m.cursorActive = true
+			m.dashShared = dashRefilterShared(m.dashShared)
+			return m, nil
+
+		case "j", "down":
+			m.cursorActive = true
+			if m.cursor < len(m.displayed)-1 {
+				m.cursor++
+			}
+			return m, nil
+
+		case "k", "up":
+			m.cursorActive = true
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return m, nil
+
+		case "enter":
+			if len(m.displayed) == 0 {
+				return m, nil
+			}
+			selected := m.displayed[m.cursor]
+			target := m.switchTarget()
+			return m, func() tea.Msg {
+				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					return dashStatusMsg(errMsg)
+				}
+				return tea.QuitMsg{}
+			}
+		}
+	}
+	return m, nil
+}
+
+// switchTarget returns the tmux client that should receive switch-client when
+// the user selects a session. In popup mode the popup process runs inside the
+// caller's own client, so client is the right target.
+func (m popupModel) switchTarget() string {
+	return m.client
+}
+
+func (m popupModel) View() string {
+	return dashView(m.dashShared, m.currentSession, m.cursorActive)
+}
+
+// ── persistent dashboard model ────────────────────────────────────────────────
+
+// persistentModel is the Bubble Tea model for the long-running persistent
+// dashboard session (`prism-dashboard`).
+//
+// Lifecycle: the process runs indefinitely. Pressing q/esc switches the current
+// client back to its previous session (switch-client -l) and returns to passive
+// watch mode. The session is kept alive by the tmux session itself, not by a
+// restart loop.
+//
+// Focus management: m.client is the only client identity needed — it is the
+// client currently viewing the persistent dashboard. q/esc and Enter both
+// operate on m.client (no caller state required).
+type persistentModel struct {
+	dashShared
+	client         string // tmux client of the process (from CurrentClient())
+	currentSession string // caller's session (from --caller-session flag; for "you are here")
+	cursorActive   bool   // false = passive watch; true = selection mode
+}
+
+func newPersistentModel(client, callerSession string) persistentModel {
+	m := persistentModel{
+		dashShared: dashShared{
+			loading: true,
+		},
+		client:         client,
+		currentSession: callerSession,
+		cursorActive:   false, // persistent starts in passive watch mode
+	}
+	m.displayed = m.sessions // empty at init; populated on first sessionsMsg
+	return m
+}
+
+func (m persistentModel) Init() tea.Cmd {
+	return tea.Batch(fetchSessionsFromDB, fetchGitHubStats, ghTick())
+}
+
+func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case RefreshMsg:
 		return m, fetchSessionsFromDB
 
 	case dashStatusMsg:
@@ -638,139 +933,105 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cursorTimeoutMsg:
 		// Do not deactivate the cursor while the filter is open — the selection
 		// bar must stay visible for the entire filter session.
-		if !m.popup && !m.filterActive {
+		if !m.filterActive {
 			m.cursorActive = false
 		}
 
 	case tea.BlurMsg:
 		// Do not deactivate the cursor while the filter is open — the user
 		// must be able to see which session Enter will select at all times.
-		if !m.popup && !m.filterActive {
+		if !m.filterActive {
 			m.cursorActive = false
 		}
+		// Client detached — clear m.client and m.currentSession unconditionally,
+		// even if filterActive is true. The detached client is truly gone: any
+		// pending action that uses m.client will hit the belt-and-suspenders
+		// tmux.CurrentClient() inline fallback and still work correctly.
+		// Clearing eagerly avoids using a stale client identity for a new visitor.
+		m.client = ""
+		m.currentSession = ""
 
 	case tea.FocusMsg:
-		// Focus regained — cursor stays hidden until user presses j/k.
+		// A tmux client just attached to this session. Query the client name
+		// asynchronously so Enter/q/esc have the right target. Clear any stale
+		// client and session state from the previous visitor while the async
+		// query is in-flight; they will be repopulated by focusClientMsg.
+		m.client = ""
+		m.currentSession = ""
+		return m, fetchCurrentClient
+
+	case focusClientMsg:
+		// Received the client name (and originating session) queried after focus
+		// was gained.
+		if msg.client != "" {
+			m.client = msg.client
+		}
+		// currentSession is empty for clients arriving via prefix+D because
+		// ClientSession returns prism-dashboard (they are already here); in that
+		// case the ◆ indicator stays blank, which is intentional.
+		m.currentSession = msg.currentSession
 
 	case sessionsMsg:
-		// Mark loading complete on first sessionsMsg regardless of content.
-		m.loading = false
-		// Only update when the fetch succeeded. fetchSessionsFromDB returns a
-		// zero sessionsMsg (nil sessions, nil gitStats) on DB error, so
-		// guarding on nil preserves the previous display during transient
-		// hiccups rather than blanking the session list and diff stats.
-		if msg.sessions != nil {
-			m.sessions = msg.sessions
-		}
-		if msg.gitStats != nil {
-			m.gitStats = msg.gitStats
-		}
-		// Do not re-read CallerSession() here — it may have changed if another
-		// client opened the dashboard. Use the value captured at init time.
-		needsSnap := !m.cursorInitialised && !m.filterActive
-		if !m.cursorInitialised {
-			// Mark initialised before calling dashRefilter — we snap into
-			// m.displayed (the sorted list) below, not m.sessions (DB order).
-			// Setting this early also covers the filter-active case so we don't
-			// attempt a snap on a later tick after the filter is cleared.
-			m.cursorInitialised = true
-		}
-		m = dashRefilter(m)
-		// Snap cursor to the current session on first load, using m.displayed
-		// (now sorted by sortDisplayed) so the cursor index is correct.
-		if needsSnap {
-			for i, s := range m.displayed {
-				if s.Name == m.currentSession {
-					m.cursor = i
-					break
-				}
-			}
-		}
+		m.dashShared, _ = m.dashShared.applySessionsMsg(msg, m.currentSession)
 
 	case tea.KeyMsg:
 		m.statusMsg = ""
+
 		// In filter mode most keys are consumed by the filter input.
 		if m.filterActive {
-			switch msg.String() {
-			case "ctrl+c":
-				// Pass ctrl+c through to bubbletea so the TUI can quit.
-				return m, tea.Quit
-
-			case "esc":
-				// Cancel filter: restore full list, deactivate filter.
-				m.filterActive = false
-				m.filterText = ""
-				m = dashRefilter(m)
-				return m, nil
-
-			case "enter":
-				// Confirm selection: switch to highlighted session.
-				if len(m.displayed) == 0 {
-					return m, nil
-				}
+			var exitFilter bool
+			var cmd tea.Cmd
+			m.dashShared, exitFilter, cmd = m.dashShared.handleFilterKey(msg)
+			if exitFilter {
+				// Confirm selection: switch the viewing client to the selected
+				// session and return to passive watch mode. The process does NOT
+				// quit — the dashboard stays alive for the next visitor.
 				selected := m.displayed[m.cursor]
-				m.filterActive = false
-				m.filterText = ""
-				target := dashSwitchTarget(m.popup, m.client, m.callerClient)
+				client := m.client
+				if client == "" {
+					// Belt-and-suspenders: FocusMsg may not have fired yet
+					// (e.g. focus reporting disabled); query inline.
+					client, _ = tmux.CurrentClient()
+				}
+				m.cursorActive = false
 				return m, func() tea.Msg {
-					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 						return dashStatusMsg(errMsg)
 					}
-					return tea.QuitMsg{}
-				}
-
-			case "backspace", "ctrl+h":
-				if len(m.filterText) > 0 {
-					runes := []rune(m.filterText)
-					m.filterText = string(runes[:len(runes)-1])
-					m = dashRefilter(m)
-				}
-
-			case "j", "down":
-				if m.cursor < len(m.displayed)-1 {
-					m.cursor++
-				}
-
-			case "k", "up":
-				if m.cursor > 0 {
-					m.cursor--
-				}
-
-			default:
-				if msg.Type == tea.KeyRunes {
-					m.filterText += msg.String()
-					m = dashRefilter(m)
+					return nil
 				}
 			}
-			return m, nil
+			return m, cmd
 		}
 
 		// Normal (non-filter) key handling.
 		switch msg.String() {
 		case "q", "esc":
-			if m.popup {
-				// Direct popup mode (C-w): just quit, display-popup -E closes it.
-				return m, tea.Quit
+			// Persistent mode: switch the current client back to its last session
+			// (switch-client -l), then deactivate the cursor (return to passive
+			// watch mode). Using -l avoids any stale caller state — it always
+			// returns to wherever the client was before it switched here.
+			// The process does NOT quit — the session stays alive.
+			client := m.client
+			if client == "" {
+				// Belt-and-suspenders: FocusMsg may not have fired yet;
+				// query the current client inline as a fallback.
+				client, _ = tmux.CurrentClient()
 			}
-			// Persistent session mode (prefix+D): switch caller client back to
-			// their previous session. TUI keeps running via the restart loop.
-			return m, tea.Sequence(
-				func() tea.Msg {
-					if m.callerClient != "" {
-						_ = tmux.SwitchClient(m.callerClient, m.currentSession)
-					}
-					return nil
-				},
-				tea.Quit,
-			)
+			m.cursorActive = false
+			return m, func() tea.Msg {
+				if client != "" {
+					_ = tmux.SwitchClientLast(client)
+				}
+				return nil
+			}
 
 		case "/":
-			// Activate inline fuzzy filter. Keep cursorActive for the entire
-			// filter session — no timeout while filter mode is open.
+			// Activate inline fuzzy filter.
 			m.filterActive = true
 			m.filterText = ""
 			m.cursorActive = true
-			m = dashRefilter(m)
+			m.dashShared = dashRefilterShared(m.dashShared)
 			return m, nil
 
 		case "j", "down":
@@ -800,156 +1061,91 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// watch mode). Mirror the j/k behaviour: first Enter activates the
 				// cursor without immediately switching, so the user can confirm the
 				// highlighted session before committing.
-				if !m.popup {
-					m.cursorActive = true
-					return m, cursorTimeoutCmd()
-				}
+				m.cursorActive = true
+				return m, cursorTimeoutCmd()
 			}
 			if len(m.displayed) == 0 {
 				return m, nil
 			}
 			selected := m.displayed[m.cursor]
-			target := dashSwitchTarget(m.popup, m.client, m.callerClient)
+			client := m.client
+			if client == "" {
+				// Belt-and-suspenders: FocusMsg may not have fired yet;
+				// query the current client inline as a fallback.
+				client, _ = tmux.CurrentClient()
+			}
+			m.cursorActive = false
 			return m, func() tea.Msg {
-				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+				// Switch the viewing client to the selected session, then return
+				// to passive watch mode. The TUI stays alive.
+				if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 					return dashStatusMsg(errMsg)
 				}
-				return tea.QuitMsg{}
+				return nil
 			}
 		}
 	}
 	return m, nil
 }
 
-func filterAgentSessions(all []agentSession) []agentSession {
-	var out []agentSession
-	for _, s := range all {
-		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
+// switchTarget returns the tmux client that should receive switch-client when
+// the user selects a session in persistent mode. Always m.client — the client
+// currently viewing the dashboard.
+func (m persistentModel) switchTarget() string {
+	return m.client
 }
+
+func (m persistentModel) View() string {
+	return dashView(m.dashShared, m.currentSession, m.cursorActive)
+}
+
+// ── helpers shared between models ────────────────────────────────────────────
 
 // dashRefilter recomputes m.displayed from m.sessions applying the active
 // fuzzy filter (if any). It also clamps the cursor so it never points out of
 // bounds. It returns the updated model.
+//
+// Deprecated: use dashRefilterShared directly. This wrapper exists for
+// compatibility with existing tests.
 func dashRefilter(m dashModel) dashModel {
-	if !m.filterActive || m.filterText == "" {
-		m.displayed = make([]agentSession, len(m.sessions))
-		copy(m.displayed, m.sessions)
-	} else {
-		var out []agentSession
-		for _, s := range m.sessions {
-			if fuzzyMatch(s.Name, m.filterText) {
-				out = append(out, s)
-			}
-		}
-		m.displayed = out
+	s := dashShared{
+		sessions:     m.sessions,
+		filterActive: m.filterActive,
+		filterText:   m.filterText,
+		cursor:       m.cursor,
+		displayed:    m.displayed,
 	}
-	// Sort displayed to match visual render order so m.cursor indexes
-	// correctly: alphabetical by repo, @main first within each repo,
-	// then other branches alphabetically.
-	sortDisplayed(m.displayed)
-	if m.cursor >= len(m.displayed) {
-		m.cursor = max(0, len(m.displayed)-1)
-	}
+	s = dashRefilterShared(s)
+	m.sessions = s.sessions
+	m.filterActive = s.filterActive
+	m.filterText = s.filterText
+	m.cursor = s.cursor
+	m.displayed = s.displayed
 	return m
-}
-
-// dashSwitchTarget returns the tmux client name that should receive a
-// switch-client command when the user selects a session in the dashboard.
-//
-// Rules:
-//   - Popup (C-w) mode: the process runs inside the popup which is attached to
-//     the viewer's own client. client (= CurrentClient() at startup) is the
-//     correct target.
-//   - Persistent-session mode: the dashboard runs in a background session; the
-//     viewer's client is identified by the @prism_caller_client stamp that was
-//     captured at model-init time as callerClient. Use that value if non-empty,
-//     otherwise fall back to client.
-//
-// Either way, callers must NOT pass tmux.CallerClient() live — that reads a
-// server-wide global that gets overwritten whenever any client opens the
-// dashboard, causing the wrong client to be switched (the original bug).
-func dashSwitchTarget(popup bool, client, callerClient string) string {
-	if !popup && callerClient != "" {
-		return callerClient
-	}
-	return client
-}
-
-// ensureSessionAndSwitch checks whether the named tmux session exists.
-// If it does, it selects the agent window and switches the given client to it.
-// If it does not, it looks up the worktree path from the DB; if the directory
-// exists on disk it recreates a bare shell session there, then switches.
-// Returns a non-empty error string on failure; returns "" on success.
-func ensureSessionAndSwitch(sessionName, target string) string {
-	if tmux.HasSession(sessionName) {
-		_ = tmux.SelectAgentWindow(sessionName)
-		if target != "" {
-			if err := tmux.SwitchClient(target, sessionName); err != nil {
-				return fmt.Sprintf("switch failed: %v", err)
-			}
-		}
-		return ""
-	}
-
-	worktreePath := worktreePathFromDB(sessionName)
-	if worktreePath == "" {
-		return fmt.Sprintf("session %q has no worktree record — use prism cleanup to remove it", sessionName)
-	}
-	if _, err := os.Stat(worktreePath); err != nil {
-		return fmt.Sprintf("worktree directory not found: %s", worktreePath)
-	}
-
-	if err := session.Create(sessionName, worktreePath, session.Opts{Layout: session.LayoutBare}); err != nil {
-		return fmt.Sprintf("could not recreate session: %v", err)
-	}
-
-	if target != "" {
-		if err := tmux.SwitchClient(target, sessionName); err != nil {
-			return fmt.Sprintf("switch failed: %v", err)
-		}
-	}
-	return ""
-}
-
-// worktreePathFromDB looks up the worktree path for a session from the DB only.
-// Returns "" if not found or on error.
-func worktreePathFromDB(sessionName string) string {
-	d, err := openDB()
-	if err != nil {
-		return ""
-	}
-	defer d.Close()
-	status, err := d.CurrentStatus(sessionName)
-	if err != nil || status == nil {
-		return ""
-	}
-	return status.Worktree
 }
 
 // ── view ──────────────────────────────────────────────────────────────────────
 
-func (m dashModel) View() string {
-	if m.width == 0 {
+// dashView is the shared rendering function for both popup and persistent modes.
+// currentSession is used to show the "you are here" ◆ indicator.
+// cursorActive controls whether the selection bar is shown.
+func dashView(d dashShared, currentSession string, cursorActive bool) string {
+	if d.width == 0 {
 		// Before WindowSizeMsg: render a minimal skeleton so the first frame
 		// is never blank. Use a fixed width so the output is deterministic.
 		return skeletonView(80)
 	}
 
-	if m.loading {
-		return skeletonView(m.width)
+	if d.loading {
+		return skeletonView(d.width)
 	}
 
 	// fixedCore (defined below) is the irreducible column overhead. At widths
 	// below fixedCore+1, the session header word "session" (7 chars) overflows
 	// its 6-char slot when sessionW=0, so render a skeleton instead.
 	const minUsableWidth = 22 // fixedCore+1
-	if m.width < minUsableWidth {
-		return skeletonView(m.width)
+	if d.width < minUsableWidth {
+		return skeletonView(d.width)
 	}
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -1011,12 +1207,12 @@ func (m dashModel) View() string {
 	// Zero: exact fit, no title.
 	// Negative: layout overflows; a column must be dropped.
 	calcTitleW := func() int {
-		// Total slack = m.width - usedWidth().
+		// Total slack = d.width - usedWidth().
 		// We need at least 3 chars of slack to show any title:
 		//   2 (gap) + 1 (one character of title content).
 		// A slack of exactly 2 means exact fit, no title (titleW = 0).
 		// A slack < 2 means overflow.
-		return m.width - usedWidth() - 2
+		return d.width - usedWidth() - 2
 	}
 
 	// growSession offers surplus space to sessionW (up to sessionWCap) before
@@ -1057,7 +1253,7 @@ func (m dashModel) View() string {
 		// Drop type.  After this only session + state remain; grow session to
 		// fill all available space, clamped to 0 on extremely narrow terminals.
 		showType = false
-		avail := m.width - fixedCore
+		avail := d.width - fixedCore
 		if avail > 0 {
 			sessionW = avail
 		} else {
@@ -1069,10 +1265,10 @@ func (m dashModel) View() string {
 	var sb strings.Builder
 
 	// ── header: stats left, art right ───────────────────────────────────────
-	sb.WriteString(renderHeader(m, styleDim, styleIns, styleDel))
+	sb.WriteString(renderHeader(d, styleDim, styleIns, styleDel))
 
 	// Rainbow separator between header and column headers.
-	sb.WriteString(rainbowLineWidth(strings.Repeat("─", m.width), m.width))
+	sb.WriteString(rainbowLineWidth(strings.Repeat("─", d.width), d.width))
 	sb.WriteString("\n")
 
 	changesHeader := "changes"
@@ -1101,18 +1297,18 @@ func (m dashModel) View() string {
 	sb.WriteString(styleHeader.Render(header))
 	sb.WriteString("\n\n")
 
-	sessions := m.displayed
+	sessions := d.displayed
 	if len(sessions) == 0 {
-		if m.filterActive {
+		if d.filterActive {
 			sb.WriteString(styleDim.Render("  no matches"))
 		} else {
 			sb.WriteString(styleDim.Render("  no active sessions"))
 		}
 		sb.WriteString("\n")
-	} else if m.filterActive {
+	} else if d.filterActive {
 		// Flat list while filter is active (no grouping — easier to scan).
 		for i, s := range sessions {
-			sb.WriteString(m.renderSessionRow(s, i, "" /*treePrefix*/, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
+			sb.WriteString(renderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
@@ -1162,21 +1358,21 @@ func (m dashModel) View() string {
 					treePrefix = "  ├── "
 				}
 			}
-			sb.WriteString(m.renderSessionRow(s, i, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
+			sb.WriteString(renderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
 		}
 	}
 
 	// Filter prompt or help hint at the bottom.
-	if m.filterActive {
+	if d.filterActive {
 		sb.WriteString("\n")
 		sb.WriteString(stylePrompt.Render(" / "))
-		sb.WriteString(m.filterText)
+		sb.WriteString(d.filterText)
 		sb.WriteString(styleDim.Render("█"))
 		sb.WriteString("\n")
-	} else if m.statusMsg != "" {
+	} else if d.statusMsg != "" {
 		sb.WriteString("\n")
 		styleErr := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
-		sb.WriteString(styleErr.Render("  " + m.statusMsg))
+		sb.WriteString(styleErr.Render("  " + d.statusMsg))
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("\n")
@@ -1192,16 +1388,19 @@ func (m dashModel) View() string {
 // pass "" for top-level rows. Top-level rows display the full session name
 // padded to treePrefixW+sessionW; child rows display the tree prefix plus the
 // branch name padded to the same total width.
-func (m dashModel) renderSessionRow(
+func renderSessionRow(
+	d dashShared,
 	s agentSession,
 	cursorIdx int,
 	treePrefix string,
+	currentSession string,
+	cursorActive bool,
 	styleDim, styleIns, styleDel, styleFg, styleAgentType lipgloss.Style,
 	sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelW int,
 	showType, showModel, showStat bool,
 ) string {
-	isHere := s.Name == m.currentSession
-	isSelected := cursorIdx == m.cursor
+	isHere := s.Name == currentSession
+	isSelected := cursorIdx == d.cursor
 
 	// dot: ◆ = you are here, ● = someone else attached, space = unattached
 	var dot string
@@ -1255,7 +1454,7 @@ func (m dashModel) renderSessionRow(
 	}
 	paddedModelLabel := fmt.Sprintf("%-*s", modelW, modelLabel)
 
-	result := m.gitStats[s.AgentPath]
+	result := d.gitStats[s.AgentPath]
 	var statPlain string
 	if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
 		statPlain = "—"
@@ -1276,7 +1475,7 @@ func (m dashModel) renderSessionRow(
 		title = string([]rune(title)[:titleW-1]) + "…"
 	}
 
-	if isSelected && m.cursorActive {
+	if isSelected && cursorActive {
 		// Bar colour: state colour for active states, primary for idle/finished.
 		barBg := lipgloss.Color(ColorPrimary)
 		switch agent.AgentState(s.AgentState) {
@@ -1304,7 +1503,7 @@ func (m dashModel) renderSessionRow(
 			Foreground(lipgloss.Color(ColorBg0)).
 			Background(barBg).
 			Bold(true).
-			Width(m.width).
+			Width(d.width).
 			Render(plain)
 		return row + "\n"
 	}
@@ -1402,6 +1601,59 @@ func skeletonView(width int) string {
 	return sb.String()
 }
 
+// ── session switch helpers ────────────────────────────────────────────────────
+
+// ensureSessionAndSwitch checks whether the named tmux session exists.
+// If it does, it selects the agent window and switches the given client to it.
+// If it does not, it looks up the worktree path from the DB; if the directory
+// exists on disk it recreates a bare shell session there, then switches.
+// Returns a non-empty error string on failure; returns "" on success.
+func ensureSessionAndSwitch(sessionName, target string) string {
+	if tmux.HasSession(sessionName) {
+		_ = tmux.SelectAgentWindow(sessionName)
+		if target != "" {
+			if err := tmux.SwitchClient(target, sessionName); err != nil {
+				return fmt.Sprintf("switch failed: %v", err)
+			}
+		}
+		return ""
+	}
+
+	worktreePath := worktreePathFromDB(sessionName)
+	if worktreePath == "" {
+		return fmt.Sprintf("session %q has no worktree record — use prism cleanup to remove it", sessionName)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		return fmt.Sprintf("worktree directory not found: %s", worktreePath)
+	}
+
+	if err := session.Create(sessionName, worktreePath, session.Opts{Layout: session.LayoutBare}); err != nil {
+		return fmt.Sprintf("could not recreate session: %v", err)
+	}
+
+	if target != "" {
+		if err := tmux.SwitchClient(target, sessionName); err != nil {
+			return fmt.Sprintf("switch failed: %v", err)
+		}
+	}
+	return ""
+}
+
+// worktreePathFromDB looks up the worktree path for a session from the DB only.
+// Returns "" if not found or on error.
+func worktreePathFromDB(sessionName string) string {
+	d, err := openDB()
+	if err != nil {
+		return ""
+	}
+	defer d.Close()
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil {
+		return ""
+	}
+	return status.Worktree
+}
+
 // ── sentinel watcher ──────────────────────────────────────────────────────────
 
 // dashSentinelPath returns the path to the dashboard sentinel file.
@@ -1449,9 +1701,10 @@ func watchDashboardSentinel(ctx context.Context, p *tea.Program) {
 const dashSession = "prism-dashboard"
 
 // ensureDashSession creates the prism-dashboard session if it doesn't exist.
-// The session command is a restart loop so it survives the TUI exiting.
+// The session runs `prism dashboard` (persistent mode) directly — no restart
+// loop. The persistent dashboard keeps itself alive without exiting on quit.
 //
-// The restart loop uses the absolute path of the running prism binary
+// The session command uses the absolute path of the running prism binary
 // (os.Executable) rather than the bare name "prism", so the command works
 // even when the tmux pane shell does not have the Nix store path in PATH.
 // Similarly, tmux.TmuxBin is used instead of the bare "tmux" string so the
@@ -1465,8 +1718,8 @@ func ensureDashSession() error {
 		// Fall back to "prism" if we cannot resolve our own path.
 		self = "prism"
 	}
-	loopCmd := "while '" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard --popup; do true; done"
-	c := exec.Command(tmux.TmuxBin, "new-session", "-ds", dashSession, "-n", "dashboard", loopCmd)
+	dashCmd := "'" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard"
+	c := exec.Command(tmux.TmuxBin, "new-session", "-ds", dashSession, "-n", "dashboard", dashCmd)
 	return c.Run()
 }
 
@@ -1475,23 +1728,43 @@ var dashboardCmd = &cobra.Command{
 	Short: "Live agent status dashboard",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		popup, _ := cmd.Flags().GetBool("popup")
+		callerSession, _ := cmd.Flags().GetString("caller-session")
 
-		// --popup: we are already attached inside the persistent session,
-		// just run the TUI directly.
 		if popup {
+			// Popup mode (C-w): run the TUI directly inside a display-popup frame.
+			// callerSession is passed via --caller-session flag so the "you are here"
+			// indicator and initial cursor snap work correctly. The popup runs inside
+			// the caller's own client (m.client), so no --caller-client flag is needed.
 			client, _ := tmux.CurrentClient()
-			m := newDashModel(client, popup)
+			m := newPopupModel(client, callerSession)
 			p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
 			ctx, cancel := context.WithCancel(context.Background())
 			watchDashboardSentinel(ctx, p)
 			_, err := p.Run()
-			cancel() // stop the sentinel watcher goroutine
+			cancel()
 			return err
 		}
 
 		inTmux := os.Getenv("TMUX") != ""
 
 		if inTmux {
+			// Check if we are already in the prism-dashboard session — if so,
+			// just run the persistent TUI directly (avoids re-entering).
+			currentSess, _ := tmux.CurrentSession()
+			if currentSess == dashSession {
+				// Already in the dashboard session — run the persistent TUI.
+				// callerSession is passed for the "you are here" indicator on
+				// first load; it is optional (empty is fine).
+				client, _ := tmux.CurrentClient()
+				m := newPersistentModel(client, callerSession)
+				p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
+				ctx, cancel := context.WithCancel(context.Background())
+				watchDashboardSentinel(ctx, p)
+				_, err := p.Run()
+				cancel()
+				return err
+			}
+
 			// Inside tmux as a CLI call: ensure session exists, switch to it.
 			if err := ensureDashSession(); err != nil {
 				return err
@@ -1524,7 +1797,8 @@ func syscallExecTmux(session string) error {
 }
 
 func init() {
-	dashboardCmd.Flags().Bool("popup", false, "Running inside a tmux display-popup")
+	dashboardCmd.Flags().Bool("popup", false, "Run as ephemeral popup (spawned by C-w keybinding)")
+	dashboardCmd.Flags().String("caller-session", "", "Tmux session name of the invoking client (for 'you are here' indicator)")
 	rootCmd.AddCommand(dashboardCmd)
 }
 
@@ -1540,4 +1814,235 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── legacy dashModel (for test compatibility) ──────────────────────────────────
+//
+// dashModel is kept as a thin wrapper around dashShared + mode-specific fields
+// to preserve backward compatibility with existing tests in dashboard_test.go.
+// New code should use popupModel or persistentModel directly.
+//
+// The popup bool here is used only by tests that construct dashModel directly.
+// In production code, the mode is determined by the entry point (newPopupModel
+// vs newPersistentModel), not by a field on the model.
+
+type dashModel struct {
+	dashShared
+	client         string
+	callerClient   string // immutable after init
+	popup          bool
+	currentSession string
+	cursorActive   bool
+}
+
+func newDashModel(client string, popup bool) dashModel {
+	currentSession := tmux.CallerSession()
+	callerClient := tmux.CallerClient()
+	m := dashModel{
+		dashShared: dashShared{
+			loading: true,
+		},
+		client:         client,
+		callerClient:   callerClient,
+		popup:          popup,
+		currentSession: currentSession,
+		cursorActive:   popup,
+	}
+	m.displayed = m.sessions
+	return m
+}
+
+func (m dashModel) Init() tea.Cmd {
+	return tea.Batch(fetchSessionsFromDB, fetchGitHubStats, ghTick())
+}
+
+func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+
+	case RefreshMsg:
+		return m, fetchSessionsFromDB
+
+	case dashStatusMsg:
+		m.statusMsg = string(msg)
+		return m, nil
+
+	case ghTickMsg:
+		return m, tea.Batch(fetchGitHubStats, ghTick())
+
+	case githubStatsMsg:
+		if !msg.err {
+			m.ghOpenPRs = msg.openPRs
+		}
+		m.ghLoaded = true
+
+	case cursorTimeoutMsg:
+		if !m.popup && !m.filterActive {
+			m.cursorActive = false
+		}
+
+	case tea.BlurMsg:
+		if !m.popup && !m.filterActive {
+			m.cursorActive = false
+		}
+
+	case tea.FocusMsg:
+		// Focus regained — cursor stays hidden until user presses j/k.
+
+	case sessionsMsg:
+		m.loading = false
+		if msg.sessions != nil {
+			m.sessions = msg.sessions
+		}
+		if msg.gitStats != nil {
+			m.gitStats = msg.gitStats
+		}
+		needsSnap := !m.cursorInitialised && !m.filterActive
+		if !m.cursorInitialised {
+			m.cursorInitialised = true
+		}
+		m.dashShared = dashRefilterShared(m.dashShared)
+		if needsSnap {
+			for i, s := range m.displayed {
+				if s.Name == m.currentSession {
+					m.cursor = i
+					break
+				}
+			}
+		}
+
+	case tea.KeyMsg:
+		m.statusMsg = ""
+		if m.filterActive {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+
+			case "esc":
+				m.filterActive = false
+				m.filterText = ""
+				m.dashShared = dashRefilterShared(m.dashShared)
+				return m, nil
+
+			case "enter":
+				if len(m.displayed) == 0 {
+					return m, nil
+				}
+				selected := m.displayed[m.cursor]
+				m.filterActive = false
+				m.filterText = ""
+				target := legacyDashSwitchTarget(m.popup, m.client, m.callerClient)
+				return m, func() tea.Msg {
+					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+						return dashStatusMsg(errMsg)
+					}
+					return tea.QuitMsg{}
+				}
+
+			case "backspace", "ctrl+h":
+				if len(m.filterText) > 0 {
+					runes := []rune(m.filterText)
+					m.filterText = string(runes[:len(runes)-1])
+					m.dashShared = dashRefilterShared(m.dashShared)
+				}
+
+			case "j", "down":
+				if m.cursor < len(m.displayed)-1 {
+					m.cursor++
+				}
+
+			case "k", "up":
+				if m.cursor > 0 {
+					m.cursor--
+				}
+
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.filterText += msg.String()
+					m.dashShared = dashRefilterShared(m.dashShared)
+				}
+			}
+			return m, nil
+		}
+
+		switch msg.String() {
+		case "q", "esc":
+			if m.popup {
+				return m, tea.Quit
+			}
+			return m, tea.Sequence(
+				func() tea.Msg {
+					if m.callerClient != "" {
+						_ = tmux.SwitchClient(m.callerClient, m.currentSession)
+					}
+					return nil
+				},
+				tea.Quit,
+			)
+
+		case "/":
+			m.filterActive = true
+			m.filterText = ""
+			m.cursorActive = true
+			m.dashShared = dashRefilterShared(m.dashShared)
+			return m, nil
+
+		case "j", "down":
+			if !m.cursorActive {
+				m.cursorActive = true
+				return m, cursorTimeoutCmd()
+			}
+			if m.cursor < len(m.displayed)-1 {
+				m.cursor++
+			}
+			return m, cursorTimeoutCmd()
+
+		case "k", "up":
+			if !m.cursorActive {
+				m.cursorActive = true
+				return m, cursorTimeoutCmd()
+			}
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			return m, cursorTimeoutCmd()
+
+		case "enter":
+			if !m.cursorActive {
+				if !m.popup {
+					m.cursorActive = true
+					return m, cursorTimeoutCmd()
+				}
+			}
+			if len(m.displayed) == 0 {
+				return m, nil
+			}
+			selected := m.displayed[m.cursor]
+			target := legacyDashSwitchTarget(m.popup, m.client, m.callerClient)
+			return m, func() tea.Msg {
+				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					return dashStatusMsg(errMsg)
+				}
+				return tea.QuitMsg{}
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m dashModel) View() string {
+	return dashView(m.dashShared, m.currentSession, m.cursorActive)
+}
+
+// legacyDashSwitchTarget is the switch-target helper used by dashModel (the
+// legacy test-compatibility model). It mirrors the original dashSwitchTarget
+// signature with the popup bool parameter.
+func legacyDashSwitchTarget(popup bool, client, callerClient string) string {
+	if !popup && callerClient != "" {
+		return callerClient
+	}
+	return client
 }

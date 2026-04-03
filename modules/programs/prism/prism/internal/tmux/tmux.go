@@ -118,6 +118,15 @@ func SwitchClientCurrent(session string) (string, error) {
 	return run("switch-client", "-t", session)
 }
 
+// SwitchClientLast switches the named client back to its previously-viewed
+// session (equivalent to `tmux switch-client -c <client> -l`). This is used
+// by the persistent dashboard on q/esc to return the viewer to where they came
+// from without needing any stored caller state.
+func SwitchClientLast(client string) error {
+	_, err := run("switch-client", "-c", client, "-l")
+	return err
+}
+
 // CurrentSession returns the session name for the current tmux client.
 func CurrentSession() (string, error) {
 	return run("display-message", "-p", "#{session_name}")
