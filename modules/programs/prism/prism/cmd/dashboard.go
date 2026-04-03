@@ -685,6 +685,7 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		m.statusMsg = ""
 		// In filter mode most keys are consumed by the filter input.
 		if m.filterActive {
 			switch msg.String() {
