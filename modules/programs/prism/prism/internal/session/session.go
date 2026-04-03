@@ -1,5 +1,5 @@
 // Package session provides composable session lifecycle operations for prism.
-// It extracts the core create/attach/send/destroy logic that was previously
+// It extracts the core create/attach/name logic that was previously
 // embedded in the monolithic ensureAndSwitchSession function in cmd/switch.go.
 package session
 
