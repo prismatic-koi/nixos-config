@@ -604,6 +604,10 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           const errorName: string | null = errProps?.error?.name ?? null;
           if (errorName === "MessageAbortedError") {
             // User pressed Escape or Ctrl-C — record as interrupted, not error.
+            // Cancel any pending idle debounce so it cannot fire "finished"
+            // after this write — eliminates the race where session.idle starts
+            // the timer before session.error fires.
+            if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             upsertAgentStatus(STATE_INTERRUPTED);
             writeStateChange(STATE_INTERRUPTED);
           } else {
