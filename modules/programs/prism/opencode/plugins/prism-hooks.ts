@@ -452,8 +452,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
                 currentState = row?.state ?? null;
               } catch (e) { console.error("[prism-hooks] getStatus (timer) failed:", e); }
             }
-            if (currentState === STATE_INTERRUPTED) {
-              // Session was interrupted — leave the interrupted state intact
+            if (currentState === STATE_INTERRUPTED || currentState === STATE_ERROR) {
+              // Session was interrupted or errored — leave the state intact
               // and skip coordinator notification.
               return;
             }
@@ -598,12 +598,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           writeStateChange(STATE_ACTIVE);
           break;
 
-        case "session.error":
-          // DB
-          upsertAgentStatus(STATE_ERROR);
-          writeStateChange(STATE_ERROR);
-          writeEvent("error", { note: "session error" });
+        case "session.error": {
+          // Read the error name from the event payload (may be absent).
+          const errProps = event.properties as any;
+          const errorName: string | null = errProps?.error?.name ?? null;
+          if (errorName === "MessageAbortedError") {
+            // User pressed Escape or Ctrl-C — record as interrupted, not error.
+            upsertAgentStatus(STATE_INTERRUPTED);
+            writeStateChange(STATE_INTERRUPTED);
+          } else {
+            // All other error types (AuthError, APIError, OutputLengthError, …).
+            upsertAgentStatus(STATE_ERROR);
+            writeStateChange(STATE_ERROR);
+            writeEvent("error", { name: errorName });
+          }
           break;
+        }
 
         case "session.compacted": {
           // Compaction done — agent returns to idle.
