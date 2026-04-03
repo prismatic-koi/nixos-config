@@ -358,3 +358,130 @@ func TestConvertToBare_NoRemote(t *testing.T) {
 		t.Errorf(".git is not a directory after rollback (got %v)", gitInfo.Mode())
 	}
 }
+
+// TestStat_EmptyDir verifies that Stat returns an error for an empty string path.
+func TestStat_EmptyDir(t *testing.T) {
+	t.Parallel()
+	_, err := Stat("")
+	if err == nil {
+		t.Error("Stat(\"\") should return an error")
+	}
+}
+
+// TestStat_NonExistentPath verifies that Stat returns an error for a path that
+// does not exist on disk.
+func TestStat_NonExistentPath(t *testing.T) {
+	t.Parallel()
+	_, err := Stat("/nonexistent/path/that/should/not/exist")
+	if err == nil {
+		t.Error("Stat on non-existent path should return an error")
+	}
+}
+
+// TestStat_NonGitDir verifies that Stat returns an error for a directory that
+// exists but is not a git repository.
+func TestStat_NonGitDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := Stat(dir)
+	if err == nil {
+		t.Error("Stat on non-git directory should return an error")
+	}
+}
+
+// TestStat_CleanRepo verifies that Stat returns a zero DiffStat (no error) for
+// a clean git repository with no uncommitted changes.
+func TestStat_CleanRepo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat on clean repo returned error: %v", err)
+	}
+	if stat.Files != 0 || stat.Insertions != 0 || stat.Deletions != 0 {
+		t.Errorf("Stat on clean repo = %+v, want zero DiffStat", stat)
+	}
+}
+
+// TestStat_DirtyRepo verifies that Stat returns a non-zero DiffStat for a
+// repository with uncommitted changes.
+func TestStat_DirtyRepo(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+
+	// Modify the existing README file — unstaged change.
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat on dirty repo returned error: %v", err)
+	}
+	if stat.Files == 0 {
+		t.Error("Stat on dirty repo returned zero files, want > 0")
+	}
+}
+
+// TestStat_StagedChanges verifies that Stat captures staged (cached) changes.
+func TestStat_StagedChanges(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+
+	// Add a new file and stage it.
+	newFile := filepath.Join(dir, "newfile.txt")
+	if err := os.WriteFile(newFile, []byte("hello\nworld\n"), 0o644); err != nil {
+		t.Fatalf("write newfile.txt: %v", err)
+	}
+	c := exec.Command("git", "add", "newfile.txt")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat with staged changes returned error: %v", err)
+	}
+	if stat.Files == 0 {
+		t.Error("Stat with staged changes returned zero files, want > 0")
+	}
+	if stat.Insertions == 0 {
+		t.Error("Stat with staged changes returned zero insertions, want > 0")
+	}
+}
+
+// TestStat_DeduplicatesStagedAndUnstaged verifies that a file that appears in
+// both staged and unstaged diff is counted only once.
+func TestStat_DeduplicatesStagedAndUnstaged(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+
+	// Modify README and stage part of it (stage then modify again so it
+	// appears in both diff HEAD and diff --cached).
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("staged change\n"), 0o644); err != nil {
+		t.Fatalf("write README (staged): %v", err)
+	}
+	c := exec.Command("git", "add", "README")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git add README: %v\n%s", err, out)
+	}
+	// Modify again so it also appears in unstaged diff.
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("staged change\nunstaged change\n"), 0o644); err != nil {
+		t.Fatalf("write README (unstaged): %v", err)
+	}
+
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	// README appears in both diffs but must be counted as exactly 1 file.
+	if stat.Files != 1 {
+		t.Errorf("Stat.Files = %d, want 1 (README should be deduplicated)", stat.Files)
+	}
+}

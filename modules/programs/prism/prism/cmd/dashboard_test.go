@@ -19,6 +19,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -876,5 +877,107 @@ func TestSortDisplayed(t *testing.T) {
 		if s.Name != want[i] {
 			t.Errorf("index %d: got %q, want %q", i, s.Name, want[i])
 		}
+	}
+}
+
+// ─── git stat error rendering tests ──────────────────────────────────────────
+
+// TestDashViewStatError verifies that a session with a failed git stat shows
+// "?" in the rendered view, not "—" (which would imply a clean worktree).
+func TestDashViewStatError(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		gitStats: map[string]gitStatResult{
+			"/some/path": {Ok: false}, // stat failed
+		},
+		width:  80,
+		height: 40,
+	}
+	view := m.View()
+	if !strings.Contains(view, "?") {
+		t.Errorf("View() should contain '?' for a failed git stat, got:\n%s", view)
+	}
+}
+
+// TestDashViewStatClean verifies that a session with a successful git stat
+// showing no changes renders "—", not "?".
+func TestDashViewStatClean(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		gitStats: map[string]gitStatResult{
+			"/some/path": {Ok: true}, // stat succeeded, zero DiffStat = clean
+		},
+		width:  80,
+		height: 40,
+	}
+	view := m.View()
+	if !strings.Contains(view, "—") {
+		t.Errorf("View() should contain '—' for a clean worktree, got:\n%s", view)
+	}
+	if strings.Contains(view, "?") {
+		t.Errorf("View() should NOT contain '?' for a clean worktree, got:\n%s", view)
+	}
+}
+
+// TestDashViewStatDirty verifies that a session with uncommitted changes shows
+// the numeric diff stats (not "—" or "?").
+func TestDashViewStatDirty(t *testing.T) {
+	t.Parallel()
+
+	m := dashModel{
+		sessions:  []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		displayed: []agentSession{{Name: "repo@main", AgentPath: "/some/path"}},
+		gitStats: map[string]gitStatResult{
+			"/some/path": {
+				Ok:   true,
+				Stat: git.DiffStat{Files: 3, Insertions: 42, Deletions: 7},
+			},
+		},
+		width:  120,
+		height: 40,
+	}
+	view := m.View()
+	if !strings.Contains(view, "+42") {
+		t.Errorf("View() should contain '+42' for a dirty worktree, got:\n%s", view)
+	}
+	if !strings.Contains(view, "-7") {
+		t.Errorf("View() should contain '-7' for a dirty worktree, got:\n%s", view)
+	}
+}
+
+// TestDashViewStatErrorDoesNotAffectOtherSessions verifies that a stat failure
+// for one session does not affect the rendering of other sessions.
+func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
+	t.Parallel()
+
+	sessions := []agentSession{
+		{Name: "repo@main", AgentPath: "/good/path"},
+		{Name: "repo@bad", AgentPath: "/bad/path"},
+	}
+	m := dashModel{
+		sessions:  sessions,
+		displayed: sessions,
+		gitStats: map[string]gitStatResult{
+			"/good/path": {Ok: true},  // clean
+			"/bad/path":  {Ok: false}, // stat failed
+		},
+		width:  120,
+		height: 40,
+	}
+	view := m.View()
+
+	// The view should contain both "—" (for the clean session) and "?" (for the
+	// failed one). We cannot assert exact positions but both must appear.
+	if !strings.Contains(view, "—") {
+		t.Errorf("View() should contain '—' for the clean session, got:\n%s", view)
+	}
+	if !strings.Contains(view, "?") {
+		t.Errorf("View() should contain '?' for the failed session, got:\n%s", view)
 	}
 }
