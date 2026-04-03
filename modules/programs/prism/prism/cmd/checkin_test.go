@@ -849,6 +849,18 @@ func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
 // TestRenderCheckinTurns_SubagentUserEventsCollapsed verifies that msg_user
 // events belonging to a subagent (agent != root) are also collapsed in default
 // mode alongside their surrounding subagent assistant turns.
+//
+// Layout (all times relative to base):
+//
+//	t=0s   subagent assistant turn 1  ← window start
+//	t=500ms subagent user message     ← inside window, must be collapsed
+//	t=1s   subagent assistant turn 2  ← window end
+//
+// The time window is [earliest_assistant, latest_assistant] = [base, base+1s].
+// The user event at base+500ms is within that window, so it enters the
+// timeline and the collapse loop must swallow it. If it were filtered out
+// before reaching the loop, the assertion below would detect the regression
+// because only one assistant event would be visible in the summary duration.
 func TestRenderCheckinTurns_SubagentUserEventsCollapsed(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -858,25 +870,35 @@ func TestRenderCheckinTurns_SubagentUserEventsCollapsed(t *testing.T) {
 
 	setRootAgent(t, d, session, rootAgent)
 
-	// Subagent user message injected between two subagent assistant turns.
+	// First subagent assistant turn — establishes the start of the time window.
+	sub1MsgID := "msg-sub1"
+	sub1Event := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub1MsgID, "sub assistant turn 1", subAgent),
+		base)
+
+	// Subagent user message at t=500ms — sits inside [base, base+1s].
 	subUserMsgID := "umsg-sub"
 	writeEvent(t, d, uuid.New().String(), session, "msg_user",
 		userPayloadWithAgent(subUserMsgID, "subagent user message", subAgent),
 		base.Add(500*time.Millisecond))
 
-	subMsgID := "msg-sub"
-	subEvent := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
-		assistantPayloadWithAgent(subMsgID, "sub assistant reply", subAgent),
+	// Second subagent assistant turn — extends the time window to base+1s.
+	sub2MsgID := "msg-sub2"
+	sub2Event := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub2MsgID, "sub assistant turn 2", subAgent),
 		base.Add(time.Second))
 
 	out := captureStdout(t, func() {
-		if err := renderCheckinTurns(session, d, []db.Event{subEvent}, false); err != nil {
+		if err := renderCheckinTurns(session, d, []db.Event{sub1Event, sub2Event}, false); err != nil {
 			t.Errorf("renderCheckinTurns: %v", err)
 		}
 	})
 
 	// Subagent text must not appear inline.
-	if strings.Contains(out, "sub assistant reply") {
+	if strings.Contains(out, "sub assistant turn 1") {
+		t.Errorf("subagent assistant text should be collapsed\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "sub assistant turn 2") {
 		t.Errorf("subagent assistant text should be collapsed\ngot:\n%s", out)
 	}
 	if strings.Contains(out, "subagent user message") {
