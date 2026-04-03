@@ -560,10 +560,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           writeStateChange(STATE_WAITING);
           writeEvent("permission_ask", { tool: props.permission ?? "unknown", patterns: props.patterns, messageId: props.tool?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
-          if (props.permission?.id) {
-            pendingPermissions.set(props.permission.id, {
-              tool: props.tool ?? "unknown",
-              messageID: props.permission.messageID ?? "",
+          // props.tool.callID is the unique identifier for the tool call that triggered
+          // this permission request. permission.replied carries permissionID which the
+          // opencode framework populates with this same callID.
+          if (props.tool?.callID) {
+            pendingPermissions.set(props.tool.callID, {
+              tool: props.permission ?? "unknown",
+              messageID: props.tool.messageID ?? "",
             });
           }
           break;

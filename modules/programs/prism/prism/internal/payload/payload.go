@@ -70,10 +70,7 @@ type PermissionToolName string
 
 // UnmarshalJSON implements json.Unmarshaler.
 func (p *PermissionToolName) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 {
-		*p = ""
-		return nil
-	}
+	// encoding/json always passes at least one byte (minimum valid JSON token).
 	// Happy path: plain string value (current plugin output).
 	if data[0] == '"' {
 		var s string
