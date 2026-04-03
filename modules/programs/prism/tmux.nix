@@ -112,15 +112,18 @@ in
               bind -n C-f display-popup -E -w 80% -h 80% -b single "${prism} switch"
 
               # C-w: run a fresh dashboard process directly in a popup.
-              # Simple and reliable — q/esc closes the popup via -E, no session involved.
-              # Still stamps @prism_caller/@prism_caller_client for the 'you are here'
-              # indicator and Enter navigation.
-              bind -n C-w run-shell \
-                '${pkgs.tmux}/bin/tmux set-option -g @prism_caller "$(${pkgs.tmux}/bin/tmux display-message -p "#S")"; ${pkgs.tmux}/bin/tmux set-option -g @prism_caller_client "$(${pkgs.tmux}/bin/tmux display-message -p "#{client_name}")"; ${pkgs.tmux}/bin/tmux display-popup -E -w 80% -h 60% -b single "${prism} dashboard --popup"'
+              # Passes --caller-client and --caller-session as flags so the popup
+              # owns its own captured caller state — no global tmux options written,
+              # so concurrent popup instances never interfere with each other.
+              # q/esc closes the popup via -E; no session involved.
+              bind -n C-w display-popup -E -w 80% -h 60% -b single \
+                "${prism} dashboard --popup --caller-client \"$(${pkgs.tmux}/bin/tmux display-message -p '#{client_name}')\" --caller-session \"$(${pkgs.tmux}/bin/tmux display-message -p '#S')\""
               # prefix+D: switch to the persistent prism-dashboard session.
-              # q/esc in that session detaches the client back to previous session.
+              # The session runs `prism dashboard` directly — no restart loop.
+              # q/esc in that session uses switch-client -l to return the client
+              # to wherever it came from (no global options needed).
               bind-key D run-shell \
-                'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux detach-client; else ${pkgs.tmux}/bin/tmux set-option -g @prism_caller "$(${pkgs.tmux}/bin/tmux display-message -p "#S")"; ${pkgs.tmux}/bin/tmux set-option -g @prism_caller_client "$(${pkgs.tmux}/bin/tmux display-message -p "#{client_name}")"; ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "while true; do ${prism} dashboard --popup; done"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
+                'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "${prism} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
 
               # toggle to/from term window (C-Space)
               unbind C-Space
