@@ -35,38 +35,6 @@
           "gh pr create *": "allow"
         }
       }
-    },
-    "coordinator": {
-      "permission": {
-        // Allow the coordinator to read files across all worktrees of this repo
-        // (e.g. to review a peer agent's branch locally without gh API calls).
-        // external_directory must be explicitly allowed for paths outside the
-        // session's working directory; it defaults to "ask".
-        // The edit deny layers on top to enforce read-only access — this is the
-        // documented pattern from opencode.ai/docs/permissions/#external-directories.
-        // Note: "edit" covers all file modifications (write, patch, multiedit);
-        // there is no separate "write" permission key.
-        "external_directory": {
-          "~/code/nixos-config/**": "allow"
-        },
-        "edit": {
-          "~/code/nixos-config/**": "deny"
-        }
-      }
-    },
-    "review": {
-      "permission": {
-        // Allow review agents to read files across all worktrees of this repo.
-        // Review agents are typically spawned by the coordinator to inspect a
-        // peer agent's branch; they need the same external_directory access.
-        // edit is denied to enforce read-only access (same pattern as coordinator).
-        "external_directory": {
-          "~/code/nixos-config/**": "allow"
-        },
-        "edit": {
-          "~/code/nixos-config/**": "deny"
-        }
-      }
     }
   }
 }
