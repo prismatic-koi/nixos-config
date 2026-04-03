@@ -1265,7 +1265,7 @@ func (m dashModel) renderSessionRow(
 	}
 
 	title := s.AgentTitle
-	if titleW > 0 && utf8.RuneCountInString(title) > titleW {
+	if titleW >= 5 && utf8.RuneCountInString(title) > titleW {
 		title = string([]rune(title)[:titleW-1]) + "…"
 	}
 
@@ -1290,7 +1290,7 @@ func (m dashModel) renderSessionRow(
 		if showStat {
 			plain += fmt.Sprintf("  %-*s", statW, statPlain)
 		}
-		if titleW > 0 {
+		if titleW >= 5 {
 			plain += fmt.Sprintf("  %s", title)
 		}
 		row := lipgloss.NewStyle().
@@ -1352,7 +1352,7 @@ func (m dashModel) renderSessionRow(
 	if showStat {
 		row += styleFg.Render("  ") + statStr
 	}
-	if titleW > 0 && title != "" {
+	if titleW >= 5 && title != "" {
 		row += styleDim.Render("  " + title)
 	}
 	return row + "\n"
