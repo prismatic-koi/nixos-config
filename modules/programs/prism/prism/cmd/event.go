@@ -46,13 +46,18 @@ func touchDashboardSentinel() {
 }
 
 // deriveBareRoot walks parent directories from worktree until it finds a
-// directory containing a file named ".bare". Returns the bare root path, or
-// an empty string if none is found.
+// directory containing a ".bare" entry. Returns the bare root path, or an
+// empty string if none is found.
+//
+// The check uses err == nil (i.e. the entry exists) rather than info.IsDir()
+// so it works whether .bare is a directory (standard git clone --bare layout)
+// or a regular file (gitdir pointer in some alternate configurations). This
+// matches the permissiveness of git.IsBareRepo.
 func deriveBareRoot(worktree string) string {
 	p := worktree
 	for {
-		info, err := os.Stat(filepath.Join(p, ".bare"))
-		if err == nil && info.IsDir() {
+		_, err := os.Stat(filepath.Join(p, ".bare"))
+		if err == nil {
 			return p
 		}
 		parent := filepath.Dir(p)

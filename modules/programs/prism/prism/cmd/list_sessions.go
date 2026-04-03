@@ -75,6 +75,17 @@ var listSessionsCmd = &cobra.Command{
 			rows = append(rows, row{name: s.SessionName, state: s.State, title: title})
 		}
 
+		// Sort rows alphabetically by session name for stable, predictable output.
+		for i := 1; i < len(rows); i++ {
+			key := rows[i]
+			j := i - 1
+			for j >= 0 && rows[j].name > key.name {
+				rows[j+1] = rows[j]
+				j--
+			}
+			rows[j+1] = key
+		}
+
 		if len(rows) == 0 {
 			fmt.Println("no agent sessions found")
 			return nil

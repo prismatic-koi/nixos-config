@@ -534,9 +534,9 @@ func TestDashFilterEscCancelsNotQuits(t *testing.T) {
 
 // TestDashFilterSnapSkippedWhenFilterActive verifies that the cursor-snap-to-
 // currentSession logic in sessionsMsg is skipped when filter mode is already
-// active. The snap sets m.cursor to an index in m.sessions; dashRefilter then
-// clamps it against m.displayed which may be a different length, silently
-// placing the cursor on the wrong entry.
+// active. When filterActive is true, needsSnap is not set, so no snap into the
+// sorted m.displayed list runs — avoiding a collision between an in-progress
+// filter and a snap that would overwrite the cursor position.
 func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 	t.Parallel()
 
@@ -562,7 +562,7 @@ func TestDashFilterSnapSkippedWhenFilterActive(t *testing.T) {
 	// The snap should have been skipped; cursor must still point into the
 	// filtered list (at most index 0 since displayed has one entry).
 	if dm.cursor != 0 {
-		t.Errorf("cursor = %d, want 0 — snap into sessions[] must not run during filter mode", dm.cursor)
+		t.Errorf("cursor = %d, want 0 — snap into m.displayed must not run during filter mode", dm.cursor)
 	}
 	// "beta" must still be the first displayed entry.
 	if len(dm.displayed) == 0 || dm.displayed[0].Name != "beta" {
@@ -839,5 +839,42 @@ func TestEnsureDashSessionIdempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 %q session, found %d", dashSession, count)
+	}
+}
+
+// TestSortDisplayed verifies the sort order produced by sortDisplayed:
+//   - repos sort alphabetically
+//   - within a repo, @main and plain sessions (no @) sort before worktree branches
+//   - worktree branches sort alphabetically after @main
+func TestSortDisplayed(t *testing.T) {
+	t.Parallel()
+
+	input := []agentSession{
+		{Name: "repoB@branch-z"},
+		{Name: "repoA@branch-b"},
+		{Name: "repoA@main"},
+		{Name: "repoB@main"},
+		{Name: "repoA@branch-a"},
+		{Name: "plain-session"}, // no "@" — sorts first within its "repo"
+	}
+
+	sortDisplayed(input)
+
+	want := []string{
+		"plain-session",  // no "@" — "plain-session\x00plain-session"
+		"repoA@main",     // @main sorts first within repoA
+		"repoA@branch-a", // branches alphabetically after @main
+		"repoA@branch-b",
+		"repoB@main", // @main sorts first within repoB
+		"repoB@branch-z",
+	}
+
+	if len(input) != len(want) {
+		t.Fatalf("got %d sessions, want %d", len(input), len(want))
+	}
+	for i, s := range input {
+		if s.Name != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, s.Name, want[i])
+		}
 	}
 }

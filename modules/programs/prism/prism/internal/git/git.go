@@ -75,10 +75,13 @@ func Stat(dir string) DiffStat {
 	return total
 }
 
-// IsBareRepo returns true if dir contains a .bare subdirectory (prism bare layout).
+// IsBareRepo returns true if dir contains a .bare entry (prism bare layout).
+// Accepts both a directory (standard git clone --bare) and a regular file
+// (gitdir pointer in alternate configurations) so the detection is consistent
+// with cmd.deriveBareRoot.
 func IsBareRepo(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".bare"))
-	return err == nil && info.IsDir()
+	_, err := os.Stat(filepath.Join(dir, ".bare"))
+	return err == nil
 }
 
 // IsRegularRepo returns true if dir is a regular (non-bare) git repo.
