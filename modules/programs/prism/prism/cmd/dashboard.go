@@ -320,6 +320,7 @@ type agentSession struct {
 	AgentPath   string // worktree path — used for git diff stats
 	AgentTitle  string // current session title from agent_status.title
 	AgentName   string // coordinator | worker | "" — from agent_status.agent_name
+	ModelID     string // model identifier from agent_status.model_id
 	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
 }
 
@@ -334,12 +335,17 @@ func statusToAgentSession(s db.Status, clientCounts map[string]int) agentSession
 	if s.AgentName != nil {
 		agentName = *s.AgentName
 	}
+	modelID := ""
+	if s.ModelID != nil {
+		modelID = *s.ModelID
+	}
 	return agentSession{
 		Name:        s.SessionName,
 		AgentState:  s.State,
 		AgentPath:   s.Worktree,
 		AgentTitle:  title,
 		AgentName:   agentName,
+		ModelID:     modelID,
 		ClientCount: clientCounts[s.SessionName],
 	}
 }
@@ -926,6 +932,14 @@ func (m dashModel) View() string {
 		return skeletonView(m.width)
 	}
 
+	// fixedCore (defined below) is the irreducible column overhead. At widths
+	// below fixedCore+1, the session header word "session" (7 chars) overflows
+	// its 6-char slot when sessionW=0, so render a skeleton instead.
+	const minUsableWidth = 22 // fixedCore+1
+	if m.width < minUsableWidth {
+		return skeletonView(m.width)
+	}
+
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
 	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
@@ -941,26 +955,102 @@ func (m dashModel) View() string {
 	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
 	const dotW = 2
-	const sessionWMax = 20
-	const sessionWMin = 14
-	const statWFull = 22    // "2 files +122 -14"
-	const statWCompact = 10 // "+122 -14"
-	// Layout per row: 1(leading space) + dotW + (treePrefixW+sessionW) + 2 + agentTypeW + 2 + stateW + 2 + statW
-	// treePrefixW is absorbed into the session column total width.
-	fixedOther := 1 + dotW + treePrefixW + 2 + agentTypeW + 2 + stateW + 2
-	titleW := m.width - (fixedOther + sessionWMax + statWFull)
+	const sessionWStart = 20 // starting width; grows as columns are dropped
+	const sessionWCap = 40   // maximum session width before the rest goes to title
+	const statWFull = 22     // "2 files +122 -14"
+	const statWCompact = 10  // "+122 -14"
+	const modelWFull = 22    // e.g. "claude-sonnet-4-6    "
+
+	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
+	// treePrefixW + gap-before-state + stateW.
+	// Full row layout:
+	//   1 + dotW + treePrefixW + sessionW
+	//   + [2+agentTypeW if showType]
+	//   + [2+modelWFull if showModel]
+	//   + 2 + stateW
+	//   + [2+statW if showStat]
+	//   + [2+titleW if titleW>0]
+	const fixedCore = 1 + dotW + treePrefixW + 2 + stateW
+
+	showType := true
+	showModel := true
+	showStat := true
 	statW := statWFull
-	sessionW := sessionWMax
+	sessionW := sessionWStart
+
+	// usedWidth returns the width of all non-title columns at their current settings.
+	usedWidth := func() int {
+		w := fixedCore + sessionW
+		if showType {
+			w += agentTypeW + 2
+		}
+		if showModel {
+			w += modelWFull + 2
+		}
+		if showStat {
+			w += statW + 2
+		}
+		return w
+	}
+
+	// calcTitleW returns the space available for the title column content
+	// (excluding the 2-char gap before it).
+	// Positive: title fits with this many chars.
+	// Zero: exact fit, no title.
+	// Negative: layout overflows; a column must be dropped.
+	calcTitleW := func() int {
+		// Total slack = m.width - usedWidth().
+		// We need at least 3 chars of slack to show any title:
+		//   2 (gap) + 1 (one character of title content).
+		// A slack of exactly 2 means exact fit, no title (titleW = 0).
+		// A slack < 2 means overflow.
+		return m.width - usedWidth() - 2
+	}
+
+	// growSession offers surplus space to sessionW (up to sessionWCap) before
+	// allocating the rest to titleW.  It keeps tw >= 2 so that at least a 2-char
+	// title content slot remains after session growth; below that threshold the
+	// title section is suppressed by the titleW>=5 guard anyway.  It modifies
+	// sessionW in place and returns the updated titleW.
+	growSession := func(tw int) int {
+		if tw > 2 && sessionW < sessionWCap {
+			gain := min(tw-2, sessionWCap-sessionW)
+			sessionW += gain
+			tw -= gain
+		}
+		return tw
+	}
+
+	// Start with the widest layout and shed columns in order until the layout fits.
+	// At each step: drop column → grow session from reclaimed space → titleW is
+	// whatever is left (may be 0 = no title shown but row fills terminal).
+	titleW := growSession(calcTitleW())
+
 	if titleW < 0 {
-		// Try compact stat column first.
-		titleW = m.width - (fixedOther + sessionWMax + statWCompact)
+		// Compact stat column first.
 		statW = statWCompact
+		titleW = growSession(calcTitleW())
 	}
 	if titleW < 0 {
-		// Still too narrow: shrink session column too.
-		sessionW = max(sessionWMin, sessionWMax+titleW)
-		titleW = 0
-	} else if titleW < 10 {
+		// Drop model.
+		showModel = false
+		titleW = growSession(calcTitleW())
+	}
+	if titleW < 0 {
+		// Drop stat entirely.
+		showStat = false
+		titleW = growSession(calcTitleW())
+	}
+	if titleW < 0 {
+		// Drop type.  After this only session + state remain; grow session to
+		// fill all available space, clamped to 0 on extremely narrow terminals.
+		showType = false
+		avail := m.width - fixedCore
+		if avail > 0 {
+			sessionW = avail
+		} else {
+			sessionW = 0
+		}
 		titleW = 0
 	}
 
@@ -979,14 +1069,21 @@ func (m dashModel) View() string {
 	}
 	// Column header: top-level rows have no tree prefix gap, so session column
 	// spans treePrefixW+sessionW total (same total width as all data rows).
-	header := fmt.Sprintf(" %-*s%-*s  %-*s  %-*s  %-*s",
+	header := fmt.Sprintf(" %-*s%-*s",
 		dotW, "",
 		treePrefixW+sessionW, "session",
-		agentTypeW, "type",
-		stateW, "state",
-		statW, changesHeader,
 	)
-	if titleW > 0 {
+	if showType {
+		header += fmt.Sprintf("  %-*s", agentTypeW, "type")
+	}
+	if showModel {
+		header += fmt.Sprintf("  %-*s", modelWFull, "model")
+	}
+	header += fmt.Sprintf("  %-*s", stateW, "state")
+	if showStat {
+		header += fmt.Sprintf("  %-*s", statW, changesHeader)
+	}
+	if titleW >= 5 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
 	sb.WriteString(styleHeader.Render(header))
@@ -1003,7 +1100,7 @@ func (m dashModel) View() string {
 	} else if m.filterActive {
 		// Flat list while filter is active (no grouping — easier to scan).
 		for i, s := range sessions {
-			sb.WriteString(m.renderSessionRow(s, i, "" /*treePrefix*/, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
+			sb.WriteString(m.renderSessionRow(s, i, "" /*treePrefix*/, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
@@ -1053,7 +1150,7 @@ func (m dashModel) View() string {
 					treePrefix = "  ├── "
 				}
 			}
-			sb.WriteString(m.renderSessionRow(s, i, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW))
+			sb.WriteString(m.renderSessionRow(s, i, treePrefix, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
 		}
 	}
 
@@ -1088,7 +1185,8 @@ func (m dashModel) renderSessionRow(
 	cursorIdx int,
 	treePrefix string,
 	styleDim, styleIns, styleDel, styleFg, styleAgentType lipgloss.Style,
-	sessionW, agentTypeW, stateW, statW, statWCompact, titleW int,
+	sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelW int,
+	showType, showModel, showStat bool,
 ) string {
 	isHere := s.Name == m.currentSession
 	isSelected := cursorIdx == m.cursor
@@ -1128,7 +1226,9 @@ func (m dashModel) renderSessionRow(
 			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
 		}
 		branch := sessionBranch(s.Name)
-		if utf8.RuneCountInString(branch) > sessionW {
+		if sessionW == 0 {
+			branch = ""
+		} else if utf8.RuneCountInString(branch) > sessionW {
 			branch = string([]rune(branch)[:sessionW-1]) + "…"
 		}
 		sessionArea = paddedPrefix + fmt.Sprintf("%-*s", sessionW, branch)
@@ -1136,6 +1236,12 @@ func (m dashModel) renderSessionRow(
 
 	agentLabel := agentTypeLabel(s.AgentName)
 	paddedAgentLabel := fmt.Sprintf("%-*s", agentTypeW, agentLabel)
+
+	modelLabel := s.ModelID
+	if utf8.RuneCountInString(modelLabel) > modelW {
+		modelLabel = string([]rune(modelLabel)[:modelW-1]) + "…"
+	}
+	paddedModelLabel := fmt.Sprintf("%-*s", modelW, modelLabel)
 
 	stat := m.gitStats[s.AgentPath]
 	var statPlain string
@@ -1152,8 +1258,8 @@ func (m dashModel) renderSessionRow(
 	}
 
 	title := s.AgentTitle
-	if titleW > 0 && len(title) > titleW {
-		title = title[:titleW-1] + "…"
+	if titleW >= 5 && utf8.RuneCountInString(title) > titleW {
+		title = string([]rune(title)[:titleW-1]) + "…"
 	}
 
 	if isSelected && m.cursorActive {
@@ -1166,13 +1272,18 @@ func (m dashModel) renderSessionRow(
 			}
 		}
 
-		plain := fmt.Sprintf(" %s%s  %-*s  %-*s  %-*s",
-			dot, sessionArea,
-			agentTypeW, agentLabel,
-			stateW, stateLabel(s.AgentState),
-			statW, statPlain,
-		)
-		if titleW > 0 {
+		plain := fmt.Sprintf(" %s%s", dot, sessionArea)
+		if showType {
+			plain += fmt.Sprintf("  %-*s", agentTypeW, agentLabel)
+		}
+		if showModel {
+			plain += fmt.Sprintf("  %-*s", modelW, modelLabel)
+		}
+		plain += fmt.Sprintf("  %-*s", stateW, stateLabel(s.AgentState))
+		if showStat {
+			plain += fmt.Sprintf("  %-*s", statW, statPlain)
+		}
+		if titleW >= 5 {
 			plain += fmt.Sprintf("  %s", title)
 		}
 		row := lipgloss.NewStyle().
@@ -1190,40 +1301,51 @@ func (m dashModel) renderSessionRow(
 		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
 
 	agentTypeStr := styleAgentType.Render(paddedAgentLabel)
+	modelStr := styleDim.Render(paddedModelLabel)
 
 	var statStr string
-	if stat.Files == 0 {
-		statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
-	} else if statW == statWCompact {
-		// Compact: just +N -N coloured, no file count.
-		coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-			" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-		rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
-		pad := statW - rawLen
-		if pad < 0 {
-			pad = 0
+	if showStat {
+		if stat.Files == 0 {
+			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
+		} else if statW == statWCompact {
+			coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+				" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+			rawLen := len(fmt.Sprintf("+%d -%d", stat.Insertions, stat.Deletions))
+			pad := statW - rawLen
+			if pad < 0 {
+				pad = 0
+			}
+			statStr = coloured + strings.Repeat(" ", pad)
+		} else {
+			fileWord := "files"
+			if stat.Files == 1 {
+				fileWord = "file "
+			}
+			plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
+			coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
+				" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
+			rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
+			pad := statW - len(rawStat)
+			if pad < 0 {
+				pad = 0
+			}
+			statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
 		}
-		statStr = coloured + strings.Repeat(" ", pad)
-	} else {
-		fileWord := "files"
-		if stat.Files == 1 {
-			fileWord = "file "
-		}
-		// Build plain portion then pad, append coloured +/- separately.
-		plain := fmt.Sprintf("%d %s ", stat.Files, fileWord)
-		coloured := styleIns.Render(fmt.Sprintf("+%d", stat.Insertions)) +
-			" " + styleDel.Render(fmt.Sprintf("-%d", stat.Deletions))
-		rawStat := fmt.Sprintf("%d %s +%d -%d", stat.Files, fileWord, stat.Insertions, stat.Deletions)
-		pad := statW - len(rawStat)
-		if pad < 0 {
-			pad = 0
-		}
-		statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
 	}
 
-	prefix := styleFg.Render(fmt.Sprintf(" %s%s  ", dot, sessionArea))
-	row := prefix + agentTypeStr + styleFg.Render("  ") + stateStr + styleFg.Render("  ") + statStr
-	if titleW > 0 && title != "" {
+	prefix := styleFg.Render(fmt.Sprintf(" %s%s", dot, sessionArea))
+	row := prefix
+	if showType {
+		row += styleFg.Render("  ") + agentTypeStr
+	}
+	if showModel {
+		row += styleFg.Render("  ") + modelStr
+	}
+	row += styleFg.Render("  ") + stateStr
+	if showStat {
+		row += styleFg.Render("  ") + statStr
+	}
+	if titleW >= 5 && title != "" {
 		row += styleDim.Render("  " + title)
 	}
 	return row + "\n"
