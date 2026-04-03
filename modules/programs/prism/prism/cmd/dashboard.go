@@ -962,31 +962,31 @@ func (m dashModel) View() string {
 	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
 	const dotW = 2
-	const sessionWMax = 20  // starting width; grows as columns are dropped
-	const sessionWCap = 40  // maximum session width before the rest goes to title
-	const sessionWMin = 14  // minimum enforced when type is dropped
-	const statWFull = 22    // "2 files +122 -14"
-	const statWCompact = 10 // "+122 -14"
-	const modelWFull = 22   // e.g. "claude-sonnet-4-6    "
+	const sessionWStart = 20 // starting width; grows as columns are dropped
+	const sessionWCap = 40   // maximum session width before the rest goes to title
+	const sessionWMin = 14   // minimum in the session+state-only layout
+	const statWFull = 22     // "2 files +122 -14"
+	const statWCompact = 10  // "+122 -14"
+	const modelWFull = 22    // e.g. "claude-sonnet-4-6    "
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
-	// Layout: 1 + dotW + treePrefixW + sessionW + 2 + [typeW+2] + [modelW+2] + stateW + [2+statW] + [2+titleW]
+	// Full row layout:
+	//   1 + dotW + treePrefixW + sessionW
+	//   + [2+agentTypeW if showType]
+	//   + [2+modelWFull if showModel]
+	//   + 2 + stateW
+	//   + [2+statW if showStat]
+	//   + [2+titleW if titleW>0]
 	const fixedCore = 1 + dotW + treePrefixW + 2 + stateW
-
-	// We compute titleW by subtracting all fixed + optional column widths from
-	// m.width. We start from the widest layout and shed columns in order.
-	// After each drop, reclaimed space first grows sessionW (up to sessionWCap),
-	// then spills into titleW.
 
 	showType := true
 	showModel := true
 	showStat := true
 	statW := statWFull
-	sessionW := sessionWMax
+	sessionW := sessionWStart
 
-	// usedWidth returns the total width of all fixed + currently-enabled columns,
-	// excluding the title column (which takes whatever is left).
+	// usedWidth returns the width of all non-title columns at their current settings.
 	usedWidth := func() int {
 		w := fixedCore + sessionW
 		if showType {
@@ -1001,67 +1001,72 @@ func (m dashModel) View() string {
 		return w
 	}
 
-	// growSession tries to widen sessionW up to sessionWCap using any surplus
-	// space that would otherwise go to titleW. Returns the remaining titleW.
-	growSession := func(titleW int) int {
-		if titleW > 0 && sessionW < sessionWCap {
-			gain := min(titleW, sessionWCap-sessionW)
-			sessionW += gain
-			titleW -= gain
-		}
-		return titleW
+	// calcTitleW returns the space available for the title column content
+	// (excluding the 2-char gap before it).
+	// Positive: title fits with this many chars.
+	// Zero: exact fit, no title.
+	// Negative: layout overflows; a column must be dropped.
+	calcTitleW := func() int {
+		// Total slack = m.width - usedWidth().
+		// We need at least 3 chars of slack to show any title:
+		//   2 (gap) + 1 (one character of title content).
+		// A slack of exactly 2 means exact fit, no title (titleW = 0).
+		// A slack < 2 means overflow.
+		return m.width - usedWidth() - 2
 	}
 
-	titleW := m.width - usedWidth() - 2 // -2 for gap before title
-	titleW = growSession(titleW)
+	// growSession offers title-column space above the 2-char gap to sessionW
+	// (up to sessionWCap) before allocating the rest to titleW.  It leaves at
+	// least 2 chars in tw for the gap so that rows always fill the terminal
+	// when there is any positive surplus.  It modifies sessionW in place and
+	// returns the updated titleW.
+	growSession := func(tw int) int {
+		if tw > 2 && sessionW < sessionWCap {
+			gain := min(tw-2, sessionWCap-sessionW)
+			sessionW += gain
+			tw -= gain
+		}
+		return tw
+	}
 
-	// Drop order: compact stat → drop model → drop stat → [drop title] →
-	// drop type → session + state only.
-	// After each drop step the freed space is first offered to sessionW (up to
-	// sessionWCap), then to titleW.
+	// Start with the widest layout and shed columns in order until the layout fits.
+	// At each step: drop column → grow session from reclaimed space → titleW is
+	// whatever is left (may be 0 = no title shown but row fills terminal).
+	titleW := growSession(calcTitleW())
+
 	if titleW < 0 {
-		// Try compact stat first.
+		// Compact stat column first.
 		statW = statWCompact
-		titleW = m.width - usedWidth() - 2
-		titleW = growSession(titleW)
+		titleW = growSession(calcTitleW())
 	}
 	if titleW < 0 {
 		// Drop model.
 		showModel = false
-		titleW = m.width - usedWidth() - 2
-		titleW = growSession(titleW)
+		titleW = growSession(calcTitleW())
 	}
 	if titleW < 0 {
 		// Drop stat entirely.
 		showStat = false
-		titleW = m.width - usedWidth() - 2
-		titleW = growSession(titleW)
+		titleW = growSession(calcTitleW())
 	}
-	// All optional columns except type have been shed. If titleW is still
-	// negative we need to drop title too. Track whether it came from overflow
-	// (as opposed to being a legitimate exact-fit zero) so the type-drop
-	// condition below is not triggered on a width that genuinely has no room
-	// left for title but still fits type.
-	titleOverflow := titleW < 0
 	if titleW < 0 {
-		titleW = 0
-	}
-	if titleOverflow && !showStat {
-		// Drop type — only reached when stat and title are both genuinely gone
-		// due to overflow, not a coincidental exact-fit zero.
+		// Drop type.  After this only session + state remain; grow session to
+		// fill all available space, floored at sessionWMin when possible and
+		// clamped to 0 on extremely narrow terminals.
 		showType = false
-		// Grow session to fill freed space, floored at sessionWMin (for
-		// readability) and at 0 (for very narrow terminals where even the
-		// minimum overflows).
 		avail := m.width - fixedCore
 		switch {
 		case avail >= sessionWMin:
 			sessionW = avail
 		case avail > 0:
-			sessionW = avail // below min but better than nothing
+			sessionW = avail
 		default:
 			sessionW = 0
 		}
+		titleW = 0
+	}
+	if titleW < 0 {
+		titleW = 0
 	}
 
 	var sb strings.Builder
