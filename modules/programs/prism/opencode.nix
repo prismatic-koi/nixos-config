@@ -151,6 +151,9 @@
         "git *" = "allow";
         "git commit *" = "allow";
         "git add*" = "allow";
+        "git rebase *" = "allow";
+        # env-prefixed rebase (e.g. GIT_EDITOR=true git rebase --continue)
+        "GIT_EDITOR=* git rebase *" = "allow";
         "git push *" = "ask";
         "git push" = "ask";
         # cover `git -C <path> push` and `git --git-dir=... push` variants
