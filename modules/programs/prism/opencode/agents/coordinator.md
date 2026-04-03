@@ -61,7 +61,7 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 When a spawned agent opens a PR:
 
 1. Invoke `@review <pr-number>`. Include the full original issue/ticket context in your invocation so the review agent has it.
-2. Perform your own sense-check independently: read `gh pr diff <number>` and compare against the original request. Does the implementation actually satisfy what was asked? Are there missing cases, wrong assumptions, or scope creep?
+2. Perform your own sense-check independently: read `gh pr diff <number>` and compare against the original request. Does the implementation actually satisfy what was asked? Are there missing cases, wrong assumptions, or scope creep? To read full files from the worker's branch, use native git commands — `git fetch && git show origin/<branch>:<path>`, `git diff <branch1>..<branch2>` — rather than direct filesystem reads across worktrees.
 3. If either review identifies issues: `prism prompt <session>` with specific, actionable fix instructions.
 4. Repeat until both reviews pass. If the cycle exceeds three iterations without convergence, escalate to the user.
 

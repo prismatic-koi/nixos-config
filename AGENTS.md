@@ -245,6 +245,19 @@ The user may request changes for testing purposes that should not be committed. 
 - **Efficiency:** Build commands can be time-consuming. Use them judiciously, only after a complete set of related changes has been applied, and then await user feedback before further iterations. Do not use them as part of an iterative debugging process unless explicitly instructed.
 - **Trusting User Feedback:** If the user confirms a fix, trust that feedback and move on, rather than attempting further "fixes" based on assumptions.
 
+### Cross-branch inspection
+
+When you need to view content from another branch — whether checking `main`, or a
+coordinator checking in on a worker's branch — prefer native git commands over
+GitHub API calls or direct filesystem reads of sibling worktrees:
+
+- `git show <branch>:<path>` — read a file from any branch
+- `git diff <branch1>..<branch2>` — compare branches
+- `git log <branch>` — view commit history on another branch
+- `git fetch && git show origin/<branch>:<path>` — if the branch is remote-only
+
+These are faster, work offline, and don't consume API rate limits.
+
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
