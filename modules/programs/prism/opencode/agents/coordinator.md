@@ -56,6 +56,16 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 
 ---
 
+## Worker notifications
+
+When you receive a "has finished" notification from a worker, immediately add it
+to your todo list as a high-priority item. If you are mid-task, finish your
+current thought, then action the oldest pending worker notification before
+continuing with other work. Do not let finished-worker items accumulate — each
+one represents a PR that may be blocking the next piece of work.
+
+---
+
 ## Review gate
 
 When a spawned agent opens a PR:
