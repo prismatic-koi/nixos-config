@@ -424,6 +424,9 @@ func agentTypeLabel(agentName string) string {
 // RefreshMsg is sent by the sentinel watcher goroutine to trigger a DB re-fetch.
 type RefreshMsg struct{}
 
+// dashStatusMsg carries a transient status/error message to display in the dashboard.
+type dashStatusMsg string
+
 type sessionsMsg struct {
 	sessions []agentSession
 	gitStats map[string]git.DiffStat
@@ -569,6 +572,8 @@ type dashModel struct {
 	filterText   string
 	// displayed is the filtered (or full) sessions list used by View/cursor.
 	displayed []agentSession
+	// statusMsg is a transient error/info line shown at the bottom of the view.
+	statusMsg string
 }
 
 func newDashModel(client string, popup bool) dashModel {
@@ -613,6 +618,10 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RefreshMsg:
 		// Sentinel watcher triggered a refresh — re-fetch from DB.
 		return m, fetchSessionsFromDB
+
+	case dashStatusMsg:
+		m.statusMsg = string(msg)
+		return m, nil
 
 	case ghTickMsg:
 		return m, tea.Batch(fetchGitHubStats, ghTick())
@@ -676,6 +685,7 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		m.statusMsg = ""
 		// In filter mode most keys are consumed by the filter input.
 		if m.filterActive {
 			switch msg.String() {
@@ -698,16 +708,13 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selected := m.displayed[m.cursor]
 				m.filterActive = false
 				m.filterText = ""
-				return m, tea.Sequence(
-					func() tea.Msg {
-						_ = tmux.SelectAgentWindow(selected.Name)
-						if target := dashSwitchTarget(m.popup, m.client, m.callerClient); target != "" {
-							_ = tmux.SwitchClient(target, selected.Name)
-						}
-						return nil
-					},
-					tea.Quit,
-				)
+				target := dashSwitchTarget(m.popup, m.client, m.callerClient)
+				return m, func() tea.Msg {
+					if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+						return dashStatusMsg(errMsg)
+					}
+					return tea.QuitMsg{}
+				}
 
 			case "backspace", "ctrl+h":
 				if len(m.filterText) > 0 {
@@ -799,18 +806,13 @@ func (m dashModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.displayed[m.cursor]
-			return m, tea.Sequence(
-				func() tea.Msg {
-					_ = tmux.SelectAgentWindow(selected.Name)
-					// dashSwitchTarget selects the right client for this model —
-					// see its doc comment for the full explanation.
-					if target := dashSwitchTarget(m.popup, m.client, m.callerClient); target != "" {
-						_ = tmux.SwitchClient(target, selected.Name)
-					}
-					return nil
-				},
-				tea.Quit,
-			)
+			target := dashSwitchTarget(m.popup, m.client, m.callerClient)
+			return m, func() tea.Msg {
+				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {
+					return dashStatusMsg(errMsg)
+				}
+				return tea.QuitMsg{}
+			}
 		}
 	}
 	return m, nil
@@ -873,6 +875,57 @@ func dashSwitchTarget(popup bool, client, callerClient string) string {
 		return callerClient
 	}
 	return client
+}
+
+// ensureSessionAndSwitch checks whether the named tmux session exists.
+// If it does, it selects the agent window and switches the given client to it.
+// If it does not, it looks up the worktree path from the DB; if the directory
+// exists on disk it recreates a bare shell session there, then switches.
+// Returns a non-empty error string on failure; returns "" on success.
+func ensureSessionAndSwitch(sessionName, target string) string {
+	if tmux.HasSession(sessionName) {
+		_ = tmux.SelectAgentWindow(sessionName)
+		if target != "" {
+			if err := tmux.SwitchClient(target, sessionName); err != nil {
+				return fmt.Sprintf("switch failed: %v", err)
+			}
+		}
+		return ""
+	}
+
+	worktreePath := worktreePathFromDB(sessionName)
+	if worktreePath == "" {
+		return fmt.Sprintf("session %q has no worktree record — use prism cleanup to remove it", sessionName)
+	}
+	if _, err := os.Stat(worktreePath); err != nil {
+		return fmt.Sprintf("worktree directory not found: %s", worktreePath)
+	}
+
+	if err := tmux.NewSessionDetached(sessionName, worktreePath); err != nil {
+		return fmt.Sprintf("could not recreate session: %v", err)
+	}
+
+	if target != "" {
+		if err := tmux.SwitchClient(target, sessionName); err != nil {
+			return fmt.Sprintf("switch failed: %v", err)
+		}
+	}
+	return ""
+}
+
+// worktreePathFromDB looks up the worktree path for a session from the DB only.
+// Returns "" if not found or on error.
+func worktreePathFromDB(sessionName string) string {
+	d, err := openDB()
+	if err != nil {
+		return ""
+	}
+	defer d.Close()
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil {
+		return ""
+	}
+	return status.Worktree
 }
 
 // ── view ──────────────────────────────────────────────────────────────────────
@@ -1025,6 +1078,11 @@ func (m dashModel) View() string {
 		sb.WriteString(stylePrompt.Render(" / "))
 		sb.WriteString(m.filterText)
 		sb.WriteString(styleDim.Render("█"))
+		sb.WriteString("\n")
+	} else if m.statusMsg != "" {
+		sb.WriteString("\n")
+		styleErr := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
+		sb.WriteString(styleErr.Render("  " + m.statusMsg))
 		sb.WriteString("\n")
 	} else {
 		sb.WriteString("\n")
