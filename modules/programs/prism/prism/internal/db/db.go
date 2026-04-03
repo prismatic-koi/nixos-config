@@ -295,6 +295,27 @@ func (d *DB) SetEnded(sessionName string) error {
 	return nil
 }
 
+// RefreshWorktree unconditionally updates the repo and worktree columns for an
+// existing agent_status row. Unlike UpsertStatus, which only writes repo and
+// worktree on the initial INSERT, this corrects any previously-corrupted values
+// (e.g. from the session-created hook race described in issue #380) and also
+// resets state to idle and refreshes last_seen.
+//
+// It is a no-op when no row exists for sessionName (returns nil).
+func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
+	now := time.Now().UnixMilli()
+	_, err := d.conn.Exec(
+		`UPDATE agent_status
+		    SET repo = ?, worktree = ?, state = ?, last_seen = ?
+		  WHERE session_name = ?`,
+		repo, worktree, "idle", now, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: refresh worktree: %w", err)
+	}
+	return nil
+}
+
 // WriteEvent inserts an event row into agent_events.
 func (d *DB) WriteEvent(e Event) error {
 	if e.CreatedAt.IsZero() {

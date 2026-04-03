@@ -169,8 +169,12 @@ in
 
               # --- DB lifecycle hooks ---
 
-              # Write tmux_session_start event when a new session is created.
-              set-hook -g session-created "run-shell '${prism} event tmux-session-start --session #{session_name} --worktree #{pane_current_path}'"
+              # session-created hook intentionally omitted: the explicit call in
+              # ensureAndSwitchSession (switch.go) is the authoritative seed for
+              # agent_status. The hook's #{pane_current_path} races the new
+              # session's first pane path and permanently corrupts the worktree
+              # field when invoked from a display-popup. See issue #380.
+
               # Write tmux_session_end event when a session is closed.
               set-hook -g session-closed "run-shell '${prism} event tmux-session-end --session #{session_name}'"
               # Transition to interrupted when a pane dies unexpectedly mid-session.
