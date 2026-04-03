@@ -378,24 +378,10 @@ func sessionBranch(name string) string {
 	return name
 }
 
-// sortStrings sorts a string slice in-place using insertion sort (no stdlib
-// import needed for small N; avoids adding "sort" to the import block if it
-// is not already there).
-func sortStrings(ss []string) {
-	for i := 1; i < len(ss); i++ {
-		key := ss[i]
-		j := i - 1
-		for j >= 0 && ss[j] > key {
-			ss[j+1] = ss[j]
-			j--
-		}
-		ss[j+1] = key
-	}
-}
-
 // sortDisplayed sorts a session slice in-place to match the flat visual render
 // order: alphabetical by repo name, @main first within each repo, then other
-// branches alphabetically. Uses insertion sort like sortStrings.
+// branches alphabetically. Uses insertion sort (no stdlib import needed for
+// small N).
 func sortDisplayed(ss []agentSession) {
 	// sessionKey returns a sort key for a session: "repo\x00" for @main and
 	// sessions without @, so they sort before any branch, or "repo\x01branch"
