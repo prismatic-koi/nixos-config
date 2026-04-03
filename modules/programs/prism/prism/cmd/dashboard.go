@@ -429,6 +429,12 @@ type gitStatResult struct {
 	Ok   bool
 }
 
+// focusClientMsg is sent by the persistent model's FocusMsg handler after
+// querying which tmux client just attached to the session. It updates m.client
+// so that Enter and q/esc operate on the correct client even when the model was
+// initialised without a client (detached new-session startup).
+type focusClientMsg struct{ client string }
+
 type sessionsMsg struct {
 	sessions []agentSession
 	gitStats map[string]gitStatResult
@@ -444,6 +450,14 @@ func ghTick() tea.Cmd {
 	return tea.Tick(60*time.Second, func(t time.Time) tea.Msg {
 		return ghTickMsg(t)
 	})
+}
+
+// fetchCurrentClient queries tmux for the currently-attached client name and
+// returns a focusClientMsg. Called as a tea.Cmd from the FocusMsg handler in
+// persistentModel so the I/O runs off the main update loop.
+func fetchCurrentClient() tea.Msg {
+	client, _ := tmux.CurrentClient()
+	return focusClientMsg{client: client}
 }
 
 func cursorTimeoutCmd() tea.Cmd {
@@ -904,9 +918,24 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.filterActive {
 			m.cursorActive = false
 		}
+		// Client detached — clear m.client so stale identity is never used.
+		m.client = ""
+		m.currentSession = ""
 
 	case tea.FocusMsg:
-		// Focus regained — cursor stays hidden until user presses j/k.
+		// A tmux client just attached to this session. Query the client name
+		// asynchronously so Enter/q/esc have the right target. Also clear the
+		// stale currentSession from the previous visitor (the "you are here"
+		// indicator will be blank until a new caller session is known, which
+		// is acceptable for the persistent dashboard).
+		m.currentSession = ""
+		return m, fetchCurrentClient
+
+	case focusClientMsg:
+		// Received the client name queried after focus was gained.
+		if msg.client != "" {
+			m.client = msg.client
+		}
 
 	case sessionsMsg:
 		m.dashShared, _ = m.dashShared.applySessionsMsg(msg, m.currentSession)
@@ -925,6 +954,11 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// quit — the dashboard stays alive for the next visitor.
 				selected := m.displayed[m.cursor]
 				client := m.client
+				if client == "" {
+					// Belt-and-suspenders: FocusMsg may not have fired yet
+					// (e.g. focus reporting disabled); query inline.
+					client, _ = tmux.CurrentClient()
+				}
 				m.cursorActive = false
 				return m, func() tea.Msg {
 					if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
@@ -945,6 +979,11 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// returns to wherever the client was before it switched here.
 			// The process does NOT quit — the session stays alive.
 			client := m.client
+			if client == "" {
+				// Belt-and-suspenders: FocusMsg may not have fired yet;
+				// query the current client inline as a fallback.
+				client, _ = tmux.CurrentClient()
+			}
 			m.cursorActive = false
 			return m, func() tea.Msg {
 				if client != "" {
@@ -996,6 +1035,11 @@ func (m persistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			selected := m.displayed[m.cursor]
 			client := m.client
+			if client == "" {
+				// Belt-and-suspenders: FocusMsg may not have fired yet;
+				// query the current client inline as a fallback.
+				client, _ = tmux.CurrentClient()
+			}
 			m.cursorActive = false
 			return m, func() tea.Msg {
 				// Switch the viewing client to the selected session, then return
