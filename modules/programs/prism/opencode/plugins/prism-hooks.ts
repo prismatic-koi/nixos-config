@@ -560,9 +560,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           writeStateChange(STATE_WAITING);
           writeEvent("permission_ask", { tool: props.permission ?? "unknown", patterns: props.patterns, messageId: props.tool?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
-          // props.tool.callID is the unique identifier for the tool call that triggered
-          // this permission request. permission.replied carries permissionID which the
-          // opencode framework populates with this same callID.
+          // We key by props.tool.callID (the Anthropic tool call ID for this invocation).
+          // TODO: verify that permission.replied.permissionID actually matches this
+          // callID at runtime — the SDK type for EventPermissionReplied carries a
+          // framework request ID (PermissionRequest.id) which may differ from callID.
+          // If the key never matches, permission_denied events will show tool "unknown".
           if (props.tool?.callID) {
             pendingPermissions.set(props.tool.callID, {
               tool: props.permission ?? "unknown",
