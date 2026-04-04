@@ -426,7 +426,11 @@ func (d *DB) SetEnded(sessionName string) error {
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
-	d.checkTransition(sessionName, agent.StateIdle, "RefreshWorktree")
+	// RefreshWorktree is an administrative reset (correcting corrupted values
+	// during prism restore), not a normal lifecycle transition. It bypasses
+	// the state machine advisory check intentionally — idle is not a valid
+	// to-state in ValidTransitions, so calling checkTransition here would
+	// always produce spurious warnings on every restore invocation.
 	now := time.Now().UnixMilli()
 	_, err := d.conn.Exec(
 		`UPDATE agent_status
