@@ -283,6 +283,9 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return nil
 		}
 
+		if err := d.ReleasePort(session); err != nil {
+			return fmt.Errorf("event tmux-session-end: release port: %w", err)
+		}
 		if err := d.SetEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
 		}

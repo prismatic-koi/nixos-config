@@ -418,6 +418,8 @@ func promptBranchInput(prompt string) string {
 
 // ensureAndSwitch creates the session if it doesn't exist (with the appropriate
 // layout) and then switches the current client to it, unless opts.Headless is set.
+// For full-layout sessions, a port is allocated from the 14000–14999 range and
+// passed through to opencode via BuildOpencodeCmd.
 func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	var sessionName string
 	var directory string
@@ -441,6 +443,24 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 
 	opts.Agent = session.DefaultAgent(directory, opts.Agent)
 
+	// Allocate a port for full-layout sessions. The agent_status row must
+	// exist before we can write opencode_port to it, so we allocate after
+	// session.Create (which seeds agent_status via `prism event
+	// tmux-session-start`). However, BuildOpencodeCmd needs the port at
+	// session creation time (it's called inside setupFullLayout). To break
+	// this ordering dependency, we pre-allocate: seed the DB row first, then
+	// allocate the port, then create the tmux session.
+	if opts.Layout == session.LayoutFull {
+		port, err := allocatePortForSession(sessionName, directory)
+		if err != nil {
+			// Non-fatal: log and continue without a port. opencode will still
+			// work, just without the serve API.
+			fmt.Fprintf(os.Stderr, "warning: port allocation failed for %q: %v\n", sessionName, err)
+		} else {
+			opts.Port = port
+		}
+	}
+
 	if err := session.Create(sessionName, directory, opts); err != nil {
 		return err
 	}
@@ -451,6 +471,40 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	return session.Attach(sessionName)
+}
+
+// allocatePortForSession ensures the agent_status row exists for sessionName
+// and then allocates a port from the DB. If the session already has a port
+// allocated (e.g. on restore), it returns the existing port.
+func allocatePortForSession(sessionName, directory string) (int, error) {
+	d, err := openDB()
+	if err != nil {
+		return 0, fmt.Errorf("open db: %w", err)
+	}
+	defer d.Close()
+
+	// Check if a status row already exists and already has a port.
+	existing, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		return 0, fmt.Errorf("current status: %w", err)
+	}
+	if existing != nil && existing.OpencodePort != nil {
+		return *existing.OpencodePort, nil
+	}
+
+	// Ensure the agent_status row exists (idempotent upsert).
+	repo := deriveRepo(directory)
+	if repo == "" {
+		// Not inside a project worktree — derive from session name.
+		if idx := strings.Index(sessionName, "@"); idx > 0 {
+			repo = sessionName[:idx]
+		}
+	}
+	if err := d.UpsertStatus(sessionName, repo, directory, "idle", nil, nil); err != nil {
+		return 0, fmt.Errorf("upsert status: %w", err)
+	}
+
+	return d.AllocatePort(sessionName)
 }
 
 // ── worktree second-level picker ──────────────────────────────────────────────
