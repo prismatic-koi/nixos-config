@@ -111,6 +111,17 @@ const pendingPermissions = new Map<string, { tool: string; messageID: string }>(
 // Track the current opencode session ID so bus delivery can call session.prompt.
 let currentOpencodeSID: string | null = null;
 
+// Set when the user manually denies a permission request (permission.replied
+// with response === "reject" after a permission.asked event put the session
+// into the waiting state).  Cleared on the next session.status busy event so
+// that if the agent recovers and issues more tool calls, a subsequent idle
+// correctly becomes finished rather than interrupted.
+//
+// Module-level (same as idleTimer) because opencode instantiates the plugin
+// twice and both instances share this flag — a denial handled by one instance
+// must be visible to the other instance when session.idle fires.
+let manualDenial = false;
+
 export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
@@ -128,13 +139,6 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
 
   // Flag to suppress busy→active transitions while compaction is in progress.
   let compacting = false;
-
-  // Set when the user manually denies a permission request (permission.replied
-  // with response === "reject" after a permission.asked event put the session
-  // into the waiting state).  Cleared on the next session.status busy event so
-  // that if the agent recovers and issues more tool calls, a subsequent idle
-  // correctly becomes finished rather than interrupted.
-  let manualDenial = false;
 
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
