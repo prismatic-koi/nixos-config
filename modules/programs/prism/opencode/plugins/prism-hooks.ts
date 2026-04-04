@@ -560,10 +560,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           writeStateChange(STATE_WAITING);
           writeEvent("permission_ask", { tool: props.permission ?? "unknown", patterns: props.patterns, messageId: props.tool?.messageID });
           // Track this permission so we can correlate a denial in permission.replied.
-          // props.permission.id is the framework request ID that matches
-          // repliedProps.permissionID in the permission.replied handler.
-          if (props.permission?.id) {
-            pendingPermissions.set(props.permission.id, {
+          // props is a PermissionRequest; props.id is the framework request ID that
+          // matches repliedProps.requestID in the permission.replied handler.
+          // props.permission is the permission-type string (e.g. "bash"), not an object.
+          if (props.id) {
+            pendingPermissions.set(props.id, {
               tool: props.permission ?? "unknown",
               messageID: props.tool?.messageID ?? "",
             });
@@ -573,8 +574,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
 
         case "permission.replied": {
           const repliedProps = event.properties as any;
-          const permID: string = repliedProps.permissionID ?? "";
-          const response: string = repliedProps.response ?? "";
+          const permID: string = repliedProps.requestID ?? "";
+          const response: string = repliedProps.reply ?? "";
           if (response === "reject") {
             // Permission was denied — record it so checkin can surface it.
             const pending = pendingPermissions.get(permID);
