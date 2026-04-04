@@ -43,6 +43,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateInterrupted, StateDeleted, "session.deleted while interrupted"},
 		{StateError, StateDeleted, "session.deleted while error"},
 		{StateCompacting, StateDeleted, "session.deleted while compacting"},
+		{StateIdle, StateDeleted, "session.deleted while idle (process killed before session.created)"},
 	}
 
 	for _, tc := range valid {
@@ -96,10 +97,16 @@ func TestTransition_InvalidPairs(t *testing.T) {
 }
 
 func TestTransition_DeletedIsTerminal(t *testing.T) {
-	// StateDeleted has no outgoing transitions — every to-state must fail.
-	for to := range ValidTransitions {
+	// deleted is a terminal state — every to-state transition must fail.
+	// Iterate a fixed slice (not the map) so we test all known states even if
+	// a state were somehow not a key in ValidTransitions.
+	allStates := []AgentState{
+		StateActive, StateWaiting, StateFinished, StateCompacting,
+		StateError, StateIdle, StateInterrupted, StateDeleted,
+	}
+	for _, to := range allStates {
 		if to == StateDeleted {
-			continue // skip the self-loop check
+			continue // skip self-loop
 		}
 		err := Transition(StateDeleted, to)
 		if err == nil {

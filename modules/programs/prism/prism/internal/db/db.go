@@ -329,7 +329,6 @@ ON CONFLICT(session_name) DO UPDATE SET
 // "interrupted" without clobbering a clean "finished" that was written first,
 // and without acting on sessions that have already been ended by cleanup.
 func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
-	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusIfNotTerminal")
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -344,6 +343,12 @@ WHERE session_name = ?
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status if not terminal: rows affected: %w", err)
+	}
+	// Validate the transition only when the write was actually applied.
+	// Checking before the SQL would produce spurious warnings for the
+	// intentional no-op cases (e.g. session already in a terminal state).
+	if n > 0 {
+		d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusIfNotTerminal")
 	}
 	return n > 0, nil
 }
@@ -361,7 +366,6 @@ WHERE session_name = ?
 // Returns (true, nil) if the update was applied, (false, nil) if the row did
 // not exist, was already interrupted or deleted, or has ended_at set.
 func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
-	d.checkTransition(sessionName, agent.StateInterrupted, "UpsertStatusInterruptedOverrideFinished")
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -376,6 +380,12 @@ WHERE session_name = ?
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status interrupted override finished: rows affected: %w", err)
+	}
+	// Validate the transition only when the write was actually applied.
+	// Checking before the SQL would produce spurious warnings for the
+	// intentional no-op case (session already interrupted or deleted).
+	if n > 0 {
+		d.checkTransition(sessionName, agent.StateInterrupted, "UpsertStatusInterruptedOverrideFinished")
 	}
 	return n > 0, nil
 }
@@ -401,6 +411,7 @@ func (d *DB) SetEnded(sessionName string) error {
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
+	d.checkTransition(sessionName, agent.StateIdle, "RefreshWorktree")
 	now := time.Now().UnixMilli()
 	_, err := d.conn.Exec(
 		`UPDATE agent_status

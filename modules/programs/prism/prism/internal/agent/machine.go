@@ -25,6 +25,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 	StateIdle: {
 		StateActive:      true,
 		StateInterrupted: true,
+		StateDeleted:     true,
 	},
 	StateActive: {
 		StateWaiting:     true,
