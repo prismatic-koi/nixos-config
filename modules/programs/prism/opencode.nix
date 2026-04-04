@@ -12,6 +12,7 @@
     nx.programs.prism.opencode.provider = lib.mkOption {
       type = lib.types.enum [
         "anthropic"
+        "anthropic-opus"
         "github-copilot"
         "google"
       ];
@@ -408,6 +409,11 @@
           secondary = "anthropic/claude-sonnet-4-6";
           lightweight = "anthropic/claude-haiku-4-5";
         };
+        anthropic-opus = {
+          primary = "anthropic/claude-opus-4-6";
+          secondary = "anthropic/claude-opus-4-6";
+          lightweight = "anthropic/claude-haiku-4-5";
+        };
         github-copilot = {
           primary = "github-copilot/claude-sonnet-4.6";
           secondary = "github-copilot/claude-sonnet-4.6";
@@ -434,6 +440,9 @@
           # no separate proxy or API key needed
           "opencode-claude-auth@latest"
         ];
+        anthropic-opus = [
+          "opencode-claude-auth@latest"
+        ];
         github-copilot = [ ];
         google = [ ];
       };
@@ -444,6 +453,7 @@
       # active default (which controls only model strings).
       providerSettings = {
         anthropic = { };
+        anthropic-opus = { };
         github-copilot = { };
         google = { };
       };
