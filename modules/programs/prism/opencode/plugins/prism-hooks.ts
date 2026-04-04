@@ -129,6 +129,13 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // Flag to suppress busy→active transitions while compaction is in progress.
   let compacting = false;
 
+  // Set when the user manually denies a permission request (permission.replied
+  // with response === "reject" after a permission.asked event put the session
+  // into the waiting state).  Cleared on the next session.status busy event so
+  // that if the agent recovers and issues more tool calls, a subsequent idle
+  // correctly becomes finished rather than interrupted.
+  let manualDenial = false;
+
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
@@ -415,6 +422,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // Cancel any pending idle→finished debounce: the agent is still
             // active (mid-task turn boundary).
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+            // Clear manual denial flag — the agent is issuing new tool calls,
+            // so a previous denial is no longer the reason it will stop.
+            manualDenial = false;
             // Don't overwrite compacting state with active.
             if (!compacting) {
               // DB
@@ -449,6 +459,16 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             idleTimer = null;
+            // If the user manually denied a permission request, transition to
+            // interrupted rather than finished — the agent paused for user input,
+            // the user said no, and the agent stopped. This is a user interrupt,
+            // not a successful task completion. Skip coordinator notification.
+            if (manualDenial) {
+              manualDenial = false;
+              upsertAgentStatus(STATE_INTERRUPTED);
+              writeStateChange(STATE_INTERRUPTED);
+              return;
+            }
             // Check current DB state: if the session was already marked
             // interrupted by the pane-died hook (Ctrl+C or unexpected exit),
             // do not overwrite that state with finished and do not notify the
@@ -584,6 +604,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               messageId: pending?.messageID ?? "",
             });
             pendingPermissions.delete(permID);
+            // Mark that this was a manual denial (triggered by permission.asked
+            // putting the session into the waiting state).  When the agent
+            // subsequently goes idle, session.idle will write interrupted
+            // instead of finished and will not notify the coordinator.
+            manualDenial = true;
           } else {
             // Approved — clean up tracking entry.
             pendingPermissions.delete(permID);
