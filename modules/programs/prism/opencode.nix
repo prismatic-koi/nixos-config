@@ -453,7 +453,6 @@
       # active default (which controls only model strings).
       providerSettings = {
         anthropic = { };
-        anthropic-opus = { };
         github-copilot = { };
         google = { };
       };
