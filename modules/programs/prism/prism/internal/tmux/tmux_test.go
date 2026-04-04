@@ -568,6 +568,193 @@ func TestAPI_ListClients(t *testing.T) {
 	}
 }
 
+// TestThreeClientsDirectSwitch_Direct verifies that three clients on the same
+// session can each be independently switched to separate targets using their own
+// captured client name, even when the global @prism_caller_client stamp has been
+// rotated through all three (so the stamp is "stale" for A and B and points only
+// to C).
+//
+// This test exercises the direct per-client switch path: it does NOT route through
+// any code that reads the global stamp. It verifies that tmux switch-client -c is
+// per-client correct with three simultaneous clients, which is the primitive
+// relied on by the model-layer tests (TestPersistentModelEnterMultiClient, etc.).
+func TestThreeClientsDirectSwitch_Direct(t *testing.T) {
+	t.Parallel()
+	s := newServer(t)
+
+	s.newSession("nixos-config@main")
+	s.newSession("target-A")
+	s.newSession("target-B")
+	s.newSession("target-C")
+
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientB := s.attachClientToSession(t, "nixos-config@main")
+	clientC := s.attachClientToSession(t, "nixos-config@main")
+
+	// Rotate stamp: A → B → C (C is the last to "open the dashboard").
+	// After this, the global stamp points only to clientC. This simulates the
+	// real-world state where the stamp is stale for A and B.
+	s.setGlobal("@prism_caller_client", clientA)
+	s.setGlobal("@prism_caller_client", clientB)
+	s.setGlobal("@prism_caller_client", clientC)
+
+	// Verify stamp now points to C (what CallerClient() would return).
+	if got := s.getGlobal("@prism_caller_client"); got != clientC {
+		t.Fatalf("@prism_caller_client = %q, want clientC=%q after rotation", got, clientC)
+	}
+
+	// Each client is switched using its own captured name (not the global stamp).
+	// This is the correct pattern: production code captures m.client at init time
+	// and uses it here, ignoring the stale stamp.
+	if err := s.switchClient(clientA, "target-A"); err != nil {
+		t.Fatalf("switchClient clientA→target-A: %v", err)
+	}
+	if err := s.switchClient(clientB, "target-B"); err != nil {
+		t.Fatalf("switchClient clientB→target-B: %v", err)
+	}
+	if err := s.switchClient(clientC, "target-C"); err != nil {
+		t.Fatalf("switchClient clientC→target-C: %v", err)
+	}
+
+	gotA, err := s.clientSession(clientA)
+	if err != nil {
+		t.Fatalf("clientSession(clientA): %v", err)
+	}
+	if gotA != "target-A" {
+		t.Errorf("clientA session = %q, want %q", gotA, "target-A")
+	}
+
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "target-B" {
+		t.Errorf("clientB session = %q, want %q", gotB, "target-B")
+	}
+
+	gotC, err := s.clientSession(clientC)
+	if err != nil {
+		t.Fatalf("clientSession(clientC): %v", err)
+	}
+	if gotC != "target-C" {
+		t.Errorf("clientC session = %q, want %q", gotC, "target-C")
+	}
+}
+
+// TestCleanupRedirectMultiClient_Direct verifies the cleanup redirect pattern
+// with three clients: two on the session being cleaned up and one bystander.
+// Only the two clients on the target session must be redirected to scratchpad;
+// the bystander must remain unaffected.
+//
+// Note: this test replicates the redirect loop pattern from
+// cleanup.go:headlessCleanup using harness helpers (s.switchClient), not by
+// calling production code directly. The test validates that the conditional
+// redirect logic (only clients on the target session are moved) is correct for
+// the three-client scenario, extending the two-client coverage in
+// TestHeadlessCleanupRedirectsOnlyTargetClients_Direct.
+func TestCleanupRedirectMultiClient_Direct(t *testing.T) {
+	t.Parallel()
+	s := newServer(t)
+
+	s.newSession("nixos-config@feature")
+	s.newSession("nixos-config@main")
+	s.newSession("scratchpad")
+
+	// Two clients viewing the session being cleaned up.
+	clientA := s.attachClientToSession(t, "nixos-config@feature")
+	clientB := s.attachClientToSession(t, "nixos-config@feature")
+	// One bystander on a different session.
+	clientC := s.attachClientToSession(t, "nixos-config@main")
+
+	// Replicate headlessCleanup's client-redirect loop.
+	targetSession := "nixos-config@feature"
+	clients, err := s.listClients()
+	if err != nil {
+		t.Fatalf("listClients: %v", err)
+	}
+	for _, c := range clients {
+		sess, err := s.clientSession(c)
+		if err != nil {
+			continue
+		}
+		if sess == targetSession {
+			_ = s.switchClient(c, "scratchpad")
+		}
+	}
+
+	gotA, err := s.clientSession(clientA)
+	if err != nil {
+		t.Fatalf("clientSession(clientA): %v", err)
+	}
+	if gotA != "scratchpad" {
+		t.Errorf("clientA = %q after cleanup redirect, want %q", gotA, "scratchpad")
+	}
+
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "scratchpad" {
+		t.Errorf("clientB = %q after cleanup redirect, want %q", gotB, "scratchpad")
+	}
+
+	gotC, err := s.clientSession(clientC)
+	if err != nil {
+		t.Fatalf("clientSession(clientC): %v", err)
+	}
+	if gotC != "nixos-config@main" {
+		t.Errorf("clientC = %q after cleanup redirect, want %q (bystander must not be redirected)", gotC, "nixos-config@main")
+	}
+}
+
+// TestSwitchClientRaceCondition_Direct verifies that two concurrent switch-
+// client calls for different clients do not cross-target each other. Client A
+// and client B start on the same session; goroutines simultaneously move each
+// to its own dedicated target. After both complete, each client must be on its
+// intended destination.
+func TestSwitchClientRaceCondition_Direct(t *testing.T) {
+	t.Parallel()
+	s := newServer(t)
+
+	s.newSession("nixos-config@main")
+	s.newSession("session1")
+	s.newSession("session2")
+
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientB := s.attachClientToSession(t, "nixos-config@main")
+
+	// Run both switches concurrently.
+	errA := make(chan error, 1)
+	errB := make(chan error, 1)
+	go func() { errA <- s.switchClient(clientA, "session1") }()
+	go func() { errB <- s.switchClient(clientB, "session2") }()
+
+	if err := <-errA; err != nil {
+		t.Fatalf("concurrent switchClient clientA→session1: %v", err)
+	}
+	if err := <-errB; err != nil {
+		t.Fatalf("concurrent switchClient clientB→session2: %v", err)
+	}
+
+	// tmux switch-client is synchronous: once the command exits the client is
+	// already on the new session. Verify immediately after both channels drain.
+	gotA, err := s.clientSession(clientA)
+	if err != nil {
+		t.Fatalf("clientSession(clientA) after concurrent switch: %v", err)
+	}
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB) after concurrent switch: %v", err)
+	}
+
+	if gotA != "session1" {
+		t.Errorf("clientA = %q after concurrent switch, want %q (no cross-targeting)", gotA, "session1")
+	}
+	if gotB != "session2" {
+		t.Errorf("clientB = %q after concurrent switch, want %q (no cross-targeting)", gotB, "session2")
+	}
+}
+
 // TestAPI_TwoClientsGlobalStampIsolation is the package-API version of the
 // core regression test. It uses tmux.* functions throughout.
 //
