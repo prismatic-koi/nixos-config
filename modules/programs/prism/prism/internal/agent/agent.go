@@ -18,4 +18,5 @@ const (
 	StateError       AgentState = "error"
 	StateIdle        AgentState = "idle"
 	StateInterrupted AgentState = "interrupted"
+	StateDeleted     AgentState = "deleted"
 )

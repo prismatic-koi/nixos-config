@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
@@ -211,6 +212,49 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
+// currentStateOf looks up the current agent state for sessionName. Returns
+// ("", nil) when no row exists (fresh insert path — caller should skip
+// transition validation).
+func (d *DB) currentStateOf(sessionName string) (agent.AgentState, error) {
+	var state string
+	err := d.conn.QueryRow(
+		"SELECT state FROM agent_status WHERE session_name = ?", sessionName,
+	).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: read current state: %w", err)
+	}
+	return agent.AgentState(state), nil
+}
+
+// checkTransition reads the current state for sessionName and validates that
+// transitioning to toState is permitted. When the transition is invalid it
+// logs a warning to stderr (including session name, from→to pair, and caller
+// context) and returns — it does not return an error, so callers are never
+// blocked by an invalid transition.
+//
+// Callers pass a short context string (e.g. "UpsertStatus", "pane-died") that
+// is included in the log line to help locate the call site.
+func (d *DB) checkTransition(sessionName string, toState agent.AgentState, callerCtx string) {
+	fromState, err := d.currentStateOf(sessionName)
+	if err != nil {
+		// Non-fatal: if we can't read the current state we skip validation.
+		fmt.Fprintf(os.Stderr, "[prism] %s: could not read current state for %q: %v\n",
+			callerCtx, sessionName, err)
+		return
+	}
+	if fromState == "" {
+		// No prior row — fresh insert; no transition to validate.
+		return
+	}
+	if err := agent.Transition(fromState, toState); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism] %s: invalid transition for session %q: %v\n",
+			callerCtx, sessionName, err)
+	}
+}
+
 // UpsertStatus inserts or updates the agent_status row for sessionName.
 // repo and worktree are only set on initial insert — they do not change on
 // conflict. title, opencodeSID, agentName, and modelID are updated only when
@@ -224,6 +268,7 @@ func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *stri
 // using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
 // are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
 func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithAgent")
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen)
@@ -252,6 +297,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 // This Go method is used in tests and is available for any future Go-side
 // session-creation paths that need to seed root_agent_name at INSERT time.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen)
@@ -283,6 +329,10 @@ ON CONFLICT(session_name) DO UPDATE SET
 // "interrupted" without clobbering a clean "finished" that was written first,
 // and without acting on sessions that have already been ended by cleanup.
 func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
+	// Snapshot the current state before the write so that the advisory
+	// transition check (below) sees the from-state rather than the newly
+	// written to-state.
+	fromState, _ := d.currentStateOf(sessionName)
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -297,6 +347,15 @@ WHERE session_name = ?
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status if not terminal: rows affected: %w", err)
+	}
+	// Validate only when the write was actually applied (n > 0) and we have a
+	// prior state to validate from. When the SQL WHERE clause suppresses the
+	// write (session already terminal), there is no transition to check.
+	if n > 0 && fromState != "" {
+		if terr := agent.Transition(fromState, agent.AgentState(state)); terr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusIfNotTerminal: invalid transition for session %q: %v\n",
+				sessionName, terr)
+		}
 	}
 	return n > 0, nil
 }
@@ -314,6 +373,10 @@ WHERE session_name = ?
 // Returns (true, nil) if the update was applied, (false, nil) if the row did
 // not exist, was already interrupted or deleted, or has ended_at set.
 func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
+	// Snapshot the current state before the write so that the advisory
+	// transition check (below) sees the from-state rather than the newly
+	// written to-state.
+	fromState, _ := d.currentStateOf(sessionName)
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -328,6 +391,16 @@ WHERE session_name = ?
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status interrupted override finished: rows affected: %w", err)
+	}
+	// Validate only when the write was actually applied (n > 0) and we have a
+	// prior state to validate from. When the SQL WHERE clause suppresses the
+	// write (session already interrupted or deleted), there is no transition
+	// to check.
+	if n > 0 && fromState != "" {
+		if terr := agent.Transition(fromState, agent.StateInterrupted); terr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusInterruptedOverrideFinished: invalid transition for session %q: %v\n",
+				sessionName, terr)
+		}
 	}
 	return n > 0, nil
 }
@@ -353,6 +426,11 @@ func (d *DB) SetEnded(sessionName string) error {
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
+	// RefreshWorktree is an administrative reset (correcting corrupted values
+	// during prism restore), not a normal lifecycle transition. It bypasses
+	// the state machine advisory check intentionally — idle is not a valid
+	// to-state in ValidTransitions, so calling checkTransition here would
+	// always produce spurious warnings on every restore invocation.
 	now := time.Now().UnixMilli()
 	_, err := d.conn.Exec(
 		`UPDATE agent_status
