@@ -430,6 +430,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	} else {
 		directory = expandHome(path)
 		sessionName = session.NameFor(directory, projectRoot)
+		opts.SessionName = sessionName
 		opts.Layout = session.LayoutFull
 	}
 

@@ -79,6 +79,8 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "coordinator", OpencodeSession: "ses_abc123", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent coordinator -s ses_abc123"},
 		// SessionName with special characters (dots and dashes are common).
 		{session.Opts{Agent: "worker", SessionName: "nixos_config@feature--my-branch"}, "PRISM_SESSION_NAME='nixos_config@feature--my-branch' opencode --agent worker"},
+		// SessionName + Prompt — env var prefix appears before the prompt flag.
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent worker --prompt 'do the thing'"},
 		// No SessionName — no env var prefix.
 		{session.Opts{Agent: "worker", SessionName: ""}, "opencode --agent worker"},
 	}
