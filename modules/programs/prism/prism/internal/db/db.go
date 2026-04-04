@@ -329,6 +329,10 @@ ON CONFLICT(session_name) DO UPDATE SET
 // "interrupted" without clobbering a clean "finished" that was written first,
 // and without acting on sessions that have already been ended by cleanup.
 func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
+	// Snapshot the current state before the write so that the advisory
+	// transition check (below) sees the from-state rather than the newly
+	// written to-state.
+	fromState, _ := d.currentStateOf(sessionName)
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -344,11 +348,14 @@ WHERE session_name = ?
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status if not terminal: rows affected: %w", err)
 	}
-	// Validate the transition only when the write was actually applied.
-	// Checking before the SQL would produce spurious warnings for the
-	// intentional no-op cases (e.g. session already in a terminal state).
-	if n > 0 {
-		d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusIfNotTerminal")
+	// Validate only when the write was actually applied (n > 0) and we have a
+	// prior state to validate from. When the SQL WHERE clause suppresses the
+	// write (session already terminal), there is no transition to check.
+	if n > 0 && fromState != "" {
+		if terr := agent.Transition(fromState, agent.AgentState(state)); terr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusIfNotTerminal: invalid transition for session %q: %v\n",
+				sessionName, terr)
+		}
 	}
 	return n > 0, nil
 }
@@ -366,6 +373,10 @@ WHERE session_name = ?
 // Returns (true, nil) if the update was applied, (false, nil) if the row did
 // not exist, was already interrupted or deleted, or has ended_at set.
 func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
+	// Snapshot the current state before the write so that the advisory
+	// transition check (below) sees the from-state rather than the newly
+	// written to-state.
+	fromState, _ := d.currentStateOf(sessionName)
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -381,11 +392,15 @@ WHERE session_name = ?
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status interrupted override finished: rows affected: %w", err)
 	}
-	// Validate the transition only when the write was actually applied.
-	// Checking before the SQL would produce spurious warnings for the
-	// intentional no-op case (session already interrupted or deleted).
-	if n > 0 {
-		d.checkTransition(sessionName, agent.StateInterrupted, "UpsertStatusInterruptedOverrideFinished")
+	// Validate only when the write was actually applied (n > 0) and we have a
+	// prior state to validate from. When the SQL WHERE clause suppresses the
+	// write (session already interrupted or deleted), there is no transition
+	// to check.
+	if n > 0 && fromState != "" {
+		if terr := agent.Transition(fromState, agent.StateInterrupted); terr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusInterruptedOverrideFinished: invalid transition for session %q: %v\n",
+				sessionName, terr)
+		}
 	}
 	return n > 0, nil
 }
