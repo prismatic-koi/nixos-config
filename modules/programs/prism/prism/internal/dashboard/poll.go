@@ -89,14 +89,11 @@ func FetchGitHubStats() tea.Msg {
 		return GithubStatsMsg{Err: true}
 	}
 	var n int
-	_, _ = strings.NewReader(strings.TrimSpace(s[:end])), &n
-	// Use fmt.Sscanf for the parse (mirrors original).
 	parseGHCount(strings.TrimSpace(s[:end]), &n)
 	return GithubStatsMsg{OpenPRs: n}
 }
 
-// parseGHCount extracts an integer from a string into out.
-// Separated from FetchGitHubStats so fmt can be imported once.
+// parseGHCount extracts a non-negative decimal integer from s into out.
 func parseGHCount(s string, out *int) {
 	for _, ch := range s {
 		if ch >= '0' && ch <= '9' {
