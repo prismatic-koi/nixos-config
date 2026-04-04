@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
@@ -211,6 +212,49 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
+// currentStateOf looks up the current agent state for sessionName. Returns
+// ("", nil) when no row exists (fresh insert path — caller should skip
+// transition validation).
+func (d *DB) currentStateOf(sessionName string) (agent.AgentState, error) {
+	var state string
+	err := d.conn.QueryRow(
+		"SELECT state FROM agent_status WHERE session_name = ?", sessionName,
+	).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: read current state: %w", err)
+	}
+	return agent.AgentState(state), nil
+}
+
+// checkTransition reads the current state for sessionName and validates that
+// transitioning to toState is permitted. When the transition is invalid it
+// logs a warning to stderr (including session name, from→to pair, and caller
+// context) and returns — it does not return an error, so callers are never
+// blocked by an invalid transition.
+//
+// Callers pass a short context string (e.g. "UpsertStatus", "pane-died") that
+// is included in the log line to help locate the call site.
+func (d *DB) checkTransition(sessionName string, toState agent.AgentState, callerCtx string) {
+	fromState, err := d.currentStateOf(sessionName)
+	if err != nil {
+		// Non-fatal: if we can't read the current state we skip validation.
+		fmt.Fprintf(os.Stderr, "[prism] %s: could not read current state for %q: %v\n",
+			callerCtx, sessionName, err)
+		return
+	}
+	if fromState == "" {
+		// No prior row — fresh insert; no transition to validate.
+		return
+	}
+	if err := agent.Transition(fromState, toState); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism] %s: invalid transition for session %q: %v\n",
+			callerCtx, sessionName, err)
+	}
+}
+
 // UpsertStatus inserts or updates the agent_status row for sessionName.
 // repo and worktree are only set on initial insert — they do not change on
 // conflict. title, opencodeSID, agentName, and modelID are updated only when
@@ -224,6 +268,7 @@ func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *stri
 // using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
 // are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
 func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithAgent")
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen)
@@ -252,6 +297,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 // This Go method is used in tests and is available for any future Go-side
 // session-creation paths that need to seed root_agent_name at INSERT time.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen)
@@ -283,6 +329,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 // "interrupted" without clobbering a clean "finished" that was written first,
 // and without acting on sessions that have already been ended by cleanup.
 func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusIfNotTerminal")
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
@@ -314,6 +361,7 @@ WHERE session_name = ?
 // Returns (true, nil) if the update was applied, (false, nil) if the row did
 // not exist, was already interrupted or deleted, or has ended_at set.
 func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
+	d.checkTransition(sessionName, agent.StateInterrupted, "UpsertStatusInterruptedOverrideFinished")
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE agent_status
