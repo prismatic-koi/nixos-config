@@ -25,8 +25,7 @@ rec {
     {
       # packages where we use master by default for bleeding edge
 
-      # 2026-04-01 Claude package 2.1.88 yanked from npm, so had to revert until master updates
-      # claude-code = masterPkgs.claude-code;
+      claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
       opencode = masterPkgs.opencode;
 
