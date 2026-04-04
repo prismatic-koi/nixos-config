@@ -134,9 +134,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
 	_ = tmux.NewWindow(name, 1, "agent", directory)
-	// Propagate the canonical session name so the opencode plugin can skip
-	// its own derivation.
-	opts.SessionName = name
+	// opts.SessionName must be set by the caller before setupFullLayout is
+	// invoked — both ensureAndSwitch and restoreProjectSession do this.
+	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	_ = tmux.SendKeys(name+":1", BuildOpencodeCmd(opts))
 
 	self, selfErr := os.Executable()
