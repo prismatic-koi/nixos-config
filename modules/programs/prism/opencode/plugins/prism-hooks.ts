@@ -111,6 +111,17 @@ const pendingPermissions = new Map<string, { tool: string; messageID: string }>(
 // Track the current opencode session ID so bus delivery can call session.prompt.
 let currentOpencodeSID: string | null = null;
 
+// Set when the user manually denies a permission request (permission.replied
+// with response === "reject" after a permission.asked event put the session
+// into the waiting state).  Cleared on the next session.status busy event so
+// that if the agent recovers and issues more tool calls, a subsequent idle
+// correctly becomes finished rather than interrupted.
+//
+// Module-level (same as idleTimer) because opencode instantiates the plugin
+// twice and both instances share this flag — a denial handled by one instance
+// must be visible to the other instance when session.idle fires.
+let manualDenial = false;
+
 export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
   // at runtime — it arrives as undefined. Fall back to process.cwd() so that
@@ -415,6 +426,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // Cancel any pending idle→finished debounce: the agent is still
             // active (mid-task turn boundary).
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+            // Clear manual denial flag — the agent is issuing new tool calls,
+            // so a previous denial is no longer the reason it will stop.
+            manualDenial = false;
             // Don't overwrite compacting state with active.
             if (!compacting) {
               // DB
@@ -449,6 +463,16 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           if (idleTimer) clearTimeout(idleTimer);
           idleTimer = setTimeout(() => {
             idleTimer = null;
+            // If the user manually denied a permission request, transition to
+            // interrupted rather than finished — the agent paused for user input,
+            // the user said no, and the agent stopped. This is a user interrupt,
+            // not a successful task completion. Skip coordinator notification.
+            if (manualDenial) {
+              manualDenial = false;
+              upsertAgentStatus(STATE_INTERRUPTED);
+              writeStateChange(STATE_INTERRUPTED);
+              return;
+            }
             // Check current DB state: if the session was already marked
             // interrupted by the pane-died hook (Ctrl+C or unexpected exit),
             // do not overwrite that state with finished and do not notify the
@@ -584,6 +608,11 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               messageId: pending?.messageID ?? "",
             });
             pendingPermissions.delete(permID);
+            // Mark that this was a manual denial (triggered by permission.asked
+            // putting the session into the waiting state).  When the agent
+            // subsequently goes idle, session.idle will write interrupted
+            // instead of finished and will not notify the coordinator.
+            manualDenial = true;
           } else {
             // Approved — clean up tracking entry.
             pendingPermissions.delete(permID);
