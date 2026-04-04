@@ -985,6 +985,254 @@ func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
 	}
 }
 
+// ─── multi-client integration tests ──────────────────────────────────────────
+
+// TestPersistentModelEnterMultiClient verifies that pressing Enter in client
+// A's persistentModel switches only client A to the selected session. Client B,
+// a bystander viewing the same session, must remain unaffected.
+func TestPersistentModelEnterMultiClient(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+
+	// Attach two real clients to the same session.
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientB := s.attachClientToSession(t, "nixos-config@main")
+
+	// Build a persistentModel for client A only.
+	model := newPersistentModel(clientA, "nixos-config@main")
+	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
+	model.displayed = model.sessions
+	model.cursor = 0
+	model.cursorActive = true // cursor active so Enter fires immediately
+
+	// Press Enter — should return a non-nil cmd.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Update(Enter) returned nil cmd — handler did not fire")
+	}
+	pm := updatedModel.(persistentModel)
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after Enter in persistent mode")
+	}
+
+	// Execute the cmd to perform the actual switch.
+	resultMsg := cmd()
+	if resultMsg != nil {
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client A to land on the target session.
+	var gotA string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(clientA); err == nil {
+			gotA = sess
+			if sess == "nixos-config@feature" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotA != "nixos-config@feature" {
+		t.Errorf("clientA session = %q after Enter, want %q", gotA, "nixos-config@feature")
+	}
+
+	// Client B must remain on nixos-config@main.
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "nixos-config@main" {
+		t.Errorf("clientB session = %q, want %q (bystander must be unaffected)", gotB, "nixos-config@main")
+	}
+}
+
+// TestPersistentModelEnterStaleStamp verifies that Enter in client A's
+// persistentModel switches client A — not client B — even when the global
+// @prism_caller_client stamp points to client B. The model must use the client
+// captured at init time, not the live global stamp.
+func TestPersistentModelEnterStaleStamp(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientB := s.attachClientToSession(t, "nixos-config@main")
+
+	// Poison the global stamp to point to client B, simulating B having opened
+	// the dashboard more recently than A.
+	s.setGlobal("@prism_caller_client", clientB)
+
+	// Build a persistentModel for client A — it must capture clientA at init,
+	// not read the global stamp lazily.
+	model := newPersistentModel(clientA, "nixos-config@main")
+	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
+	model.displayed = model.sessions
+	model.cursor = 0
+	model.cursorActive = true
+
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Update(Enter) returned nil cmd — handler did not fire")
+	}
+	_ = updatedModel
+
+	resultMsg := cmd()
+	if resultMsg != nil {
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client A to land on the target.
+	var gotA string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(clientA); err == nil {
+			gotA = sess
+			if sess == "nixos-config@feature" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotA != "nixos-config@feature" {
+		t.Errorf("clientA session = %q, want %q (should be switched despite stale stamp)", gotA, "nixos-config@feature")
+	}
+
+	// Client B must remain on nixos-config@main — the stale stamp must not
+	// cause B to be switched.
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "nixos-config@main" {
+		t.Errorf("clientB session = %q, want %q (stale stamp must not switch bystander)", gotB, "nixos-config@main")
+	}
+}
+
+// TestPersistentModelQuitMultiClient verifies that pressing q in client A's
+// persistentModel calls SwitchClientLast for client A (returning it to its
+// previous session) while client B, viewing a different session, is unaffected.
+func TestPersistentModelQuitMultiClient(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+	s.newSession("nixos-config@other")
+
+	// Attach client A to main, then switch it to feature so "last" = main.
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	if err := s.run("switch-client", "-c", clientA, "-t", "nixos-config@feature"); err != nil {
+		t.Fatalf("setup: switch clientA to feature: %v", err)
+	}
+
+	// Attach client B to a completely separate session.
+	clientB := s.attachClientToSession(t, "nixos-config@other")
+
+	// Build a persistentModel for client A while it is on nixos-config@feature.
+	model := newPersistentModel(clientA, "nixos-config@feature")
+	model.cursorActive = true
+
+	// Press q — should return a non-nil cmd.
+	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("Update('q') returned nil cmd — handler did not fire")
+	}
+	pm := updatedModel.(persistentModel)
+	if pm.cursorActive {
+		t.Error("cursorActive should be false after q")
+	}
+
+	resultMsg := cmd()
+	if resultMsg != nil {
+		t.Fatalf("cmd() returned unexpected message: %v", resultMsg)
+	}
+
+	// Poll for client A to return to nixos-config@main (its "last" session).
+	var gotA string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(clientA); err == nil {
+			gotA = sess
+			if sess == "nixos-config@main" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotA != "nixos-config@main" {
+		t.Errorf("clientA session = %q after q, want %q (SwitchClientLast should return to previous)", gotA, "nixos-config@main")
+	}
+
+	// Client B must remain on nixos-config@other.
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "nixos-config@other" {
+		t.Errorf("clientB session = %q, want %q (unaffected by client A's quit)", gotB, "nixos-config@other")
+	}
+}
+
+// TestPopupModelEnterMultiClient verifies that pressing Enter in client A's
+// popupModel switches client A to the selected session. Client B, a bystander,
+// must remain on its original session.
+func TestPopupModelEnterMultiClient(t *testing.T) {
+	s := newCmdTestServer(t)
+	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
+	s.newSession("nixos-config@main")
+	s.newSession("nixos-config@feature")
+
+	clientA := s.attachClientToSession(t, "nixos-config@main")
+	clientB := s.attachClientToSession(t, "nixos-config@main")
+
+	// Build a popupModel for client A.
+	model := newPopupModel(clientA, "nixos-config@main")
+	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
+	model.displayed = model.sessions
+	model.cursor = 0
+	// popupModel always has cursorActive = true (set in newPopupModel).
+
+	// Press Enter.
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Update(Enter) returned nil cmd — popup handler did not fire")
+	}
+
+	// Execute the cmd. In popup mode a successful switch returns tea.QuitMsg{}.
+	resultMsg := cmd()
+	if _, isQuit := resultMsg.(tea.QuitMsg); !isQuit {
+		t.Fatalf("cmd() returned %T (%v), want tea.QuitMsg (popup should quit after switch)", resultMsg, resultMsg)
+	}
+
+	// Poll for client A to land on nixos-config@feature.
+	var gotA string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if sess, err := s.clientSession(clientA); err == nil {
+			gotA = sess
+			if sess == "nixos-config@feature" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotA != "nixos-config@feature" {
+		t.Errorf("clientA session = %q after popup Enter, want %q", gotA, "nixos-config@feature")
+	}
+
+	// Client B must remain on nixos-config@main.
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB): %v", err)
+	}
+	if gotB != "nixos-config@main" {
+		t.Errorf("clientB session = %q, want %q (bystander must be unaffected)", gotB, "nixos-config@main")
+	}
+}
+
 // TestDashViewStatEmptyAgentPath verifies that a session with an empty
 // AgentPath renders "—" (no stat available), not "?" (which would imply a
 // git error). Sessions with no worktree path are not stat-failed; they simply
