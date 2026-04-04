@@ -427,6 +427,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		home, _ := os.UserHomeDir()
 		directory = home
 		opts.Layout = session.LayoutScratchpad
+		opts.SessionName = sessionName
 	} else {
 		directory = expandHome(path)
 		sessionName = session.NameFor(directory, projectRoot)
