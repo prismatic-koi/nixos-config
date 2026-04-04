@@ -125,6 +125,15 @@ func (s *cmdTestServer) hasSession(name string) bool {
 	return s.run("has-session", "-t", name) == nil
 }
 
+func (s *cmdTestServer) setGlobal(option, value string) {
+	_ = s.run("set-option", "-g", option, value)
+}
+
+func (s *cmdTestServer) getGlobal(option string) string {
+	val, _ := s.output("show-option", "-gv", option)
+	return val
+}
+
 func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string) string {
 	t.Helper()
 	before, _ := s.output("list-clients", "-F", "#{client_name}")
@@ -1065,6 +1074,12 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	// Poison the global stamp to point to client B, simulating B having opened
 	// the dashboard more recently than A.
 	s.setGlobal("@prism_caller_client", clientB)
+
+	// Assert the stamp was written before constructing the model, so any failure
+	// is clearly attributable to the model (not a setup error).
+	if got := s.getGlobal("@prism_caller_client"); got != clientB {
+		t.Fatalf("setup: @prism_caller_client = %q, want clientB=%q", got, clientB)
+	}
 
 	// Build a persistentModel for client A — it must capture clientA at init,
 	// not read the global stamp lazily.

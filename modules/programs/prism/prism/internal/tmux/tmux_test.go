@@ -568,12 +568,17 @@ func TestAPI_ListClients(t *testing.T) {
 	}
 }
 
-// TestThreeClientsStampRotation_Direct verifies that rotating the global
-// @prism_caller_client stamp through three clients does not cause cross-
-// contamination: each client ends up on its own intended target session
-// because switches are performed using the per-client name directly (not the
-// stale stamp).
-func TestThreeClientsStampRotation_Direct(t *testing.T) {
+// TestThreeClientsDirectSwitch_Direct verifies that three clients on the same
+// session can each be independently switched to separate targets using their own
+// captured client name, even when the global @prism_caller_client stamp has been
+// rotated through all three (so the stamp is "stale" for A and B and points only
+// to C).
+//
+// This test exercises the direct per-client switch path: it does NOT route through
+// any code that reads the global stamp. It verifies that tmux switch-client -c is
+// per-client correct with three simultaneous clients, which is the primitive
+// relied on by the model-layer tests (TestPersistentModelEnterMultiClient, etc.).
+func TestThreeClientsDirectSwitch_Direct(t *testing.T) {
 	t.Parallel()
 	s := newServer(t)
 
@@ -587,6 +592,8 @@ func TestThreeClientsStampRotation_Direct(t *testing.T) {
 	clientC := s.attachClientToSession(t, "nixos-config@main")
 
 	// Rotate stamp: A → B → C (C is the last to "open the dashboard").
+	// After this, the global stamp points only to clientC. This simulates the
+	// real-world state where the stamp is stale for A and B.
 	s.setGlobal("@prism_caller_client", clientA)
 	s.setGlobal("@prism_caller_client", clientB)
 	s.setGlobal("@prism_caller_client", clientC)
@@ -596,7 +603,9 @@ func TestThreeClientsStampRotation_Direct(t *testing.T) {
 		t.Fatalf("@prism_caller_client = %q, want clientC=%q after rotation", got, clientC)
 	}
 
-	// Each client switches using its own captured name (not the global stamp).
+	// Each client is switched using its own captured name (not the global stamp).
+	// This is the correct pattern: production code captures m.client at init time
+	// and uses it here, ignoring the stale stamp.
 	if err := s.switchClient(clientA, "target-A"); err != nil {
 		t.Fatalf("switchClient clientA→target-A: %v", err)
 	}
@@ -632,10 +641,17 @@ func TestThreeClientsStampRotation_Direct(t *testing.T) {
 	}
 }
 
-// TestCleanupRedirectMultiClient_Direct verifies the cleanup redirect loop with
-// three clients: two on the session being cleaned up and one bystander.
+// TestCleanupRedirectMultiClient_Direct verifies the cleanup redirect pattern
+// with three clients: two on the session being cleaned up and one bystander.
 // Only the two clients on the target session must be redirected to scratchpad;
 // the bystander must remain unaffected.
+//
+// Note: this test replicates the redirect loop pattern from
+// cleanup.go:headlessCleanup using harness helpers (s.switchClient), not by
+// calling production code directly. The test validates that the conditional
+// redirect logic (only clients on the target session are moved) is correct for
+// the three-client scenario, extending the two-client coverage in
+// TestHeadlessCleanupRedirectsOnlyTargetClients_Direct.
 func TestCleanupRedirectMultiClient_Direct(t *testing.T) {
 	t.Parallel()
 	s := newServer(t)
@@ -720,17 +736,15 @@ func TestSwitchClientRaceCondition_Direct(t *testing.T) {
 		t.Fatalf("concurrent switchClient clientB→session2: %v", err)
 	}
 
-	// Poll briefly to let any in-flight tmux state settle.
-	deadline := time.Now().Add(5 * time.Second)
-	var gotA, gotB string
-	for time.Now().Before(deadline) {
-		var errA2, errB2 error
-		gotA, errA2 = s.clientSession(clientA)
-		gotB, errB2 = s.clientSession(clientB)
-		if errA2 == nil && errB2 == nil && gotA == "session1" && gotB == "session2" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	// tmux switch-client is synchronous: once the command exits the client is
+	// already on the new session. Verify immediately after both channels drain.
+	gotA, err := s.clientSession(clientA)
+	if err != nil {
+		t.Fatalf("clientSession(clientA) after concurrent switch: %v", err)
+	}
+	gotB, err := s.clientSession(clientB)
+	if err != nil {
+		t.Fatalf("clientSession(clientB) after concurrent switch: %v", err)
 	}
 
 	if gotA != "session1" {
