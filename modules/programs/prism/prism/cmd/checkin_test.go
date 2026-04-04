@@ -935,3 +935,77 @@ func TestRunCheckinSession_LegacyFallbackNoRows(t *testing.T) {
 		t.Errorf("error should mention session name\ngot: %v", err)
 	}
 }
+
+// TestRenderChildEvent_PermissionAsk_NewShape verifies that a permission_ask
+// payload in the current plugin shape (tool = permission-type string) renders
+// as "[⏳ waiting for approval: bash — <pattern>]" without a parse error.
+func TestRenderChildEvent_PermissionAsk_NewShape(t *testing.T) {
+	raw := `{"tool":"bash","patterns":["GIT_EDITOR=true git rebase --continue 2>&1"],"messageId":"msg_abc"}`
+	out := captureStdout(t, func() {
+		renderChildEvent("permission_ask", raw, false, "")
+	})
+	if strings.Contains(out, "parse error") {
+		t.Errorf("output should not contain 'parse error'\ngot: %s", out)
+	}
+	if !strings.Contains(out, "⏳ waiting for approval: bash") {
+		t.Errorf("output missing permission type 'bash'\ngot: %s", out)
+	}
+	if !strings.Contains(out, "GIT_EDITOR=true git rebase --continue 2>&1") {
+		t.Errorf("output missing pattern\ngot: %s", out)
+	}
+}
+
+// TestRenderChildEvent_PermissionAsk_LegacyObjectShape verifies that old DB
+// rows — where the plugin wrote the tool-call metadata object instead of the
+// permission-type string — render without "(parse error)" and without panicking.
+// The tool name falls back to "unknown" since the object is discarded.
+func TestRenderChildEvent_PermissionAsk_LegacyObjectShape(t *testing.T) {
+	raw := `{"tool":{"messageID":"msg_d54f0894c001","callID":"tooluse_Yw1mPLjlv1x8"},"patterns":["/home/ben/code/nixos-config/*"],"messageId":null}`
+	out := captureStdout(t, func() {
+		renderChildEvent("permission_ask", raw, false, "")
+	})
+	if strings.Contains(out, "parse error") {
+		t.Errorf("legacy object shape must not produce 'parse error'\ngot: %s", out)
+	}
+	if !strings.Contains(out, "⏳ waiting for approval") {
+		t.Errorf("output missing waiting-for-approval marker\ngot: %s", out)
+	}
+	// Tool name should fall back to "unknown" when object was discarded.
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("output should use 'unknown' fallback for legacy tool object\ngot: %s", out)
+	}
+}
+
+// TestRenderChildEvent_PermissionAsk_EmptyPatterns verifies that an empty
+// patterns array renders as "[⏳ waiting for approval: bash]" (no dash-section).
+func TestRenderChildEvent_PermissionAsk_EmptyPatterns(t *testing.T) {
+	raw := `{"tool":"bash","patterns":[],"messageId":"msg-1"}`
+	out := captureStdout(t, func() {
+		renderChildEvent("permission_ask", raw, false, "")
+	})
+	if strings.Contains(out, "parse error") {
+		t.Errorf("empty patterns must not produce 'parse error'\ngot: %s", out)
+	}
+	if !strings.Contains(out, "⏳ waiting for approval: bash") {
+		t.Errorf("output missing expected string\ngot: %s", out)
+	}
+	// No " — " separator when patterns is empty.
+	if strings.Contains(out, " — ") {
+		t.Errorf("output should not contain separator when patterns is empty\ngot: %s", out)
+	}
+}
+
+// TestRenderChildEvent_PermissionAsk_AbsentTool verifies that an absent tool
+// field uses the "unknown" fallback.
+func TestRenderChildEvent_PermissionAsk_AbsentTool(t *testing.T) {
+	raw := `{"patterns":["git push"],"messageId":"msg-3"}`
+	out := captureStdout(t, func() {
+		renderChildEvent("permission_ask", raw, false, "")
+	})
+	if strings.Contains(out, "parse error") {
+		t.Errorf("absent tool must not produce 'parse error'\ngot: %s", out)
+	}
+	if !strings.Contains(out, "unknown") {
+		t.Errorf("output should use 'unknown' fallback\ngot: %s", out)
+	}
+}

@@ -8,6 +8,8 @@
 // JSON field names match the plugin's output verbatim (camelCase).
 package payload
 
+import "encoding/json"
+
 // StateChange is the payload for state_change events.
 type StateChange struct {
 	State string `json:"state"`
@@ -48,10 +50,45 @@ type ToolResult struct {
 }
 
 // PermissionAsk is the payload for permission_ask events.
+//
+// The tool field is written by the plugin as the permission-type string
+// (e.g. "bash", "external_directory"). Older DB rows may have the raw tool
+// call metadata object { "messageID": "...", "callID": "..." } in this field.
+// PermissionToolName handles both cases transparently.
 type PermissionAsk struct {
-	Tool      string   `json:"tool"`
-	Patterns  []string `json:"patterns"`
-	MessageID string   `json:"messageId"`
+	Tool      PermissionToolName `json:"tool"`
+	Patterns  []string           `json:"patterns"`
+	MessageID string             `json:"messageId"`
+}
+
+// PermissionToolName is a string that can be unmarshalled from either a plain
+// JSON string (current plugin output) or a JSON object (legacy DB rows that
+// stored the raw tool-call metadata object instead of the permission-type
+// string). When the value is an object, the field is set to the empty string
+// so callers can apply their own fallback label.
+type PermissionToolName string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (p *PermissionToolName) UnmarshalJSON(data []byte) error {
+	// encoding/json always passes at least one byte (minimum valid JSON token).
+	// Happy path: plain string value (current plugin output).
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*p = PermissionToolName(s)
+		return nil
+	}
+	// Legacy path: JSON object — discard and leave as empty string so that
+	// callers can substitute a fallback rather than failing entirely.
+	if data[0] == '{' {
+		*p = ""
+		return nil
+	}
+	// null → empty string; any other token type → empty string (best-effort).
+	*p = ""
+	return nil
 }
 
 // PermissionDenied is the payload for permission_denied events.

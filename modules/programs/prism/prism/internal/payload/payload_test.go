@@ -121,7 +121,7 @@ func TestPermissionAsk_Roundtrip(t *testing.T) {
 		MessageID: "msg-1",
 	}
 	out := roundtrip(t, in)
-	if out.Tool != in.Tool {
+	if string(out.Tool) != string(in.Tool) {
 		t.Errorf("Tool: got %q, want %q", out.Tool, in.Tool)
 	}
 	if len(out.Patterns) != len(in.Patterns) {
@@ -134,6 +134,91 @@ func TestPermissionAsk_Roundtrip(t *testing.T) {
 	}
 	if out.MessageID != in.MessageID {
 		t.Errorf("MessageID: got %q, want %q", out.MessageID, in.MessageID)
+	}
+}
+
+// TestPermissionAsk_RealPluginShape unmarshals a permission_ask payload shaped
+// exactly as the (fixed) plugin writes it: tool is a permission-type string,
+// patterns is a non-empty array of strings, and messageId is a string.
+func TestPermissionAsk_RealPluginShape(t *testing.T) {
+	// This is the shape written by the fixed plugin (tool = permission type string).
+	raw := `{"tool":"bash","patterns":["GIT_EDITOR=true git rebase --continue 2>&1"],"messageId":"msg_abc123"}`
+	var p payload.PermissionAsk
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(p.Tool) != "bash" {
+		t.Errorf("Tool: got %q, want \"bash\"", p.Tool)
+	}
+	if len(p.Patterns) == 0 {
+		t.Fatal("Patterns: got empty slice, want at least one entry")
+	}
+	if p.Patterns[0] != "GIT_EDITOR=true git rebase --continue 2>&1" {
+		t.Errorf("Patterns[0]: got %q, want the git rebase command", p.Patterns[0])
+	}
+	if p.MessageID != "msg_abc123" {
+		t.Errorf("MessageID: got %q, want \"msg_abc123\"", p.MessageID)
+	}
+}
+
+// TestPermissionAsk_LegacyToolObject verifies that old DB rows — where the
+// plugin mistakenly wrote the tool-call metadata object instead of the
+// permission-type string — unmarshal without error. Tool should be empty
+// (callers apply their own fallback label).
+func TestPermissionAsk_LegacyToolObject(t *testing.T) {
+	// Shape written by the buggy (pre-fix) plugin.
+	raw := `{"tool":{"messageID":"msg_d54f0894c001","callID":"tooluse_Yw1mPLjlv1x8"},"patterns":["/home/ben/code/nixos-config/*"],"messageId":null}`
+	var p payload.PermissionAsk
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal legacy tool object: %v (should not error)", err)
+	}
+	if string(p.Tool) != "" {
+		t.Errorf("Tool: got %q, want empty string for legacy object shape", p.Tool)
+	}
+	if len(p.Patterns) == 0 {
+		t.Fatal("Patterns: got empty slice, want at least one entry")
+	}
+}
+
+// TestPermissionAsk_EmptyPatterns verifies that an empty patterns array renders
+// without error and without panicking.
+func TestPermissionAsk_EmptyPatterns(t *testing.T) {
+	raw := `{"tool":"bash","patterns":[],"messageId":"msg-1"}`
+	var p payload.PermissionAsk
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(p.Tool) != "bash" {
+		t.Errorf("Tool: got %q, want \"bash\"", p.Tool)
+	}
+	if len(p.Patterns) != 0 {
+		t.Errorf("Patterns: got %v, want empty slice", p.Patterns)
+	}
+}
+
+// TestPermissionAsk_NullPatterns verifies that null patterns unmarshals
+// gracefully (nil slice, no panic).
+func TestPermissionAsk_NullPatterns(t *testing.T) {
+	raw := `{"tool":"external_directory","patterns":null,"messageId":"msg-2"}`
+	var p payload.PermissionAsk
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(p.Patterns) != 0 {
+		t.Errorf("Patterns: got %v, want nil/empty", p.Patterns)
+	}
+}
+
+// TestPermissionAsk_AbsentTool verifies that an absent tool field unmarshals
+// gracefully with an empty Tool value (callers apply the "unknown" fallback).
+func TestPermissionAsk_AbsentTool(t *testing.T) {
+	raw := `{"patterns":["git push"],"messageId":"msg-3"}`
+	var p payload.PermissionAsk
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if string(p.Tool) != "" {
+		t.Errorf("Tool: got %q, want empty string when field is absent", p.Tool)
 	}
 }
 
