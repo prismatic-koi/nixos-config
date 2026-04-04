@@ -1009,21 +1009,21 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 	clientA := s.attachClientToSession(t, "nixos-config@main")
 	clientB := s.attachClientToSession(t, "nixos-config@main")
 
-	// Build a persistentModel for client A only.
-	model := newPersistentModel(clientA, "nixos-config@main")
-	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
-	model.displayed = model.sessions
-	model.cursor = 0
-	model.cursorActive = true // cursor active so Enter fires immediately
+	// Build a PersistentModel for client A only.
+	model := dashboard.NewPersistentModel(clientA, "nixos-config@main")
+	model.Sessions = []dashboard.AgentSession{{Name: "nixos-config@feature"}}
+	model.Displayed = model.Sessions
+	model.Cursor = 0
+	model.CursorActive = true // cursor active so Enter fires immediately
 
 	// Press Enter — should return a non-nil cmd.
 	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Update(Enter) returned nil cmd — handler did not fire")
 	}
-	pm := updatedModel.(persistentModel)
-	if pm.cursorActive {
-		t.Error("cursorActive should be false after Enter in persistent mode")
+	pm := updatedModel.(dashboard.PersistentModel)
+	if pm.CursorActive {
+		t.Error("CursorActive should be false after Enter in persistent mode")
 	}
 
 	// Execute the cmd to perform the actual switch.
@@ -1059,9 +1059,10 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 }
 
 // TestPersistentModelEnterStaleStamp verifies that Enter in client A's
-// persistentModel switches client A — not client B — even when the global
-// @prism_caller_client stamp points to client B. The model must use the client
-// captured at init time, not the live global stamp.
+// PersistentModel switches client A — not client B — even when a global
+// tmux option (@prism_caller_client) points to client B. The model stores
+// the client identity in m.Client (set at construction time) and never reads
+// any global tmux option, so the option is completely ignored.
 func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
@@ -1071,23 +1072,23 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 	clientA := s.attachClientToSession(t, "nixos-config@main")
 	clientB := s.attachClientToSession(t, "nixos-config@main")
 
-	// Poison the global stamp to point to client B, simulating B having opened
-	// the dashboard more recently than A.
+	// Set a global option pointing to client B, simulating B having opened
+	// the dashboard more recently than A. The model must ignore this.
 	s.setGlobal("@prism_caller_client", clientB)
 
-	// Assert the stamp was written before constructing the model, so any failure
-	// is clearly attributable to the model (not a setup error).
+	// Assert the option was written before constructing the model, so any
+	// failure is clearly attributable to the model (not a setup error).
 	if got := s.getGlobal("@prism_caller_client"); got != clientB {
 		t.Fatalf("setup: @prism_caller_client = %q, want clientB=%q", got, clientB)
 	}
 
-	// Build a persistentModel for client A — it must capture clientA at init,
-	// not read the global stamp lazily.
-	model := newPersistentModel(clientA, "nixos-config@main")
-	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
-	model.displayed = model.sessions
-	model.cursor = 0
-	model.cursorActive = true
+	// Build a PersistentModel for client A — m.Client is set to clientA at
+	// construction and never changes due to any global option.
+	model := dashboard.NewPersistentModel(clientA, "nixos-config@main")
+	model.Sessions = []dashboard.AgentSession{{Name: "nixos-config@feature"}}
+	model.Displayed = model.Sessions
+	model.Cursor = 0
+	model.CursorActive = true
 
 	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -1146,21 +1147,21 @@ func TestPersistentModelQuitMultiClient(t *testing.T) {
 	// Attach client B to a completely separate session.
 	clientB := s.attachClientToSession(t, "nixos-config@other")
 
-	// Build a persistentModel for client A while it is on nixos-config@feature.
-	// Note: cursorActive is intentionally left as the default (false) from
-	// newPersistentModel — the q handler in persistentModel.Update fires
-	// unconditionally regardless of cursorActive, so there is no need to
+	// Build a PersistentModel for client A while it is on nixos-config@feature.
+	// Note: CursorActive is intentionally left as the default (false) from
+	// NewPersistentModel — the q handler in PersistentModel.Update fires
+	// unconditionally regardless of CursorActive, so there is no need to
 	// activate the cursor to trigger a quit/switch.
-	model := newPersistentModel(clientA, "nixos-config@feature")
+	model := dashboard.NewPersistentModel(clientA, "nixos-config@feature")
 
 	// Press q — should return a non-nil cmd.
 	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
 	if cmd == nil {
 		t.Fatal("Update('q') returned nil cmd — handler did not fire")
 	}
-	pm := updatedModel.(persistentModel)
-	if pm.cursorActive {
-		t.Error("cursorActive should be false after q")
+	pm := updatedModel.(dashboard.PersistentModel)
+	if pm.CursorActive {
+		t.Error("CursorActive should be false after q")
 	}
 
 	resultMsg := cmd()
@@ -1206,12 +1207,12 @@ func TestPopupModelEnterMultiClient(t *testing.T) {
 	clientA := s.attachClientToSession(t, "nixos-config@main")
 	clientB := s.attachClientToSession(t, "nixos-config@main")
 
-	// Build a popupModel for client A.
-	model := newPopupModel(clientA, "nixos-config@main")
-	model.sessions = []agentSession{{Name: "nixos-config@feature"}}
-	model.displayed = model.sessions
-	model.cursor = 0
-	// popupModel always has cursorActive = true (set in newPopupModel).
+	// Build a PopupModel for client A.
+	model := dashboard.NewPopupModel(clientA, "nixos-config@main")
+	model.Sessions = []dashboard.AgentSession{{Name: "nixos-config@feature"}}
+	model.Displayed = model.Sessions
+	model.Cursor = 0
+	// PopupModel always has CursorActive = true (set in NewPopupModel).
 
 	// Press Enter.
 	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
