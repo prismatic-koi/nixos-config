@@ -448,9 +448,10 @@
       };
       authPlugins = lib.lists.unique (lib.concatLists (lib.attrValues providerPlugins));
 
-      # All three provider blocks are always present so that models from any
+      # All provider blocks are always present so that models from any
       # provider can be used manually regardless of which provider is the
       # active default (which controls only model strings).
+      # Note: anthropic-opus shares the anthropic provider block — no separate entry needed.
       providerSettings = {
         anthropic = { };
         github-copilot = { };
