@@ -10,6 +10,9 @@
 //   - clients attached to the target session are redirected to scratchpad
 //   - clients attached to other sessions are unaffected
 //   - the target session is removed
+//
+// TestCleanupYes_DefaultBranch verifies that cleanup of a @main session closes
+// the session but preserves the worktree and branch.
 package cmd
 
 import (
@@ -240,6 +243,111 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 	// The bystander client should still be on "other".  Poll briefly for
 	// stability rather than reading once.  Guard: only assert if at least one
 	// successful read was obtained.
+	var gotOther string
+	otherDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(otherDeadline) {
+		if sess, err := s.clientSession(clientOther); err == nil {
+			gotOther = sess
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotOther != "" && gotOther != "other" {
+		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",
+			gotOther, "other")
+	}
+}
+
+// TestCleanupYes_DefaultBranch verifies that the headless (--yes) cleanup of a
+// default-branch session (e.g. myrepo@main) closes the session but preserves
+// the worktree directory and git branch.
+//
+// Layout:
+//   - session "myrepo@main"  ← the target; has an "agent" window at mainWorktreePath
+//   - session "other"        ← a bystander session
+//   - clientTarget attached to "myrepo@main"
+//   - clientOther attached to "other"
+func TestCleanupYes_DefaultBranch(t *testing.T) {
+	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+
+	prismBin := buildPrismBinary(t)
+
+	bareRoot, _, _ := setupMinimalBareRepo(t)
+	// The default branch worktree is at bareRoot/main.
+	mainWorktreePath := filepath.Join(bareRoot, "main")
+
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	targetSession := "myrepo@main"
+
+	// Create the target session rooted at the main worktree.
+	if err := s.run("new-session", "-ds", targetSession, "-c", mainWorktreePath); err != nil {
+		t.Fatalf("new-session %q: %v", targetSession, err)
+	}
+	if err := s.run("rename-window", "-t", targetSession+":0", "agent"); err != nil {
+		t.Fatalf("rename-window agent: %v", err)
+	}
+
+	// Create the bystander session.
+	s.newSession("other")
+
+	// Attach clients.
+	clientTarget := s.attachClientToSession(t, targetSession)
+	clientOther := s.attachClientToSession(t, "other")
+
+	// Invoke cleanup on the default-branch session.
+	cleanupArgs := fmt.Sprintf("%s cleanup --yes --session %s", prismBin, targetSession)
+	runInNewWindow(t, s, "other", "/tmp", cleanupArgs)
+
+	// Poll until the target session disappears.
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.hasSession(targetSession) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if s.hasSession(targetSession) {
+		t.Fatalf("session %q still exists after cleanup (timed out)", targetSession)
+	}
+
+	// The worktree directory must still exist.
+	if _, err := os.Stat(mainWorktreePath); err != nil {
+		t.Errorf("worktree directory %q was removed — expected it to be preserved: %v",
+			mainWorktreePath, err)
+	}
+
+	// The git branch "main" must still exist.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/main").Run(); err != nil {
+		t.Errorf("branch 'main' no longer exists — expected it to be preserved: %v", err)
+	}
+
+	// Poll until clientTarget lands on "scratchpad".
+	var gotTarget string
+	targetDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(targetDeadline) {
+		if sess, err := s.clientSession(clientTarget); err == nil {
+			gotTarget = sess
+			if sess == "scratchpad" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotTarget != "" && gotTarget != "scratchpad" {
+		t.Errorf("clientTarget session = %q, want %q — client was not redirected to scratchpad",
+			gotTarget, "scratchpad")
+	}
+	if gotTarget == "" {
+		t.Errorf("clientTarget: could not confirm session after cleanup (all clientSession calls failed)")
+	}
+
+	// The bystander client should still be on "other".
 	var gotOther string
 	otherDeadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(otherDeadline) {
