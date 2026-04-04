@@ -83,6 +83,14 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent worker --prompt 'do the thing'"},
 		// No SessionName — no env var prefix.
 		{session.Opts{Agent: "worker", SessionName: ""}, "opencode --agent worker"},
+		// Port set — includes --port and --hostname.
+		{session.Opts{Agent: "worker", Port: 14000}, "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
+		// Port + session ID + SessionName — all flags together.
+		{session.Opts{Agent: "coordinator", Port: 14042, OpencodeSession: "ses_abc", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent coordinator --port 14042 --hostname 127.0.0.1 -s ses_abc"},
+		// Port + Prompt.
+		{session.Opts{Agent: "worker", Port: 14001, Prompt: "fix it"}, "opencode --agent worker --port 14001 --hostname 127.0.0.1 --prompt 'fix it'"},
+		// Port zero — no port flags.
+		{session.Opts{Agent: "worker", Port: 0}, "opencode --agent worker"},
 	}
 	for _, tc := range cases {
 		got := session.BuildOpencodeCmd(tc.opts)
