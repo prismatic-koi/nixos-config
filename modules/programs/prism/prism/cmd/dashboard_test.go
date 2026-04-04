@@ -1147,8 +1147,11 @@ func TestPersistentModelQuitMultiClient(t *testing.T) {
 	clientB := s.attachClientToSession(t, "nixos-config@other")
 
 	// Build a persistentModel for client A while it is on nixos-config@feature.
+	// Note: cursorActive is intentionally left as the default (false) from
+	// newPersistentModel — the q handler in persistentModel.Update fires
+	// unconditionally regardless of cursorActive, so there is no need to
+	// activate the cursor to trigger a quit/switch.
 	model := newPersistentModel(clientA, "nixos-config@feature")
-	model.cursorActive = true
 
 	// Press q — should return a non-nil cmd.
 	updatedModel, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
