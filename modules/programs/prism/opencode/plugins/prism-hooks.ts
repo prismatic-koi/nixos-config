@@ -22,6 +22,12 @@ const STATE_IDLE = "idle"; // eslint-disable-line @typescript-eslint/no-unused-v
 const STATE_INTERRUPTED = "interrupted";
 const STATE_DELETED = "deleted";
 
+/**
+ * @deprecated Legacy fallback only. Session names are now passed from the Go
+ * CLI via the PRISM_SESSION_NAME environment variable. This function is kept
+ * for backward compatibility when opencode is launched outside prism (e.g.
+ * manually in a plain terminal without PRISM_SESSION_NAME set).
+ */
 function deriveSessionName(worktree: string): string | null {
   // Walk up to find .bare marker
   let dir = worktree;
@@ -144,8 +150,12 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
 
-  // Derive session name from worktree
-  const sessionName = deriveSessionName(worktree);
+  // Resolve the canonical session name. When launched from prism, the Go CLI
+  // sets PRISM_SESSION_NAME to the value computed by session.NameFor(), which
+  // is the authoritative source of truth. Fall back to deriveSessionName() for
+  // backward compatibility when opencode is run outside prism (e.g. manually
+  // in a terminal without the env var set).
+  const sessionName = process.env.PRISM_SESSION_NAME ?? deriveSessionName(worktree);
 
   // Open DB
   const stateHome = process.env.XDG_STATE_HOME ?? path.join(homedir(), ".local/state");

@@ -180,6 +180,7 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		Headless:        true,
 		OpencodeSession: opencodeSession,
 		Agent:           session.DefaultAgent(directory, ""),
+		SessionName:     s.SessionName,
 	}
 	_ = tmux.SendKeys(s.SessionName+":1", session.BuildOpencodeCmd(opts))
 

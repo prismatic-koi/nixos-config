@@ -74,6 +74,15 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", Prompt: "run `make test` and fix $ERRORS"}, "opencode --agent worker --prompt 'run `make test` and fix $ERRORS'"},
 		// Prompt + session ID — both flags present.
 		{session.Opts{Agent: "coordinator", OpencodeSession: "ses_abc", Prompt: "review pr"}, "opencode --agent coordinator -s ses_abc --prompt 'review pr'"},
+		// SessionName set — PRISM_SESSION_NAME is prepended.
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent worker"},
+		{session.Opts{Agent: "coordinator", OpencodeSession: "ses_abc123", SessionName: "myrepo@main"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent coordinator -s ses_abc123"},
+		// SessionName with special characters (dots and dashes are common).
+		{session.Opts{Agent: "worker", SessionName: "nixos_config@feature--my-branch"}, "PRISM_SESSION_NAME='nixos_config@feature--my-branch' opencode --agent worker"},
+		// SessionName + Prompt — env var prefix appears before the prompt flag.
+		{session.Opts{Agent: "worker", SessionName: "myrepo@main", Prompt: "do the thing"}, "PRISM_SESSION_NAME='myrepo@main' opencode --agent worker --prompt 'do the thing'"},
+		// No SessionName — no env var prefix.
+		{session.Opts{Agent: "worker", SessionName: ""}, "opencode --agent worker"},
 	}
 	for _, tc := range cases {
 		got := session.BuildOpencodeCmd(tc.opts)

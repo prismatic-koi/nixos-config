@@ -427,9 +427,15 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		home, _ := os.UserHomeDir()
 		directory = home
 		opts.Layout = session.LayoutScratchpad
+		// Set SessionName for consistency with the full-layout branch.
+		// LayoutScratchpad does not call BuildOpencodeCmd today, so this has
+		// no runtime effect, but keeps the struct complete in case the
+		// scratchpad layout ever gains an opencode agent window.
+		opts.SessionName = sessionName
 	} else {
 		directory = expandHome(path)
 		sessionName = session.NameFor(directory, projectRoot)
+		opts.SessionName = sessionName
 		opts.Layout = session.LayoutFull
 	}
 

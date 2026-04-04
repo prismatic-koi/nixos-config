@@ -29,6 +29,10 @@ type Opts struct {
 	OpencodeSession string
 	// Layout controls which window layout to set up on creation.
 	Layout Layout
+	// SessionName is the canonical prism session name. When set, it is passed
+	// to opencode via the PRISM_SESSION_NAME environment variable so the plugin
+	// can skip its own session-name derivation.
+	SessionName string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -64,6 +68,9 @@ func DefaultAgent(directory, explicit string) string {
 }
 
 // BuildOpencodeCmd returns the opencode launch command string for the given opts.
+// When opts.SessionName is set, the returned string is prefixed with
+// PRISM_SESSION_NAME=<name> so that the opencode plugin can read the canonical
+// session name without having to re-derive it from the filesystem.
 func BuildOpencodeCmd(opts Opts) string {
 	agent := opts.Agent
 	if agent == "" {
@@ -75,6 +82,9 @@ func BuildOpencodeCmd(opts Opts) string {
 	}
 	if opts.Prompt != "" {
 		cmd += " --prompt " + shellQuote(opts.Prompt)
+	}
+	if opts.SessionName != "" {
+		cmd = "PRISM_SESSION_NAME=" + shellQuote(opts.SessionName) + " " + cmd
 	}
 	return cmd
 }
@@ -124,6 +134,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
 	_ = tmux.NewWindow(name, 1, "agent", directory)
+	// opts.SessionName must be set by the caller before setupFullLayout is
+	// invoked — both ensureAndSwitch and restoreProjectSession do this.
+	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	_ = tmux.SendKeys(name+":1", BuildOpencodeCmd(opts))
 
 	self, selfErr := os.Executable()
