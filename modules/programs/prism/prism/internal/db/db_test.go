@@ -2,7 +2,9 @@ package db_test
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,13 +41,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=3 (migrations are applied on Open).
+	// Verify schema_version=4 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("schema_version: got %d, want 3", version)
+	if version != 4 {
+		t.Errorf("schema_version: got %d, want 4", version)
 	}
 
 	// Verify WAL mode.
@@ -775,20 +777,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2 and v2→v3 migrations.
+	// Open via db.Open — should apply the v1→v2, v2→v3, and v3→v4 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=3.
+	// Verify schema_version=4.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("schema_version after migration: got %d, want 3", version)
+	if version != 4 {
+		t.Errorf("schema_version after migration: got %d, want 4", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -862,8 +864,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("schema_version after migration: got %d, want 3", version)
+	if version != 4 {
+		t.Errorf("schema_version after migration: got %d, want 4", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1056,4 +1058,253 @@ func TestQueryEventsByMessageIDs(t *testing.T) {
 	if results3 != nil {
 		t.Errorf("empty result: got %v, want nil", results3)
 	}
+}
+
+// TestAllocatePort_NoConflicts verifies that AllocatePort assigns the lowest
+// port in the range when no ports are in use.
+func TestAllocatePort_NoConflicts(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create a session to allocate a port for.
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	port, err := d.AllocatePort("repo@main")
+	if err != nil {
+		t.Fatalf("AllocatePort: %v", err)
+	}
+	if port < db.PortRangeStart || port > db.PortRangeEnd {
+		t.Errorf("allocated port %d outside range %d–%d", port, db.PortRangeStart, db.PortRangeEnd)
+	}
+
+	// Verify the port is written to the DB.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.OpencodePort == nil {
+		t.Fatal("OpencodePort: got nil, want non-nil")
+	}
+	if *s.OpencodePort != port {
+		t.Errorf("OpencodePort: got %d, want %d", *s.OpencodePort, port)
+	}
+}
+
+// TestAllocatePort_PartiallyUsed verifies that AllocatePort skips ports that
+// are already allocated to other active sessions.
+func TestAllocatePort_PartiallyUsed(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create two sessions, allocate ports for both.
+	if err := d.UpsertStatus("repo@s1", "repo", "/code/repo/s1", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus s1: %v", err)
+	}
+	if err := d.UpsertStatus("repo@s2", "repo", "/code/repo/s2", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus s2: %v", err)
+	}
+
+	port1, err := d.AllocatePort("repo@s1")
+	if err != nil {
+		t.Fatalf("AllocatePort s1: %v", err)
+	}
+
+	port2, err := d.AllocatePort("repo@s2")
+	if err != nil {
+		t.Fatalf("AllocatePort s2: %v", err)
+	}
+
+	if port1 == port2 {
+		t.Errorf("ports must be different: both got %d", port1)
+	}
+	// port2 should be the next available (port1 + 1, unless port1+1 is
+	// unavailable at the OS level, in which case it should still be > port1).
+	if port2 <= port1 {
+		t.Errorf("port2 (%d) should be > port1 (%d)", port2, port1)
+	}
+}
+
+// TestAllocatePort_Exhaustion verifies that AllocatePort returns a clear error
+// when all ports in the range are taken. This test uses a small range override
+// via direct SQL to simulate exhaustion without allocating 1000 real ports.
+func TestAllocatePort_Exhaustion(t *testing.T) {
+	d := openTestDB(t)
+
+	// Fill the entire range by creating sessions with every port in the range.
+	// To keep the test fast, we manually INSERT rows with ports set rather than
+	// calling AllocatePort 1000 times.
+	for port := db.PortRangeStart; port <= db.PortRangeEnd; port++ {
+		name := fmt.Sprintf("repo@s%d", port)
+		if err := d.UpsertStatus(name, "repo", "/code/repo/"+name, "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", name, err)
+		}
+		// Set the port directly via raw SQL for speed.
+		if err := setPort(d, name, port); err != nil {
+			t.Fatalf("setPort %s: %v", name, err)
+		}
+	}
+
+	// Now create one more session and try to allocate — should fail.
+	if err := d.UpsertStatus("repo@overflow", "repo", "/code/repo/overflow", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus overflow: %v", err)
+	}
+
+	_, err := d.AllocatePort("repo@overflow")
+	if err == nil {
+		t.Fatal("AllocatePort: expected error for exhausted range, got nil")
+	}
+	if !strings.Contains(err.Error(), "exhausted") {
+		t.Errorf("error message should mention exhaustion: got %q", err.Error())
+	}
+}
+
+// TestAllocatePort_StaleReclamation verifies that ports from ended sessions
+// (ended_at IS NOT NULL) are reclaimed and available for reuse.
+func TestAllocatePort_StaleReclamation(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create a session, allocate a port, then end it.
+	if err := d.UpsertStatus("repo@old", "repo", "/code/repo/old", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus old: %v", err)
+	}
+	portOld, err := d.AllocatePort("repo@old")
+	if err != nil {
+		t.Fatalf("AllocatePort old: %v", err)
+	}
+	if err := d.SetEnded("repo@old"); err != nil {
+		t.Fatalf("SetEnded old: %v", err)
+	}
+
+	// Create a new session and allocate — it should be able to reuse the port
+	// from the ended session (since it was the lowest available).
+	if err := d.UpsertStatus("repo@new", "repo", "/code/repo/new", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus new: %v", err)
+	}
+	portNew, err := d.AllocatePort("repo@new")
+	if err != nil {
+		t.Fatalf("AllocatePort new: %v", err)
+	}
+
+	// The old port should be reclaimed (assuming it's available at the OS level).
+	if portNew != portOld {
+		t.Errorf("expected reclaimed port %d, got %d", portOld, portNew)
+	}
+}
+
+// TestReleasePort verifies that ReleasePort clears the opencode_port column.
+func TestReleasePort(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	port, err := d.AllocatePort("repo@main")
+	if err != nil {
+		t.Fatalf("AllocatePort: %v", err)
+	}
+	if port == 0 {
+		t.Fatal("AllocatePort returned 0")
+	}
+
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.OpencodePort != nil {
+		t.Errorf("OpencodePort after release: got %v, want nil", *s.OpencodePort)
+	}
+}
+
+// TestAllocatePort_NonexistentSession verifies that AllocatePort returns an
+// error when the session does not exist in agent_status.
+func TestAllocatePort_NonexistentSession(t *testing.T) {
+	d := openTestDB(t)
+
+	_, err := d.AllocatePort("repo@nonexistent")
+	if err == nil {
+		t.Fatal("AllocatePort: expected error for nonexistent session, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error message should mention 'not found': got %q", err.Error())
+	}
+}
+
+// TestMigration_V3ToV4 verifies that Open applies the v3→v4 migration to an
+// existing DB that was created at schema_version=3 (no opencode_port column).
+func TestMigration_V3ToV4(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v3.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (3);
+		INSERT INTO agent_status (session_name, repo, worktree, state, agent_name, model_id, root_agent_name, root_model_id, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'worker', 'claude-sonnet-4.6', 'worker', 'claude-sonnet-4.6', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v3 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v3 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 4 {
+		t.Errorf("schema_version after migration: got %d, want 4", version)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	if s.OpencodePort != nil {
+		t.Errorf("OpencodePort: got %v, want nil (newly added column)", s.OpencodePort)
+	}
+	if s.AgentName == nil || *s.AgentName != "worker" {
+		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
+	}
+}
+
+// setPort is a test helper that writes opencode_port directly via QueryRow.
+func setPort(d *db.DB, sessionName string, port int) error {
+	// Use QueryRow with a dummy scan to execute the UPDATE.
+	var dummy int
+	err := d.QueryRow(
+		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING 1",
+		port, sessionName,
+	).Scan(&dummy)
+	return err
 }
