@@ -74,10 +74,7 @@ func newTmuxServer(t *testing.T) *tmuxServer {
 	t.Helper()
 	bin := requireTmux(t)
 
-	b := make([]byte, 8)
-	if _, err := exec.Command("dd", "if=/dev/urandom", "bs=8", "count=1").Output(); err != nil {
-		// Fallback: use pid + nanoseconds for uniqueness.
-	}
+	// pid + nanoseconds gives sufficient uniqueness across parallel test runs.
 	socket := fmt.Sprintf("prism-integ-%d-%d", os.Getpid(), time.Now().UnixNano())
 	s := &tmuxServer{socket: socket, bin: bin}
 
@@ -88,7 +85,6 @@ func newTmuxServer(t *testing.T) *tmuxServer {
 	t.Cleanup(func() {
 		_ = exec.Command(bin, "-L", socket, "kill-server").Run()
 	})
-	_ = b // suppress unused warning
 	return s
 }
 
@@ -154,32 +150,6 @@ func withTmuxServer(t *testing.T, s *tmuxServer) {
 	}
 	tmux.TmuxBin = wrapperPath
 	t.Cleanup(func() { tmux.TmuxBin = orig })
-}
-
-// makeBareWorktree creates a minimal bare+worktree directory structure under
-// dir so that deriveRepo() can walk up and find the .bare marker.
-//
-// Layout:
-//
-//	<dir>/
-//	  <repo>.git/
-//	    .bare          ← marker file
-//	  main/            ← worktree directory
-//
-// Returns the worktree path and the repo name.
-func makeBareWorktree(t *testing.T, dir, repoName string) (worktreePath, repo string) {
-	t.Helper()
-	bareDir := filepath.Join(dir, repoName+".git")
-	worktreePath = filepath.Join(bareDir, "main")
-	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
-		t.Fatalf("makeBareWorktree: mkdir: %v", err)
-	}
-	// Create .bare marker file.
-	if err := os.WriteFile(filepath.Join(bareDir, ".bare"), []byte(""), 0o644); err != nil {
-		t.Fatalf("makeBareWorktree: write .bare: %v", err)
-	}
-	repo = repoName
-	return worktreePath, repo
 }
 
 // runPaneDied invokes the pane-died logic directly via the DB methods, mirroring
@@ -670,11 +640,21 @@ func TestConcurrentStateWrites_MultipleGoroutines(t *testing.T) {
 
 // ─── tmux integration tests (require tmux binary) ─────────────────────────────
 
-// TestSessionCreate_LayoutFull verifies that session.Create() with LayoutFull
-// creates three windows with the correct names: edit, agent, term.
+// TestTmuxHarness_ThreeWindowLayout verifies that a tmux session created via
+// the test harness (mirroring what setupFullLayout in session.go does) has
+// three windows with the correct names: edit, agent, term.
+//
+// This test also verifies that session.Create() with LayoutBare creates and
+// recognises sessions correctly — including that a second Create call on an
+// existing session is a no-op.
+//
+// NOTE: session.Create() with LayoutFull cannot be called directly in tests
+// because it invokes os.Executable() to spawn `prism event tmux-session-start`,
+// which is not available in the test binary. The three-window layout is therefore
+// exercised by replicating setupFullLayout's tmux commands via the harness.
 //
 // NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
-func TestSessionCreate_LayoutFull(t *testing.T) {
+func TestTmuxHarness_ThreeWindowLayout(t *testing.T) {
 	s := newTmuxServer(t)
 	withTmuxServer(t, s)
 
