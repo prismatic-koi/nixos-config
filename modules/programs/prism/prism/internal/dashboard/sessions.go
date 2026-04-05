@@ -240,14 +240,15 @@ func RenderSessionRow(
 
 	// When a portLabel is present, reserve its width (plus one space separator)
 	// from the title budget so the title still fits within titleW.
-	// If there isn't enough room for the port label, hide it rather than overflow.
+	// Only show the port label if at least 5 characters remain for the title
+	// after the reservation; otherwise suppress it to avoid overflow.
 	titleAvail := titleW
 	if portLabel != "" && titleAvail >= 5 {
 		reserved := utf8.RuneCountInString(portLabel) + 1 // +1 for the separating space
-		if titleAvail-reserved >= 0 {
+		if titleAvail-reserved >= 5 {
 			titleAvail -= reserved
 		} else {
-			// Not enough room for the port label; suppress it.
+			// Not enough room for the port label and a usable title; suppress it.
 			portLabel = ""
 		}
 	}
