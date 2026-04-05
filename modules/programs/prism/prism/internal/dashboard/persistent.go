@@ -123,14 +123,11 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// session and return to passive watch mode. The process does NOT
 				// quit — the dashboard stays alive for the next visitor.
 				selected := m.Displayed[m.Cursor]
-				client := m.Client
-				if client == "" {
-					// Belt-and-suspenders: FocusMsg may not have fired yet
-					// (e.g. focus reporting disabled); query inline.
-					client, _ = tmux.CurrentClient()
-				}
 				m.CursorActive = false
 				return m, func() tea.Msg {
+					// Always query the current client at switch time (see
+					// Enter handler comment for rationale).
+					client, _ := CurrentClientFunc()
 					if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 						return DashStatusMsg(errMsg)
 					}
@@ -148,14 +145,12 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// watch mode). Using -l avoids any stale caller state — it always
 			// returns to wherever the client was before it switched here.
 			// The process does NOT quit — the session stays alive.
-			client := m.Client
-			if client == "" {
-				// Belt-and-suspenders: FocusMsg may not have fired yet;
-				// query the current client inline as a fallback.
-				client, _ = tmux.CurrentClient()
-			}
+			//
+			// Always query the current client at switch time (see Enter handler
+			// comment for rationale).
 			m.CursorActive = false
 			return m, func() tea.Msg {
+				client, _ := CurrentClientFunc()
 				if client != "" {
 					_ = tmux.SwitchClientLast(client)
 				}
@@ -204,16 +199,16 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.Displayed[m.Cursor]
-			client := m.Client
-			if client == "" {
-				// Belt-and-suspenders: FocusMsg may not have fired yet;
-				// query the current client inline as a fallback.
-				client, _ = tmux.CurrentClient()
-			}
 			m.CursorActive = false
 			return m, func() tea.Msg {
-				// Switch the viewing client to the selected session, then return
-				// to passive watch mode. The TUI stays alive.
+				// Always query the current client at switch time rather than
+				// using the cached m.Client. The persistent dashboard is a
+				// single process serving all visitors; m.Client tracks the
+				// last client to trigger FocusMsg, which may differ from the
+				// client that actually pressed Enter. tmux's "current client"
+				// for the dashboard pane is the one that most recently sent
+				// input — i.e. the client that pressed Enter.
+				client, _ := CurrentClientFunc()
 				if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
 					return DashStatusMsg(errMsg)
 				}
@@ -240,7 +235,7 @@ func (m PersistentModel) View() string {
 // Returns a FocusClientMsg. Called as a tea.Cmd from the FocusMsg handler in
 // PersistentModel so the I/O runs off the main update loop.
 func fetchCurrentClient() tea.Msg {
-	client, _ := tmux.CurrentClient()
+	client, _ := CurrentClientFunc()
 	// Also fetch the session the client came from so the "you are here" ◆
 	// indicator can be shown for the visiting client.
 	var currentSession string
