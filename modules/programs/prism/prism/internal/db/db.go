@@ -522,13 +522,23 @@ func (d *DB) AllocatePort(sessionName string) (int, error) {
 }
 
 // ReleasePort sets opencode_port = NULL for the given session.
+// Returns an error if the session does not exist in agent_status.
+// Calling ReleasePort on a session whose opencode_port is already NULL is
+// idempotent and returns nil.
 func (d *DB) ReleasePort(sessionName string) error {
-	_, err := d.conn.Exec(
+	res, err := d.conn.Exec(
 		"UPDATE agent_status SET opencode_port = NULL WHERE session_name = ?",
 		sessionName,
 	)
 	if err != nil {
 		return fmt.Errorf("db: release port: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: release port: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("db: release port: session %q not found in agent_status", sessionName)
 	}
 	return nil
 }

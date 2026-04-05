@@ -212,7 +212,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		_ = tmux.KillSession(m.session)
 		killSidecar(m.session)
 		if d, err := openDB(); err == nil {
-			_ = d.ReleasePort(m.session)
+			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
+			}
 			_ = d.SetEnded(m.session)
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
@@ -447,7 +449,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	_ = tmux.KillSession(session)
 	killSidecar(session)
 	if d, err := openDB(); err == nil {
-		_ = d.ReleasePort(session)
+		if releaseErr := d.ReleasePort(session); releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
+		}
 		_ = d.SetEnded(session)
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -481,6 +485,9 @@ func closeSession(session string) error {
 	_ = tmux.KillSession(session)
 	killSidecar(session)
 	if d, err := openDB(); err == nil {
+		if releaseErr := d.ReleasePort(session); releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
+		}
 		_ = d.SetEnded(session)
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -513,6 +520,9 @@ func headlessCloseSession(session string) error {
 	_ = tmux.KillSession(session)
 	killSidecar(session)
 	if d, err := openDB(); err == nil {
+		if releaseErr := d.ReleasePort(session); releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
+		}
 		_ = d.SetEnded(session)
 		_ = d.PurgeBusMessages(session)
 		d.Close()

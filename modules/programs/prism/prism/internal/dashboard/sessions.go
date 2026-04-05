@@ -15,13 +15,14 @@ import (
 // db.Status (the authoritative source) with client attachment count added from
 // a tmux query.
 type AgentSession struct {
-	Name        string
-	AgentState  string // active | waiting | finished | compacting | error | idle | ""
-	AgentPath   string // worktree path — used for git diff stats
-	AgentTitle  string // current session title from agent_status.title
-	AgentName   string // coordinator | worker | "" — from agent_status.agent_name
-	ModelID     string // model identifier from agent_status.model_id
-	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
+	Name         string
+	AgentState   string // active | waiting | finished | compacting | error | idle | ""
+	AgentPath    string // worktree path — used for git diff stats
+	AgentTitle   string // current session title from agent_status.title
+	AgentName    string // coordinator | worker | "" — from agent_status.agent_name
+	ModelID      string // model identifier from agent_status.model_id
+	OpencodePort *int   // allocated port from agent_status.opencode_port, nil when unset
+	ClientCount  int    // tmux clients currently attached (best-effort, 0 on error)
 }
 
 // StatusToAgentSession converts a db.Status into an AgentSession.
@@ -40,13 +41,14 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 		modelID = *s.ModelID
 	}
 	return AgentSession{
-		Name:        s.SessionName,
-		AgentState:  s.State,
-		AgentPath:   s.Worktree,
-		AgentTitle:  title,
-		AgentName:   agentName,
-		ModelID:     modelID,
-		ClientCount: clientCounts[s.SessionName],
+		Name:         s.SessionName,
+		AgentState:   s.State,
+		AgentPath:    s.Worktree,
+		AgentTitle:   title,
+		AgentName:    agentName,
+		ModelID:      modelID,
+		OpencodePort: s.OpencodePort,
+		ClientCount:  clientCounts[s.SessionName],
 	}
 }
 
@@ -228,8 +230,26 @@ func RenderSessionRow(
 	}
 
 	title := s.AgentTitle
-	if titleW >= 5 && utf8.RuneCountInString(title) > titleW {
-		title = string([]rune(title)[:titleW-1]) + "…"
+
+	// portLabel is the compact port display shown when a port is allocated.
+	// It is rendered at the start of the title column, before the title text.
+	portLabel := ""
+	if s.OpencodePort != nil {
+		portLabel = fmt.Sprintf(":%d", *s.OpencodePort)
+	}
+
+	// When a portLabel is present, reserve its width (plus one space separator)
+	// from the title budget so the title still fits within titleW.
+	titleAvail := titleW
+	if portLabel != "" && titleAvail >= 5 {
+		reserved := utf8.RuneCountInString(portLabel) + 1 // +1 for the separating space
+		titleAvail -= reserved
+		if titleAvail < 0 {
+			titleAvail = 0
+		}
+	}
+	if titleAvail >= 5 && utf8.RuneCountInString(title) > titleAvail {
+		title = string([]rune(title)[:titleAvail-1]) + "…"
 	}
 
 	if isSelected && cursorActive {
@@ -254,7 +274,15 @@ func RenderSessionRow(
 			plain += fmt.Sprintf("  %-*s", statW, statPlain)
 		}
 		if titleW >= 5 {
-			plain += fmt.Sprintf("  %s", title)
+			titleSection := ""
+			if portLabel != "" && title != "" {
+				titleSection = portLabel + " " + title
+			} else if portLabel != "" {
+				titleSection = portLabel
+			} else {
+				titleSection = title
+			}
+			plain += fmt.Sprintf("  %s", titleSection)
 		}
 		row := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorBg0)).
@@ -317,8 +345,14 @@ func RenderSessionRow(
 	if showStat {
 		row += styleFg.Render("  ") + statStr
 	}
-	if titleW >= 5 && title != "" {
-		row += styleDim.Render("  " + title)
+	if titleW >= 5 {
+		if portLabel != "" && title != "" {
+			row += styleDim.Render("  "+portLabel) + styleDim.Render(" "+title)
+		} else if portLabel != "" {
+			row += styleDim.Render("  " + portLabel)
+		} else if title != "" {
+			row += styleDim.Render("  " + title)
+		}
 	}
 	return row + "\n"
 }

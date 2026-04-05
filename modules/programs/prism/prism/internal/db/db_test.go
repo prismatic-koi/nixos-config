@@ -1219,6 +1219,38 @@ func TestReleasePort(t *testing.T) {
 	}
 }
 
+// TestReleasePort_NonexistentSession verifies that ReleasePort returns an error
+// when the session name does not exist in agent_status.
+func TestReleasePort_NonexistentSession(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.ReleasePort("repo@nonexistent")
+	if err == nil {
+		t.Fatal("ReleasePort: expected error for nonexistent session, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error message should mention 'not found': got %q", err.Error())
+	}
+}
+
+// TestReleasePort_Idempotent verifies that calling ReleasePort on a session
+// whose opencode_port is already NULL succeeds without error.
+func TestReleasePort_Idempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	// Port is NULL from the start — release should be a no-op (not an error).
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort on already-NULL port: %v", err)
+	}
+	// Second call should also succeed.
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort second call: %v", err)
+	}
+}
+
 // TestAllocatePort_NonexistentSession verifies that AllocatePort returns an
 // error when the session does not exist in agent_status.
 func TestAllocatePort_NonexistentSession(t *testing.T) {
