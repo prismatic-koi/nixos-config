@@ -34,7 +34,9 @@ func TestTransition_ValidPairs(t *testing.T) {
 		// Edge cases from acceptance criteria
 		{StateFinished, StateInterrupted, "non-zero exit overrides finished (pane-died)"},
 		{StateFinished, StateActive, "session resumed after prior close"},
+		{StateFinished, StateIdle, "tmux-session-start resets finished session on recreate"},
 		{StateInterrupted, StateActive, "session resumed after interruption"},
+		{StateInterrupted, StateIdle, "tmux-session-start resets interrupted session on recreate"},
 
 		// Deleted from any state
 		{StateActive, StateDeleted, "session.deleted while active"},
@@ -63,8 +65,7 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		// Terminal states may not restart unexpectedly
 		{StateDeleted, StateActive, "deleted → active"},
 		{StateDeleted, StateIdle, "deleted → idle"},
-		{StateFinished, StateIdle, "finished → idle"},
-		{StateInterrupted, StateFinished, "interrupted → finished (no idle path)"},
+		{StateInterrupted, StateFinished, "interrupted → finished (must go through active)"},
 
 		// Skip states (e.g. idle → waiting, idle → finished)
 		{StateIdle, StateWaiting, "idle → waiting (no permission before active)"},
