@@ -1,6 +1,6 @@
 package session
 
-// startSidecar launches a detached `prism sidecar` process alongside opencode.
+// StartSidecar launches a detached `prism sidecar` process alongside opencode.
 //
 // It derives the prism binary path via os.Executable, creates the log and PID
 // directories under $XDG_STATE_HOME/prism/ (falling back to

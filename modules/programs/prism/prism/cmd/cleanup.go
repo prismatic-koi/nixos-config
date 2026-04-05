@@ -299,6 +299,14 @@ func killSidecar(sessionName string) {
 	}
 
 	// Send SIGTERM; ignore ESRCH (no such process — already gone).
+	// The PID file is removed unconditionally after the kill attempt:
+	// - ESRCH means the sidecar is already gone — file is stale, remove it.
+	// - EPERM means the PID has likely been recycled and now belongs to a
+	//   different process. We do not want to retry with this PID file, so we
+	//   remove it. The wrong process is not killed (Kill returned an error).
+	// - nil means SIGTERM was delivered — remove the now-stale file.
+	// In all cases, retrying with the same file would either repeat the
+	// failure or try to kill an unrelated process.
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 		fmt.Fprintf(os.Stderr, "warning: kill sidecar pid %d: %v\n", pid, err)
 	}
