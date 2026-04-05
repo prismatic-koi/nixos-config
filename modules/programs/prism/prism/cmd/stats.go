@@ -73,8 +73,8 @@ func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	showAll, _ := cmd.Flags().GetBool("all")
 
-	if days > 0 && len(args) > 0 {
-		return fmt.Errorf("--days and a session name are mutually exclusive")
+	if days > 0 && (len(args) > 0 || showAll) {
+		return fmt.Errorf("--days is mutually exclusive with a session name and --all")
 	}
 
 	if days > 0 {

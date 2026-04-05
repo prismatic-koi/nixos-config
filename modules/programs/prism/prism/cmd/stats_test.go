@@ -507,21 +507,35 @@ func TestRunStatsSession_SubagentInvocations(t *testing.T) {
 	}
 }
 
-// TestRunStats_DaysAndSessionMutuallyExclusive verifies that passing both
-// --days and a session name returns an error regardless of other state.
-func TestRunStats_DaysAndSessionMutuallyExclusive(t *testing.T) {
+// TestRunStats_DaysMutuallyExclusive verifies that --days is mutually exclusive
+// with a session name argument and with --all.
+func TestRunStats_DaysMutuallyExclusive(t *testing.T) {
 	statsCmd.Flags().Set("days", "7") //nolint:errcheck
 	defer statsCmd.Flags().Set("days", "0")
 
+	// --days + session arg should error.
 	err := runStats(statsCmd, []string{"testrepo@main"})
 	if err == nil {
 		t.Fatal("expected error when --days and session arg are both provided, got nil")
 	}
 	if !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
+		t.Errorf("expected 'mutually exclusive' in error for --days+session, got: %v", err)
+	}
+
+	// --days + --all should also error.
+	statsCmd.Flags().Set("all", "true") //nolint:errcheck
+	defer statsCmd.Flags().Set("all", "false")
+
+	err = runStats(statsCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when --days and --all are both provided, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error for --days+--all, got: %v", err)
 	}
 }
 
+// TestCollectMetrics_PreEnrichmentEvents verifies that events without token
 // data (pre-enrichment) result in zero values rather than errors.
 func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 	d := openStatsTestDB(t)
