@@ -332,6 +332,10 @@ func TestSessionUpdated_ResumeFromInterrupted(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "interrupted", nil, nil)
+	// Simulate ended_at being set (e.g. by session.deleted or pane-died hook).
+	if err := sc.cfg.DB.SetEnded(sc.cfg.SessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
 
 	evt := makeSSE("session.updated", map[string]any{
 		"info": map[string]any{
@@ -341,9 +345,16 @@ func TestSessionUpdated_ResumeFromInterrupted(t *testing.T) {
 	})
 	sc.HandleEvent(evt)
 
-	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if state != string(agent.StateActive) {
-		t.Errorf("state = %q after resume, want %q", state, agent.StateActive)
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status.State != string(agent.StateActive) {
+		t.Errorf("state = %q after resume, want %q", status.State, agent.StateActive)
+	}
+	// ended_at must be cleared so the session appears in AllActiveStatus.
+	if status.EndedAt != nil {
+		t.Error("expected ended_at to be cleared on resume from interrupted")
 	}
 }
 
@@ -351,6 +362,10 @@ func TestSessionUpdated_ResumeFromFinished(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "finished", nil, nil)
+	// Simulate ended_at being set.
+	if err := sc.cfg.DB.SetEnded(sc.cfg.SessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
 
 	evt := makeSSE("session.updated", map[string]any{
 		"info": map[string]any{
@@ -360,9 +375,16 @@ func TestSessionUpdated_ResumeFromFinished(t *testing.T) {
 	})
 	sc.HandleEvent(evt)
 
-	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if state != string(agent.StateActive) {
-		t.Errorf("state = %q after resume from finished, want %q", state, agent.StateActive)
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status.State != string(agent.StateActive) {
+		t.Errorf("state = %q after resume from finished, want %q", status.State, agent.StateActive)
+	}
+	// ended_at must be cleared so the session appears in AllActiveStatus.
+	if status.EndedAt != nil {
+		t.Error("expected ended_at to be cleared on resume from finished")
 	}
 }
 
