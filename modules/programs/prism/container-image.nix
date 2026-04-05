@@ -11,9 +11,9 @@
   # Automatically loading the image into the VM at activation time is not
   # straightforward without assuming `podman machine` is already running,
   # so we skip the activation step on Darwin and document the manual workflow.
-  # podman.enable is required because the activation script uses the podman
-  # store path directly — if podman is not enabled there is no guarantee the
-  # store path exists at runtime.
+  # podman.enable is included in the guard so the activation script is skipped
+  # entirely when the user has explicitly disabled podman, avoiding a no-op or
+  # confusing error at switch time.
   config =
     lib.mkIf
       (config.nx.programs.prism.enable && pkgs.stdenv.isLinux && config.nx.programs.podman.enable)
@@ -138,13 +138,13 @@
           #   podman machine start && podman load < ${prismAgentImage}
           #
           # Activation scripts run in a minimal environment without the usual PATH,
-          # so podman is referenced by its full Nix store path rather than a bare
-          # command name.
+          # so both podman and sudo are referenced by their full Nix store paths
+          # rather than bare command names.
           system.activationScripts.prismAgentContainerImage = ''
             echo "prism: loading prism-agent:latest into podman (user: ${username})..." >&2
-            sudo -u ${username} ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
-            sudo -u ${username} ${pkgs.podman}/bin/podman load < ${prismAgentImage}
-            sudo -u ${username} ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
+            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
+            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman load < ${prismAgentImage}
+            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
             echo "prism: prism-agent:latest loaded successfully." >&2
           '';
         }
