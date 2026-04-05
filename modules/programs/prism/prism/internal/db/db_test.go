@@ -1353,9 +1353,19 @@ func TestClearEnded_RestoresVisibility(t *testing.T) {
 	const repo = "repo"
 	const worktree = "/code/repo/main"
 
-	// Insert initial status row (idle matches the real tmux-session-start path).
+	// Insert initial status row via the tmux-session-start path.
 	if err := d.UpsertStatus(session, repo, worktree, "idle", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus (initial): %v", err)
+		t.Fatalf("UpsertStatus (initial idle): %v", err)
+	}
+
+	// Advance through the real lifecycle: idle → active → finished.
+	// tmux-session-end fires after the session has progressed to a terminal
+	// state; skipping these steps would cause spurious state-machine warnings.
+	if err := d.UpsertStatus(session, repo, worktree, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (active): %v", err)
+	}
+	if err := d.UpsertStatus(session, repo, worktree, "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (finished): %v", err)
 	}
 
 	// Simulate tmux-session-end: mark the session as ended.
