@@ -98,6 +98,10 @@ type Sidecar struct {
 	// container is set when running in container mode.
 	// Protected by mu.
 	container *containerMgr
+	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
+	// to prevent OnReady from firing after SIGTERM even when the HTTP health
+	// probe succeeds during podman stop's grace period. Protected by mu.
+	shuttingDown bool
 
 	// rootAgent is the name of the top-level agent for this session, derived
 	// from the first msg_user event. Empty until the first user message arrives.
@@ -167,12 +171,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		log.Printf("sidecar: container %q is healthy", mgr.Name())
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
-		// Guard with ctx.Err() so OnReady is not called after SIGTERM: the signal
-		// goroutine calls Shutdown() (which stops the container and sets a flag)
-		// then cancel(). WaitHealthy returns when ctx is cancelled, so by the time
-		// we reach here after a successful health-check, ctx might already be
-		// cancelled if SIGTERM arrived while we were in WaitHealthy.
-		if ctx.Err() == nil && s.cfg.OnReady != nil {
+		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
+		// even if WaitHealthy returned a genuine 200 during podman stop's grace
+		// period. Shutdown() sets shuttingDown=true before starting podman stop,
+		// so this check is reliable regardless of ctx cancellation timing.
+		s.mu.Lock()
+		isShuttingDown := s.shuttingDown
+		s.mu.Unlock()
+		if !isShuttingDown && s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
 	}
@@ -254,6 +260,9 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 // container (if running in container mode). Called on SIGINT/SIGTERM.
 func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
+	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
+	// sees shuttingDown=true even if it races with Shutdown() (AC-16).
+	s.shuttingDown = true
 	ctr := s.container
 	s.mu.Unlock()
 
