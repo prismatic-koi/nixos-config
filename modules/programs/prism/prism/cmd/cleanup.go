@@ -7,6 +7,10 @@ package cmd
 // 3. Confirms with the user (y/n).
 // 4. Optionally offers to delete the git branch.
 // 5. Switches to scratchpad, kills the session, removes the worktree.
+//
+// For default-branch sessions (e.g. repo@main), steps 4-5 skip worktree
+// removal and branch deletion — only the tmux session is closed and the
+// DB status is marked as ended.
 
 import (
 	"fmt"
@@ -267,7 +271,7 @@ func (m cleanupModel) View() string {
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Remove the current worktree session (project@branch sessions only)",
+	Short: "Close and clean up a worktree session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		sessionFlag, _ := cmd.Flags().GetString("session")
@@ -307,8 +311,23 @@ var cleanupCmd = &cobra.Command{
 		}
 
 		defaultBr := git.DefaultBranchFromBareRoot(bareRoot)
-		if defaultBr != "" && worktreeName == defaultBr {
-			return fmt.Errorf("refusing to remove the default branch worktree '%s'\n  switch to a feature branch session first", worktreeName)
+		isDefaultBranch := defaultBr != "" && worktreeName == defaultBr
+
+		if isDefaultBranch {
+			// Default-branch sessions (e.g. repo@main): close the tmux
+			// session and mark the DB as ended, but keep the worktree
+			// and branch intact.
+			if yesFlag {
+				return headlessCloseSession(session)
+			}
+			// Interactive path: simplified confirmation (no worktree/branch prompts).
+			if os.Getenv("TMUX") == "" {
+				return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
+			}
+			if !confirm(fmt.Sprintf("Close session %s? (worktree will be kept)", session)) {
+				return nil
+			}
+			return closeSession(session)
 		}
 
 		// Non-interactive path: --yes skips all prompts and runs headlessly.
@@ -356,6 +375,69 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 
 	// Redirect only clients that are currently attached to the target session.
 	// We must not touch the orchestrator's own client.
+	if clients, err := tmux.ListClients(); err == nil {
+		for _, c := range clients {
+			if sess, err := tmux.ClientSession(c); err == nil && sess == session {
+				_ = tmux.SwitchClient(c, "scratchpad")
+			}
+		}
+	}
+
+	fmt.Printf("killing session %s\n", session)
+	_ = tmux.KillSession(session)
+	if d, err := openDB(); err == nil {
+		_ = d.SetEnded(session)
+		_ = d.PurgeBusMessages(session)
+		d.Close()
+	}
+	fmt.Println("done")
+	return nil
+}
+
+// closeSession redirects attached clients to scratchpad, kills the tmux
+// session, and marks the DB as ended. It does NOT remove the worktree or
+// delete the branch — used for default-branch sessions where the checkout
+// must remain intact.
+func closeSession(session string) error {
+	// Ensure scratchpad exists.
+	if !tmux.HasSession("scratchpad") {
+		home, _ := os.UserHomeDir()
+		_ = tmux.NewSessionDetached("scratchpad", home)
+		_ = tmux.RenameWindow("scratchpad:0", "term")
+	}
+
+	// Switch only this client to scratchpad, then kill the session.
+	client, _ := tmux.CurrentClient()
+	if client == "" {
+		client = tmux.CallerClient()
+	}
+	if client != "" {
+		_ = tmux.SwitchClient(client, "scratchpad")
+	} else {
+		_, _ = tmux.SwitchClientCurrent("scratchpad")
+	}
+	_ = tmux.KillSession(session)
+	if d, err := openDB(); err == nil {
+		_ = d.SetEnded(session)
+		_ = d.PurgeBusMessages(session)
+		d.Close()
+	}
+	return nil
+}
+
+// headlessCloseSession is the non-interactive variant of closeSession — used
+// for default-branch sessions invoked with --yes.
+func headlessCloseSession(session string) error {
+	fmt.Printf("closing session %s (worktree kept)...\n", session)
+
+	// Ensure scratchpad exists.
+	if !tmux.HasSession("scratchpad") {
+		home, _ := os.UserHomeDir()
+		_ = tmux.NewSessionDetached("scratchpad", home)
+		_ = tmux.RenameWindow("scratchpad:0", "term")
+	}
+
+	// Redirect clients attached to the target session.
 	if clients, err := tmux.ListClients(); err == nil {
 		for _, c := range clients {
 			if sess, err := tmux.ClientSession(c); err == nil && sess == session {
