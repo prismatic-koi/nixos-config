@@ -17,6 +17,10 @@ let
     color_foreground = foreground;
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
+    container_mode = true;
+    sidecar_plugin_path = "${
+      config.home-manager.users.${config.nx.username}.xdg.configHome
+    }/opencode/plugins/prism-hooks.ts";
     worktree_exclude = config.nx.programs.prism.worktreeExclude;
     project_locations = config.nx.programs.prism.projects.locations;
     project_specific = config.nx.programs.prism.projects.specific;
