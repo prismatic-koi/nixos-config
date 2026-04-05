@@ -2,6 +2,10 @@ package sidecar
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -1212,5 +1216,506 @@ func TestSessionDeleted_UpdatesDBState(t *testing.T) {
 	}
 	if status.EndedAt == nil {
 		t.Error("expected ended_at to be set")
+	}
+}
+
+// ── coordinator notification tests ──────────────────────────────────────────
+
+// newWorkerSidecar creates a worker sidecar (session name "test-repo@feature",
+// repo "test-repo") distinct from the coordinator ("test-repo@main").
+// It uses the given DB so both worker and coordinator share the same store.
+// An optional *http.Client may be passed to override the HTTP client used for
+// coordinator notifications; pass nil to use the package default.
+func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
+	t.Helper()
+	clk := newTestClock()
+	cfg := Config{
+		SessionName: "test-repo@feature",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-worktree-feature",
+		OpencodeURL: "http://localhost:14001",
+		DB:          d,
+		Clock:       clk,
+		HTTPClient:  httpClient,
+	}
+	return New(cfg), clk
+}
+
+// seedCoordinatorWithPort inserts a coordinator row with a specific known port
+// and opencode_sid using a SQL exec via db.QueryRow (for testing).
+func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid string) {
+	t.Helper()
+	coordName := repo + "@main"
+	agentName := "coordinator"
+	modelID := "anthropic/claude-sonnet-4-5"
+	if err := d.UpsertStatusWithAgent(coordName, repo, "/tmp/coord-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
+		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
+	}
+	// Set the port directly via a UPDATE … RETURNING to verify it applied.
+	var got int
+	if err := d.QueryRow(
+		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING opencode_port",
+		port, coordName,
+	).Scan(&got); err != nil {
+		t.Fatalf("seed coordinator: set port: %v", err)
+	}
+	if got != port {
+		t.Fatalf("seed coordinator: port mismatch: got %d, want %d", got, port)
+	}
+}
+
+// waitForBusMessage polls the DB for a bus message to toSession, with a short
+// timeout. Returns the first message found or nil.
+func waitForBusMessage(t *testing.T, d *db.DB, toSession string) *db.BusMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		msgs, err := d.PendingMessages(toSession, "normal")
+		if err != nil {
+			t.Fatalf("PendingMessages: %v", err)
+		}
+		if len(msgs) > 0 {
+			return &msgs[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
+}
+
+// waitForBusMessageDelivered polls the DB for a delivered bus message
+// (delivered_at IS NOT NULL) to toSession.
+func waitForBusMessageDelivered(t *testing.T, d *db.DB, toSession string) *db.BusMessage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		row := d.QueryRow(`
+SELECT id, from_session, to_session, repo, text, urgency, sent_at, delivered_at
+FROM bus_messages
+WHERE to_session = ? AND delivered_at IS NOT NULL
+ORDER BY sent_at DESC LIMIT 1`, toSession)
+		var m db.BusMessage
+		var sentAt, deliveredAt int64
+		if err := row.Scan(&m.ID, &m.FromSession, &m.ToSession, &m.Repo, &m.Text, &m.Urgency, &sentAt, &deliveredAt); err == nil {
+			return &m
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
+}
+
+func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed the coordinator with a known port and sid via a test HTTP server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Extract the port from the test server URL.
+	var srvPort int
+	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+	if err != nil {
+		// Try localhost form.
+		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port from %q: %v", srv.URL, err)
+	}
+
+	coordSID := "coord-sid-123"
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create worker sidecar with the test server's HTTP client.
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Seed worker as active.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// Trigger idle debounce → finished.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	// Verify state is finished.
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Wait for the async notification to write to bus_messages (delivered).
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered bus message to coordinator, got none")
+	}
+	if msg.FromSession != worker.cfg.SessionName {
+		t.Errorf("from_session = %q, want %q", msg.FromSession, worker.cfg.SessionName)
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_CompactedPath(t *testing.T) {
+	d := openTestDB(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var srvPort int
+	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+	if err != nil {
+		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port from %q: %v", srv.URL, err)
+	}
+
+	coordSID := "coord-sid-456"
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create worker sidecar with the test server's HTTP client.
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
+
+	// Seed worker as compacting.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+
+	// Trigger session.compacted → finished.
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Wait for async notification.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered bus message to coordinator, got none")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_NoNotificationOnInterrupted(t *testing.T) {
+	d := openTestDB(t)
+	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Seed coordinator.
+	coordSID := "coord-sid-789"
+	_ = d.UpsertStatus("test-repo@main", "test-repo", "/tmp/coord", "active", nil, &coordSID)
+
+	// Seed worker as active with a manual denial.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// permission.replied reject → sets manualDenial.
+	worker.HandleEvent(makeSSE("permission.replied", map[string]any{"reply": "reject"}))
+
+	// session.idle → debounce timer.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+
+	// Fire → should write interrupted (not finished), so no coordinator notification.
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "interrupted" {
+		t.Errorf("worker state = %q, want interrupted", state)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written.
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages on interrupted, got %d", totalMsgs)
+	}
+}
+
+func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
+	// Use a coordinator sidecar (session name matches "<repo>@main").
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-coord-worktree",
+		OpencodeURL: "http://localhost:14000",
+		DB:          d,
+		Clock:       clk,
+	}
+	coordinator := New(cfg)
+
+	_ = d.UpsertStatus(coordinator.cfg.SessionName, coordinator.cfg.Repo, coordinator.cfg.Worktree, "active", nil, nil)
+
+	// Trigger idle debounce → finished.
+	coordinator.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, coordinator.cfg.SessionName); state != "finished" {
+		t.Errorf("coordinator state = %q, want finished", state)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written (self-notification skipped).
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages for self-notification, got %d", totalMsgs)
+	}
+}
+
+func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
+	d := openTestDB(t)
+
+	// Record HTTP requests to verify the body.
+	var (
+		bodyMu       sync.Mutex
+		receivedBody []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyMu.Lock()
+		receivedBody = body
+		bodyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var srvPort int
+	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+	if err != nil {
+		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	coordSID := "coord-sid-audit"
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create worker sidecar with the test server's HTTP client.
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Wait for delivered bus message (audit trail).
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered audit bus message")
+	}
+
+	// Verify no undelivered message was written.
+	undelivered, err := d.PendingMessages("test-repo@main", "normal")
+	if err != nil {
+		t.Fatalf("PendingMessages: %v", err)
+	}
+	if len(undelivered) != 0 {
+		t.Errorf("expected no undelivered messages after HTTP success, got %d", len(undelivered))
+	}
+
+	// Verify the HTTP body contained the notification text.
+	// waitForBusMessageDelivered ensures the HTTP call completed before we get here.
+	bodyMu.Lock()
+	captured := make([]byte, len(receivedBody))
+	copy(captured, receivedBody)
+	bodyMu.Unlock()
+
+	if len(captured) == 0 {
+		t.Fatal("expected HTTP request body to be captured, got empty")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("unmarshal HTTP body: %v", err)
+	}
+	parts, _ := body["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("expected parts in HTTP body")
+	}
+	part, _ := parts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	wantText := "Agent test-repo@feature has finished its current task"
+	if text != wantText {
+		t.Errorf("HTTP body text = %q, want %q", text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
+	d := openTestDB(t)
+
+	// Use a server that returns an error status.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	var srvPort int
+	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+	if err != nil {
+		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+
+	coordSID := "coord-sid-fallback"
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create worker sidecar with the test server's HTTP client (returns 500).
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Wait for fallback bus message (undelivered).
+	msg := waitForBusMessage(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected fallback bus message after HTTP failure")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
+	d := openTestDB(t)
+	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Do NOT seed a coordinator row.
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Give a brief window.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should exist (delivered or undelivered).
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages when no coordinator, got %d", totalMsgs)
+	}
+}
+
+func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
+	d := openTestDB(t)
+	worker, _ := newWorkerSidecar(t, d, nil)
+
+	// Seed coordinator with a port but no opencode_sid.
+	coordName := "test-repo@main"
+	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, nil); err != nil {
+		t.Fatalf("seed coordinator: UpsertStatus: %v", err)
+	}
+	// Set port but leave opencode_sid = NULL.
+	var gotPort int
+	if err := d.QueryRow(
+		"UPDATE agent_status SET opencode_port = 19999 WHERE session_name = ? RETURNING opencode_port",
+		coordName,
+	).Scan(&gotPort); err != nil {
+		t.Fatalf("set port: %v", err)
+	}
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Should fall back to undelivered bus message since opencode_sid is nil.
+	msg := waitForBusMessage(t, d, coordName)
+	if msg == nil {
+		t.Fatal("expected fallback bus message when coordinator has port but no sid")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
+	d := openTestDB(t)
+	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Seed coordinator row, then mark it as ended.
+	coordName := "test-repo@main"
+	coordSID := "coord-sid-ended"
+	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, &coordSID); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	if err := d.SetEnded(coordName); err != nil {
+		t.Fatalf("SetEnded coordinator: %v", err)
+	}
+
+	// Seed worker as active.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// Trigger idle debounce → finished.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written — coordinator has ended.
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", coordName).Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages when coordinator has ended, got %d", totalMsgs)
 	}
 }

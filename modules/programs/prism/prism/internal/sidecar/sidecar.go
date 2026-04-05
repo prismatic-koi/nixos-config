@@ -9,12 +9,15 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +27,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
+
+// defaultNotifyHTTPClient is the HTTP client used for coordinator notification
+// delivery when Config.HTTPClient is nil.
+var defaultNotifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // IdleDebounce is the duration to wait after session.idle before committing
 // the finished state. Cancelled if session.status busy fires in the window.
@@ -57,6 +64,9 @@ type Config struct {
 	OpencodeURL string
 	DB          *db.DB
 	Clock       Clock
+	// HTTPClient is the HTTP client used for coordinator notification delivery.
+	// If nil, defaultNotifyHTTPClient is used.
+	HTTPClient *http.Client
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -78,6 +88,9 @@ type Sidecar struct {
 func New(cfg Config) *Sidecar {
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock()
+	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
 	return &Sidecar{
 		cfg:             cfg,
@@ -216,6 +229,7 @@ func (s *Sidecar) handleSessionIdle() {
 
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
+		go s.notifyCoordinator()
 	})
 }
 
@@ -346,6 +360,7 @@ func (s *Sidecar) handleSessionCompacted() {
 	s.upsertState(agent.StateFinished, nil, nil)
 	s.writeStateChange(agent.StateFinished)
 	s.writeEvent("compaction", map[string]string{"note": "compaction complete"}, nil)
+	go s.notifyCoordinator()
 }
 
 func (s *Sidecar) handleSessionDeleted(evt sse.Event) {
@@ -691,6 +706,142 @@ func touchDashboardSentinel() {
 			_ = f.Close()
 		}
 	}
+}
+
+// notifyCoordinator sends a "finished" notification to the coordinator session
+// for this repo. It is called asynchronously (via go) after writing
+// StateFinished, so s.mu must NOT be held when this method runs.
+//
+// The coordinator is discovered by looking up "<repo>@main" in the DB. If the
+// coordinator has an opencode_port and opencode_sid, the notification is
+// delivered via HTTP POST to /session/<sid>/prompt_async. On success, an audit
+// row is written via WriteBusMessageDelivered. If the coordinator has no port
+// or the HTTP call fails, the notification falls back to WriteBusMessage
+// (undelivered, for plugin polling).
+//
+// If no coordinator exists, it has ended, or this session IS the coordinator,
+// the call is a silent no-op.
+func (s *Sidecar) notifyCoordinator() {
+	// Self-notification guard: if this session is the coordinator, skip.
+	coordinatorName := s.cfg.Repo + "@main"
+	if s.cfg.SessionName == coordinatorName {
+		return
+	}
+
+	// Look up coordinator status.
+	coordStatus, err := s.cfg.DB.CurrentStatus(coordinatorName)
+	if err != nil {
+		log.Printf("sidecar: notifyCoordinator: look up coordinator: %v", err)
+		return
+	}
+	if coordStatus == nil {
+		// No coordinator session — silent skip.
+		return
+	}
+	if coordStatus.EndedAt != nil {
+		// Coordinator has ended — silent skip.
+		return
+	}
+
+	notifyText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
+
+	msg := db.BusMessage{
+		ID:          uuid.New().String(),
+		FromSession: s.cfg.SessionName,
+		ToSession:   coordinatorName,
+		Repo:        s.cfg.Repo,
+		Text:        notifyText,
+		Urgency:     "normal",
+		SentAt:      time.Now(),
+	}
+
+	// Try HTTP delivery if coordinator has port and session ID.
+	if coordStatus.OpencodePort != nil && coordStatus.OpencodeSID != nil {
+		httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus, s.cfg.HTTPClient)
+		if httpErr == nil {
+			// HTTP succeeded — write audit trail with delivered_at set.
+			if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
+				log.Printf("sidecar: notifyCoordinator: write audit bus message: %v", err)
+			}
+			return
+		}
+		// HTTP failed — log and fall through to bus_messages fallback.
+		log.Printf("sidecar: notifyCoordinator: HTTP delivery failed, falling back to bus: %v", httpErr)
+	}
+
+	// Fallback: write to bus_messages for plugin-based delivery.
+	if err := s.cfg.DB.WriteBusMessage(msg); err != nil {
+		log.Printf("sidecar: notifyCoordinator: write bus message: %v", err)
+	}
+}
+
+// deliverNotificationViaHTTP sends a notification prompt to the opencode HTTP API.
+func deliverNotificationViaHTTP(port int, opencodeSID string, text string, status *db.Status, httpClient *http.Client) error {
+	body := buildNotifyPromptBody(text, status)
+	jsonBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal prompt body: %w", err)
+	}
+
+	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, opencodeSID)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// buildNotifyPromptBody constructs the request body for the coordinator
+// notification prompt_async call. When root_agent_name and root_model_id are
+// known, they are included so the session continues using its root agent/model.
+// Falls back to agent_name/model_id for sessions created before the root fields
+// migration. Mirrors the buildPromptBody logic in cmd/prompt.go.
+func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
+	body := map[string]any{
+		"parts": []map[string]string{
+			{"type": "text", "text": text},
+		},
+	}
+
+	agentName := status.RootAgentName
+	if agentName == nil {
+		agentName = status.AgentName
+	}
+	modelID := status.RootModelID
+	if modelID == nil {
+		modelID = status.ModelID
+	}
+
+	if agentName != nil && modelID != nil {
+		body["agent"] = *agentName
+
+		// Split model_id on the first "/" to get providerID and modelID.
+		slashIdx := strings.Index(*modelID, "/")
+		providerID := *modelID
+		modelIDStr := ""
+		if slashIdx >= 0 {
+			providerID = (*modelID)[:slashIdx]
+			modelIDStr = (*modelID)[slashIdx+1:]
+		}
+		body["model"] = map[string]string{
+			"providerID": providerID,
+			"modelID":    modelIDStr,
+		}
+	}
+
+	return body
 }
 
 func strPtr(s string) *string {
