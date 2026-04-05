@@ -38,7 +38,7 @@ import (
 // TestMain intercepts re-invocations of the test binary used as a stub sidecar.
 // When PRISM_CMD_TEST_STUB=1 the binary sleeps for 60 seconds (simulating a
 // long-running sidecar), then exits. The sleep is interruptible by SIGTERM,
-// which is exactly what killSidecar sends.
+// which is exactly what KillSidecar sends.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
@@ -122,7 +122,7 @@ func startStubProcess(t *testing.T) (pid int, cleanup func()) {
 	}
 }
 
-// TestKillSidecar_NormalOperation verifies that killSidecar sends SIGTERM to a
+// TestKillSidecar_NormalOperation verifies that KillSidecar sends SIGTERM to a
 // running process and removes the PID file.
 func TestKillSidecar_NormalOperation(t *testing.T) {
 	pid, cleanupProc := startStubProcess(t)
@@ -164,7 +164,7 @@ func TestKillSidecar_NormalOperation(t *testing.T) {
 	}
 }
 
-// TestKillSidecar_StalePID verifies that killSidecar handles a PID that no
+// TestKillSidecar_StalePID verifies that KillSidecar handles a PID that no
 // longer exists (ESRCH) gracefully — it removes the stale PID file and does
 // not panic.
 func TestKillSidecar_StalePID(t *testing.T) {
@@ -193,7 +193,7 @@ func TestKillSidecar_StalePID(t *testing.T) {
 	}
 }
 
-// TestKillSidecar_MissingPIDFile verifies that killSidecar returns silently
+// TestKillSidecar_MissingPIDFile verifies that KillSidecar returns silently
 // when no PID file is present.
 func TestKillSidecar_MissingPIDFile(t *testing.T) {
 	tmp := t.TempDir()
@@ -203,7 +203,7 @@ func TestKillSidecar_MissingPIDFile(t *testing.T) {
 	prismSession.KillSidecar("testrepo@no-pid-file")
 }
 
-// TestKillSidecar_CorruptPIDFile verifies that killSidecar removes a corrupt
+// TestKillSidecar_CorruptPIDFile verifies that KillSidecar removes a corrupt
 // (non-integer) PID file without panicking.
 func TestKillSidecar_CorruptPIDFile(t *testing.T) {
 	tmp := t.TempDir()
@@ -227,7 +227,7 @@ func TestKillSidecar_CorruptPIDFile(t *testing.T) {
 }
 
 // TestKillSidecar_PIDRecycledToUnrelatedProcess verifies that when
-// /proc/<pid>/cmdline does not contain "prism", killSidecar skips the kill
+// /proc/<pid>/cmdline does not contain "prism", KillSidecar skips the kill
 // but still removes the stale PID file.
 func TestKillSidecar_PIDRecycledToUnrelatedProcess(t *testing.T) {
 	// Use the absolute path to sleep (not a symlink) so its cmdline won't
