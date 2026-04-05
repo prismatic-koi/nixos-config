@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // sidecarStateDir returns the $XDG_STATE_HOME/prism base directory.
@@ -98,6 +99,11 @@ func StartSidecar(sessionName string, port int) error {
 	cmd.Stderr = logFile
 	// No Stdin — keep the child fully detached from the terminal.
 	cmd.Stdin = nil
+	// Start the child in its own session so it is fully detached from the
+	// parent's controlling terminal and survives the spawning pane exiting.
+	// Process.Release() alone is insufficient — it only drops the Go runtime's
+	// handle to the process, but does not change the process's session/PGID.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start sidecar: %w", err)
