@@ -182,6 +182,17 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		Agent:           session.DefaultAgent(directory, ""),
 		SessionName:     s.SessionName,
 	}
+
+	// Allocate a port for the restored session. The agent_status row was
+	// refreshed above, so AllocatePort can write to it.
+	port, err := d.AllocatePort(s.SessionName)
+	if err != nil {
+		// Non-fatal: log and continue without a port.
+		fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
+	} else {
+		opts.Port = port
+	}
+
 	_ = tmux.SendKeys(s.SessionName+":1", session.BuildOpencodeCmd(opts))
 
 	// Window 2: term.

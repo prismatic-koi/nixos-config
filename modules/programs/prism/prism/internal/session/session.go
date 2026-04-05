@@ -33,6 +33,9 @@ type Opts struct {
 	// to opencode via the PRISM_SESSION_NAME environment variable so the plugin
 	// can skip its own session-name derivation.
 	SessionName string
+	// Port is the allocated opencode serve port. When non-zero, BuildOpencodeCmd
+	// includes --port <n> and --hostname 127.0.0.1 in the opencode launch command.
+	Port int
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -71,12 +74,17 @@ func DefaultAgent(directory, explicit string) string {
 // When opts.SessionName is set, the returned string is prefixed with
 // PRISM_SESSION_NAME=<name> so that the opencode plugin can read the canonical
 // session name without having to re-derive it from the filesystem.
+// When opts.Port is non-zero, --port and --hostname 127.0.0.1 are included so
+// that opencode starts its HTTP serve API on the allocated port.
 func BuildOpencodeCmd(opts Opts) string {
 	agent := opts.Agent
 	if agent == "" {
 		agent = "worker"
 	}
 	cmd := "opencode --agent " + agent
+	if opts.Port != 0 {
+		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
+	}
 	if opts.OpencodeSession != "" && !opts.Fresh {
 		cmd += " -s " + opts.OpencodeSession
 	}

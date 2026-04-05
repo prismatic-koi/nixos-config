@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,13 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	_ "modernc.org/sqlite" // register sqlite3 driver
+)
+
+const (
+	// PortRangeStart is the first port in the allocation range (inclusive).
+	PortRangeStart = 14000
+	// PortRangeEnd is the last port in the allocation range (inclusive).
+	PortRangeEnd = 14999
 )
 
 // DB wraps a SQLite connection.
@@ -57,6 +65,7 @@ type Status struct {
 	ModelID       *string
 	RootAgentName *string
 	RootModelID   *string
+	OpencodePort  *int
 	LastSeen      time.Time
 	EndedAt       *time.Time
 }
@@ -98,6 +107,7 @@ CREATE TABLE IF NOT EXISTS agent_status (
   model_id        TEXT,
   root_agent_name TEXT,
   root_model_id   TEXT,
+  opencode_port   INTEGER,
   last_seen       INTEGER NOT NULL,
   ended_at        INTEGER
 );
@@ -122,9 +132,9 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=3 if the table is empty. Pending migrations
+// schema, and sets schema_version=4 if the table is empty. Pending migrations
 // are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
-// root_agent_name/root_model_id to agent_status.
+// root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -154,15 +164,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=3 if the table is empty (fresh database already has
-	// all columns including the v2 and v3 additions, so no migration is needed).
+	// Set schema_version=4 if the table is empty (fresh database already has
+	// all columns including the v2, v3, and v4 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (3)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (4)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -200,6 +210,20 @@ func Open(path string) (*DB, error) {
 			if _, err := conn.Exec(m); err != nil {
 				conn.Close()
 				return nil, fmt.Errorf("db: migration v2→v3: %w", err)
+			}
+		}
+		version = 3
+	}
+	if version == 3 {
+		// Migration v3 → v4: add opencode_port to agent_status.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN opencode_port INTEGER",
+			"UPDATE schema_version SET version = 4",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v3→v4: %w", err)
 			}
 		}
 	}
@@ -418,6 +442,93 @@ func (d *DB) SetEnded(sessionName string) error {
 	return nil
 }
 
+// AllocatePort picks the lowest unused port from the range PortRangeStart–PortRangeEnd,
+// writes it to agent_status.opencode_port for sessionName, and returns it.
+//
+// A port is considered "in use" if it is assigned to a session whose ended_at IS NULL
+// and opencode_port IS NOT NULL. Ports assigned to ended sessions (ended_at IS NOT NULL)
+// are reclaimed and available for reuse.
+//
+// In addition to the DB check, each candidate port is probed at the OS level via
+// a brief TCP listen on 127.0.0.1:<port>. This prevents conflicts with non-prism
+// processes that happen to be using a port in the range.
+//
+// Returns an error if all ports in the range are exhausted or if the session does
+// not exist in agent_status.
+func (d *DB) AllocatePort(sessionName string) (int, error) {
+	// Collect ports currently assigned to active (non-ended) sessions.
+	rows, err := d.conn.Query(
+		"SELECT opencode_port FROM agent_status WHERE ended_at IS NULL AND opencode_port IS NOT NULL",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("db: allocate port: query used ports: %w", err)
+	}
+	usedPorts := map[int]bool{}
+	for rows.Next() {
+		var p int
+		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("db: allocate port: scan port: %w", err)
+		}
+		usedPorts[p] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("db: allocate port: iterate ports: %w", err)
+	}
+
+	// Find the lowest unused port that is also available at the OS level.
+	for port := PortRangeStart; port <= PortRangeEnd; port++ {
+		if usedPorts[port] {
+			continue
+		}
+		if !portAvailable(port) {
+			continue
+		}
+		// Write the allocated port to agent_status.
+		res, err := d.conn.Exec(
+			"UPDATE agent_status SET opencode_port = ? WHERE session_name = ?",
+			port, sessionName,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("db: allocate port: update: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("db: allocate port: rows affected: %w", err)
+		}
+		if n == 0 {
+			return 0, fmt.Errorf("db: allocate port: session %q not found in agent_status", sessionName)
+		}
+		return port, nil
+	}
+
+	return 0, fmt.Errorf("db: allocate port: all ports in range %d–%d are exhausted", PortRangeStart, PortRangeEnd)
+}
+
+// ReleasePort sets opencode_port = NULL for the given session.
+func (d *DB) ReleasePort(sessionName string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET opencode_port = NULL WHERE session_name = ?",
+		sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: release port: %w", err)
+	}
+	return nil
+}
+
+// portAvailable checks whether a TCP port is available on localhost by
+// attempting a brief listen. Returns true if the port is free.
+func portAvailable(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
 // RefreshWorktree unconditionally updates the repo and worktree columns for an
 // existing agent_status row. Unlike UpsertStatus, which only writes repo and
 // worktree on the initial INSERT, this corrects any previously-corrupted values
@@ -630,7 +741,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -647,7 +758,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -656,7 +767,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -798,10 +909,11 @@ func scanStatus(s scanner) (*Status, error) {
 	var st Status
 	var lastSeen int64
 	var endedAt sql.NullInt64
+	var port sql.NullInt64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &lastSeen, &endedAt,
+		&st.RootAgentName, &st.RootModelID, &port, &lastSeen, &endedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -810,6 +922,10 @@ func scanStatus(s scanner) (*Status, error) {
 	if endedAt.Valid {
 		t := time.UnixMilli(endedAt.Int64)
 		st.EndedAt = &t
+	}
+	if port.Valid {
+		p := int(port.Int64)
+		st.OpencodePort = &p
 	}
 	return &st, nil
 }
