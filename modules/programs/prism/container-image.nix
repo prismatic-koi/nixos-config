@@ -56,9 +56,6 @@ let
     };
   };
 
-  # Path to the built image tarball — captured at evaluation time so
-  # the activation script references it in the Nix store.
-  imagePath = prismAgentImage;
 in
 {
   # This module is imported unconditionally but its config block is wrapped
@@ -70,10 +67,11 @@ in
   config = lib.mkIf (config.nx.programs.prism.enable && pkgs.stdenv.isLinux) {
     # Load the prism-agent container image into podman on every nixos-rebuild switch.
     #
-    # Idempotency: podman load replaces an existing image with the same name:tag,
-    # so running switch twice produces no errors and no duplicate images.
-    # Old untagged layers are left in the podman store but do not interfere —
-    # run `podman image prune` to clean them up manually if desired.
+    # Idempotency: the existing tag is removed before loading so that the
+    # previous manifest never becomes a dangling/orphaned image.  If no image
+    # exists yet, `podman image rm` exits 0 via `|| true` and the load
+    # proceeds normally.  Running switch twice with no input changes is
+    # therefore a no-op: same Nix hash → same tarball → re-tag with no leftovers.
     #
     # Error handling: if podman is not on PATH (e.g. podman not enabled),
     # the script exits with a human-readable message rather than a silent no-op.
@@ -81,7 +79,7 @@ in
     # Darwin note: this activation script is Linux-only. On macOS, podman runs
     # inside a Linux VM (`podman machine`). To load the image manually after
     # a rebuild, run:
-    #   podman machine start && podman load < ${imagePath}
+    #   podman machine start && podman load < ${prismAgentImage}
     system.activationScripts.prismAgentContainerImage = ''
       if ! command -v podman >/dev/null 2>&1; then
         echo "ERROR: prism container-image activation: podman not found on PATH." >&2
@@ -89,7 +87,8 @@ in
         exit 1
       fi
       echo "prism: loading prism-agent:latest into podman..." >&2
-      podman load < ${imagePath}
+      podman image rm prism-agent:latest 2>/dev/null || true
+      podman load < ${prismAgentImage}
       echo "prism: prism-agent:latest loaded successfully." >&2
     '';
   };
