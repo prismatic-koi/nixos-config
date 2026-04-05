@@ -558,6 +558,22 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             if (wasInserted) {
               writeStateChange(STATE_ACTIVE, info.id);
             }
+            // Step 3: recover state after a process restart.
+            // The SIGTERM handler writes "interrupted" before the process exits,
+            // so when opencode resumes an existing session the DB state may be
+            // "interrupted", "error", or "finished".  Transition back to "active"
+            // so the session reflects that the agent is running again.
+            // "active", "waiting", "compacting" and other states are left alone.
+            if (!wasInserted && db && sessionName && getStatus) {
+              try {
+                const row = getStatus.get(sessionName) as { state: string } | undefined;
+                const resumedState = row?.state ?? null;
+                if (resumedState === STATE_INTERRUPTED || resumedState === STATE_ERROR || resumedState === STATE_FINISHED) {
+                  upsertAgentStatus(STATE_ACTIVE);
+                  writeStateChange(STATE_ACTIVE, info.id);
+                }
+              } catch (e) { console.error("[prism-hooks] getStatus (resume recovery) failed:", e); }
+            }
           }
           break;
         }
