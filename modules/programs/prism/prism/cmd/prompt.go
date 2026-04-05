@@ -53,23 +53,6 @@ func init() {
 	rootCmd.AddCommand(promptCmd)
 }
 
-// promptAsyncBody is the JSON structure for POST /session/:id/prompt_async.
-type promptAsyncBody struct {
-	Parts []promptPart `json:"parts"`
-	Agent string       `json:"agent,omitempty"`
-	Model *promptModel `json:"model,omitempty"`
-}
-
-type promptPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type promptModel struct {
-	ProviderID string `json:"providerID"`
-	ModelID    string `json:"modelID"`
-}
-
 func runPrompt(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
 

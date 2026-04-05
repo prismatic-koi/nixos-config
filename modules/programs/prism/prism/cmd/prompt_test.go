@@ -358,7 +358,6 @@ func TestRunPrompt_BusFallback_HTTPError(t *testing.T) {
 // TestRunPrompt_WaitingStateGuard verifies that prism prompt refuses to send
 // when the target session is in "waiting" state.
 func TestRunPrompt_WaitingStateGuard(t *testing.T) {
-	_ = openPromptTestDB(t)
 	d := openPromptTestDB(t)
 	seedSession(t, d, "repo@waiting", "waiting", nil, nil, nil, nil)
 
