@@ -152,6 +152,18 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	_ = tmux.SendKeys(name+":1", BuildOpencodeCmd(opts))
 
+	// Start the sidecar as a detached OS process when a port was allocated.
+	// If port is 0 (allocation failed) the sidecar is skipped with a warning —
+	// opencode still works, just without the SSE-driven state machine.
+	if opts.Port == 0 {
+		fmt.Fprintf(os.Stderr, "warning: sidecar skipped for %q — no port allocated\n", name)
+	} else {
+		if err := StartSidecar(name, opts.Port); err != nil {
+			// Non-fatal: log and continue. The session is created regardless.
+			fmt.Fprintf(os.Stderr, "warning: could not start sidecar for %q: %v\n", name, err)
+		}
+	}
+
 	if !opts.SkipStatusSeed {
 		self, selfErr := os.Executable()
 		if selfErr != nil {
