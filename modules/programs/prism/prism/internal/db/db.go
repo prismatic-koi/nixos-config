@@ -893,6 +893,27 @@ VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`
 	return nil
 }
 
+// WriteBusMessageDelivered inserts a new row into bus_messages with
+// delivered_at set to now. This is used for audit-trail writes when a prompt
+// was delivered via HTTP (so the plugin doesn't need to deliver it again).
+func (d *DB) WriteBusMessageDelivered(msg BusMessage) error {
+	now := time.Now().UnixMilli()
+	var sentAt int64
+	if msg.SentAt.IsZero() {
+		sentAt = now
+	} else {
+		sentAt = msg.SentAt.UnixMilli()
+	}
+	const q = `
+INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.Repo, msg.Text, msg.Urgency, sentAt, now)
+	if err != nil {
+		return fmt.Errorf("db: write bus message delivered: %w", err)
+	}
+	return nil
+}
+
 // Prune deletes agent_events older than olderThan, and delivered bus_messages
 // older than olderThan. It does NOT delete agent_status rows or undelivered
 // bus_messages.
