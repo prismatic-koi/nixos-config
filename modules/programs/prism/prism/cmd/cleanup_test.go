@@ -167,6 +167,11 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
 
+	// Redirect XDG_STATE_HOME so the prism binary uses an isolated DB and
+	// sidecar state dir instead of the production ~/.local/state/prism/ path.
+	// Must be set before newCmdTestServer starts the tmux server.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	prismBin := buildPrismBinary(t)
 
 	_, worktreePath, branchName := setupMinimalBareRepo(t)
@@ -271,6 +276,11 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
+
+	// Redirect XDG_STATE_HOME so the prism binary uses an isolated DB and
+	// sidecar state dir instead of the production ~/.local/state/prism/ path.
+	// Must be set before newCmdTestServer starts the tmux server.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	prismBin := buildPrismBinary(t)
 

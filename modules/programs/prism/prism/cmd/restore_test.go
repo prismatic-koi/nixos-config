@@ -109,6 +109,9 @@ func isEnded(t *testing.T, d *db.DB, sessionName string) bool {
 // session name and the three-window layout: edit / agent / term.
 func TestRestoreSession_BareLayout(t *testing.T) {
 	// Uses withCmdServer (mutates TmuxBin) — must not run in parallel.
+	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
+	// isolated temp dir rather than the production ~/.local/state/prism/.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -154,6 +157,9 @@ func TestRestoreSession_BareLayout(t *testing.T) {
 // as the worktree to guarantee the derivation path is never taken.
 func TestRestoreSession_NonBare(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
+	// isolated temp dir rather than the production ~/.local/state/prism/.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -203,6 +209,9 @@ func TestRestoreSession_NonBare(t *testing.T) {
 // and the correct session was never created.
 func TestRestoreSession_NameDivergence(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
+	// isolated temp dir rather than the production ~/.local/state/prism/.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -239,6 +248,7 @@ func TestRestoreSession_NameDivergence(t *testing.T) {
 // the target session already exists in tmux.
 func TestRestoreSession_Idempotent(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -287,6 +297,7 @@ func TestRestoreSession_Idempotent(t *testing.T) {
 // created as a tmux session.
 func TestRestoreSession_MissingWorktree(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -316,6 +327,7 @@ func TestRestoreSession_MissingWorktree(t *testing.T) {
 // worktree string is marked as ended in the DB rather than left as a zombie.
 func TestRestoreSession_EmptyWorktree(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -345,6 +357,9 @@ func TestRestoreSession_EmptyWorktree(t *testing.T) {
 // capture-pane and asserts the session ID appears in the captured output.
 func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
+	// isolated temp dir rather than the production ~/.local/state/prism/.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -391,6 +406,9 @@ func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 // regardless of the session name format.
 func TestRestoreSession_AllThreeWindows(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
+	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
+	// isolated temp dir rather than the production ~/.local/state/prism/.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 

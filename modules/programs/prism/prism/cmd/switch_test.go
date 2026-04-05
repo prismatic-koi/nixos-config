@@ -80,6 +80,12 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// This test mutates package-level state (TmuxBin) via withCmdServer, so it
 	// must NOT run in parallel.
 
+	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
+	// writes its DB and sidecar state to an isolated location instead of the
+	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
+	// starts the tmux server (which inherits the environment).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	prismBin := buildPrismBinary(t)
 
 	s := newCmdTestServer(t)
@@ -139,6 +145,12 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 // other.
 func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// Mutates TmuxBin via withCmdServer — must not be parallel.
+
+	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
+	// writes its DB and sidecar state to an isolated location instead of the
+	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
+	// starts the tmux server (which inherits the environment).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	prismBin := buildPrismBinary(t)
 
