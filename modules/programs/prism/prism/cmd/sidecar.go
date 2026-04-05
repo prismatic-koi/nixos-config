@@ -64,6 +64,11 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	if worktree == "" {
 		worktree, _ = os.Getwd()
 	}
+	// Resolve worktree to absolute path before passing it to the sidecar config
+	// and the initial UpsertStatus call.
+	if abs, err := filepath.Abs(worktree); err == nil {
+		worktree = abs
+	}
 
 	// Open the prism database.
 	d, err := openDB()
@@ -101,11 +106,6 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		sc.Shutdown()
 		cancel()
 	}()
-
-	// Resolve worktree to absolute path for sentinel derivation.
-	if abs, err := filepath.Abs(worktree); err == nil {
-		worktree = abs
-	}
 
 	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s\n", sessionName, opencodeURL)
 

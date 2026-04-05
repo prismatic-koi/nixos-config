@@ -132,6 +132,13 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 		s.handlePermissionAsked(evt)
 	case "permission.replied":
 		s.handlePermissionReplied(evt)
+	case "question.asked":
+		// The question tool asks the user something — treat like a permission wait.
+		s.upsertState(agent.StateWaiting, nil, nil)
+		s.writeStateChange(agent.StateWaiting)
+	case "question.replied", "question.rejected":
+		s.upsertState(agent.StateActive, nil, nil)
+		s.writeStateChange(agent.StateActive)
 	case "message.updated":
 		s.handleMessageUpdated(evt)
 	case "message.part.updated":
@@ -345,12 +352,12 @@ func (s *Sidecar) handleSessionDeleted(evt sse.Event) {
 		return
 	}
 
-	// Set ended_at.
+	// Update state to deleted and set ended_at.
+	sid := strPtr(payload.Properties.Info.ID)
+	s.upsertState(agent.StateDeleted, nil, sid)
 	if err := s.cfg.DB.SetEnded(s.cfg.SessionName); err != nil {
 		log.Printf("sidecar: SetEnded failed: %v", err)
 	}
-
-	sid := strPtr(payload.Properties.Info.ID)
 	s.writeStateChangeWithSID(agent.StateDeleted, sid)
 }
 

@@ -1107,3 +1107,68 @@ func TestSessionCompacted_CancelsIdleTimer(t *testing.T) {
 		t.Errorf("state = %q, want %q", state, agent.StateFinished)
 	}
 }
+
+func TestQuestionAsked_WritesWaiting(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	sc.HandleEvent(makeSSE("question.asked", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateWaiting) {
+		t.Errorf("state = %q, want %q", state, agent.StateWaiting)
+	}
+}
+
+func TestQuestionReplied_WritesActive(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "waiting", nil, nil)
+
+	sc.HandleEvent(makeSSE("question.replied", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q, want %q", state, agent.StateActive)
+	}
+}
+
+func TestQuestionRejected_WritesActive(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "waiting", nil, nil)
+
+	sc.HandleEvent(makeSSE("question.rejected", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q, want %q", state, agent.StateActive)
+	}
+}
+
+func TestSessionDeleted_UpdatesDBState(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	evt := makeSSE("session.deleted", map[string]any{
+		"info": map[string]string{"id": "oc-session-del-2"},
+	})
+	sc.HandleEvent(evt)
+
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected status row to exist")
+	}
+	// Verify the state column is updated to "deleted" (not just ended_at).
+	if status.State != string(agent.StateDeleted) {
+		t.Errorf("state = %q, want %q", status.State, agent.StateDeleted)
+	}
+	if status.EndedAt == nil {
+		t.Error("expected ended_at to be set")
+	}
+}
