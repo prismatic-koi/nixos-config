@@ -1438,12 +1438,13 @@ func TestNotifyCoordinator_NoNotificationOnInterrupted(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// No bus messages should have been written.
-	msgs, err := d.PendingMessages("test-repo@main", "normal")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Errorf("expected no bus messages on interrupted, got %d", len(msgs))
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages on interrupted, got %d", totalMsgs)
 	}
 }
 
@@ -1479,12 +1480,13 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// No bus messages should have been written (self-notification skipped).
-	msgs, err := d.PendingMessages("test-repo@main", "normal")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Errorf("expected no bus messages for self-notification, got %d", len(msgs))
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages for self-notification, got %d", totalMsgs)
 	}
 }
 
@@ -1630,13 +1632,13 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	// Give a brief window.
 	time.Sleep(50 * time.Millisecond)
 
-	// No bus messages should exist.
-	msgs, err := d.PendingMessages("test-repo@main", "normal")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// No bus messages should exist (delivered or undelivered).
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Errorf("expected no bus messages when no coordinator, got %d", len(msgs))
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages when no coordinator, got %d", totalMsgs)
 	}
 }
 
@@ -1708,11 +1710,12 @@ func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// No bus messages should have been written — coordinator has ended.
-	msgs, err := d.PendingMessages(coordName, "normal")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// Check both delivered and undelivered rows.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", coordName).Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	if len(msgs) != 0 {
-		t.Errorf("expected no bus messages when coordinator has ended, got %d", len(msgs))
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages when coordinator has ended, got %d", totalMsgs)
 	}
 }
