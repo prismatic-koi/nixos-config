@@ -133,14 +133,6 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		return d.SetEnded(s.SessionName)
 	}
 
-	// Guard against a race: the session may have been created externally between
-	// the HasSession check in restoreSession and here. If it now exists, skip
-	// all DB writes (RefreshWorktree, AllocatePort) to avoid corrupting the
-	// live session's agent_status row.
-	if tmux.HasSession(s.SessionName) {
-		return nil
-	}
-
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
 	// setupFullLayout from forking "prism event tmux-session-start" — we
 	// manage agent_status directly below via the open DB handle.
@@ -155,6 +147,16 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		SessionName:     s.SessionName,
 		Layout:          session.LayoutFull,
 		SkipStatusSeed:  true,
+	}
+
+	// Re-check for a race immediately before DB writes: if the session has
+	// appeared since restoreSession's outer HasSession check, skip
+	// RefreshWorktree and AllocatePort to avoid corrupting the live session's
+	// agent_status row. This is as late as we can usefully check — the
+	// remaining window (between here and tmux new-session inside Create) is
+	// unavoidable and is handled by Create's own inner guard.
+	if tmux.HasSession(s.SessionName) {
+		return nil
 	}
 
 	// Refresh agent_status and allocate a port before calling session.Create,
@@ -203,8 +205,8 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
-	// session.Create is a no-op if the session already exists (the race guard
-	// above makes this unlikely, but the inner guard in Create is a safety net).
+	// session.Create contains its own inner HasSession guard as a final safety
+	// net for the narrow race window between the check above and new-session.
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return nil
