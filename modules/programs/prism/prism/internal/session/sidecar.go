@@ -116,7 +116,11 @@ func StartSidecar(sessionName string, port int) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write sidecar PID file %s: %v\n", pidPath, err)
 	}
 
-	// Detach: release the child from our process group so it outlives us.
+	// Release the Go runtime's reference to the child process so the GC
+	// finalizer does not call waitpid on the still-running sidecar. Without
+	// this, the Go runtime would attempt to reap the child when the os.Process
+	// object is garbage collected, which would conflict with a long-lived
+	// detached process. (Setsid: true above handles the session/PGID detach.)
 	if err := cmd.Process.Release(); err != nil {
 		// This is cosmetic — the child is already running.
 		fmt.Fprintf(os.Stderr, "warning: sidecar process release: %v\n", err)

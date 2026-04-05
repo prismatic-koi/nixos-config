@@ -9,6 +9,7 @@ package session
 // variable set, it exits immediately instead of running tests.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -104,7 +105,7 @@ func TestSidecarPIDPath_CustomXDG(t *testing.T) {
 //   - returns nil (no error)
 //   - creates the log file
 //   - writes a valid PID file
-//   - the written PID matches a live process (before it exits)
+//   - the written PID corresponds to a live process (before it exits)
 //
 // The test re-uses this test binary as the sidecar stub; when invoked with
 // PRISM_TEST_SUBPROCESS=1 the binary exits after a short sleep (see TestMain).
@@ -146,6 +147,15 @@ func TestStartSidecar_LaunchesProcess(t *testing.T) {
 	}
 	if pid <= 0 {
 		t.Errorf("PID = %d, want > 0", pid)
+	}
+
+	// The written PID should correspond to a live process immediately after
+	// StartSidecar returns. The stub sleeps 50ms before exiting, so there is
+	// a window in which the process is still alive.
+	if statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err != nil {
+		t.Errorf("process pid %d not found in /proc: %v", pid, err)
+	} else if strings.Contains(string(statusData), "State:\tZ") {
+		t.Errorf("process pid %d is already a zombie immediately after start", pid)
 	}
 }
 
