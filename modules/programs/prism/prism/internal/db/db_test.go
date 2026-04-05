@@ -1353,8 +1353,8 @@ func TestClearEnded_RestoresVisibility(t *testing.T) {
 	const repo = "repo"
 	const worktree = "/code/repo/main"
 
-	// Insert initial status row.
-	if err := d.UpsertStatus(session, repo, worktree, "active", nil, nil); err != nil {
+	// Insert initial status row (idle matches the real tmux-session-start path).
+	if err := d.UpsertStatus(session, repo, worktree, "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus (initial): %v", err)
 	}
 
