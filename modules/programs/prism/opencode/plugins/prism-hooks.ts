@@ -95,10 +95,10 @@ const textByMessageId = new Map<string, string>();
 // a session is acceptable; the tradeoff is intentional.
 const writtenMessageIds = new Set<string>();
 
-// Map from "providerID/modelID" → context window token limit. Populated when
-// we see model info (from the opencode config or step-finish parts that carry
-// token metadata). Used to calculate context window utilization percentage
-// in msg_assistant payloads.
+// Map from "providerID/modelID" → context window token limit. Populated once
+// per session via populateContextLimits(), which calls the opencode provider
+// API (client.provider.list). Used to calculate context window utilization
+// percentage in msg_assistant payloads.
 const contextLimitByModel = new Map<string, number>();
 
 // Track the root agent name (set from the first msg_user event). Used to
@@ -816,7 +816,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
               : 0;
             // Context window utilization: inputTokens / model context limit.
             // Look up the model's context limit from contextLimitByModel (populated
-            // by step-finish parts which carry the full model info).
+            // at session start by populateContextLimits via the provider API).
             const contextLimit = contextLimitByModel.get(asst_model) ?? 0;
             const contextWindowPct: number = (contextLimit > 0 && inputTokens > 0)
               ? Math.round((inputTokens / contextLimit) * 10000) / 100  // 2 decimal places

@@ -25,22 +25,26 @@ import (
 )
 
 // modelCosts contains per-million-token pricing for known models.
-// Cost is in USD. Keys are "providerID/modelID" as stored in payloads.
-// Update this map as new models are added.
+// Cost is in USD. Keys are "providerID/modelID" exactly as stored in payloads —
+// these must match the model IDs emitted by the opencode plugin verbatim.
+// Add new entries when new models are configured in opencode.nix.
 var modelCosts = map[string]struct {
 	Input      float64
 	Output     float64
 	CacheRead  float64
 	CacheWrite float64
 }{
-	"anthropic/claude-sonnet-4-20250514": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
-	"anthropic/claude-opus-4-20250514":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
-	// GitHub Copilot models use the same pricing as their base models.
-	"github-copilot/claude-sonnet-4-20250514": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
-	"github-copilot/claude-opus-4-20250514":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
-	// Gemini models.
-	"google/gemini-2.5-pro": {Input: 1.25, Output: 10.0, CacheRead: 0.3125, CacheWrite: 0},
-	// Alias forms that omit the date suffix — falls through to explicit keys above.
+	// Anthropic direct models (hyphens as version separators).
+	"anthropic/claude-sonnet-4-6": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
+	"anthropic/claude-opus-4-6":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
+	"anthropic/claude-haiku-4-5":  {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
+	// GitHub Copilot models (dots as version separators — different from Anthropic direct).
+	"github-copilot/claude-sonnet-4.6": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
+	"github-copilot/claude-opus-4.6":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
+	"github-copilot/claude-haiku-4.5":  {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
+	// Google Gemini models.
+	"google/gemini-3-flash-preview":        {Input: 0.15, Output: 0.60, CacheRead: 0.0375, CacheWrite: 0},
+	"google/gemini-3.1-flash-lite-preview": {Input: 0.075, Output: 0.30, CacheRead: 0.01875, CacheWrite: 0},
 }
 
 var statsCmd = &cobra.Command{
@@ -68,6 +72,10 @@ func init() {
 func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	showAll, _ := cmd.Flags().GetBool("all")
+
+	if days > 0 && len(args) > 0 {
+		return fmt.Errorf("--days and a session name are mutually exclusive")
+	}
 
 	if days > 0 {
 		return runStatsHistorical(days)

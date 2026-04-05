@@ -46,7 +46,7 @@ func writeStatsEvent(t *testing.T, d *db.DB, session, typ, payload string, ts ti
 }
 
 func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, cacheRead, cacheWrite int, durationMs int64, contextPct float64) string {
-	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":"opencode","model":"anthropic/claude-sonnet-4-20250514","inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d,"durationMs":%d,"contextWindowPct":%f}`,
+	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":"opencode","model":"anthropic/claude-sonnet-4-6","inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d,"durationMs":%d,"contextWindowPct":%f}`,
 		msgID, text, inputTokens, outputTokens, cacheRead, cacheWrite, durationMs, contextPct)
 }
 
@@ -507,7 +507,24 @@ func TestRunStatsSession_SubagentInvocations(t *testing.T) {
 	}
 }
 
-// TestCollectMetrics_PreEnrichmentEvents verifies that events without token
+// TestRunStats_DaysAndSessionMutuallyExclusive verifies that passing both
+// --days and a session name returns an error.
+func TestRunStats_DaysAndSessionMutuallyExclusive(t *testing.T) {
+	err := runStats(statsCmd, []string{"testrepo@main"})
+	// Without --days set the call should succeed (or fail for other reasons).
+	// Now set days flag and verify we get the mutual-exclusion error.
+	statsCmd.Flags().Set("days", "7") //nolint:errcheck
+	defer statsCmd.Flags().Set("days", "0")
+
+	err = runStats(statsCmd, []string{"testrepo@main"})
+	if err == nil {
+		t.Fatal("expected error when --days and session arg are both provided, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
+	}
+}
+
 // data (pre-enrichment) result in zero values rather than errors.
 func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 	d := openStatsTestDB(t)
