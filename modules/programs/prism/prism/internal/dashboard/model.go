@@ -18,6 +18,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // ── message types ─────────────────────────────────────────────────────────────
@@ -232,3 +233,11 @@ func fuzzyMatch(s, pattern string) bool {
 // openDB is a package-level function pointer so tests can redirect it.
 // defaultOpenDB is defined in db.go (a separate file in this package).
 var openDB = defaultOpenDB
+
+// ── tmux client helper ────────────────────────────────────────────────────────
+
+// CurrentClientFunc is a package-level function pointer that returns the name
+// of the tmux client that most recently interacted with the current pane. It
+// defaults to tmux.CurrentClient but can be overridden in tests (where no real
+// tmux client is attached to the test server's pane) to inject a known client.
+var CurrentClientFunc = tmux.CurrentClient
