@@ -15,13 +15,16 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -207,6 +210,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			_, _ = tmux.SwitchClientCurrent("scratchpad")
 		}
 		_ = tmux.KillSession(m.session)
+		killSidecar(m.session)
 		if d, err := openDB(); err == nil {
 			_ = d.ReleasePort(m.session)
 			_ = d.SetEnded(m.session)
@@ -269,6 +273,61 @@ func (m cleanupModel) View() string {
 }
 
 // ── cobra command ─────────────────────────────────────────────────────────────
+
+// killSidecar reads the PID file for the named session, sends SIGTERM to the
+// recorded process, and removes the file. It handles missing or stale PID
+// files gracefully — no error is returned in those cases.
+func killSidecar(sessionName string) {
+	pidPath, err := session.SidecarPIDPath(sessionName)
+	if err != nil {
+		// Can't derive the path — nothing to clean up.
+		return
+	}
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		// PID file absent — sidecar was never started or already cleaned up.
+		return
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		// Corrupt PID file — remove it and move on.
+		_ = os.Remove(pidPath)
+		return
+	}
+
+	// Send SIGTERM; ignore ESRCH (no such process — already gone).
+	// The PID file is removed unconditionally after the kill attempt:
+	// - ESRCH means the sidecar is already gone — file is stale, remove it.
+	// - EPERM means the PID has likely been recycled and now belongs to a
+	//   different process. We do not want to retry with this PID file, so we
+	//   remove it. The wrong process is not killed (Kill returned an error).
+	// - nil means SIGTERM was delivered — remove the now-stale file.
+	// In all cases, retrying with the same file would either repeat the
+	// failure or try to kill an unrelated process.
+
+	// Guard against same-user PID recycling: verify the PID belongs to a
+	// prism process by checking /proc/<pid>/cmdline before sending SIGTERM.
+	// This is Linux-specific (codebase targets NixOS), so if the file is
+	// unreadable (e.g. the process is already gone) we fall through and let
+	// the subsequent Kill handle ESRCH gracefully.
+	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		if !strings.Contains(string(cmdline), "prism") {
+			// PID has been recycled to an unrelated process — do not kill it.
+			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism process — skipping kill\n", pid)
+			_ = os.Remove(pidPath)
+			return
+		}
+	}
+
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		fmt.Fprintf(os.Stderr, "warning: kill sidecar pid %d: %v\n", pid, err)
+	}
+
+	_ = os.Remove(pidPath)
+}
 
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
@@ -386,6 +445,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
+	killSidecar(session)
 	if d, err := openDB(); err == nil {
 		_ = d.ReleasePort(session)
 		_ = d.SetEnded(session)
@@ -419,6 +479,7 @@ func closeSession(session string) error {
 		_, _ = tmux.SwitchClientCurrent("scratchpad")
 	}
 	_ = tmux.KillSession(session)
+	killSidecar(session)
 	if d, err := openDB(); err == nil {
 		_ = d.SetEnded(session)
 		_ = d.PurgeBusMessages(session)
@@ -450,6 +511,7 @@ func headlessCloseSession(session string) error {
 
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
+	killSidecar(session)
 	if d, err := openDB(); err == nil {
 		_ = d.SetEnded(session)
 		_ = d.PurgeBusMessages(session)
