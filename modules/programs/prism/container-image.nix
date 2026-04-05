@@ -69,8 +69,8 @@ in
     #
     # Idempotency: the existing tag is removed before loading so that the
     # previous manifest never becomes a dangling/orphaned image.  If no image
-    # exists yet, `podman image rm` exits 0 via `|| true` and the load
-    # proceeds normally.  Running switch twice with no input changes is
+    # exists yet, `podman image rm` exits non-zero and `|| true` lets the script
+    # continue normally.  Running switch twice with no input changes is
     # therefore a no-op: same Nix hash → same tarball → re-tag with no leftovers.
     #
     # Error handling: if podman is not on PATH (e.g. podman not enabled),
