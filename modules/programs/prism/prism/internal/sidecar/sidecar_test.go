@@ -118,12 +118,22 @@ func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 	return New(cfg), clk
 }
 
-// makeSSE creates an sse.Event with the given type and a JSON data payload
-// built from nested properties. The payload structure mirrors opencode's
-// SSE events: {"properties": {...}}.
+// makeSSE creates an sse.Event using the real wire format that opencode emits.
+// opencode does NOT use the SSE `event:` field — it sends all events as plain
+// `data:` lines. The SSE client therefore sets Type to "message" (the SSE
+// spec default). The real event type and properties are embedded inside the
+// JSON data payload, mirroring what opencode actually sends:
+//
+//	data: {"type":"session.status","properties":{...}}
+//
+// Using this wire format ensures the tests exercise the same code path as
+// production (type extraction from JSON data), not a shortcut that bypasses it.
 func makeSSE(eventType string, properties any) sse.Event {
-	data, _ := json.Marshal(map[string]any{"properties": properties})
-	return sse.Event{Type: eventType, Data: string(data)}
+	data, _ := json.Marshal(map[string]any{
+		"type":       eventType,
+		"properties": properties,
+	})
+	return sse.Event{Type: "message", Data: string(data)}
 }
 
 // getState reads the current agent state from the DB.
@@ -1216,6 +1226,33 @@ func TestSessionDeleted_UpdatesDBState(t *testing.T) {
 	}
 	if status.EndedAt == nil {
 		t.Error("expected ended_at to be set")
+	}
+}
+
+func TestServerConnected_SilentlyIgnored(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// Seed a known state so we can verify it does not change.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
+
+	// server.connected arrives via the real wire format (Type: "message", type
+	// embedded in the JSON data). It should be silently ignored — no state
+	// change, no error, no state_change event written.
+	sc.HandleEvent(sse.Event{
+		Type: "message",
+		Data: `{"type":"server.connected"}`,
+	})
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != "idle" {
+		t.Errorf("state = %q after server.connected, want %q (should be unchanged)", state, "idle")
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	for _, e := range events {
+		if e.Type == "state_change" {
+			t.Error("server.connected should not write a state_change event")
+		}
 	}
 }
 

@@ -126,7 +126,23 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	switch evt.Type {
+	// opencode sends all events as plain `data:` lines with no `event:` field.
+	// The SSE spec defaults the event type to "message" when no `event:` line
+	// is present. Extract the real event type from the JSON `type` field in the
+	// data payload when the SSE-level type is "message" or empty.
+	eventType := evt.Type
+	if eventType == "" || eventType == "message" {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(evt.Data), &envelope); err == nil && envelope.Type != "" {
+			eventType = envelope.Type
+		}
+	}
+
+	switch eventType {
+	case "server.connected":
+		// Sent by opencode on initial connection — silently ignore.
 	case "session.status":
 		s.handleSessionStatus(evt)
 	case "session.idle":
