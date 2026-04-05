@@ -577,6 +577,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           } else {
             // Track current opencode session ID for bus delivery.
             currentOpencodeSID = info.id;
+            // Populate model context limits for resumed sessions too — the map
+            // is empty after an opencode restart, so we re-fetch here.
+            populateContextLimits(client).catch(() => {});
             // Two-step so we can detect a genuine resume (new row inserted).
             // Step 1: insert with state='active' if no row exists yet.
             let wasInserted = false;

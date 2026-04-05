@@ -508,15 +508,12 @@ func TestRunStatsSession_SubagentInvocations(t *testing.T) {
 }
 
 // TestRunStats_DaysAndSessionMutuallyExclusive verifies that passing both
-// --days and a session name returns an error.
+// --days and a session name returns an error regardless of other state.
 func TestRunStats_DaysAndSessionMutuallyExclusive(t *testing.T) {
-	err := runStats(statsCmd, []string{"testrepo@main"})
-	// Without --days set the call should succeed (or fail for other reasons).
-	// Now set days flag and verify we get the mutual-exclusion error.
 	statsCmd.Flags().Set("days", "7") //nolint:errcheck
 	defer statsCmd.Flags().Set("days", "0")
 
-	err = runStats(statsCmd, []string{"testrepo@main"})
+	err := runStats(statsCmd, []string{"testrepo@main"})
 	if err == nil {
 		t.Fatal("expected error when --days and session arg are both provided, got nil")
 	}
