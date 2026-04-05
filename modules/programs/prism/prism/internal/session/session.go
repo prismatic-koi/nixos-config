@@ -36,6 +36,11 @@ type Opts struct {
 	// Port is the allocated opencode serve port. When non-zero, BuildOpencodeCmd
 	// includes --port <n> and --hostname 127.0.0.1 in the opencode launch command.
 	Port int
+	// SkipStatusSeed, when true, causes setupFullLayout to skip the
+	// "prism event tmux-session-start" call that seeds agent_status.
+	// Used by the restore path, which manages agent_status directly via the
+	// already-open DB handle rather than forking a subprocess.
+	SkipStatusSeed bool
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -147,14 +152,16 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	_ = tmux.SendKeys(name+":1", BuildOpencodeCmd(opts))
 
-	self, selfErr := os.Executable()
-	if selfErr != nil {
-		return fmt.Errorf("resolve prism binary: %w", selfErr)
-	}
-	if err := exec.Command(self, "event", "tmux-session-start",
-		"--session", name,
-		"--worktree", directory).Run(); err != nil {
-		return fmt.Errorf("seed agent_status: %w", err)
+	if !opts.SkipStatusSeed {
+		self, selfErr := os.Executable()
+		if selfErr != nil {
+			return fmt.Errorf("resolve prism binary: %w", selfErr)
+		}
+		if err := exec.Command(self, "event", "tmux-session-start",
+			"--session", name,
+			"--worktree", directory).Run(); err != nil {
+			return fmt.Errorf("seed agent_status: %w", err)
+		}
 	}
 
 	_ = tmux.NewWindow(name, 2, "term", directory)

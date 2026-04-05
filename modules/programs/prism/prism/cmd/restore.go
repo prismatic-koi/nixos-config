@@ -9,7 +9,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -108,10 +107,17 @@ func restoreSession(d *db.DB, s db.Status) error {
 	}
 }
 
-// restoreProjectSession builds the standard three-window layout for a project
-// session directly, without routing through ensureAndSwitchSession. This
-// avoids the name re-derivation that caused non-bare sessions (e.g. obsidian)
-// to silently create the wrong session or skip creation entirely.
+// restoreProjectSession recreates a project session using the shared
+// session.Create(LayoutFull) code path, ensuring the same three-window layout
+// (edit / agent / term) that normal session creation produces. The session
+// name comes from the DB row (s.SessionName) and is never re-derived from
+// the filesystem — this ensures non-bare sessions (e.g. obsidian) and sessions
+// whose name diverges from the worktree path are restored correctly.
+//
+// agent_status seeding is handled directly via the open DB handle
+// (SkipStatusSeed=true) rather than forking a subprocess, because
+// os.Executable() does not reliably resolve the real prism binary in all
+// contexts (e.g. test binaries).
 func restoreProjectSession(d *db.DB, s db.Status) error {
 	// If the worktree directory doesn't exist or is inaccessible, mark the
 	// session as ended in the DB so it doesn't appear as a zombie in the
@@ -127,31 +133,44 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		return d.SetEnded(s.SessionName)
 	}
 
-	// Create the session with window 0 rooted at the worktree directory.
-	if err := tmux.NewSessionDetached(s.SessionName, directory); err != nil {
-		return fmt.Errorf("new-session: %w", err)
+	// Build opts for the full three-window layout. SkipStatusSeed prevents
+	// setupFullLayout from forking "prism event tmux-session-start" — we
+	// manage agent_status directly below via the open DB handle.
+	opencodeSession := ""
+	if s.OpencodeSID != nil {
+		opencodeSession = *s.OpencodeSID
+	}
+	opts := session.Opts{
+		Headless:        true,
+		OpencodeSession: opencodeSession,
+		Agent:           session.DefaultAgent(directory, ""),
+		SessionName:     s.SessionName,
+		Layout:          session.LayoutFull,
+		SkipStatusSeed:  true,
 	}
 
-	// Window 0: edit — open nvim, mirroring the full layout behaviour.
-	_ = tmux.RenameWindow(s.SessionName+":0", "edit")
-	_ = tmux.SendKeys(s.SessionName+":0", session.NvimCmd(directory))
+	// Re-check for a race immediately before DB writes: if the session has
+	// appeared since restoreSession's outer HasSession check, skip
+	// RefreshWorktree and AllocatePort to avoid corrupting the live session's
+	// agent_status row. This is as late as we can usefully check — the
+	// remaining window (between here and tmux new-session inside Create) is
+	// unavoidable and is handled by Create's own inner guard.
+	if tmux.HasSession(s.SessionName) {
+		return nil
+	}
 
-	// Refresh agent_status with the verified worktree path, idle state, and a
-	// current last_seen so that post-restore operations find a fresh row.
+	// Refresh agent_status and allocate a port before calling session.Create,
+	// so that opts.Port is set when BuildOpencodeCmd fires inside
+	// setupFullLayout.
 	//
 	// RefreshWorktree is used instead of UpsertStatus because UpsertStatus only
 	// writes repo/worktree on the initial INSERT (ON CONFLICT does not update
 	// them). If the row was previously corrupted by the session-created hook
 	// race (issue #380), UpsertStatus would silently leave the stale path.
 	// RefreshWorktree corrects repo and worktree unconditionally.
-	//
-	// We write directly via the open DB handle rather than exec-ing a
-	// subprocess to avoid depending on os.Executable() returning the real
-	// prism binary (which it does not in test binaries).
 	if s.Repo != "" {
 		if err := d.RefreshWorktree(s.SessionName, s.Repo, directory); err != nil {
-			// Non-fatal: the session is created; a stale DB row is preferable
-			// to aborting the rest of the restore.
+			// Non-fatal: a stale DB row is preferable to aborting the restore.
 			fmt.Fprintf(os.Stderr, "restore %q: refresh agent_status: %v\n", s.SessionName, err)
 		} else {
 			e := db.Event{
@@ -168,42 +187,28 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 				fmt.Fprintf(os.Stderr, "restore %q: write event: %v\n", s.SessionName, err)
 			}
 		}
-	}
 
-	// Window 1: agent — launch opencode resuming the stored session ID.
-	_ = tmux.NewWindow(s.SessionName, 1, "agent", directory)
-	opencodeSession := ""
-	if s.OpencodeSID != nil {
-		opencodeSession = *s.OpencodeSID
+		// Allocate a port unconditionally (regardless of whether
+		// RefreshWorktree succeeded). AllocatePort only needs the
+		// agent_status row to exist, which it does since we are restoring
+		// a previously-known session.
+		port, err := d.AllocatePort(s.SessionName)
+		if err != nil {
+			// Non-fatal: log and continue without a port.
+			fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
+		} else {
+			opts.Port = port
+		}
 	}
-	opts := session.Opts{
-		Headless:        true,
-		OpencodeSession: opencodeSession,
-		Agent:           session.DefaultAgent(directory, ""),
-		SessionName:     s.SessionName,
+	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
+	// session is still created with the full layout; it just won't have an
+	// opencode serve port allocated.
+
+	if err := session.Create(s.SessionName, directory, opts); err != nil {
+		return fmt.Errorf("create session: %w", err)
 	}
-
-	// Allocate a port for the restored session. The agent_status row was
-	// refreshed above, so AllocatePort can write to it.
-	port, err := d.AllocatePort(s.SessionName)
-	if err != nil {
-		// Non-fatal: log and continue without a port.
-		fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
-	} else {
-		opts.Port = port
-	}
-
-	_ = tmux.SendKeys(s.SessionName+":1", session.BuildOpencodeCmd(opts))
-
-	// Window 2: term.
-	_ = tmux.NewWindow(s.SessionName, 2, "term", directory)
-
-	// Focus: obsidian → edit (0), else → agent (1).
-	focusIdx := 1
-	if strings.Contains(directory, "obsidian") {
-		focusIdx = 0
-	}
-	_ = tmux.SelectWindow(s.SessionName, focusIdx)
+	// session.Create contains its own inner HasSession guard as a final safety
+	// net for the narrow race window between the check above and new-session.
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return nil
