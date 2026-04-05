@@ -172,8 +172,11 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	go func() {
 		<-sigCh
-		sc.Shutdown()
+		// Cancel the context first so WaitHealthy/Create return immediately via
+		// ctx.Err(), eliminating the window where OnReady could fire after SIGTERM.
+		// Shutdown() then handles container stop/remove and DB state writes.
 		cancel()
+		sc.Shutdown()
 	}()
 
 	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s container=%v\n",

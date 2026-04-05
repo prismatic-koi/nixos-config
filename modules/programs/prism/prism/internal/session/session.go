@@ -201,6 +201,13 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	if opts.ContainerMode && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
 		if pathErr == nil {
+			// Remove any stale ready file from a previous session lifecycle
+			// BEFORE sending the readiness-wait script to the pane. This must
+			// happen synchronously here (in the parent process) to guarantee the
+			// file is gone before the pane script starts polling. If we left this
+			// to the sidecar process, there would be a race: the pane script could
+			// see the stale file before the sidecar process starts.
+			_ = os.Remove(readyPath)
 			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
 	}

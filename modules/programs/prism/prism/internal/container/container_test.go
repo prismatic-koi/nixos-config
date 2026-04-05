@@ -150,6 +150,67 @@ func TestBuildRunArgs_WorktreeMountedAtWorkspace(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_OpencodeStateMountedAtContainerPath(t *testing.T) {
+	// AC-3: opencode state mounted read-write into /root/.local/share/opencode
+	// with :Z SELinux label.
+	m := New(Config{
+		SessionName:   "my-repo@feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, ":/root/.local/share/opencode") {
+				found = true
+				if !strings.HasSuffix(v, ":Z") {
+					t.Errorf("opencode state mount %q should have :Z SELinux label (AC-3)", v)
+				}
+				// Must be read-write (no :ro).
+				if strings.Contains(v, ":ro") {
+					t.Errorf("opencode state mount %q should be read-write, not :ro (AC-3)", v)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("opencode state volume mount not found in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_OpencodeConfigMountedReadOnly(t *testing.T) {
+	// AC-4: opencode config mounted read-only into /root/.config/opencode.
+	m := New(Config{
+		SessionName:   "my-repo@feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, ":/root/.config/opencode:") {
+				found = true
+				if !strings.Contains(v, ":ro") {
+					t.Errorf("opencode config mount %q should be :ro (AC-4)", v)
+				}
+				// Must NOT have :Z (config is read-only, no relabelling needed).
+				if strings.HasSuffix(v, ":Z") || strings.Contains(v, ":ro,Z") {
+					t.Errorf("opencode config mount %q should not have :Z (AC-4)", v)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("opencode config volume mount not found in args: %v", args)
+	}
+}
+
 func TestBuildRunArgs_WorkdirIsWorkspace(t *testing.T) {
 	m := New(Config{
 		SessionName:   "my-repo@feat",
@@ -210,6 +271,22 @@ func TestBuildRunArgs_ContainerNameSet(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("--name %q not found in args: %v", m.Name(), args)
+	}
+}
+
+func TestBuildRunArgs_NetworkSlirp4netns(t *testing.T) {
+	// AC-12: explicit network mode for isolation.
+	m := New(Config{SessionName: "repo@br", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+	found := false
+	for i, arg := range args {
+		if arg == "--network" && i+1 < len(args) && args[i+1] == "slirp4netns" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("--network slirp4netns not found in args: %v", args)
 	}
 }
 
