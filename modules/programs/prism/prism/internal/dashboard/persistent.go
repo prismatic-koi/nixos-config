@@ -219,13 +219,6 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// SwitchTarget returns the tmux client that should receive switch-client when
-// the user selects a session in persistent mode. Always Client — the client
-// currently viewing the dashboard.
-func (m PersistentModel) SwitchTarget() string {
-	return m.Client
-}
-
 func (m PersistentModel) View() string {
 	return DashView(m.Shared, m.CurrentSession, m.CursorActive)
 }

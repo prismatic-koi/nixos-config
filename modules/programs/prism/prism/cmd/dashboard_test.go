@@ -175,21 +175,6 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 	return clientName
 }
 
-// ─── PersistentModel.SwitchTarget unit test ───────────────────────────────────
-
-// TestPersistentSwitchTarget verifies that PersistentModel.SwitchTarget() always
-// returns Client (the client currently viewing the dashboard). In the new
-// architecture, persistent mode no longer has a callerClient field; it operates
-// directly on the viewing client for both Enter navigation and q/esc return.
-func TestPersistentSwitchTarget(t *testing.T) {
-	t.Parallel()
-
-	m := dashboard.NewPersistentModel("viewing-client", "some-session")
-	if got := m.SwitchTarget(); got != "viewing-client" {
-		t.Errorf("PersistentModel.SwitchTarget() = %q, want %q", got, "viewing-client")
-	}
-}
-
 // TestPopupSwitchTarget verifies that popup mode always uses Client
 // (the popup runs inside the caller's own tmux client — no indirection needed).
 func TestPopupSwitchTarget(t *testing.T) {
