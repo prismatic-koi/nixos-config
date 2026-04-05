@@ -172,11 +172,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	go func() {
 		<-sigCh
-		// Cancel the context first so WaitHealthy/Create return immediately via
-		// ctx.Err(), eliminating the window where OnReady could fire after SIGTERM.
-		// Shutdown() then handles container stop/remove and DB state writes.
-		cancel()
+		// Shutdown() runs before cancel() so that its DB writes (upsertState,
+		// writeEvent) complete while the database connection is still open.
+		// Defer d.Close() runs only after runSidecar returns, which happens
+		// after Run() exits, which happens after cancel() fires here.
+		// OnReady is guarded by ctx.Err() in sidecar.Run() to prevent it
+		// from firing after SIGTERM even though cancel() comes last.
 		sc.Shutdown()
+		cancel()
 	}()
 
 	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s container=%v\n",

@@ -167,7 +167,12 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		log.Printf("sidecar: container %q is healthy", mgr.Name())
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
-		if s.cfg.OnReady != nil {
+		// Guard with ctx.Err() so OnReady is not called after SIGTERM: the signal
+		// goroutine calls Shutdown() (which stops the container and sets a flag)
+		// then cancel(). WaitHealthy returns when ctx is cancelled, so by the time
+		// we reach here after a successful health-check, ctx might already be
+		// cancelled if SIGTERM arrived while we were in WaitHealthy.
+		if ctx.Err() == nil && s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
 	}
