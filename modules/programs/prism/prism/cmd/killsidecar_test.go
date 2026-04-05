@@ -1,9 +1,13 @@
 package cmd
 
-// Unit tests for killSidecar.
+// Unit tests for session.KillSidecar.
 //
-// killSidecar is an unexported function in the cmd package, so these tests live
-// in the same package. They exercise the main paths:
+// KillSidecar was moved from the cmd package (where it was unexported as
+// killSidecar) to the session package so that both cmd and integration tests
+// can call it for test teardown.  These tests live in the cmd package because
+// they re-use the TestMain stub mechanism already present here.
+//
+// Paths exercised:
 //   - Normal operation: PID file exists, process running, SIGTERM delivered,
 //     PID file removed.
 //   - Stale PID file: process no longer exists (ESRCH), PID file still removed.
@@ -27,6 +31,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
 // TestMain intercepts re-invocations of the test binary used as a stub sidecar.
@@ -138,11 +144,11 @@ func TestKillSidecar_NormalOperation(t *testing.T) {
 	const session = "testrepo@kill-normal"
 	pidPath := writePIDFile(t, stateDir, session, pid)
 
-	killSidecar(session)
+	prismSession.KillSidecar(session)
 
 	// PID file should be gone.
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Errorf("PID file still exists after killSidecar: %v", err)
+		t.Errorf("PID file still exists after KillSidecar: %v", err)
 	}
 
 	// Wait for the process to actually terminate (it received SIGTERM).
@@ -154,7 +160,7 @@ func TestKillSidecar_NormalOperation(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if processExists(pid) {
-		t.Errorf("process pid %d still exists after killSidecar", pid)
+		t.Errorf("process pid %d still exists after KillSidecar", pid)
 	}
 }
 
@@ -180,10 +186,10 @@ func TestKillSidecar_StalePID(t *testing.T) {
 	const session = "testrepo@kill-stale"
 	pidPath := writePIDFile(t, tmp, session, stalePID)
 
-	killSidecar(session)
+	prismSession.KillSidecar(session)
 
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Errorf("stale PID file still exists after killSidecar: %v", err)
+		t.Errorf("stale PID file still exists after KillSidecar: %v", err)
 	}
 }
 
@@ -193,8 +199,8 @@ func TestKillSidecar_MissingPIDFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	// No PID file written — just call killSidecar and ensure no panic.
-	killSidecar("testrepo@no-pid-file")
+	// No PID file written — just call KillSidecar and ensure no panic.
+	prismSession.KillSidecar("testrepo@no-pid-file")
 }
 
 // TestKillSidecar_CorruptPIDFile verifies that killSidecar removes a corrupt
@@ -213,10 +219,10 @@ func TestKillSidecar_CorruptPIDFile(t *testing.T) {
 		t.Fatalf("write corrupt PID file: %v", err)
 	}
 
-	killSidecar(session)
+	prismSession.KillSidecar(session)
 
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Errorf("corrupt PID file still exists after killSidecar: %v", err)
+		t.Errorf("corrupt PID file still exists after KillSidecar: %v", err)
 	}
 }
 
@@ -256,15 +262,15 @@ func TestKillSidecar_PIDRecycledToUnrelatedProcess(t *testing.T) {
 		t.Skipf("cmdline unexpectedly contains 'prism': %q", string(cmdline))
 	}
 
-	killSidecar(session)
+	prismSession.KillSidecar(session)
 
 	// PID file should be removed.
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Errorf("PID file still exists after killSidecar (recycled PID): %v", err)
+		t.Errorf("PID file still exists after KillSidecar (recycled PID): %v", err)
 	}
 
 	// The unrelated process should still be alive.
 	if !processExists(pid) {
-		t.Errorf("unrelated process (pid %d) was killed — killSidecar should have skipped it", pid)
+		t.Errorf("unrelated process (pid %d) was killed — KillSidecar should have skipped it", pid)
 	}
 }

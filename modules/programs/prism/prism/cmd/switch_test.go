@@ -109,6 +109,10 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// Derive the expected session name via the same helper used by the binary.
 	expectedSession := session.NameFor(targetDir, "")
 
+	// Register sidecar cleanup before polling — the binary may have already
+	// launched a sidecar by the time the session appears in tmux.
+	t.Cleanup(func() { session.KillSidecar(expectedSession) })
+
 	// Poll until the client moves to the expected session.
 	deadline := time.Now().Add(10 * time.Second)
 	var gotSession string
@@ -159,6 +163,10 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	runInNewWindow(t, s, "sessionA", "/tmp", switchArgs)
 
 	expectedSession := session.NameFor(targetDir, "")
+
+	// Register sidecar cleanup before polling — the binary may have already
+	// launched a sidecar by the time the session appears in tmux.
+	t.Cleanup(func() { session.KillSidecar(expectedSession) })
 
 	// Wait for clientA to land on the target session.
 	deadline := time.Now().Add(10 * time.Second)

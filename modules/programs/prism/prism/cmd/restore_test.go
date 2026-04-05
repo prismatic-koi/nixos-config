@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -120,6 +121,8 @@ func TestRestoreSession_BareLayout(t *testing.T) {
 	if err := restoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
+	// Kill any sidecar that setupFullLayout may have launched.
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
 	if !s.hasSession(sessionName) {
 		t.Fatalf("session %q was not created", sessionName)
@@ -168,6 +171,8 @@ func TestRestoreSession_NonBare(t *testing.T) {
 	if err := restoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
+	// Kill any sidecar that setupFullLayout may have launched.
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
 	// The session must be created under the authoritative name — not under any
 	// derived name like filepath.Base(worktreeDir).
@@ -215,6 +220,8 @@ func TestRestoreSession_NameDivergence(t *testing.T) {
 	if err := restoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
+	// Kill any sidecar that setupFullLayout may have launched.
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
 	// Must exist under the authoritative name.
 	if !s.hasSession(sessionName) {
@@ -351,6 +358,8 @@ func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 	if err := restoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
+	// Kill any sidecar that setupFullLayout may have launched.
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
 	if !s.hasSession(sessionName) {
 		t.Fatalf("session %q was not created", sessionName)
@@ -409,6 +418,10 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 		if err := restoreSession(d, status); err != nil {
 			t.Fatalf("[%d] %q: restoreSession: %v", i, tc.sessionName, err)
 		}
+		// Kill any sidecar that setupFullLayout may have launched for this session.
+		func(name string) {
+			t.Cleanup(func() { session.KillSidecar(name) })
+		}(tc.sessionName)
 
 		if !s.hasSession(tc.sessionName) {
 			t.Errorf("[%d] %q: session not created", i, tc.sessionName)
