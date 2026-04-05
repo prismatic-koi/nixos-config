@@ -29,17 +29,45 @@ let
     fromImage = ubuntuBase;
 
     contents = with pkgs; [
+      # Shell and core utilities — pin the Nix versions so PATH is consistent
+      # regardless of what Ubuntu provides
+      bash
+      coreutils
+
       # Development tools
       opencode
       git
       gh
       go
+      gcc # C compiler — required for cgo
       nodejs # LTS Node.js for JavaScript/TypeScript tooling
       bun # Fast JavaScript runtime / bundler
       jq
+      yq-go
       ripgrep
       fd
       curl
+      wget
+      unzip
+      sqlite # prism uses SQLite; agents may query it directly
+
+      # Cloud and infrastructure
+      awscli2
+      opentofu
+      kubectl
+      kubernetes-helm
+      fluxcd
+
+      # Secrets tooling — agents may read or edit sops-encrypted files
+      sops
+      age
+
+      # Per-project environment management
+      direnv
+
+      # Nix toolchain — agents run nix build/eval/flake check and nixfmt
+      nix
+      nixfmt
 
       # LSP servers
       gopls
