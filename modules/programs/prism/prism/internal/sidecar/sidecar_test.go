@@ -1714,6 +1714,271 @@ func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 	}
 }
 
+// ── subagent suppression tests ──────────────────────────────────────────────
+
+// makeAssistantMessage creates a message.part.updated + message.updated pair
+// that simulates an assistant message completing, as opencode sends them.
+func makeAssistantMessage(messageID, agentName, text string) []sse.Event {
+	created := 1000.0
+	completed := 2000.0
+	return []sse.Event{
+		makeSSE("message.part.updated", map[string]any{
+			"part": map[string]any{
+				"type":      "text",
+				"messageID": messageID,
+				"text":      text,
+			},
+		}),
+		makeSSE("message.updated", map[string]any{
+			"info": map[string]any{
+				"id":         messageID,
+				"role":       "assistant",
+				"agent":      agentName,
+				"providerID": "anthropic",
+				"modelID":    "claude-sonnet-4-5",
+				"time": map[string]*float64{
+					"created":   &created,
+					"completed": &completed,
+				},
+			},
+		}),
+	}
+}
+
+// makeUserMessage creates a message.part.updated + message.updated pair that
+// simulates a user message, as opencode sends them.
+func makeUserMessage(messageID, agentName, text string) []sse.Event {
+	return []sse.Event{
+		makeSSE("message.part.updated", map[string]any{
+			"part": map[string]any{
+				"type":      "text",
+				"messageID": messageID,
+				"text":      text,
+			},
+		}),
+		makeSSE("message.updated", map[string]any{
+			"info": map[string]any{
+				"id":    messageID,
+				"role":  "user",
+				"agent": agentName,
+			},
+		}),
+	}
+}
+
+func sendEvents(sc *Sidecar, evts []sse.Event) {
+	for _, e := range evts {
+		sc.HandleEvent(e)
+	}
+}
+
+// TestSubagentIdle_SuppressesDebounce verifies that when session.idle fires
+// immediately after a subagent assistant message, no debounce timer is created
+// (the parent agent is expected to resume shortly).
+func TestSubagentIdle_SuppressesDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent from initial user message.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Please review this PR"))
+
+	// Root agent produces an assistant message (normal operation).
+	sendEvents(sc, makeAssistantMessage("msg-asst-1", "worker", "I will invoke the review agent"))
+
+	// Root agent invokes subagent: user message with agent="review".
+	sendEvents(sc, makeUserMessage("msg-user-2", "review", "Review this code"))
+
+	// Subagent (review) produces its response.
+	sendEvents(sc, makeAssistantMessage("msg-asst-2", "review", "Here are the review findings"))
+
+	// session.idle fires after subagent completes.
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	// No debounce timer should be created — subagent was last active.
+	if clk.TimerCount() != timersBefore {
+		t.Errorf("expected no new timer after subagent idle, but timer count went from %d to %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// State should remain active.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after suppressed idle, want %q", state, agent.StateActive)
+	}
+}
+
+// TestRootAgentIdle_AllowsDebounce verifies that session.idle after a root
+// agent assistant message starts the debounce timer normally.
+func TestRootAgentIdle_AllowsDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Fix the bug"))
+
+	// Root agent produces its response.
+	sendEvents(sc, makeAssistantMessage("msg-asst-1", "worker", "Done, I fixed it"))
+
+	// session.idle fires after root agent completes.
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	// Debounce timer should be created.
+	if clk.TimerCount() != timersBefore+1 {
+		t.Errorf("expected new timer after root-agent idle, got timer count %d (was %d)",
+			clk.TimerCount(), timersBefore)
+	}
+
+	// Fire the timer → finished.
+	clk.LastTimer().Fire()
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after root idle debounce, want %q", state, agent.StateFinished)
+	}
+}
+
+// TestSubagentCycle_MultipleRounds simulates the full spurious-finished
+// scenario: worker → review (multiple rounds) → worker finishes.
+// Only the final session.idle (after the worker's last message) should produce
+// a finished transition; all intermediate idles should be suppressed.
+func TestSubagentCycle_MultipleRounds(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent from initial user message.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Please open a PR and have it reviewed"))
+
+	// Round 1: worker invokes review subagent.
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-1", "worker", "Opening PR and invoking review"))
+	sendEvents(sc, makeUserMessage("msg-review-1", "review", "Review round 1"))
+	sendEvents(sc, makeAssistantMessage("msg-asst-review-1", "review", "Round 1 review findings"))
+
+	// session.idle after review round 1 → should be suppressed.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.LastTimer() != nil {
+		// A timer may exist from earlier events; check it's not a new one.
+		// Simpler: just verify state stays active.
+	}
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("after review round 1 idle: state = %q, want active (should be suppressed)", state)
+	}
+
+	// Worker resumes after reviewing the feedback.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-2", "worker", "Fixing issues from round 1"))
+
+	// Round 2: worker invokes review again.
+	sendEvents(sc, makeUserMessage("msg-review-2", "review", "Review round 2"))
+	sendEvents(sc, makeAssistantMessage("msg-asst-review-2", "review", "Round 2 review findings"))
+
+	// session.idle after review round 2 → should be suppressed again.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("after review round 2 idle: state = %q, want active (should be suppressed)", state)
+	}
+
+	// Worker resumes and completes its final response.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-3", "worker", "All done, PR is approved"))
+
+	// session.idle after worker's final message → should proceed to finished.
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() == timersBefore {
+		t.Fatal("expected debounce timer after root agent final idle, but no timer created")
+	}
+
+	// Fire the timer → finished.
+	clk.LastTimer().Fire()
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after final idle debounce, want %q", state, agent.StateFinished)
+	}
+}
+
+// TestSubagentIdle_NoRootAgent_AllowsDebounce verifies that when no root
+// agent has been established yet (no user messages seen), session.idle
+// proceeds normally to avoid blocking the debounce indefinitely.
+func TestSubagentIdle_NoRootAgent_AllowsDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// No user messages — root agent is unknown. session.idle should still work.
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timersBefore+1 {
+		t.Errorf("expected timer when rootAgent is unknown, got timer count %d (was %d)",
+			clk.TimerCount(), timersBefore)
+	}
+
+	clk.LastTimer().Fire()
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q, want %q", state, agent.StateFinished)
+	}
+}
+
+// TestSubagentIdle_UnknownAssistantAgent_AllowsDebounce verifies that when an
+// assistant message arrives with an empty agent name (e.g. older opencode
+// versions), session.idle is not incorrectly suppressed.
+func TestSubagentIdle_UnknownAssistantAgent_AllowsDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Do some work"))
+
+	// Assistant message with empty agent name.
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-empty",
+			"text":      "Done",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-empty",
+			"role":       "assistant",
+			"agent":      "", // empty agent name
+			"providerID": "anthropic",
+			"modelID":    "claude-sonnet-4-5",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	// session.idle should allow the debounce (empty agent name → lastAssistantAgent = "").
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timersBefore+1 {
+		t.Errorf("expected timer when lastAssistantAgent is empty, got timer count %d (was %d)",
+			clk.TimerCount(), timersBefore)
+	}
+
+	clk.LastTimer().Fire()
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q, want %q", state, agent.StateFinished)
+	}
+}
+
 func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 	d := openTestDB(t)
 	worker, clk := newWorkerSidecar(t, d, nil)

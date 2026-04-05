@@ -82,6 +82,16 @@ type Sidecar struct {
 	opencodeSID     string
 	writtenMessages map[string]bool // dedup message.updated writes
 	textByMessage   map[string]string
+
+	// rootAgent is the name of the top-level agent for this session, derived
+	// from the first msg_user event. Empty until the first user message arrives.
+	rootAgent string
+	// lastAssistantAgent is the agent name from the most recent completed
+	// assistant message. Used to suppress spurious finished transitions when a
+	// subagent (non-root) was the last to produce output: in that case the
+	// parent agent is likely about to resume, so session.idle should not start
+	// the finished debounce.
+	lastAssistantAgent string
 }
 
 // New creates a Sidecar with the given configuration.
@@ -223,6 +233,14 @@ func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 func (s *Sidecar) handleSessionIdle() {
 	// Snapshot current DB state before the timer fires.
 	s.cancelIdleTimer()
+
+	// If the most recent assistant message was from a subagent (not the root
+	// agent), suppress the finished debounce entirely. The parent agent is
+	// likely about to resume — the next session.idle after the root agent
+	// completes will start the timer normally.
+	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
+		return
+	}
 
 	s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
 		s.mu.Lock()
@@ -504,6 +522,13 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 			model = info.Model.ProviderID + "/" + info.Model.ModelID
 		}
 
+		// Record the root agent from the first user message seen. All
+		// subsequent user messages from the same or different agents can
+		// be used to detect subagent invocations.
+		if s.rootAgent == "" && agentName != "" {
+			s.rootAgent = agentName
+		}
+
 		s.writeEvent("msg_user", map[string]string{
 			"messageId": info.ID,
 			"text":      text,
@@ -526,6 +551,17 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		model := ""
 		if info.ProviderID != "" && info.ModelID != "" {
 			model = info.ProviderID + "/" + info.ModelID
+		}
+
+		// Track which agent last produced an assistant message. When
+		// session.idle fires, this is used to suppress the finished
+		// debounce if a subagent (non-root) was most recently active —
+		// the parent agent is likely about to resume.
+		s.lastAssistantAgent = agentName
+		// If the root agent just completed, clear the tracking so the
+		// next session.idle can proceed normally to finished.
+		if agentName != "" && agentName == s.rootAgent {
+			s.lastAssistantAgent = ""
 		}
 
 		eventPayload := map[string]any{
