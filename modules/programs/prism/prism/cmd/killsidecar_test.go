@@ -129,7 +129,7 @@ func TestKillSidecar_NormalOperation(t *testing.T) {
 		t.Skipf("could not read /proc/%d/cmdline: %v (process may have exited already)", pid, err)
 	}
 	if !strings.Contains(string(cmdlineData), "prism") {
-		t.Skipf("stub process cmdline does not contain 'prism': %q — skipping", string(cmdlineData))
+		t.Fatalf("stub process cmdline does not contain 'prism': %q — startStubProcess setup is broken", string(cmdlineData))
 	}
 
 	stateDir := t.TempDir()
