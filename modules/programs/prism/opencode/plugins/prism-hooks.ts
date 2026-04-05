@@ -814,7 +814,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             const cacheReadTokens: number = tokens?.cache?.read ?? 0;
             const cacheWriteTokens: number = tokens?.cache?.write ?? 0;
             // Wall-clock duration of the assistant turn (created → completed).
-            const durationMs: number = (info.time.completed && info.time.created)
+            const durationMs: number = (info.time.completed != null && info.time.created != null)
               ? Math.max(0, info.time.completed - info.time.created)
               : 0;
             // Context window utilization: inputTokens / model context limit.
@@ -865,7 +865,7 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             const result = String(part.state.output ?? "").slice(0, 500);
             // Calculate tool call duration from state.time.start → state.time.end (milliseconds).
             const toolTime = part.state.time as { start?: number; end?: number } | undefined;
-            const toolDurationMs: number = (toolTime?.start && toolTime?.end)
+            const toolDurationMs: number = (toolTime?.start != null && toolTime?.end != null)
               ? Math.max(0, toolTime.end - toolTime.start)
               : 0;
             const toolCallPayload: Record<string, unknown> = { tool: part.tool, args, messageId: part.messageID };
