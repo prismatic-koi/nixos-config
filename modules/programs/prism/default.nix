@@ -73,6 +73,7 @@
   };
 
   imports = [
+    ./container-image.nix
     ./neovim
     ./opencode.nix
     ./tmux.nix
