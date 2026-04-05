@@ -381,13 +381,94 @@ done:
 }
 
 func TestInitialConnectionError(t *testing.T) {
-	ctx := context.Background()
-	client := &Client{}
+	// Connect to a URL where nothing is listening. Connect now retries with
+	// backoff, so we cancel the context quickly to get a clean error return.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
 
-	// Connect to a URL that will refuse connections.
+	client := &Client{
+		InitialRetryDelay: 50 * time.Millisecond,
+		MaxRetryDelay:     100 * time.Millisecond,
+	}
+
 	_, err := client.Connect(ctx, "http://127.0.0.1:1")
 	if err == nil {
-		t.Fatal("expected error for bad URL, got nil")
+		t.Fatal("expected error when context cancelled with no server, got nil")
+	}
+}
+
+// TestConnectRetryOnStartup verifies that Connect retries the initial
+// connection with backoff when the server is not yet ready, and succeeds once
+// the server starts accepting connections.
+func TestConnectRetryOnStartup(t *testing.T) {
+	var mu sync.Mutex
+	ready := false
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		isReady := ready
+		mu.Unlock()
+
+		if !isReady {
+			// Simulate server not ready yet — refuse with 503.
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		fmt.Fprint(w, "event: ready\ndata: ok\n\n")
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client := &Client{
+		InitialRetryDelay: 50 * time.Millisecond,
+		MaxRetryDelay:     200 * time.Millisecond,
+	}
+
+	// Start the connect attempt before the server is ready.
+	done := make(chan struct{})
+	var ch <-chan Event
+	var connectErr error
+	go func() {
+		defer close(done)
+		ch, connectErr = client.Connect(ctx, srv.URL)
+	}()
+
+	// Let it attempt and fail at least once, then flip the server to ready.
+	time.Sleep(120 * time.Millisecond)
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+
+	// Wait for Connect to return.
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("Connect did not return within timeout after server became ready")
+	}
+
+	if connectErr != nil {
+		t.Fatalf("Connect returned error after server became ready: %v", connectErr)
+	}
+
+	// Expect the "ready" event delivered via the channel.
+	events := collectEvents(t, ch, 1)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != "ready" || events[0].Data != "ok" {
+		t.Errorf("unexpected event: %+v", events[0])
 	}
 }
 

@@ -307,6 +307,21 @@ func killSidecar(sessionName string) {
 	// - nil means SIGTERM was delivered — remove the now-stale file.
 	// In all cases, retrying with the same file would either repeat the
 	// failure or try to kill an unrelated process.
+
+	// Guard against same-user PID recycling: verify the PID belongs to a
+	// prism process by checking /proc/<pid>/cmdline before sending SIGTERM.
+	// This is Linux-specific (codebase targets NixOS), so if the file is
+	// unreadable (e.g. the process is already gone) we fall through and let
+	// the subsequent Kill handle ESRCH gracefully.
+	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		if !strings.Contains(string(cmdline), "prism") {
+			// PID has been recycled to an unrelated process — do not kill it.
+			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d appears to belong to an unrelated process (cmdline check failed) — skipping kill\n", pid)
+			_ = os.Remove(pidPath)
+			return
+		}
+	}
+
 	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
 		fmt.Fprintf(os.Stderr, "warning: kill sidecar pid %d: %v\n", pid, err)
 	}

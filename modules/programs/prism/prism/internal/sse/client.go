@@ -77,26 +77,47 @@ func (c *Client) maxRetryDelay() time.Duration {
 }
 
 // Connect starts consuming the SSE stream at url. It returns a channel of
-// parsed events and an error if the initial connection fails. The channel is
-// closed when ctx is cancelled.
+// parsed events. The channel is closed when ctx is cancelled.
 //
-// On connection loss the client automatically reconnects with exponential
-// backoff (1s, 2s, 4s, … capped at 30s). The backoff resets after a successful
-// connection.
+// If the server is not yet ready (e.g. opencode is still starting up),
+// Connect retries the initial connection with the same exponential backoff
+// used for reconnection (InitialRetryDelay…MaxRetryDelay). It only returns
+// an error if ctx is cancelled before the first successful connection.
+//
+// On subsequent connection losses the client automatically reconnects with the
+// same backoff policy.
 func (c *Client) Connect(ctx context.Context, url string) (<-chan Event, error) {
 	ch := make(chan Event, c.bufferSize())
 
-	// Validate the initial connection so callers get an immediate error for
-	// obviously wrong URLs. We pass the body off to the read loop.
-	resp, err := c.doRequest(ctx, url)
-	if err != nil {
+	// Retry the initial connection with backoff — the server may not be ready
+	// yet (e.g. opencode is still starting up from a tmux send-keys command).
+	resp := c.connectWithRetry(ctx, url)
+	if resp == nil {
 		close(ch)
-		return ch, fmt.Errorf("sse: initial connection failed: %w", err)
+		return ch, fmt.Errorf("sse: connection cancelled: %w", ctx.Err())
 	}
 
 	go c.readLoop(ctx, url, resp, ch)
-
 	return ch, nil
+}
+
+// connectWithRetry attempts the initial SSE connection. It tries once
+// immediately — the common case where the server is already up — then falls
+// into the same exponential backoff loop as reconnect() if that fails.
+// Returns nil if ctx is cancelled before a connection is established.
+func (c *Client) connectWithRetry(ctx context.Context, url string) *http.Response {
+	// Try immediately first.
+	resp, err := c.doRequest(ctx, url)
+	if err == nil {
+		return resp
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	log.Printf("sse: initial connection failed, retrying: %v", err)
+
+	// Fall into the same backoff loop used for reconnection.
+	return c.reconnect(ctx, url)
 }
 
 // doRequest performs a single SSE connection attempt.
