@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -152,10 +153,13 @@ func TestStartSidecar_LaunchesProcess(t *testing.T) {
 	// The written PID should correspond to a live process immediately after
 	// StartSidecar returns. The stub sleeps 50ms before exiting, so there is
 	// a window in which the process is still alive.
-	if statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err != nil {
-		t.Errorf("process pid %d not found in /proc: %v", pid, err)
-	} else if strings.Contains(string(statusData), "State:\tZ") {
-		t.Errorf("process pid %d is already a zombie immediately after start", pid)
+	// This check is Linux-specific (/proc is not available on Darwin).
+	if runtime.GOOS == "linux" {
+		if statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid)); err != nil {
+			t.Errorf("process pid %d not found in /proc: %v", pid, err)
+		} else if strings.Contains(string(statusData), "State:\tZ") {
+			t.Errorf("process pid %d is already a zombie immediately after start", pid)
+		}
 	}
 }
 
