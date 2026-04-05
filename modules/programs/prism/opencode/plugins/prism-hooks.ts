@@ -95,6 +95,24 @@ const textByMessageId = new Map<string, string>();
 // a session is acceptable; the tradeoff is intentional.
 const writtenMessageIds = new Set<string>();
 
+// Map from "providerID/modelID" → context window token limit. Populated once
+// per session via populateContextLimits(), which calls the opencode provider
+// API (client.provider.list). Used to calculate context window utilization
+// percentage in msg_assistant payloads.
+const contextLimitByModel = new Map<string, number>();
+
+// Track the root agent name (set from the first msg_user event). Used to
+// detect when a subagent invocation ends (the root agent resumes).
+let rootAgentName: string | null = null;
+
+// Track active subagent invocations. When we see a subtask part
+// (type="subtask") we record the start time and agent name. When the root
+// agent resumes (detected by seeing a msg_assistant with the root agent name
+// after subagent activity), we write a subagent_end event with the duration.
+//
+// Key: agent name (e.g. "review"), Value: { startMs, messageID, description }.
+const activeSubagents = new Map<string, { startMs: number; messageID: string; description: string }>();
+
 // Track the last state_change value written so we only emit an event when
 // the state actually transitions.  session.status busy fires multiple times
 // per turn; without this guard each turn produces 4+ state_change rows.
@@ -127,6 +145,26 @@ let currentOpencodeSID: string | null = null;
 // twice and both instances share this flag — a denial handled by one instance
 // must be visible to the other instance when session.idle fires.
 let manualDenial = false;
+
+// Fetch model context limits from the opencode provider API and populate
+// contextLimitByModel. Called once per session creation/resume. Best-effort:
+// errors are silently ignored (context utilization will show as 0%).
+async function populateContextLimits(client: any): Promise<void> {
+  try {
+    const resp = await client.provider.list({});
+    const providers = resp?.data as Array<{ id: string; models: Record<string, { id: string; limit?: { context?: number } }> }> | undefined;
+    if (!providers) return;
+    for (const prov of providers) {
+      for (const [_modelKey, model] of Object.entries(prov.models ?? {})) {
+        const ctx = model.limit?.context;
+        if (ctx && ctx > 0) {
+          const key = `${prov.id}/${model.id}`;
+          contextLimitByModel.set(key, ctx);
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+}
 
 export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => {
   // worktree is defined in the PluginInput types but is NOT passed by opencode
@@ -523,6 +561,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           // DB
           upsertAgentStatus(STATE_ACTIVE, info.title || null, info.id);
           writeStateChange(STATE_ACTIVE, info.id);
+          // Populate model context limits for utilization calculation.
+          populateContextLimits(client).catch(() => {});
           break;
         }
 
@@ -537,6 +577,9 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           } else {
             // Track current opencode session ID for bus delivery.
             currentOpencodeSID = info.id;
+            // Populate model context limits for resumed sessions too — the map
+            // is empty after an opencode restart, so we re-fetch here.
+            populateContextLimits(client).catch(() => {});
             // Two-step so we can detect a genuine resume (new row inserted).
             // Step 1: insert with state='active' if no row exists yet.
             let wasInserted = false;
@@ -736,6 +779,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             writeEvent("msg_user", { messageId: info.id, text, agent, model });
             writtenMessageIds.add(info.id);
             textByMessageId.delete(info.id);
+            // Track root agent name for subagent end detection.
+            if (!rootAgentName && agent) rootAgentName = agent;
             // Persist agent and model into agent_status. For user messages,
             // also set root_agent_name/root_model_id if not yet present —
             // the first user message establishes the root agent context used
@@ -761,10 +806,50 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             const asst_model: string = (info.providerID && info.modelID)
               ? `${info.providerID}/${info.modelID}`
               : "";
-            writeEvent("msg_assistant", { messageId: info.id, text, agent: asst_agent, model: asst_model });
+            // Extract token usage from the assistant message metadata.
+            // AssistantMessage has: tokens.{input, output, cache.{read, write}}, cost
+            const tokens = info.tokens as { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } } | undefined;
+            const inputTokens: number = tokens?.input ?? 0;
+            const outputTokens: number = tokens?.output ?? 0;
+            const cacheReadTokens: number = tokens?.cache?.read ?? 0;
+            const cacheWriteTokens: number = tokens?.cache?.write ?? 0;
+            // Wall-clock duration of the assistant turn (created → completed).
+            const durationMs: number = (info.time.completed != null && info.time.created != null)
+              ? Math.max(0, info.time.completed - info.time.created)
+              : 0;
+            // Context window utilization: inputTokens / model context limit.
+            // Look up the model's context limit from contextLimitByModel (populated
+            // at session start by populateContextLimits via the provider API).
+            const contextLimit = contextLimitByModel.get(asst_model) ?? 0;
+            const contextWindowPct: number = (contextLimit > 0 && inputTokens > 0)
+              ? Math.round((inputTokens / contextLimit) * 10000) / 100  // 2 decimal places
+              : 0;
+            const payload: Record<string, unknown> = { messageId: info.id, text, agent: asst_agent, model: asst_model };
+            if (inputTokens > 0)      payload.inputTokens = inputTokens;
+            if (outputTokens > 0)     payload.outputTokens = outputTokens;
+            if (cacheReadTokens > 0)  payload.cacheReadTokens = cacheReadTokens;
+            if (cacheWriteTokens > 0) payload.cacheWriteTokens = cacheWriteTokens;
+            if (durationMs > 0)       payload.durationMs = durationMs;
+            if (contextWindowPct > 0) payload.contextWindowPct = contextWindowPct;
+            writeEvent("msg_assistant", payload);
             writtenMessageIds.add(info.id);
             // Clean up accumulated text now that the message is complete.
             textByMessageId.delete(info.id);
+            // Detect subagent end: when we see a completed assistant message
+            // from the root agent and there are active subagent invocations,
+            // write subagent_end events for each.
+            if (rootAgentName && asst_agent === rootAgentName && activeSubagents.size > 0) {
+              const now = Date.now();
+              for (const [subName, sub] of activeSubagents) {
+                const subDuration = Math.max(0, now - sub.startMs);
+                writeEvent("subagent_end", {
+                  agent: subName,
+                  durationMs: subDuration,
+                  messageId: sub.messageID,
+                });
+              }
+              activeSubagents.clear();
+            }
           }
           break;
         }
@@ -778,12 +863,41 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
           } else if (part.type === "tool" && part.state?.status === "completed") {
             const args = JSON.stringify(part.state.input ?? {}).slice(0, 500);
             const result = String(part.state.output ?? "").slice(0, 500);
-            writeEvent("tool_call",   { tool: part.tool, args,   messageId: part.messageID });
+            // Calculate tool call duration from state.time.start → state.time.end (milliseconds).
+            const toolTime = part.state.time as { start?: number; end?: number } | undefined;
+            const toolDurationMs: number = (toolTime?.start != null && toolTime?.end != null)
+              ? Math.max(0, toolTime.end - toolTime.start)
+              : 0;
+            const toolCallPayload: Record<string, unknown> = { tool: part.tool, args, messageId: part.messageID };
+            if (toolDurationMs > 0) toolCallPayload.durationMs = toolDurationMs;
+            writeEvent("tool_call",   toolCallPayload);
             writeEvent("tool_result", { tool: part.tool, result, messageId: part.messageID });
           } else if (part.type === "reasoning" && part.time?.end != null) {
             // Only write when the reasoning block is complete to avoid one row per token.
             writeEvent("thinking", { text: String(part.text ?? "").slice(0, 500), messageId: part.messageID });
           }
+
+          // Capture subagent invocations from subtask parts. A subtask part
+          // fires when the LLM invokes a subagent (e.g. @review, @explore).
+          // Record the start time here; the end is detected when the root
+          // agent resumes in the message.updated handler.
+          if (part.type === "subtask" && part.agent) {
+            const subagentName: string = part.agent;
+            const subDesc: string = part.description ?? "";
+            if (!activeSubagents.has(subagentName)) {
+              activeSubagents.set(subagentName, {
+                startMs: Date.now(),
+                messageID: part.messageID,
+                description: subDesc,
+              });
+              writeEvent("subagent_start", {
+                agent: subagentName,
+                description: subDesc,
+                messageId: part.messageID,
+              });
+            }
+          }
+
           break;
         }
       }

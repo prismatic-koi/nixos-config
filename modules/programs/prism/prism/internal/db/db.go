@@ -773,6 +773,42 @@ WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
 }
 
+// AllSessionEvents returns all events for a session, ordered by created_at ASC.
+// Unlike QueryEvents, this has no limit — it returns the full event history.
+func (d *DB) AllSessionEvents(sessionName string) ([]Event, error) {
+	return d.QueryEvents(sessionName, 0, nil, nil, nil)
+}
+
+// EventsSince returns all events across all sessions created after sinceMs
+// (Unix milliseconds), ordered by created_at ASC. Used by `prism stats --days`.
+func (d *DB) EventsSince(sinceMs int64) ([]Event, error) {
+	const q = `
+SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at
+FROM agent_events
+WHERE created_at >= ?
+ORDER BY created_at ASC`
+	rows, err := d.conn.Query(q, sinceMs)
+	if err != nil {
+		return nil, fmt.Errorf("db: events since: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("db: scan event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate events since: %w", err)
+	}
+	return events, nil
+}
+
 // WaitingCount returns the number of active sessions with state='waiting'.
 func (d *DB) WaitingCount() (int, error) {
 	var n int

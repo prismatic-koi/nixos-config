@@ -28,18 +28,42 @@ type MsgUser struct {
 // MsgAssistant is the payload for msg_assistant events.
 // Agent and Model are populated from the message.updated event's info fields.
 // Model is stored as "providerID/modelID" (e.g. "github-copilot/claude-sonnet-4.6").
+//
+// Token usage fields (InputTokens, OutputTokens, CacheReadTokens,
+// CacheWriteTokens) are populated when available from the message.updated
+// event's token metadata. Zero values mean "not available" (pre-enrichment
+// events or models that don't report token counts).
+//
+// DurationMs is the wall-clock time of the assistant turn in milliseconds,
+// measured from time.created to time.completed on the message. Zero means
+// "not available".
+//
+// ContextWindowPct is the context window utilization as a percentage (0-100),
+// calculated as (inputTokens / contextWindowSize) * 100. Zero means
+// "not available" (model context window size unknown or inputTokens absent).
 type MsgAssistant struct {
-	MessageID string `json:"messageId"`
-	Text      string `json:"text"`
-	Agent     string `json:"agent"`
-	Model     string `json:"model"`
+	MessageID        string  `json:"messageId"`
+	Text             string  `json:"text"`
+	Agent            string  `json:"agent"`
+	Model            string  `json:"model"`
+	InputTokens      int     `json:"inputTokens,omitempty"`
+	OutputTokens     int     `json:"outputTokens,omitempty"`
+	CacheReadTokens  int     `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int     `json:"cacheWriteTokens,omitempty"`
+	DurationMs       int64   `json:"durationMs,omitempty"`
+	ContextWindowPct float64 `json:"contextWindowPct,omitempty"`
 }
 
 // ToolCall is the payload for tool_call events.
+//
+// DurationMs is the wall-clock time of the tool execution in milliseconds,
+// measured from state.start to state.end on the tool part. Zero means
+// "not available" (pre-enrichment events or tools that don't report timing).
 type ToolCall struct {
-	Tool      string `json:"tool"`
-	Args      string `json:"args"`
-	MessageID string `json:"messageId"`
+	Tool       string `json:"tool"`
+	Args       string `json:"args"`
+	MessageID  string `json:"messageId"`
+	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
 // ToolResult is the payload for tool_result events.
@@ -111,4 +135,20 @@ type Compaction struct {
 // ErrorEvent is the payload for error events.
 type ErrorEvent struct {
 	Note string `json:"note"`
+}
+
+// SubagentStart is the payload for subagent_start events, recorded when a
+// subagent (e.g. @review, @explore) is invoked via a subtask part.
+type SubagentStart struct {
+	Agent       string `json:"agent"`
+	Description string `json:"description,omitempty"`
+	MessageID   string `json:"messageId"`
+}
+
+// SubagentEnd is the payload for subagent_end events, recorded when the
+// message context returns to the root agent after a subagent invocation.
+type SubagentEnd struct {
+	Agent      string `json:"agent"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	MessageID  string `json:"messageId"`
 }
