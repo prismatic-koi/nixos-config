@@ -1342,6 +1342,75 @@ func TestMigration_V3ToV4(t *testing.T) {
 	}
 }
 
+// TestClearEnded_RestoresVisibility verifies the tmux-session-start scenario:
+// a session that was ended (via SetEnded) becomes visible again in
+// AllActiveStatus and AllActiveStatusForRepo after UpsertStatus + ClearEnded,
+// matching the fix in cmd/event.go's tmux-session-start handler.
+func TestClearEnded_RestoresVisibility(t *testing.T) {
+	d := openTestDB(t)
+
+	const session = "repo@main"
+	const repo = "repo"
+	const worktree = "/code/repo/main"
+
+	// Insert initial status row.
+	if err := d.UpsertStatus(session, repo, worktree, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (initial): %v", err)
+	}
+
+	// Simulate tmux-session-end: mark the session as ended.
+	if err := d.SetEnded(session); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Confirm the session is now invisible to active-session queries.
+	all, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus (after SetEnded): %v", err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("AllActiveStatus after SetEnded: got %d rows, want 0", len(all))
+	}
+
+	// Simulate tmux-session-start: UpsertStatus then ClearEnded (the fix).
+	if err := d.UpsertStatus(session, repo, worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (restart): %v", err)
+	}
+	if err := d.ClearEnded(session); err != nil {
+		t.Fatalf("ClearEnded: %v", err)
+	}
+
+	// The session must now appear in AllActiveStatus.
+	all2, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus (after ClearEnded): %v", err)
+	}
+	if len(all2) != 1 {
+		t.Fatalf("AllActiveStatus after ClearEnded: got %d rows, want 1", len(all2))
+	}
+	if all2[0].SessionName != session {
+		t.Errorf("AllActiveStatus: got %q, want %q", all2[0].SessionName, session)
+	}
+	if all2[0].State != "idle" {
+		t.Errorf("State after restart: got %q, want \"idle\"", all2[0].State)
+	}
+	if all2[0].EndedAt != nil {
+		t.Errorf("EndedAt after ClearEnded: got non-nil, want nil")
+	}
+
+	// The session must also appear in AllActiveStatusForRepo.
+	forRepo, err := d.AllActiveStatusForRepo(repo)
+	if err != nil {
+		t.Fatalf("AllActiveStatusForRepo (after ClearEnded): %v", err)
+	}
+	if len(forRepo) != 1 {
+		t.Fatalf("AllActiveStatusForRepo after ClearEnded: got %d rows, want 1", len(forRepo))
+	}
+	if forRepo[0].SessionName != session {
+		t.Errorf("AllActiveStatusForRepo: got %q, want %q", forRepo[0].SessionName, session)
+	}
+}
+
 // setPort is a test helper that writes opencode_port directly via QueryRow.
 func setPort(d *db.DB, sessionName string, port int) error {
 	// Use QueryRow with a dummy scan to execute the UPDATE.

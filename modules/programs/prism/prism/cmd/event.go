@@ -234,6 +234,9 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateIdle), nil, nil); err != nil {
 			return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
 		}
+		if err := d.ClearEnded(session); err != nil {
+			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
+		}
 
 		e := db.Event{
 			ID:          uuid.New().String(),
