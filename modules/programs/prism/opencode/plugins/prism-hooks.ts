@@ -565,14 +565,15 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             // so the session reflects that the agent is running again.
             // "active", "waiting", "compacting" and other states are left alone.
             if (!wasInserted && db && sessionName && getStatus) {
+              let resumedState: string | null = null;
               try {
                 const row = getStatus.get(sessionName) as { state: string } | undefined;
-                const resumedState = row?.state ?? null;
-                if (resumedState === STATE_INTERRUPTED || resumedState === STATE_ERROR || resumedState === STATE_FINISHED) {
-                  upsertAgentStatus(STATE_ACTIVE);
-                  writeStateChange(STATE_ACTIVE, info.id);
-                }
+                resumedState = row?.state ?? null;
               } catch (e) { console.error("[prism-hooks] getStatus (resume recovery) failed:", e); }
+              if (resumedState === STATE_INTERRUPTED || resumedState === STATE_ERROR || resumedState === STATE_FINISHED) {
+                upsertAgentStatus(STATE_ACTIVE, null, info.id);
+                writeStateChange(STATE_ACTIVE, info.id);
+              }
             }
           }
           break;
