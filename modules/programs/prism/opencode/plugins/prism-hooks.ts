@@ -101,6 +101,18 @@ const writtenMessageIds = new Set<string>();
 // in msg_assistant payloads.
 const contextLimitByModel = new Map<string, number>();
 
+// Track the root agent name (set from the first msg_user event). Used to
+// detect when a subagent invocation ends (the root agent resumes).
+let rootAgentName: string | null = null;
+
+// Track active subagent invocations. When we see a subtask part
+// (type="subtask") we record the start time and agent name. When the root
+// agent resumes (detected by seeing a msg_assistant with the root agent name
+// after subagent activity), we write a subagent_end event with the duration.
+//
+// Key: agent name (e.g. "review"), Value: { startMs, messageID, description }.
+const activeSubagents = new Map<string, { startMs: number; messageID: string; description: string }>();
+
 // Track the last state_change value written so we only emit an event when
 // the state actually transitions.  session.status busy fires multiple times
 // per turn; without this guard each turn produces 4+ state_change rows.
@@ -764,6 +776,8 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             writeEvent("msg_user", { messageId: info.id, text, agent, model });
             writtenMessageIds.add(info.id);
             textByMessageId.delete(info.id);
+            // Track root agent name for subagent end detection.
+            if (!rootAgentName && agent) rootAgentName = agent;
             // Persist agent and model into agent_status. For user messages,
             // also set root_agent_name/root_model_id if not yet present —
             // the first user message establishes the root agent context used
@@ -818,6 +832,21 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             writtenMessageIds.add(info.id);
             // Clean up accumulated text now that the message is complete.
             textByMessageId.delete(info.id);
+            // Detect subagent end: when we see a completed assistant message
+            // from the root agent and there are active subagent invocations,
+            // write subagent_end events for each.
+            if (rootAgentName && asst_agent === rootAgentName && activeSubagents.size > 0) {
+              const now = Date.now();
+              for (const [subName, sub] of activeSubagents) {
+                const subDuration = Math.max(0, now - sub.startMs);
+                writeEvent("subagent_end", {
+                  agent: subName,
+                  durationMs: subDuration,
+                  messageId: sub.messageID,
+                });
+              }
+              activeSubagents.clear();
+            }
           }
           break;
         }
@@ -845,15 +874,26 @@ export const PrismHooks: Plugin = async ({ $, worktree: _worktree, client }) => 
             writeEvent("thinking", { text: String(part.text ?? "").slice(0, 500), messageId: part.messageID });
           }
 
-          // Populate context window limits from step-finish parts. opencode
-          // doesn't expose Model.limit directly in events, but we can derive
-          // useful data from the message-level tokens. For now, populate from
-          // the opencode config API at session creation (see session.created
-          // handler below) rather than per-part.
-          //
-          // No additional handling needed here; contextLimitByModel is
-          // populated in the session.created/session.updated handlers via the
-          // config API.
+          // Capture subagent invocations from subtask parts. A subtask part
+          // fires when the LLM invokes a subagent (e.g. @review, @explore).
+          // Record the start time here; the end is detected when the root
+          // agent resumes in the message.updated handler.
+          if (part.type === "subtask" && part.agent) {
+            const subagentName: string = part.agent;
+            const subDesc: string = part.description ?? "";
+            if (!activeSubagents.has(subagentName)) {
+              activeSubagents.set(subagentName, {
+                startMs: Date.now(),
+                messageID: part.messageID,
+                description: subDesc,
+              });
+              writeEvent("subagent_start", {
+                agent: subagentName,
+                description: subDesc,
+                messageId: part.messageID,
+              });
+            }
+          }
 
           break;
         }

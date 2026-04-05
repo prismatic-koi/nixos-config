@@ -460,6 +460,53 @@ func TestFormatDurationLong(t *testing.T) {
 	}
 }
 
+// TestRunStatsSession_SubagentInvocations verifies subagent invocation display.
+func TestRunStatsSession_SubagentInvocations(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Add a msg_assistant to make the session non-empty.
+	writeStatsEvent(t, d, session, "msg_assistant",
+		assistantPayloadWithTokens("msg-1", "reply", 1000, 500, 0, 0, 5000, 0),
+		base)
+
+	// Two subagent invocations.
+	writeStatsEvent(t, d, session, "subagent_start",
+		`{"agent":"review","description":"Review PR","messageId":"msg-sub1"}`,
+		base.Add(5*time.Second))
+	writeStatsEvent(t, d, session, "subagent_end",
+		`{"agent":"review","durationMs":30000,"messageId":"msg-sub1"}`,
+		base.Add(35*time.Second))
+
+	writeStatsEvent(t, d, session, "subagent_start",
+		`{"agent":"explore","description":"Search code","messageId":"msg-sub2"}`,
+		base.Add(40*time.Second))
+	writeStatsEvent(t, d, session, "subagent_end",
+		`{"agent":"explore","durationMs":10000,"messageId":"msg-sub2"}`,
+		base.Add(50*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Subagent Invocations") {
+		t.Errorf("output missing 'Subagent Invocations' section\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "review") {
+		t.Errorf("output missing 'review' subagent\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "explore") {
+		t.Errorf("output missing 'explore' subagent\ngot:\n%s", out)
+	}
+}
+
 // TestCollectMetrics_PreEnrichmentEvents verifies that events without token
 // data (pre-enrichment) result in zero values rather than errors.
 func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {

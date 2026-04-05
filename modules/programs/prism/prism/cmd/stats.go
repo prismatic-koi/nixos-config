@@ -111,6 +111,15 @@ type sessionMetrics struct {
 
 	// Compaction count.
 	Compactions int
+
+	// Subagent invocations.
+	SubagentInvocations []subagentInvocation
+}
+
+// subagentInvocation records a single subagent lifecycle.
+type subagentInvocation struct {
+	Agent    string
+	Duration time.Duration
 }
 
 func (m *sessionMetrics) totalCost() float64 {
@@ -215,6 +224,19 @@ func collectMetrics(events []db.Event) *sessionMetrics {
 
 		case "compaction":
 			m.Compactions++
+
+		case "subagent_end":
+			var p payload.SubagentEnd
+			if err := json.Unmarshal([]byte(e.Payload), &p); err == nil {
+				dur := time.Duration(0)
+				if p.DurationMs > 0 {
+					dur = time.Duration(p.DurationMs) * time.Millisecond
+				}
+				m.SubagentInvocations = append(m.SubagentInvocations, subagentInvocation{
+					Agent:    p.Agent,
+					Duration: dur,
+				})
+			}
 		}
 	}
 
@@ -349,6 +371,45 @@ func renderSessionDetail(m *sessionMetrics) {
 		}
 	} else {
 		fmt.Println(styleDim.Render("  no tool data"))
+	}
+
+	// Subagent invocations.
+	if len(m.SubagentInvocations) > 0 {
+		fmt.Println()
+		fmt.Println(styleHeader.Render("Subagent Invocations"))
+		// Aggregate by agent name.
+		type subStats struct {
+			count    int
+			totalDur time.Duration
+		}
+		byAgent := make(map[string]*subStats)
+		for _, inv := range m.SubagentInvocations {
+			s, ok := byAgent[inv.Agent]
+			if !ok {
+				s = &subStats{}
+				byAgent[inv.Agent] = s
+			}
+			s.count++
+			s.totalDur += inv.Duration
+		}
+		// Sort by count descending.
+		type agentEntry struct {
+			name  string
+			stats *subStats
+		}
+		var agents []agentEntry
+		for name, stats := range byAgent {
+			agents = append(agents, agentEntry{name, stats})
+		}
+		sort.Slice(agents, func(i, j int) bool { return agents[i].stats.count > agents[j].stats.count })
+		for _, a := range agents {
+			avgDur := ""
+			if a.stats.totalDur > 0 && a.stats.count > 0 {
+				avg := a.stats.totalDur / time.Duration(a.stats.count)
+				avgDur = fmt.Sprintf("  avg %s", formatDurationLong(avg))
+			}
+			fmt.Printf("  %-20s %4d%s\n", a.name, a.stats.count, styleDim.Render(avgDur))
+		}
 	}
 }
 

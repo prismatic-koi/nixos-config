@@ -136,3 +136,19 @@ type Compaction struct {
 type ErrorEvent struct {
 	Note string `json:"note"`
 }
+
+// SubagentStart is the payload for subagent_start events, recorded when a
+// subagent (e.g. @review, @explore) is invoked via a subtask part.
+type SubagentStart struct {
+	Agent       string `json:"agent"`
+	Description string `json:"description,omitempty"`
+	MessageID   string `json:"messageId"`
+}
+
+// SubagentEnd is the payload for subagent_end events, recorded when the
+// message context returns to the root agent after a subagent invocation.
+type SubagentEnd struct {
+	Agent      string `json:"agent"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	MessageID  string `json:"messageId"`
+}

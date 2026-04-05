@@ -809,23 +809,6 @@ ORDER BY created_at ASC`
 	return events, nil
 }
 
-// AllStatusForRepo returns all agent_status rows for repo (active and ended).
-func (d *DB) AllStatusForRepo(repo string) ([]Status, error) {
-	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
-FROM agent_status
-WHERE repo = ?`
-	return d.queryStatuses(q, repo)
-}
-
-// AllStatus returns all agent_status rows (active and ended).
-func (d *DB) AllStatus() ([]Status, error) {
-	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, ended_at
-FROM agent_status`
-	return d.queryStatuses(q)
-}
-
 // WaitingCount returns the number of active sessions with state='waiting'.
 func (d *DB) WaitingCount() (int, error) {
 	var n int
