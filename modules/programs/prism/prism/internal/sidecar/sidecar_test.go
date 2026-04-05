@@ -3,6 +3,7 @@ package sidecar
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1247,13 +1248,16 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	if err := d.UpsertStatusWithAgent(coordName, repo, "/tmp/coord-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
 		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
 	}
-	// Set the port directly.
-	row := d.QueryRow(
-		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ?",
+	// Set the port directly via a UPDATE … RETURNING to verify it applied.
+	var got int
+	if err := d.QueryRow(
+		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING opencode_port",
 		port, coordName,
-	)
-	if row.Err() != nil {
-		t.Fatalf("seed coordinator: set port: %v", row.Err())
+	).Scan(&got); err != nil {
+		t.Fatalf("seed coordinator: set port: %v", err)
+	}
+	if got != port {
+		t.Fatalf("seed coordinator: port mismatch: got %d, want %d", got, port)
 	}
 }
 
@@ -1491,11 +1495,15 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	worker, _ := newWorkerSidecar(t, d)
 
 	// Record HTTP requests to verify the body.
-	var receivedBody []byte
+	var (
+		bodyMu       sync.Mutex
+		receivedBody []byte
+	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		buf := make([]byte, 4096)
-		n, _ := r.Body.Read(buf)
-		receivedBody = buf[:n]
+		body, _ := io.ReadAll(r.Body)
+		bodyMu.Lock()
+		receivedBody = body
+		bodyMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -1538,19 +1546,28 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	}
 
 	// Verify the HTTP body contained the notification text.
-	if len(receivedBody) > 0 {
-		var body map[string]any
-		if err := json.Unmarshal(receivedBody, &body); err == nil {
-			parts, _ := body["parts"].([]any)
-			if len(parts) > 0 {
-				part, _ := parts[0].(map[string]any)
-				text, _ := part["text"].(string)
-				wantText := "Agent test-repo@feature has finished its current task"
-				if text != wantText {
-					t.Errorf("HTTP body text = %q, want %q", text, wantText)
-				}
-			}
-		}
+	// waitForBusMessageDelivered ensures the HTTP call completed before we get here.
+	bodyMu.Lock()
+	captured := make([]byte, len(receivedBody))
+	copy(captured, receivedBody)
+	bodyMu.Unlock()
+
+	if len(captured) == 0 {
+		t.Fatal("expected HTTP request body to be captured, got empty")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(captured, &body); err != nil {
+		t.Fatalf("unmarshal HTTP body: %v", err)
+	}
+	parts, _ := body["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatal("expected parts in HTTP body")
+	}
+	part, _ := parts[0].(map[string]any)
+	text, _ := part["text"].(string)
+	wantText := "Agent test-repo@feature has finished its current task"
+	if text != wantText {
+		t.Errorf("HTTP body text = %q, want %q", text, wantText)
 	}
 }
 
@@ -1626,5 +1643,40 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	}
 	if len(msgs) != 0 {
 		t.Errorf("expected no bus messages when no coordinator, got %d", len(msgs))
+	}
+}
+
+func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
+	d := openTestDB(t)
+	worker, _ := newWorkerSidecar(t, d)
+
+	// Seed coordinator with a port but no opencode_sid.
+	coordName := "test-repo@main"
+	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, nil); err != nil {
+		t.Fatalf("seed coordinator: UpsertStatus: %v", err)
+	}
+	// Set port but leave opencode_sid = NULL.
+	var gotPort int
+	if err := d.QueryRow(
+		"UPDATE agent_status SET opencode_port = 19999 WHERE session_name = ? RETURNING opencode_port",
+		coordName,
+	).Scan(&gotPort); err != nil {
+		t.Fatalf("set port: %v", err)
+	}
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Should fall back to undelivered bus message since opencode_sid is nil.
+	msg := waitForBusMessage(t, d, coordName)
+	if msg == nil {
+		t.Fatal("expected fallback bus message when coordinator has port but no sid")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
 	}
 }
