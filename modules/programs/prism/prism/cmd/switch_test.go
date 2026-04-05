@@ -80,6 +80,12 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// This test mutates package-level state (TmuxBin) via withCmdServer, so it
 	// must NOT run in parallel.
 
+	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
+	// writes its DB and sidecar state to an isolated location instead of the
+	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
+	// starts the tmux server (which inherits the environment).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	prismBin := buildPrismBinary(t)
 
 	s := newCmdTestServer(t)
@@ -109,6 +115,10 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// Derive the expected session name via the same helper used by the binary.
 	expectedSession := session.NameFor(targetDir, "")
 
+	// Register sidecar cleanup before polling — the binary may have already
+	// launched a sidecar by the time the session appears in tmux.
+	t.Cleanup(func() { session.KillSidecar(expectedSession) })
+
 	// Poll until the client moves to the expected session.
 	deadline := time.Now().Add(10 * time.Second)
 	var gotSession string
@@ -136,6 +146,12 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// Mutates TmuxBin via withCmdServer — must not be parallel.
 
+	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
+	// writes its DB and sidecar state to an isolated location instead of the
+	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
+	// starts the tmux server (which inherits the environment).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	prismBin := buildPrismBinary(t)
 
 	s := newCmdTestServer(t)
@@ -159,6 +175,10 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	runInNewWindow(t, s, "sessionA", "/tmp", switchArgs)
 
 	expectedSession := session.NameFor(targetDir, "")
+
+	// Register sidecar cleanup before polling — the binary may have already
+	// launched a sidecar by the time the session appears in tmux.
+	t.Cleanup(func() { session.KillSidecar(expectedSession) })
 
 	// Wait for clientA to land on the target session.
 	deadline := time.Now().Add(10 * time.Second)

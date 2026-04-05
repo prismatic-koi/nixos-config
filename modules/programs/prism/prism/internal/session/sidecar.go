@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -50,6 +51,60 @@ func SidecarPIDPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "run", sessionName+"-sidecar.pid"), nil
+}
+
+// KillSidecar reads the PID file for the named session, sends SIGTERM to the
+// recorded process, and removes the PID file. It handles missing or stale PID
+// files gracefully — no error is returned in those cases.
+//
+// This function is safe to call from test teardown: if StartSidecar was never
+// reached (e.g. the test failed before the session was created) the missing PID
+// file is treated as a no-op.  If the process has already exited (ESRCH), the
+// stale PID file is removed without attempting the kill.  If the PID has been
+// recycled to an unrelated process (/proc/<pid>/cmdline does not contain
+// "prism"), the kill is skipped and the file is removed.
+func KillSidecar(sessionName string) {
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		// Can't derive the path — nothing to clean up.
+		return
+	}
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		// PID file absent — sidecar was never started or already cleaned up.
+		return
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		// Corrupt PID file — remove it and move on.
+		_ = os.Remove(pidPath)
+		return
+	}
+
+	// Guard against same-user PID recycling: verify the PID belongs to a
+	// prism process by checking /proc/<pid>/cmdline before sending SIGTERM.
+	// This is Linux-specific (codebase targets NixOS), so if the file is
+	// unreadable (e.g. the process is already gone) we fall through and let
+	// the subsequent Kill handle ESRCH gracefully.
+	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
+		if !strings.Contains(string(cmdline), "prism") {
+			// PID has been recycled to an unrelated process — do not kill it.
+			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism process — skipping kill\n", pid)
+			_ = os.Remove(pidPath)
+			return
+		}
+	}
+
+	// Send SIGTERM; ignore ESRCH (no such process — already gone).
+	// The PID file is removed unconditionally after the kill attempt.
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
+		fmt.Fprintf(os.Stderr, "warning: kill sidecar pid %d: %v\n", pid, err)
+	}
+
+	_ = os.Remove(pidPath)
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
