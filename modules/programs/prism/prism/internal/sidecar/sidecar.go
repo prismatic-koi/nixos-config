@@ -265,6 +265,10 @@ func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
 		s.compacting = true
 		s.writeEvent("compaction", map[string]string{"note": "compaction started"}, strPtr(info.ID))
 		sid := strPtr(info.ID)
+		// Deliberately omit writeStateChange here: compacting is an internal detail
+		// and does not warrant a dashboard refresh or state_change event.
+		// lastState is intentionally not updated so a later writeStateChange
+		// won't consider this a no-op.
 		s.upsertState(agent.StateCompacting, nil, sid)
 		return
 	}
@@ -283,7 +287,12 @@ func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
 	case agent.StateInterrupted, agent.StateError, agent.StateFinished:
-		// Resume: transition back to active.
+		// Resume: transition back to active. Clear ended_at so the session
+		// becomes visible again in AllActiveStatus / dashboard filters
+		// (both query WHERE ended_at IS NULL).
+		if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
+			log.Printf("sidecar: ClearEnded failed on resume: %v", err)
+		}
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
 	default:
@@ -692,10 +701,11 @@ func strPtr(s string) *string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen]
+	return string(runes[:maxLen])
 }
 
 func marshalTruncated(v any, maxLen int) string {

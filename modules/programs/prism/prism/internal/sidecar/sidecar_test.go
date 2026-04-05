@@ -280,6 +280,26 @@ func TestSessionIdle_DoesNotOverrideInterrupted(t *testing.T) {
 	}
 }
 
+func TestSessionIdle_DoesNotOverrideError(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed as error (e.g. session.error wrote error state, then session.idle fires).
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "error", nil, nil)
+
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer to be created")
+	}
+	timer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q (should not overwrite error)", state, agent.StateError)
+	}
+}
+
 func TestSessionCreated_WritesActiveWithTitle(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 

@@ -442,6 +442,21 @@ func (d *DB) SetEnded(sessionName string) error {
 	return nil
 }
 
+// ClearEnded clears the ended_at timestamp for sessionName, making the session
+// visible again to AllActiveStatus and the dashboard (which both filter
+// WHERE ended_at IS NULL). Called when a session resumes from a terminal state
+// so that the resumed session re-appears in all active-session views.
+func (d *DB) ClearEnded(sessionName string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET ended_at = NULL WHERE session_name = ?",
+		sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: clear ended: %w", err)
+	}
+	return nil
+}
+
 // AllocatePort picks the lowest unused port from the range PortRangeStart–PortRangeEnd,
 // writes it to agent_status.opencode_port for sessionName, and returns it.
 //
