@@ -19,6 +19,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -53,10 +54,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
 	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
+	cfg := config.Load()
 	opts := session.Opts{
-		Prompt:   promptFlag,
-		Agent:    agentFlag,
-		Headless: !fromKeybind && !attachFlag,
+		Prompt:         promptFlag,
+		Agent:          agentFlag,
+		Headless:       !fromKeybind && !attachFlag,
+		ContainerMode:  cfg.ContainerMode,
+		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
 	// Resolve the bare repo root from the current pane path.

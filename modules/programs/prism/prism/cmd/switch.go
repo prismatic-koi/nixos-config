@@ -623,7 +623,12 @@ var switchCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
 		fresh, _ := cmd.Flags().GetBool("fresh")
-		opts := session.Opts{Fresh: fresh}
+		cfg := config.Load()
+		opts := session.Opts{
+			Fresh:          fresh,
+			ContainerMode:  cfg.ContainerMode,
+			PluginHostPath: cfg.SidecarPluginPath,
+		}
 
 		// --path: open a specific path directly.
 		if pathArg != "" {

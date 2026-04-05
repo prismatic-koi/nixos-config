@@ -30,6 +30,15 @@ type Config struct {
 	// Binary paths.
 	KittyBin string `json:"kitty_bin"`
 
+	// Sidecar container settings.
+	// ContainerMode, when true, causes spawn and switch to run opencode inside
+	// a podman container managed by the sidecar, using "opencode attach" in the
+	// agent window rather than launching opencode directly.
+	ContainerMode bool `json:"container_mode"`
+	// SidecarPluginPath is the host-side path to the opencode plugin file that
+	// is bind-mounted into the container. Empty string = no plugin.
+	SidecarPluginPath string `json:"sidecar_plugin_path"`
+
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
@@ -39,19 +48,21 @@ type Config struct {
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or
 // absent key is distinguishable from an explicit empty array [].
 type parsedConfig struct {
-	ColorPrimary     string    `json:"color_primary"`
-	ColorSecondary   string    `json:"color_secondary"`
-	ColorPurple      string    `json:"color_purple"`
-	ColorYellow      string    `json:"color_yellow"`
-	ColorGreen       string    `json:"color_green"`
-	ColorBlue        string    `json:"color_blue"`
-	ColorRed         string    `json:"color_red"`
-	ColorForeground  string    `json:"color_foreground"`
-	ColorBg0         string    `json:"color_bg0"`
-	KittyBin         string    `json:"kitty_bin"`
-	WorktreeExclude  *[]string `json:"worktree_exclude"`
-	ProjectLocations *[]string `json:"project_locations"`
-	ProjectSpecific  *[]string `json:"project_specific"`
+	ColorPrimary      string    `json:"color_primary"`
+	ColorSecondary    string    `json:"color_secondary"`
+	ColorPurple       string    `json:"color_purple"`
+	ColorYellow       string    `json:"color_yellow"`
+	ColorGreen        string    `json:"color_green"`
+	ColorBlue         string    `json:"color_blue"`
+	ColorRed          string    `json:"color_red"`
+	ColorForeground   string    `json:"color_foreground"`
+	ColorBg0          string    `json:"color_bg0"`
+	KittyBin          string    `json:"kitty_bin"`
+	ContainerMode     *bool     `json:"container_mode"`
+	SidecarPluginPath string    `json:"sidecar_plugin_path"`
+	WorktreeExclude   *[]string `json:"worktree_exclude"`
+	ProjectLocations  *[]string `json:"project_locations"`
+	ProjectSpecific   *[]string `json:"project_specific"`
 }
 
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
@@ -144,6 +155,12 @@ func load() Config {
 	}
 	if parsed.KittyBin != "" {
 		cfg.KittyBin = parsed.KittyBin
+	}
+	if parsed.ContainerMode != nil {
+		cfg.ContainerMode = *parsed.ContainerMode
+	}
+	if parsed.SidecarPluginPath != "" {
+		cfg.SidecarPluginPath = parsed.SidecarPluginPath
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil

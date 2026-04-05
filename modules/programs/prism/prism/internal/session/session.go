@@ -43,6 +43,10 @@ type Opts struct {
 	// The sidecar is responsible for starting the container and signalling readiness
 	// before the attach command is sent to the tmux pane.
 	ContainerMode bool
+	// PluginHostPath is the host-side path to the opencode plugin file that
+	// is bind-mounted into the container. Empty string = no plugin. Only used
+	// when ContainerMode is true.
+	PluginHostPath string
 	// SkipStatusSeed, when true, causes setupFullLayout to skip the
 	// "prism event tmux-session-start" call that seeds agent_status.
 	// Used by the restore path, which manages agent_status directly via the
@@ -183,10 +187,11 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		fmt.Fprintf(os.Stderr, "warning: sidecar skipped for %q — no port allocated\n", name)
 	} else {
 		sidecarOpts := StartSidecarOpts{
-			Port:          opts.Port,
-			ContainerMode: opts.ContainerMode,
-			AgentRole:     opts.Agent,
-			Worktree:      directory,
+			Port:           opts.Port,
+			ContainerMode:  opts.ContainerMode,
+			AgentRole:      opts.Agent,
+			Worktree:       directory,
+			PluginHostPath: opts.PluginHostPath,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.
