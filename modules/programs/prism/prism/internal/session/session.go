@@ -35,7 +35,14 @@ type Opts struct {
 	SessionName string
 	// Port is the allocated opencode serve port. When non-zero, BuildOpencodeCmd
 	// includes --port <n> and --hostname 127.0.0.1 in the opencode launch command.
+	// In container mode, the port is also passed to the sidecar so it knows which
+	// host port to bind.
 	Port int
+	// ContainerMode, when true, switches the agent window command from
+	// "opencode --agent <name> --port <n>" to "opencode attach http://localhost:<n>".
+	// The sidecar is responsible for starting the container and signalling readiness
+	// before the attach command is sent to the tmux pane.
+	ContainerMode bool
 	// SkipStatusSeed, when true, causes setupFullLayout to skip the
 	// "prism event tmux-session-start" call that seeds agent_status.
 	// Used by the restore path, which manages agent_status directly via the
@@ -76,12 +83,29 @@ func DefaultAgent(directory, explicit string) string {
 }
 
 // BuildOpencodeCmd returns the opencode launch command string for the given opts.
-// When opts.SessionName is set, the returned string is prefixed with
-// PRISM_SESSION_NAME=<name> so that the opencode plugin can read the canonical
-// session name without having to re-derive it from the filesystem.
-// When opts.Port is non-zero, --port and --hostname 127.0.0.1 are included so
-// that opencode starts its HTTP serve API on the allocated port.
+//
+// When opts.ContainerMode is true, the command is "opencode attach http://localhost:<port>"
+// — a lightweight TUI client that connects to the containerised opencode serve
+// instance (AC-17, AC-22). The port in the URL is opts.Port (never hardcoded).
+//
+// When opts.ContainerMode is false (default), the command launches opencode
+// directly as before. PRISM_SESSION_NAME is prepended when opts.SessionName is
+// set, and --port / --hostname are appended when opts.Port is non-zero.
 func BuildOpencodeCmd(opts Opts) string {
+	if opts.ContainerMode {
+		if opts.Port == 0 {
+			// Shouldn't happen — callers must allocate a port before enabling
+			// container mode. Fall back to the non-container command.
+			return buildDirectOpencodeCmd(opts)
+		}
+		// AC-17: opencode attach with the allocated port (not 4096).
+		return fmt.Sprintf("opencode attach http://localhost:%d", opts.Port)
+	}
+	return buildDirectOpencodeCmd(opts)
+}
+
+// buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).
+func buildDirectOpencodeCmd(opts Opts) string {
 	agent := opts.Agent
 	if agent == "" {
 		agent = "worker"
@@ -140,6 +164,10 @@ func Create(name, directory string, opts Opts) error {
 // setupFullLayout configures the three-window layout for a project session:
 // window 0 "edit" (nvim auto-launched), window 1 "agent" (opencode),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
+//
+// In container mode (opts.ContainerMode), the sidecar is started first and the
+// agent window runs a readiness-wait loop before running "opencode attach".
+// This ensures the container is healthy before the TUI client tries to connect.
 func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.RenameWindow(name+":0", "edit")
 
@@ -147,22 +175,39 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
 	_ = tmux.NewWindow(name, 1, "agent", directory)
-	// opts.SessionName must be set by the caller before setupFullLayout is
-	// invoked — both ensureAndSwitch and restoreProjectSession do this.
-	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
-	_ = tmux.SendKeys(name+":1", BuildOpencodeCmd(opts))
 
-	// Start the sidecar as a detached OS process when a port was allocated.
-	// If port is 0 (allocation failed) the sidecar is skipped with a warning —
-	// opencode still works, just without the SSE-driven state machine.
+	// Start the sidecar before sending the agent window command.
+	// In container mode the sidecar creates the container; we must start it
+	// before the attach command is queued so readiness signalling works.
 	if opts.Port == 0 {
 		fmt.Fprintf(os.Stderr, "warning: sidecar skipped for %q — no port allocated\n", name)
 	} else {
-		if err := StartSidecar(name, opts.Port); err != nil {
+		sidecarOpts := StartSidecarOpts{
+			Port:          opts.Port,
+			ContainerMode: opts.ContainerMode,
+			AgentRole:     opts.Agent,
+			Worktree:      directory,
+		}
+		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.
 			fmt.Fprintf(os.Stderr, "warning: could not start sidecar for %q: %v\n", name, err)
 		}
 	}
+
+	// Build and send the agent window command.
+	// In container mode, prepend a readiness wait so the pane blocks until
+	// the sidecar has health-checked the container (AC-18, AC-19, AC-20).
+	agentCmd := BuildOpencodeCmd(opts)
+	if opts.ContainerMode && opts.Port != 0 {
+		readyPath, pathErr := SidecarReadyPath(name)
+		if pathErr == nil {
+			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
+		}
+	}
+	// opts.SessionName must be set by the caller before setupFullLayout is
+	// invoked — both ensureAndSwitch and restoreProjectSession do this.
+	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
+	_ = tmux.SendKeys(name+":1", agentCmd)
 
 	if !opts.SkipStatusSeed {
 		self, selfErr := os.Executable()
@@ -185,6 +230,22 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.SelectWindow(name, focusIdx)
 
 	return nil
+}
+
+// buildReadinessWaitCmd builds a shell command that polls for the sidecar
+// readiness file and, once found, runs the given attach command.
+// If the wait times out (120s), it prints an error and exits (AC-20).
+func buildReadinessWaitCmd(readyPath, attachCmd string) string {
+	// Poll every 0.5s for up to 120s (240 iterations).
+	// On success, exec the attach command; on timeout, print a clear error.
+	return fmt.Sprintf(
+		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+
+			`if [ ! -f %s ]; then `+
+			`echo "prism: container did not become ready within 120s" >&2; exit 1; `+
+			`fi; `+
+			`%s`,
+		shellQuote(readyPath), shellQuote(readyPath), attachCmd,
+	)
 }
 
 // NvimCmd returns the nvim command to run in the edit window for the given

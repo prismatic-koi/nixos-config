@@ -4,6 +4,9 @@
 // into agent state transitions, DB writes, and dashboard sentinel touches —
 // replicating the logic in opencode/plugins/prism-hooks.ts.
 //
+// In container mode (Config.Container != nil), the sidecar also manages the
+// podman container lifecycle: create, health-check, stop, remove.
+//
 // All timer and clock operations go through an abstracted Clock interface so
 // that tests can control time deterministically.
 package sidecar
@@ -24,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
@@ -67,6 +71,15 @@ type Config struct {
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
+	// Container, when non-nil, enables container mode: the sidecar creates and
+	// manages a podman container running opencode serve instead of relying on a
+	// directly-launched opencode process.
+	Container *container.Config
+	// OnReady is called (once, synchronously) after the container is healthy
+	// and before the SSE loop starts. Used in container mode to write the
+	// readiness signal file that unblocks the tmux pane running "opencode attach".
+	// No-op when nil.
+	OnReady func()
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -82,6 +95,9 @@ type Sidecar struct {
 	opencodeSID     string
 	writtenMessages map[string]bool // dedup message.updated writes
 	textByMessage   map[string]string
+	// container is set when running in container mode.
+	// Protected by mu.
+	container *containerMgr
 
 	// rootAgent is the name of the top-level agent for this session, derived
 	// from the first msg_user event. Empty until the first user message arrives.
@@ -109,10 +125,47 @@ func New(cfg Config) *Sidecar {
 	}
 }
 
+// containerMgr holds the container.Manager when running in container mode.
+// It is set in Run before the SSE loop starts, and used by Shutdown.
+type containerMgr struct {
+	mgr *container.Manager
+}
+
 // Run connects to the SSE stream and processes events until ctx is cancelled.
 // It blocks until the event channel is closed (context cancellation or
 // permanent connection failure).
+//
+// When Config.Container is non-nil (container mode), Run first creates and
+// health-checks the podman container before subscribing to the SSE stream.
+// The container is stopped and removed by Shutdown().
 func (s *Sidecar) Run(ctx context.Context) error {
+	// Container mode: create and health-check the container before connecting.
+	if s.cfg.Container != nil {
+		mgr := container.New(*s.cfg.Container)
+		s.mu.Lock()
+		s.container = &containerMgr{mgr: mgr}
+		s.mu.Unlock()
+
+		log.Printf("sidecar: creating container %q", mgr.Name())
+		if err := mgr.Create(ctx); err != nil {
+			return fmt.Errorf("sidecar: container create: %w", err)
+		}
+
+		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
+		if err := mgr.WaitHealthy(ctx); err != nil {
+			// AC-14: health-check timeout — stop/remove and exit non-zero.
+			log.Printf("sidecar: health check failed, stopping container: %v", err)
+			mgr.Shutdown()
+			return fmt.Errorf("sidecar: container health check: %w", err)
+		}
+		log.Printf("sidecar: container %q is healthy", mgr.Name())
+
+		// Signal readiness after the container is healthy (AC-7, AC-19).
+		if s.cfg.OnReady != nil {
+			s.cfg.OnReady()
+		}
+	}
+
 	url := s.cfg.OpencodeURL + "/event"
 	client := &sse.Client{
 		InitialRetryDelay: 1 * time.Second,
@@ -186,8 +239,19 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 }
 
 // Shutdown writes the interrupted state if the session is not already in a
-// terminal state, and cancels any pending idle timer. Called on SIGINT/SIGTERM.
+// terminal state, cancels any pending idle timer, and stops/removes the
+// container (if running in container mode). Called on SIGINT/SIGTERM.
 func (s *Sidecar) Shutdown() {
+	s.mu.Lock()
+	ctr := s.container
+	s.mu.Unlock()
+
+	// Stop and remove the container before writing state — this ensures
+	// cleanup happens even if SIGTERM arrives during health-check (AC-16).
+	if ctr != nil {
+		ctr.mgr.Shutdown()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

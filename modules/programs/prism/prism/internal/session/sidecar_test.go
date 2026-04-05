@@ -189,3 +189,38 @@ func TestStartSidecar_CreatesDirectories(t *testing.T) {
 		}
 	}
 }
+
+// ── SidecarReadyPath tests ────────────────────────────────────────────────────
+
+func TestSidecarReadyPath_DefaultXDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	got, err := SidecarReadyPath("myrepo@feature")
+	if err != nil {
+		t.Fatalf("SidecarReadyPath: %v", err)
+	}
+
+	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature-sidecar.ready")
+	if got != want {
+		t.Errorf("SidecarReadyPath = %q, want %q", got, want)
+	}
+}
+
+func TestSidecarReadyPath_CustomXDG(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	got, err := SidecarReadyPath("myrepo@main")
+	if err != nil {
+		t.Fatalf("SidecarReadyPath: %v", err)
+	}
+
+	want := filepath.Join(tmp, "prism", "run", "myrepo@main-sidecar.ready")
+	if got != want {
+		t.Errorf("SidecarReadyPath = %q, want %q", got, want)
+	}
+}

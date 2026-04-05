@@ -99,3 +99,29 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildOpencodeCmd_ContainerMode verifies that container mode produces the
+// correct "opencode attach http://localhost:<port>" command (AC-17, AC-22).
+func TestBuildOpencodeCmd_ContainerMode(t *testing.T) {
+	cases := []struct {
+		opts session.Opts
+		want string
+	}{
+		// Container mode with allocated port — should use opencode attach.
+		{session.Opts{ContainerMode: true, Port: 14000}, "opencode attach http://localhost:14000"},
+		// Different port (AC-22: port in URL is the allocated port, not 4096).
+		{session.Opts{ContainerMode: true, Port: 14042}, "opencode attach http://localhost:14042"},
+		// Agent role is irrelevant in container mode (attach doesn't take --agent).
+		{session.Opts{ContainerMode: true, Port: 14001, Agent: "coordinator"}, "opencode attach http://localhost:14001"},
+		// Container mode with no port falls back to direct launch.
+		{session.Opts{ContainerMode: true, Port: 0, Agent: "worker"}, "opencode --agent worker"},
+		// Non-container mode is unaffected.
+		{session.Opts{ContainerMode: false, Port: 14000, Agent: "worker"}, "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
+	}
+	for _, tc := range cases {
+		got := session.BuildOpencodeCmd(tc.opts)
+		if got != tc.want {
+			t.Errorf("BuildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
+		}
+	}
+}
