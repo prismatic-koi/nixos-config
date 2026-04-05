@@ -523,3 +523,61 @@ func TestIsNoSuchContainer(t *testing.T) {
 		}
 	}
 }
+
+// ── redactArgs tests ─────────────────────────────────────────────────────────
+
+func TestRedactArgs_EnvValueRedacted(t *testing.T) {
+	args := []string{"run", "--env", "ANTHROPIC_API_KEY=sk-ant-abc123"}
+	got := redactArgs(args)
+	if got[2] != "ANTHROPIC_API_KEY=***" {
+		t.Errorf("expected ANTHROPIC_API_KEY=***, got %q", got[2])
+	}
+	// Original must be unchanged.
+	if args[2] != "ANTHROPIC_API_KEY=sk-ant-abc123" {
+		t.Errorf("redactArgs mutated original slice")
+	}
+}
+
+func TestRedactArgs_NonEnvArgsUntouched(t *testing.T) {
+	args := []string{"run", "--name", "prism-foo", "--detach"}
+	got := redactArgs(args)
+	for i, want := range args {
+		if got[i] != want {
+			t.Errorf("arg[%d]: got %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+func TestRedactArgs_EnvAsLastArgNoPanic(t *testing.T) {
+	// --env at the last position — should not panic.
+	args := []string{"run", "--env"}
+	got := redactArgs(args)
+	if len(got) != 2 || got[1] != "--env" {
+		t.Errorf("unexpected result for trailing --env: %v", got)
+	}
+}
+
+func TestRedactArgs_MultipleEnvVarsAllRedacted(t *testing.T) {
+	args := []string{
+		"run",
+		"--env", "ANTHROPIC_API_KEY=sk-ant-secret",
+		"--env", "GITHUB_TOKEN=ghp_supersecret",
+		"--env", "OPENAI_API_KEY=sk-openai-xyz",
+	}
+	got := redactArgs(args)
+	for i, arg := range got {
+		if strings.Contains(arg, "secret") || strings.Contains(arg, "supersecret") || strings.Contains(arg, "xyz") {
+			t.Errorf("got[%d] = %q still contains plaintext secret", i, arg)
+		}
+	}
+	// Keys must still be present.
+	if got[2] != "ANTHROPIC_API_KEY=***" {
+		t.Errorf("expected ANTHROPIC_API_KEY=***, got %q", got[2])
+	}
+	if got[4] != "GITHUB_TOKEN=***" {
+		t.Errorf("expected GITHUB_TOKEN=***, got %q", got[4])
+	}
+	if got[6] != "OPENAI_API_KEY=***" {
+		t.Errorf("expected OPENAI_API_KEY=***, got %q", got[6])
+	}
+}

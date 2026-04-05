@@ -137,7 +137,7 @@ func (m *Manager) Create(ctx context.Context) error {
 	// Build the podman run arguments.
 	args := m.buildRunArgs()
 
-	log.Printf("container: creating %q: podman %s", m.name, strings.Join(args, " "))
+	log.Printf("container: creating %q: podman %s", m.name, strings.Join(redactArgs(args), " "))
 
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout = os.Stderr // forward container stdout to sidecar's stderr log
@@ -335,6 +335,24 @@ func (m *Manager) credentialEnvVars() []string {
 	}
 
 	return vars
+}
+
+// redactArgs returns a copy of args where any value immediately following a
+// "--env" element has its value (the part after the first "=") replaced with
+// "***". This prevents API keys and tokens from appearing in log output.
+// The original slice is not modified.
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i, arg := range out {
+		if arg == "--env" && i+1 < len(out) {
+			kv := out[i+1]
+			if eq := strings.IndexByte(kv, '='); eq >= 0 {
+				out[i+1] = kv[:eq] + "=***"
+			}
+		}
+	}
+	return out
 }
 
 // isNoSuchContainer returns true when the podman output indicates the container

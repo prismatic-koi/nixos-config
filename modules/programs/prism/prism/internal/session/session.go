@@ -200,7 +200,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	agentCmd := BuildOpencodeCmd(opts)
 	if opts.ContainerMode && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
-		if pathErr == nil {
+		if pathErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)
+		} else {
 			// Remove any stale ready file from a previous session lifecycle
 			// BEFORE sending the readiness-wait script to the pane. This must
 			// happen synchronously here (in the parent process) to guarantee the
