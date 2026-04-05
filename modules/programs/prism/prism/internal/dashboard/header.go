@@ -201,8 +201,16 @@ func RenderHeader(d Shared, styleDim, styleIns, styleDel lipgloss.Style) string 
 	stateRendered := styleStatDim.Render(stateLine)
 	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.Sessions)))
 
-	// Fixed column width — wide enough for worst-case state line (35 chars) + room.
-	const statsW = 37
+	// Dynamically compute statsW from the actual visible widths of all stat
+	// content lines, so that a long state line (e.g. all 5 status categories)
+	// never overflows into the art column.
+	const minStatsW = 20
+	statsW := minStatsW
+	for _, s := range []string{sessionCountLine, stateRendered, changesLine, prRendered} {
+		if w := lipgloss.Width(s); w > statsW {
+			statsW = w
+		}
+	}
 
 	// 7 stat lines matching artHeight, each exactly statsW wide.
 	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
