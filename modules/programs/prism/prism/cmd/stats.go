@@ -494,11 +494,11 @@ func runStatsSummary(showAll bool) error {
 	styleName := lipgloss.NewStyle().Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	fmt.Println(styleHeader.Render(fmt.Sprintf("%-36s  %-12s  %-8s  %-10s  %8s  %8s",
+	fmt.Println(styleHeader.Render(fmt.Sprintf("%-36s  %-12s  %-12s  %-10s  %8s  %8s",
 		"SESSION", "AGENT", "STATE", "DURATION", "TOKENS", "COST")))
 
 	for _, r := range rows {
-		stateStyled := stateStyle(r.State).Render(fmt.Sprintf("%-8s", r.State))
+		stateStyled := stateStyle(r.State).Render(fmt.Sprintf("%-12s", r.State))
 		tokStr := "—"
 		if r.Tokens > 0 {
 			tokStr = formatTokenCount(r.Tokens)
@@ -601,7 +601,11 @@ func runStatsHistorical(days int) error {
 	fmt.Println(styleHeader.Render(fmt.Sprintf("Aggregate Statistics — last %d days", days)))
 	fmt.Println()
 	fmt.Printf("  %s %d\n", styleLabel.Render("sessions:"), totalSessions)
-	fmt.Printf("  %s %s\n", styleLabel.Render("total cost:"), formatCost(totalCost))
+	costStr := "—"
+	if totalCost > 0 {
+		costStr = formatCost(totalCost)
+	}
+	fmt.Printf("  %s %s\n", styleLabel.Render("total cost:"), costStr)
 	fmt.Printf("  %s %s\n", styleLabel.Render("avg duration:"), formatDurationLong(avgDuration))
 	fmt.Println()
 
