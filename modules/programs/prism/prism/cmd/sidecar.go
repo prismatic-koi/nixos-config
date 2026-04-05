@@ -176,8 +176,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		// writeEvent) complete while the database connection is still open.
 		// Defer d.Close() runs only after runSidecar returns, which happens
 		// after Run() exits, which happens after cancel() fires here.
-		// OnReady is guarded by ctx.Err() in sidecar.Run() to prevent it
-		// from firing after SIGTERM even though cancel() comes last.
+		// OnReady is gated on Sidecar.shuttingDown (set at the start of
+		// Shutdown()) to prevent it from firing after SIGTERM even though
+		// cancel() comes last.
 		sc.Shutdown()
 		cancel()
 	}()

@@ -158,11 +158,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
 		if err := mgr.WaitHealthy(ctx); err != nil {
 			log.Printf("sidecar: health check failed: %v", err)
-			// AC-14: genuine timeout (not SIGTERM) — Shutdown() has not been called
-			// yet, so we must stop/remove the container here. When SIGTERM arrives,
-			// the signal goroutine calls cancel() then Shutdown(), so ctx.Err() is
-			// non-nil and Shutdown() already handles cleanup — skip it here to avoid
-			// a double-Shutdown that would log spurious errors.
+			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
+			// must stop/remove the container here.
+			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
+			// sets shuttingDown=true and stops the container) then cancel(). In
+			// that case ctx may still be non-nil here (cancel fires after Shutdown),
+			// but we check ctx.Err() to distinguish a context-cancelled WaitHealthy
+			// (SIGTERM path where Shutdown already ran) from a genuine probe timeout
+			// (no Shutdown yet), avoiding a double-Shutdown with spurious log lines.
 			if ctx.Err() == nil {
 				mgr.Shutdown()
 			}
