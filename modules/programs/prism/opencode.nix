@@ -163,6 +163,9 @@
         "git send-pack" = "ask";
         "git send-pack *" = "ask";
         "git receive-pack *" = "ask";
+        # deny PR merge — merging is a coordinator responsibility, never a worker's
+        "gh pr merge" = "deny";
+        "gh pr merge *" = "deny";
         # file operations that modify
         "mkdir *" = "allow";
         "rm *" = "allow";
@@ -637,6 +640,11 @@
                 }
                 // readOnlyBashCommands
                 // writeBashCommands
+                // {
+                  # deny PR merge — merging is a coordinator responsibility, never a worker's
+                  "gh pr merge" = "deny";
+                  "gh pr merge *" = "deny";
+                }
                 // tmuxDenyCommands;
               };
               plugin = [
