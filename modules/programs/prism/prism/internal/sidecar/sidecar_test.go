@@ -1224,7 +1224,9 @@ func TestSessionDeleted_UpdatesDBState(t *testing.T) {
 // newWorkerSidecar creates a worker sidecar (session name "test-repo@feature",
 // repo "test-repo") distinct from the coordinator ("test-repo@main").
 // It uses the given DB so both worker and coordinator share the same store.
-func newWorkerSidecar(t *testing.T, d *db.DB) (*Sidecar, *testClock) {
+// An optional *http.Client may be passed to override the HTTP client used for
+// coordinator notifications; pass nil to use the package default.
+func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
 	t.Helper()
 	clk := newTestClock()
 	cfg := Config{
@@ -1234,6 +1236,7 @@ func newWorkerSidecar(t *testing.T, d *db.DB) (*Sidecar, *testClock) {
 		OpencodeURL: "http://localhost:14001",
 		DB:          d,
 		Clock:       clk,
+		HTTPClient:  httpClient,
 	}
 	return New(cfg), clk
 }
@@ -1302,7 +1305,6 @@ ORDER BY sent_at DESC LIMIT 1`, toSession)
 
 func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d)
 
 	// Seed the coordinator with a known port and sid via a test HTTP server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1324,10 +1326,8 @@ func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	coordSID := "coord-sid-123"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
-	// Override the HTTP client to use the test server's transport.
-	origClient := notifyHTTPClient
-	notifyHTTPClient = srv.Client()
-	defer func() { notifyHTTPClient = origClient }()
+	// Create worker sidecar with the test server's HTTP client.
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
 	// Seed worker as active.
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
@@ -1361,7 +1361,6 @@ func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 
 func TestNotifyCoordinator_CompactedPath(t *testing.T) {
 	d := openTestDB(t)
-	worker, _ := newWorkerSidecar(t, d)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1380,9 +1379,8 @@ func TestNotifyCoordinator_CompactedPath(t *testing.T) {
 	coordSID := "coord-sid-456"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
-	origClient := notifyHTTPClient
-	notifyHTTPClient = srv.Client()
-	defer func() { notifyHTTPClient = origClient }()
+	// Create worker sidecar with the test server's HTTP client.
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
 
 	// Seed worker as compacting.
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
@@ -1410,7 +1408,7 @@ func TestNotifyCoordinator_CompactedPath(t *testing.T) {
 
 func TestNotifyCoordinator_NoNotificationOnInterrupted(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d)
+	worker, clk := newWorkerSidecar(t, d, nil)
 
 	// Seed coordinator.
 	coordSID := "coord-sid-789"
@@ -1492,7 +1490,6 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 
 func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	d := openTestDB(t)
-	worker, _ := newWorkerSidecar(t, d)
 
 	// Record HTTP requests to verify the body.
 	var (
@@ -1520,9 +1517,8 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	coordSID := "coord-sid-audit"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
-	origClient := notifyHTTPClient
-	notifyHTTPClient = srv.Client()
-	defer func() { notifyHTTPClient = origClient }()
+	// Create worker sidecar with the test server's HTTP client.
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
 
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
 	worker.mu.Lock()
@@ -1573,7 +1569,6 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 
 func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	d := openTestDB(t)
-	worker, _ := newWorkerSidecar(t, d)
 
 	// Use a server that returns an error status.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1593,9 +1588,8 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	coordSID := "coord-sid-fallback"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
-	origClient := notifyHTTPClient
-	notifyHTTPClient = srv.Client()
-	defer func() { notifyHTTPClient = origClient }()
+	// Create worker sidecar with the test server's HTTP client (returns 500).
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
 
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
 	worker.mu.Lock()
@@ -1616,7 +1610,7 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 
 func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d)
+	worker, clk := newWorkerSidecar(t, d, nil)
 
 	// Do NOT seed a coordinator row.
 
@@ -1648,7 +1642,7 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 
 func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 	d := openTestDB(t)
-	worker, _ := newWorkerSidecar(t, d)
+	worker, _ := newWorkerSidecar(t, d, nil)
 
 	// Seed coordinator with a port but no opencode_sid.
 	coordName := "test-repo@main"
@@ -1678,5 +1672,47 @@ func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
 		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
+	d := openTestDB(t)
+	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Seed coordinator row, then mark it as ended.
+	coordName := "test-repo@main"
+	coordSID := "coord-sid-ended"
+	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, &coordSID); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	if err := d.SetEnded(coordName); err != nil {
+		t.Fatalf("SetEnded coordinator: %v", err)
+	}
+
+	// Seed worker as active.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// Trigger idle debounce → finished.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written — coordinator has ended.
+	msgs, err := d.PendingMessages(coordName, "normal")
+	if err != nil {
+		t.Fatalf("PendingMessages: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected no bus messages when coordinator has ended, got %d", len(msgs))
 	}
 }

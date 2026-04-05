@@ -28,9 +28,9 @@ import (
 	"github.com/prismatic-koi/prism/internal/sse"
 )
 
-// notifyHTTPClient is the HTTP client used for coordinator notification
-// delivery. Package-level so tests can replace it with a test server.
-var notifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
+// defaultNotifyHTTPClient is the HTTP client used for coordinator notification
+// delivery when Config.HTTPClient is nil.
+var defaultNotifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // IdleDebounce is the duration to wait after session.idle before committing
 // the finished state. Cancelled if session.status busy fires in the window.
@@ -64,6 +64,9 @@ type Config struct {
 	OpencodeURL string
 	DB          *db.DB
 	Clock       Clock
+	// HTTPClient is the HTTP client used for coordinator notification delivery.
+	// If nil, defaultNotifyHTTPClient is used.
+	HTTPClient *http.Client
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -85,6 +88,9 @@ type Sidecar struct {
 func New(cfg Config) *Sidecar {
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock()
+	}
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
 	return &Sidecar{
 		cfg:             cfg,
@@ -751,7 +757,7 @@ func (s *Sidecar) notifyCoordinator() {
 
 	// Try HTTP delivery if coordinator has port and session ID.
 	if coordStatus.OpencodePort != nil && coordStatus.OpencodeSID != nil {
-		httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus)
+		httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus, s.cfg.HTTPClient)
 		if httpErr == nil {
 			// HTTP succeeded — write audit trail with delivered_at set.
 			if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
@@ -770,7 +776,7 @@ func (s *Sidecar) notifyCoordinator() {
 }
 
 // deliverNotificationViaHTTP sends a notification prompt to the opencode HTTP API.
-func deliverNotificationViaHTTP(port int, opencodeSID string, text string, status *db.Status) error {
+func deliverNotificationViaHTTP(port int, opencodeSID string, text string, status *db.Status, httpClient *http.Client) error {
 	body := buildNotifyPromptBody(text, status)
 	jsonBytes, err := json.Marshal(body)
 	if err != nil {
@@ -784,7 +790,7 @@ func deliverNotificationViaHTTP(port int, opencodeSID string, text string, statu
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := notifyHTTPClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http request: %w", err)
 	}
