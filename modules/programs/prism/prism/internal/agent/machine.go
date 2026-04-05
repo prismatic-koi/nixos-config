@@ -16,7 +16,11 @@ import "fmt"
 //     "finished" (see UpsertStatusInterruptedOverrideFinished).
 //   - finished → active: the resumed-session path — opencode reopens a session
 //     that was previously closed cleanly (see session.updated in the plugin).
+//   - finished → idle: tmux-session-start resets a previously-finished session
+//     back to idle when the tmux session is recreated (e.g. prism restore or
+//     manual kill+recreate).
 //   - interrupted → active: session resumed after an interruption.
+//   - interrupted → idle: same as finished → idle but starting from interrupted.
 //   - * → deleted: any state can transition to deleted when session.deleted fires.
 //
 // The TypeScript plugin writes state directly to SQLite and is not constrained
@@ -55,14 +59,18 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 	},
 	// finished→interrupted: non-zero pane exit overrides a clean finish.
 	// finished→active: resumed-session path after prior close.
+	// finished→idle: tmux-session-start resets the session on recreate.
 	StateFinished: {
 		StateInterrupted: true,
 		StateActive:      true,
+		StateIdle:        true,
 		StateDeleted:     true,
 	},
 	// interrupted→active: session resumed after interruption.
+	// interrupted→idle: tmux-session-start resets the session on recreate.
 	StateInterrupted: {
 		StateActive:  true,
+		StateIdle:    true,
 		StateDeleted: true,
 	},
 	// deleted is a terminal state — no outgoing transitions.
