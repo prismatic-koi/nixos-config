@@ -28,6 +28,13 @@ You will be given a PR number. Use it to gather context:
 
 **Important:** Before making any `gh api` calls to fetch file contents, check whether the local working directory is already on the PR branch (`gh pr view <number> --json headRefName` and compare to `git branch --show-current`). If it matches, read files directly from disk — no remote calls needed.
 
+**Working-tree safety — CRITICAL:** This review agent runs as a subagent inside the coordinator's session, which is on `main`. Modifying the working tree or index will pollute the coordinator's branch and leave dirty state that must be manually reset.
+
+- **Never** use `git checkout <branch> -- <path>` — this checks out files into the working tree and stages them
+- **Never** use `git stash`, `git apply`, `git merge`, or any other git command that modifies files or the index
+- **Always** use `git show origin/<branch>:<path>` to read full file contents from the PR branch
+- **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
+
 ---
 
 ## What to Look For
@@ -50,8 +57,10 @@ You will be given a PR number. Use it to gather context:
 - Excessive nesting that could be flattened with early returns or extraction
 
 **Requirements** — does the implementation match the intent?
-- If acceptance criteria are present (in the PR description, linked ticket, or a checklist), verify each one is met. Call out any that are missing or only partially addressed.
+- Check the PR body for `Closes #N` or `Fixes #N` references. If found, run `gh issue view N` to fetch the linked issue.
+- If the issue contains acceptance criteria, validate **each one** against the implementation and include a pass/fail result for each AC in your review output.
 - If a ticket or issue is referenced but has no explicit AC, assess whether the implementation addresses the stated goal.
+- If the PR does not reference any issue, note this in your output but do not block on it.
 - Are there missing cases or incomplete implementations?
 
 **Performance** — only flag if obviously problematic.
