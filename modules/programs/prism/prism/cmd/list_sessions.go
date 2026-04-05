@@ -53,6 +53,7 @@ var listSessionsCmd = &cobra.Command{
 		type row struct {
 			name  string
 			state string
+			port  string
 			title string
 		}
 
@@ -72,7 +73,11 @@ var listSessionsCmd = &cobra.Command{
 			if s.Title != nil && *s.Title != "" {
 				title = *s.Title
 			}
-			rows = append(rows, row{name: s.SessionName, state: s.State, title: title})
+			port := ""
+			if s.OpencodePort != nil {
+				port = fmt.Sprintf("%d", *s.OpencodePort)
+			}
+			rows = append(rows, row{name: s.SessionName, state: s.State, port: port, title: title})
 		}
 
 		// Sort rows alphabetically by session name for stable, predictable output.
@@ -95,7 +100,7 @@ var listSessionsCmd = &cobra.Command{
 		styleName := lipgloss.NewStyle().Bold(true)
 		styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-		fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %s", "SESSION", "STATE", "TITLE")))
+		fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %-6s  %s", "SESSION", "STATE", "PORT", "TITLE")))
 		for _, r := range rows {
 			state := r.state
 			if state == "" {
@@ -114,9 +119,10 @@ var listSessionsCmd = &cobra.Command{
 				nameStyle = styleName
 			}
 
-			fmt.Printf("%s  %s  %s\n",
+			fmt.Printf("%s  %s  %s  %s\n",
 				nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
 				stateStyled,
+				styleTitle.Render(fmt.Sprintf("%-6s", r.port)),
 				styleTitle.Render(title),
 			)
 		}

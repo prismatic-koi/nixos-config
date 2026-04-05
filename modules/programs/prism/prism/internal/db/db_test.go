@@ -1217,6 +1217,50 @@ func TestReleasePort(t *testing.T) {
 	if s.OpencodePort != nil {
 		t.Errorf("OpencodePort after release: got %v, want nil", *s.OpencodePort)
 	}
+
+	// After release the port must re-enter the pool so a new session can claim it.
+	if err := d.UpsertStatus("repo@other", "repo", "/code/repo/other", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus other: %v", err)
+	}
+	portReclaimed, err := d.AllocatePort("repo@other")
+	if err != nil {
+		t.Fatalf("AllocatePort after release: %v", err)
+	}
+	if portReclaimed != port {
+		t.Errorf("expected reclaimed port %d, got %d", port, portReclaimed)
+	}
+}
+
+// TestReleasePort_NonexistentSession verifies that ReleasePort returns an error
+// when the session name does not exist in agent_status.
+func TestReleasePort_NonexistentSession(t *testing.T) {
+	d := openTestDB(t)
+
+	err := d.ReleasePort("repo@nonexistent")
+	if err == nil {
+		t.Fatal("ReleasePort: expected error for nonexistent session, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error message should mention 'not found': got %q", err.Error())
+	}
+}
+
+// TestReleasePort_Idempotent verifies that calling ReleasePort on a session
+// whose opencode_port is already NULL succeeds without error.
+func TestReleasePort_Idempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	// Port is NULL from the start — release should be a no-op (not an error).
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort on already-NULL port: %v", err)
+	}
+	// Second call should also succeed.
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort second call: %v", err)
+	}
 }
 
 // TestAllocatePort_NonexistentSession verifies that AllocatePort returns an
