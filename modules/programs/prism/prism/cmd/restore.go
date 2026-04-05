@@ -133,18 +133,39 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		return d.SetEnded(s.SessionName)
 	}
 
-	// Refresh agent_status with the verified worktree path, idle state, and a
-	// current last_seen so that post-restore operations find a fresh row.
+	// Guard against a race: the session may have been created externally between
+	// the HasSession check in restoreSession and here. If it now exists, skip
+	// all DB writes (RefreshWorktree, AllocatePort) to avoid corrupting the
+	// live session's agent_status row.
+	if tmux.HasSession(s.SessionName) {
+		return nil
+	}
+
+	// Build opts for the full three-window layout. SkipStatusSeed prevents
+	// setupFullLayout from forking "prism event tmux-session-start" — we
+	// manage agent_status directly below via the open DB handle.
+	opencodeSession := ""
+	if s.OpencodeSID != nil {
+		opencodeSession = *s.OpencodeSID
+	}
+	opts := session.Opts{
+		Headless:        true,
+		OpencodeSession: opencodeSession,
+		Agent:           session.DefaultAgent(directory, ""),
+		SessionName:     s.SessionName,
+		Layout:          session.LayoutFull,
+		SkipStatusSeed:  true,
+	}
+
+	// Refresh agent_status and allocate a port before calling session.Create,
+	// so that opts.Port is set when BuildOpencodeCmd fires inside
+	// setupFullLayout.
 	//
 	// RefreshWorktree is used instead of UpsertStatus because UpsertStatus only
 	// writes repo/worktree on the initial INSERT (ON CONFLICT does not update
 	// them). If the row was previously corrupted by the session-created hook
 	// race (issue #380), UpsertStatus would silently leave the stale path.
 	// RefreshWorktree corrects repo and worktree unconditionally.
-	//
-	// This is done before session.Create so that AllocatePort (which writes to
-	// agent_status) has a fresh row to update, and the allocated port is
-	// available in opts when BuildOpencodeCmd fires inside setupFullLayout.
 	if s.Repo != "" {
 		if err := d.RefreshWorktree(s.SessionName, s.Repo, directory); err != nil {
 			// Non-fatal: a stale DB row is preferable to aborting the restore.
@@ -163,39 +184,27 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 				// Non-fatal.
 				fmt.Fprintf(os.Stderr, "restore %q: write event: %v\n", s.SessionName, err)
 			}
+
+			// Allocate a port now that the row is fresh. AllocatePort writes
+			// to the agent_status row, so it must run after RefreshWorktree.
+			port, err := d.AllocatePort(s.SessionName)
+			if err != nil {
+				// Non-fatal: log and continue without a port.
+				fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
+			} else {
+				opts.Port = port
+			}
 		}
 	}
-
-	// Build opts for the full three-window layout. SkipStatusSeed prevents
-	// setupFullLayout from forking "prism event tmux-session-start" — we
-	// managed agent_status directly above via the open DB handle.
-	opencodeSession := ""
-	if s.OpencodeSID != nil {
-		opencodeSession = *s.OpencodeSID
-	}
-	opts := session.Opts{
-		Headless:        true,
-		OpencodeSession: opencodeSession,
-		Agent:           session.DefaultAgent(directory, ""),
-		SessionName:     s.SessionName,
-		Layout:          session.LayoutFull,
-		SkipStatusSeed:  true,
-	}
-
-	// Allocate a port for the restored session. The agent_status row was
-	// refreshed above, so AllocatePort can write to it. The port must be set
-	// in opts before session.Create so BuildOpencodeCmd includes --port.
-	port, err := d.AllocatePort(s.SessionName)
-	if err != nil {
-		// Non-fatal: log and continue without a port.
-		fmt.Fprintf(os.Stderr, "restore %q: port allocation: %v\n", s.SessionName, err)
-	} else {
-		opts.Port = port
-	}
+	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
+	// session is still created with the full layout; it just won't have an
+	// opencode serve port allocated.
 
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
+	// session.Create is a no-op if the session already exists (the race guard
+	// above makes this unlikely, but the inner guard in Create is a safety net).
 
 	fmt.Printf("session %q restored\n", s.SessionName)
 	return nil
