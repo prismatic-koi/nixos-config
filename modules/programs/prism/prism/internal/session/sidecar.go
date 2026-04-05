@@ -44,6 +44,19 @@ func SidecarLogPath(sessionName string) (string, error) {
 	return filepath.Join(base, "logs", sessionName+"-sidecar.log"), nil
 }
 
+// SidecarReadyPath returns the readiness signal file path for the named session.
+// The sidecar creates this file after the container is healthy. The tmux pane
+// startup script polls for its existence before running "opencode attach".
+//
+// Ready file: $XDG_STATE_HOME/prism/run/<session>-sidecar.ready
+func SidecarReadyPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", sessionName+"-sidecar.ready"), nil
+}
+
 // SidecarPIDPath returns the PID file path for the named session's sidecar.
 func SidecarPIDPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
@@ -107,6 +120,24 @@ func KillSidecar(sessionName string) {
 	_ = os.Remove(pidPath)
 }
 
+// StartSidecarOpts holds optional parameters for launching a sidecar process.
+type StartSidecarOpts struct {
+	// Port is the allocated opencode serve port.
+	Port int
+	// ContainerMode, when true, passes --container to the sidecar so it creates
+	// and manages a podman container.
+	ContainerMode bool
+	// AgentRole is "worker" or "coordinator". Passed via --agent-role when in
+	// container mode to select the appropriate credential set.
+	AgentRole string
+	// Worktree is the absolute path to the git worktree. Used as PRISM_WORKTREE
+	// in the sidecar's environment so it can mount the correct directory.
+	Worktree string
+	// PluginHostPath is the host path to the prism-hooks.ts plugin file.
+	// Passed via --plugin-path in container mode.
+	PluginHostPath string
+}
+
 // StartSidecar launches a detached `prism sidecar` process for the given
 // session on the given port. It writes the sidecar PID to a PID file and
 // redirects stdout/stderr to a log file.
@@ -114,6 +145,13 @@ func KillSidecar(sessionName string) {
 // Returns an error if the process cannot be started. Callers should treat
 // this as non-fatal — the spawn/restore still succeeds without the sidecar.
 func StartSidecar(sessionName string, port int) error {
+	return StartSidecarWithOpts(sessionName, StartSidecarOpts{Port: port})
+}
+
+// StartSidecarWithOpts launches a detached `prism sidecar` process with full
+// option control. It writes the sidecar PID to a PID file and redirects
+// stdout/stderr to a log file.
+func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve prism binary: %w", err)
@@ -145,15 +183,39 @@ func StartSidecar(sessionName string, port int) error {
 	// Start() hands it off to the child.
 	defer logFile.Close()
 
-	opencodeURL := fmt.Sprintf("http://localhost:%d", port)
-	cmd := exec.Command(self, "sidecar",
+	opencodeURL := fmt.Sprintf("http://localhost:%d", opts.Port)
+
+	// Build the sidecar command arguments.
+	cmdArgs := []string{"sidecar",
 		"--session", sessionName,
 		"--opencode-url", opencodeURL,
-	)
+	}
+
+	if opts.ContainerMode {
+		cmdArgs = append(cmdArgs, "--container")
+		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
+		if opts.AgentRole != "" {
+			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)
+		}
+		if opts.PluginHostPath != "" {
+			cmdArgs = append(cmdArgs, "--plugin-path", opts.PluginHostPath)
+		}
+	}
+
+	cmd := exec.Command(self, cmdArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	// No Stdin — keep the child fully detached from the terminal.
 	cmd.Stdin = nil
+
+	// Inject PRISM_WORKTREE so the sidecar can resolve the worktree path.
+	// Inherit the full environment and add/override PRISM_WORKTREE.
+	env := os.Environ()
+	if opts.Worktree != "" {
+		env = append(env, "PRISM_WORKTREE="+opts.Worktree)
+	}
+	cmd.Env = env
+
 	// Start the child in its own session so it is fully detached from the
 	// parent's controlling terminal and survives the spawning pane exiting.
 	// Process.Release() alone is insufficient — it only drops the Go runtime's

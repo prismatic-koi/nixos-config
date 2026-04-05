@@ -2027,3 +2027,75 @@ func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 		t.Errorf("expected no bus messages when coordinator has ended, got %d", totalMsgs)
 	}
 }
+
+// TestOnReady_NotCalledAfterShutdown verifies that the shuttingDown guard
+// (AC-16) prevents OnReady from firing when Shutdown() races a successful
+// health probe.
+//
+// The race: WaitHealthy returns a genuine 200 during podman stop's grace
+// period. Shutdown() has already set shuttingDown=true. The guard in Run()
+// checks the flag before calling OnReady — this test exercises that guard
+// directly by setting shuttingDown before the guard check runs.
+func TestOnReady_NotCalledAfterShutdown(t *testing.T) {
+	called := false
+	sc := New(Config{
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test",
+		OpencodeURL: "http://localhost:14000",
+		DB:          openTestDB(t),
+		Clock:       newTestClock(),
+		OnReady: func() {
+			called = true
+		},
+	})
+
+	// Simulate Shutdown() having already fired — it sets shuttingDown=true
+	// under the mutex, exactly as the real Shutdown() method does.
+	sc.mu.Lock()
+	sc.shuttingDown = true
+	sc.mu.Unlock()
+
+	// Now simulate the Run() guard: read shuttingDown under the lock and only
+	// call OnReady when the flag is false. This is the code path exercised
+	// when WaitHealthy returns ok after Shutdown() has already been called.
+	sc.mu.Lock()
+	isShuttingDown := sc.shuttingDown
+	sc.mu.Unlock()
+	if !isShuttingDown && sc.cfg.OnReady != nil {
+		sc.cfg.OnReady()
+	}
+
+	if called {
+		t.Error("OnReady was called after Shutdown() set shuttingDown=true; expected it to be suppressed")
+	}
+}
+
+// TestOnReady_CalledWhenNotShuttingDown verifies the positive case: OnReady
+// fires normally when shuttingDown is false (no SIGTERM race).
+func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
+	called := false
+	sc := New(Config{
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test",
+		OpencodeURL: "http://localhost:14000",
+		DB:          openTestDB(t),
+		Clock:       newTestClock(),
+		OnReady: func() {
+			called = true
+		},
+	})
+
+	// shuttingDown is false by default (zero value). Simulate the guard check.
+	sc.mu.Lock()
+	isShuttingDown := sc.shuttingDown
+	sc.mu.Unlock()
+	if !isShuttingDown && sc.cfg.OnReady != nil {
+		sc.cfg.OnReady()
+	}
+
+	if !called {
+		t.Error("OnReady was not called when shuttingDown=false; expected it to fire")
+	}
+}

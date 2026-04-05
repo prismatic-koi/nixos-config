@@ -4,6 +4,9 @@
 // into agent state transitions, DB writes, and dashboard sentinel touches —
 // replicating the logic in opencode/plugins/prism-hooks.ts.
 //
+// In container mode (Config.Container != nil), the sidecar also manages the
+// podman container lifecycle: create, health-check, stop, remove.
+//
 // All timer and clock operations go through an abstracted Clock interface so
 // that tests can control time deterministically.
 package sidecar
@@ -24,6 +27,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
@@ -67,6 +71,15 @@ type Config struct {
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
+	// Container, when non-nil, enables container mode: the sidecar creates and
+	// manages a podman container running opencode serve instead of relying on a
+	// directly-launched opencode process.
+	Container *container.Config
+	// OnReady is called (once, synchronously) after the container is healthy
+	// and before the SSE loop starts. Used in container mode to write the
+	// readiness signal file that unblocks the tmux pane running "opencode attach".
+	// No-op when nil.
+	OnReady func()
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -82,6 +95,13 @@ type Sidecar struct {
 	opencodeSID     string
 	writtenMessages map[string]bool // dedup message.updated writes
 	textByMessage   map[string]string
+	// container is set when running in container mode.
+	// Protected by mu.
+	container *containerMgr
+	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
+	// to prevent OnReady from firing after SIGTERM even when the HTTP health
+	// probe succeeds during podman stop's grace period. Protected by mu.
+	shuttingDown bool
 
 	// rootAgent is the name of the top-level agent for this session, derived
 	// from the first msg_user event. Empty until the first user message arrives.
@@ -109,10 +129,63 @@ func New(cfg Config) *Sidecar {
 	}
 }
 
+// containerMgr holds the container.Manager when running in container mode.
+// It is set in Run before the SSE loop starts, and used by Shutdown.
+type containerMgr struct {
+	mgr *container.Manager
+}
+
 // Run connects to the SSE stream and processes events until ctx is cancelled.
 // It blocks until the event channel is closed (context cancellation or
 // permanent connection failure).
+//
+// When Config.Container is non-nil (container mode), Run first creates and
+// health-checks the podman container before subscribing to the SSE stream.
+// The container is stopped and removed by Shutdown().
 func (s *Sidecar) Run(ctx context.Context) error {
+	// Container mode: create and health-check the container before connecting.
+	if s.cfg.Container != nil {
+		mgr := container.New(*s.cfg.Container)
+		s.mu.Lock()
+		s.container = &containerMgr{mgr: mgr}
+		s.mu.Unlock()
+
+		log.Printf("sidecar: creating container %q", mgr.Name())
+		if err := mgr.Create(ctx); err != nil {
+			return fmt.Errorf("sidecar: container create: %w", err)
+		}
+
+		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
+		if err := mgr.WaitHealthy(ctx); err != nil {
+			log.Printf("sidecar: health check failed: %v", err)
+			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
+			// must stop/remove the container here.
+			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
+			// sets shuttingDown=true and stops the container) then cancel(). In
+			// that case ctx may still be non-nil here (cancel fires after Shutdown),
+			// but we check ctx.Err() to distinguish a context-cancelled WaitHealthy
+			// (SIGTERM path where Shutdown already ran) from a genuine probe timeout
+			// (no Shutdown yet), avoiding a double-Shutdown with spurious log lines.
+			if ctx.Err() == nil {
+				mgr.Shutdown()
+			}
+			return fmt.Errorf("sidecar: container health check: %w", err)
+		}
+		log.Printf("sidecar: container %q is healthy", mgr.Name())
+
+		// Signal readiness after the container is healthy (AC-7, AC-19).
+		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
+		// even if WaitHealthy returned a genuine 200 during podman stop's grace
+		// period. Shutdown() sets shuttingDown=true before starting podman stop,
+		// so this check is reliable regardless of ctx cancellation timing.
+		s.mu.Lock()
+		isShuttingDown := s.shuttingDown
+		s.mu.Unlock()
+		if !isShuttingDown && s.cfg.OnReady != nil {
+			s.cfg.OnReady()
+		}
+	}
+
 	url := s.cfg.OpencodeURL + "/event"
 	client := &sse.Client{
 		InitialRetryDelay: 1 * time.Second,
@@ -186,8 +259,22 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 }
 
 // Shutdown writes the interrupted state if the session is not already in a
-// terminal state, and cancels any pending idle timer. Called on SIGINT/SIGTERM.
+// terminal state, cancels any pending idle timer, and stops/removes the
+// container (if running in container mode). Called on SIGINT/SIGTERM.
 func (s *Sidecar) Shutdown() {
+	s.mu.Lock()
+	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
+	// sees shuttingDown=true even if it races with Shutdown() (AC-16).
+	s.shuttingDown = true
+	ctr := s.container
+	s.mu.Unlock()
+
+	// Stop and remove the container before writing state — this ensures
+	// cleanup happens even if SIGTERM arrives during health-check (AC-16).
+	if ctr != nil {
+		ctr.mgr.Shutdown()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
