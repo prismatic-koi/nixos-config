@@ -1857,11 +1857,12 @@ func TestSubagentCycle_MultipleRounds(t *testing.T) {
 	sendEvents(sc, makeUserMessage("msg-review-1", "review", "Review round 1"))
 	sendEvents(sc, makeAssistantMessage("msg-asst-review-1", "review", "Round 1 review findings"))
 
-	// session.idle after review round 1 → should be suppressed.
+	// session.idle after review round 1 → should be suppressed (no new timer).
+	timersAfterRound1 := clk.TimerCount()
 	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	if clk.LastTimer() != nil {
-		// A timer may exist from earlier events; check it's not a new one.
-		// Simpler: just verify state stays active.
+	if clk.TimerCount() != timersAfterRound1 {
+		t.Errorf("expected no new timer after review round 1 idle, but timer count went from %d to %d",
+			timersAfterRound1, clk.TimerCount())
 	}
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
 	if state != string(agent.StateActive) {
@@ -1878,8 +1879,13 @@ func TestSubagentCycle_MultipleRounds(t *testing.T) {
 	sendEvents(sc, makeUserMessage("msg-review-2", "review", "Review round 2"))
 	sendEvents(sc, makeAssistantMessage("msg-asst-review-2", "review", "Round 2 review findings"))
 
-	// session.idle after review round 2 → should be suppressed again.
+	// session.idle after review round 2 → should be suppressed again (no new timer).
+	timersAfterRound2 := clk.TimerCount()
 	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timersAfterRound2 {
+		t.Errorf("expected no new timer after review round 2 idle, but timer count went from %d to %d",
+			timersAfterRound2, clk.TimerCount())
+	}
 	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
 	if state != string(agent.StateActive) {
 		t.Fatalf("after review round 2 idle: state = %q, want active (should be suppressed)", state)
