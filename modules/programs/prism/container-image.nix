@@ -161,7 +161,7 @@
                     echo "prism: prism-agent:latest loaded successfully." >&2
                   '';
                 in
-                "${script}";
+                script;
             };
             Install = {
               WantedBy = [ "default.target" ];
