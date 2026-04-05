@@ -8,12 +8,11 @@
   # This module is imported unconditionally but its config block is wrapped
   # in the same mkIf guard as the rest of the prism module (see default.nix).
   # On Darwin, podman runs inside a Linux VM managed by `podman machine`.
-  # Automatically loading the image into the VM at activation time is not
+  # Automatically loading the image into the VM at login time is not
   # straightforward without assuming `podman machine` is already running,
-  # so we skip the activation step on Darwin and document the manual workflow.
-  # podman.enable is included in the guard so the activation script is skipped
-  # entirely when the user has explicitly disabled podman, avoiding a no-op or
-  # confusing error at switch time.
+  # so we skip the user service on Darwin and document the manual workflow.
+  # podman.enable is included in the guard so the service is skipped
+  # entirely when the user has explicitly disabled podman.
   config =
     lib.mkIf
       (config.nx.programs.prism.enable && pkgs.stdenv.isLinux && config.nx.programs.podman.enable)
@@ -119,11 +118,17 @@
         in
         {
           # Load the prism-agent container image into the user's podman store on
-          # every nixos-rebuild switch.
+          # login via a systemd user service.
           #
-          # Runs as the prism user (not root) because podman is rootless: activation
-          # scripts run as root, so we use `sudo -u <user>` to target the correct
-          # per-user container storage (~/.local/share/containers).
+          # This replaces the former nixos-rebuild activation script, which only ran
+          # at switch time and therefore left the image absent after a reboot (because
+          # ~/.local/share/containers/ is not persisted by impermanence).
+          #
+          # The service is declared as oneshot with RemainAfterExit=yes: systemd
+          # considers it "active" once ExecStart returns successfully and will NOT
+          # re-run it within the same login session, satisfying the idempotency
+          # requirement.  On the next login (e.g. after a reboot) the unit is in
+          # the "inactive" state again and will re-run.
           #
           # Idempotency:
           #   1. Remove the existing tag first — prevents the old manifest becoming a
@@ -132,21 +137,36 @@
           #      previously unreferenced (e.g. from an interrupted switch).
           #   Both commands use `|| true` so a missing image or empty prune is not fatal.
           #
-          # Darwin note: this activation script is Linux-only. On macOS, podman runs
-          # inside a Linux VM (`podman machine`). To load the image manually after
-          # a rebuild, run:
+          # Darwin note: this service is Linux-only. On macOS, podman runs inside a
+          # Linux VM (`podman machine`). To load the image manually after a rebuild,
+          # run:
           #   podman machine start && podman load < ${prismAgentImage}
-          #
-          # Activation scripts run in a minimal environment without the usual PATH,
-          # so both podman and sudo are referenced by their full Nix store paths
-          # rather than bare command names.
-          system.activationScripts.prismAgentContainerImage = ''
-            echo "prism: loading prism-agent:latest into podman (user: ${username})..." >&2
-            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
-            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman load < ${prismAgentImage}
-            ${pkgs.sudo}/bin/sudo -u ${username} ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
-            echo "prism: prism-agent:latest loaded successfully." >&2
-          '';
+          home-manager.users.${username}.systemd.user.services.prism-agent-image = {
+            Unit = {
+              Description = "Load prism-agent container image into rootless podman storage";
+              # Run before prism session restore so the image is available when
+              # the first container spawn happens.
+              Before = [ "prism-restore.service" ];
+            };
+            Service = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart =
+                let
+                  script = pkgs.writeShellScript "load-prism-agent-image" ''
+                    echo "prism: loading prism-agent:latest into podman..." >&2
+                    ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
+                    ${pkgs.podman}/bin/podman load < ${prismAgentImage}
+                    ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
+                    echo "prism: prism-agent:latest loaded successfully." >&2
+                  '';
+                in
+                script;
+            };
+            Install = {
+              WantedBy = [ "default.target" ];
+            };
+          };
         }
       );
 }

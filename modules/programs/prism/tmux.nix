@@ -196,7 +196,12 @@ in
         systemd.user.services.prism-restore = {
           Unit = {
             Description = "Restore prism tmux sessions after login";
-            After = [ "graphical-session.target" ];
+            After = [
+              "graphical-session.target"
+              # Ensure the container image is loaded before we try to spawn containers.
+              "prism-agent-image.service"
+            ];
+            Wants = [ "prism-agent-image.service" ];
           };
           Service = {
             Type = "oneshot";
