@@ -126,23 +126,19 @@
       #      previously unreferenced (e.g. from an interrupted switch).
       #   Both commands use `|| true` so a missing image or empty prune is not fatal.
       #
-      # Error handling: if podman is not on PATH the script exits with a
-      # human-readable message rather than a silent no-op or opaque trace.
-      #
       # Darwin note: this activation script is Linux-only. On macOS, podman runs
       # inside a Linux VM (`podman machine`). To load the image manually after
       # a rebuild, run:
       #   podman machine start && podman load < ${prismAgentImage}
+      #
+      # Activation scripts run in a minimal environment without the usual PATH,
+      # so podman is referenced by its full Nix store path rather than a bare
+      # command name.
       system.activationScripts.prismAgentContainerImage = ''
-        if ! command -v podman >/dev/null 2>&1; then
-          echo "ERROR: prism container-image activation: podman not found on PATH." >&2
-          echo "       Ensure nx.programs.podman.enable = true and podman is installed." >&2
-          exit 1
-        fi
         echo "prism: loading prism-agent:latest into podman (user: ${username})..." >&2
-        sudo -u ${username} podman image rm prism-agent:latest 2>/dev/null || true
-        sudo -u ${username} podman load < ${prismAgentImage}
-        sudo -u ${username} podman image prune --force 2>/dev/null || true
+        sudo -u ${username} ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
+        sudo -u ${username} ${pkgs.podman}/bin/podman load < ${prismAgentImage}
+        sudo -u ${username} ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
         echo "prism: prism-agent:latest loaded successfully." >&2
       '';
     }
