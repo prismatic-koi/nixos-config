@@ -1217,6 +1217,18 @@ func TestReleasePort(t *testing.T) {
 	if s.OpencodePort != nil {
 		t.Errorf("OpencodePort after release: got %v, want nil", *s.OpencodePort)
 	}
+
+	// After release the port must re-enter the pool so a new session can claim it.
+	if err := d.UpsertStatus("repo@other", "repo", "/code/repo/other", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus other: %v", err)
+	}
+	portReclaimed, err := d.AllocatePort("repo@other")
+	if err != nil {
+		t.Fatalf("AllocatePort after release: %v", err)
+	}
+	if portReclaimed != port {
+		t.Errorf("expected reclaimed port %d, got %d", port, portReclaimed)
+	}
 }
 
 // TestReleasePort_NonexistentSession verifies that ReleasePort returns an error
