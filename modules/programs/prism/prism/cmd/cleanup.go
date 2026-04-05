@@ -316,7 +316,7 @@ func killSidecar(sessionName string) {
 	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
 		if !strings.Contains(string(cmdline), "prism") {
 			// PID has been recycled to an unrelated process — do not kill it.
-			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d appears to belong to an unrelated process (cmdline check failed) — skipping kill\n", pid)
+			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism process — skipping kill\n", pid)
 			_ = os.Remove(pidPath)
 			return
 		}
