@@ -21,6 +21,7 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,7 +63,10 @@ func runReset(cmd *cobra.Command, _ []string) error {
 		fmt.Print("This will kill all prism sessions. Continue? [y/N] ")
 		reader := bufio.NewReader(os.Stdin)
 		line, err := reader.ReadString('\n')
-		if err != nil {
+		// ReadString returns (data, io.EOF) when it hits EOF before finding '\n'
+		// (e.g. `echo -n y | prism reset`). Treat that as a valid answer only
+		// when there is content; abort only when stdin was closed with nothing.
+		if err != nil && (err != io.EOF || strings.TrimSpace(line) == "") {
 			fmt.Fprintln(os.Stderr, "stdin closed — aborting (use --yes to skip prompt)")
 			return nil
 		}
@@ -130,10 +134,19 @@ func resetRemovePodmanContainers() error {
 		return nil
 	}
 
-	// List IDs of all containers whose name starts with "prism-" (including stopped ones).
-	// Using --format {{.ID}} with a --filter avoids the comma-separated multi-name
-	// issue that {{.Names}} produces for containers with multiple aliases.
-	out, err := exec.Command(podmanBin, "ps", "-a", "--filter", "name=prism-", "--format", "{{.ID}}").Output()
+	// Fetch "name\tid" for every container (including stopped ones).
+	//
+	// We avoid --filter name=prism- because podman's name filter is a
+	// substring match, not a prefix match — it would incorrectly include
+	// containers like "not-prism-foo". Instead we do the prefix check
+	// client-side after fetching all names.
+	//
+	// We avoid --format {{.Names}} alone because podman emits comma-separated
+	// values for containers with multiple aliases (e.g. "prism-foo,prism-foo-alias"),
+	// which breaks `podman rm -f` when passed as a single argument. Using
+	// {{.ID}} gives a stable, unique identifier; we only use {{.Names}} here
+	// to decide which containers to target.
+	out, err := exec.Command(podmanBin, "ps", "-a", "--format", "{{.Names}}\t{{.ID}}").Output()
 	if err != nil {
 		// If podman fails (e.g. no running machine), treat as no containers.
 		fmt.Printf("  podman ps failed: %v — skipping container cleanup.\n", err)
@@ -141,10 +154,19 @@ func resetRemovePodmanContainers() error {
 	}
 
 	var prismContainers []string
-	for _, id := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		id = strings.TrimSpace(id)
-		if id != "" {
-			prismContainers = append(prismContainers, id)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		// parts[0] may be "name" or "name1,name2,..."; check the first name only.
+		firstName := strings.SplitN(parts[0], ",", 2)[0]
+		if strings.HasPrefix(firstName, "prism-") {
+			prismContainers = append(prismContainers, strings.TrimSpace(parts[1]))
 		}
 	}
 
