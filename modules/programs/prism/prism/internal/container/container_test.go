@@ -274,19 +274,19 @@ func TestBuildRunArgs_ContainerNameSet(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_NetworkSlirp4netns(t *testing.T) {
+func TestBuildRunArgs_NetworkPasta(t *testing.T) {
 	// AC-12: explicit network mode for isolation.
 	m := New(Config{SessionName: "repo@br", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 	found := false
 	for i, arg := range args {
-		if arg == "--network" && i+1 < len(args) && args[i+1] == "slirp4netns" {
+		if arg == "--network" && i+1 < len(args) && args[i+1] == "pasta" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("--network slirp4netns not found in args: %v", args)
+		t.Errorf("--network pasta not found in args: %v", args)
 	}
 }
 
