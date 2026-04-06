@@ -69,6 +69,7 @@ let
           opencode
           claude-code
           git
+          openssh # git push/fetch over SSH remotes
           gh
           go
           gcc # C compiler — required for cgo

@@ -316,6 +316,9 @@ func (m *Manager) buildRunArgs() []string {
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
 	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
+	// SSH keys and config — required for git push/fetch over SSH remotes.
+	// Read-only since agents should not modify the host's SSH config.
+	sshMount := filepath.Join(home, ".ssh") + ":/root/.ssh:ro"
 	// Nix eval cache — pre-populated git cache from the host so flake input
 	// tarballs (nixpkgs, home-manager, etc.) don't need to be re-fetched and
 	// unpacked on every container start. Read-write because nix writes to
@@ -348,6 +351,8 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", bunCacheMount,
 		// Claude credentials — read-write for auth plugin token refresh.
 		"--volume", claudeMount,
+		// SSH keys and config — git push/fetch over SSH remotes.
+		"--volume", sshMount,
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 
