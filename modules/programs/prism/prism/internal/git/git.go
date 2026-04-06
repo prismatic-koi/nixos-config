@@ -95,6 +95,20 @@ func IsBareRepo(dir string) bool {
 	return err == nil
 }
 
+// IsRawBareGitDir returns true if dir is itself a raw git bare repository
+// (i.e. contains HEAD and objects/ directly, without a .bare wrapper).
+// This is used to detect the container layout where the bare repo is mounted
+// directly at /prism-git rather than being a project root containing .bare/.
+func IsRawBareGitDir(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join(dir, "objects")); err != nil {
+		return false
+	}
+	return true
+}
+
 // IsRegularRepo returns true if dir is a regular (non-bare) git repo.
 func IsRegularRepo(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
@@ -118,9 +132,22 @@ func IsInsideRegularRepo(dir string) bool {
 	return false
 }
 
-// gitDir returns the path to the .bare directory for a bare-layout repo.
+// gitDir returns the path to the git bare directory for a prism repo.
+// Normally this is <projectPath>/.bare. When projectPath itself is a raw bare
+// git dir (e.g. /prism-git in container mode), it is returned directly so
+// that all git operations work without requiring a .bare wrapper.
 func gitDir(projectPath string) string {
-	return filepath.Join(projectPath, ".bare")
+	candidate := filepath.Join(projectPath, ".bare")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate
+	}
+	// If projectPath is itself a raw bare git dir, use it directly.
+	if IsRawBareGitDir(projectPath) {
+		return projectPath
+	}
+	// Fall through to the standard path (will fail if .bare doesn't exist,
+	// which is the correct behaviour for non-bare project dirs).
+	return candidate
 }
 
 // runGit runs git with the given args and returns trimmed stdout.
