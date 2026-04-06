@@ -6,8 +6,11 @@ package cmd
 //
 //  1. Kill the tmux server (equivalent to `tmux kill-server`).
 //  2. Stop and remove all podman containers whose names match the "prism-" prefix.
-//  3. Mark all non-ended rows in agent_status as ended (state='ended', ended_at=unixepoch()).
-//  4. Kill all sidecar processes by reading PID files from ~/.local/state/prism/run/.
+//  3. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
+//     state is intentionally left at its last known value — ended_at IS NULL
+//     is the canonical "active session" filter throughout the codebase).
+//  4. Kill all sidecar processes and remove stale run files (PID, ready, SID)
+//     from ~/.local/state/prism/run/.
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
 // Flags:
@@ -175,8 +178,13 @@ func resetMarkDBEnded() error {
 	return nil
 }
 
-// resetKillSidecars scans ~/.local/state/prism/run/ for *.pid files and
-// sends SIGTERM to each recorded process via session.KillSidecar.
+// resetKillSidecars scans ~/.local/state/prism/run/ for *-sidecar.pid files,
+// sends SIGTERM to each recorded process via session.KillSidecar, and then
+// removes stale *-sidecar.ready and *-sidecar.sid files for the same sessions.
+//
+// Removing the .ready and .sid files prevents a re-launched session from
+// finding stale readiness state or a deleted opencode session ID from a prior
+// run and misbehaving on startup.
 //
 // The directory may be absent (fresh install or already cleaned up) — that
 // is treated as a no-op, not an error.
@@ -208,7 +216,21 @@ func resetKillSidecars() error {
 		}
 		// Derive session name by stripping the "-sidecar.pid" suffix.
 		sessionName := strings.TrimSuffix(name, "-sidecar.pid")
+
+		// Send SIGTERM and remove the PID file.
 		prismSession.KillSidecar(sessionName)
+
+		// Remove stale readiness and session-ID files so a re-launched session
+		// for the same name starts fresh rather than picking up stale state.
+		readyPath, _ := prismSession.SidecarReadyPath(sessionName)
+		if readyPath != "" {
+			_ = os.Remove(readyPath)
+		}
+		sidPath, _ := prismSession.SidecarSessionPath(sessionName)
+		if sidPath != "" {
+			_ = os.Remove(sidPath)
+		}
+
 		killed++
 	}
 

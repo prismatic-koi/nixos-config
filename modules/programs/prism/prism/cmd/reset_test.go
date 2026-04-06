@@ -66,6 +66,13 @@ func TestResetMarkDBEnded_MarksAllNonEndedRows(t *testing.T) {
 		} else if status.EndedAt.UnixMilli() == 0 {
 			t.Errorf("session %q: ended_at is zero — should be non-zero", s.name)
 		}
+		// state is intentionally NOT updated by MarkAllEnded — ended_at IS NULL
+		// is the canonical "active session" filter; state retains its last known
+		// value. Verify the original state is preserved, not overwritten.
+		if status.State != s.state {
+			t.Errorf("session %q: state changed from %q to %q — MarkAllEnded must not modify state",
+				s.name, s.state, status.State)
+		}
 	}
 }
 

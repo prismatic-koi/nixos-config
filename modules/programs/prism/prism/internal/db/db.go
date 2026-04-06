@@ -462,13 +462,17 @@ func (d *DB) SetEnded(sessionName string) error {
 	return nil
 }
 
-// MarkAllEnded marks every row in agent_status that has state != 'ended'
-// (i.e. ended_at IS NULL) as ended by setting ended_at = now (Unix milliseconds).
+// MarkAllEnded marks every row in agent_status where ended_at IS NULL as ended
+// by setting ended_at = now (Unix milliseconds). The state column is intentionally
+// left unchanged — ended_at IS NULL is the canonical "active session" filter used
+// throughout the codebase; state captures the last known agent state before teardown
+// and is not overwritten here.
+//
 // It is used by `prism reset` to atomically close all live sessions in one
 // query rather than iterating over them individually.
 //
 // Returns the number of rows updated and any database error.
-// When there are no non-ended rows, returns (0, nil) — not an error.
+// When there are no rows with ended_at IS NULL, returns (0, nil) — not an error.
 func (d *DB) MarkAllEnded() (int64, error) {
 	now := time.Now().UnixMilli()
 	res, err := d.conn.Exec(
