@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -80,9 +81,118 @@ func SidecarPIDPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", sessionName+"-sidecar.pid"), nil
 }
 
+// FindSidecarPID scans running processes to find the sidecar for sessionName
+// by matching its command-line arguments. It looks for a process whose argument
+// list contains both "sidecar" and "--session" followed by sessionName.
+//
+// On Linux, /proc/<pid>/cmdline is scanned for efficiency. On other platforms
+// (macOS), "ps aux" is used as a fallback.
+//
+// Returns the PID of the matching process, or 0 if not found. Returns 0 without
+// error if the scan is not supported on the current platform.
+func FindSidecarPID(sessionName string) int {
+	if runtime.GOOS == "linux" {
+		return findSidecarPIDLinux(sessionName)
+	}
+	return findSidecarPIDPS(sessionName)
+}
+
+// findSidecarPIDLinux scans /proc/<pid>/cmdline entries to find the sidecar
+// process. Only processes owned by the current user are inspected (others
+// would be unreadable and return permission errors).
+func findSidecarPIDLinux(sessionName string) int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue // not a PID directory
+		}
+		cmdlineData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			continue // process may have exited or is unreadable
+		}
+		if isSidecarCmdline(string(cmdlineData), sessionName) {
+			return pid
+		}
+	}
+	return 0
+}
+
+// findSidecarPIDPS uses "ps aux" to find the sidecar process.  This is the
+// fallback used on macOS and other non-Linux platforms.
+func findSidecarPIDPS(sessionName string) int {
+	out, err := exec.Command("ps", "aux").Output()
+	if err != nil {
+		return 0
+	}
+	// Each line: USER PID %CPU %MEM VSZ RSS TT STAT STARTED TIME COMMAND...
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.Contains(line, "sidecar") {
+			continue
+		}
+		if !strings.Contains(line, "--session") {
+			continue
+		}
+		if !strings.Contains(line, sessionName) {
+			continue
+		}
+		// Parse the PID from column 1 (0-indexed).
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		// Verify it looks like a prism sidecar (not a grep or unrelated match).
+		// Reconstruct the command part (fields[10:]) and do a precise check.
+		if len(fields) > 10 {
+			cmdPart := strings.Join(fields[10:], " ")
+			if isSidecarCmdline(cmdPart, sessionName) {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// isSidecarCmdline returns true when the raw cmdline string (NUL-separated on
+// Linux, space-separated on macOS) contains both the "sidecar" subcommand and
+// "--session <sessionName>" as consecutive tokens.
+//
+// The raw Linux cmdline bytes use NUL as the argument separator. Replacing NUL
+// with a space gives a space-separated string we can work with uniformly.
+func isSidecarCmdline(cmdline, sessionName string) bool {
+	// Normalise NUL-separators (Linux /proc/<pid>/cmdline) to spaces.
+	normalised := strings.ReplaceAll(cmdline, "\x00", " ")
+	if !strings.Contains(normalised, "sidecar") {
+		return false
+	}
+	// Check for "--session <sessionName>" as adjacent tokens.
+	tokens := strings.Fields(normalised)
+	for i, tok := range tokens {
+		if tok == "--session" && i+1 < len(tokens) && tokens[i+1] == sessionName {
+			return true
+		}
+	}
+	return false
+}
+
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the
 // recorded process, and removes the PID file. It handles missing or stale PID
 // files gracefully — no error is returned in those cases.
+//
+// When no PID file is found, KillSidecar falls back to FindSidecarPID to
+// locate an orphaned sidecar process by its command-line arguments. This
+// handles the case where the PID file was lost (e.g. sidecar crashed before
+// writing it, or the file was manually removed).
 //
 // This function is safe to call from test teardown: if StartSidecar was never
 // reached (e.g. the test failed before the session was created) the missing PID
@@ -99,7 +209,13 @@ func KillSidecar(sessionName string) {
 
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
-		// PID file absent — sidecar was never started or already cleaned up.
+		// PID file absent — try to find an orphaned sidecar by process args.
+		if pid := FindSidecarPID(sessionName); pid != 0 {
+			fmt.Fprintf(os.Stderr, "[prism] no PID file for session %q — found orphaned sidecar pid %d via process scan, sending SIGTERM\n", sessionName, pid)
+			if killErr := syscall.Kill(pid, syscall.SIGTERM); killErr != nil && killErr != syscall.ESRCH {
+				fmt.Fprintf(os.Stderr, "warning: kill orphaned sidecar pid %d: %v\n", pid, killErr)
+			}
+		}
 		return
 	}
 

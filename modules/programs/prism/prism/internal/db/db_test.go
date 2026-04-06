@@ -1421,6 +1421,47 @@ func TestClearEnded_RestoresVisibility(t *testing.T) {
 	}
 }
 
+// TestSetEnded_NoRow verifies that SetEnded on a non-existent session (one that
+// was never started and has no agent_status row) returns nil rather than an
+// error. This covers the edge case described in issue #503 where cleanup is
+// invoked against a session that was never fully initialised.
+func TestSetEnded_NoRow(t *testing.T) {
+	d := openTestDB(t)
+	// Call SetEnded on a session that has no row in agent_status.
+	if err := d.SetEnded("repo@never-started"); err != nil {
+		t.Errorf("SetEnded (no row): got error %v, want nil", err)
+	}
+}
+
+// TestPurgeBusMessages_NoRows_NeverStarted verifies that PurgeBusMessages for a
+// session with no rows in bus_messages (e.g. the session was never started)
+// returns nil without error. This is distinct from TestPurgeBusMessages_NoRows
+// in that it asserts the same behaviour when called explicitly in a cleanup
+// context where no messages were ever written.
+func TestPurgeBusMessages_NoRows_NeverStarted(t *testing.T) {
+	d := openTestDB(t)
+	// No bus_messages rows exist for this session at all.
+	if err := d.PurgeBusMessages("repo@never-started"); err != nil {
+		t.Errorf("PurgeBusMessages (no rows, never started): got error %v, want nil", err)
+	}
+}
+
+// TestCleanupSequence_NeverStartedSession verifies that the full cleanup
+// sequence (SetEnded + PurgeBusMessages) is safe to call for a session that
+// has no agent_status row and no bus_messages rows — i.e. a session that was
+// never fully initialised. Neither call should return an error.
+func TestCleanupSequence_NeverStartedSession(t *testing.T) {
+	d := openTestDB(t)
+	const session = "repo@ghost"
+
+	if err := d.SetEnded(session); err != nil {
+		t.Errorf("SetEnded (never started): got error %v, want nil", err)
+	}
+	if err := d.PurgeBusMessages(session); err != nil {
+		t.Errorf("PurgeBusMessages (never started): got error %v, want nil", err)
+	}
+}
+
 // setPort is a test helper that writes opencode_port directly via QueryRow.
 func setPort(d *db.DB, sessionName string, port int) error {
 	// Use QueryRow with a dummy scan to execute the UPDATE.

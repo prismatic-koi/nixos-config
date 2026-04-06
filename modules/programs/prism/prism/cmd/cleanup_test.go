@@ -132,6 +132,144 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 	})
 }
 
+// TestHeadlessCleanup_PurgesBusMessages verifies that headlessCleanup deletes
+// pending bus_messages for the session being cleaned up (AC-2 from issue #503).
+// Delivered messages must be preserved.
+func TestHeadlessCleanup_PurgesBusMessages(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	session := "myrepo@purge-test"
+	otherSession := "myrepo@other"
+	if err := d.UpsertStatus(session, "myrepo", "", "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Write three pending messages from the session being cleaned up.
+	for i := 0; i < 3; i++ {
+		msg := db.BusMessage{
+			ID:          fmt.Sprintf("pending-%d", i),
+			FromSession: session,
+			ToSession:   otherSession,
+			Repo:        "myrepo",
+			Text:        fmt.Sprintf("pending message %d", i),
+			Urgency:     "normal",
+		}
+		if err := d.WriteBusMessage(msg); err != nil {
+			t.Fatalf("WriteBusMessage pending %d: %v", i, err)
+		}
+	}
+
+	// Write one delivered message — should not be removed.
+	delivered := db.BusMessage{
+		ID:          "delivered-1",
+		FromSession: session,
+		ToSession:   otherSession,
+		Repo:        "myrepo",
+		Text:        "already delivered",
+		Urgency:     "normal",
+	}
+	if err := d.WriteBusMessage(delivered); err != nil {
+		t.Fatalf("WriteBusMessage delivered: %v", err)
+	}
+	if err := d.MarkDelivered("delivered-1"); err != nil {
+		t.Fatalf("MarkDelivered: %v", err)
+	}
+
+	// Write a pending message for a different session — should not be removed.
+	otherMsg := db.BusMessage{
+		ID:          "other-pending",
+		FromSession: otherSession,
+		ToSession:   "myrepo@third",
+		Repo:        "myrepo",
+		Text:        "unrelated message",
+		Urgency:     "normal",
+	}
+	if err := d.WriteBusMessage(otherMsg); err != nil {
+		t.Fatalf("WriteBusMessage other: %v", err)
+	}
+
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	if err := headlessCleanup(session, "purge-test", "", ""); err != nil {
+		t.Fatalf("headlessCleanup: %v", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	// Pending messages from the cleaned-up session must be gone.
+	pending, err := d2.PendingMessages(otherSession, "normal")
+	if err != nil {
+		t.Fatalf("PendingMessages: %v", err)
+	}
+	for _, m := range pending {
+		if m.FromSession == session {
+			t.Errorf("pending message %q from cleaned-up session %q still present after cleanup", m.ID, session)
+		}
+	}
+
+	// Delivered message must still be present.
+	var deliveredCount int
+	if err := d2.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE id = 'delivered-1'").Scan(&deliveredCount); err != nil {
+		t.Fatalf("count delivered: %v", err)
+	}
+	if deliveredCount != 1 {
+		t.Errorf("delivered message was removed by cleanup — want 1 row, got %d", deliveredCount)
+	}
+
+	// Unrelated session's pending message must still be present.
+	var otherCount int
+	if err := d2.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE id = 'other-pending'").Scan(&otherCount); err != nil {
+		t.Fatalf("count other: %v", err)
+	}
+	if otherCount != 1 {
+		t.Errorf("unrelated pending message was removed — want 1 row, got %d", otherCount)
+	}
+
+	// Session must be marked as ended.
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — session was not marked as ended")
+	}
+}
+
+// TestHeadlessCleanup_NeverStartedSession verifies that headlessCleanup does not
+// panic or return an error when called against a session that was never started
+// (no agent_status row, no bus_messages rows, no PID file).
+func TestHeadlessCleanup_NeverStartedSession(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	// Open and immediately close to create the schema — no rows inserted.
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Must not panic, must return nil.
+	if err := headlessCleanup("myrepo@ghost", "ghost", "", ""); err != nil {
+		t.Errorf("headlessCleanup (never started): got error %v, want nil", err)
+	}
+}
+
 // TestHeadlessCleanup_InvalidWorktreePath verifies AC-2:
 // when the worktree path exists on disk but is not a registered git worktree,
 // headlessCleanup warns and continues rather than returning an error.
