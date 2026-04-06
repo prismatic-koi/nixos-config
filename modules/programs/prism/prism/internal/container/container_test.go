@@ -398,6 +398,7 @@ func TestBuildRunArgs_GitMountsWhenBareRootSet(t *testing.T) {
 		t.Errorf("worktree git dir mount not found; mounts: %v", mounts)
 	}
 }
+
 func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
 	m := New(Config{
 		SessionName:   "repo@feat",
@@ -520,6 +521,7 @@ func TestCredentialEnvVars_GitDirInjectedWhenBareRootSet(t *testing.T) {
 		t.Errorf("GIT_DIR=/prism-git/worktrees/feat not injected; vars=%v", vars)
 	}
 }
+
 func TestCredentialEnvVars_NoGitDirWhenBareRootEmpty(t *testing.T) {
 	m := New(Config{
 		SessionName:   "repo@feat",

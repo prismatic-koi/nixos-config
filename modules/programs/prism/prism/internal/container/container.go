@@ -382,6 +382,12 @@ func (m *Manager) credentialEnvVars() []string {
 		branch := filepath.Base(m.cfg.WorktreeGitDir)
 		vars = append(vars, "GIT_DIR=/prism-git/worktrees/"+branch)
 	}
+	// Note: GIT_COMMON_DIR is intentionally NOT injected. Although the original
+	// issue called for it, testing showed it breaks ref lookup in the git version
+	// used in the container image — git cannot resolve branch refs via rev-parse
+	// when GIT_COMMON_DIR is set. The commondir file in the worktree private state
+	// directory already performs the same function via a relative path ("../.."),
+	// making the env var redundant and harmful.
 
 	return vars
 }
