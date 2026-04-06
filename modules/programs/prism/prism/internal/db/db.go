@@ -311,6 +311,26 @@ ON CONFLICT(session_name) DO UPDATE SET
 	return nil
 }
 
+// UpdateRootModelID unconditionally sets root_model_id for sessionName to the
+// given model value. Unlike UpsertStatusWithRootAgent (which uses COALESCE to
+// preserve the existing value), this method always overwrites, allowing the
+// current session's model to replace a stale value from a prior session.
+//
+// It is a no-op when no row exists for sessionName (returns nil).
+// Called by the sidecar when the first completed assistant message of a session
+// reveals the current model, so that coordinator notifications always reflect
+// the live model configuration.
+func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET root_model_id = ? WHERE session_name = ?",
+		modelID, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update root_model_id: %w", err)
+	}
+	return nil
+}
+
 // UpsertStatusWithRootAgent is like UpsertStatusWithAgent but also writes
 // root_agent_name and root_model_id on the initial INSERT. On conflict (update),
 // root_agent_name and root_model_id are preserved via COALESCE — once set, they

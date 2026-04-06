@@ -679,6 +679,17 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 			s.lastAssistantAgent = ""
 		}
 
+		// Refresh root_model_id with the current session's model so that
+		// coordinator notifications always reflect the live model
+		// configuration (AC-1, AC-2, AC-3). Only write when model is
+		// non-empty to avoid overwriting an existing value with nothing
+		// (AC-5).
+		if model != "" {
+			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
+				log.Printf("sidecar: UpdateRootModelID failed: %v", err)
+			}
+		}
+
 		eventPayload := map[string]any{
 			"messageId": info.ID,
 			"text":      text,
