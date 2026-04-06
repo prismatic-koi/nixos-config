@@ -306,7 +306,17 @@ var cleanupCmd = &cobra.Command{
 
 		// Find worktree path from agent window.
 		worktreePath := worktreePathFromSession(session)
+
+		// When the worktree path cannot be determined (tmux session gone AND DB
+		// path missing on disk), we can still clean up the sidecar/container,
+		// release the DB port, and mark the session as ended.  This is only
+		// supported in the headless (--yes) path; interactive cleanup needs a
+		// real worktree to display info.
 		if worktreePath == "" {
+			if yesFlag {
+				fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+				return headlessCleanup(session, worktreeName, "", "")
+			}
 			return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 		}
 
@@ -356,13 +366,25 @@ var cleanupCmd = &cobra.Command{
 // It always deletes the branch if it is already merged; if unmerged it skips
 // branch deletion (safe default — the orchestrator should only call this after
 // confirming the PR has been merged).
+//
+// Both worktreePath and bareRoot may be empty when the caller could not
+// determine the worktree location (e.g. tmux session already gone and DB path
+// missing on disk).  In that case the worktree and branch removal steps are
+// skipped, and cleanup continues with sidecar teardown and DB updates.
 func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error {
-	fmt.Printf("removing worktree %s...\n", worktreePath)
-	if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
-		return fmt.Errorf("worktree remove: %w", err)
+	if worktreePath == "" {
+		fmt.Printf("worktree path unknown — skipping worktree removal for session %s\n", session)
+	} else {
+		fmt.Printf("removing worktree %s...\n", worktreePath)
+		if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
+			// Non-fatal: the path may no longer be a registered git worktree
+			// (e.g. already removed, or pointing at the prism source dir).
+			// Log a warning and continue so sidecar/DB cleanup still happens.
+			fmt.Fprintf(os.Stderr, "[prism] warning: worktree remove: %v — continuing cleanup\n", err)
+		}
 	}
 
-	if git.BranchExists(bareRoot, worktreeName) {
+	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
 		if git.BranchMerged(bareRoot, worktreeName, git.DefaultBranchFromBareRoot(bareRoot)) {
 			fmt.Printf("deleting merged branch %s...\n", worktreeName)
 			_ = git.DeleteBranch(bareRoot, worktreeName)

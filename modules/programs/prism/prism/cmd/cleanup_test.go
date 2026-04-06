@@ -85,6 +85,106 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	})
 }
 
+// TestHeadlessCleanup_EmptyWorktreePath verifies that when worktreePath is
+// empty, headlessCleanup skips worktree removal, still marks the session as
+// ended in the DB, and returns nil.
+//
+// Runs without tmux, so it exercises only the DB-update path.
+func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
+	// Seed a temp DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	session := "myrepo@ghost-branch"
+	if err := d.UpsertStatus(session, "myrepo", "", "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	t.Run("empty worktreePath returns nil and marks session ended", func(t *testing.T) {
+		err := headlessCleanup(session, "ghost-branch", "", "")
+		if err != nil {
+			t.Errorf("headlessCleanup returned error %v, want nil", err)
+		}
+
+		// Verify the DB row was updated to ended state.
+		d2, err := db.Open(dbFile)
+		if err != nil {
+			t.Fatalf("re-open db: %v", err)
+		}
+		defer d2.Close()
+		status, err := d2.CurrentStatus(session)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if status == nil {
+			t.Fatal("CurrentStatus returned nil — row missing")
+		}
+		if status.EndedAt == nil {
+			t.Errorf("ended_at is nil — session was not marked as ended")
+		}
+	})
+}
+
+// TestHeadlessCleanup_InvalidWorktreePath verifies AC-2:
+// when the worktree path exists on disk but is not a registered git worktree,
+// headlessCleanup warns and continues rather than returning an error.
+func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+
+	// Create a real directory that is NOT a git worktree.
+	notAWorktree := t.TempDir()
+
+	// Seed a temp DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@stale-branch"
+	if err := d.UpsertStatus(session, "myrepo", notAWorktree, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Use a fake bareRoot (also just a plain directory) so git.RemoveWorktree
+	// fails with a "not a git worktree" error.
+	fakeBareRoot := t.TempDir()
+
+	err = headlessCleanup(session, "stale-branch", notAWorktree, fakeBareRoot)
+	if err != nil {
+		t.Errorf("headlessCleanup returned error %v, want nil (should warn and continue)", err)
+	}
+
+	// DB should still be marked ended.
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — session was not marked as ended")
+	}
+}
+
 // setupMinimalBareRepo creates a minimal bare+worktree git repository layout
 // under baseDir with the following structure:
 //
