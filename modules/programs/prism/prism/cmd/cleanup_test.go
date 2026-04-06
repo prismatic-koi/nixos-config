@@ -85,15 +85,11 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	})
 }
 
-// TestHeadlessCleanup_EmptyWorktreePath verifies AC-1 and AC-2:
+// TestHeadlessCleanup_EmptyWorktreePath verifies that when worktreePath is
+// empty, headlessCleanup skips worktree removal, still marks the session as
+// ended in the DB, and returns nil.
 //
-//   - When worktreePath is empty, headlessCleanup skips worktree removal,
-//     still marks the session as ended in the DB, and returns nil.
-//   - When git.RemoveWorktree would fail (path is not a git worktree),
-//     headlessCleanup logs a warning and continues instead of returning an
-//     error — the session is still marked ended in the DB.
-//
-// Both sub-cases run without tmux, so they exercise only the DB-update path.
+// Runs without tmux, so it exercises only the DB-update path.
 func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 	// Seed a temp DB.
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
