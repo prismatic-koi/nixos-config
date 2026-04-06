@@ -169,14 +169,27 @@ func findSidecarPIDPS(sessionName string) int {
 //
 // The raw Linux cmdline bytes use NUL as the argument separator. Replacing NUL
 // with a space gives a space-separated string we can work with uniformly.
+//
+// Both "sidecar" and the session name are matched as exact tokens — never as
+// substrings. This prevents false positives when a session name itself contains
+// the word "sidecar" (e.g. repo@fix-cleanup-orphaned-sidecar).
 func isSidecarCmdline(cmdline, sessionName string) bool {
 	// Normalise NUL-separators (Linux /proc/<pid>/cmdline) to spaces.
 	normalised := strings.ReplaceAll(cmdline, "\x00", " ")
-	if !strings.Contains(normalised, "sidecar") {
+	tokens := strings.Fields(normalised)
+	// Require "sidecar" as an exact token (the prism subcommand), not a
+	// substring. A session name like "repo@fix-sidecar-bug" must not qualify.
+	hasSidecar := false
+	for _, tok := range tokens {
+		if tok == "sidecar" {
+			hasSidecar = true
+			break
+		}
+	}
+	if !hasSidecar {
 		return false
 	}
 	// Check for "--session <sessionName>" as adjacent tokens.
-	tokens := strings.Fields(normalised)
 	for i, tok := range tokens {
 		if tok == "--session" && i+1 < len(tokens) && tokens[i+1] == sessionName {
 			return true

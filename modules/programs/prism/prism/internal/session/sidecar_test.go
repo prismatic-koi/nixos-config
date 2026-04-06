@@ -336,6 +336,18 @@ func TestIsSidecarCmdline_SessionAsSubstring(t *testing.T) {
 	}
 }
 
+// TestIsSidecarCmdline_SidecarInSessionName verifies that a cmdline where
+// "sidecar" appears only inside the session name — not as a standalone
+// subcommand token — is not matched. This prevents false positives for
+// sessions like "repo@fix-cleanup-orphaned-sidecar".
+func TestIsSidecarCmdline_SidecarInSessionName(t *testing.T) {
+	// "sidecar" appears only inside the session name token, not as a subcommand.
+	cmdline := "/path/to/prism\x00spawn\x00--session\x00myrepo@fix-sidecar-bug\x00"
+	if isSidecarCmdline(cmdline, "myrepo@fix-sidecar-bug") {
+		t.Errorf("isSidecarCmdline = true, want false ('sidecar' only in session name, not subcommand token)")
+	}
+}
+
 // ── FindSidecarPID tests ──────────────────────────────────────────────────────
 
 // TestFindSidecarPID_RunningProcess verifies that FindSidecarPID locates a live
