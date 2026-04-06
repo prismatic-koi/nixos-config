@@ -61,7 +61,11 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	if !yesFlag {
 		fmt.Print("This will kill all prism sessions. Continue? [y/N] ")
 		reader := bufio.NewReader(os.Stdin)
-		line, _ := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "stdin closed — aborting (use --yes to skip prompt)")
+			return nil
+		}
 		answer := strings.TrimSpace(strings.ToLower(line))
 		if answer != "y" {
 			fmt.Println("Aborted.")
@@ -126,8 +130,10 @@ func resetRemovePodmanContainers() error {
 		return nil
 	}
 
-	// List all container names (including stopped ones).
-	out, err := exec.Command(podmanBin, "ps", "-a", "--format", "{{.Names}}").Output()
+	// List IDs of all containers whose name starts with "prism-" (including stopped ones).
+	// Using --format {{.ID}} with a --filter avoids the comma-separated multi-name
+	// issue that {{.Names}} produces for containers with multiple aliases.
+	out, err := exec.Command(podmanBin, "ps", "-a", "--filter", "name=prism-", "--format", "{{.ID}}").Output()
 	if err != nil {
 		// If podman fails (e.g. no running machine), treat as no containers.
 		fmt.Printf("  podman ps failed: %v — skipping container cleanup.\n", err)
@@ -135,10 +141,10 @@ func resetRemovePodmanContainers() error {
 	}
 
 	var prismContainers []string
-	for _, name := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		name = strings.TrimSpace(name)
-		if name != "" && strings.HasPrefix(name, "prism-") {
-			prismContainers = append(prismContainers, name)
+	for _, id := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			prismContainers = append(prismContainers, id)
 		}
 	}
 
@@ -147,7 +153,7 @@ func resetRemovePodmanContainers() error {
 		return nil
 	}
 
-	fmt.Printf("  removing %d container(s): %s\n", len(prismContainers), strings.Join(prismContainers, ", "))
+	fmt.Printf("  removing %d container(s)\n", len(prismContainers))
 	args := append([]string{"rm", "-f"}, prismContainers...)
 	rmOut, err := exec.Command(podmanBin, args...).CombinedOutput()
 	if err != nil {
