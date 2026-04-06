@@ -82,6 +82,9 @@ let
           unzip
           sqlite # prism uses SQLite; agents may query it directly
 
+          # Prism CLI — agents need prism spawn, prompt, checkin, etc.
+          (pkgs.callPackage ../../../pkgs/prism.nix { })
+
           # Cloud and infrastructure
           awscli2
           opentofu
