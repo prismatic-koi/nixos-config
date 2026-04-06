@@ -2099,3 +2099,168 @@ func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
 		t.Error("OnReady was not called when shuttingDown=false; expected it to fire")
 	}
 }
+
+// TestMessageUpdated_AssistantWritesRootModelID verifies AC-6: after the first
+// completed assistant message from the root agent, root_model_id in the DB
+// reflects that message's model. A subagent message that follows must not
+// overwrite root_model_id.
+func TestMessageUpdated_AssistantWritesRootModelID(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent via a user message.
+	sendEvents(sc, makeUserMessage("msg-user-ac6", "root-agent", "Hello"))
+
+	// Accumulate text for the root-agent assistant message.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-ac6",
+			"text":      "Here is the answer.",
+		},
+	}))
+
+	// Complete the root-agent assistant message with a known model.
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-ac6",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "github-copilot",
+			"modelID":    "claude-sonnet-4.6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus: got nil status")
+	}
+	if status.RootModelID == nil {
+		t.Fatal("RootModelID: got nil, want non-nil")
+	}
+	want := "github-copilot/claude-sonnet-4.6"
+	if *status.RootModelID != want {
+		t.Errorf("RootModelID = %q, want %q", *status.RootModelID, want)
+	}
+
+	// Now fire a subagent assistant message with a different model. It must NOT
+	// overwrite root_model_id.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-subagent",
+			"text":      "Subagent response.",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-subagent",
+			"role":       "assistant",
+			"agent":      "subagent",
+			"providerID": "openai",
+			"modelID":    "gpt-4o",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after subagent: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after subagent message = %v, want %q (subagent must not overwrite root model)", status.RootModelID, want)
+	}
+}
+
+// TestMessageUpdated_SecondSessionUpdatesRootModelID verifies AC-7: when a
+// second session starts with a different model, root_model_id is updated to the
+// new value (the stale-model scenario is explicitly covered).
+func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// First session: establish root agent via user message, then assistant message with old model.
+	sendEvents(sc, makeUserMessage("msg-user-s1", "root-agent", "Session 1 prompt"))
+
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-session1",
+			"text":      "First session response.",
+		},
+	}))
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-session1",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "anthropic",
+			"modelID":    "claude-opus-4",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	// Verify first model was written.
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus (session 1): %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != "anthropic/claude-opus-4" {
+		t.Fatalf("RootModelID after session 1 = %v, want %q", status.RootModelID, "anthropic/claude-opus-4")
+	}
+
+	// Second session: assistant message with a new (different) model — simulates
+	// a configuration change between sessions. root_model_id must be updated.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-session2",
+			"text":      "Second session response.",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-session2",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "github-copilot",
+			"modelID":    "claude-sonnet-4.6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	// Verify root_model_id now reflects the new model, not the old one.
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus (session 2): %v", err)
+	}
+	if status.RootModelID == nil {
+		t.Fatal("RootModelID after session 2: got nil, want non-nil")
+	}
+	want := "github-copilot/claude-sonnet-4.6"
+	if *status.RootModelID != want {
+		t.Errorf("RootModelID after session 2 = %q, want %q (stale model not updated)", *status.RootModelID, want)
+	}
+}
