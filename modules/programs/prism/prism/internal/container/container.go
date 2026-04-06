@@ -280,14 +280,18 @@ func (m *Manager) buildRunArgs() []string {
 	// dir that prevents --mount from adding subdirectories inside it.
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 
-	// opencode plugin cache — mount from host so auth plugins
-	// (opencode-claude-auth, opencode-gemini-auth) are available without
-	// needing network access inside the container.
-	opencodePluginsMount := filepath.Join(home, ".cache", "opencode", "node_modules") +
-		":/root/.cache/opencode/node_modules:ro"
+	// opencode cache — mount the whole directory so plugins, models.json,
+	// package.json, and bun.lock are all available without network access.
+	opencodeCacheMount := filepath.Join(home, ".cache", "opencode") +
+		":/root/.cache/opencode:ro"
+	// bun transpiler cache — required for bun to load plugins without
+	// re-transpiling on every container start.
+	bunCacheMount := filepath.Join(home, ".cache", "bun") +
+		":/root/.cache/bun:ro"
 	// Claude credentials — required for Anthropic provider auth. Mounted
-	// read-only so the agent can use the host's Claude session.
-	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude:ro"
+	// read-write so the opencode-claude-auth plugin can write back refreshed
+	// OAuth tokens to .credentials.json inside the container.
+	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
 
 	args := []string{
 		"run",
@@ -308,9 +312,11 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", worktreeMount,
 		// opencode state — shared with host, read-write.
 		"--volume", opencodeStateMount,
-		// opencode plugin node_modules — auth plugins from host, read-only.
-		"--volume", opencodePluginsMount,
-		// Claude credentials — read-only.
+		// opencode cache — plugins, models, bun.lock from host, read-only.
+		"--volume", opencodeCacheMount,
+		// bun transpiler cache — pre-compiled plugin modules from host.
+		"--volume", bunCacheMount,
+		// Claude credentials — read-write for auth plugin token refresh.
 		"--volume", claudeMount,
 
 		// Work inside the worktree by default.
@@ -328,6 +334,12 @@ func (m *Manager) buildRunArgs() []string {
 	//   - Regular files → use --volume
 	if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
 		for _, entry := range entries {
+			// Skip the plugins directory — it contains symlinks into the Nix
+			// store that are not available inside the container. Individual
+			// plugin files are mounted separately below (see PluginHostPath).
+			if entry.Name() == "plugins" {
+				continue
+			}
 			hostPath := filepath.Join(opencodeConfigDir, entry.Name())
 			resolved, err := filepath.EvalSymlinks(hostPath)
 			if err != nil {
