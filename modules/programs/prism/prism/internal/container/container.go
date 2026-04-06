@@ -131,9 +131,10 @@ func (m *Manager) Name() string { return m.name }
 // and cleans up any temp files created by Create. It is safe to call when no
 // such container exists — errors for "no such container" are silently ignored.
 func (m *Manager) EnsureRemoved(ctx context.Context) {
-	// Clean up the corrected .git pointer files if they exist.
+	// Clean up temp files created by Create.
 	_ = os.Remove(m.gitdirFilePath())
 	_ = os.Remove(m.worktreeGitdirFilePath())
+	_ = os.Remove(m.sshConfigFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -157,6 +158,15 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 // so it is stable and can be cleaned up by EnsureRemoved.
 func (m *Manager) gitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
+}
+
+// sshConfigFilePath returns the host path for the temporary SSH config
+// written before container start. The container needs a minimal SSH config
+// for git push/fetch over SSH remotes, but the host's ~/.ssh/config is a
+// nix store symlink with wrong ownership (nobody:nogroup, 0444) which SSH
+// rejects. We write a simple config that points to the mounted key.
+func (m *Manager) sshConfigFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-ssh-config-"+m.name)
 }
 
 // worktreeGitdirFilePath returns the host path for the temporary corrected
@@ -200,6 +210,15 @@ func (m *Manager) Create(ctx context.Context) error {
 		if err := os.WriteFile(m.worktreeGitdirFilePath(), []byte(wtGitdirContent), 0o644); err != nil {
 			return fmt.Errorf("container: write worktree gitdir file: %w", err)
 		}
+	}
+
+	// Write a minimal SSH config for the container. The host's ~/.ssh/config
+	// is a nix store symlink with wrong ownership that SSH rejects. This
+	// config only needs to handle GitHub; other SSH hosts are not expected
+	// inside agent containers.
+	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile /root/.ssh/prismatic-koi-ed25519\n  IdentitiesOnly yes\n"
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
+		return fmt.Errorf("container: write ssh config: %w", err)
 	}
 
 	// Build the podman run arguments.
@@ -406,6 +425,22 @@ func (m *Manager) buildRunArgs() []string {
 			}
 		}
 	}
+
+	// Mount SSH keys and a generated config for git push/fetch over SSH.
+	// The host's ~/.ssh/ contains sops-nix symlinks to /run/secrets/ssh/ and
+	// a nix store symlink for the config — neither resolves inside the container.
+	// We mount only the keys we need (resolving symlinks to real paths) and
+	// overlay a generated config file with correct permissions.
+	sshDir := filepath.Join(home, ".ssh")
+	for _, keyName := range []string{"prismatic-koi-ed25519", "known_hosts"} {
+		hostPath := filepath.Join(sshDir, keyName)
+		resolved, err := filepath.EvalSymlinks(hostPath)
+		if err != nil {
+			continue
+		}
+		args = append(args, "--volume", resolved+":/root/.ssh/"+keyName+":ro")
+	}
+	args = append(args, "--volume", m.sshConfigFilePath()+":/root/.ssh/config:ro")
 
 	// Git mounts: when BareRoot is set, mount the bare repo and the
 	// worktree's private git state so that git works inside the container
