@@ -259,6 +259,11 @@ func (d *DB) currentStateOf(sessionName string) (agent.AgentState, error) {
 // context) and returns — it does not return an error, so callers are never
 // blocked by an invalid transition.
 //
+// Same-state "transitions" (fromState == toState) are always silently skipped:
+// they represent metadata-only upserts (title, opencode_sid, model_id,
+// last_seen) where the state value does not actually change, so there is
+// nothing to validate.
+//
 // Callers pass a short context string (e.g. "UpsertStatus", "pane-died") that
 // is included in the log line to help locate the call site.
 func (d *DB) checkTransition(sessionName string, toState agent.AgentState, callerCtx string) {
@@ -271,6 +276,10 @@ func (d *DB) checkTransition(sessionName string, toState agent.AgentState, calle
 	}
 	if fromState == "" {
 		// No prior row — fresh insert; no transition to validate.
+		return
+	}
+	if fromState == toState {
+		// Same-state update — metadata-only refresh, nothing to validate.
 		return
 	}
 	if err := agent.Transition(fromState, toState); err != nil {
