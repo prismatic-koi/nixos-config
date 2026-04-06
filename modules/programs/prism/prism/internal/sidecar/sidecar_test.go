@@ -2101,14 +2101,18 @@ func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
 }
 
 // TestMessageUpdated_AssistantWritesRootModelID verifies AC-6: after the first
-// completed assistant message, root_model_id in the DB reflects that message's
-// model.
+// completed assistant message from the root agent, root_model_id in the DB
+// reflects that message's model. A subagent message that follows must not
+// overwrite root_model_id.
 func TestMessageUpdated_AssistantWritesRootModelID(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
-	// Accumulate text for the assistant message.
+	// Establish root agent via a user message.
+	sendEvents(sc, makeUserMessage("msg-user-ac6", "root-agent", "Hello"))
+
+	// Accumulate text for the root-agent assistant message.
 	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type":      "text",
@@ -2117,14 +2121,14 @@ func TestMessageUpdated_AssistantWritesRootModelID(t *testing.T) {
 		},
 	}))
 
-	// Complete the assistant message with a known model.
+	// Complete the root-agent assistant message with a known model.
 	created := 1000.0
 	completed := 2000.0
 	sc.HandleEvent(makeSSE("message.updated", map[string]any{
 		"info": map[string]any{
 			"id":         "msg-asst-ac6",
 			"role":       "assistant",
-			"agent":      "worker",
+			"agent":      "root-agent",
 			"providerID": "github-copilot",
 			"modelID":    "claude-sonnet-4.6",
 			"time": map[string]*float64{
@@ -2148,6 +2152,37 @@ func TestMessageUpdated_AssistantWritesRootModelID(t *testing.T) {
 	if *status.RootModelID != want {
 		t.Errorf("RootModelID = %q, want %q", *status.RootModelID, want)
 	}
+
+	// Now fire a subagent assistant message with a different model. It must NOT
+	// overwrite root_model_id.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-subagent",
+			"text":      "Subagent response.",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-subagent",
+			"role":       "assistant",
+			"agent":      "subagent",
+			"providerID": "openai",
+			"modelID":    "gpt-4o",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after subagent: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after subagent message = %v, want %q (subagent must not overwrite root model)", status.RootModelID, want)
+	}
 }
 
 // TestMessageUpdated_SecondSessionUpdatesRootModelID verifies AC-7: when a
@@ -2158,7 +2193,9 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
-	// First session: assistant message with old model.
+	// First session: establish root agent via user message, then assistant message with old model.
+	sendEvents(sc, makeUserMessage("msg-user-s1", "root-agent", "Session 1 prompt"))
+
 	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type":      "text",
@@ -2172,7 +2209,7 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 		"info": map[string]any{
 			"id":         "msg-asst-session1",
 			"role":       "assistant",
-			"agent":      "worker",
+			"agent":      "root-agent",
 			"providerID": "anthropic",
 			"modelID":    "claude-opus-4",
 			"time": map[string]*float64{
@@ -2192,7 +2229,7 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 	}
 
 	// Second session: assistant message with a new (different) model — simulates
-	// a configuration change between sessions.
+	// a configuration change between sessions. root_model_id must be updated.
 	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type":      "text",
@@ -2204,7 +2241,7 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 		"info": map[string]any{
 			"id":         "msg-asst-session2",
 			"role":       "assistant",
-			"agent":      "worker",
+			"agent":      "root-agent",
 			"providerID": "github-copilot",
 			"modelID":    "claude-sonnet-4.6",
 			"time": map[string]*float64{

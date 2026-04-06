@@ -317,7 +317,7 @@ ON CONFLICT(session_name) DO UPDATE SET
 // current session's model to replace a stale value from a prior session.
 //
 // It is a no-op when no row exists for sessionName (returns nil).
-// Called by the sidecar when the first completed assistant message of a session
+// Called by the sidecar when a completed assistant message from the root agent
 // reveals the current model, so that coordinator notifications always reflect
 // the live model configuration.
 func (d *DB) UpdateRootModelID(sessionName, modelID string) error {

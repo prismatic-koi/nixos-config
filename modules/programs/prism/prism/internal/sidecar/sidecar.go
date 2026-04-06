@@ -683,8 +683,12 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		// coordinator notifications always reflect the live model
 		// configuration (AC-1, AC-2, AC-3). Only write when model is
 		// non-empty to avoid overwriting an existing value with nothing
-		// (AC-5).
-		if model != "" {
+		// (AC-5). Only write for root-agent messages: if a root agent is
+		// known and this message is from a subagent (different name), skip
+		// the update so the root agent's model is not overwritten by a
+		// subagent's model.
+		isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
+		if model != "" && isRootAgent {
 			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
 				log.Printf("sidecar: UpdateRootModelID failed: %v", err)
 			}
