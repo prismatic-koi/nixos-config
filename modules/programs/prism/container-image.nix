@@ -131,6 +131,29 @@ let
       # Nix experimental features — required for nix build, nix flake, etc.
       mkdir -p etc/nix
       echo "experimental-features = nix-command flakes" > etc/nix/nix.conf
+
+      # Nix wrapper: when the host's nix daemon socket is mounted (by
+      # container.go), transparently inject --eval-store auto so that
+      # "nix build", "nix flake check", etc. evaluate locally (can see
+      # /workspace) but delegate store operations to the host daemon
+      # (reusing cached derivations). Without the socket the wrapper is
+      # a no-op passthrough to the real nix binary.
+      real_nix=$(readlink -f bin/nix)
+      mv bin/nix bin/.nix-real
+      cat > bin/nix << 'WRAPPER'
+      #!/bin/bash
+      SOCKET=/nix/var/nix/daemon-socket/socket
+      if [ -S "$SOCKET" ]; then
+        # Subcommands that accept --eval-store
+        case "''${1:-}" in
+          build|eval|flake|develop|path-info|print-dev-env|log|derivation)
+            exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
+            ;;
+        esac
+      fi
+      exec /bin/.nix-real "$@"
+      WRAPPER
+      chmod +x bin/nix
     '';
 
     config = {

@@ -409,6 +409,19 @@ func TestBuildRunArgs_GitMountsWhenBareRootSet(t *testing.T) {
 	if !foundGitdirFile {
 		t.Errorf("corrected .git pointer file mount not found; mounts: %v", mounts)
 	}
+
+	// Corrected worktree back-pointer mounted over /prism-git/worktrees/<branch>/gitdir (read-only).
+	// This ensures nix/libgit2 resolves the worktree chain correctly inside the container.
+	foundWtGitdir := false
+	for _, v := range mounts {
+		if strings.HasSuffix(v, ":/prism-git/worktrees/feat/gitdir:ro") {
+			foundWtGitdir = true
+			break
+		}
+	}
+	if !foundWtGitdir {
+		t.Errorf("worktree back-pointer (gitdir) mount not found; mounts: %v", mounts)
+	}
 }
 
 func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {

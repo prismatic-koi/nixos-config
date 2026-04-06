@@ -131,8 +131,9 @@ func (m *Manager) Name() string { return m.name }
 // and cleans up any temp files created by Create. It is safe to call when no
 // such container exists — errors for "no such container" are silently ignored.
 func (m *Manager) EnsureRemoved(ctx context.Context) {
-	// Clean up the corrected .git pointer file if it exists.
+	// Clean up the corrected .git pointer files if they exist.
 	_ = os.Remove(m.gitdirFilePath())
+	_ = os.Remove(m.worktreeGitdirFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -158,6 +159,18 @@ func (m *Manager) gitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
 }
 
+// worktreeGitdirFilePath returns the host path for the temporary corrected
+// worktree back-pointer file. The worktrees/<branch>/gitdir file is a
+// reverse pointer from the git metadata back to the worktree's .git file.
+// On the host it contains an absolute host path (e.g.
+// /home/user/code/repo/branch/.git) which doesn't exist inside the container.
+// We write a temp file with the container-internal path (/workspace/.git) and
+// bind-mount it over the original so that nix/libgit2 can resolve the full
+// worktree chain.
+func (m *Manager) worktreeGitdirFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-wt-gitdir-"+m.name)
+}
+
 // Create creates and starts the podman container for this session.
 // It first calls EnsureRemoved to handle any stale container with the same name.
 // Returns an error if podman create or start fails.
@@ -165,16 +178,27 @@ func (m *Manager) Create(ctx context.Context) error {
 	// Remove any stale container first (AC-15).
 	m.EnsureRemoved(ctx)
 
-	// Write a corrected .git pointer file for the container (#492).
-	// The worktree's host .git file contains an absolute host path that does
-	// not exist inside the container. We write a temp file with the
-	// container-internal path and bind-mount it over /workspace/.git so that
-	// all tools (including opencode's internal git library) see the right path.
+	// Write corrected git pointer files for the container.
 	if m.cfg.BareRoot != "" && m.cfg.WorktreeGitDir != "" {
 		branch := filepath.Base(m.cfg.WorktreeGitDir)
+
+		// Forward pointer: /workspace/.git → /prism-git/worktrees/<branch> (#492).
+		// The host's .git file contains an absolute host path that doesn't exist
+		// inside the container.
 		gitdirContent := "gitdir: /prism-git/worktrees/" + branch + "\n"
 		if err := os.WriteFile(m.gitdirFilePath(), []byte(gitdirContent), 0o644); err != nil {
 			return fmt.Errorf("container: write gitdir file: %w", err)
+		}
+
+		// Back-pointer: worktrees/<branch>/gitdir → /workspace/.git
+		// This file is the reverse pointer from git metadata back to the
+		// worktree checkout. On the host it contains the host worktree path
+		// (e.g. /home/user/code/repo/branch/.git) which doesn't exist in the
+		// container. nix/libgit2 follows this pointer when resolving the
+		// working tree, so it must point to the container-internal path.
+		wtGitdirContent := "/workspace/.git\n"
+		if err := os.WriteFile(m.worktreeGitdirFilePath(), []byte(wtGitdirContent), 0o644); err != nil {
+			return fmt.Errorf("container: write worktree gitdir file: %w", err)
 		}
 	}
 
@@ -292,6 +316,12 @@ func (m *Manager) buildRunArgs() []string {
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
 	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
+	// Nix eval cache — pre-populated git cache from the host so flake input
+	// tarballs (nixpkgs, home-manager, etc.) don't need to be re-fetched and
+	// unpacked on every container start. Read-write because nix writes to
+	// SQLite databases (fetcher-cache, binary-cache, eval-cache) during
+	// evaluation; the :Z label handles SELinux relabeling.
+	nixCacheMount := filepath.Join(home, ".cache", "nix") + ":/root/.cache/nix:Z"
 
 	args := []string{
 		"run",
@@ -318,6 +348,23 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", bunCacheMount,
 		// Claude credentials — read-write for auth plugin token refresh.
 		"--volume", claudeMount,
+		// Nix eval cache — flake input tarballs pre-unpacked from the host.
+		"--volume", nixCacheMount,
+
+		// Nix daemon socket — lets the container's nix CLI delegate store
+		// operations to the host's nix-daemon, reusing the host's /nix/store
+		// cache and persisting new build outputs for reuse across container
+		// restarts. The host's nix-daemon trusts @wheel users (nix-options.nix);
+		// in rootless podman, container root maps to the host user who is in
+		// the wheel group, so the daemon accepts the connection.
+		//
+		// NIX_CONFIG sets store=daemon so nix uses the host daemon for all
+		// store operations. The container image includes a nix wrapper script
+		// that automatically injects --eval-store auto when the socket is
+		// present, so evaluation happens locally (can see /workspace) while
+		// builds/fetches go through the daemon.
+		"--volume", "/nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket",
+		"--env", "NIX_CONFIG=store = daemon",
 
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
@@ -378,10 +425,15 @@ func (m *Manager) buildRunArgs() []string {
 		worktreeGitMount := cfg.WorktreeGitDir + ":/prism-git/worktrees/" + branch + ":Z"
 		// Corrected .git pointer — read-only overlay over the host's .git file.
 		gitdirMount := m.gitdirFilePath() + ":/workspace/.git:ro"
+		// Corrected worktree back-pointer — overlays the gitdir file inside
+		// the worktree metadata so nix/libgit2 resolves to /workspace/.git
+		// instead of the host path.
+		wtGitdirMount := m.worktreeGitdirFilePath() + ":/prism-git/worktrees/" + branch + "/gitdir:ro"
 		args = append(args,
 			"--volume", bareMount,
 			"--volume", worktreeGitMount,
 			"--volume", gitdirMount,
+			"--volume", wtGitdirMount,
 		)
 	}
 
