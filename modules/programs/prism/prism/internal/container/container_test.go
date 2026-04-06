@@ -353,6 +353,68 @@ func TestBuildRunArgs_NoPluginMountWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_GitMountsWhenBareRootSet(t *testing.T) {
+	m := New(Config{
+		SessionName:    "repo@feat",
+		Worktree:       "/home/user/code/my-repo/feat",
+		AllocatedPort:  14000,
+		BareRoot:       "/home/user/code/my-repo",
+		WorktreeGitDir: "/home/user/code/my-repo/.bare/worktrees/feat",
+	})
+	args := m.buildRunArgs()
+	var mounts []string
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			mounts = append(mounts, args[i+1])
+		}
+	}
+	foundBareRepo := false
+	for _, v := range mounts {
+		if strings.Contains(v, "/home/user/code/my-repo/.bare:/prism-git:") {
+			foundBareRepo = true
+			if !strings.HasSuffix(v, ":Z") {
+				t.Errorf("bare repo mount %q should have :Z label", v)
+			}
+			if strings.Contains(v, ":ro") {
+				t.Errorf("bare repo mount %q must be read-write (not :ro)", v)
+			}
+			break
+		}
+	}
+	if !foundBareRepo {
+		t.Errorf("bare repo mount not found; mounts: %v", mounts)
+	}
+	foundGitDir := false
+	for _, v := range mounts {
+		if strings.Contains(v, "/home/user/code/my-repo/.bare/worktrees/feat:/prism-git/worktrees/feat:") {
+			foundGitDir = true
+			if !strings.HasSuffix(v, ":Z") {
+				t.Errorf("worktree git dir mount %q should have :Z label", v)
+			}
+			break
+		}
+	}
+	if !foundGitDir {
+		t.Errorf("worktree git dir mount not found; mounts: %v", mounts)
+	}
+}
+func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		Worktree:      "/home/user/code/my-repo/feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "/prism-git") {
+				t.Errorf("unexpected git mount when BareRoot is empty: %q", v)
+			}
+		}
+	}
+}
+
 // ── credentialEnvVars tests ──────────────────────────────────────────────────
 
 func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
@@ -434,6 +496,40 @@ func TestCredentialEnvVars_FallbackToGitHubToken(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("fallback GITHUB_TOKEN not forwarded; vars=%v", vars)
+	}
+}
+
+func TestCredentialEnvVars_GitDirInjectedWhenBareRootSet(t *testing.T) {
+	m := New(Config{
+		SessionName:    "repo@feat",
+		AllocatedPort:  14000,
+		BareRoot:       "/home/user/code/my-repo",
+		WorktreeGitDir: "/home/user/code/my-repo/.bare/worktrees/feat",
+	})
+	vars := m.credentialEnvVars()
+	foundGitDir := false
+	for _, kv := range vars {
+		if kv == "GIT_DIR=/prism-git/worktrees/feat" {
+			foundGitDir = true
+		}
+		if strings.HasPrefix(kv, "GIT_COMMON_DIR=") {
+			t.Errorf("GIT_COMMON_DIR should not be injected; got %q", kv)
+		}
+	}
+	if !foundGitDir {
+		t.Errorf("GIT_DIR=/prism-git/worktrees/feat not injected; vars=%v", vars)
+	}
+}
+func TestCredentialEnvVars_NoGitDirWhenBareRootEmpty(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+	vars := m.credentialEnvVars()
+	for _, kv := range vars {
+		if strings.HasPrefix(kv, "GIT_DIR=") {
+			t.Errorf("GIT_DIR should not be injected when BareRoot is empty; got %q", kv)
+		}
 	}
 }
 

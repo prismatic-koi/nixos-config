@@ -62,6 +62,22 @@ type Config struct {
 	// read-only into the container's opencode plugin directory.
 	PluginHostPath string
 
+	// BareRoot is the absolute path to the bare git repo root on the host
+	// (the directory containing .bare/). When set, the bare repo and the
+	// worktree's private git state are mounted into the container so that
+	// git works correctly without needing to follow the absolute gitdir
+	// pointer in the worktree's .git file.
+	//
+	// The .bare directory is mounted at /prism-git inside the container,
+	// mirroring the relative layout git expects: the worktree private state
+	// is at /prism-git/worktrees/<branch>, and commondir ("../..") resolves
+	// naturally to /prism-git (the bare repo).
+	BareRoot string
+	// WorktreeGitDir is the absolute path to the worktree's private git
+	// state directory on the host (e.g. <BareRoot>/.bare/worktrees/<branch>).
+	// Mounted read-write at /prism-git/worktrees/<branch> inside the container.
+	WorktreeGitDir string
+
 	// HealthCheckTimeout overrides DefaultHealthCheckTimeout when non-zero.
 	HealthCheckTimeout time.Duration
 
@@ -260,6 +276,30 @@ func (m *Manager) buildRunArgs() []string {
 		"--workdir", "/workspace",
 	}
 
+	// Git mounts: when BareRoot is set, mount the bare repo and the
+	// worktree's private git state so that git works inside the container
+	// without following the absolute host path in the worktree's .git file.
+	//
+	// Layout mirrors what git expects from the commondir pointer:
+	//   /prism-git                        ← bare repo (.bare/)
+	//   /prism-git/worktrees/<branch>     ← worktree private state
+	//
+	// The commondir file in the worktree private state says "../.." which
+	// from /prism-git/worktrees/<branch> resolves to /prism-git — correct.
+	// GIT_DIR is set to /prism-git/worktrees/<branch> so git uses that dir
+	// for HEAD/index/etc. without touching the absolute .git file on disk.
+	if cfg.BareRoot != "" && cfg.WorktreeGitDir != "" {
+		branch := filepath.Base(cfg.WorktreeGitDir)
+		// Bare repo — read-write so git can write new objects on commit.
+		bareMount := filepath.Join(cfg.BareRoot, ".bare") + ":/prism-git:Z"
+		// Worktree private state (HEAD, index, logs, etc.) — read-write.
+		worktreeGitMount := cfg.WorktreeGitDir + ":/prism-git/worktrees/" + branch + ":Z"
+		args = append(args,
+			"--volume", bareMount,
+			"--volume", worktreeGitMount,
+		)
+	}
+
 	// Plugin mount (AC-5): mount the prism-hooks plugin if a path was provided.
 	if cfg.PluginHostPath != "" {
 		// The container's opencode config is at /root/.config/opencode (from the
@@ -332,6 +372,15 @@ func (m *Manager) credentialEnvVars() []string {
 		if v := os.Getenv(k); v != "" {
 			vars = append(vars, k+"="+v)
 		}
+	}
+
+	// GIT_DIR override — injected when the bare+worktree layout is used so
+	// that git inside the container uses the mounted worktree private state
+	// at /prism-git/worktrees/<branch> instead of following the absolute host
+	// path stored in the worktree's .git file.
+	if m.cfg.BareRoot != "" && m.cfg.WorktreeGitDir != "" {
+		branch := filepath.Base(m.cfg.WorktreeGitDir)
+		vars = append(vars, "GIT_DIR=/prism-git/worktrees/"+branch)
 	}
 
 	return vars

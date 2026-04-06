@@ -40,6 +40,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/git"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
@@ -118,9 +119,19 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		if port == 0 {
 			return fmt.Errorf("sidecar: --port is required in container mode")
 		}
+		// Derive git bare-root and worktree private git dir so that git works
+		// inside the container without following the absolute host path stored
+		// in the worktree's .git file (fixes #485).
+		bareRoot := git.BareRoot(worktree)
+		var worktreeGitDir string
+		if bareRoot != "" {
+			worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
+		}
 		ctrCfg = &container.Config{
 			SessionName:    sessionName,
 			Worktree:       worktree,
+			BareRoot:       bareRoot,
+			WorktreeGitDir: worktreeGitDir,
 			AllocatedPort:  port,
 			AgentRole:      agentRole,
 			PluginHostPath: pluginPath,
