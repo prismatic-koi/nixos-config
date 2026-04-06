@@ -1479,19 +1479,9 @@ func TestCheckTransition_SameState(t *testing.T) {
 // transition (e.g. idle → error, idle → finished) still logs a warning to
 // stderr after the same-state early-return fix is in place.
 func TestCheckTransition_InvalidTransition(t *testing.T) {
+	// "error → active" is valid per ValidTransitions; use only pairs that are
+	// genuinely invalid (not present in ValidTransitions).
 	invalidPairs := []struct {
-		from string
-		to   string
-	}{
-		{"idle", "error"},
-		{"idle", "finished"},
-		{"error", "active"}, // valid per ValidTransitions — use a truly invalid one
-		{"deleted", "active"},
-	}
-
-	// "error → active" is actually valid in ValidTransitions, replace with a
-	// pair that is definitely invalid.
-	invalidPairs = []struct {
 		from string
 		to   string
 	}{
