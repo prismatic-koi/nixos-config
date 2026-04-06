@@ -94,6 +94,19 @@ func resolveBareRoot(repoFlag string) (string, error) {
 	}
 
 	// Fall back to inferring from the current tmux pane path.
+	// PRISM_BARE_ROOT is injected by the sidecar into container environments
+	// where the bare repo is mounted at a fixed path (/prism-git) that is not
+	// a parent of the worktree (/workspace). The parent-walk heuristic below
+	// cannot find it, so honour this override directly. Accepts both the prism
+	// project root (containing .bare/) and a raw bare git dir (e.g. /prism-git
+	// itself in container mode).
+	if bareRootEnv := os.Getenv("PRISM_BARE_ROOT"); bareRootEnv != "" {
+		if git.IsBareRepo(bareRootEnv) || git.IsRawBareGitDir(bareRootEnv) {
+			return bareRootEnv, nil
+		}
+		return "", fmt.Errorf("PRISM_BARE_ROOT=%q is not a prism bare repo", bareRootEnv)
+	}
+
 	panePathRaw := os.Getenv("PRISM_SPAWN_PATH")
 	if panePathRaw == "" {
 		var err error

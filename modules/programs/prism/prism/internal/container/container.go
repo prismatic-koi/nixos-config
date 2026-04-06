@@ -390,6 +390,17 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", "/nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket",
 		"--env", "NIX_CONFIG=store = daemon",
 
+		// Prism context — tells prism CLI commands running inside the container
+		// where the worktree and bare repo are mounted. PRISM_SPAWN_PATH is the
+		// existing escape hatch used by prism spawn / list-sessions to infer the
+		// current repo without a tmux pane path. PRISM_BARE_ROOT is a new var
+		// that resolveBareRoot uses as a direct bare-root override when the
+		// parent-walk heuristic cannot find .bare (which is always the case
+		// inside a container where the bare repo is at /prism-git, not a parent
+		// of /workspace).
+		"--env", "PRISM_SPAWN_PATH=/workspace",
+		"--env", "PRISM_BARE_ROOT=/prism-git",
+
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
 	}
