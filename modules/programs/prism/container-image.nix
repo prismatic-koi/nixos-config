@@ -67,6 +67,7 @@ let
 
           # Development tools
           opencode
+          claude-code
           git
           gh
           go
