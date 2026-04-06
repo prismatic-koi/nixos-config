@@ -239,12 +239,12 @@ func (m *Manager) buildRunArgs() []string {
 		"--detach",
 		"--name", m.name,
 
-		// Network: slirp4netns (rootless default on Linux) provides outbound
+		// Network: pasta (rootless default on podman 5.x) provides outbound
 		// NAT via the host's network, but the container cannot reach host
 		// loopback services or other containers directly. Declaring it explicitly
 		// makes the network policy declarative rather than relying on the
 		// podman default — satisfying AC-12.
-		"--network", "slirp4netns",
+		"--network", "pasta",
 
 		// Port — bound to localhost only (AC-6).
 		"--publish", portBinding,
