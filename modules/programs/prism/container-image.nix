@@ -52,6 +52,11 @@ let
     fromImage = ubuntuBase;
 
     contents = [
+      # CA certificates — places bundles at /etc/ssl/certs/ca-bundle.crt and
+      # /etc/ssl/certs/ca-certificates.crt so curl, git, gh, and opencode all
+      # find them without needing env var overrides.
+      pkgs.dockerTools.caCertificates
+
       (pkgs.buildEnv {
         name = "prism-agent-root";
         paths = with pkgs; [
@@ -95,6 +100,11 @@ let
           nix
           nixfmt
 
+          # cacert — Nix itself needs NIX_SSL_CERT_FILE to point at the bundle.
+          # dockerTools.caCertificates (added as a top-level content entry below)
+          # handles the /etc/ssl/certs layout that other tools expect.
+          cacert
+
           # LSP servers
           gopls
           typescript-language-server
@@ -109,11 +119,20 @@ let
       })
     ];
 
+    extraCommands = ''
+      # Nix experimental features — required for nix build, nix flake, etc.
+      mkdir -p etc/nix
+      echo "experimental-features = nix-command flakes" > etc/nix/nix.conf
+    '';
+
     config = {
       Cmd = [ "/bin/bash" ];
       Env = [
         # /bin first so Nix-installed tools shadow Ubuntu's equivalents
         "PATH=/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        # CA bundle — used by Nix itself (other tools find certs via the
+        # standard /etc/ssl/certs/ paths placed by dockerTools.caCertificates).
+        "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
       ];
     };
   };
