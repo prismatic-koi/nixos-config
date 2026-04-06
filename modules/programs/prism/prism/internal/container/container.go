@@ -57,6 +57,12 @@ type Config struct {
 	// injected into the container.
 	AgentRole string
 
+	// AgentModel is the model identifier to use when delivering the initial
+	// prompt (e.g. "anthropic/claude-sonnet-4-6"). When empty, opencode's
+	// default model for the session is used (which may differ from the host
+	// opencode config and cause "model not supported" errors).
+	AgentModel string
+
 	// PluginHostPath is the absolute path to the prism-hooks plugin file on the
 	// host (e.g. ~/.config/opencode/plugins/prism-hooks.ts). It is mounted
 	// read-only into the container's opencode plugin directory.
@@ -121,10 +127,12 @@ func New(cfg Config) *Manager {
 // Name returns the container name.
 func (m *Manager) Name() string { return m.name }
 
-// EnsureRemoved stops and removes any existing container with the same name.
-// It is safe to call when no such container exists — errors for "no such
-// container" are silently ignored.
+// EnsureRemoved stops and removes any existing container with the same name,
+// and cleans up any temp files created by Create. It is safe to call when no
+// such container exists — errors for "no such container" are silently ignored.
 func (m *Manager) EnsureRemoved(ctx context.Context) {
+	// Clean up the corrected .git pointer file if it exists.
+	_ = os.Remove(m.gitdirFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -143,12 +151,32 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	}
 }
 
+// gitdirFilePath returns the host path for the temporary corrected .git pointer
+// file written before container start. The file is named after the container
+// so it is stable and can be cleaned up by EnsureRemoved.
+func (m *Manager) gitdirFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
+}
+
 // Create creates and starts the podman container for this session.
 // It first calls EnsureRemoved to handle any stale container with the same name.
 // Returns an error if podman create or start fails.
 func (m *Manager) Create(ctx context.Context) error {
 	// Remove any stale container first (AC-15).
 	m.EnsureRemoved(ctx)
+
+	// Write a corrected .git pointer file for the container (#492).
+	// The worktree's host .git file contains an absolute host path that does
+	// not exist inside the container. We write a temp file with the
+	// container-internal path and bind-mount it over /workspace/.git so that
+	// all tools (including opencode's internal git library) see the right path.
+	if m.cfg.BareRoot != "" && m.cfg.WorktreeGitDir != "" {
+		branch := filepath.Base(m.cfg.WorktreeGitDir)
+		gitdirContent := "gitdir: /prism-git/worktrees/" + branch + "\n"
+		if err := os.WriteFile(m.gitdirFilePath(), []byte(gitdirContent), 0o644); err != nil {
+			return fmt.Errorf("container: write gitdir file: %w", err)
+		}
+	}
 
 	// Build the podman run arguments.
 	args := m.buildRunArgs()
@@ -247,8 +275,19 @@ func (m *Manager) buildRunArgs() []string {
 	worktreeMount := cfg.Worktree + ":/workspace:Z"
 	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
 		":/root/.local/share/opencode:Z"
-	opencodeConfigMount := filepath.Join(home, ".config", "opencode") +
-		":/root/.config/opencode:ro"
+	// opencode config: mount each entry individually so Nix store symlinks are
+	// resolved. The whole-dir mount is NOT used — it would create a read-only
+	// dir that prevents --mount from adding subdirectories inside it.
+	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
+
+	// opencode plugin cache — mount from host so auth plugins
+	// (opencode-claude-auth, opencode-gemini-auth) are available without
+	// needing network access inside the container.
+	opencodePluginsMount := filepath.Join(home, ".cache", "opencode", "node_modules") +
+		":/root/.cache/opencode/node_modules:ro"
+	// Claude credentials — required for Anthropic provider auth. Mounted
+	// read-only so the agent can use the host's Claude session.
+	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude:ro"
 
 	args := []string{
 		"run",
@@ -269,11 +308,39 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", worktreeMount,
 		// opencode state — shared with host, read-write.
 		"--volume", opencodeStateMount,
-		// opencode config — read-only.
-		"--volume", opencodeConfigMount,
+		// opencode plugin node_modules — auth plugins from host, read-only.
+		"--volume", opencodePluginsMount,
+		// Claude credentials — read-only.
+		"--volume", claudeMount,
 
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
+	}
+
+	// Mount ~/.config/opencode entries individually. The whole-dir mount is
+	// intentionally omitted — it would create a read-only container directory
+	// that prevents --mount from adding resolved symlink targets inside it.
+	//
+	// For each entry:
+	//   - Symlinks → resolve to real Nix store path and mount that
+	//   - Real entries → mount directly
+	//   - Directories → use --mount type=bind (podman creates dest automatically)
+	//   - Regular files → use --volume
+	if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
+		for _, entry := range entries {
+			hostPath := filepath.Join(opencodeConfigDir, entry.Name())
+			resolved, err := filepath.EvalSymlinks(hostPath)
+			if err != nil {
+				continue
+			}
+			containerPath := "/root/.config/opencode/" + entry.Name()
+			if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
+				args = append(args, "--mount",
+					"type=bind,src="+resolved+",dst="+containerPath+",ro")
+			} else {
+				args = append(args, "--volume", resolved+":"+containerPath+":ro")
+			}
+		}
 	}
 
 	// Git mounts: when BareRoot is set, mount the bare repo and the
@@ -286,17 +353,23 @@ func (m *Manager) buildRunArgs() []string {
 	//
 	// The commondir file in the worktree private state says "../.." which
 	// from /prism-git/worktrees/<branch> resolves to /prism-git — correct.
-	// GIT_DIR is set to /prism-git/worktrees/<branch> so git uses that dir
-	// for HEAD/index/etc. without touching the absolute .git file on disk.
+	//
+	// A corrected .git pointer file (written by Create before container start)
+	// is bind-mounted over /workspace/.git so that opencode's internal git
+	// library — which reads .git directly rather than honouring GIT_DIR — also
+	// resolves to the correct container-internal path (#492).
 	if cfg.BareRoot != "" && cfg.WorktreeGitDir != "" {
 		branch := filepath.Base(cfg.WorktreeGitDir)
 		// Bare repo — read-write so git can write new objects on commit.
 		bareMount := filepath.Join(cfg.BareRoot, ".bare") + ":/prism-git:Z"
 		// Worktree private state (HEAD, index, logs, etc.) — read-write.
 		worktreeGitMount := cfg.WorktreeGitDir + ":/prism-git/worktrees/" + branch + ":Z"
+		// Corrected .git pointer — read-only overlay over the host's .git file.
+		gitdirMount := m.gitdirFilePath() + ":/workspace/.git:ro"
 		args = append(args,
 			"--volume", bareMount,
 			"--volume", worktreeGitMount,
+			"--volume", gitdirMount,
 		)
 	}
 
@@ -374,20 +447,13 @@ func (m *Manager) credentialEnvVars() []string {
 		}
 	}
 
-	// GIT_DIR override — injected when the bare+worktree layout is used so
-	// that git inside the container uses the mounted worktree private state
-	// at /prism-git/worktrees/<branch> instead of following the absolute host
-	// path stored in the worktree's .git file.
-	if m.cfg.BareRoot != "" && m.cfg.WorktreeGitDir != "" {
-		branch := filepath.Base(m.cfg.WorktreeGitDir)
-		vars = append(vars, "GIT_DIR=/prism-git/worktrees/"+branch)
-	}
-	// Note: GIT_COMMON_DIR is intentionally NOT injected. Although the original
-	// issue called for it, testing showed it breaks ref lookup in the git version
-	// used in the container image — git cannot resolve branch refs via rev-parse
-	// when GIT_COMMON_DIR is set. The commondir file in the worktree private state
-	// directory already performs the same function via a relative path ("../.."),
-	// making the env var redundant and harmful.
+	// Note: GIT_DIR and GIT_COMMON_DIR are intentionally NOT injected.
+	// Instead, Create() writes a corrected .git pointer file and bind-mounts it
+	// over /workspace/.git so all tools — including opencode's internal git
+	// library which reads .git directly rather than honouring GIT_DIR — resolve
+	// the correct container-internal path (#492).
+	// GIT_COMMON_DIR breaks ref lookup in the git version used in the container
+	// image and is therefore also omitted.
 
 	return vars
 }
