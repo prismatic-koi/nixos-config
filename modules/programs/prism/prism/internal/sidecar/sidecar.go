@@ -29,6 +29,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	session "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
 
@@ -80,6 +81,11 @@ type Config struct {
 	// readiness signal file that unblocks the tmux pane running "opencode attach".
 	// No-op when nil.
 	OnReady func()
+	// InitialPrompt, when non-empty, is delivered to the opencode server via
+	// prompt_async after the first session.created event is received following
+	// container readiness. This is the mechanism for prompt delivery in container
+	// mode, where the TUI runs "opencode attach" and cannot accept --prompt (#487).
+	InitialPrompt string
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -102,7 +108,6 @@ type Sidecar struct {
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
 	shuttingDown bool
-
 	// rootAgent is the name of the top-level agent for this session, derived
 	// from the first msg_user event. Empty until the first user message arrives.
 	rootAgent string
@@ -181,7 +186,29 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		if !isShuttingDown && s.cfg.OnReady != nil {
+		// Deliver the initial prompt (#487) before calling OnReady, so the
+		// .sid file is on disk before the TUI readiness-wait script unblocks.
+		// 1. POST /session  — create the session, capture its ID.
+		// 2. Write the sid file so opencode attach -s <sid> opens the right session.
+		// 3. Call OnReady  — unblocks the TUI pane, which runs opencode attach -s <sid>.
+		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
+		//    now attaching/subscribed so execution begins immediately.
+		if !isShuttingDown && s.cfg.InitialPrompt != "" {
+			sid, createErr := s.createOpencodeSession(s.cfg.OpencodeURL, s.cfg.HTTPClient)
+			if createErr != nil {
+				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
+			} else {
+				if sidPath, err := session.SidecarSessionPath(s.cfg.SessionName); err == nil {
+					_ = os.WriteFile(sidPath, []byte(sid), 0o644)
+				}
+			}
+			if !isShuttingDown && s.cfg.OnReady != nil {
+				s.cfg.OnReady()
+			}
+			if createErr == nil {
+				go s.deliverInitialPrompt(s.cfg.OpencodeURL, sid, s.cfg.InitialPrompt, s.cfg.HTTPClient)
+			}
+		} else if !isShuttingDown && s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
 	}
@@ -374,6 +401,7 @@ func (s *Sidecar) handleSessionCreated(evt sse.Event) {
 	sid := strPtr(info.ID)
 	s.upsertState(agent.StateActive, title, sid)
 	s.writeStateChange(agent.StateActive)
+
 }
 
 func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
@@ -912,6 +940,102 @@ func (s *Sidecar) notifyCoordinator() {
 	if err := s.cfg.DB.WriteBusMessage(msg); err != nil {
 		log.Printf("sidecar: notifyCoordinator: write bus message: %v", err)
 	}
+}
+
+// createOpencodeSession creates a new session on the opencode server via
+// POST /session and returns its ID. The directory defaults to /workspace
+// (the container's working directory).
+func (s *Sidecar) createOpencodeSession(opencodeURL string, httpClient *http.Client) (string, error) {
+	body := map[string]string{"directory": "/workspace"}
+	jsonBytes, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("marshal session body: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", opencodeURL+"/session", bytes.NewReader(jsonBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("http status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode response: %w", err)
+	}
+	if result.ID == "" {
+		return "", fmt.Errorf("empty session ID in response")
+	}
+	return result.ID, nil
+}
+
+// deliverInitialPrompt sends the initial spawn prompt to an existing opencode
+// session via POST /session/<sid>/prompt_async (#487).
+//
+// The session must already exist (created by createOpencodeSession). The TUI
+// will have received the sid and opened that session via opencode attach -s
+// before this is called, so prompt_async fires into a subscribed session.
+func (s *Sidecar) deliverInitialPrompt(opencodeURL, sid, prompt string, httpClient *http.Client) {
+	agentRole := "worker"
+	if s.cfg.Container != nil && s.cfg.Container.AgentRole != "" {
+		agentRole = s.cfg.Container.AgentRole
+	}
+
+	body := map[string]any{
+		"parts": []map[string]string{
+			{"type": "text", "text": prompt},
+		},
+		"agent": agentRole,
+	}
+	if s.cfg.Container != nil && s.cfg.Container.AgentModel != "" {
+		slashIdx := strings.Index(s.cfg.Container.AgentModel, "/")
+		if slashIdx >= 0 {
+			body["model"] = map[string]string{
+				"providerID": s.cfg.Container.AgentModel[:slashIdx],
+				"modelID":    s.cfg.Container.AgentModel[slashIdx+1:],
+			}
+		}
+	}
+
+	jsonBytes, err := json.Marshal(body)
+	if err != nil {
+		log.Printf("sidecar: deliverInitialPrompt: marshal body: %v", err)
+		return
+	}
+
+	url := fmt.Sprintf("%s/session/%s/prompt_async", opencodeURL, sid)
+	log.Printf("sidecar: deliverInitialPrompt: POST %s (agent=%s)", url, agentRole)
+
+	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		log.Printf("sidecar: deliverInitialPrompt: create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("sidecar: deliverInitialPrompt: http request: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("sidecar: deliverInitialPrompt: http status %d", resp.StatusCode)
+		return
+	}
+	log.Printf("sidecar: deliverInitialPrompt: completed for session %s", sid)
 }
 
 // deliverNotificationViaHTTP sends a notification prompt to the opencode HTTP API.

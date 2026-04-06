@@ -192,6 +192,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			AgentRole:      opts.Agent,
 			Worktree:       directory,
 			PluginHostPath: opts.PluginHostPath,
+			InitialPrompt:  opts.Prompt,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.
@@ -205,17 +206,19 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	agentCmd := BuildOpencodeCmd(opts)
 	if opts.ContainerMode && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
+		sidPath, sidErr := SidecarSessionPath(name)
 		if pathErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)
 		} else {
-			// Remove any stale ready file from a previous session lifecycle
-			// BEFORE sending the readiness-wait script to the pane. This must
-			// happen synchronously here (in the parent process) to guarantee the
-			// file is gone before the pane script starts polling. If we left this
-			// to the sidecar process, there would be a race: the pane script could
-			// see the stale file before the sidecar process starts.
+			// Remove any stale ready and session ID files from a previous
+			// session lifecycle before the pane script starts polling.
 			_ = os.Remove(readyPath)
-			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
+			if sidErr == nil {
+				_ = os.Remove(sidPath)
+			} else {
+				sidPath = ""
+			}
+			agentCmd = buildReadinessWaitCmd(readyPath, sidPath, agentCmd)
 		}
 	}
 	// opts.SessionName must be set by the caller before setupFullLayout is
@@ -249,16 +252,21 @@ func setupFullLayout(name, directory string, opts Opts) error {
 // buildReadinessWaitCmd builds a shell command that polls for the sidecar
 // readiness file and, once found, runs the given attach command.
 // If the wait times out (120s), it prints an error and exits (AC-20).
-func buildReadinessWaitCmd(readyPath, attachCmd string) string {
+//
+// sidPath is the optional path to the sidecar session ID file written by
+// deliverInitialPrompt. When present, its contents are appended as -s <sid>
+// to the attach command so opencode opens directly into the agent's session.
+func buildReadinessWaitCmd(readyPath, sidPath, attachCmd string) string {
 	// Poll every 0.5s for up to 120s (240 iterations).
-	// On success, exec the attach command; on timeout, print a clear error.
+	// On success, read the session ID (if any) and exec the attach command.
 	return fmt.Sprintf(
 		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+
 			`if [ ! -f %s ]; then `+
 			`echo "prism: container did not become ready within 120s" >&2; exit 1; `+
 			`fi; `+
-			`%s`,
-		shellQuote(readyPath), shellQuote(readyPath), attachCmd,
+			`if [ -f %s ]; then _sid=$(cat %s); %s -s "$_sid"; else %s; fi`,
+		shellQuote(readyPath), shellQuote(readyPath),
+		shellQuote(sidPath), shellQuote(sidPath), attachCmd, attachCmd,
 	)
 }
 

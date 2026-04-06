@@ -57,6 +57,20 @@ func SidecarReadyPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", sessionName+"-sidecar.ready"), nil
 }
 
+// SidecarSessionPath returns the path to the file where the sidecar writes the
+// opencode session ID after creating it via prompt delivery (#487). The tmux
+// pane startup script reads this file (if present) and passes -s <sid> to
+// "opencode attach" so it opens directly into the agent's session.
+//
+// Session file: $XDG_STATE_HOME/prism/run/<session>-sidecar.sid
+func SidecarSessionPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", sessionName+"-sidecar.sid"), nil
+}
+
 // SidecarPIDPath returns the PID file path for the named session's sidecar.
 func SidecarPIDPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
@@ -136,6 +150,10 @@ type StartSidecarOpts struct {
 	// PluginHostPath is the host path to the prism-hooks.ts plugin file.
 	// Passed via --plugin-path in container mode.
 	PluginHostPath string
+	// InitialPrompt is the spawn prompt to deliver to the agent after container
+	// readiness. Passed via --initial-prompt in container mode (#487).
+	// Empty string means no prompt delivery.
+	InitialPrompt string
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -199,6 +217,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 		}
 		if opts.PluginHostPath != "" {
 			cmdArgs = append(cmdArgs, "--plugin-path", opts.PluginHostPath)
+		}
+		if opts.InitialPrompt != "" {
+			cmdArgs = append(cmdArgs, "--initial-prompt", opts.InitialPrompt)
 		}
 	}
 

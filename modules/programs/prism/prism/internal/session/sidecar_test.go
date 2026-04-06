@@ -193,7 +193,9 @@ func TestStartSidecar_CreatesDirectories(t *testing.T) {
 // ── buildReadinessWaitCmd tests ──────────────────────────────────────────────
 
 func TestBuildReadinessWaitCmd_ContainsReadyPath(t *testing.T) {
-	cmd := buildReadinessWaitCmd("/home/user/.local/state/prism/run/my-session-sidecar.ready",
+	cmd := buildReadinessWaitCmd(
+		"/home/user/.local/state/prism/run/my-session-sidecar.ready",
+		"/home/user/.local/state/prism/run/my-session-sidecar.sid",
 		"opencode attach http://localhost:14000")
 	if !strings.Contains(cmd, "/home/user/.local/state/prism/run/my-session-sidecar.ready") {
 		t.Errorf("readiness command does not reference ready path: %q", cmd)
@@ -202,14 +204,14 @@ func TestBuildReadinessWaitCmd_ContainsReadyPath(t *testing.T) {
 
 func TestBuildReadinessWaitCmd_ContainsAttachCmd(t *testing.T) {
 	attach := "opencode attach http://localhost:14042"
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", attach)
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", attach)
 	if !strings.Contains(cmd, attach) {
 		t.Errorf("readiness command does not contain attach command %q: %q", attach, cmd)
 	}
 }
 
 func TestBuildReadinessWaitCmd_TimeoutMessage(t *testing.T) {
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", "opencode attach http://localhost:14000")
 	// Verify the timeout message matches 120s (240 iterations × 0.5s).
 	if !strings.Contains(cmd, "120s") {
 		t.Errorf("readiness command should mention 120s timeout: %q", cmd)
@@ -223,7 +225,7 @@ func TestBuildReadinessWaitCmd_TimeoutMessage(t *testing.T) {
 func TestBuildReadinessWaitCmd_PathWithSpaces(t *testing.T) {
 	// Path with spaces must be properly quoted.
 	path := "/home/user name/.local/state/prism/run/my session-sidecar.ready"
-	cmd := buildReadinessWaitCmd(path, "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd(path, "/tmp/test.sid", "opencode attach http://localhost:14000")
 	// The path should be single-quoted.
 	if !strings.Contains(cmd, "'"+path+"'") {
 		t.Errorf("path with spaces not properly quoted in command: %q", cmd)
@@ -231,7 +233,7 @@ func TestBuildReadinessWaitCmd_PathWithSpaces(t *testing.T) {
 }
 
 func TestBuildReadinessWaitCmd_ExitsOneOnTimeout(t *testing.T) {
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", "opencode attach http://localhost:14000")
 	if !strings.Contains(cmd, "exit 1") {
 		t.Errorf("readiness command should exit 1 on timeout: %q", cmd)
 	}

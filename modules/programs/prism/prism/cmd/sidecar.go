@@ -30,6 +30,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -68,6 +69,7 @@ func init() {
 	sidecarCmd.Flags().String("agent-role", "worker", "Agent role: worker or coordinator (used in container mode)")
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
+	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -80,6 +82,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	agentRole, _ := cmd.Flags().GetString("agent-role")
 	port, _ := cmd.Flags().GetInt("port")
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
+	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -134,6 +137,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			WorktreeGitDir: worktreeGitDir,
 			AllocatedPort:  port,
 			AgentRole:      agentRole,
+			AgentModel:     opencodeAgentModel(agentRole),
 			PluginHostPath: pluginPath,
 		}
 	}
@@ -163,14 +167,15 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := sidecar.Config{
-		SessionName: sessionName,
-		Repo:        repo,
-		Worktree:    worktree,
-		OpencodeURL: opencodeURL,
-		DB:          d,
-		Clock:       sidecar.RealClock(),
-		Container:   ctrCfg,
-		OnReady:     onReady,
+		SessionName:   sessionName,
+		Repo:          repo,
+		Worktree:      worktree,
+		OpencodeURL:   opencodeURL,
+		DB:            d,
+		Clock:         sidecar.RealClock(),
+		Container:     ctrCfg,
+		OnReady:       onReady,
+		InitialPrompt: initialPrompt,
 	}
 	sc := sidecar.New(cfg)
 
@@ -203,4 +208,37 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "[prism sidecar] shutting down\n")
 	return nil
+}
+
+// opencodeAgentModel reads the model configured for the given agent role from
+// the opencode config file (~/.config/opencode/opencode.json). Returns empty
+// string if the config cannot be read or the agent has no explicit model.
+func opencodeAgentModel(agentRole string) string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	data, err := os.ReadFile(filepath.Join(configHome, "opencode", "opencode.json"))
+	if err != nil {
+		return ""
+	}
+
+	// Minimal parse — just enough to extract agent.<role>.model.
+	// Using encoding/json directly to avoid pulling in a full config package.
+	var cfg struct {
+		Agent map[string]struct {
+			Model string `json:"model"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if a, ok := cfg.Agent[agentRole]; ok {
+		return a.Model
+	}
+	return ""
 }
