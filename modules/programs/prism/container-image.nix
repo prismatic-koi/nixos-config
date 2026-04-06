@@ -154,8 +154,9 @@ in
         # login via a systemd user service.
         #
         # This replaces the former nixos-rebuild activation script, which only ran
-        # at switch time and therefore left the image absent after a reboot (because
-        # ~/.local/share/containers/ is not persisted by impermanence).
+        # at switch time.  ~/.local/share/containers/ is now persisted by
+        # impermanence, so the image survives reboots and only needs reloading
+        # when the image definition changes (incremental, layer-cached).
         #
         # The service is declared as oneshot with RemainAfterExit=yes: systemd
         # considers it "active" once ExecStart returns successfully and will NOT
@@ -169,30 +170,54 @@ in
         #   2. Prune dangling images after load — cleans up any layers that were
         #      previously unreferenced (e.g. from an interrupted switch).
         #   Both commands use `|| true` so a missing image or empty prune is not fatal.
-        home-manager.users.${username}.systemd.user.services.prism-agent-image = {
-          Unit = {
-            Description = "Load prism-agent container image into rootless podman storage";
-            # Run before prism session restore so the image is available when
-            # the first container spawn happens.
-            Before = [ "prism-restore.service" ];
+        home-manager.users.${username} = {
+          home.persistence."/persist" = {
+            directories = [
+              ".local/share/containers"
+            ];
           };
-          Service = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-            ExecStart =
-              let
-                script = pkgs.writeShellScript "load-prism-agent-image" ''
-                  echo "prism: loading prism-agent:latest into podman..." >&2
-                  ${pkgs.podman}/bin/podman image rm prism-agent:latest 2>/dev/null || true
-                  ${pkgs.podman}/bin/podman load < ${prismAgentImage}
-                  ${pkgs.podman}/bin/podman image prune --force 2>/dev/null || true
-                  echo "prism: prism-agent:latest loaded successfully." >&2
-                '';
-              in
-              script;
-          };
-          Install = {
-            WantedBy = [ "default.target" ];
+          systemd.user.services.prism-agent-image = {
+            Unit = {
+              Description = "Load prism-agent container image into rootless podman storage";
+              # Run before prism session restore so the image is available when
+              # the first container spawn happens.
+              Before = [ "prism-restore.service" ];
+            };
+            Service = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart =
+                let
+                  # The expected image ID is derived from the Nix store path at
+                  # build time. podman load prints "Loaded image: <id>" on the
+                  # last line — we extract the sha256 digest from the archive
+                  # manifest so we can skip the load when the image is unchanged.
+                  script = pkgs.writeShellScript "load-prism-agent-image" ''
+                    PODMAN="${pkgs.podman}/bin/podman"
+
+                    # Extract the expected image ID from the archive manifest.
+                    EXPECTED_ID=$(${pkgs.gnutar}/bin/tar -xf ${prismAgentImage} --to-stdout manifest.json 2>/dev/null \
+                      | ${pkgs.jq}/bin/jq -r '.[0].Config // empty' 2>/dev/null \
+                      | ${pkgs.gnused}/bin/sed 's/\.json$//')
+                    CURRENT_ID=$($PODMAN image inspect prism-agent:latest --format '{{.Id}}' 2>/dev/null || true)
+
+                    if [ -n "$EXPECTED_ID" ] && [ "$CURRENT_ID" = "$EXPECTED_ID" ]; then
+                      echo "prism: prism-agent:latest is up to date ($EXPECTED_ID), skipping load." >&2
+                      exit 0
+                    fi
+
+                    echo "prism: loading prism-agent:latest into podman..." >&2
+                    $PODMAN image rm prism-agent:latest 2>/dev/null || true
+                    $PODMAN load < ${prismAgentImage}
+                    $PODMAN image prune --force 2>/dev/null || true
+                    echo "prism: prism-agent:latest loaded successfully." >&2
+                  '';
+                in
+                script;
+            };
+            Install = {
+              WantedBy = [ "default.target" ];
+            };
           };
         };
       })
