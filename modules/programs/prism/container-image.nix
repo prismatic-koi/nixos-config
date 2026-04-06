@@ -82,6 +82,10 @@ let
           wget
           unzip
           sqlite # prism uses SQLite; agents may query it directly
+          python3 # scripting, data processing, quick automation
+
+          # Browser automation — playwright-cli wraps chromium
+          playwright-cli
 
           # Prism CLI — agents need prism spawn, prompt, checkin, etc.
           prism

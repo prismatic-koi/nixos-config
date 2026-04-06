@@ -180,7 +180,7 @@
         "source *" = "allow";
         "pytest *" = "allow";
         "python3 *" = "allow";
-        "pyhton *" = "allow";
+        "python *" = "allow";
         # Kubernetes write operations
         "flux *" = "allow";
         "helm *" = "allow";
@@ -333,6 +333,23 @@
         ```bash
         aws ec2 describe-instances --profile <name> --region eu-west-1
         ```
+      '';
+
+      # Merged skills directory — built as a single derivation so it can be
+      # mounted via one xdg.configFile entry (like agents/ and command/).
+      # This avoids fragmented xdg.configFile entries that create symlinks
+      # inside the persisted ~/.config/opencode/skills/ directory — those
+      # symlinks dangle after nix-collect-garbage removes the store paths
+      # they pointed to.
+      skillsDir = pkgs.runCommand "opencode-skills" { } ''
+        mkdir -p $out/prism $out/aws
+        cp -r ${./opencode/skills/prism}/* $out/prism/
+        ${lib.optionalString pkgs.stdenv.isLinux ''
+          cp -r ${./opencode/skills/playwright-cli} $out/playwright-cli
+        ''}
+        cat > $out/aws/SKILL.md << 'SKILL_EOF'
+        ${awsSkill}
+        SKILL_EOF
       '';
 
       agentInstructions = /* markdown */ ''
@@ -673,14 +690,9 @@
           xdg.configFile."opencode/plugins/prism-hooks.ts" = {
             source = ./opencode/plugins/prism-hooks.ts;
           };
-          # playwright-cli global skill (Linux-only: playwright-cli depends on chromium)
-          xdg.configFile."opencode/skills/playwright-cli" = lib.mkIf pkgs.stdenv.isLinux {
-            source = ./opencode/skills/playwright-cli;
-          };
-          # prism skill — teaches agents how to spawn isolated sessions
-          xdg.configFile."opencode/skills/prism".source = ./opencode/skills/prism;
-          # AWS skill — generated so clipboard command is platform-correct
-          xdg.configFile."opencode/skills/aws/SKILL.md".text = awsSkill;
+          # Skills — mounted as a single directory (like agents/) so
+          # impermanence does not create dangling symlinks after GC (#501).
+          xdg.configFile."opencode/skills".source = skillsDir;
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"
