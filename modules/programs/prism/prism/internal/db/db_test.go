@@ -1,8 +1,11 @@
 package db_test
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1419,6 +1422,193 @@ func TestClearEnded_RestoresVisibility(t *testing.T) {
 	if forRepo[0].SessionName != session {
 		t.Errorf("AllActiveStatusForRepo: got %q, want %q", forRepo[0].SessionName, session)
 	}
+}
+
+// TestCheckTransition_SameState verifies that upserting the same state that is
+// already stored produces no "invalid transition" log output and completes
+// without error, for every defined agent state.
+//
+// The test captures os.Stderr by redirecting it to a pipe, then checks that
+// the captured output is empty after a same-state upsert.  The session is
+// first inserted with the initial state (which goes through the fresh-insert
+// path — no transition logged), then a second upsert with the identical state
+// is performed — this is the same-state path being exercised.
+func TestCheckTransition_SameState(t *testing.T) {
+	states := []string{"idle", "active", "error", "finished", "waiting", "compacting", "interrupted", "deleted"}
+
+	for _, state := range states {
+		t.Run(state, func(t *testing.T) {
+			d := openTestDB(t)
+
+			// Insert initial row (fresh insert — no transition to validate).
+			if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", state, nil, nil); err != nil {
+				t.Fatalf("initial UpsertStatus: %v", err)
+			}
+
+			// Redirect stderr to capture any log output from checkTransition.
+			origStderr := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			os.Stderr = w
+
+			// Same-state upsert — must not log anything.
+			upsertErr := d.UpsertStatus("repo@main", "repo", "/code/repo/main", state, nil, nil)
+
+			// Restore stderr and read any output that was written.
+			w.Close()
+			os.Stderr = origStderr
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, r); err != nil {
+				t.Fatalf("read captured stderr: %v", err)
+			}
+			r.Close()
+
+			if upsertErr != nil {
+				t.Fatalf("same-state UpsertStatus: %v", upsertErr)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("same-state upsert produced unexpected log output for state %q:\n%s", state, buf.String())
+			}
+		})
+	}
+}
+
+// TestCheckTransition_InvalidTransition verifies that a genuinely invalid
+// transition (e.g. idle → error, idle → finished) still logs a warning to
+// stderr after the same-state early-return fix is in place.
+func TestCheckTransition_InvalidTransition(t *testing.T) {
+	invalidPairs := []struct {
+		from string
+		to   string
+	}{
+		{"idle", "error"},
+		{"idle", "finished"},
+		{"error", "active"}, // valid per ValidTransitions — use a truly invalid one
+		{"deleted", "active"},
+	}
+
+	// "error → active" is actually valid in ValidTransitions, replace with a
+	// pair that is definitely invalid.
+	invalidPairs = []struct {
+		from string
+		to   string
+	}{
+		{"idle", "error"},
+		{"idle", "finished"},
+		{"deleted", "active"},
+		{"idle", "waiting"},
+	}
+
+	for _, pair := range invalidPairs {
+		t.Run(pair.from+"→"+pair.to, func(t *testing.T) {
+			d := openTestDB(t)
+
+			// Insert initial row with fromState.
+			if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", pair.from, nil, nil); err != nil {
+				t.Fatalf("initial UpsertStatus: %v", err)
+			}
+
+			// Redirect stderr to capture log output.
+			origStderr := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			os.Stderr = w
+
+			// Invalid-transition upsert — must log a warning.
+			upsertErr := d.UpsertStatus("repo@main", "repo", "/code/repo/main", pair.to, nil, nil)
+
+			w.Close()
+			os.Stderr = origStderr
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, r); err != nil {
+				t.Fatalf("read captured stderr: %v", err)
+			}
+			r.Close()
+
+			if upsertErr != nil {
+				t.Fatalf("UpsertStatus with invalid transition: %v", upsertErr)
+			}
+			if buf.Len() == 0 {
+				t.Errorf("expected warning log for invalid transition %q → %q but got no output",
+					pair.from, pair.to)
+			}
+		})
+	}
+}
+
+// TestCheckTransition_ValidTransitionNotSuppressed verifies that a valid
+// (state-changing) transition — e.g. idle → active — is NOT suppressed by
+// the same-state short-circuit and continues to pass through without logging.
+func TestCheckTransition_ValidTransitionNotSuppressed(t *testing.T) {
+	d := openTestDB(t)
+
+	// Insert initial idle row.
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("initial UpsertStatus: %v", err)
+	}
+
+	// Capture stderr.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	// idle → active is a valid transition per ValidTransitions — must not log.
+	upsertErr := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil)
+
+	w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	r.Close()
+
+	if upsertErr != nil {
+		t.Fatalf("UpsertStatus (idle→active): %v", upsertErr)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("valid transition idle→active produced unexpected log output:\n%s", buf.String())
+	}
+
+	// Confirm the state was actually updated.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.State != "active" {
+		t.Errorf("State after idle→active: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestCheckTransition_EmptyStates verifies that checkTransition does not panic
+// when called with an empty string for either fromState (no row in DB) or
+// toState (empty target state). This is exercised indirectly via UpsertStatus.
+func TestCheckTransition_EmptyStates(t *testing.T) {
+	d := openTestDB(t)
+
+	// No prior row: fresh insert with empty-string state must not panic.
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "", nil, nil); err != nil {
+		// A DB error is acceptable (empty state constraint); the key thing is no panic.
+		t.Logf("UpsertStatus with empty state returned error (acceptable): %v", err)
+	}
+
+	// Session with a valid state, then upsert with empty toState — must not panic.
+	d2 := openTestDB(t)
+	if err := d2.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("initial UpsertStatus: %v", err)
+	}
+	// This exercises the fromState=idle, toState="" path through checkTransition.
+	if err := d2.UpsertStatus("repo@main", "repo", "/code/repo/main", "", nil, nil); err != nil {
+		t.Logf("UpsertStatus with empty toState returned error (acceptable): %v", err)
+	}
+	// If we reach here, no panic occurred.
 }
 
 // setPort is a test helper that writes opencode_port directly via QueryRow.
