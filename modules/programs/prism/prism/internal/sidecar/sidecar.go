@@ -1227,8 +1227,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	}
 
 	// prismBinary returns the path to the prism binary (this process).
+	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
+	// the absolute path at binary launch time, avoiding CWD-relative resolution.
 	prismBinary := func() string {
-		self, err := exec.LookPath(os.Args[0])
+		self, err := os.Executable()
 		if err != nil {
 			return os.Args[0]
 		}
@@ -1261,7 +1263,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		args := []string{"spawn", "--branch", req.Branch, "--attach"}
+		args := []string{"spawn", "--branch", req.Branch}
 		if req.Prompt != "" {
 			args = append(args, "--prompt", req.Prompt)
 		}
@@ -1272,14 +1274,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(args, " "))
 		cmd := exec.Command(prismBinary(), args...)
-		out, err := cmd.CombinedOutput()
+		out, err := cmd.Output()
 		if err != nil {
-			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
+			log.Printf("sidecar: host-API /spawn: %v", err)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("spawn failed: %v", err))
 			return
 		}
 
-		sessionName := req.Repo + "@" + req.Branch
+		// prism spawn headless prints: session "name" created
+		// Parse the session name from the output.
+		sessionName := parseSpawnSessionName(string(out))
+		if sessionName == "" {
+			// Fallback: derive from repo@branch (branch already sanitised by spawn).
+			sessionName = req.Repo + "@" + req.Branch
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
 	})
 
@@ -1377,4 +1385,25 @@ func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
 		return "", fmt.Errorf("session %q has no worktree path in DB", sessionName)
 	}
 	return status.Worktree, nil
+}
+
+// parseSpawnSessionName parses the session name from the output of `prism spawn`
+// in headless mode, which prints: session "name" created
+// Returns empty string if the output does not match the expected format.
+func parseSpawnSessionName(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		// Match: session "name" created
+		if !strings.HasPrefix(line, "session ") || !strings.HasSuffix(line, " created") {
+			continue
+		}
+		// Strip prefix "session " and suffix " created".
+		inner := strings.TrimPrefix(line, "session ")
+		inner = strings.TrimSuffix(inner, " created")
+		// inner should now be a quoted string like `"name"`.
+		if len(inner) >= 2 && inner[0] == '"' && inner[len(inner)-1] == '"' {
+			return inner[1 : len(inner)-1]
+		}
+	}
+	return ""
 }

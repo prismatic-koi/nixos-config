@@ -145,7 +145,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Build the host-API socket path for container mode (A-1).
 	var hostAPISockPath string
 	if containerMode {
-		sockPath, _ := prismSession.SidecarHostAPIPath(sessionName)
+		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
+		if err != nil {
+			return fmt.Errorf("sidecar: resolve host-API socket path: %w", err)
+		}
 		hostAPISockPath = sockPath
 	}
 
