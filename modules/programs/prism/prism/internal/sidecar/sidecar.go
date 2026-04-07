@@ -115,6 +115,10 @@ type Sidecar struct {
 	// Set in Run() when container mode is active and HostAPISockPath is non-empty.
 	// Protected by mu.
 	hostAPIListener net.Listener
+	// hostAPISrv is the HTTP server for the host-API Unix socket.
+	// Stored so Shutdown() can drain in-flight requests gracefully.
+	// Protected by mu.
+	hostAPISrv *http.Server
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
@@ -224,24 +228,28 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 
 		// Start the host-API Unix socket server (AC-1, AC-9).
-		if s.cfg.HostAPISockPath != "" {
+		// Guard with !isShuttingDown: if SIGTERM arrived between WaitHealthy
+		// and here, Shutdown() will have already run and we must not create a
+		// new listener that would never be closed.
+		if !isShuttingDown && s.cfg.HostAPISockPath != "" {
 			// Remove stale socket file from a previous crashed session.
 			_ = os.Remove(s.cfg.HostAPISockPath)
 			ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 			if listenErr != nil {
 				log.Printf("sidecar: host-API server: listen: %v", listenErr)
 			} else {
+				srv := &http.Server{Handler: s.hostAPIHandler()}
 				s.mu.Lock()
 				s.hostAPIListener = ln
+				s.hostAPISrv = srv
 				s.mu.Unlock()
-				srv := &http.Server{Handler: s.hostAPIHandler()}
 				go func() {
 					if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
 						log.Printf("sidecar: host-API server: %v", err)
 					}
 				}()
 			}
-		} else {
+		} else if s.cfg.HostAPISockPath == "" {
 			log.Printf("sidecar: host-API server: HostAPISockPath is empty — skipping (container mode active but no socket path configured)")
 		}
 	}
@@ -336,11 +344,19 @@ func (s *Sidecar) Shutdown() {
 	}
 
 	// Close the host-API Unix socket listener and remove the socket file (AC-5).
+	// Drain in-flight requests with a short deadline before closing.
 	s.mu.Lock()
 	ln := s.hostAPIListener
+	srv := s.hostAPISrv
 	s.mu.Unlock()
-	if ln != nil {
+	if srv != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	} else if ln != nil {
 		_ = ln.Close()
+	}
+	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
 	}
 
@@ -1272,7 +1288,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		args = append(args, req.Repo)
 
-		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(args, " "))
+		// Log without the prompt value — it may contain sensitive context.
+		logArgs := []string{"spawn", "--branch", req.Branch}
+		if req.Prompt != "" {
+			logArgs = append(logArgs, "--prompt", "<omitted>")
+		}
+		if req.Agent != "" {
+			logArgs = append(logArgs, "--agent", req.Agent)
+		}
+		logArgs = append(logArgs, req.Repo)
+		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.Output()
 		if err != nil {
