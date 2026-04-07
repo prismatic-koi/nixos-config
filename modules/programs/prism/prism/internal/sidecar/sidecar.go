@@ -599,9 +599,11 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 	if errorName == "MessageAbortedError" {
 		// User pressed Escape/Ctrl-C — record as interrupted.
 		s.cancelIdleTimer()
+		s.cancelRecoveryTimer()
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	} else {
+		s.cancelRecoveryTimer()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
@@ -611,6 +613,7 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 func (s *Sidecar) handleSessionCompacted() {
 	s.compacting = false
 	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
 
 	// If already interrupted, leave it.
 	currentState := s.currentDBState()

@@ -2545,6 +2545,109 @@ func TestServerConnected_NotActive_NoTimer(t *testing.T) {
 	}
 }
 
+// TestServerConnected_RecoveryTimer_CancelledBySessionError verifies that a
+// session.error event cancels any in-flight recovery timer, preventing the
+// timer from overwriting the error/interrupted state with finished.
+func TestServerConnected_RecoveryTimer_CancelledBySessionError(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires recovery timer.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// A non-abort error arrives — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "SomeError"},
+	}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after cancelled recovery timer on error, want %q",
+			state, agent.StateError)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError verifies
+// that a MessageAbortedError cancels any in-flight recovery timer, preventing
+// the timer from overwriting interrupted with finished.
+func TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires recovery timer.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// User aborted — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "MessageAbortedError"},
+	}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateInterrupted) {
+		t.Errorf("state = %q after cancelled recovery timer on abort, want %q",
+			state, agent.StateInterrupted)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByCompaction verifies that
+// handleSessionCompacted cancels any in-flight recovery timer, preventing a
+// spurious duplicate notifyCoordinator call after compaction finishes.
+func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active+compacting state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "compacting"},
+	}))
+
+	// Reconnect while compacting — recovery timer should start (lastState == active).
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// Compaction finishes — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after cancelled recovery timer on compaction, want %q",
+			state, agent.StateFinished)
+	}
+}
+
 // TestServerConnected_RecoveryTimer_CancelledByShutdown verifies that
 // Shutdown() cancels any in-flight recovery timer (AC-5: must not fire after
 // sidecar shutdown).
