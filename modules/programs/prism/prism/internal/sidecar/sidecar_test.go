@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1644,6 +1645,87 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
 		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+// TestDeliverNotificationViaHTTP_BodyLogging verifies that a non-2xx response
+// body (up to 200 bytes) is included in the returned error, making HTTP 500s
+// from the coordinator self-diagnosing in the sidecar log.
+func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantInErr  string
+	}{
+		{
+			name:       "500 with body snippet in error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":"session not found"}`,
+			wantInErr:  `session not found`,
+		},
+		{
+			name:       "body truncated at 200 bytes",
+			statusCode: http.StatusInternalServerError,
+			body:       string(make([]byte, 300)), // 300-byte body
+			wantInErr:  "http status 500",
+		},
+		{
+			name:       "404 with body snippet in error",
+			statusCode: http.StatusNotFound,
+			body:       "session abc not found",
+			wantInErr:  "session abc not found",
+		},
+		{
+			name:       "200 ok returns no error",
+			statusCode: http.StatusOK,
+			body:       "",
+			wantInErr:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.statusCode)
+				if tc.body != "" {
+					_, _ = w.Write([]byte(tc.body))
+				}
+			}))
+			defer srv.Close()
+
+			var srvPort int
+			_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+			if err != nil {
+				_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+			}
+			if err != nil {
+				t.Fatalf("parse test server port: %v", err)
+			}
+
+			agentName := "coordinator"
+			modelID := "anthropic/claude-sonnet-4-5"
+			status := &db.Status{
+				AgentName: &agentName,
+				ModelID:   &modelID,
+			}
+
+			gotErr := deliverNotificationViaHTTP(srvPort, "test-sid", "notify text", status, srv.Client())
+
+			if tc.wantInErr == "" {
+				if gotErr != nil {
+					t.Errorf("expected no error, got: %v", gotErr)
+				}
+				return
+			}
+
+			if gotErr == nil {
+				t.Fatalf("expected an error containing %q, got nil", tc.wantInErr)
+			}
+			if !strings.Contains(gotErr.Error(), tc.wantInErr) {
+				t.Errorf("error = %q, want it to contain %q", gotErr.Error(), tc.wantInErr)
+			}
+		})
 	}
 }
 
