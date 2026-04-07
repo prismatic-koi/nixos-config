@@ -36,7 +36,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		return err
 	}
 	// repo is derived from PRISM_BARE_ROOT (injected by A-2/sidecar).
-	repo := filepath.Base(os.Getenv("PRISM_BARE_ROOT"))
+	bareRoot := os.Getenv("PRISM_BARE_ROOT")
+	if bareRoot == "" {
+		return fmt.Errorf("PRISM_BARE_ROOT is not set — cannot determine repo name in container mode")
+	}
+	repo := filepath.Base(bareRoot)
 	var resp struct {
 		SessionName string `json:"session_name"`
 	}

@@ -337,7 +337,7 @@ func TestHeadlessCloseSession_Proxy(t *testing.T) {
 
 // TestSwitchProxy_SendsCorrectPayload verifies AC-11 for switch: when
 // PRISM_HOST_API is set, switchCmd.RunE POSTs to /switch with the session
-// (path) value.
+// (path) value from the --path flag.
 func TestSwitchProxy_SendsCorrectPayload(t *testing.T) {
 	type switchReq struct {
 		Session string `json:"session"`
@@ -360,11 +360,14 @@ func TestSwitchProxy_SendsCorrectPayload(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 
-	err := proxyToHostAPI(srv.apiURL(), "/switch", map[string]any{
-		"session": "/workspace/my-project",
-	}, nil)
-	if err != nil {
-		t.Fatalf("proxyToHostAPI /switch: %v", err)
+	// Exercise switchCmd.RunE directly (not proxyToHostAPI) to ensure the
+	// proxy guard in switch.go is what sends the request.
+	cmd := &cobra.Command{}
+	cmd.Flags().String("path", "", "")
+	_ = cmd.Flags().Set("path", "/workspace/my-project")
+
+	if err := switchCmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("switchCmd.RunE: %v", err)
 	}
 
 	select {
