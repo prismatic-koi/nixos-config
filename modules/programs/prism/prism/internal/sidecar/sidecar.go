@@ -15,11 +15,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -77,6 +80,10 @@ type Config struct {
 	// manages a podman container running opencode serve instead of relying on a
 	// directly-launched opencode process.
 	Container *container.Config
+	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
+	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
+	// to agents running inside the container.
+	HostAPISockPath string
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
 	// readiness signal file that unblocks the tmux pane running "opencode attach".
@@ -105,6 +112,14 @@ type Sidecar struct {
 	// container is set when running in container mode.
 	// Protected by mu.
 	container *containerMgr
+	// hostAPIListener is the Unix socket listener for the host-API HTTP server.
+	// Set in Run() when container mode is active and HostAPISockPath is non-empty.
+	// Protected by mu.
+	hostAPIListener net.Listener
+	// hostAPISrv is the HTTP server for the host-API Unix socket.
+	// Stored so Shutdown() can drain in-flight requests gracefully.
+	// Protected by mu.
+	hostAPISrv *http.Server
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
@@ -212,6 +227,34 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		} else if !isShuttingDown && s.cfg.OnReady != nil {
 			s.cfg.OnReady()
 		}
+
+		// Start the host-API Unix socket server (AC-1, AC-9).
+		// Guard with !isShuttingDown: if SIGTERM arrived between WaitHealthy
+		// and here, Shutdown() will have already run and we must not create a
+		// new listener that would never be closed.
+		if !isShuttingDown && s.cfg.HostAPISockPath != "" {
+			// Remove stale socket file from a previous crashed session.
+			_ = os.Remove(s.cfg.HostAPISockPath)
+			ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
+			if listenErr != nil {
+				log.Printf("sidecar: host-API server: listen: %v", listenErr)
+			} else {
+				srv := &http.Server{Handler: s.hostAPIHandler()}
+				s.mu.Lock()
+				s.hostAPIListener = ln
+				s.hostAPISrv = srv
+				s.mu.Unlock()
+				go func() {
+					if err := srv.Serve(ln); err != nil &&
+						!errors.Is(err, http.ErrServerClosed) &&
+						!errors.Is(err, net.ErrClosed) {
+						log.Printf("sidecar: host-API server: %v", err)
+					}
+				}()
+			}
+		} else if s.cfg.HostAPISockPath == "" {
+			log.Printf("sidecar: host-API server: HostAPISockPath is empty — skipping (container mode active but no socket path configured)")
+		}
 	}
 
 	url := s.cfg.OpencodeURL + "/event"
@@ -301,6 +344,23 @@ func (s *Sidecar) Shutdown() {
 	// cleanup happens even if SIGTERM arrives during health-check (AC-16).
 	if ctr != nil {
 		ctr.mgr.Shutdown()
+	}
+
+	// Close the host-API Unix socket listener and remove the socket file (AC-5).
+	// Drain in-flight requests with a short deadline before closing.
+	s.mu.Lock()
+	ln := s.hostAPIListener
+	srv := s.hostAPISrv
+	s.mu.Unlock()
+	if srv != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	} else if ln != nil {
+		_ = ln.Close()
+	}
+	if ln != nil {
+		_ = os.Remove(s.cfg.HostAPISockPath)
 	}
 
 	s.mu.Lock()
@@ -1151,4 +1211,235 @@ func marshalTruncated(v any, maxLen int) string {
 		return "{}"
 	}
 	return truncate(string(data), maxLen)
+}
+
+// ── host-API handler ─────────────────────────────────────────────────────────
+
+// hostAPIHandler returns an http.Handler that exposes host-side tmux operations
+// to agents running inside the container via a Unix socket. Routes:
+//
+//	POST /spawn   — spawn a new worktree session
+//	POST /cleanup — clean up an existing session
+//	POST /switch  — switch the tmux client to a session
+//
+// AC-11: returns HTTP 400 for malformed JSON, HTTP 405 for non-POST methods.
+func (s *Sidecar) hostAPIHandler() http.Handler {
+	mux := http.NewServeMux()
+
+	// writeJSON writes a JSON response with the given status code.
+	writeJSON := func(w http.ResponseWriter, status int, v any) {
+		data, err := json.Marshal(v)
+		if err != nil {
+			http.Error(w, `{"error":"internal: marshal response"}`, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(data)
+	}
+
+	// writeError writes a JSON error response.
+	writeError := func(w http.ResponseWriter, status int, msg string) {
+		writeJSON(w, status, map[string]string{"error": msg})
+	}
+
+	// requirePost writes a 405 and returns false if the method is not POST.
+	// Returns true when the method is POST (caller should proceed).
+	requirePost := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return false
+		}
+		return true
+	}
+
+	// prismBinary returns the path to the prism binary (this process).
+	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
+	// the absolute path at binary launch time, avoiding CWD-relative resolution.
+	prismBinary := func() string {
+		self, err := os.Executable()
+		if err != nil {
+			return os.Args[0]
+		}
+		return self
+	}
+
+	// POST /spawn
+	// Request:  {"repo":"nixos-config","branch":"my-feature","prompt":"...","agent":"worker"}
+	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
+	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Repo   string `json:"repo"`
+			Branch string `json:"branch"`
+			Prompt string `json:"prompt"`
+			Agent  string `json:"agent"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Repo == "" {
+			writeError(w, http.StatusBadRequest, "repo is required")
+			return
+		}
+		if req.Branch == "" {
+			writeError(w, http.StatusBadRequest, "branch is required")
+			return
+		}
+
+		args := []string{"spawn", "--branch", req.Branch}
+		if req.Prompt != "" {
+			args = append(args, "--prompt", req.Prompt)
+		}
+		if req.Agent != "" {
+			args = append(args, "--agent", req.Agent)
+		}
+		args = append(args, req.Repo)
+
+		// Log without the prompt value — it may contain sensitive context.
+		logArgs := []string{"spawn", "--branch", req.Branch}
+		if req.Prompt != "" {
+			logArgs = append(logArgs, "--prompt", "<omitted>")
+		}
+		if req.Agent != "" {
+			logArgs = append(logArgs, "--agent", req.Agent)
+		}
+		logArgs = append(logArgs, req.Repo)
+		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
+		cmd := exec.Command(prismBinary(), args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("spawn failed: %v", err))
+			return
+		}
+
+		// prism spawn headless prints: session "name" created
+		// Parse the session name from the output.
+		sessionName := parseSpawnSessionName(string(out))
+		if sessionName == "" {
+			// Fallback: derive from repo@branch (branch already sanitised by spawn).
+			sessionName = req.Repo + "@" + req.Branch
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
+	})
+
+	// POST /cleanup
+	// Request:  {"session":"nixos-config@my-feature","yes":true}
+	// Response: {} | {"error":"..."}
+	mux.HandleFunc("/cleanup", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Session string `json:"session"`
+			Yes     bool   `json:"yes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		args := []string{"cleanup", "--session", req.Session}
+		if req.Yes {
+			args = append(args, "--yes")
+		}
+
+		log.Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
+		cmd := exec.Command(prismBinary(), args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("sidecar: host-API /cleanup: %v: %s", err, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cleanup failed: %v", err))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
+	// POST /switch
+	// Request:  {"session":"nixos-config@my-feature"}
+	// Response: {} | {"error":"..."}
+	mux.HandleFunc("/switch", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Session string `json:"session"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Resolve worktree path for the session from the DB, then use
+		// prism switch --path <worktree> to switch the tmux client.
+		worktreePath, err := s.worktreePathForSession(req.Session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("resolve worktree: %v", err))
+			return
+		}
+
+		args := []string{"switch", "--path", worktreePath}
+		log.Printf("sidecar: host-API /switch: prism %s", strings.Join(args, " "))
+		cmd := exec.Command(prismBinary(), args...)
+		out, switchErr := cmd.CombinedOutput()
+		if switchErr != nil {
+			log.Printf("sidecar: host-API /switch: %v: %s", switchErr, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("switch failed: %v", switchErr))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
+	return mux
+}
+
+// worktreePathForSession looks up the worktree path for a session from the DB.
+// Used by the /switch host-API handler to resolve the path for prism switch --path.
+func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
+	status, err := s.cfg.DB.CurrentStatus(sessionName)
+	if err != nil {
+		return "", fmt.Errorf("db lookup: %w", err)
+	}
+	if status == nil {
+		return "", fmt.Errorf("session %q not found in DB", sessionName)
+	}
+	if status.Worktree == "" {
+		return "", fmt.Errorf("session %q has no worktree path in DB", sessionName)
+	}
+	return status.Worktree, nil
+}
+
+// parseSpawnSessionName parses the session name from the output of `prism spawn`
+// in headless mode, which prints: session "name" created
+// Returns empty string if the output does not match the expected format.
+func parseSpawnSessionName(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		// Match: session "name" created
+		if !strings.HasPrefix(line, "session ") || !strings.HasSuffix(line, " created") {
+			continue
+		}
+		// Strip prefix "session " and suffix " created".
+		inner := strings.TrimPrefix(line, "session ")
+		inner = strings.TrimSuffix(inner, " created")
+		// inner should now be a quoted string like `"name"`.
+		if len(inner) >= 2 && inner[0] == '"' && inner[len(inner)-1] == '"' {
+			return inner[1 : len(inner)-1]
+		}
+	}
+	return ""
 }

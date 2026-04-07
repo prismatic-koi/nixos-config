@@ -80,6 +80,18 @@ func SidecarPIDPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", sessionName+"-sidecar.pid"), nil
 }
 
+// SidecarHostAPIPath returns the Unix socket path for the session's host-API server.
+// The sidecar creates this socket and the container mounts it at /var/run/prism-hostapi.sock.
+//
+// Socket path: $XDG_STATE_HOME/prism/run/<session>-hostapi.sock
+func SidecarHostAPIPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", sessionName+"-hostapi.sock"), nil
+}
+
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the
 // recorded process, and removes the PID file. It handles missing or stale PID
 // files gracefully — no error is returned in those cases.

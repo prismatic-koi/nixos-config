@@ -273,3 +273,38 @@ func TestSidecarReadyPath_CustomXDG(t *testing.T) {
 		t.Errorf("SidecarReadyPath = %q, want %q", got, want)
 	}
 }
+
+// ── SidecarHostAPIPath tests ──────────────────────────────────────────────────
+
+func TestSidecarHostAPIPath_DefaultXDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	got, err := SidecarHostAPIPath("myrepo@feature")
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+
+	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature-hostapi.sock")
+	if got != want {
+		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
+	}
+}
+
+func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	got, err := SidecarHostAPIPath("myrepo@main")
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+
+	want := filepath.Join(tmp, "prism", "run", "myrepo@main-hostapi.sock")
+	if got != want {
+		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
+	}
+}

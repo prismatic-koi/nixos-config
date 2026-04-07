@@ -142,6 +142,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Build the host-API socket path for container mode (A-1).
+	var hostAPISockPath string
+	if containerMode {
+		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
+		if err != nil {
+			return fmt.Errorf("sidecar: resolve host-API socket path: %w", err)
+		}
+		hostAPISockPath = sockPath
+	}
+
 	// Build the OnReady callback for container mode (AC-18, AC-19).
 	// Written to the config before creating the sidecar.
 	var onReady func()
@@ -167,15 +177,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := sidecar.Config{
-		SessionName:   sessionName,
-		Repo:          repo,
-		Worktree:      worktree,
-		OpencodeURL:   opencodeURL,
-		DB:            d,
-		Clock:         sidecar.RealClock(),
-		Container:     ctrCfg,
-		OnReady:       onReady,
-		InitialPrompt: initialPrompt,
+		SessionName:     sessionName,
+		Repo:            repo,
+		Worktree:        worktree,
+		OpencodeURL:     opencodeURL,
+		DB:              d,
+		Clock:           sidecar.RealClock(),
+		Container:       ctrCfg,
+		HostAPISockPath: hostAPISockPath,
+		OnReady:         onReady,
+		InitialPrompt:   initialPrompt,
 	}
 	sc := sidecar.New(cfg)
 
