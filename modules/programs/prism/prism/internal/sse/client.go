@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// maxScanTokenSize is the maximum size of a single SSE line. The default
+// bufio.MaxScanTokenSize (64 KiB) is too small: opencode streams full LLM
+// response text inside message.part.updated data: fields, which can easily
+// exceed 64 KiB for long assistant responses. 10 MiB is generous but still
+// bounded.
+const maxScanTokenSize = 10 * 1024 * 1024 // 10 MiB
+
 // Event represents a single SSE event parsed from the stream.
 type Event struct {
 	// Type is the event type from the SSE "event:" field.
@@ -146,13 +153,15 @@ func (c *Client) readLoop(ctx context.Context, url string, resp *http.Response, 
 	defer close(ch)
 
 	for {
-		c.consumeStream(ctx, resp, ch)
+		reason := c.consumeStream(ctx, resp, ch)
 		resp.Body.Close()
 
 		// If the context is done, stop reconnecting.
 		if ctx.Err() != nil {
 			return
 		}
+
+		log.Printf("sse: disconnected (reason: %s)", reason)
 
 		// Reconnect with exponential backoff.
 		resp = c.reconnect(ctx, url)
@@ -195,16 +204,21 @@ func (c *Client) reconnect(ctx context.Context, url string) *http.Response {
 	}
 }
 
-// consumeStream reads from a single response body until EOF or error.
-func (c *Client) consumeStream(ctx context.Context, resp *http.Response, ch chan<- Event) {
+// consumeStream reads from a single response body until EOF or error. It
+// returns a human-readable reason string describing why the stream ended.
+func (c *Client) consumeStream(ctx context.Context, resp *http.Response, ch chan<- Event) string {
 	scanner := bufio.NewScanner(resp.Body)
+	// Use a large buffer to handle big SSE data: lines (e.g. message.part.updated
+	// events that embed full LLM response text). The default 64 KiB limit causes
+	// spurious "token too long" disconnects for long assistant responses.
+	scanner.Buffer(make([]byte, 64*1024), maxScanTokenSize)
 
 	var eventType string
 	var dataLines []string
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			return
+			return "context cancelled"
 		}
 
 		line := scanner.Text()
@@ -256,16 +270,10 @@ func (c *Client) consumeStream(ctx context.Context, resp *http.Response, ch chan
 	// we discard it. This matches the SSE spec: an event is only dispatched
 	// when an empty line is encountered.
 
-	// Only log the disconnect reason when the context is still live — if ctx
-	// is cancelled, the caller (readLoop) will exit without reconnecting, so
-	// the log would be misleading noise rather than a useful signal.
-	if ctx.Err() == nil {
-		if err := scanner.Err(); err != nil {
-			log.Printf("sse: stream ended: scanner error: %v", err)
-		} else {
-			log.Printf("sse: stream ended: EOF")
-		}
+	if err := scanner.Err(); err != nil {
+		return fmt.Sprintf("read error: %v", err)
 	}
+	return "EOF"
 }
 
 // send delivers an event to the channel, dropping it with a log warning if the
