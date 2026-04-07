@@ -1302,9 +1302,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		logArgs = append(logArgs, req.Repo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
-		out, err := cmd.Output()
+		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("sidecar: host-API /spawn: %v", err)
+			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("spawn failed: %v", err))
 			return
 		}
