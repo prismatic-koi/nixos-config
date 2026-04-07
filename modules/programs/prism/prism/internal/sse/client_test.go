@@ -520,3 +520,60 @@ func TestServerConnectedEvent(t *testing.T) {
 		t.Errorf("Data = %q", events[0].Data)
 	}
 }
+
+// TestLargeDataLine verifies that a single SSE data: line larger than the
+// default bufio.MaxScanTokenSize (64 KiB) is parsed without triggering a
+// reconnect. This exercises the root-cause fix for the reconnect storm:
+// opencode sends message.part.updated events with full LLM text in the data
+// field, which can exceed 64 KiB for long responses.
+func TestLargeDataLine(t *testing.T) {
+	// Generate a payload larger than the default 64 KiB scanner limit.
+	const size = 128 * 1024 // 128 KiB
+	largeData := strings.Repeat("x", size)
+
+	// Server sends one event with a large data line, then blocks.
+	var connectionCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connectionCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+
+		fmt.Fprintf(w, "event: large\ndata: %s\n\n", largeData)
+		flusher.Flush()
+
+		// Block until the client disconnects to prevent triggering reconnection.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client := &Client{}
+	ch, err := client.Connect(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+
+	events := collectEvents(t, ch, 1)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Type != "large" {
+		t.Errorf("Type = %q, want %q", events[0].Type, "large")
+	}
+	if events[0].Data != largeData {
+		t.Errorf("Data length = %d, want %d (first 20 chars: %q)", len(events[0].Data), size, events[0].Data[:20])
+	}
+
+	// Exactly one connection should have been made — no spurious reconnect.
+	if connectionCount != 1 {
+		t.Errorf("connection count = %d, want 1 (large payload should not cause reconnect)", connectionCount)
+	}
+}

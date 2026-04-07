@@ -2379,3 +2379,307 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 		t.Errorf("RootModelID after session 2 = %q, want %q (stale model not updated)", *status.RootModelID, want)
 	}
 }
+
+// ── reconnect recovery timer tests ──────────────────────────────────────────
+
+// TestServerConnected_InitialConnection_NoTimer verifies that server.connected
+// on the initial connection (lastState empty) does NOT start a recovery timer.
+func TestServerConnected_InitialConnection_NoTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+
+	if clk.TimerCount() != 0 {
+		t.Errorf("expected no timers on initial server.connected, got %d", clk.TimerCount())
+	}
+}
+
+// TestServerConnected_WhileActive_StartsRecoveryTimer verifies that
+// server.connected while in active state starts the reconnect recovery timer
+// (AC-5: recovery timer fires only when sidecar reconnects and last state is active).
+func TestServerConnected_WhileActive_StartsRecoveryTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state and drive lastState via an event.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// server.connected while active → recovery timer should start.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+
+	if clk.TimerCount() == 0 {
+		t.Fatal("expected recovery timer to be created after server.connected while active")
+	}
+}
+
+// TestServerConnected_RecoveryTimer_FiresFinished verifies that when the
+// recovery timer fires with no subsequent events, the sidecar writes finished
+// (AC-5: writes finished and calls notifyCoordinator after recovery window).
+func TestServerConnected_RecoveryTimer_FiresFinished(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// server.connected on reconnect.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected recovery timer to be created")
+	}
+
+	// Fire the timer manually (simulates 60s passing with no events).
+	timer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after recovery timer fired, want %q", state, agent.StateFinished)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledBySessionIdle verifies that when
+// session.idle arrives in the recovery window, the recovery timer is cancelled
+// and normal idle debounce proceeds.
+func TestServerConnected_RecoveryTimer_CancelledBySessionIdle(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires server.connected → recovery timer starts.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// session.idle arrives — should cancel recovery timer and start idle debounce.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	// Recovery timer must be stopped.
+	recoveryTimer.Fire()
+
+	// State should still be active (idle debounce has not fired yet).
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after recovery-cancelled by session.idle, want %q",
+			state, agent.StateActive)
+	}
+
+	// The idle debounce timer should now be present.
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil || idleTimer == recoveryTimer {
+		t.Fatal("expected new idle debounce timer after session.idle")
+	}
+	idleTimer.Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after idle debounce fired, want %q", state, agent.StateFinished)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByBusy verifies that when
+// session.status busy arrives in the recovery window, the recovery timer is
+// cancelled (the session is still running).
+func TestServerConnected_RecoveryTimer_CancelledByBusy(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires server.connected → recovery timer starts.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// session.status busy arrives — should cancel recovery timer.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Recovery timer must be stopped — firing it should NOT change state.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after cancelled recovery timer, want %q", state, agent.StateActive)
+	}
+}
+
+// TestServerConnected_NotActive_NoTimer verifies that server.connected while
+// in a non-active state (e.g. waiting or finished) does NOT start a recovery timer.
+func TestServerConnected_NotActive_NoTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Drive to waiting state via events.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	sc.HandleEvent(makeSSE("permission.asked", map[string]any{
+		"permission": "bash",
+	}))
+
+	countBefore := clk.TimerCount()
+
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+
+	if clk.TimerCount() != countBefore {
+		t.Errorf("expected no new timers on server.connected while waiting, got %d new timer(s)",
+			clk.TimerCount()-countBefore)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledBySessionError verifies that a
+// session.error event cancels any in-flight recovery timer, preventing the
+// timer from overwriting the error/interrupted state with finished.
+func TestServerConnected_RecoveryTimer_CancelledBySessionError(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires recovery timer.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// A non-abort error arrives — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "SomeError"},
+	}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after cancelled recovery timer on error, want %q",
+			state, agent.StateError)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError verifies
+// that a MessageAbortedError cancels any in-flight recovery timer, preventing
+// the timer from overwriting interrupted with finished.
+func TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires recovery timer.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// User aborted — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "MessageAbortedError"},
+	}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateInterrupted) {
+		t.Errorf("state = %q after cancelled recovery timer on abort, want %q",
+			state, agent.StateInterrupted)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByCompaction verifies that
+// handleSessionCompacted cancels any in-flight recovery timer, preventing a
+// spurious duplicate notifyCoordinator call after compaction finishes.
+func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state, then send a compacting status (no-op in handleSessionStatus,
+	// but s.compacting and lastState = active are the relevant preconditions).
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	// Note: "compacting" type is not handled by handleSessionStatus, so lastState
+	// stays "active" — which is the precondition handleServerConnected checks.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "compacting"},
+	}))
+
+	// Reconnect while compacting — recovery timer should start (lastState == active).
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// Compaction finishes — must cancel the recovery timer.
+	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// Fire the timer — should be a no-op.
+	recoveryTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after cancelled recovery timer on compaction, want %q",
+			state, agent.StateFinished)
+	}
+}
+
+// TestServerConnected_RecoveryTimer_CancelledByShutdown verifies that
+// Shutdown() cancels any in-flight recovery timer (AC-5: must not fire after
+// sidecar shutdown).
+func TestServerConnected_RecoveryTimer_CancelledByShutdown(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	// Seed active state.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// Reconnect fires recovery timer.
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+	recoveryTimer := clk.LastTimer()
+	if recoveryTimer == nil {
+		t.Fatal("expected recovery timer after server.connected")
+	}
+
+	// Shutdown must cancel the recovery timer.
+	sc.Shutdown()
+
+	// Fire the timer — should be a no-op because it was stopped.
+	recoveryTimer.Fire()
+
+	// After Shutdown the state should be interrupted (not finished).
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateInterrupted) {
+		t.Errorf("state = %q after shutdown with cancelled recovery timer, want %q",
+			state, agent.StateInterrupted)
+	}
+}

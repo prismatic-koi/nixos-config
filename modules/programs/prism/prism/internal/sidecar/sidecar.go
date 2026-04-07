@@ -45,6 +45,13 @@ var defaultNotifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 // the finished state. Cancelled if session.status busy fires in the window.
 const IdleDebounce = 2 * time.Second
 
+// ReconnectRecoveryDelay is the window the sidecar waits after a reconnect
+// (detected via server.connected while in active state) before concluding
+// that session.idle was missed and writing the finished state. Any arriving
+// session.status busy or session.idle event resets normal flow and cancels
+// this timer.
+const ReconnectRecoveryDelay = 60 * time.Second
+
 // Clock abstracts time and timer operations for testing.
 type Clock interface {
 	Now() time.Time
@@ -104,6 +111,7 @@ type Sidecar struct {
 	mu              sync.Mutex
 	lastState       agent.AgentState
 	idleTimer       Timer
+	recoveryTimer   Timer
 	manualDenial    bool
 	compacting      bool
 	opencodeSID     string
@@ -298,7 +306,7 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 
 	switch eventType {
 	case "server.connected":
-		// Sent by opencode on initial connection — silently ignore.
+		s.handleServerConnected()
 	case "session.status":
 		s.handleSessionStatus(evt)
 	case "session.idle":
@@ -369,6 +377,7 @@ func (s *Sidecar) Shutdown() {
 	defer s.mu.Unlock()
 
 	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
 
 	if s.lastState != agent.StateFinished &&
 		s.lastState != agent.StateDeleted &&
@@ -379,6 +388,39 @@ func (s *Sidecar) Shutdown() {
 }
 
 // ── event handlers (must be called with s.mu held) ──────────────────────────
+
+// handleServerConnected is called when opencode sends the server.connected
+// event on each new SSE connection. On the initial connection the sidecar has
+// no prior state (lastState is empty) so this is a no-op. On reconnects the
+// sidecar may have been in active state when the connection dropped, in which
+// case session.idle might have been emitted during the gap. The recovery timer
+// gives arriving events (session.status busy, session.idle) a 60-second window
+// to arrive before concluding the session finished and writing that state.
+func (s *Sidecar) handleServerConnected() {
+	if s.lastState != agent.StateActive {
+		return
+	}
+
+	// Reconnect while active — start a recovery timer in case session.idle was
+	// missed during the gap.
+	s.cancelRecoveryTimer()
+	log.Printf("sidecar: reconnected while active, starting %v recovery timer", ReconnectRecoveryDelay)
+	s.recoveryTimer = s.cfg.Clock.AfterFunc(ReconnectRecoveryDelay, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.recoveryTimer = nil
+
+		// Only proceed if we are still in active state (no event arrived to
+		// update it in the recovery window).
+		if s.lastState != agent.StateActive {
+			return
+		}
+		log.Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
+		s.upsertState(agent.StateFinished, nil, nil)
+		s.writeStateChange(agent.StateFinished)
+		go s.notifyCoordinator()
+	})
+}
 
 func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 	var payload struct {
@@ -396,12 +438,14 @@ func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 	switch payload.Properties.Status.Type {
 	case "busy":
 		s.cancelIdleTimer()
+		s.cancelRecoveryTimer()
 		s.manualDenial = false
 		if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 		}
 	case "retry":
+		s.cancelRecoveryTimer()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 	}
@@ -410,6 +454,7 @@ func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 func (s *Sidecar) handleSessionIdle() {
 	// Snapshot current DB state before the timer fires.
 	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
 
 	// If the most recent assistant message was from a subagent (not the root
 	// agent), suppress the finished debounce entirely. The parent agent is
@@ -554,9 +599,11 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 	if errorName == "MessageAbortedError" {
 		// User pressed Escape/Ctrl-C — record as interrupted.
 		s.cancelIdleTimer()
+		s.cancelRecoveryTimer()
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	} else {
+		s.cancelRecoveryTimer()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
@@ -566,6 +613,7 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 func (s *Sidecar) handleSessionCompacted() {
 	s.compacting = false
 	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
 
 	// If already interrupted, leave it.
 	currentState := s.currentDBState()
@@ -877,6 +925,13 @@ func (s *Sidecar) cancelIdleTimer() {
 		log.Printf("sidecar: idle debounce cancelled")
 		s.idleTimer.Stop()
 		s.idleTimer = nil
+	}
+}
+
+func (s *Sidecar) cancelRecoveryTimer() {
+	if s.recoveryTimer != nil {
+		s.recoveryTimer.Stop()
+		s.recoveryTimer = nil
 	}
 }
 
