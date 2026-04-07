@@ -144,7 +144,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
 		// Only log if it looks like a real error (not "no such container").
-		if !isNoSuchContainer(string(out)) {
+		if !IsNoSuchContainerError(string(out)) {
 			log.Printf("container: stop existing %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -152,7 +152,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	// Remove the container (ignore errors — may not exist).
 	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
 	if out, err := rmCmd.CombinedOutput(); err != nil {
-		if !isNoSuchContainer(string(out)) {
+		if !IsNoSuchContainerError(string(out)) {
 			log.Printf("container: rm existing %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -295,12 +295,12 @@ func (m *Manager) Shutdown() {
 	log.Printf("container: shutting down %q", m.name)
 
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
-	if out, err := stopCmd.CombinedOutput(); err != nil && !isNoSuchContainer(string(out)) {
+	if out, err := stopCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
 		log.Printf("container: stop %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 	}
 
 	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
-	if out, err := rmCmd.CombinedOutput(); err != nil && !isNoSuchContainer(string(out)) {
+	if out, err := rmCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
 		log.Printf("container: rm %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 	}
 
@@ -603,9 +603,4 @@ func IsNoSuchContainerError(output string) bool {
 		strings.Contains(output, "No such container") ||
 		strings.Contains(output, "Error: no such container") ||
 		strings.Contains(output, "Error response from daemon: No such container")
-}
-
-// isNoSuchContainer is the unexported alias kept for internal use.
-func isNoSuchContainer(output string) bool {
-	return IsNoSuchContainerError(output)
 }

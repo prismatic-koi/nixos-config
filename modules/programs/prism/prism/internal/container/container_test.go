@@ -683,9 +683,9 @@ func TestIsNoSuchContainer(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		got := isNoSuchContainer(tc.output)
+		got := IsNoSuchContainerError(tc.output)
 		if got != tc.want {
-			t.Errorf("isNoSuchContainer(%q) = %v, want %v", tc.output, got, tc.want)
+			t.Errorf("IsNoSuchContainerError(%q) = %v, want %v", tc.output, got, tc.want)
 		}
 	}
 }

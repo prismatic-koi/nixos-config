@@ -578,21 +578,27 @@ func init() {
 // Called after KillSidecar to handle the case where the sidecar is already dead.
 // For host-mode (non-container) sessions, the podman calls return "no such
 // container" which is silently ignored.
+// Each podman command gets its own independent context so that a slow or
+// hung stop does not consume the budget for the rm --force fallback.
 func removeContainerIfExists(sessionName string) {
 	name := container.NameForSession(sessionName)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
-	// Stop the container (10s grace period).
-	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", name)
+	// Stop the container (10s grace period). Own context so that a slow stop
+	// cannot starve the rm --force that follows.
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stopCancel()
+	stopCmd := exec.CommandContext(stopCtx, "podman", "stop", "--time", "10", name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
 		if !container.IsNoSuchContainerError(string(out)) {
 			fmt.Fprintf(os.Stderr, "[prism] stop container %q: %v\n", name, err)
 		}
 	}
 
-	// Force-remove the container.
-	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", name)
+	// Force-remove the container. Independent context ensures this always runs
+	// even when podman stop timed out.
+	rmCtx, rmCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer rmCancel()
+	rmCmd := exec.CommandContext(rmCtx, "podman", "rm", "--force", name)
 	if out, err := rmCmd.CombinedOutput(); err != nil {
 		if !container.IsNoSuchContainerError(string(out)) {
 			fmt.Fprintf(os.Stderr, "[prism] rm container %q: %v\n", name, err)
