@@ -13,14 +13,19 @@ package cmd
 // DB status is marked as ended.
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -209,6 +214,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		}
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
+		removeContainerIfExists(m.session)
 		if d, err := openDB(); err == nil {
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
@@ -413,6 +419,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	removeContainerIfExists(session)
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
@@ -449,6 +456,7 @@ func closeSession(session string) error {
 	}
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	removeContainerIfExists(session)
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
@@ -484,6 +492,7 @@ func headlessCloseSession(session string) error {
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	removeContainerIfExists(session)
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
@@ -561,4 +570,42 @@ func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	rootCmd.AddCommand(cleanupCmd)
+}
+
+// removeContainerIfExists stops and removes any podman container for the given
+// prism session, and cleans up the associated temp files.
+// It is idempotent: all steps are safe to call when the container does not exist.
+// Called after KillSidecar to handle the case where the sidecar is already dead.
+// For host-mode (non-container) sessions, the podman calls return "no such
+// container" which is silently ignored.
+func removeContainerIfExists(sessionName string) {
+	name := container.NameForSession(sessionName)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Stop the container (10s grace period).
+	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", name)
+	if out, err := stopCmd.CombinedOutput(); err != nil {
+		if !container.IsNoSuchContainerError(string(out)) {
+			fmt.Fprintf(os.Stderr, "[prism] stop container %q: %v\n", name, err)
+		}
+	}
+
+	// Force-remove the container.
+	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", name)
+	if out, err := rmCmd.CombinedOutput(); err != nil {
+		if !container.IsNoSuchContainerError(string(out)) {
+			fmt.Fprintf(os.Stderr, "[prism] rm container %q: %v\n", name, err)
+		}
+	}
+
+	// Clean up temp files created by container.Manager.Create.
+	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitdir-"+name))
+	_ = os.Remove(filepath.Join(os.TempDir(), "prism-wt-gitdir-"+name))
+	_ = os.Remove(filepath.Join(os.TempDir(), "prism-ssh-config-"+name))
+
+	// TODO(#507): clean up the host-API socket file once SidecarHostAPIPath is available.
+	// if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
+	// 	_ = os.Remove(sockPath)
+	// }
 }

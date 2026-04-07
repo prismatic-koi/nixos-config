@@ -44,6 +44,49 @@ func TestContainerName_Deterministic(t *testing.T) {
 	}
 }
 
+// ── NameForSession tests ─────────────────────────────────────────────────────
+
+func TestNameForSession_ReplacesAt(t *testing.T) {
+	name := NameForSession("nixos-config@feature")
+	want := "prism-nixos-config-feature"
+	if name != want {
+		t.Errorf("NameForSession(%q) = %q, want %q", "nixos-config@feature", name, want)
+	}
+}
+
+func TestNameForSession_ReplacesSlash(t *testing.T) {
+	name := NameForSession("repo@feat/sub")
+	want := "prism-repo-feat-sub"
+	if name != want {
+		t.Errorf("NameForSession(%q) = %q, want %q", "repo@feat/sub", name, want)
+	}
+}
+
+func TestNameForSession_ReplacesDot(t *testing.T) {
+	name := NameForSession("repo.git@main")
+	want := "prism-repo-git-main"
+	if name != want {
+		t.Errorf("NameForSession(%q) = %q, want %q", "repo.git@main", name, want)
+	}
+}
+
+func TestNameForSession_MatchesContainerName(t *testing.T) {
+	sessions := []string{
+		"nixos-config@main",
+		"repo@feat/sub",
+		"repo.git@main",
+		"a@b/c.d",
+	}
+	for _, s := range sessions {
+		exported := NameForSession(s)
+		unexported := containerName(s)
+		if exported != unexported {
+			t.Errorf("NameForSession(%q) = %q, containerName(%q) = %q — must be identical",
+				s, exported, s, unexported)
+		}
+	}
+}
+
 // ── New tests ────────────────────────────────────────────────────────────────
 
 func TestNew_SetsName(t *testing.T) {
