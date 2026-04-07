@@ -42,6 +42,11 @@ let
   # etc. symlink farm so binaries land on PATH. Passing raw package
   # derivations directly would place them at their Nix store paths only,
   # leaving them unreachable via PATH.
+  #
+  # The packages are split into two buildEnv groups so that podman can cache
+  # the rarely-changing "stable-infra" layer independently from the
+  # frequently-updated "ai-tooling" layer (opencode, claude-code, prism).
+  # When only the AI tools change, only that layer needs to be transferred.
   prismAgentImage = pkgs.dockerTools.buildLayeredImage {
     name = "prism-agent";
     tag = "latest";
@@ -57,8 +62,10 @@ let
       # find them without needing env var overrides.
       pkgs.dockerTools.caCertificates
 
+      # Stable infrastructure tools — rarely change, so this layer is almost
+      # always cache-hit when only AI tooling is updated.
       (pkgs.buildEnv {
-        name = "prism-agent-root";
+        name = "prism-agent-stable-infra";
         paths = with pkgs; [
           # Shell and core utilities — pin the Nix versions so PATH is consistent
           # regardless of what Ubuntu provides
@@ -66,8 +73,6 @@ let
           coreutils
 
           # Development tools
-          opencode
-          claude-code
           git
           openssh # git push/fetch over SSH remotes
           gh
@@ -88,19 +93,17 @@ let
           # Browser automation — playwright-cli wraps chromium
           playwright-cli
 
-          # Prism CLI — agents need prism spawn, prompt, checkin, etc.
-          prism
-
           # Cloud and infrastructure
-          awscli2
-          opentofu
           kubectl
           kubernetes-helm
+          awscli2
+          opentofu
           fluxcd
 
           # Secrets tooling — agents may read or edit sops-encrypted files
           sops
           age
+          openssl
 
           # Per-project environment management
           direnv
@@ -118,6 +121,24 @@ let
           gopls
           typescript-language-server
           nil # Nix LSP
+        ];
+        pathsToLink = [
+          "/bin"
+          "/lib"
+          "/share"
+          "/etc"
+        ];
+      })
+
+      # AI tooling — updated frequently; isolated so the stable-infra layer
+      # above is unaffected when opencode, claude-code, or prism bump versions.
+      (pkgs.buildEnv {
+        name = "prism-agent-ai-tooling";
+        paths = with pkgs; [
+          opencode
+          claude-code
+          # Prism CLI — agents need prism spawn, prompt, checkin, etc.
+          prism
         ];
         pathsToLink = [
           "/bin"
@@ -210,6 +231,11 @@ in
               # Run before prism session restore so the image is available when
               # the first container spawn happens.
               Before = [ "prism-restore.service" ];
+              # Only restart the service when the image derivation itself changes,
+              # not on every home-manager switch.  Passing prismAgentImage as a
+              # derivation (not a string interpolation) ensures home-manager hashes
+              # the store path and triggers a restart only when it changes.
+              X-Restart-Triggers = [ prismAgentImage ];
             };
             Service = {
               Type = "oneshot";
