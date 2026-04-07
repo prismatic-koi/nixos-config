@@ -84,6 +84,13 @@ type Config struct {
 	// Mounted read-write at /prism-git/worktrees/<branch> inside the container.
 	WorktreeGitDir string
 
+	// HostAPISockPath is the absolute host path to the sidecar's host-API Unix socket.
+	// When non-empty, the socket is bind-mounted into the container at
+	// /var/run/prism-hostapi.sock and PRISM_HOST_API is set to
+	// unix:///var/run/prism-hostapi.sock so that prism CLI commands inside
+	// the container can proxy tmux operations to the host sidecar.
+	HostAPISockPath string
+
 	// HealthCheckTimeout overrides DefaultHealthCheckTimeout when non-zero.
 	HealthCheckTimeout time.Duration
 
@@ -408,6 +415,17 @@ func (m *Manager) buildRunArgs() []string {
 
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
+	}
+
+	// Host-API socket: mount the sidecar's Unix socket into the container and
+	// tell prism CLI where to find it. Container root can access the socket because
+	// rootless podman maps container root to the host user UID (same mechanism as
+	// the nix-daemon socket mount already in use above).
+	if cfg.HostAPISockPath != "" {
+		args = append(args,
+			"--volume", cfg.HostAPISockPath+":/var/run/prism-hostapi.sock:Z",
+			"--env", "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock",
+		)
 	}
 
 	// Mount ~/.config/opencode entries individually. The whole-dir mount is
