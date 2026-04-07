@@ -2619,11 +2619,14 @@ func TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError(t *testing
 func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 
-	// Seed active+compacting state.
+	// Seed active state, then send a compacting status (no-op in handleSessionStatus,
+	// but s.compacting and lastState = active are the relevant preconditions).
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 	sc.HandleEvent(makeSSE("session.status", map[string]any{
 		"status": map[string]string{"type": "busy"},
 	}))
+	// Note: "compacting" type is not handled by handleSessionStatus, so lastState
+	// stays "active" — which is the precondition handleServerConnected checks.
 	sc.HandleEvent(makeSSE("session.status", map[string]any{
 		"status": map[string]string{"type": "compacting"},
 	}))
