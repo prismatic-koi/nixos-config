@@ -118,6 +118,11 @@ run_check_shell "nix wrapper is a regular file at /bin/nix" \
   'test -f /bin/nix && ! test -L /bin/nix'
 run_check_shell "real nix binary stashed at /bin/.nix-real" \
   'test -f /bin/.nix-real'
+# Functional check: the wrapper must not break the --version flag.
+# Invoked via absolute path to confirm the exec chain functions end-to-end
+# (distinct from the PATH-based check in the binary checks section above).
+run_check_shell "nix wrapper passthrough works (/bin/nix --version succeeds)" \
+  '/bin/nix --version'
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
