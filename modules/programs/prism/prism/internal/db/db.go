@@ -243,6 +243,7 @@ func Open(path string) (*DB, error) {
 				return nil, fmt.Errorf("db: migration v4→v5: %w", err)
 			}
 		}
+		version = 5
 	}
 
 	return &DB{conn: conn, path: path}, nil

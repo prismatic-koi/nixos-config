@@ -631,19 +631,6 @@ func hostModeFromDB(d *db.DB, sessionName string) bool {
 	return status.HostMode
 }
 
-// isHostModeSession returns true when the agent_status row for sessionName
-// has host_mode = 1. When the row is missing, host_mode is NULL (pre-migration),
-// or the DB cannot be opened, it returns false (treat as container session —
-// safe conservative default).
-func isHostModeSession(sessionName string) bool {
-	d, err := openDB()
-	if err != nil {
-		return false
-	}
-	defer d.Close()
-	return hostModeFromDB(d, sessionName)
-}
-
 // removeContainerIfExists stops and removes any podman container for the given
 // prism session, and cleans up the associated temp files.
 // It is idempotent: all steps are safe to call when the container does not exist.
