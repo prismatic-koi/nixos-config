@@ -244,7 +244,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				s.hostAPISrv = srv
 				s.mu.Unlock()
 				go func() {
-					if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
+					if err := srv.Serve(ln); err != nil &&
+						!errors.Is(err, http.ErrServerClosed) &&
+						!errors.Is(err, net.ErrClosed) {
 						log.Printf("sidecar: host-API server: %v", err)
 					}
 				}()
@@ -1233,7 +1235,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, status, map[string]string{"error": msg})
 	}
 
-	// requirePost returns true (and writes 405) if the method is not POST.
+	// requirePost writes a 405 and returns false if the method is not POST.
+	// Returns true when the method is POST (caller should proceed).
 	requirePost := func(w http.ResponseWriter, r *http.Request) bool {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
