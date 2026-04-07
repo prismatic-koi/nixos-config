@@ -256,10 +256,15 @@ func (c *Client) consumeStream(ctx context.Context, resp *http.Response, ch chan
 	// we discard it. This matches the SSE spec: an event is only dispatched
 	// when an empty line is encountered.
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("sse: stream ended: scanner error: %v", err)
-	} else {
-		log.Printf("sse: stream ended: EOF")
+	// Only log the disconnect reason when the context is still live — if ctx
+	// is cancelled, the caller (readLoop) will exit without reconnecting, so
+	// the log would be misleading noise rather than a useful signal.
+	if ctx.Err() == nil {
+		if err := scanner.Err(); err != nil {
+			log.Printf("sse: stream ended: scanner error: %v", err)
+		} else {
+			log.Printf("sse: stream ended: EOF")
+		}
 	}
 }
 
