@@ -10,6 +10,9 @@ package cmd
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
 //	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--model <name>        model identifier to pass to opencode (e.g. anthropic/claude-sonnet-4-6)
+//	--variant <name>      model variant / reasoning effort (e.g. high, max, minimal)
+//	--host-mode           bypass container mode and run opencode directly in the tmux pane
 
 import (
 	"fmt"
@@ -20,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -31,6 +35,9 @@ import (
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	agentFlag, _ := cmd.Flags().GetString("agent")
+	modelFlag, _ := cmd.Flags().GetString("model")
+	variantFlag, _ := cmd.Flags().GetString("variant")
+	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
@@ -45,10 +52,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		SessionName string `json:"session_name"`
 	}
 	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-		"repo":   repo,
-		"branch": branchFlag,
-		"prompt": promptFlag,
-		"agent":  agentFlag,
+		"repo":      repo,
+		"branch":    branchFlag,
+		"prompt":    promptFlag,
+		"agent":     agentFlag,
+		"model":     modelFlag,
+		"variant":   variantFlag,
+		"host_mode": hostModeFlag,
 	}, &resp); err != nil {
 		return err
 	}
@@ -68,6 +78,9 @@ func init() {
 	addPromptFlags(spawnCmd)
 	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
+	spawnCmd.Flags().String("model", "", "Model identifier to pass to opencode (e.g. anthropic/claude-sonnet-4-6)")
+	spawnCmd.Flags().String("variant", "", "Model variant / reasoning effort (e.g. high, max, minimal)")
+	spawnCmd.Flags().Bool("host-mode", false, "Bypass container mode and run opencode directly in the tmux pane")
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -79,6 +92,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
 	agentFlag, _ := cmd.Flags().GetString("agent")
+	modelFlag, _ := cmd.Flags().GetString("model")
+	variantFlag, _ := cmd.Flags().GetString("variant")
+	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
@@ -90,11 +106,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
+
+	// Determine the effective container mode: cfg.ContainerMode can be
+	// overridden to false when --host-mode is passed.
+	effectiveContainerMode := cfg.ContainerMode
+	if hostModeFlag {
+		effectiveContainerMode = false
+	}
+
+	// Container availability check: when container mode is active (and
+	// --host-mode is not) verify podman is available before touching anything.
+	if cfg.ContainerMode && !hostModeFlag {
+		if err := container.CheckAvailability(); err != nil {
+			return err
+		}
+	}
+
 	opts := session.Opts{
 		Prompt:         promptFlag,
 		Agent:          agentFlag,
+		Model:          modelFlag,
+		Variant:        variantFlag,
 		Headless:       !fromKeybind && !attachFlag,
-		ContainerMode:  cfg.ContainerMode,
+		ContainerMode:  effectiveContainerMode,
 		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
@@ -116,7 +150,22 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	return ensureAndSwitch(worktreePath, bareRoot, opts)
+	if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
+		return err
+	}
+
+	// Persist host_mode in the DB so cleanup can skip container teardown.
+	if hostModeFlag {
+		sessionName := session.NameFor(worktreePath, bareRoot)
+		if d, dbErr := openDB(); dbErr == nil {
+			if setErr := d.SetHostMode(sessionName, true); setErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] spawn: set host_mode: %v\n", setErr)
+			}
+			d.Close()
+		}
+	}
+
+	return nil
 }
 
 // resolveBareRoot returns the bare repo root to operate on.

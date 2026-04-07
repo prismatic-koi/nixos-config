@@ -214,7 +214,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		}
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
-		removeContainerIfExists(m.session)
+		if !isHostModeSession(m.session) {
+			removeContainerIfExists(m.session)
+		}
 		if d, err := openDB(); err == nil {
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
@@ -439,7 +441,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
-	removeContainerIfExists(session)
+	if !isHostModeSession(session) {
+		removeContainerIfExists(session)
+	}
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
@@ -476,7 +480,9 @@ func closeSession(session string) error {
 	}
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
-	removeContainerIfExists(session)
+	if !isHostModeSession(session) {
+		removeContainerIfExists(session)
+	}
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
@@ -519,7 +525,9 @@ func headlessCloseSession(session string) error {
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
-	removeContainerIfExists(session)
+	if !isHostModeSession(session) {
+		removeContainerIfExists(session)
+	}
 	if d, err := openDB(); err == nil {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
@@ -597,6 +605,23 @@ func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	rootCmd.AddCommand(cleanupCmd)
+}
+
+// isHostModeSession returns true when the agent_status row for sessionName
+// has host_mode = 1. When the row is missing, host_mode is NULL (pre-migration),
+// or the DB cannot be opened, it returns false (treat as container session —
+// safe conservative default).
+func isHostModeSession(sessionName string) bool {
+	d, err := openDB()
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil {
+		return false
+	}
+	return status.HostMode
 }
 
 // removeContainerIfExists stops and removes any podman container for the given
