@@ -63,6 +63,16 @@ type Config struct {
 	// opencode config and cause "model not supported" errors).
 	AgentModel string
 
+	// Model is the model identifier to pass to opencode serve at container
+	// startup via --model (e.g. "anthropic/claude-sonnet-4-6"). When empty,
+	// opencode's default model is used.
+	Model string
+
+	// Variant is the model variant to pass to opencode serve at container
+	// startup via --variant (e.g. "high", "max"). When empty, no --variant
+	// flag is passed.
+	Variant string
+
 	// PluginHostPath is the absolute path to the prism-hooks plugin file on the
 	// host (e.g. ~/.config/opencode/plugins/prism-hooks.ts). It is mounted
 	// read-only into the container's opencode plugin directory.
@@ -532,6 +542,13 @@ func (m *Manager) buildRunArgs() []string {
 		"--hostname", "0.0.0.0",
 	)
 
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if cfg.Variant != "" {
+		args = append(args, "--variant", cfg.Variant)
+	}
+
 	return args
 }
 
@@ -621,4 +638,57 @@ func IsNoSuchContainerError(output string) bool {
 		strings.Contains(output, "No such container") ||
 		strings.Contains(output, "Error: no such container") ||
 		strings.Contains(output, "Error response from daemon: No such container")
+}
+
+// CheckAvailability verifies that:
+//  1. podman is on PATH,
+//  2. the podman socket is reachable (podman info succeeds), and
+//  3. the prism-agent:latest image is loaded.
+//
+// Returns a descriptive error for the first failing check, including a hint to
+// use --host-mode as an escape hatch. Returns nil when all checks pass.
+func CheckAvailability() error {
+	// 1. Podman binary on PATH.
+	if _, err := exec.LookPath("podman"); err != nil {
+		return fmt.Errorf(
+			"container mode requires podman but it was not found on PATH\n" +
+				"hint: use --host-mode to run opencode directly without a container",
+		)
+	}
+
+	// 2. Podman socket / daemon reachable.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	infoCmd := exec.CommandContext(ctx, "podman", "info", "--format", "json")
+	if out, err := infoCmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		return fmt.Errorf(
+			"container mode requires the podman socket to be running but it is not reachable: %s\n"+
+				"hint: use --host-mode to run opencode directly without a container",
+			msg,
+		)
+	}
+
+	// 3. prism-agent:latest image loaded.
+	imagesCtx, imagesCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer imagesCancel()
+	imagesCmd := exec.CommandContext(imagesCtx, "podman", "images", "--quiet", Image)
+	out, err := imagesCmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		return fmt.Errorf(
+			"container mode requires the %q image but the check failed: %s\n"+
+				"hint: use --host-mode to run opencode directly without a container",
+			Image, msg,
+		)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		return fmt.Errorf(
+			"container mode requires the %q image but it is not loaded\n"+
+				"hint: use --host-mode to run opencode directly without a container",
+			Image,
+		)
+	}
+
+	return nil
 }

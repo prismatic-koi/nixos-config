@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=4 (migrations are applied on Open).
+	// Verify schema_version=5 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("schema_version: got %d, want 4", version)
+	if version != 5 {
+		t.Errorf("schema_version: got %d, want 5", version)
 	}
 
 	// Verify WAL mode.
@@ -780,20 +780,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2, v2→v3, and v3→v4 migrations.
+	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, and v4→v5 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=4.
+	// Verify schema_version=5.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("schema_version after migration: got %d, want 4", version)
+	if version != 5 {
+		t.Errorf("schema_version after migration: got %d, want 5", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -867,8 +867,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("schema_version after migration: got %d, want 4", version)
+	if version != 5 {
+		t.Errorf("schema_version after migration: got %d, want 5", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1326,8 +1326,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 4 {
-		t.Errorf("schema_version after migration: got %d, want 4", version)
+	if version != 5 {
+		t.Errorf("schema_version after migration: got %d, want 5", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1342,6 +1342,123 @@ func TestMigration_V3ToV4(t *testing.T) {
 	}
 	if s.AgentName == nil || *s.AgentName != "worker" {
 		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
+	}
+}
+
+// TestMigration_V4ToV5 verifies that Open applies the v4→v5 migration to an
+// existing DB that was created at schema_version=4 (no host_mode column).
+func TestMigration_V4ToV5(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v4.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER,
+		  last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (4);
+		INSERT INTO agent_status (session_name, repo, worktree, state, agent_name, model_id, root_agent_name, root_model_id, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'worker', 'claude-sonnet-4.6', 'worker', 'claude-sonnet-4.6', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v4 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v4 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 5 {
+		t.Errorf("schema_version after migration: got %d, want 5", version)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	// host_mode should default to false for migrated rows.
+	if s.HostMode {
+		t.Errorf("HostMode: got true, want false (default for migrated rows)")
+	}
+	if s.AgentName == nil || *s.AgentName != "worker" {
+		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestSetHostMode verifies that SetHostMode sets and clears the host_mode flag.
+func TestSetHostMode(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Initially host_mode should be false.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.HostMode {
+		t.Error("HostMode: got true initially, want false")
+	}
+
+	// Set host_mode to true.
+	if err := d.SetHostMode("repo@main", true); err != nil {
+		t.Fatalf("SetHostMode(true): %v", err)
+	}
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after SetHostMode(true): %v", err)
+	}
+	if !s2.HostMode {
+		t.Error("HostMode: got false after SetHostMode(true), want true")
+	}
+
+	// Set host_mode back to false.
+	if err := d.SetHostMode("repo@main", false); err != nil {
+		t.Fatalf("SetHostMode(false): %v", err)
+	}
+	s3, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after SetHostMode(false): %v", err)
+	}
+	if s3.HostMode {
+		t.Error("HostMode: got true after SetHostMode(false), want false")
+	}
+
+	// SetHostMode on a non-existent session should be a no-op (not an error).
+	if err := d.SetHostMode("repo@nonexistent", true); err != nil {
+		t.Fatalf("SetHostMode on nonexistent session: %v", err)
 	}
 }
 

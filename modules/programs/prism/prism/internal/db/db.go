@@ -66,6 +66,7 @@ type Status struct {
 	RootAgentName *string
 	RootModelID   *string
 	OpencodePort  *int
+	HostMode      bool
 	LastSeen      time.Time
 	EndedAt       *time.Time
 }
@@ -108,6 +109,7 @@ CREATE TABLE IF NOT EXISTS agent_status (
   root_agent_name TEXT,
   root_model_id   TEXT,
   opencode_port   INTEGER,
+  host_mode       INTEGER NOT NULL DEFAULT 0,
   last_seen       INTEGER NOT NULL,
   ended_at        INTEGER
 );
@@ -132,9 +134,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=4 if the table is empty. Pending migrations
+// schema, and sets schema_version=5 if the table is empty. Pending migrations
 // are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
-// root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status.
+// root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status;
+// v4→v5 adds host_mode to agent_status.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -164,15 +167,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=4 if the table is empty (fresh database already has
-	// all columns including the v2, v3, and v4 additions, so no migration is needed).
+	// Set schema_version=5 if the table is empty (fresh database already has
+	// all columns including the v2, v3, v4, and v5 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (4)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (5)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -226,6 +229,21 @@ func Open(path string) (*DB, error) {
 				return nil, fmt.Errorf("db: migration v3→v4: %w", err)
 			}
 		}
+		version = 4
+	}
+	if version == 4 {
+		// Migration v4 → v5: add host_mode to agent_status.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN host_mode INTEGER NOT NULL DEFAULT 0",
+			"UPDATE schema_version SET version = 5",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v4→v5: %w", err)
+			}
+		}
+		version = 5
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -599,6 +617,25 @@ func (d *DB) ReleasePort(sessionName string) error {
 	return nil
 }
 
+// SetHostMode sets the host_mode column for the given session to 1 (true) or
+// 0 (false). Called by spawn when --host-mode is passed, so that cleanup can
+// skip container teardown for host-mode sessions.
+// It is a no-op when no row exists for sessionName (returns nil).
+func (d *DB) SetHostMode(sessionName string, hostMode bool) error {
+	val := 0
+	if hostMode {
+		val = 1
+	}
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET host_mode = ? WHERE session_name = ?",
+		val, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set host_mode: %w", err)
+	}
+	return nil
+}
+
 // portAvailable checks whether a TCP port is available on localhost by
 // attempting a brief listen. Returns true if the port is free.
 func portAvailable(port int) bool {
@@ -822,7 +859,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -839,7 +876,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -848,7 +885,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -1048,10 +1085,11 @@ func scanStatus(s scanner) (*Status, error) {
 	var lastSeen int64
 	var endedAt sql.NullInt64
 	var port sql.NullInt64
+	var hostMode sql.NullInt64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &port, &lastSeen, &endedAt,
+		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &lastSeen, &endedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1064,6 +1102,10 @@ func scanStatus(s scanner) (*Status, error) {
 	if port.Valid {
 		p := int(port.Int64)
 		st.OpencodePort = &p
+	}
+	// host_mode: treat NULL (rows written before migration) as 0/false.
+	if hostMode.Valid {
+		st.HostMode = hostMode.Int64 != 0
 	}
 	return &st, nil
 }

@@ -52,6 +52,13 @@ type Opts struct {
 	// Used by the restore path, which manages agent_status directly via the
 	// already-open DB handle rather than forking a subprocess.
 	SkipStatusSeed bool
+	// Model is the model identifier to pass to opencode at launch
+	// (e.g. "anthropic/claude-sonnet-4-6"). When empty, opencode's default
+	// model is used. Appended as --model <value> in buildDirectOpencodeCmd.
+	Model string
+	// Variant is the model variant (provider-specific reasoning effort, e.g.
+	// "high", "max", "minimal"). When empty, no --variant flag is appended.
+	Variant string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -120,6 +127,12 @@ func buildDirectOpencodeCmd(opts Opts) string {
 	}
 	if opts.OpencodeSession != "" && !opts.Fresh {
 		cmd += " -s " + opts.OpencodeSession
+	}
+	if opts.Model != "" {
+		cmd += " --model " + shellQuote(opts.Model)
+	}
+	if opts.Variant != "" {
+		cmd += " --variant " + shellQuote(opts.Variant)
 	}
 	if opts.Prompt != "" {
 		cmd += " --prompt " + shellQuote(opts.Prompt)
@@ -193,6 +206,8 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			Worktree:       directory,
 			PluginHostPath: opts.PluginHostPath,
 			InitialPrompt:  opts.Prompt,
+			Model:          opts.Model,
+			Variant:        opts.Variant,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.

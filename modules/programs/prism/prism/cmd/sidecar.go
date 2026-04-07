@@ -70,6 +70,8 @@ func init() {
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
+	sidecarCmd.Flags().String("model", "", "Model identifier to pass to opencode serve (container mode only, e.g. anthropic/claude-sonnet-4-6)")
+	sidecarCmd.Flags().String("variant", "", "Model variant to pass to opencode serve (container mode only, e.g. high, max)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -83,6 +85,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	port, _ := cmd.Flags().GetInt("port")
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
+	model, _ := cmd.Flags().GetString("model")
+	variant, _ := cmd.Flags().GetString("variant")
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -139,6 +143,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			AgentRole:      agentRole,
 			AgentModel:     opencodeAgentModel(agentRole),
 			PluginHostPath: pluginPath,
+			Model:          model,
+			Variant:        variant,
 		}
 	}
 
