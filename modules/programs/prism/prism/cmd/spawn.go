@@ -25,6 +25,37 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
+// proxySpawn forwards a spawn request to the host-API sidecar when running
+// inside a container (PRISM_HOST_API is set). It reads the same flags as
+// runSpawn and POSTs them to /spawn, then prints the returned session name.
+func proxySpawn(apiURL string, cmd *cobra.Command) error {
+	branchFlag, _ := cmd.Flags().GetString("branch")
+	agentFlag, _ := cmd.Flags().GetString("agent")
+	promptFlag, err := resolvePrompt(cmd)
+	if err != nil {
+		return err
+	}
+	// repo is derived from PRISM_BARE_ROOT (injected by A-2/sidecar).
+	bareRoot := os.Getenv("PRISM_BARE_ROOT")
+	if bareRoot == "" {
+		return fmt.Errorf("PRISM_BARE_ROOT is not set — cannot determine repo name in container mode")
+	}
+	repo := filepath.Base(bareRoot)
+	var resp struct {
+		SessionName string `json:"session_name"`
+	}
+	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
+		"repo":   repo,
+		"branch": branchFlag,
+		"prompt": promptFlag,
+		"agent":  agentFlag,
+	}, &resp); err != nil {
+		return err
+	}
+	fmt.Printf("session %q created\n", resp.SessionName)
+	return nil
+}
+
 var spawnCmd = &cobra.Command{
 	Use:   "spawn",
 	Short: "Create a new worktree from the current (or named) repo and switch to it",
@@ -41,6 +72,10 @@ func init() {
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return proxySpawn(apiURL, cmd)
+	}
+
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
 	agentFlag, _ := cmd.Flags().GetString("agent")

@@ -15,6 +15,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -40,6 +42,29 @@ var prCmd = &cobra.Command{
 		bareRoot, err := resolveBareRoot(repoFlag)
 		if err != nil {
 			return err
+		}
+
+		// In container mode, proxy the spawn to the host API after resolving
+		// the PR number to a branch locally (git is accessible from containers).
+		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			branch, branchErr := resolveBranch(bareRoot, "", prNumber)
+			if branchErr != nil {
+				return branchErr
+			}
+			repo := filepath.Base(bareRoot)
+			var resp struct {
+				SessionName string `json:"session_name"`
+			}
+			if proxyErr := proxyToHostAPI(apiURL, "/spawn", map[string]any{
+				"repo":   repo,
+				"branch": branch,
+				"prompt": promptFlag,
+				"agent":  agentFlag,
+			}, &resp); proxyErr != nil {
+				return proxyErr
+			}
+			fmt.Printf("session %q created\n", resp.SessionName)
+			return nil
 		}
 
 		branch, err := resolveBranch(bareRoot, "", prNumber)

@@ -287,6 +287,19 @@ var cleanupCmd = &cobra.Command{
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		sessionFlag, _ := cmd.Flags().GetString("session")
 
+		// Inside a container: proxy all cleanup invocations to the host sidecar.
+		// The proxy handles both --yes (headless) and any future interactive paths.
+		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			target := sessionFlag
+			if target == "" {
+				return fmt.Errorf("--session is required when running inside a container")
+			}
+			return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
+				"session": target,
+				"yes":     yesFlag,
+			}, nil)
+		}
+
 		// Only require tmux when we need to auto-detect the current session.
 		if sessionFlag == "" && os.Getenv("TMUX") == "" {
 			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+q)")
@@ -378,6 +391,13 @@ var cleanupCmd = &cobra.Command{
 // missing on disk).  In that case the worktree and branch removal steps are
 // skipped, and cleanup continues with sidecar teardown and DB updates.
 func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
+			"session": session,
+			"yes":     true,
+		}, nil)
+	}
+
 	if worktreePath == "" {
 		fmt.Printf("worktree path unknown — skipping worktree removal for session %s\n", session)
 	} else {
@@ -471,6 +491,13 @@ func closeSession(session string) error {
 // headlessCloseSession is the non-interactive variant of closeSession — used
 // for default-branch sessions invoked with --yes.
 func headlessCloseSession(session string) error {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
+			"session": session,
+			"yes":     true,
+		}, nil)
+	}
+
 	fmt.Printf("closing session %s (worktree kept)...\n", session)
 
 	// Ensure scratchpad exists.
