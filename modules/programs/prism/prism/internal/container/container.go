@@ -92,14 +92,19 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// containerName returns the stable podman container name for a session.
-// The name is derived from the session name with "@" replaced by "-" and
-// a "prism-" prefix, e.g. "prism-nixos-config-feature".
-func containerName(sessionName string) string {
+// NameForSession returns the stable podman container name for a session.
+// The name is derived from the session name with "@", "/", and "." replaced
+// by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
+func NameForSession(sessionName string) string {
 	safe := strings.ReplaceAll(sessionName, "@", "-")
 	safe = strings.ReplaceAll(safe, "/", "-")
 	safe = strings.ReplaceAll(safe, ".", "-")
 	return "prism-" + safe
+}
+
+// containerName is the unexported alias kept for internal use.
+func containerName(sessionName string) string {
+	return NameForSession(sessionName)
 }
 
 // Manager manages the lifecycle of a single podman container for a session.
@@ -139,7 +144,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
 		// Only log if it looks like a real error (not "no such container").
-		if !isNoSuchContainer(string(out)) {
+		if !IsNoSuchContainerError(string(out)) {
 			log.Printf("container: stop existing %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -147,7 +152,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	// Remove the container (ignore errors — may not exist).
 	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
 	if out, err := rmCmd.CombinedOutput(); err != nil {
-		if !isNoSuchContainer(string(out)) {
+		if !IsNoSuchContainerError(string(out)) {
 			log.Printf("container: rm existing %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 		}
 	}
@@ -290,12 +295,12 @@ func (m *Manager) Shutdown() {
 	log.Printf("container: shutting down %q", m.name)
 
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
-	if out, err := stopCmd.CombinedOutput(); err != nil && !isNoSuchContainer(string(out)) {
+	if out, err := stopCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
 		log.Printf("container: stop %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 	}
 
 	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
-	if out, err := rmCmd.CombinedOutput(); err != nil && !isNoSuchContainer(string(out)) {
+	if out, err := rmCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
 		log.Printf("container: rm %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 	}
 
@@ -591,9 +596,9 @@ func redactArgs(args []string) []string {
 	return out
 }
 
-// isNoSuchContainer returns true when the podman output indicates the container
-// does not exist (so the error can be silently ignored).
-func isNoSuchContainer(output string) bool {
+// IsNoSuchContainerError returns true when the podman output indicates the
+// container does not exist (so the error can be silently ignored).
+func IsNoSuchContainerError(output string) bool {
 	return strings.Contains(output, "no such container") ||
 		strings.Contains(output, "No such container") ||
 		strings.Contains(output, "Error: no such container") ||
