@@ -111,8 +111,13 @@ echo ""
 echo "Nix wrapper check:"
 
 # The extraCommands block in container-image.nix replaces the real nix binary
-# with a wrapper script. Verify the wrapper does not break --version.
-run_check "nix wrapper passes through --version" nix --version
+# with a bash wrapper at /bin/nix and moves the original to /bin/.nix-real.
+# Verify the wrapper file is a regular file (not a symlink to the store binary)
+# and that the real binary is stashed alongside it.
+run_check_shell "nix wrapper is a regular file at /bin/nix" \
+  'test -f /bin/nix && ! test -L /bin/nix'
+run_check_shell "real nix binary stashed at /bin/.nix-real" \
+  'test -f /bin/.nix-real'
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
