@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1644,6 +1645,120 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
 		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+// TestDeliverNotificationViaHTTP_BodyLogging verifies that a non-2xx response
+// body (up to 200 bytes) is included in the returned error, making HTTP 500s
+// from the coordinator self-diagnosing in the sidecar log.
+func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
+	// Build a 300-byte body where the first 200 bytes are all 'a' and the
+	// last 100 bytes are all 'b'. After truncation at 200, the 'b' region
+	// must not appear in the error.
+	longBody := strings.Repeat("a", 200) + strings.Repeat("b", 100)
+
+	tests := []struct {
+		name          string
+		statusCode    int
+		body          string
+		wantInErr     string
+		wantNotInErr  string
+		exactErrMatch string // if set, error must equal this exactly
+	}{
+		{
+			name:       "500 with body snippet in error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":"session not found"}`,
+			wantInErr:  `session not found`,
+		},
+		{
+			// The body is 300 bytes (200 'a' + 100 'b'); only the first 200
+			// bytes should appear in the error, so 'b' must not be present.
+			name:         "body truncated at 200 bytes",
+			statusCode:   http.StatusInternalServerError,
+			body:         longBody,
+			wantInErr:    strings.Repeat("a", 200),
+			wantNotInErr: "b",
+		},
+		{
+			// Non-2xx with no body: error must be "http status NNN" with no
+			// trailing colon-space.
+			name:          "empty body does not add trailing colon-space",
+			statusCode:    http.StatusBadGateway,
+			body:          "",
+			exactErrMatch: "http status 502",
+		},
+		{
+			name:       "404 with body snippet in error",
+			statusCode: http.StatusNotFound,
+			body:       "session abc not found",
+			wantInErr:  "session abc not found",
+		},
+		{
+			name:       "200 ok returns no error",
+			statusCode: http.StatusOK,
+			body:       "",
+			wantInErr:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.statusCode)
+				if tc.body != "" {
+					_, _ = w.Write([]byte(tc.body))
+				}
+			}))
+			defer srv.Close()
+
+			var srvPort int
+			_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+			if err != nil {
+				_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+			}
+			if err != nil {
+				t.Fatalf("parse test server port: %v", err)
+			}
+
+			agentName := "coordinator"
+			modelID := "anthropic/claude-sonnet-4-5"
+			status := &db.Status{
+				AgentName: &agentName,
+				ModelID:   &modelID,
+			}
+
+			gotErr := deliverNotificationViaHTTP(srvPort, "test-sid", "notify text", status, srv.Client())
+
+			if tc.wantInErr == "" && tc.exactErrMatch == "" {
+				if gotErr != nil {
+					t.Errorf("expected no error, got: %v", gotErr)
+				}
+				return
+			}
+
+			if gotErr == nil {
+				want := tc.wantInErr
+				if tc.exactErrMatch != "" {
+					want = tc.exactErrMatch
+				}
+				t.Fatalf("expected an error (want %q), got nil", want)
+			}
+
+			if tc.exactErrMatch != "" {
+				if gotErr.Error() != tc.exactErrMatch {
+					t.Errorf("error = %q, want exactly %q", gotErr.Error(), tc.exactErrMatch)
+				}
+				return
+			}
+
+			if !strings.Contains(gotErr.Error(), tc.wantInErr) {
+				t.Errorf("error = %q, want it to contain %q", gotErr.Error(), tc.wantInErr)
+			}
+			if tc.wantNotInErr != "" && strings.Contains(gotErr.Error(), tc.wantNotInErr) {
+				t.Errorf("error = %q, must NOT contain %q (body was not truncated)", gotErr.Error(), tc.wantNotInErr)
+			}
+		})
 	}
 }
 

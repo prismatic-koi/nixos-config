@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -1075,6 +1076,13 @@ func deliverNotificationViaHTTP(port int, opencodeSID string, text string, statu
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read up to 200 bytes of the response body to include in the error so
+		// that the root cause of non-2xx responses is self-diagnosing in logs.
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		bodySnippet := strings.TrimSpace(string(bodyBytes))
+		if bodySnippet != "" {
+			return fmt.Errorf("http status %d: %s", resp.StatusCode, bodySnippet)
+		}
 		return fmt.Errorf("http status %d", resp.StatusCode)
 	}
 
