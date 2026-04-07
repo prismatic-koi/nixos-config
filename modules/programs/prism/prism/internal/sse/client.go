@@ -255,6 +255,12 @@ func (c *Client) consumeStream(ctx context.Context, resp *http.Response, ch chan
 	// If the stream ended with accumulated data but no trailing blank line,
 	// we discard it. This matches the SSE spec: an event is only dispatched
 	// when an empty line is encountered.
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("sse: stream ended: scanner error: %v", err)
+	} else {
+		log.Printf("sse: stream ended: EOF")
+	}
 }
 
 // send delivers an event to the channel, dropping it with a log warning if the
