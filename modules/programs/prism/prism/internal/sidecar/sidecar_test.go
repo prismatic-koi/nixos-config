@@ -1652,11 +1652,18 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 // body (up to 200 bytes) is included in the returned error, making HTTP 500s
 // from the coordinator self-diagnosing in the sidecar log.
 func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
+	// Build a 300-byte body where the first 200 bytes are all 'a' and the
+	// last 100 bytes are all 'b'. After truncation at 200, the 'b' region
+	// must not appear in the error.
+	longBody := strings.Repeat("a", 200) + strings.Repeat("b", 100)
+
 	tests := []struct {
-		name       string
-		statusCode int
-		body       string
-		wantInErr  string
+		name          string
+		statusCode    int
+		body          string
+		wantInErr     string
+		wantNotInErr  string
+		exactErrMatch string // if set, error must equal this exactly
 	}{
 		{
 			name:       "500 with body snippet in error",
@@ -1665,10 +1672,21 @@ func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
 			wantInErr:  `session not found`,
 		},
 		{
-			name:       "body truncated at 200 bytes",
-			statusCode: http.StatusInternalServerError,
-			body:       string(make([]byte, 300)), // 300-byte body
-			wantInErr:  "http status 500",
+			// The body is 300 bytes (200 'a' + 100 'b'); only the first 200
+			// bytes should appear in the error, so 'b' must not be present.
+			name:         "body truncated at 200 bytes",
+			statusCode:   http.StatusInternalServerError,
+			body:         longBody,
+			wantInErr:    strings.Repeat("a", 200),
+			wantNotInErr: "b",
+		},
+		{
+			// Non-2xx with no body: error must be "http status NNN" with no
+			// trailing colon-space.
+			name:          "empty body does not add trailing colon-space",
+			statusCode:    http.StatusBadGateway,
+			body:          "",
+			exactErrMatch: "http status 502",
 		},
 		{
 			name:       "404 with body snippet in error",
@@ -1712,7 +1730,7 @@ func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
 
 			gotErr := deliverNotificationViaHTTP(srvPort, "test-sid", "notify text", status, srv.Client())
 
-			if tc.wantInErr == "" {
+			if tc.wantInErr == "" && tc.exactErrMatch == "" {
 				if gotErr != nil {
 					t.Errorf("expected no error, got: %v", gotErr)
 				}
@@ -1720,10 +1738,25 @@ func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
 			}
 
 			if gotErr == nil {
-				t.Fatalf("expected an error containing %q, got nil", tc.wantInErr)
+				want := tc.wantInErr
+				if tc.exactErrMatch != "" {
+					want = tc.exactErrMatch
+				}
+				t.Fatalf("expected an error (want %q), got nil", want)
 			}
+
+			if tc.exactErrMatch != "" {
+				if gotErr.Error() != tc.exactErrMatch {
+					t.Errorf("error = %q, want exactly %q", gotErr.Error(), tc.exactErrMatch)
+				}
+				return
+			}
+
 			if !strings.Contains(gotErr.Error(), tc.wantInErr) {
 				t.Errorf("error = %q, want it to contain %q", gotErr.Error(), tc.wantInErr)
+			}
+			if tc.wantNotInErr != "" && strings.Contains(gotErr.Error(), tc.wantNotInErr) {
+				t.Errorf("error = %q, must NOT contain %q (body was not truncated)", gotErr.Error(), tc.wantNotInErr)
 			}
 		})
 	}

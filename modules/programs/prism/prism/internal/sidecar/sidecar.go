@@ -1080,7 +1080,10 @@ func deliverNotificationViaHTTP(port int, opencodeSID string, text string, statu
 		// that the root cause of non-2xx responses is self-diagnosing in logs.
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		bodySnippet := strings.TrimSpace(string(bodyBytes))
-		return fmt.Errorf("http status %d: %s", resp.StatusCode, bodySnippet)
+		if bodySnippet != "" {
+			return fmt.Errorf("http status %d: %s", resp.StatusCode, bodySnippet)
+		}
+		return fmt.Errorf("http status %d", resp.StatusCode)
 	}
 
 	return nil
