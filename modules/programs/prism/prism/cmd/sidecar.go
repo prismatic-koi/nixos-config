@@ -152,9 +152,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		hostAPISockPath = sockPath
 		// Wire the socket path into the container config so the container
 		// gets the socket mounted and PRISM_HOST_API injected (A-2).
-		if ctrCfg != nil {
-			ctrCfg.HostAPISockPath = sockPath
-		}
+		ctrCfg.HostAPISockPath = sockPath
 	}
 
 	// Build the OnReady callback for container mode (AC-18, AC-19).
