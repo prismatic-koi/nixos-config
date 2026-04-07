@@ -43,10 +43,14 @@ let
   # derivations directly would place them at their Nix store paths only,
   # leaving them unreachable via PATH.
   #
-  # The packages are split into two buildEnv groups so that podman can cache
-  # the rarely-changing "stable-infra" layer independently from the
-  # frequently-updated "ai-tooling" layer (opencode, claude-code, prism).
-  # When only the AI tools change, only that layer needs to be transferred.
+  # The packages are split into two buildEnv groups.  buildLayeredImage merges
+  # all contents entries via symlinkJoin into one customisation layer, but the
+  # per-package layers come from the Nix store closure graph — each store path
+  # gets its own layer.  By isolating opencode/claude-code/prism into their own
+  # buildEnv, the ai-tooling store path (and its closure) changes independently
+  # from the stable-infra store path.  When only the AI tools bump, only those
+  # layers in the closure are invalidated; the stable-infra closure layers
+  # remain cache-hits in podman.
   prismAgentImage = pkgs.dockerTools.buildLayeredImage {
     name = "prism-agent";
     tag = "latest";
@@ -132,6 +136,9 @@ let
 
       # AI tooling — updated frequently; isolated so the stable-infra layer
       # above is unaffected when opencode, claude-code, or prism bump versions.
+      # Note: /etc is intentionally omitted from pathsToLink — these packages
+      # don't install to /etc, and including it would risk a symlinkJoin
+      # collision with cacert's /etc/ssl/certs/ from the stable-infra group.
       (pkgs.buildEnv {
         name = "prism-agent-ai-tooling";
         paths = with pkgs; [
@@ -144,7 +151,6 @@ let
           "/bin"
           "/lib"
           "/share"
-          "/etc"
         ];
       })
     ];
