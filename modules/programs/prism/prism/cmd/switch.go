@@ -622,6 +622,15 @@ var switchCmd = &cobra.Command{
 	Short: "Context switcher — open or create a project session",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pathArg, _ := cmd.Flags().GetString("path")
+
+		// Inside a container: proxy the switch to the host sidecar.
+		// --path is the only flag that makes sense in this context.
+		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			return proxyToHostAPI(apiURL, "/switch", map[string]any{
+				"session": pathArg, // host resolves path → session name
+			}, nil)
+		}
+
 		fresh, _ := cmd.Flags().GetBool("fresh")
 		cfg := config.Load()
 		opts := session.Opts{
