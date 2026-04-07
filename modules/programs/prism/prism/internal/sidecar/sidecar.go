@@ -294,6 +294,8 @@ func (s *Sidecar) HandleEvent(evt sse.Event) {
 		}
 	}
 
+	log.Printf("sidecar: event: %s", eventType)
+
 	switch eventType {
 	case "server.connected":
 		// Sent by opencode on initial connection — silently ignore.
@@ -414,13 +416,17 @@ func (s *Sidecar) handleSessionIdle() {
 	// likely about to resume — the next session.idle after the root agent
 	// completes will start the timer normally.
 	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
+		log.Printf("sidecar: idle suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
 		return
 	}
 
+	log.Printf("sidecar: idle debounce started (%v)", IdleDebounce)
 	s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.idleTimer = nil
+
+		log.Printf("sidecar: idle debounce fired -> finished")
 
 		// If the user manually denied a permission, write interrupted not finished.
 		if s.manualDenial {
@@ -733,10 +739,12 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		// session.idle fires, this is used to suppress the finished
 		// debounce if a subagent (non-root) was most recently active —
 		// the parent agent is likely about to resume.
+		log.Printf("sidecar: lastAssistantAgent: %q -> %q (rootAgent=%q)", s.lastAssistantAgent, agentName, s.rootAgent)
 		s.lastAssistantAgent = agentName
 		// If the root agent just completed, clear the tracking so the
 		// next session.idle can proceed normally to finished.
 		if agentName != "" && agentName == s.rootAgent {
+			log.Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
 		}
 
@@ -866,6 +874,7 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 
 func (s *Sidecar) cancelIdleTimer() {
 	if s.idleTimer != nil {
+		log.Printf("sidecar: idle debounce cancelled")
 		s.idleTimer.Stop()
 		s.idleTimer = nil
 	}
@@ -898,8 +907,10 @@ func (s *Sidecar) writeStateChange(state agent.AgentState) {
 
 func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, opencodeSID *string) {
 	if state == s.lastState {
-		return // deduplicate
+		log.Printf("sidecar: state dedup: %s (no change)", state)
+		return
 	}
+	log.Printf("sidecar: state: %s -> %s", s.lastState, state)
 	s.writeEvent("state_change", map[string]string{"state": string(state)}, opencodeSID)
 	s.lastState = state
 	touchDashboardSentinel()
