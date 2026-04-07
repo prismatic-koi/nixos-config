@@ -487,6 +487,133 @@ func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
+	// AC-1, AC-2: when HostAPISockPath is non-empty, buildRunArgs must include
+	// the socket volume mount and the PRISM_HOST_API env var.
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "/home/user/.local/state/prism/run/repo@feat-hostapi.sock",
+	})
+	args := m.buildRunArgs()
+
+	// AC-1: --volume <host-sock>:/var/run/prism-hostapi.sock:Z must be present.
+	foundMount := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if v == "/home/user/.local/state/prism/run/repo@feat-hostapi.sock:/var/run/prism-hostapi.sock:Z" {
+				foundMount = true
+				break
+			}
+		}
+	}
+	if !foundMount {
+		t.Errorf("host-API socket volume mount not found in args: %v", args)
+	}
+
+	// AC-2: --env PRISM_HOST_API=unix:///var/run/prism-hostapi.sock must be present.
+	foundEnv := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			if args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock" {
+				foundEnv = true
+				break
+			}
+		}
+	}
+	if !foundEnv {
+		t.Errorf("PRISM_HOST_API env var not found in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_HostAPISockVolumeBeforeEnv(t *testing.T) {
+	// AC-3: the --volume for the socket must appear before the --env PRISM_HOST_API.
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "/run/prism/test-hostapi.sock",
+	})
+	args := m.buildRunArgs()
+
+	mountIdx := -1
+	envIdx := -1
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "/var/run/prism-hostapi.sock") {
+			mountIdx = i
+		}
+		if arg == "--env" && i+1 < len(args) &&
+			args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock" {
+			envIdx = i
+		}
+	}
+	if mountIdx == -1 {
+		t.Fatal("host-API socket volume mount not found")
+	}
+	if envIdx == -1 {
+		t.Fatal("PRISM_HOST_API env var not found")
+	}
+	if mountIdx >= envIdx {
+		t.Errorf("expected --volume (idx %d) to appear before --env PRISM_HOST_API (idx %d)", mountIdx, envIdx)
+	}
+}
+
+func TestBuildRunArgs_HostAPISockAfterPrismBareRoot(t *testing.T) {
+	// AC-3: both host-API args must appear after PRISM_BARE_ROOT injection.
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "/run/prism/test-hostapi.sock",
+	})
+	args := m.buildRunArgs()
+
+	bareRootIdx := -1
+	hostAPIVolumeIdx := -1
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == "PRISM_BARE_ROOT=/prism-git" {
+			bareRootIdx = i
+		}
+		if arg == "--volume" && i+1 < len(args) &&
+			strings.Contains(args[i+1], "/var/run/prism-hostapi.sock") {
+			hostAPIVolumeIdx = i
+		}
+	}
+	if bareRootIdx == -1 {
+		t.Fatal("PRISM_BARE_ROOT env injection not found")
+	}
+	if hostAPIVolumeIdx == -1 {
+		t.Fatal("host-API socket volume mount not found")
+	}
+	if hostAPIVolumeIdx <= bareRootIdx {
+		t.Errorf("host-API volume (idx %d) should appear after PRISM_BARE_ROOT (idx %d)", hostAPIVolumeIdx, bareRootIdx)
+	}
+}
+
+func TestBuildRunArgs_NoHostAPISockWhenEmpty(t *testing.T) {
+	// AC-5: when HostAPISockPath is empty, no socket mount or PRISM_HOST_API env var
+	// should appear in the args.
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "",
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "prism-hostapi") {
+				t.Errorf("unexpected host-API socket mount when HostAPISockPath is empty: %q", args[i+1])
+			}
+		}
+		if arg == "--env" && i+1 < len(args) {
+			if strings.HasPrefix(args[i+1], "PRISM_HOST_API=") {
+				t.Errorf("unexpected PRISM_HOST_API env var when HostAPISockPath is empty: %q", args[i+1])
+			}
+		}
+	}
+}
+
 // ── credentialEnvVars tests ──────────────────────────────────────────────────
 
 func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
