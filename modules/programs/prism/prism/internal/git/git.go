@@ -660,9 +660,19 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 
 	worktreeDir := filepath.Join(targetDir, defaultBranch)
 
-	// Check whether the remote repo is empty (no commits yet).
-	isEmpty := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
-		"refs/heads/"+defaultBranch).Run() != nil
+	// Check whether the remote repo is truly empty (no commits on any branch).
+	// We inspect all refs under refs/heads/ rather than just the default branch:
+	// if the remote has commits on some branch (e.g. master) but HEAD was
+	// renamed to main without yet pushing a commit, for-each-ref returns a
+	// non-empty result and we correctly keep the non-empty path, which will
+	// fail loudly if the specific default branch ref is missing.
+	refsOut, err := exec.Command("git", "--git-dir", bareDir, "for-each-ref",
+		"--count=1", "refs/heads").Output()
+	if err != nil {
+		_ = os.RemoveAll(targetDir)
+		return fmt.Errorf("for-each-ref: %w", err)
+	}
+	isEmpty := strings.TrimSpace(string(refsOut)) == ""
 
 	if isEmpty {
 		// Empty repo — skip upstream tracking (no branch exists to track) and
