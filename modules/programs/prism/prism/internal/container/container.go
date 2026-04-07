@@ -63,6 +63,16 @@ type Config struct {
 	// opencode config and cause "model not supported" errors).
 	AgentModel string
 
+	// Model is the model identifier to pass to opencode serve at container
+	// startup via --model (e.g. "anthropic/claude-sonnet-4-6"). When empty,
+	// opencode's default model is used.
+	Model string
+
+	// Variant is the model variant to pass to opencode serve at container
+	// startup via --variant (e.g. "high", "max"). When empty, no --variant
+	// flag is passed.
+	Variant string
+
 	// PluginHostPath is the absolute path to the prism-hooks plugin file on the
 	// host (e.g. ~/.config/opencode/plugins/prism-hooks.ts). It is mounted
 	// read-only into the container's opencode plugin directory.
@@ -531,6 +541,13 @@ func (m *Manager) buildRunArgs() []string {
 		"--port", fmt.Sprintf("%d", ContainerPort),
 		"--hostname", "0.0.0.0",
 	)
+
+	if cfg.Model != "" {
+		args = append(args, "--model", cfg.Model)
+	}
+	if cfg.Variant != "" {
+		args = append(args, "--variant", cfg.Variant)
+	}
 
 	return args
 }

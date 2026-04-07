@@ -206,6 +206,8 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			Worktree:       directory,
 			PluginHostPath: opts.PluginHostPath,
 			InitialPrompt:  opts.Prompt,
+			Model:          opts.Model,
+			Variant:        opts.Variant,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.

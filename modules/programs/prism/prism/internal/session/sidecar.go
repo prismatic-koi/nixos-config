@@ -166,6 +166,14 @@ type StartSidecarOpts struct {
 	// readiness. Passed via --initial-prompt in container mode (#487).
 	// Empty string means no prompt delivery.
 	InitialPrompt string
+	// Model is the model identifier to pass to opencode serve at container
+	// startup via --model. Passed via --model in container mode. When empty,
+	// opencode's default model is used.
+	Model string
+	// Variant is the model variant to pass to opencode serve at container
+	// startup via --variant. Passed via --variant in container mode. When
+	// empty, no --variant flag is passed.
+	Variant string
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -232,6 +240,12 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 		}
 		if opts.InitialPrompt != "" {
 			cmdArgs = append(cmdArgs, "--initial-prompt", opts.InitialPrompt)
+		}
+		if opts.Model != "" {
+			cmdArgs = append(cmdArgs, "--model", opts.Model)
+		}
+		if opts.Variant != "" {
+			cmdArgs = append(cmdArgs, "--variant", opts.Variant)
 		}
 	}
 
