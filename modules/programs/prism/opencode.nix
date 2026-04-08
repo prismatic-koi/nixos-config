@@ -415,8 +415,8 @@
       '';
       # Model identifiers for the selected provider.
       # "primary"     — capable reasoning model for coordinator and plan agents.
-      # "secondary"   — capable model for worker, review, and ac agents (= primary for
-      #                 Anthropic/Copilot so there is zero behaviour change on those machines).
+      # "secondary"   — capable model for worker, review, and ac agents
+      #                 (lighter than primary; Sonnet for Anthropic, Sonnet for Copilot).
       # "lightweight" — cheaper/faster model for mechanical subagents
       #                 (explore, title, summary, compaction).
       #
@@ -425,7 +425,7 @@
       # the two providers report different identifier formats from `opencode models`.
       providerModels = {
         anthropic = {
-          primary = "anthropic/claude-sonnet-4-6";
+          primary = "anthropic/claude-opus-4-6";
           secondary = "anthropic/claude-sonnet-4-6";
           lightweight = "anthropic/claude-haiku-4-5";
         };
