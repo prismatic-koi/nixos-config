@@ -23,6 +23,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // touchDashboardSentinel creates or updates the modification time of the
@@ -269,6 +270,19 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 	Short: "Mark the session as ended and write a tmux_session_end event",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
+
+		// Guard: reject blank session names before touching tmux or the DB.
+		if strings.TrimSpace(session) == "" {
+			return fmt.Errorf("event tmux-session-end: session name must not be empty")
+		}
+
+		// Liveness check: the session-closed hook fires spuriously when a
+		// display-popup is dismissed (tmux reports the popup's pseudo-session
+		// name as the outer session). If the session still exists in tmux it
+		// is a spurious fire — exit 0 without writing anything to the DB.
+		if tmux.HasSession(session) {
+			return nil
+		}
 
 		d, err := openDB()
 		if err != nil {
