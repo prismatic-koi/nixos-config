@@ -425,7 +425,7 @@
       # the two providers report different identifier formats from `opencode models`.
       providerModels = {
         anthropic = {
-          primary = "anthropic/claude-sonnet-4-6";
+          primary = "anthropic/claude-opus-4-6";
           secondary = "anthropic/claude-sonnet-4-6";
           lightweight = "anthropic/claude-haiku-4-5";
         };
