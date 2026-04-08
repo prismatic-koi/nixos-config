@@ -658,6 +658,36 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	}
 	defaultBranch := strings.TrimPrefix(headStr, prefix)
 
+	worktreeDir := filepath.Join(targetDir, defaultBranch)
+
+	// Check whether the remote repo is truly empty (no commits on any branch).
+	// We inspect all refs under refs/heads/ rather than just the default branch:
+	// if the remote has commits on some branch (e.g. master) but HEAD was
+	// renamed to main without yet pushing a commit, for-each-ref returns a
+	// non-empty result and we correctly keep the non-empty path, which will
+	// fail loudly if the specific default branch ref is missing.
+	refsOut, err := exec.Command("git", "--git-dir", bareDir, "for-each-ref",
+		"--count=1", "refs/heads").Output()
+	if err != nil {
+		_ = os.RemoveAll(targetDir)
+		return fmt.Errorf("for-each-ref: %w", err)
+	}
+	isEmpty := strings.TrimSpace(string(refsOut)) == ""
+
+	if isEmpty {
+		// Empty repo — skip upstream tracking (no branch exists to track) and
+		// create an orphan worktree so the user can make the first commit.
+		progress("remote repository is empty — creating orphan worktree for '" + defaultBranch + "'...")
+		if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+			"add", "--orphan", "-b", defaultBranch, worktreeDir).CombinedOutput(); err != nil {
+			_ = os.RemoveAll(targetDir)
+			return fmt.Errorf("worktree add --orphan: %w: %s", err, out)
+		}
+		progress("done — orphan worktree at " + worktreeDir)
+		progress("  hint: make a first commit and run: git push -u origin " + defaultBranch)
+		return nil
+	}
+
 	// Set upstream tracking.
 	progress("setting up tracking for branch '" + defaultBranch + "'...")
 	if out, err := exec.Command("git", "--git-dir", bareDir, "branch",
@@ -668,7 +698,6 @@ func CloneWorktree(repoURL, targetDir string, progress func(string)) error {
 	}
 
 	// Create default branch worktree.
-	worktreeDir := filepath.Join(targetDir, defaultBranch)
 	progress("creating worktree for branch '" + defaultBranch + "'...")
 	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
 		"add", worktreeDir, defaultBranch).CombinedOutput(); err != nil {

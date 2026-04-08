@@ -485,3 +485,133 @@ func TestStat_DeduplicatesStagedAndUnstaged(t *testing.T) {
 		t.Errorf("Stat.Files = %d, want 1 (README should be deduplicated)", stat.Files)
 	}
 }
+
+// initEmptyBareRepo creates an empty bare git repo at dir with HEAD pointing
+// at defaultBranch. No commits are made.
+func initEmptyBareRepo(t *testing.T, dir, defaultBranch string) {
+	t.Helper()
+	if out, err := exec.Command("git", "init", "--bare", "-b", defaultBranch, dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+}
+
+// TestCloneWorktree_EmptyRepo verifies that CloneWorktree succeeds on a remote
+// repository that has no commits, creating an orphan worktree.
+func TestCloneWorktree_EmptyRepo(t *testing.T) {
+	remoteDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	initEmptyBareRepo(t, remoteDir, "main")
+
+	var progressMsgs []string
+	err := CloneWorktree(remoteDir, targetDir, func(msg string) {
+		progressMsgs = append(progressMsgs, msg)
+	})
+	if err != nil {
+		t.Fatalf("CloneWorktree on empty repo: %v", err)
+	}
+
+	// .bare/ must exist as a directory.
+	bareDir := filepath.Join(targetDir, ".bare")
+	if info, err := os.Stat(bareDir); err != nil || !info.IsDir() {
+		t.Fatalf(".bare/ does not exist or is not a directory: %v", err)
+	}
+
+	// Orphan worktree dir must exist as a directory.
+	worktreeDir := filepath.Join(targetDir, "main")
+	if info, err := os.Stat(worktreeDir); err != nil || !info.IsDir() {
+		t.Fatalf("worktree dir %s does not exist or is not a directory: %v", worktreeDir, err)
+	}
+
+	// At least one progress message must mention "empty" or "orphan".
+	foundOrphanMsg := false
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "empty") || strings.Contains(msg, "orphan") {
+			foundOrphanMsg = true
+			break
+		}
+	}
+	if !foundOrphanMsg {
+		t.Errorf("no progress message about empty/orphan repo; got: %v", progressMsgs)
+	}
+
+	// At least one progress message must include bootstrap instructions
+	// (push + branch name).
+	foundBootstrapMsg := false
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "push") && strings.Contains(msg, "main") {
+			foundBootstrapMsg = true
+			break
+		}
+	}
+	if !foundBootstrapMsg {
+		t.Errorf("no bootstrap instructions in progress messages; got: %v", progressMsgs)
+	}
+
+	// User must be able to make a commit in the orphan worktree.
+	runGitIn(t, worktreeDir, "config", "user.email", "test@test.com")
+	runGitIn(t, worktreeDir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(worktreeDir, "README"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	runGitIn(t, worktreeDir, "add", ".")
+	runGitIn(t, worktreeDir, "commit", "-m", "initial commit")
+
+	logOut := runGitIn(t, worktreeDir, "log", "--oneline", "-1")
+	if !strings.Contains(logOut, "initial commit") {
+		t.Errorf("git log in orphan worktree = %q, want 'initial commit'", logOut)
+	}
+}
+
+// TestCloneWorktree_NonEmptyRepo verifies that CloneWorktree succeeds on a
+// remote repository that already has commits, preserving upstream tracking and
+// using the standard (non-orphan) worktree layout.
+func TestCloneWorktree_NonEmptyRepo(t *testing.T) {
+	remoteDir := t.TempDir()
+	targetDir := t.TempDir()
+
+	// Create a non-empty bare remote: clone a repo with one commit.
+	srcDir := t.TempDir()
+	initRepo(t, srcDir, "main")
+	if out, err := exec.Command("git", "clone", "--bare", srcDir, remoteDir).CombinedOutput(); err != nil {
+		t.Fatalf("bare clone for remote: %v\n%s", err, out)
+	}
+
+	var progressMsgs []string
+	err := CloneWorktree(remoteDir, targetDir, func(msg string) {
+		progressMsgs = append(progressMsgs, msg)
+	})
+	if err != nil {
+		t.Fatalf("CloneWorktree on non-empty repo: %v", err)
+	}
+
+	// .bare/ must exist as a directory.
+	bareDir := filepath.Join(targetDir, ".bare")
+	if info, err := os.Stat(bareDir); err != nil || !info.IsDir() {
+		t.Fatalf(".bare/ does not exist or is not a directory: %v", err)
+	}
+
+	// Worktree dir must exist as a directory.
+	worktreeDir := filepath.Join(targetDir, "main")
+	if info, err := os.Stat(worktreeDir); err != nil || !info.IsDir() {
+		t.Fatalf("worktree dir %s does not exist or is not a directory: %v", worktreeDir, err)
+	}
+
+	// git status must report nothing to commit (clean worktree).
+	statusOut := runGitIn(t, worktreeDir, "status")
+	if !strings.Contains(statusOut, "nothing to commit") {
+		t.Errorf("git status does not contain 'nothing to commit':\n%s", statusOut)
+	}
+
+	// Upstream tracking must be configured: git status should mention origin/main.
+	if !strings.Contains(statusOut, "origin/main") {
+		t.Errorf("git status does not mention 'origin/main' (upstream not tracked?):\n%s", statusOut)
+	}
+
+	// No empty-repo or orphan messages must appear for a non-empty repo.
+	for _, msg := range progressMsgs {
+		if strings.Contains(msg, "empty") || strings.Contains(msg, "orphan") {
+			t.Errorf("unexpected empty/orphan message for non-empty repo: %q", msg)
+		}
+	}
+}
