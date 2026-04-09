@@ -173,12 +173,10 @@ let
         nixConfLines = [
           "experimental-features = nix-command flakes"
         ]
-        ++ lib.optional (cachixSubstituters != [ ]) (
+        ++ lib.optionals (cachixSubstituters != [ ]) [
           "extra-substituters = ${lib.concatStringsSep " " cachixSubstituters}"
-        )
-        ++ lib.optional (config.nix.settings.trusted-public-keys != [ ]) (
           "extra-trusted-public-keys = ${lib.concatStringsSep " " config.nix.settings.trusted-public-keys}"
-        );
+        ];
         nixConfFile = pkgs.writeText "container-nix.conf" (lib.concatStringsSep "\n" nixConfLines + "\n");
       in
       ''
