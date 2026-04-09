@@ -2851,10 +2851,33 @@ func TestSubagentFinish_NoSecondIdle_TransitionsToFinished(t *testing.T) {
 // TestSubagentFinish_IdleAlsoArrivesAfterRootMessage verifies that when both
 // the message-triggered debounce and a subsequent session.idle arrive after the
 // root agent's final message, the session transitions to finished exactly once
-// and notifyCoordinator is called exactly once.
+// and notifyCoordinator is called exactly once (no duplicates).
 func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Seed a real coordinator with a test HTTP server so we can count
+	// delivered notifications and verify exactly-once behaviour.
+	var notifyCount int
+	var notifyMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		notifyMu.Lock()
+		notifyCount++
+		notifyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	var srvPort int
+	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
+	if err != nil {
+		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port: %v", err)
+	}
+	coordSID := "coord-sid-race"
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
 
@@ -2865,12 +2888,12 @@ func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 	sendEvents(worker, makeAssistantMessage("msg-asst-worker-1", "worker", "Invoking review"))
 	sendEvents(worker, makeUserMessage("msg-review-1", "review", "Review this"))
 	sendEvents(worker, makeAssistantMessage("msg-asst-review-1", "review", "LGTM"))
-	sc := worker
+
 	// session.idle fires (subagent idle — suppressed).
-	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
 
 	// Root agent writes final message — starts message-path debounce.
-	sendEvents(sc, makeAssistantMessage("msg-asst-worker-final", "worker", "All done"))
+	sendEvents(worker, makeAssistantMessage("msg-asst-worker-final", "worker", "All done"))
 
 	msgTimer := clk.LastTimer()
 	if msgTimer == nil {
@@ -2879,7 +2902,7 @@ func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 
 	// A second session.idle arrives (race). handleSessionIdle cancels the
 	// existing timer and starts a fresh one.
-	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
 
 	idleTimer := clk.LastTimer()
 	if idleTimer == nil || idleTimer == msgTimer {
@@ -2903,17 +2926,109 @@ func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 		t.Errorf("state = %q after idle debounce, want finished", state)
 	}
 
-	// Give a brief window for any spurious goroutines.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the async notification and verify exactly one delivery.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected exactly one delivered bus message, got none")
+	}
 
-	// Verify no coordinator notification was sent (no coordinator seeded).
+	notifyMu.Lock()
+	count := notifyCount
+	notifyMu.Unlock()
+	if count != 1 {
+		t.Errorf("notifyCoordinator HTTP calls = %d, want exactly 1 (idempotency)", count)
+	}
+
+	// Verify no second (undelivered) bus message was written.
 	var totalMsgs int
 	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
 		t.Fatalf("count bus_messages: %v", err)
 	}
-	// No coordinator → 0 messages. The important thing is there are not 2.
-	if totalMsgs > 1 {
-		t.Errorf("expected at most 1 bus message (for idempotency), got %d", totalMsgs)
+	if totalMsgs != 1 {
+		t.Errorf("bus message count = %d, want exactly 1 (no duplicate notifications)", totalMsgs)
+	}
+}
+
+// TestSubagentFinish_MultipleRounds_NoSecondIdle verifies the full multi-round
+// subagent scenario (worker → review → worker → review → worker final) where
+// the last finished transition goes through the new message-path debounce —
+// no second session.idle fires after the root agent's final message.
+// All intermediate idle events must be suppressed; exactly one finished
+// transition must occur.
+func TestSubagentFinish_MultipleRounds_NoSecondIdle(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Open a PR and get it reviewed twice"))
+
+	// --- Round 1 ---
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-1", "worker", "Opening PR, invoking review round 1"))
+	sendEvents(sc, makeUserMessage("msg-review-1", "review", "Review round 1"))
+	sendEvents(sc, makeAssistantMessage("msg-asst-review-1", "review", "Round 1 findings"))
+
+	// session.idle after review round 1 — must be suppressed (and cancel the
+	// early debounce started by the worker-1 message).
+	timers0 := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	// handleSessionIdle cancels the existing timer and skips the new one
+	// because lastAssistantAgent == "review". Timer count must not increase.
+	if clk.TimerCount() != timers0 {
+		t.Errorf("after review-round-1 idle: timer count went %d -> %d (should be unchanged)", timers0, clk.TimerCount())
+	}
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("after review-round-1 idle: state = %q, want active", state)
+	}
+
+	// Worker resumes.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-2", "worker", "Fixing round-1 issues, invoking review round 2"))
+
+	// --- Round 2 ---
+	sendEvents(sc, makeUserMessage("msg-review-2", "review", "Review round 2"))
+	sendEvents(sc, makeAssistantMessage("msg-asst-review-2", "review", "Round 2 findings"))
+
+	// session.idle after review round 2 — must be suppressed again.
+	timers1 := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timers1 {
+		t.Errorf("after review-round-2 idle: timer count went %d -> %d (should be unchanged)", timers1, clk.TimerCount())
+	}
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("after review-round-2 idle: state = %q, want active", state)
+	}
+
+	// Worker resumes and writes its final message. NO second session.idle
+	// will arrive. The fix must produce a finished transition via message path.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	timersBefore := clk.TimerCount()
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-final", "worker", "All done, PR approved"))
+
+	// A new debounce timer must have been started by the message path.
+	if clk.TimerCount() != timersBefore+1 {
+		t.Fatalf("expected message-path debounce timer after worker final message, timer count %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// State must be active (timer hasn't fired yet).
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q before debounce fires, want active", state)
+	}
+
+	// Fire the timer — exactly one finished transition.
+	clk.LastTimer().Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after message-path debounce, want finished", state)
 	}
 }
 
