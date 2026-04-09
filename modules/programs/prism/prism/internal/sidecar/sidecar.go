@@ -141,6 +141,14 @@ type Sidecar struct {
 	// parent agent is likely about to resume, so session.idle should not start
 	// the finished debounce.
 	lastAssistantAgent string
+	// busyEpoch is incremented each time a session.status busy event is
+	// received. It is used by the root-agent-message debounce path to detect
+	// whether a new busy event arrived after the timer was started (which
+	// would mean the agent started a new turn and the debounce should be
+	// cancelled). The existing cancelIdleTimer() in handleSessionStatus
+	// already stops the timer; busyEpoch provides an additional guard for
+	// the timer closure so it can bail out even if Stop() loses the race.
+	busyEpoch uint64
 }
 
 // New creates a Sidecar with the given configuration.
@@ -440,6 +448,7 @@ func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
 		s.manualDenial = false
+		s.busyEpoch++
 		if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
@@ -791,10 +800,64 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		log.Printf("sidecar: lastAssistantAgent: %q -> %q (rootAgent=%q)", s.lastAssistantAgent, agentName, s.rootAgent)
 		s.lastAssistantAgent = agentName
 		// If the root agent just completed, clear the tracking so the
-		// next session.idle can proceed normally to finished.
+		// next session.idle can proceed normally to finished. Also start
+		// the idle debounce timer immediately: opencode emits only one
+		// session.idle per agent cycle (before the root agent writes its
+		// final message), so a second session.idle may never arrive after
+		// the root agent appends its handoff message. Starting the timer
+		// here ensures the session always reaches finished even when no
+		// second idle event is emitted (#538).
 		if agentName != "" && agentName == s.rootAgent {
 			log.Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
+
+			// Start the idle debounce timer immediately. opencode emits only
+			// one session.idle per agent cycle — the idle fires after the
+			// subagent returns, before the root agent writes its final turn.
+			// The root agent then appends its handoff message, but because the
+			// session was already idle from opencode's perspective, no second
+			// session.idle is emitted. Starting the timer here ensures the
+			// session always reaches finished even when no second idle arrives
+			// (#538).
+			//
+			// Capture the current busyEpoch. If session.status busy fires
+			// after this point, cancelIdleTimer() stops the timer in
+			// handleSessionStatus. The epoch guard in the closure is an
+			// additional safety net for the race where Stop() returns false
+			// (the goroutine already started running).
+			epochAtStart := s.busyEpoch
+			log.Printf("sidecar: root-agent message completed — starting idle debounce early (%v)", IdleDebounce)
+			s.cancelIdleTimer()
+			s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				s.idleTimer = nil
+
+				// If a new busy event arrived after this timer started, the
+				// agent began a new turn — do not transition to finished.
+				if s.busyEpoch != epochAtStart {
+					log.Printf("sidecar: idle debounce (root-agent message path) suppressed — busy fired after timer start (epochAtStart=%d, busyEpoch=%d)", epochAtStart, s.busyEpoch)
+					return
+				}
+
+				log.Printf("sidecar: idle debounce fired (root-agent message path) -> finished")
+
+				if s.manualDenial {
+					s.manualDenial = false
+					s.upsertState(agent.StateInterrupted, nil, nil)
+					s.writeStateChange(agent.StateInterrupted)
+					return
+				}
+
+				currentState := s.currentDBState()
+				if currentState == agent.StateInterrupted || currentState == agent.StateError {
+					return
+				}
+
+				s.upsertState(agent.StateFinished, nil, nil)
+				s.writeStateChange(agent.StateFinished)
+				go s.notifyCoordinator()
+			})
 		}
 
 		// Refresh root_model_id with the current session's model so that
