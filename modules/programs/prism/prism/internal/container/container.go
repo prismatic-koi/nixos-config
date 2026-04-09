@@ -119,6 +119,14 @@ type Config struct {
 	// HTTPClient is used for health-check probes. Defaults to a short-timeout
 	// client when nil.
 	HTTPClient *http.Client
+
+	// GitUserName is the git user.name to write into the container's .gitconfig.
+	// When empty, the [user] section is omitted from the generated gitconfig.
+	GitUserName string
+
+	// GitUserEmail is the git user.email to write into the container's .gitconfig.
+	// When empty, the [user] section is omitted from the generated gitconfig.
+	GitUserEmail string
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -169,6 +177,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.gitdirFilePath())
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
+	_ = os.Remove(m.gitconfigFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -201,6 +210,77 @@ func (m *Manager) gitdirFilePath() string {
 // rejects. We write a simple config that points to the mounted key.
 func (m *Manager) sshConfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-ssh-config-"+m.name)
+}
+
+// gitconfigFilePath returns the host path for the temporary .gitconfig
+// written before container start. The container needs a minimal gitconfig
+// for commit identity and SSH signing. Mounted read-only at /root/.gitconfig.
+func (m *Manager) gitconfigFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
+}
+
+// writeGitconfig generates a minimal .gitconfig for the container and writes
+// it to a temp file. The file is later mounted at /root/.gitconfig:ro.
+//
+// Sections included:
+//   - [user] — only when GitUserName and GitUserEmail are both non-empty;
+//     includes signingKey when the signing public key can be resolved.
+//   - [commit] / [gpg] — only when the signing keys are available.
+//   - [push] — autoSetupRemote = true (always).
+//   - [init] — defaultBranch = main (always).
+//
+// Missing identity → [user] section omitted, warning logged (AC-14).
+// Missing signing keys → signing sections omitted, warning logged (AC-13).
+func (m *Manager) writeGitconfig() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+
+	// Check whether signing keys are resolvable.
+	signingKeyPriv := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey")
+	signingKeyPub := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub")
+	_, errPriv := filepath.EvalSymlinks(signingKeyPriv)
+	_, errPub := filepath.EvalSymlinks(signingKeyPub)
+	hasSigning := errPriv == nil && errPub == nil
+	if !hasSigning {
+		log.Printf("container: signing keys not resolvable (%v, %v); omitting signing config from gitconfig", errPriv, errPub)
+	}
+
+	var sb strings.Builder
+
+	// [user] section — only when identity is present.
+	if m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
+		sb.WriteString("[user]\n")
+		sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
+		sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
+		if hasSigning {
+			sb.WriteString("    signingKey = /root/.ssh/signing-key.pub\n")
+		}
+	} else {
+		log.Printf("container: git identity (name=%q, email=%q) missing; omitting [user] section from gitconfig",
+			m.cfg.GitUserName, m.cfg.GitUserEmail)
+	}
+
+	// [commit] and [gpg] sections — only when signing keys are available.
+	if hasSigning {
+		sb.WriteString("\n[commit]\n")
+		sb.WriteString("    gpgsign = true\n")
+		sb.WriteString("\n[gpg]\n")
+		sb.WriteString("    format = ssh\n")
+	}
+
+	// [push] and [init] — always included.
+	sb.WriteString("\n[push]\n")
+	sb.WriteString("    autoSetupRemote = true\n")
+	sb.WriteString("\n[init]\n")
+	sb.WriteString("    defaultBranch = main\n")
+
+	if err := os.WriteFile(m.gitconfigFilePath(), []byte(sb.String()), 0o644); err != nil {
+		return err
+	}
+	return nil
 }
 
 // worktreeGitdirFilePath returns the host path for the temporary corrected
@@ -250,9 +330,17 @@ func (m *Manager) Create(ctx context.Context) error {
 	// is a nix store symlink with wrong ownership that SSH rejects. This
 	// config only needs to handle GitHub; other SSH hosts are not expected
 	// inside agent containers.
-	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile /root/.ssh/prismatic-koi-ed25519\n  IdentitiesOnly yes\n"
+	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile /root/.ssh/access-key\n  IdentitiesOnly yes\n"
 	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
 		return fmt.Errorf("container: write ssh config: %w", err)
+	}
+
+	// Write a minimal .gitconfig for the container. The host's git config lives
+	// in ~/.config/git/config (managed by home-manager) and is not mounted into
+	// containers. We generate a minimal config with identity, signing, and
+	// convenience settings.
+	if err := m.writeGitconfig(); err != nil {
+		return fmt.Errorf("container: write gitconfig: %w", err)
 	}
 
 	// Build the podman run arguments.
@@ -333,6 +421,12 @@ func (m *Manager) Shutdown() {
 		log.Printf("container: rm %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
 	}
 
+	// Clean up temp files created by Create.
+	_ = os.Remove(m.gitdirFilePath())
+	_ = os.Remove(m.worktreeGitdirFilePath())
+	_ = os.Remove(m.sshConfigFilePath())
+	_ = os.Remove(m.gitconfigFilePath())
+
 	log.Printf("container: %q removed", m.name)
 }
 
@@ -369,9 +463,6 @@ func (m *Manager) buildRunArgs() []string {
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
 	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
-	// SSH keys and config — required for git push/fetch over SSH remotes.
-	// Read-only since agents should not modify the host's SSH config.
-	sshMount := filepath.Join(home, ".ssh") + ":/root/.ssh:ro"
 	// Nix eval cache — pre-populated git cache from the host so flake input
 	// tarballs (nixpkgs, home-manager, etc.) don't need to be re-fetched and
 	// unpacked on every container start. Read-write because nix writes to
@@ -404,8 +495,6 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", bunCacheMount,
 		// Claude credentials — read-write for auth plugin token refresh.
 		"--volume", claudeMount,
-		// SSH keys and config — git push/fetch over SSH remotes.
-		"--volume", sshMount,
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 
@@ -513,21 +602,41 @@ func (m *Manager) buildRunArgs() []string {
 		}
 	}
 
-	// Mount SSH keys and a generated config for git push/fetch over SSH.
-	// The host's ~/.ssh/ contains sops-nix symlinks to /run/secrets/ssh/ and
-	// a nix store symlink for the config — neither resolves inside the container.
-	// We mount only the keys we need (resolving symlinks to real paths) and
-	// overlay a generated config file with correct permissions.
+	// Mount individual SSH keys and a generated config for git push/fetch and
+	// commit signing over SSH.
+	// The host's ~/.ssh/ contains sops-nix symlinks to /run/secrets/ssh/ and a
+	// nix store symlink for the config — neither resolves inside the container.
+	// We mount only the specific files we need (resolving symlinks to real
+	// paths) and overlay a generated config with correct permissions.
+	// Note: the whole ~/.ssh directory is NOT mounted — only individual files.
 	sshDir := filepath.Join(home, ".ssh")
-	for _, keyName := range []string{"prismatic-koi-ed25519", "known_hosts"} {
-		hostPath := filepath.Join(sshDir, keyName)
-		resolved, err := filepath.EvalSymlinks(hostPath)
-		if err != nil {
-			continue
-		}
-		args = append(args, "--volume", resolved+":/root/.ssh/"+keyName+":ro")
+
+	// Access key (git push/fetch): prismatic-koi-ed25519 → /root/.ssh/access-key
+	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519")); err == nil {
+		args = append(args, "--volume", resolved+":/root/.ssh/access-key:ro")
 	}
+
+	// Signing key private (commit signing): prismatic-koi-ed25519-signingkey → /root/.ssh/signing-key
+	// Signing key public (gitconfig signingKey): prismatic-koi-ed25519-signingkey.pub → /root/.ssh/signing-key.pub
+	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey"))
+	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub"))
+	if errPriv == nil && errPub == nil {
+		args = append(args,
+			"--volume", signingKeyResolved+":/root/.ssh/signing-key:ro",
+			"--volume", signingKeyPubResolved+":/root/.ssh/signing-key.pub:ro",
+		)
+	}
+
+	// known_hosts: unchanged
+	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "known_hosts")); err == nil {
+		args = append(args, "--volume", resolved+":/root/.ssh/known_hosts:ro")
+	}
+
+	// Generated SSH config (points to /root/.ssh/access-key).
 	args = append(args, "--volume", m.sshConfigFilePath()+":/root/.ssh/config:ro")
+
+	// Generated .gitconfig (identity, signing, convenience settings).
+	args = append(args, "--volume", m.gitconfigFilePath()+":/root/.gitconfig:ro")
 
 	// Git mounts: when BareRoot is set, mount the bare repo and the
 	// worktree's private git state so that git works inside the container
@@ -636,14 +745,10 @@ func (m *Manager) credentialEnvVars() []string {
 		}
 	}
 
-	// Git author identity — forwarded so git commits inside the container have
-	// proper attribution.
-	for _, k := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
-		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
-		if v := os.Getenv(k); v != "" {
-			vars = append(vars, k+"="+v)
-		}
-	}
+	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and
+	// GIT_COMMITTER_EMAIL are intentionally NOT injected. The container now
+	// has a generated .gitconfig with a [user] section (sourced from prism
+	// config). Env vars override gitconfig and would mask a broken gitconfig.
 
 	// Note: GIT_DIR and GIT_COMMON_DIR are intentionally NOT injected.
 	// Instead, Create() writes a corrected .git pointer file and bind-mounts it
