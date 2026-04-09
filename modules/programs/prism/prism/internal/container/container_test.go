@@ -1012,6 +1012,37 @@ func TestBuildRunArgs_PluginMountedSeparatelyWithRoleConfig(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_CoordinatorFallsBackWhenCoordinatorPathEmpty(t *testing.T) {
+	// AC-18: if the coordinator path is empty but the worker path is non-empty,
+	// the coordinator container must fall back to the legacy item-by-item mount
+	// rather than silently using the worker config.
+	m := New(Config{
+		SessionName:                    "repo@main",
+		AllocatedPort:                  14000,
+		AgentRole:                      "coordinator",
+		ContainerWorkerConfigPath:      "/nix/store/abc123-opencode-container-config-worker",
+		ContainerCoordinatorConfigPath: "", // absent — should trigger fallback
+	})
+	args := m.buildRunArgs()
+
+	// The single whole-dir bind mount must NOT be present for the coordinator
+	// config dir — neither the worker path nor any other single-dir mount.
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "dst=/root/.config/opencode,") ||
+				strings.HasSuffix(v, "dst=/root/.config/opencode") {
+				t.Errorf("unexpected single whole-dir config mount when coordinator path is empty: %q", v)
+			}
+			// Worker path must also not be mounted as the opencode config dir.
+			if strings.Contains(v, "abc123-opencode-container-config-worker") &&
+				strings.Contains(v, "dst=/root/.config/opencode") {
+				t.Errorf("worker config must not be used for coordinator role: %q", v)
+			}
+		}
+	}
+}
+
 func TestBuildRunArgs_FallbackToItemByItemWhenConfigPathsEmpty(t *testing.T) {
 	// AC-18: when both config paths are empty, buildRunArgs must NOT add the
 	// single whole-directory bind mount for /root/.config/opencode. The legacy

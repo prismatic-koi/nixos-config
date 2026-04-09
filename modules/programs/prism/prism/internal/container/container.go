@@ -456,14 +456,21 @@ func (m *Manager) buildRunArgs() []string {
 	// single read-only bind mount. This avoids symlink-resolution complexity
 	// and ensures worker/coordinator containers get distinct, minimal configs.
 	//
-	// Fallback (backward compat): when config paths are empty (old config
-	// without the new keys), mirror the host config item-by-item, resolving
-	// Nix store symlinks so they are accessible inside the container.
-	roleConfigPath := cfg.ContainerWorkerConfigPath
-	if cfg.AgentRole == "coordinator" && cfg.ContainerCoordinatorConfigPath != "" {
+	// Fallback (backward compat): when the role-appropriate config path is
+	// empty (old config without the new keys, or opencode.enable = false),
+	// mirror the host config item-by-item, resolving Nix store symlinks so
+	// they are accessible inside the container.
+	//
+	// AC-18: if either role-specific path is absent, fall back. In particular:
+	//   - coordinator role + empty coordinator path → fallback (not worker path)
+	//   - worker/unknown role + empty worker path → fallback
+	var roleConfigPath string
+	if cfg.AgentRole == "coordinator" {
 		roleConfigPath = cfg.ContainerCoordinatorConfigPath
-	} else if cfg.AgentRole != "coordinator" && cfg.ContainerWorkerConfigPath == "" {
-		roleConfigPath = ""
+		// empty → stays "" → legacy fallback
+	} else {
+		roleConfigPath = cfg.ContainerWorkerConfigPath
+		// empty → stays "" → legacy fallback
 	}
 
 	if roleConfigPath != "" {

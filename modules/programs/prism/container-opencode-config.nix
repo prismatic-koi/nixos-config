@@ -642,9 +642,10 @@
       containerCoordinatorConfig = mkContainerConfig "coordinator" coordinatorOpencodeJson;
     in
     {
-      # Expose derivation paths for prism-tui.nix to reference.
-      nx.programs.prism._internal.containerWorkerConfig = containerWorkerConfig;
-      nx.programs.prism._internal.containerCoordinatorConfig = containerCoordinatorConfig;
+      # Expose derivation paths via typed options so prism-tui.nix can reference
+      # them without conflicting with the _internal attrset merge.
+      nx.programs.prism.containerWorkerConfigPath = "${containerWorkerConfig}";
+      nx.programs.prism.containerCoordinatorConfigPath = "${containerCoordinatorConfig}";
     }
   );
 }
