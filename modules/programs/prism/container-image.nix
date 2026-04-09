@@ -159,11 +159,22 @@ let
       let
         # Build nix.conf content from the NixOS module system config so it
         # stays in sync with the host's nix settings automatically.
+        #
+        # Combine both trusted-substituters (user-addable caches) and
+        # substituters (active caches) so the container nix.conf stays in sync
+        # regardless of which attribute future cachix entries are added to.
+        # cache.nixos.org is excluded since it is always present in the daemon.
+        allSubstituters = lib.unique (
+          config.nix.settings.trusted-substituters ++ config.nix.settings.substituters
+        );
+        cachixSubstituters = builtins.filter (
+          s: s != "https://cache.nixos.org/" && s != "https://cache.nixos.org"
+        ) allSubstituters;
         nixConfLines = [
           "experimental-features = nix-command flakes"
         ]
-        ++ lib.optional (config.nix.settings.trusted-substituters != [ ]) (
-          "extra-substituters = ${lib.concatStringsSep " " config.nix.settings.trusted-substituters}"
+        ++ lib.optional (cachixSubstituters != [ ]) (
+          "extra-substituters = ${lib.concatStringsSep " " cachixSubstituters}"
         )
         ++ lib.optional (config.nix.settings.trusted-public-keys != [ ]) (
           "extra-trusted-public-keys = ${lib.concatStringsSep " " config.nix.settings.trusted-public-keys}"
