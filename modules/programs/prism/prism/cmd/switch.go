@@ -569,18 +569,30 @@ func handleRegularRepo(path string, opts session.Opts) error {
 			return ensureAndSwitch(path, "", opts)
 		}
 
-		// Conversion succeeded — clean up the pre-conversion session.
+		// Conversion succeeded — clean up the pre-conversion session,
+		// mirroring the pattern used by cleanup.go for intentional teardowns.
 		// Kill the tmux session if it exists; ignore "no such session" errors.
 		_ = tmux.KillSession(oldSessionName)
-		// Mark the DB row as ended and purge any undelivered bus messages.
-		// Both operations are best-effort: errors are logged but do not prevent
+		// Kill any sidecar process associated with the old session (no-op if
+		// no PID file exists).
+		session.KillSidecar(oldSessionName)
+		// Release the port allocation, mark the DB row as ended, purge
+		// undelivered bus messages, and clean up any container. All
+		// operations are best-effort: errors are logged but do not prevent
 		// the switch to the new worktree session.
 		if d, dbErr := openDB(); dbErr == nil {
+			if !hostModeFromDB(d, oldSessionName) {
+				removeContainerIfExists(oldSessionName)
+			}
+			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
+			}
 			_ = d.SetEnded(oldSessionName)
 			_ = d.PurgeBusMessages(oldSessionName)
 			d.Close()
 		} else {
 			fmt.Fprintf(os.Stderr, "warning: could not open DB to clean up old session %q: %v\n", oldSessionName, dbErr)
+			removeContainerIfExists(oldSessionName)
 		}
 
 		return ensureAndSwitch(worktreePath, path, opts)
