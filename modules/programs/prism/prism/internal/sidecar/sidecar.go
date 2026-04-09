@@ -138,8 +138,10 @@ type Sidecar struct {
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
 	shuttingDown bool
-	// rootAgent is the name of the top-level agent for this session, derived
-	// from the first msg_user event. Empty until the first user message arrives.
+	// rootAgent is the name of the top-level agent for this session.
+	// Pre-set from Config.AgentRole in New() when non-empty (#555); falls back
+	// to inference from the first user message with a non-empty agent field when
+	// AgentRole is empty (see handleMessageUpdated).
 	rootAgent string
 	// lastAssistantAgent is the agent name from the most recent completed
 	// assistant message. Used to suppress spurious finished transitions when a
@@ -1208,9 +1210,9 @@ func (s *Sidecar) createOpencodeSession(opencodeURL string, httpClient *http.Cli
 // will have received the sid and opened that session via opencode attach -s
 // before this is called, so prompt_async fires into a subscribed session.
 func (s *Sidecar) deliverInitialPrompt(opencodeURL, sid, prompt string, httpClient *http.Client) {
-	agentRole := "worker"
-	if s.cfg.Container != nil && s.cfg.Container.AgentRole != "" {
-		agentRole = s.cfg.Container.AgentRole
+	agentRole := s.cfg.AgentRole
+	if agentRole == "" {
+		agentRole = "worker"
 	}
 
 	body := map[string]any{
