@@ -308,7 +308,7 @@ var cleanupCmd = &cobra.Command{
 
 		// Only require tmux when we need to auto-detect the current session.
 		if sessionFlag == "" && os.Getenv("TMUX") == "" {
-			return fmt.Errorf("not running inside tmux — invoke via the tmux binding (prefix+q)")
+			return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
 		}
 
 		var session string
@@ -323,7 +323,20 @@ var cleanupCmd = &cobra.Command{
 		}
 
 		if !strings.Contains(session, "@") {
-			return fmt.Errorf("'%s' is not a worktree session\n  prefix+q only works in project@branch sessions", session)
+			// Non-worktree session (e.g. "obsidian"): perform a soft cleanup —
+			// kill the tmux session, kill the sidecar, mark the DB as ended.
+			// No git operations (no worktree removal, no branch deletion).
+			if yesFlag {
+				return headlessCloseSession(session)
+			}
+			// Interactive path: simplified confirmation (no worktree/branch prompts).
+			if os.Getenv("TMUX") == "" {
+				return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
+			}
+			if !confirm(fmt.Sprintf("Close session %s?", session)) {
+				return nil
+			}
+			return closeSession(session)
 		}
 
 		parts := strings.SplitN(session, "@", 2)
