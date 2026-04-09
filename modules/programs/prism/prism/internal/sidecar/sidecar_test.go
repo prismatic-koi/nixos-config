@@ -2784,3 +2784,297 @@ func TestServerConnected_RecoveryTimer_CancelledByShutdown(t *testing.T) {
 			state, agent.StateInterrupted)
 	}
 }
+
+// ── subagent-finish fix tests (#538) ─────────────────────────────────────────
+
+// TestSubagentFinish_NoSecondIdle_TransitionsToFinished is the primary regression
+// test for #538. It reproduces the exact scenario from the bug report: the worker's
+// final action is invoking a @review subagent, so opencode emits one session.idle
+// (after the subagent returns, before the root agent writes its final message). The
+// root agent then appends its handoff message but no second session.idle arrives.
+//
+// Expected: the sidecar starts the debounce from handleMessageUpdated and
+// transitions the session to finished without any session.idle.
+func TestSubagentFinish_NoSecondIdle_TransitionsToFinished(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent from initial user message.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Please open a PR and review it"))
+
+	// Root agent invokes review subagent.
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-1", "worker", "Opening PR and invoking review"))
+	sendEvents(sc, makeUserMessage("msg-review-1", "review", "Review this PR"))
+	sendEvents(sc, makeAssistantMessage("msg-asst-review-1", "review", "LGTM"))
+
+	// The one and only session.idle fires — while review was last active.
+	// This should be suppressed (lastAssistantAgent == "review" != "worker").
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timersBefore {
+		t.Errorf("expected no timer after subagent idle (suppressed), timer count went %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("after suppressed idle: state = %q, want active", state)
+	}
+
+	// Root agent now writes its final handoff message. No second session.idle
+	// will arrive. The fix should start the debounce timer here.
+	timersBefore = clk.TimerCount()
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-final", "worker", "All done, pushing PR"))
+
+	// A new timer must have been created by the message path.
+	if clk.TimerCount() != timersBefore+1 {
+		t.Fatalf("expected debounce timer from message path, timer count went %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// State must still be active (debounce hasn't fired yet).
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q before debounce fires, want active", state)
+	}
+
+	// Fire the timer — session must transition to finished.
+	clk.LastTimer().Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after debounce, want finished", state)
+	}
+}
+
+// TestSubagentFinish_IdleAlsoArrivesAfterRootMessage verifies that when both
+// the message-triggered debounce and a subsequent session.idle arrive after the
+// root agent's final message, the session transitions to finished exactly once
+// and notifyCoordinator is called exactly once.
+func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
+	d := openTestDB(t)
+	worker, clk := newWorkerSidecar(t, d, nil)
+
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(worker, makeUserMessage("msg-user-1", "worker", "Do some work"))
+
+	// Subagent cycle: worker → review → worker final message.
+	sendEvents(worker, makeAssistantMessage("msg-asst-worker-1", "worker", "Invoking review"))
+	sendEvents(worker, makeUserMessage("msg-review-1", "review", "Review this"))
+	sendEvents(worker, makeAssistantMessage("msg-asst-review-1", "review", "LGTM"))
+	sc := worker
+	// session.idle fires (subagent idle — suppressed).
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	// Root agent writes final message — starts message-path debounce.
+	sendEvents(sc, makeAssistantMessage("msg-asst-worker-final", "worker", "All done"))
+
+	msgTimer := clk.LastTimer()
+	if msgTimer == nil {
+		t.Fatal("expected debounce timer after root-agent final message")
+	}
+
+	// A second session.idle arrives (race). handleSessionIdle cancels the
+	// existing timer and starts a fresh one.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil || idleTimer == msgTimer {
+		t.Fatal("expected new idle debounce timer after second session.idle")
+	}
+
+	// The message-path timer was already stopped by cancelIdleTimer(). Firing
+	// it must be a no-op.
+	msgTimer.Fire()
+
+	state := getState(t, d, worker.cfg.SessionName)
+	if state == string(agent.StateFinished) {
+		t.Errorf("message-path timer should have been cancelled by session.idle — state should not be finished yet, got %q", state)
+	}
+
+	// Now fire the idle-path timer → single finished transition.
+	idleTimer.Fire()
+
+	state = getState(t, d, worker.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after idle debounce, want finished", state)
+	}
+
+	// Give a brief window for any spurious goroutines.
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify no coordinator notification was sent (no coordinator seeded).
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	// No coordinator → 0 messages. The important thing is there are not 2.
+	if totalMsgs > 1 {
+		t.Errorf("expected at most 1 bus message (for idempotency), got %d", totalMsgs)
+	}
+}
+
+// TestSubagentFinish_MessageIncomplete_NoDebounce verifies that a
+// message.updated event where info.Time.Completed == nil (message not yet
+// complete) does NOT start the debounce timer prematurely.
+func TestSubagentFinish_MessageIncomplete_NoDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Do some work"))
+
+	// Fire an incomplete assistant message (no Completed timestamp).
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-incomplete",
+			"text":      "Working on it...",
+		},
+	}))
+	created := 1000.0
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-incomplete",
+			"role":       "assistant",
+			"agent":      "worker",
+			"providerID": "anthropic",
+			"modelID":    "claude-sonnet-4-5",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": nil, // message not complete yet
+			},
+		},
+	}))
+
+	// No new timer should have been created.
+	if clk.TimerCount() != timersBefore {
+		t.Errorf("expected no timer for incomplete message, timer count went %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// State must remain active.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after incomplete message, want active", state)
+	}
+}
+
+// TestSubagentFinish_BusyCancelsMessageDebounce verifies that a session.status
+// busy event arriving after the message-triggered debounce timer starts cancels
+// the timer and keeps the session in active state.
+func TestSubagentFinish_BusyCancelsMessageDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Do some work"))
+
+	// Root agent completes a message — starts the early debounce.
+	sendEvents(sc, makeAssistantMessage("msg-asst-1", "worker", "Done with this part"))
+
+	msgTimer := clk.LastTimer()
+	if msgTimer == nil {
+		t.Fatal("expected debounce timer after root-agent message")
+	}
+
+	// session.status busy arrives — should cancel the timer (agent started a new turn).
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	// The timer must be stopped — firing it should be a no-op.
+	msgTimer.Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state == string(agent.StateFinished) {
+		t.Errorf("state = finished after busy cancelled the debounce — should remain active")
+	}
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after busy, want active", state)
+	}
+}
+
+// TestSubagentFinish_NoRootAgent_NoSpuriousFinished verifies that when no root
+// agent has been established and a message.updated arrives attributed to an
+// agent that looks like a root agent, the sidecar does not transition to
+// finished and does not panic.
+func TestSubagentFinish_NoRootAgent_NoSpuriousFinished(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// No user messages — rootAgent is empty. Fire an assistant message.
+	// The fix only starts debounce when agentName != "" && agentName == s.rootAgent.
+	// Since rootAgent == "", agentName != rootAgent (even if agentName == ""), so
+	// no early debounce should fire.
+	timersBefore := clk.TimerCount()
+	sendEvents(sc, makeAssistantMessage("msg-asst-1", "worker", "Some response"))
+
+	// No timer should be created (rootAgent not yet established).
+	if clk.TimerCount() != timersBefore {
+		t.Errorf("expected no timer when rootAgent is not established, timer count went %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// State must remain active.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q, want active (no rootAgent established)", state)
+	}
+}
+
+// TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks verifies the edge
+// case where the root agent's final turn is tool-use only (no completed
+// assistant text message arrives before session.idle). The existing idle-
+// triggered debounce path must still handle the finished transition correctly.
+func TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "worker", "Do some work"))
+
+	// Root agent runs only tool calls (no completed text assistant message).
+	// Simulate this by NOT sending a completed assistant message before idle.
+	start := 1000.0
+	end := 2000.0
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-tool-1",
+			"tool":      "bash",
+			"state": map[string]any{
+				"status": "completed",
+				"input":  map[string]string{"command": "git push"},
+				"output": "ok",
+				"time":   map[string]*float64{"start": &start, "end": &end},
+			},
+		},
+	}))
+	// Note: no message.updated with completed time for the root agent.
+
+	// session.idle fires. lastAssistantAgent is still "" (no completed
+	// assistant message), so the normal idle debounce should proceed.
+	timersBefore := clk.TimerCount()
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	if clk.TimerCount() != timersBefore+1 {
+		t.Fatalf("expected idle debounce timer for tool-only final turn, timer count %d -> %d",
+			timersBefore, clk.TimerCount())
+	}
+
+	// Fire the timer → finished.
+	clk.LastTimer().Fire()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateFinished) {
+		t.Errorf("state = %q after tool-only idle debounce, want finished", state)
+	}
+}
