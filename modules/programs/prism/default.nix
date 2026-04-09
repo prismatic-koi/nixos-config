@@ -74,6 +74,7 @@
 
   imports = [
     ./container-image.nix
+    ./container-opencode-config.nix
     ./neovim
     ./opencode.nix
     ./tmux.nix

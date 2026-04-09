@@ -850,6 +850,199 @@ func TestRedactArgs_EnvAsLastArgNoPanic(t *testing.T) {
 	}
 }
 
+// ── role-specific opencode config mount tests ────────────────────────────────
+
+func TestBuildRunArgs_WorkerConfigMountedForWorkerRole(t *testing.T) {
+	// AC-14, AC-15: when ContainerWorkerConfigPath is set and role is "worker",
+	// the worker config dir must be bind-mounted at /root/.config/opencode:ro.
+	m := New(Config{
+		SessionName:               "repo@feat",
+		AllocatedPort:             14000,
+		AgentRole:                 "worker",
+		ContainerWorkerConfigPath: "/nix/store/abc123-opencode-container-config-worker",
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "/nix/store/abc123-opencode-container-config-worker") &&
+				strings.Contains(v, "dst=/root/.config/opencode") &&
+				strings.Contains(v, "ro") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("worker config bind mount not found in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_CoordinatorConfigMountedForCoordinatorRole(t *testing.T) {
+	// AC-14, AC-15: when ContainerCoordinatorConfigPath is set and role is
+	// "coordinator", the coordinator config dir must be bind-mounted at
+	// /root/.config/opencode:ro.
+	m := New(Config{
+		SessionName:                    "repo@main",
+		AllocatedPort:                  14000,
+		AgentRole:                      "coordinator",
+		ContainerWorkerConfigPath:      "/nix/store/abc123-opencode-container-config-worker",
+		ContainerCoordinatorConfigPath: "/nix/store/def456-opencode-container-config-coordinator",
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "/nix/store/def456-opencode-container-config-coordinator") &&
+				strings.Contains(v, "dst=/root/.config/opencode") &&
+				strings.Contains(v, "ro") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("coordinator config bind mount not found in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_WorkerConfigMountedForUnknownRole(t *testing.T) {
+	// AC-15: unknown roles fall back to the worker config.
+	m := New(Config{
+		SessionName:               "repo@feat",
+		AllocatedPort:             14000,
+		AgentRole:                 "unknown-role",
+		ContainerWorkerConfigPath: "/nix/store/abc123-opencode-container-config-worker",
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "/nix/store/abc123-opencode-container-config-worker") &&
+				strings.Contains(v, "dst=/root/.config/opencode") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("worker config bind mount not found for unknown role in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_CoordinatorConfigNotUsedForWorkerRole(t *testing.T) {
+	// AC-15: worker role must NOT use the coordinator config.
+	m := New(Config{
+		SessionName:                    "repo@feat",
+		AllocatedPort:                  14000,
+		AgentRole:                      "worker",
+		ContainerWorkerConfigPath:      "/nix/store/abc123-opencode-container-config-worker",
+		ContainerCoordinatorConfigPath: "/nix/store/def456-opencode-container-config-coordinator",
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "def456-opencode-container-config-coordinator") {
+				t.Errorf("coordinator config must not be mounted for worker role: %q", v)
+			}
+		}
+	}
+}
+
+func TestBuildRunArgs_ConfigDirMountIsReadOnly(t *testing.T) {
+	// AC-14: the single bind mount must be read-only.
+	m := New(Config{
+		SessionName:               "repo@feat",
+		AllocatedPort:             14000,
+		AgentRole:                 "worker",
+		ContainerWorkerConfigPath: "/nix/store/abc123-opencode-container-config-worker",
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "dst=/root/.config/opencode") {
+				if !strings.Contains(v, "ro") {
+					t.Errorf("opencode config mount %q must be read-only (ro)", v)
+				}
+				return
+			}
+		}
+	}
+	t.Errorf("opencode config mount not found in args: %v", args)
+}
+
+func TestBuildRunArgs_PluginMountedSeparatelyWithRoleConfig(t *testing.T) {
+	// AC-16: even when using role-based config dir mount, the prism-hooks plugin
+	// file is still mounted separately via --volume at the plugins/ path.
+	m := New(Config{
+		SessionName:               "repo@feat",
+		AllocatedPort:             14000,
+		AgentRole:                 "worker",
+		ContainerWorkerConfigPath: "/nix/store/abc123-opencode-container-config-worker",
+		PluginHostPath:            "/home/user/.config/opencode/plugins/prism-hooks.ts",
+	})
+	args := m.buildRunArgs()
+
+	foundPlugin := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, "prism-hooks.ts") &&
+				strings.Contains(v, "/root/.config/opencode/plugins/prism-hooks.ts") {
+				foundPlugin = true
+				if !strings.HasSuffix(v, ":ro") {
+					t.Errorf("plugin mount %q must be read-only", v)
+				}
+				break
+			}
+		}
+	}
+	if !foundPlugin {
+		t.Errorf("plugin file not mounted separately when role config dir is used; args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_FallbackToItemByItemWhenConfigPathsEmpty(t *testing.T) {
+	// AC-18: when both config paths are empty, buildRunArgs must NOT add the
+	// single whole-directory bind mount for /root/.config/opencode. The legacy
+	// item-by-item path will be attempted instead, which mounts individual
+	// sub-paths (like /root/.config/opencode/agents, /root/.config/opencode/skills,
+	// etc.) rather than the top-level directory as a single unit.
+	m := New(Config{
+		SessionName:                    "repo@feat",
+		AllocatedPort:                  14000,
+		AgentRole:                      "worker",
+		ContainerWorkerConfigPath:      "",
+		ContainerCoordinatorConfigPath: "",
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--mount" && i+1 < len(args) {
+			v := args[i+1]
+			// The single whole-dir mount has exactly "dst=/root/.config/opencode"
+			// (no sub-path after it). Item-by-item mounts have a sub-path like
+			// "dst=/root/.config/opencode/agents". Detect the whole-dir mount by
+			// checking that the destination is exactly "/root/.config/opencode"
+			// with no trailing path separator or additional segment.
+			if strings.Contains(v, "dst=/root/.config/opencode,") ||
+				strings.HasSuffix(v, "dst=/root/.config/opencode") {
+				t.Errorf("unexpected single whole-dir config mount in fallback mode: %q", v)
+			}
+		}
+	}
+}
+
 func TestRedactArgs_MultipleEnvVarsAllRedacted(t *testing.T) {
 	args := []string{
 		"run",

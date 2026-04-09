@@ -21,6 +21,8 @@ let
     sidecar_plugin_path = "${
       config.home-manager.users.${config.nx.username}.xdg.configHome
     }/opencode/plugins/prism-hooks.ts";
+    container_worker_config = "${config.nx.programs.prism._internal.containerWorkerConfig}";
+    container_coordinator_config = "${config.nx.programs.prism._internal.containerCoordinatorConfig}";
     worktree_exclude = config.nx.programs.prism.worktreeExclude;
     project_locations = config.nx.programs.prism.projects.locations;
     project_specific = config.nx.programs.prism.projects.specific;

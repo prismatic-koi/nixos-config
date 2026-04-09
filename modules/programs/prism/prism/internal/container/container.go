@@ -78,6 +78,18 @@ type Config struct {
 	// read-only into the container's opencode plugin directory.
 	PluginHostPath string
 
+	// ContainerWorkerConfigPath is the Nix store path to the pre-built worker
+	// opencode config directory. When non-empty and AgentRole is not
+	// "coordinator", this directory is bind-mounted at /root/.config/opencode
+	// (read-only) instead of mirroring the host config item-by-item.
+	ContainerWorkerConfigPath string
+
+	// ContainerCoordinatorConfigPath is the Nix store path to the pre-built
+	// coordinator opencode config directory. When non-empty and AgentRole is
+	// "coordinator", this directory is bind-mounted at /root/.config/opencode
+	// (read-only) instead of mirroring the host config item-by-item.
+	ContainerCoordinatorConfigPath string
+
 	// BareRoot is the absolute path to the bare git repo root on the host
 	// (the directory containing .bare/). When set, the bare repo and the
 	// worktree's private git state are mounted into the container so that
@@ -340,9 +352,9 @@ func (m *Manager) buildRunArgs() []string {
 	worktreeMount := cfg.Worktree + ":/workspace:Z"
 	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
 		":/root/.local/share/opencode:Z"
-	// opencode config: mount each entry individually so Nix store symlinks are
-	// resolved. The whole-dir mount is NOT used — it would create a read-only
-	// dir that prevents --mount from adding subdirectories inside it.
+	// opencodeConfigDir is the host's opencode config directory, used only in
+	// the legacy fallback path when role-specific config derivation paths are
+	// not configured (ContainerWorkerConfigPath / ContainerCoordinatorConfigPath).
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 
 	// opencode cache — mount the whole directory so plugins, models.json,
@@ -438,34 +450,58 @@ func (m *Manager) buildRunArgs() []string {
 		)
 	}
 
-	// Mount ~/.config/opencode entries individually. The whole-dir mount is
-	// intentionally omitted — it would create a read-only container directory
-	// that prevents --mount from adding resolved symlink targets inside it.
+	// Mount the opencode config directory into /root/.config/opencode.
 	//
-	// For each entry:
-	//   - Symlinks → resolve to real Nix store path and mount that
-	//   - Real entries → mount directly
-	//   - Directories → use --mount type=bind (podman creates dest automatically)
-	//   - Regular files → use --volume
-	if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
-		for _, entry := range entries {
-			// Skip the plugins directory — it contains symlinks into the Nix
-			// store that are not available inside the container. Individual
-			// plugin files are mounted separately below (see PluginHostPath).
-			if entry.Name() == "plugins" {
-				continue
-			}
-			hostPath := filepath.Join(opencodeConfigDir, entry.Name())
-			resolved, err := filepath.EvalSymlinks(hostPath)
-			if err != nil {
-				continue
-			}
-			containerPath := "/root/.config/opencode/" + entry.Name()
-			if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
-				args = append(args, "--mount",
-					"type=bind,src="+resolved+",dst="+containerPath+",ro")
-			} else {
-				args = append(args, "--volume", resolved+":"+containerPath+":ro")
+	// Preferred path: use the role-appropriate pre-built Nix derivation as a
+	// single read-only bind mount. This avoids symlink-resolution complexity
+	// and ensures worker/coordinator containers get distinct, minimal configs.
+	//
+	// Fallback (backward compat): when config paths are empty (old config
+	// without the new keys), mirror the host config item-by-item, resolving
+	// Nix store symlinks so they are accessible inside the container.
+	roleConfigPath := cfg.ContainerWorkerConfigPath
+	if cfg.AgentRole == "coordinator" && cfg.ContainerCoordinatorConfigPath != "" {
+		roleConfigPath = cfg.ContainerCoordinatorConfigPath
+	} else if cfg.AgentRole != "coordinator" && cfg.ContainerWorkerConfigPath == "" {
+		roleConfigPath = ""
+	}
+
+	if roleConfigPath != "" {
+		// Single bind mount of the pre-built config derivation (read-only).
+		args = append(args, "--mount",
+			"type=bind,src="+roleConfigPath+",dst=/root/.config/opencode,ro")
+	} else {
+		// Legacy fallback: mount each ~/.config/opencode entry individually,
+		// resolving Nix store symlinks so they are accessible inside the container.
+		// The whole-dir mount is intentionally omitted — it would create a
+		// read-only container directory that prevents --mount from adding
+		// resolved symlink targets inside it.
+		//
+		// For each entry:
+		//   - Symlinks → resolve to real Nix store path and mount that
+		//   - Real entries → mount directly
+		//   - Directories → use --mount type=bind (podman creates dest automatically)
+		//   - Regular files → use --volume
+		if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
+			for _, entry := range entries {
+				// Skip the plugins directory — it contains symlinks into the Nix
+				// store that are not available inside the container. Individual
+				// plugin files are mounted separately below (see PluginHostPath).
+				if entry.Name() == "plugins" {
+					continue
+				}
+				hostPath := filepath.Join(opencodeConfigDir, entry.Name())
+				resolved, err := filepath.EvalSymlinks(hostPath)
+				if err != nil {
+					continue
+				}
+				containerPath := "/root/.config/opencode/" + entry.Name()
+				if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
+					args = append(args, "--mount",
+						"type=bind,src="+resolved+",dst="+containerPath+",ro")
+				} else {
+					args = append(args, "--volume", resolved+":"+containerPath+":ro")
+				}
 			}
 		}
 	}
