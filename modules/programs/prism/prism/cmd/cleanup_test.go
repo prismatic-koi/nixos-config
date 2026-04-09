@@ -471,3 +471,199 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 			gotOther, "other")
 	}
 }
+
+// ── non-worktree session tests ─────────────────────────────────────────────────
+
+// TestHeadlessCloseSession_NonWorktree_MarksEnded verifies that
+// headlessCloseSession marks the DB row as ended for a non-worktree session
+// (no "@" in name, e.g. "obsidian").
+//
+// Runs without tmux, so it exercises only the DB-update path.
+func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sessionName := "obsidian"
+	if err := d.UpsertStatus(sessionName, "", "", "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	if err := headlessCloseSession(sessionName); err != nil {
+		t.Fatalf("headlessCloseSession returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — session was not marked as ended")
+	}
+}
+
+// TestHeadlessCloseSession_NonWorktree_NoDB verifies that headlessCloseSession
+// exits 0 even when no DB row exists for the session (never recorded).
+func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
+	// Point openDB at an empty temp DB (no row for "obsidian").
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	if err := headlessCloseSession("obsidian"); err != nil {
+		t.Errorf("headlessCloseSession returned error %v, want nil (no DB row)", err)
+	}
+}
+
+// TestCleanupYes_NonWorktreeSession verifies the end-to-end headless (--yes)
+// cleanup path for a non-worktree session (no "@" in name, e.g. "obsidian").
+//
+// Layout:
+//   - session "obsidian"  ← the target (no "@" in name)
+//   - session "other"     ← a bystander session
+//   - clientTarget attached to "obsidian"
+//   - clientOther attached to "other"
+//
+// After cleanup:
+//   - "obsidian" must no longer exist in tmux.
+//   - clientTarget must be redirected to "scratchpad".
+//   - clientOther must remain on "other".
+//   - No git commands are invoked (absence is inferred from the absence of a
+//     bare repo — if git ops were called they would fail and surface as errors).
+func TestCleanupYes_NonWorktreeSession(t *testing.T) {
+	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	prismBin := buildPrismBinary(t)
+
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	targetSession := "obsidian"
+
+	// Create the target session.
+	if err := s.run("new-session", "-ds", targetSession, "-c", "/tmp"); err != nil {
+		t.Fatalf("new-session %q: %v", targetSession, err)
+	}
+
+	// Create the bystander session.
+	s.newSession("other")
+
+	// Attach clients.
+	clientTarget := s.attachClientToSession(t, targetSession)
+	clientOther := s.attachClientToSession(t, "other")
+
+	// Invoke `prism cleanup --yes --session obsidian`.
+	cleanupArgs := fmt.Sprintf("%s cleanup --yes --session %s", prismBin, targetSession)
+	runInNewWindow(t, s, "other", "/tmp", cleanupArgs)
+
+	// Poll until the target session disappears.
+	nwDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(nwDeadline) {
+		if !s.hasSession(targetSession) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if s.hasSession(targetSession) {
+		t.Fatalf("session %q still exists after cleanup (timed out)", targetSession)
+	}
+
+	// Poll until clientTarget lands on "scratchpad".
+	var gotTargetNW string
+	targetDeadlineNW := time.Now().Add(5 * time.Second)
+	for time.Now().Before(targetDeadlineNW) {
+		if sess, err := s.clientSession(clientTarget); err == nil {
+			gotTargetNW = sess
+			if sess == "scratchpad" {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotTargetNW != "" && gotTargetNW != "scratchpad" {
+		t.Errorf("clientTarget session = %q, want %q — client was not redirected to scratchpad",
+			gotTargetNW, "scratchpad")
+	}
+	if gotTargetNW == "" {
+		t.Errorf("clientTarget: could not confirm session after cleanup (all clientSession calls failed)")
+	}
+
+	// The bystander client should still be on "other".
+	var gotOtherNW string
+	otherDeadlineNW := time.Now().Add(2 * time.Second)
+	for time.Now().Before(otherDeadlineNW) {
+		if sess, err := s.clientSession(clientOther); err == nil {
+			gotOtherNW = sess
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if gotOtherNW != "" && gotOtherNW != "other" {
+		t.Errorf("clientOther session = %q, want %q — unrelated client was incorrectly moved",
+			gotOtherNW, "other")
+	}
+}
+
+// TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded verifies that
+// headlessCloseSession marks the DB row as ended even when the tmux session
+// no longer exists (already killed or never started). This calls
+// headlessCloseSession directly — it does not exercise cleanupCmd routing.
+func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	sessionName := "obsidian"
+	if err := d.UpsertStatus(sessionName, "", "", "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// headlessCloseSession is what the cleanup command routes to for non-@
+	// sessions with --yes. Calling it directly with no tmux server exercises the
+	// "session already dead" edge case: KillSession will fail silently and the
+	// DB update must still succeed.
+	if err := headlessCloseSession(sessionName); err != nil {
+		t.Fatalf("headlessCloseSession returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — session was not marked as ended despite tmux session being absent")
+	}
+}
