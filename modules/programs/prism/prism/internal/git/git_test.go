@@ -199,21 +199,35 @@ func TestConvertToBare(t *testing.T) {
 	// worktree field is the path returned by ConvertToBare.
 	wtList := runGitIn(t, dir, "--git-dir", barePath, "worktree", "list", "--porcelain")
 	var worktreePaths []string
+	// Identify bare entries by the "bare" attribute line, matching the
+	// production Worktrees() logic. This is immune to symlink resolution
+	// differences (e.g. /var → /private/var on macOS).
+	var current string
+	isBare := false
 	for _, line := range strings.Split(wtList, "\n") {
 		if strings.HasPrefix(line, "worktree ") {
-			p := strings.TrimPrefix(line, "worktree ")
-			// Skip the bare repo entry itself.
-			if p != barePath {
-				worktreePaths = append(worktreePaths, p)
+			if current != "" && !isBare {
+				worktreePaths = append(worktreePaths, current)
 			}
+			current = strings.TrimPrefix(line, "worktree ")
+			isBare = false
+		} else if strings.TrimSpace(line) == "bare" {
+			isBare = true
 		}
+	}
+	if current != "" && !isBare {
+		worktreePaths = append(worktreePaths, current)
 	}
 	if len(worktreePaths) != 1 {
 		t.Fatalf("expected exactly 1 non-bare worktree, got %d: %v\nworktree list output:\n%s",
 			len(worktreePaths), worktreePaths, wtList)
 	}
-	if worktreePaths[0] != worktreePath {
-		t.Errorf("worktree list path = %q, want %q", worktreePaths[0], worktreePath)
+	// Use os.SameFile for the path equality check so that symlink differences
+	// (e.g. /var vs /private/var on macOS) do not cause a false mismatch.
+	info0, err0 := os.Stat(worktreePaths[0])
+	infoWt, errWt := os.Stat(worktreePath)
+	if err0 != nil || errWt != nil || !os.SameFile(info0, infoWt) {
+		t.Errorf("worktree list path = %q, want %q (same file)", worktreePaths[0], worktreePath)
 	}
 
 	// git status in worktree must exit 0 and report nothing to commit.
