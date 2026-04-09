@@ -612,19 +612,20 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 
 func (s *Sidecar) handleSessionCompacted() {
 	s.compacting = false
-	s.cancelIdleTimer()
 	s.cancelRecoveryTimer()
 
-	// If already interrupted, leave it.
+	// Compaction complete — the session is resuming, not finishing.
+	// Do NOT notify the coordinator; the task is still in progress.
+	s.writeEvent("compaction", map[string]string{"note": "compaction complete"}, nil)
+
+	// If already in a terminal/exceptional state (interrupted, deleted), leave it.
 	currentState := s.currentDBState()
-	if currentState == agent.StateInterrupted {
+	if currentState == agent.StateInterrupted || currentState == agent.StateDeleted {
 		return
 	}
 
-	s.upsertState(agent.StateFinished, nil, nil)
-	s.writeStateChange(agent.StateFinished)
-	s.writeEvent("compaction", map[string]string{"note": "compaction complete"}, nil)
-	go s.notifyCoordinator()
+	s.upsertState(agent.StateActive, nil, nil)
+	s.writeStateChange(agent.StateActive)
 }
 
 func (s *Sidecar) handleSessionDeleted(evt sse.Event) {

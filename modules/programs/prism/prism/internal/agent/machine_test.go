@@ -16,7 +16,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateWaiting, StateActive, "permission.replied / question.replied"},
 		{StateActive, StateFinished, "idle debounce fires"},
 		{StateActive, StateCompacting, "compaction started"},
-		{StateCompacting, StateFinished, "session.compacted"},
+		{StateCompacting, StateActive, "session.compacted — session resumes after compaction"},
 
 		// Error paths
 		{StateActive, StateError, "session.error"},
@@ -73,8 +73,8 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateIdle, StateCompacting, "idle → compacting (nothing happened)"},
 		{StateIdle, StateError, "idle → error (nothing happened)"},
 
-		// Compacting cannot go back to active directly
-		{StateCompacting, StateActive, "compacting → active (must go through finished)"},
+		// Compacting resumes to active; finished is no longer a valid direct transition
+		{StateCompacting, StateFinished, "compacting → finished (compaction ≠ task completion)"},
 		{StateCompacting, StateWaiting, "compacting → waiting"},
 		{StateCompacting, StateError, "compacting → error"},
 	}

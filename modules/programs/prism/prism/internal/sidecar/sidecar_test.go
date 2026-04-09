@@ -519,7 +519,7 @@ func TestSessionError_MessageAborted_CancelsIdleTimer(t *testing.T) {
 	}
 }
 
-func TestSessionCompacted_WritesFinished(t *testing.T) {
+func TestSessionCompacted_WritesActive(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "compacting", nil, nil)
@@ -527,8 +527,44 @@ func TestSessionCompacted_WritesFinished(t *testing.T) {
 	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
 
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if state != string(agent.StateFinished) {
-		t.Errorf("state = %q, want %q", state, agent.StateFinished)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q, want %q (compaction complete means session is resuming)", state, agent.StateActive)
+	}
+}
+
+// TestSessionCompacted_NoCoordinatorNotification verifies that session.compacted
+// does NOT call notifyCoordinator — compaction finishing means the session is
+// resuming, not that the task is done.
+func TestSessionCompacted_NoCoordinatorNotification(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed coordinator so notification would be possible if triggered.
+	coordSID := "coord-sid-compacted-test"
+	_ = d.UpsertStatus("test-repo@main", "test-repo", "/tmp/coord", "active", nil, &coordSID)
+
+	worker, _ := newWorkerSidecar(t, d, nil)
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
+	worker.mu.Lock()
+	worker.compacting = true
+	worker.mu.Unlock()
+
+	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	// State must be active (not finished).
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
+		t.Errorf("state = %q after session.compacted, want %q", state, agent.StateActive)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("session.compacted must not notify coordinator, but got %d bus message(s)", totalMsgs)
 	}
 }
 
@@ -542,6 +578,19 @@ func TestSessionCompacted_DoesNotOverrideInterrupted(t *testing.T) {
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
 	if state != string(agent.StateInterrupted) {
 		t.Errorf("state = %q, want %q (should not overwrite interrupted)", state, agent.StateInterrupted)
+	}
+}
+
+func TestSessionCompacted_DoesNotOverrideDeleted(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "deleted", nil, nil)
+
+	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateDeleted) {
+		t.Errorf("state = %q, want %q (should not overwrite deleted)", state, agent.StateDeleted)
 	}
 }
 
@@ -1135,33 +1184,29 @@ func TestSessionUpdated_NoRow_WritesActive(t *testing.T) {
 	}
 }
 
-func TestSessionCompacted_CancelsIdleTimer(t *testing.T) {
-	sc, clk := newTestSidecar(t)
+func TestSessionCompacted_WritesCompactionEvent(t *testing.T) {
+	sc, _ := newTestSidecar(t)
 
-	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
-
-	// Start idle timer.
-	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected timer")
-	}
-
-	// Mark compacting.
-	sc.mu.Lock()
-	sc.compacting = true
-	sc.mu.Unlock()
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "compacting", nil, nil)
 
-	// session.compacted should cancel the idle timer.
 	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
 
-	// Timer fire should be no-op.
-	timer.Fire()
-
-	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if state != string(agent.StateFinished) {
-		t.Errorf("state = %q, want %q", state, agent.StateFinished)
+	// Verify the compaction complete event is still written for debug visibility.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	found := false
+	for _, e := range events {
+		if e.Type == "compaction" {
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(e.Payload), &payload); err == nil {
+				if payload["note"] == "compaction complete" {
+					found = true
+					break
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("expected compaction event with note 'compaction complete' to be written")
 	}
 }
 
@@ -1397,9 +1442,13 @@ func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	}
 }
 
-func TestNotifyCoordinator_CompactedPath(t *testing.T) {
+// TestNotifyCoordinator_CompactedPath verifies that session.compacted does NOT
+// notify the coordinator — compaction complete means the session is resuming,
+// not that the task is done. State must be active, no bus message written.
+func TestNotifyCoordinator_CompactedPath_NoNotification(t *testing.T) {
 	d := openTestDB(t)
 
+	// Seed coordinator with port so a notification would be deliverable if triggered.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1426,21 +1475,23 @@ func TestNotifyCoordinator_CompactedPath(t *testing.T) {
 	worker.compacting = true
 	worker.mu.Unlock()
 
-	// Trigger session.compacted → finished.
+	// Trigger session.compacted — session resumes, state becomes active.
 	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
 
-	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
-		t.Errorf("worker state = %q, want finished", state)
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
+		t.Errorf("worker state = %q, want %q (compaction complete means resuming)", state, agent.StateActive)
 	}
 
-	// Wait for async notification.
-	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected delivered bus message to coordinator, got none")
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	wantText := "Agent test-repo@feature has finished its current task"
-	if msg.Text != wantText {
-		t.Errorf("text = %q, want %q", msg.Text, wantText)
+	if totalMsgs != 0 {
+		t.Errorf("session.compacted must not send coordinator notification, but got %d bus message(s)", totalMsgs)
 	}
 }
 
@@ -1558,13 +1609,16 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with the test server's HTTP client.
-	worker, _ := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
-	worker.mu.Lock()
-	worker.compacting = true
-	worker.mu.Unlock()
-	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+	// Trigger idle debounce → finished (the real notification path).
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
 
 	// Wait for delivered bus message (audit trail).
 	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
@@ -1629,13 +1683,16 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with the test server's HTTP client (returns 500).
-	worker, _ := newWorkerSidecar(t, d, srv.Client())
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
-	worker.mu.Lock()
-	worker.compacting = true
-	worker.mu.Unlock()
-	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+	// Trigger idle debounce → finished (the real notification path).
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
 
 	// Wait for fallback bus message (undelivered).
 	msg := waitForBusMessage(t, d, "test-repo@main")
@@ -1796,7 +1853,7 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 
 func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 	d := openTestDB(t)
-	worker, _ := newWorkerSidecar(t, d, nil)
+	worker, clk := newWorkerSidecar(t, d, nil)
 
 	// Seed coordinator with a port but no opencode_sid.
 	coordName := "test-repo@main"
@@ -1812,11 +1869,14 @@ func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 		t.Fatalf("set port: %v", err)
 	}
 
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "compacting", nil, nil)
-	worker.mu.Lock()
-	worker.compacting = true
-	worker.mu.Unlock()
-	worker.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+	// Trigger idle debounce → finished (the real notification path).
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
 
 	// Should fall back to undelivered bus message since opencode_sid is nil.
 	msg := waitForBusMessage(t, d, coordName)
@@ -2615,7 +2675,8 @@ func TestServerConnected_RecoveryTimer_CancelledByMessageAbortedError(t *testing
 
 // TestServerConnected_RecoveryTimer_CancelledByCompaction verifies that
 // handleSessionCompacted cancels any in-flight recovery timer, preventing a
-// spurious duplicate notifyCoordinator call after compaction finishes.
+// spurious notifyCoordinator call from the recovery timer after compaction finishes.
+// After compaction, the session is in active state (resuming), not finished.
 func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 
@@ -2638,16 +2699,17 @@ func TestServerConnected_RecoveryTimer_CancelledByCompaction(t *testing.T) {
 		t.Fatal("expected recovery timer after server.connected")
 	}
 
-	// Compaction finishes — must cancel the recovery timer.
+	// Compaction finishes — must cancel the recovery timer and restore active state.
 	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
 
-	// Fire the timer — should be a no-op.
+	// Fire the timer — should be a no-op (it was cancelled by handleSessionCompacted).
 	recoveryTimer.Fire()
 
+	// State must be active (compaction complete = session resuming).
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if state != string(agent.StateFinished) {
+	if state != string(agent.StateActive) {
 		t.Errorf("state = %q after cancelled recovery timer on compaction, want %q",
-			state, agent.StateFinished)
+			state, agent.StateActive)
 	}
 }
 

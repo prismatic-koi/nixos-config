@@ -47,7 +47,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateDeleted:     true,
 	},
 	StateCompacting: {
-		StateFinished:    true,
+		StateActive:      true,
 		StateInterrupted: true,
 		StateDeleted:     true,
 	},
