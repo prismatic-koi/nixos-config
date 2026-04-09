@@ -519,6 +519,7 @@
           programs.opencode = {
             enable = true;
             settings = {
+              autoupdate = false;
               model = models.primary;
               agent = {
                 worker = {
