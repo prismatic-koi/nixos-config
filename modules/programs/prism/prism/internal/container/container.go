@@ -245,7 +245,14 @@ func (m *Manager) writeGitconfig() error {
 	_, errPub := filepath.EvalSymlinks(signingKeyPub)
 	hasSigning := errPriv == nil && errPub == nil
 	if !hasSigning {
-		log.Printf("container: signing keys not resolvable (%v, %v); omitting signing config from gitconfig", errPriv, errPub)
+		// Log each missing key separately so the message is not misleading when
+		// only one of the two is unresolvable.
+		if errPriv != nil {
+			log.Printf("container: signing key (private) not resolvable: %v; omitting signing config from gitconfig", errPriv)
+		}
+		if errPub != nil {
+			log.Printf("container: signing key (public) not resolvable: %v; omitting signing config from gitconfig", errPub)
+		}
 	}
 
 	var sb strings.Builder
@@ -620,6 +627,13 @@ func (m *Manager) buildRunArgs() []string {
 
 	// Signing key private (commit signing): prismatic-koi-ed25519-signingkey → /root/.ssh/signing-key
 	// Signing key public (gitconfig signingKey): prismatic-koi-ed25519-signingkey.pub → /root/.ssh/signing-key.pub
+	//
+	// Note: writeGitconfig (called immediately before buildRunArgs in Create)
+	// also resolves these symlinks to determine hasSigning. The resolutions are
+	// intentionally independent — writeGitconfig decides what to write into the
+	// gitconfig file, while this block decides what volumes to mount. Both must
+	// agree for the container to work, and they do because Create() calls them
+	// sequentially with no symlink changes possible between the two calls.
 	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey"))
 	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub"))
 	if errPriv == nil && errPub == nil {
