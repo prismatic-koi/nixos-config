@@ -624,10 +624,11 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 	}
 }
 
-// TestCleanupYes_NonWorktreeSession_AlreadyDead verifies AC edge-case:
-// `prism cleanup --session obsidian --yes` when the tmux session no longer
-// exists still marks the DB row as ended and exits 0.
-func TestCleanupYes_NonWorktreeSession_AlreadyDead(t *testing.T) {
+// TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded verifies that
+// headlessCloseSession marks the DB row as ended even when the tmux session
+// no longer exists (already killed or never started). This calls
+// headlessCloseSession directly — it does not exercise cleanupCmd routing.
+func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {

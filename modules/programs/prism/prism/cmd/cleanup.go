@@ -385,6 +385,10 @@ var cleanupCmd = &cobra.Command{
 			if !confirm(fmt.Sprintf("Close session %s? (worktree will be kept)", session)) {
 				return nil
 			}
+			// closeSession (not headlessCloseSession) is used here deliberately:
+			// the interactive path redirects only the calling client to scratchpad,
+			// not all attached clients. The user who invoked cleanup is the one
+			// who gets moved; other clients remain on the session until it is killed.
 			return closeSession(session)
 		}
 
