@@ -87,6 +87,7 @@
     enable = true;
     efiSupport = true;
     efiInstallAsRemovable = true;
+    device = "nodev"; # EFI-only, no BIOS embedding
     configurationLimit = 20; # Keep only 20 most recent generations in /boot
   };
 
