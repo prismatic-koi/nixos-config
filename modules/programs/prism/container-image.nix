@@ -178,6 +178,13 @@ let
           "extra-trusted-public-keys = ${lib.concatStringsSep " " config.nix.settings.trusted-public-keys}"
         ];
         nixConfFile = pkgs.writeText "container-nix.conf" (lib.concatStringsSep "\n" nixConfLines + "\n");
+        # nixos-rebuild guard — prevents agents from accidentally trying to apply
+        # NixOS configuration inside a container (which would fail without systemd).
+        nixosRebuildGuard = pkgs.writeShellScript "nixos-rebuild" ''
+          echo "error: nixos-rebuild is not available inside agent containers" >&2
+          echo "Use 'nix build' to validate the flake instead." >&2
+          exit 1
+        '';
       in
       ''
         # Nix configuration — experimental features plus substituters/keys
@@ -185,14 +192,8 @@ let
         mkdir -p etc/nix
         cp ${nixConfFile} etc/nix/nix.conf
 
-        # nixos-rebuild guard — prevents agents from accidentally trying to apply
-        # NixOS configuration inside a container (which would fail without systemd).
-        cat > bin/nixos-rebuild << 'GUARD'
-        #!/bin/bash
-        echo "error: nixos-rebuild is not available inside agent containers" >&2
-        echo "Use 'nix build' to validate the flake instead." >&2
-        exit 1
-        GUARD
+        # nixos-rebuild guard
+        cp ${nixosRebuildGuard} bin/nixos-rebuild
         chmod +x bin/nixos-rebuild
 
         # Nix wrapper: when the host's nix daemon socket is mounted (by
