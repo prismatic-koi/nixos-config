@@ -1,16 +1,19 @@
 package cmd
 
-// prism cleanup — worktree + session teardown (replaces cli.tmux.worktreeCleanup)
+// prism cleanup — session teardown (replaces cli.tmux.worktreeCleanup)
 //
-// 1. Detects the current tmux session; aborts if not project@worktree.
-// 2. Finds the worktree path via the agent window's pane_current_path.
-// 3. Confirms with the user (y/n).
-// 4. Optionally offers to delete the git branch.
-// 5. Switches to scratchpad, kills the session, removes the worktree.
+// There are three distinct cases:
 //
-// For default-branch sessions (e.g. repo@main), steps 4-5 skip worktree
-// removal and branch deletion — only the tmux session is closed and the
-// DB status is marked as ended.
+//  1. Non-worktree sessions (no "@" in name, e.g. "obsidian"):
+//     Soft cleanup — kill the tmux session, kill the sidecar, mark the DB as
+//     ended. No git operations.
+//
+//  2. Default-branch sessions (e.g. repo@main):
+//     Soft cleanup — same as above, but the worktree and branch are kept intact.
+//
+//  3. Feature-branch sessions (e.g. repo@feature):
+//     Full cleanup — remove the worktree, optionally delete the branch, kill
+//     the tmux session, kill the sidecar, mark the DB as ended.
 
 import (
 	"context"
@@ -336,7 +339,9 @@ var cleanupCmd = &cobra.Command{
 			if !confirm(fmt.Sprintf("Close session %s?", session)) {
 				return nil
 			}
-			return closeSession(session)
+			// Use headlessCloseSession so all attached clients are redirected to
+			// scratchpad (not just the calling client).
+			return headlessCloseSession(session)
 		}
 
 		parts := strings.SplitN(session, "@", 2)
@@ -517,8 +522,10 @@ func closeSession(session string) error {
 	return nil
 }
 
-// headlessCloseSession is the non-interactive variant of closeSession — used
-// for default-branch sessions invoked with --yes.
+// headlessCloseSession is the non-interactive soft-close path — used for both
+// default-branch sessions (e.g. repo@main) and non-worktree sessions (no "@").
+// It kills the tmux session and marks the DB as ended without touching the
+// worktree or branch (for @main) or without any git operations (for non-@ sessions).
 func headlessCloseSession(session string) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
@@ -527,7 +534,7 @@ func headlessCloseSession(session string) error {
 		}, nil)
 	}
 
-	fmt.Printf("closing session %s (worktree kept)...\n", session)
+	fmt.Printf("closing session %s...\n", session)
 
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
