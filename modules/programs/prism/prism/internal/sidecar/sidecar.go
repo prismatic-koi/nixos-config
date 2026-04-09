@@ -80,6 +80,12 @@ type Config struct {
 	OpencodeURL string
 	DB          *db.DB
 	Clock       Clock
+	// AgentRole is the top-level agent role for this session (e.g. "worker" or
+	// "coordinator"), derived from the --agent-role CLI flag. When non-empty, it
+	// is used to pre-set rootAgent at initialisation time so that subagent user
+	// messages (which have a non-empty agent field) do not accidentally overwrite
+	// rootAgent with a subagent name (#555).
+	AgentRole string
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
@@ -159,11 +165,20 @@ func New(cfg Config) *Sidecar {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
-	return &Sidecar{
+	s := &Sidecar{
 		cfg:             cfg,
 		writtenMessages: make(map[string]bool),
 		textByMessage:   make(map[string]string),
 	}
+	// Pre-set rootAgent from the configured agent role so that subagent user
+	// messages (which have a non-empty agent field in SSE events) do not
+	// accidentally overwrite it. The existing user-message inference logic
+	// (handleMessageUpdated) is preserved as a fallback for when AgentRole is
+	// empty (#555).
+	if cfg.AgentRole != "" {
+		s.rootAgent = cfg.AgentRole
+	}
+	return s
 }
 
 // containerMgr holds the container.Manager when running in container mode.
