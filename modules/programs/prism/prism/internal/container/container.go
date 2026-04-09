@@ -614,6 +614,8 @@ func (m *Manager) buildRunArgs() []string {
 	// Access key (git push/fetch): prismatic-koi-ed25519 → /root/.ssh/access-key
 	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519")); err == nil {
 		args = append(args, "--volume", resolved+":/root/.ssh/access-key:ro")
+	} else {
+		log.Printf("container: access key not resolvable (%v); SSH push/fetch will not work", err)
 	}
 
 	// Signing key private (commit signing): prismatic-koi-ed25519-signingkey → /root/.ssh/signing-key

@@ -12,14 +12,20 @@ let
   gitUserName =
     let
       names = lib.concatMap (
-        inc: lib.optional (inc.contents ? user && inc.contents.user ? name) inc.contents.user.name
+        inc:
+        lib.optional (
+          inc ? contents && inc.contents ? user && inc.contents.user ? name
+        ) inc.contents.user.name
       ) gitCfg.includes;
     in
     if names != [ ] then builtins.head names else "";
   gitUserEmail =
     let
       emails = lib.concatMap (
-        inc: lib.optional (inc.contents ? user && inc.contents.user ? email) inc.contents.user.email
+        inc:
+        lib.optional (
+          inc ? contents && inc.contents ? user && inc.contents.user ? email
+        ) inc.contents.user.email
       ) gitCfg.includes;
     in
     if emails != [ ] then builtins.head emails else "";
