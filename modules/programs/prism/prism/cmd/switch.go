@@ -556,6 +556,11 @@ func handleRegularRepo(path string, opts session.Opts) error {
 	case "":
 		return nil
 	case convert:
+		// Record the old session name before conversion so we can clean it up
+		// afterwards. The pre-conversion session is named after the repo directory
+		// with no "@" component (e.g. "dns-management").
+		oldSessionName := session.NameFor(path, "")
+
 		worktreePath, err := git.ConvertToBare(path, func(msg string) {
 			fmt.Println(msg)
 		})
@@ -563,6 +568,33 @@ func handleRegularRepo(path string, opts session.Opts) error {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
 			return ensureAndSwitch(path, "", opts)
 		}
+
+		// Conversion succeeded — clean up the pre-conversion session,
+		// mirroring the pattern used by cleanup.go for intentional teardowns.
+		// Kill the tmux session if it exists; ignore "no such session" errors.
+		_ = tmux.KillSession(oldSessionName)
+		// Kill any sidecar process associated with the old session (no-op if
+		// no PID file exists).
+		session.KillSidecar(oldSessionName)
+		// Release the port allocation, mark the DB row as ended, purge
+		// undelivered bus messages, and clean up any container. All
+		// operations are best-effort: errors are logged but do not prevent
+		// the switch to the new worktree session.
+		if d, dbErr := openDB(); dbErr == nil {
+			if !hostModeFromDB(d, oldSessionName) {
+				removeContainerIfExists(oldSessionName)
+			}
+			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: release port for old session %q: %v\n", oldSessionName, releaseErr)
+			}
+			_ = d.SetEnded(oldSessionName)
+			_ = d.PurgeBusMessages(oldSessionName)
+			d.Close()
+		} else {
+			fmt.Fprintf(os.Stderr, "warning: could not open DB to clean up old session %q: %v\n", oldSessionName, dbErr)
+			removeContainerIfExists(oldSessionName)
+		}
+
 		return ensureAndSwitch(worktreePath, path, opts)
 	default:
 		return ensureAndSwitch(path, "", opts)
