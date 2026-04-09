@@ -1108,13 +1108,14 @@ func TestRedactArgs_MultipleEnvVarsAllRedacted(t *testing.T) {
 
 // ── SSH key simplification tests (AC-5, AC-9) ────────────────────────────────
 
-func TestBuildRunArgs_SSHConfigUsesAccessKey(t *testing.T) {
-	// AC-9: The generated SSH config must reference /root/.ssh/access-key.
+func TestBuildRunArgs_SSHConfigIsMounted(t *testing.T) {
+	// Verifies that a generated SSH config file is mounted at /root/.ssh/config:ro.
+	// The content of the SSH config (including the IdentityFile = access-key reference
+	// required by AC-9) is tested via the Create() path which writes the config file.
 	m := New(Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14000,
 	})
-	// Verify that the SSH config file path is mounted at /root/.ssh/config.
 	args := m.buildRunArgs()
 	found := false
 	for i, arg := range args {
@@ -1231,6 +1232,46 @@ func TestWriteGitconfig_IncludesPushAndInit(t *testing.T) {
 	}
 	if !strings.Contains(content, "defaultBranch = main") {
 		t.Errorf("gitconfig missing defaultBranch; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_NoSigningSectionsWhenKeysUnavailable(t *testing.T) {
+	// AC-13: when signing keys are not resolvable, the generated gitconfig must
+	// NOT contain [commit], [gpg], or signingKey.
+	//
+	// We redirect HOME to a temp dir with no .ssh/ directory so that
+	// filepath.EvalSymlinks cannot find the signing keys, regardless of
+	// what is present on the host running the test.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// These sections must be absent when signing keys can't be resolved.
+	if strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig must not include [commit] when signing keys are absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig must not include [gpg] when signing keys are absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "signingKey") {
+		t.Errorf("gitconfig must not include signingKey when signing keys are absent; content:\n%s", content)
 	}
 }
 
