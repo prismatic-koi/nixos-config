@@ -80,6 +80,12 @@ type Config struct {
 	OpencodeURL string
 	DB          *db.DB
 	Clock       Clock
+	// AgentRole is the top-level agent role for this session (e.g. "worker" or
+	// "coordinator"), derived from the --agent-role CLI flag. When non-empty, it
+	// is used to pre-set rootAgent at initialisation time so that subagent user
+	// messages (which have a non-empty agent field) do not accidentally overwrite
+	// rootAgent with a subagent name (#555).
+	AgentRole string
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
@@ -132,8 +138,10 @@ type Sidecar struct {
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
 	shuttingDown bool
-	// rootAgent is the name of the top-level agent for this session, derived
-	// from the first msg_user event. Empty until the first user message arrives.
+	// rootAgent is the name of the top-level agent for this session.
+	// Pre-set from Config.AgentRole in New() when non-empty (#555); falls back
+	// to inference from the first user message with a non-empty agent field when
+	// AgentRole is empty (see handleMessageUpdated).
 	rootAgent string
 	// lastAssistantAgent is the agent name from the most recent completed
 	// assistant message. Used to suppress spurious finished transitions when a
@@ -159,11 +167,20 @@ func New(cfg Config) *Sidecar {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
-	return &Sidecar{
+	s := &Sidecar{
 		cfg:             cfg,
 		writtenMessages: make(map[string]bool),
 		textByMessage:   make(map[string]string),
 	}
+	// Pre-set rootAgent from the configured agent role so that subagent user
+	// messages (which have a non-empty agent field in SSE events) do not
+	// accidentally overwrite it. The existing user-message inference logic
+	// (handleMessageUpdated) is preserved as a fallback for when AgentRole is
+	// empty (#555).
+	if cfg.AgentRole != "" {
+		s.rootAgent = cfg.AgentRole
+	}
+	return s
 }
 
 // containerMgr holds the container.Manager when running in container mode.
@@ -1193,9 +1210,9 @@ func (s *Sidecar) createOpencodeSession(opencodeURL string, httpClient *http.Cli
 // will have received the sid and opened that session via opencode attach -s
 // before this is called, so prompt_async fires into a subscribed session.
 func (s *Sidecar) deliverInitialPrompt(opencodeURL, sid, prompt string, httpClient *http.Client) {
-	agentRole := "worker"
-	if s.cfg.Container != nil && s.cfg.Container.AgentRole != "" {
-		agentRole = s.cfg.Container.AgentRole
+	agentRole := s.cfg.AgentRole
+	if agentRole == "" {
+		agentRole = "worker"
 	}
 
 	body := map[string]any{
