@@ -1210,6 +1210,45 @@ func TestSessionCompacted_WritesCompactionEvent(t *testing.T) {
 	}
 }
 
+// TestSessionCompacted_CancelsIdleTimer verifies that any pending idle debounce
+// timer is cancelled when session.compacted fires. Without this, the timer
+// could fire after compaction restores StateActive and spuriously write
+// StateFinished + notify the coordinator.
+func TestSessionCompacted_CancelsIdleTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Start idle timer.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected timer")
+	}
+
+	// Mark compacting.
+	sc.mu.Lock()
+	sc.compacting = true
+	sc.mu.Unlock()
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "compacting", nil, nil)
+
+	// session.compacted must cancel the idle timer and restore active state.
+	sc.HandleEvent(makeSSE("session.compacted", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after session.compacted, want %q", state, agent.StateActive)
+	}
+
+	// Firing the (stopped) timer must be a no-op — state must remain active.
+	timer.Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after idle timer fired post-compaction, want %q (idle timer should have been cancelled)", state, agent.StateActive)
+	}
+}
+
 func TestQuestionAsked_WritesWaiting(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 
