@@ -166,10 +166,15 @@ func (s *server) capturePane(target string) string {
 // a pseudo-terminal without a real display. The syntax differs by platform:
 //
 //   - Linux:  script -q -c '<cmd>' /dev/null
-//   - macOS:  script -q /dev/null <cmd>  (no -c flag; command is positional)
+//   - macOS:  script -q /dev/null <cmd args...>  (no -c flag; command is positional)
+//
+// On macOS, BSD script treats its command argument as a literal executable path,
+// not a shell command string, so the command must be split into separate args.
+// strings.Fields is safe here because tmux binary paths and all arguments
+// (socket names, session names) are guaranteed to be whitespace-free.
 func scriptArgs(cmd string) []string {
 	if runtime.GOOS == "darwin" {
-		return []string{"-q", "/dev/null", cmd}
+		return append([]string{"-q", "/dev/null"}, strings.Fields(cmd)...)
 	}
 	return []string{"-q", "-c", cmd, "/dev/null"}
 }
