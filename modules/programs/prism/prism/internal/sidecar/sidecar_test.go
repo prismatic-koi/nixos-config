@@ -3571,10 +3571,11 @@ func TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks(t *testing.T) {
 	}
 }
 
-// TestRootAgentName_SeededFromAgentRole verifies that root_agent_name in the DB
-// is seeded from Config.AgentRole on the first state transition (AC-1, AC-3,
-// AC-4 from #557). It also verifies COALESCE semantics: a subsequent state
-// transition must not overwrite the already-set root_agent_name value.
+// TestRootAgentName_SeededFromAgentRole verifies that root_agent_name and
+// root_model_id in the DB are seeded from Config.AgentRole and Config.AgentModel
+// on the first state transition (AC-1, AC-3, AC-4, AC-5 from #557). It also
+// verifies COALESCE semantics: subsequent state transitions must not overwrite
+// the already-set values.
 func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 	t.Run("seeded when AgentRole is set", func(t *testing.T) {
 		clk := newTestClock()
@@ -3587,6 +3588,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			DB:          d,
 			Clock:       clk,
 			AgentRole:   "worker",
+			AgentModel:  "anthropic/claude-sonnet-4-6",
 		}
 		sc := New(cfg)
 
@@ -3611,6 +3613,12 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 		if *st.RootAgentName != "worker" {
 			t.Errorf("root_agent_name = %q, want %q", *st.RootAgentName, "worker")
 		}
+		if st.RootModelID == nil {
+			t.Fatal("root_model_id is nil, want \"anthropic/claude-sonnet-4-6\"")
+		}
+		if *st.RootModelID != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("root_model_id = %q, want %q", *st.RootModelID, "anthropic/claude-sonnet-4-6")
+		}
 	})
 
 	t.Run("preserved on subsequent state transitions (COALESCE)", func(t *testing.T) {
@@ -3624,10 +3632,11 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			DB:          d,
 			Clock:       clk,
 			AgentRole:   "worker",
+			AgentModel:  "anthropic/claude-sonnet-4-6",
 		}
 		sc := New(cfg)
 
-		// First transition: session.created → active (seeds root_agent_name).
+		// First transition: session.created → active (seeds root_agent_name and root_model_id).
 		sc.HandleEvent(makeSSE("session.created", map[string]any{
 			"info": map[string]any{
 				"id":    "sid-1",
@@ -3635,7 +3644,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			},
 		}))
 
-		// Second transition: session.idle → finished (must preserve root_agent_name).
+		// Second transition: session.idle → finished (must preserve both values).
 		sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
 		timer := clk.LastTimer()
 		if timer == nil {
@@ -3656,6 +3665,12 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 		if *st.RootAgentName != "worker" {
 			t.Errorf("root_agent_name = %q after subsequent transition, want %q", *st.RootAgentName, "worker")
 		}
+		if st.RootModelID == nil {
+			t.Fatal("root_model_id became nil after subsequent state transition, want preserved")
+		}
+		if *st.RootModelID != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("root_model_id = %q after subsequent transition, want %q", *st.RootModelID, "anthropic/claude-sonnet-4-6")
+		}
 	})
 
 	t.Run("remains NULL when AgentRole is empty", func(t *testing.T) {
@@ -3668,7 +3683,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			OpencodeURL: "http://localhost:14000",
 			DB:          d,
 			Clock:       clk,
-			// AgentRole intentionally left empty to simulate a legacy session.
+			// AgentRole and AgentModel intentionally left empty (legacy session).
 		}
 		sc := New(cfg)
 
@@ -3689,6 +3704,9 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 		}
 		if st.RootAgentName != nil {
 			t.Errorf("root_agent_name = %q, want nil for legacy session with empty AgentRole", *st.RootAgentName)
+		}
+		if st.RootModelID != nil {
+			t.Errorf("root_model_id = %q, want nil for legacy session with empty AgentRole", *st.RootModelID)
 		}
 	})
 }
