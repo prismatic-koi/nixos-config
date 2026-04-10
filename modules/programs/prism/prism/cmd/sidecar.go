@@ -201,6 +201,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		DB:              d,
 		Clock:           sidecar.RealClock(),
 		AgentRole:       agentRole,
+		AgentModel:      opencodeAgentModel(agentRole),
 		Container:       ctrCfg,
 		HostAPISockPath: hostAPISockPath,
 		OnReady:         onReady,

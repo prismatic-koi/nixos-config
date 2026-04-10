@@ -84,8 +84,15 @@ type Config struct {
 	// "coordinator"), derived from the --agent-role CLI flag. When non-empty, it
 	// is used to pre-set rootAgent at initialisation time so that subagent user
 	// messages (which have a non-empty agent field) do not accidentally overwrite
-	// rootAgent with a subagent name (#555).
+	// rootAgent with a subagent name (#555). It is also written to
+	// root_agent_name in the DB so that `prism prompt` can target the correct
+	// agent for follow-up messages (#557).
 	AgentRole string
+	// AgentModel is the model identifier for the agent role (e.g.
+	// "anthropic/claude-sonnet-4-6"), read from the opencode config at startup.
+	// When non-empty it is seeded into root_model_id in the DB so that
+	// buildPromptBody can include the model in the prompt_async body (#557).
+	AgentModel string
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
@@ -1025,6 +1032,34 @@ func (s *Sidecar) currentDBState() agent.AgentState {
 }
 
 func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID *string) {
+	// When AgentRole is set, use UpsertStatusWithRootAgent so that
+	// root_agent_name is seeded from the configured role on the initial INSERT
+	// and preserved via COALESCE on subsequent UPDATEs. AgentModel is also
+	// seeded into root_model_id when available, so that buildPromptBody can
+	// include the model in the prompt_async body (#557).
+	// When AgentRole is empty (legacy sessions), fall back to UpsertStatus so
+	// that root_agent_name is left NULL rather than set to an empty string.
+	if s.cfg.AgentRole != "" {
+		agentRole := s.cfg.AgentRole
+		var agentModel *string
+		if s.cfg.AgentModel != "" {
+			m := s.cfg.AgentModel
+			agentModel = &m
+		}
+		if err := s.cfg.DB.UpsertStatusWithRootAgent(
+			s.cfg.SessionName,
+			s.cfg.Repo,
+			s.cfg.Worktree,
+			string(state),
+			title,
+			opencodeSID,
+			&agentRole,
+			agentModel,
+		); err != nil {
+			log.Printf("sidecar: UpsertStatusWithRootAgent failed: %v", err)
+		}
+		return
+	}
 	if err := s.cfg.DB.UpsertStatus(
 		s.cfg.SessionName,
 		s.cfg.Repo,

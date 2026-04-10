@@ -3570,3 +3570,143 @@ func TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks(t *testing.T) {
 		t.Errorf("state = %q after tool-only idle debounce, want finished", state)
 	}
 }
+
+// TestRootAgentName_SeededFromAgentRole verifies that root_agent_name and
+// root_model_id in the DB are seeded from Config.AgentRole and Config.AgentModel
+// on the first state transition (AC-1, AC-3, AC-4, AC-5 from #557). It also
+// verifies COALESCE semantics: subsequent state transitions must not overwrite
+// the already-set values.
+func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
+	t.Run("seeded when AgentRole is set", func(t *testing.T) {
+		clk := newTestClock()
+		d := openTestDB(t)
+		cfg := Config{
+			SessionName: "test-repo@main",
+			Repo:        "test-repo",
+			Worktree:    "/tmp/test-worktree",
+			OpencodeURL: "http://localhost:14000",
+			DB:          d,
+			Clock:       clk,
+			AgentRole:   "worker",
+			AgentModel:  "anthropic/claude-sonnet-4-6",
+		}
+		sc := New(cfg)
+
+		// Trigger first state transition via session.created.
+		sc.HandleEvent(makeSSE("session.created", map[string]any{
+			"info": map[string]any{
+				"id":    "sid-1",
+				"title": "Test session",
+			},
+		}))
+
+		st, err := d.CurrentStatus(sc.cfg.SessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if st == nil {
+			t.Fatal("expected status row to exist after session.created")
+		}
+		if st.RootAgentName == nil {
+			t.Fatal("root_agent_name is nil, want \"worker\"")
+		}
+		if *st.RootAgentName != "worker" {
+			t.Errorf("root_agent_name = %q, want %q", *st.RootAgentName, "worker")
+		}
+		if st.RootModelID == nil {
+			t.Fatal("root_model_id is nil, want \"anthropic/claude-sonnet-4-6\"")
+		}
+		if *st.RootModelID != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("root_model_id = %q, want %q", *st.RootModelID, "anthropic/claude-sonnet-4-6")
+		}
+	})
+
+	t.Run("preserved on subsequent state transitions (COALESCE)", func(t *testing.T) {
+		clk := newTestClock()
+		d := openTestDB(t)
+		cfg := Config{
+			SessionName: "test-repo@main",
+			Repo:        "test-repo",
+			Worktree:    "/tmp/test-worktree",
+			OpencodeURL: "http://localhost:14000",
+			DB:          d,
+			Clock:       clk,
+			AgentRole:   "worker",
+			AgentModel:  "anthropic/claude-sonnet-4-6",
+		}
+		sc := New(cfg)
+
+		// First transition: session.created → active (seeds root_agent_name and root_model_id).
+		sc.HandleEvent(makeSSE("session.created", map[string]any{
+			"info": map[string]any{
+				"id":    "sid-1",
+				"title": "Test session",
+			},
+		}))
+
+		// Second transition: session.idle → finished (must preserve both values).
+		sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+		timer := clk.LastTimer()
+		if timer == nil {
+			t.Fatal("expected idle debounce timer")
+		}
+		timer.Fire()
+
+		st, err := d.CurrentStatus(sc.cfg.SessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if st == nil {
+			t.Fatal("expected status row after finished transition")
+		}
+		if st.RootAgentName == nil {
+			t.Fatal("root_agent_name became nil after subsequent state transition, want preserved")
+		}
+		if *st.RootAgentName != "worker" {
+			t.Errorf("root_agent_name = %q after subsequent transition, want %q", *st.RootAgentName, "worker")
+		}
+		if st.RootModelID == nil {
+			t.Fatal("root_model_id became nil after subsequent state transition, want preserved")
+		}
+		if *st.RootModelID != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("root_model_id = %q after subsequent transition, want %q", *st.RootModelID, "anthropic/claude-sonnet-4-6")
+		}
+	})
+
+	t.Run("remains NULL when AgentRole is empty", func(t *testing.T) {
+		clk := newTestClock()
+		d := openTestDB(t)
+		cfg := Config{
+			SessionName: "test-repo@main",
+			Repo:        "test-repo",
+			Worktree:    "/tmp/test-worktree",
+			OpencodeURL: "http://localhost:14000",
+			DB:          d,
+			Clock:       clk,
+			// AgentRole and AgentModel intentionally left empty (legacy session).
+		}
+		sc := New(cfg)
+
+		// Trigger state transition.
+		sc.HandleEvent(makeSSE("session.created", map[string]any{
+			"info": map[string]any{
+				"id":    "sid-1",
+				"title": "Legacy session",
+			},
+		}))
+
+		st, err := d.CurrentStatus(sc.cfg.SessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if st == nil {
+			t.Fatal("expected status row to exist after session.created")
+		}
+		if st.RootAgentName != nil {
+			t.Errorf("root_agent_name = %q, want nil for legacy session with empty AgentRole", *st.RootAgentName)
+		}
+		if st.RootModelID != nil {
+			t.Errorf("root_model_id = %q, want nil for legacy session with empty AgentRole", *st.RootModelID)
+		}
+	})
+}
