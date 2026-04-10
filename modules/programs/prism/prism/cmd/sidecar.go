@@ -40,6 +40,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
@@ -120,6 +121,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
 	}
 
+	// Load prism runtime config — needed for container config derivation paths.
+	prismCfg := config.Load()
+
 	// Build container config if container mode is enabled.
 	var ctrCfg *container.Config
 	if containerMode {
@@ -135,16 +139,18 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
 		}
 		ctrCfg = &container.Config{
-			SessionName:    sessionName,
-			Worktree:       worktree,
-			BareRoot:       bareRoot,
-			WorktreeGitDir: worktreeGitDir,
-			AllocatedPort:  port,
-			AgentRole:      agentRole,
-			AgentModel:     opencodeAgentModel(agentRole),
-			PluginHostPath: pluginPath,
-			Model:          model,
-			Variant:        variant,
+			SessionName:                    sessionName,
+			Worktree:                       worktree,
+			BareRoot:                       bareRoot,
+			WorktreeGitDir:                 worktreeGitDir,
+			AllocatedPort:                  port,
+			AgentRole:                      agentRole,
+			AgentModel:                     opencodeAgentModel(agentRole),
+			PluginHostPath:                 pluginPath,
+			Model:                          model,
+			Variant:                        variant,
+			ContainerWorkerConfigPath:      prismCfg.ContainerWorkerConfigPath,
+			ContainerCoordinatorConfigPath: prismCfg.ContainerCoordinatorConfigPath,
 		}
 	}
 
