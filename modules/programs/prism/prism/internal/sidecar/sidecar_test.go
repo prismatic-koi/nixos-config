@@ -3710,3 +3710,181 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 		}
 	})
 }
+
+// ── TTFT computation tests ───────────────────────────────────────────────────
+
+// TestTtft_HappyPath verifies that a complete assistant turn with a text part
+// that carries time.start produces a msg_assistant event with the correct
+// ttftMs value: time.start − message.time.created.
+func TestTtft_HappyPath(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	const (
+		msgID     = "msg-ttft-1"
+		createdMs = 1000.0 // request sent
+		startMs   = 1800.0 // first token received → TTFT = 800 ms
+		completed = 5000.0 // response complete → durationMs = 4000 ms
+	)
+
+	// 1. First message.updated: carries time.created but no time.completed —
+	//    the sidecar stores msgCreatedAtMs and returns early.
+	created := float64(createdMs)
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":   msgID,
+			"role": "assistant",
+			"time": map[string]*float64{
+				"created": &created,
+			},
+		},
+	}))
+
+	// 2. message.part.updated: text part with time.start — triggers TTFT computation.
+	start := float64(startMs)
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": msgID,
+			"text":      "Here is the answer...",
+			"time": map[string]*float64{
+				"start": &start,
+			},
+		},
+	}))
+
+	// 3. Final message.updated: carries time.completed — triggers the write.
+	comp := float64(completed)
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         msgID,
+			"role":       "assistant",
+			"agent":      "worker",
+			"providerID": "anthropic",
+			"modelID":    "claude-4",
+			"tokens": map[string]any{
+				"input":  100,
+				"output": 50,
+			},
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &comp,
+			},
+		},
+	}))
+
+	// Find and inspect the msg_assistant event.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var found bool
+	for _, e := range events {
+		if e.Type != "msg_assistant" {
+			continue
+		}
+		found = true
+		var p map[string]any
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			t.Fatalf("unmarshal msg_assistant payload: %v", err)
+		}
+
+		// durationMs should be completed − created = 4000.
+		if got, ok := p["durationMs"]; !ok || got != float64(4000) {
+			t.Errorf("durationMs = %v, want 4000", got)
+		}
+
+		// ttftMs should be start − created = 800.
+		if got, ok := p["ttftMs"]; !ok || got != float64(800) {
+			t.Errorf("ttftMs = %v, want 800", got)
+		}
+		break
+	}
+	if !found {
+		t.Error("expected msg_assistant event to be written")
+	}
+}
+
+// TestTtft_NoTimeStart verifies that a complete assistant turn whose text part
+// carries no time.start produces a msg_assistant event without a ttftMs field
+// (omitempty means it is absent when zero).
+func TestTtft_NoTimeStart(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	const (
+		msgID     = "msg-ttft-2"
+		createdMs = 2000.0
+		completed = 7000.0
+	)
+
+	// 1. message.updated: time.created present, no time.completed.
+	created := float64(createdMs)
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":   msgID,
+			"role": "assistant",
+			"time": map[string]*float64{
+				"created": &created,
+			},
+		},
+	}))
+
+	// 2. message.part.updated: text part WITHOUT time.start — no TTFT should be computed.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": msgID,
+			"text":      "Response without timing info",
+			// deliberately no "time" field
+		},
+	}))
+
+	// 3. Final message.updated: time.completed → triggers write.
+	comp := float64(completed)
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         msgID,
+			"role":       "assistant",
+			"agent":      "worker",
+			"providerID": "anthropic",
+			"modelID":    "claude-4",
+			"tokens": map[string]any{
+				"input":  100,
+				"output": 50,
+			},
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &comp,
+			},
+		},
+	}))
+
+	// Find and inspect the msg_assistant event.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var found bool
+	for _, e := range events {
+		if e.Type != "msg_assistant" {
+			continue
+		}
+		found = true
+		var p map[string]any
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			t.Fatalf("unmarshal msg_assistant payload: %v", err)
+		}
+
+		// durationMs should still be present.
+		if _, ok := p["durationMs"]; !ok {
+			t.Error("durationMs should be present")
+		}
+
+		// ttftMs must be absent (omitempty with zero value means the field is
+		// not emitted in JSON).
+		if got, present := p["ttftMs"]; present {
+			t.Errorf("ttftMs should be absent when no time.start was seen, got %v", got)
+		}
+		break
+	}
+	if !found {
+		t.Error("expected msg_assistant event to be written")
+	}
+}

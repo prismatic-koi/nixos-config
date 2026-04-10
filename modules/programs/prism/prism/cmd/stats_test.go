@@ -640,7 +640,7 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 		renderModelBreakdown(metrics, 7)
 	})
 
-	for _, want := range []string{"PROVIDER", "MODEL", "TURNS", "LAT p50", "TOK/S p50", "INPUT", "OUTPUT", "COST", "SESSIONS"} {
+	for _, want := range []string{"PROVIDER", "MODEL", "TURNS", "TTFT p50", "DUR p50", "TOK/S p50", "INPUT", "OUTPUT", "COST", "SESSIONS"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing column header %q\ngot:\n%s", want, out)
 		}
@@ -865,7 +865,7 @@ func TestRunStatsModel_LatencyNote(t *testing.T) {
 		renderModelBreakdown(metrics, 7)
 	})
 
-	if !strings.Contains(out, "turn duration") && !strings.Contains(out, "LAT p50") {
+	if !strings.Contains(out, "turn duration") && !strings.Contains(out, "DUR p50") {
 		t.Errorf("output should contain latency note\ngot:\n%s", out)
 	}
 }
@@ -915,6 +915,7 @@ type fakeEvent struct {
 	inputTokens  int
 	outputTokens int
 	durationMs   int64
+	ttftMs       int64
 }
 
 // fakeEventsToDBEvents converts fakeEvents into db.Events for use with
@@ -922,8 +923,8 @@ type fakeEvent struct {
 func fakeEventsToDBEvents(fakes []fakeEvent) []db.Event {
 	var events []db.Event
 	for i, f := range fakes {
-		payload := fmt.Sprintf(`{"messageId":"msg-%d","text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d}`,
-			i, f.model, f.inputTokens, f.outputTokens, f.durationMs)
+		payload := fmt.Sprintf(`{"messageId":"msg-%d","text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d,"ttftMs":%d}`,
+			i, f.model, f.inputTokens, f.outputTokens, f.durationMs, f.ttftMs)
 		events = append(events, db.Event{
 			ID:          fmt.Sprintf("id-%d", i),
 			SessionName: f.session,
@@ -933,4 +934,135 @@ func fakeEventsToDBEvents(fakes []fakeEvent) []db.Event {
 		})
 	}
 	return events
+}
+
+// TestRunStatsModel_TtftP50 verifies that TTFT p50 is calculated only from
+// turns that have a non-zero ttftMs, and that the DUR p50 column still shows
+// full turn duration.
+func TestRunStatsModel_TtftP50(t *testing.T) {
+	events := []fakeEvent{
+		// Turn 1: ttft=2s, duration=10s
+		{session: "s1", model: "anthropic/claude-sonnet-4-6", inputTokens: 1000, outputTokens: 500, durationMs: 10000, ttftMs: 2000},
+		// Turn 2: ttft=4s, duration=20s
+		{session: "s1", model: "anthropic/claude-sonnet-4-6", inputTokens: 1000, outputTokens: 500, durationMs: 20000, ttftMs: 4000},
+		// Turn 3: no ttft (zero) — should be excluded from TTFT p50
+		{session: "s1", model: "anthropic/claude-sonnet-4-6", inputTokens: 1000, outputTokens: 500, durationMs: 15000, ttftMs: 0},
+	}
+
+	dbEvents := fakeEventsToDBEvents(events)
+	metrics := collectModelMetrics(dbEvents)
+
+	entry, ok := metrics["anthropic/claude-sonnet-4-6"]
+	if !ok {
+		t.Fatal("missing anthropic/claude-sonnet-4-6 entry")
+	}
+
+	// All three turns count towards totals.
+	if entry.Turns != 3 {
+		t.Errorf("Turns = %d, want 3", entry.Turns)
+	}
+
+	// Only the two non-zero ttft turns contribute to TtftMs.
+	if len(entry.TtftMs) != 2 {
+		t.Errorf("TtftMs has %d entries, want 2 (zero excluded)", len(entry.TtftMs))
+	}
+
+	// All three non-zero duration turns contribute to DurationsMs.
+	if len(entry.DurationsMs) != 3 {
+		t.Errorf("DurationsMs has %d entries, want 3", len(entry.DurationsMs))
+	}
+
+	// TTFT p50: [2000, 4000] → p50 = 2000 (nearest rank, idx=0 for 2 values at p50)
+	ttftP50 := percentileFloat64(append([]float64{}, entry.TtftMs...), 50)
+	if ttftP50 != 2000 {
+		t.Errorf("TTFT p50 = %v, want 2000", ttftP50)
+	}
+
+	// Render and verify columns appear.
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	if !strings.Contains(out, "TTFT p50") {
+		t.Errorf("output missing 'TTFT p50' column header\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "DUR p50") {
+		t.Errorf("output missing 'DUR p50' column header\ngot:\n%s", out)
+	}
+	// "2s" should appear as TTFT p50 value.
+	if !strings.Contains(out, "2s") {
+		t.Errorf("output missing '2s' for TTFT p50\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsModel_ZeroTtftShowsDash verifies that when all turns have
+// ttftMs == 0 (or the field is absent), the TTFT p50 column shows "-".
+func TestRunStatsModel_ZeroTtftShowsDash(t *testing.T) {
+	events := []fakeEvent{
+		{session: "s1", model: "anthropic/claude-sonnet-4-6", inputTokens: 1000, outputTokens: 500, durationMs: 10000, ttftMs: 0},
+		{session: "s1", model: "anthropic/claude-sonnet-4-6", inputTokens: 1000, outputTokens: 500, durationMs: 20000, ttftMs: 0},
+	}
+
+	dbEvents := fakeEventsToDBEvents(events)
+	metrics := collectModelMetrics(dbEvents)
+
+	entry, ok := metrics["anthropic/claude-sonnet-4-6"]
+	if !ok {
+		t.Fatal("missing anthropic/claude-sonnet-4-6 entry")
+	}
+
+	if len(entry.TtftMs) != 0 {
+		t.Errorf("TtftMs should be empty when all ttftMs == 0, got %d entries", len(entry.TtftMs))
+	}
+
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	// The TTFT p50 column value should be "-" (a dash), not a duration.
+	// The header "TTFT p50" must still be present.
+	if !strings.Contains(out, "TTFT p50") {
+		t.Errorf("output missing 'TTFT p50' column header\ngot:\n%s", out)
+	}
+	// The rendered data row should show " - " for the TTFT p50 value.
+	if !strings.Contains(out, " - ") {
+		t.Errorf("expected '-' for TTFT p50 in render output\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsModel_TtftAbsentInOldRows verifies that old DB rows without a
+// ttftMs field degrade gracefully (TTFT p50 shows "-", no error).
+func TestRunStatsModel_TtftAbsentInOldRows(t *testing.T) {
+	// Old-format payloads with no ttftMs field.
+	dbEvents := []db.Event{
+		{
+			ID:          "id-0",
+			SessionName: "s1",
+			Type:        "msg_assistant",
+			Payload:     `{"messageId":"msg-0","text":"reply","agent":"opencode","model":"anthropic/claude-sonnet-4-6","inputTokens":1000,"outputTokens":500,"durationMs":10000}`,
+			CreatedAt:   time.Now(),
+		},
+	}
+
+	metrics := collectModelMetrics(dbEvents)
+
+	entry, ok := metrics["anthropic/claude-sonnet-4-6"]
+	if !ok {
+		t.Fatal("missing anthropic/claude-sonnet-4-6 entry")
+	}
+
+	if len(entry.TtftMs) != 0 {
+		t.Errorf("TtftMs should be empty for old rows without ttftMs field, got %d entries", len(entry.TtftMs))
+	}
+	if entry.Turns != 1 {
+		t.Errorf("Turns = %d, want 1", entry.Turns)
+	}
+
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	if !strings.Contains(out, "TTFT p50") {
+		t.Errorf("output missing 'TTFT p50' column header\ngot:\n%s", out)
+	}
 }
