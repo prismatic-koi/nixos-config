@@ -4,17 +4,19 @@ package cmd
 //
 // Usage:
 //
-//	prism stats                   summary table of active sessions for current repo
+//	prism stats                   summary table of all active sessions across all repos
 //	prism stats <session>         per-session detail
-//	prism stats --all             summary table of all active sessions across all repos
+//	prism stats --all             same as no flags (kept for backwards compatibility)
 //	prism stats --days N          historical aggregate over the last N days
+//	prism stats model             per-model performance breakdown over last 7 days
+//	prism stats model --days N    per-model performance breakdown over last N days
 
 import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
@@ -52,19 +54,21 @@ var statsCmd = &cobra.Command{
 	Short: "Session metrics and statistics",
 	Long: `Display metrics and statistics for agent sessions.
 
-With no arguments, shows a summary table of active sessions for the current
-repo (use --all for all repos).
+With no arguments, shows a summary table of all active sessions across all repos.
+The --all flag is accepted for backwards compatibility and is a no-op.
 
 With a session name argument, shows detailed per-session metrics including
 token usage, cost, duration, tool breakdown, and turn timing.
 
-Use --days N to show aggregate statistics over the last N days.`,
+Use --days N to show aggregate statistics over the last N days.
+
+Use the 'model' subcommand for a per-provider/model performance breakdown.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStats,
 }
 
 func init() {
-	statsCmd.Flags().Bool("all", false, "Show all active sessions across all repos")
+	statsCmd.Flags().Bool("all", false, "No-op, kept for backwards compatibility (all repos are always shown)")
 	statsCmd.Flags().Int("days", 0, "Show aggregate statistics over the last N days")
 	rootCmd.AddCommand(statsCmd)
 }
@@ -73,8 +77,8 @@ func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	showAll, _ := cmd.Flags().GetBool("all")
 
-	if days > 0 && (len(args) > 0 || showAll) {
-		return fmt.Errorf("--days is mutually exclusive with a session name and --all")
+	if days > 0 && len(args) > 0 {
+		return fmt.Errorf("--days is mutually exclusive with a session name")
 	}
 
 	if days > 0 {
@@ -423,33 +427,16 @@ func renderSessionDetail(m *sessionMetrics) {
 
 // ---------- summary table ----------
 
-func runStatsSummary(showAll bool) error {
+// runStatsSummary shows a summary table of all active sessions across all repos.
+// showAll is accepted for backwards compatibility but is now a no-op.
+func runStatsSummary(_ bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
 	}
 	defer d.Close()
 
-	// Determine repo scope.
-	currentRepo := ""
-	if !showAll {
-		cwd, err := os.Getwd()
-		if err != nil {
-			cwd = os.Getenv("PRISM_SPAWN_PATH")
-		}
-		if cwd != "" {
-			currentRepo = deriveRepo(cwd)
-		}
-	}
-
-	var statuses []db.Status
-	if showAll {
-		statuses, err = d.AllActiveStatus()
-	} else if currentRepo != "" {
-		statuses, err = d.AllActiveStatusForRepo(currentRepo)
-	} else {
-		statuses, err = d.AllActiveStatus()
-	}
+	statuses, err := d.AllActiveStatus()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
 	}
@@ -707,4 +694,271 @@ func truncateStr(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// ---------- model performance breakdown ----------
+
+// modelMetrics tracks per-model metrics accumulated across turns.
+type modelMetrics struct {
+	Provider     string
+	Model        string
+	Turns        int
+	Sessions     map[string]struct{} // distinct session IDs
+	DurationsMs  []float64           // durationMs values for P50 (zero values excluded)
+	TokPerSec    []float64           // output tokens/sec per turn (zero-duration turns excluded)
+	InputTokens  int
+	OutputTokens int
+	Cost         float64
+}
+
+// percentileFloat64 returns the p-th percentile of a sorted (or unsorted) slice.
+// vals is sorted in-place. Returns 0 for an empty slice.
+func percentileFloat64(vals []float64, p int) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	sort.Float64s(vals)
+	if len(vals) == 1 {
+		return vals[0]
+	}
+	// Nearest-rank method.
+	idx := int(math.Ceil(float64(p)/100.0*float64(len(vals)))) - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(vals) {
+		idx = len(vals) - 1
+	}
+	return vals[idx]
+}
+
+// splitModel splits a "provider/model" string into its two parts.
+// If there is no "/" the whole string is returned as the model name with an
+// empty provider.
+func splitModel(modelID string) (provider, model string) {
+	idx := strings.IndexByte(modelID, '/')
+	if idx < 0 {
+		return "", modelID
+	}
+	return modelID[:idx], modelID[idx+1:]
+}
+
+// collectModelMetrics groups msg_assistant events by provider/model and builds
+// per-model metrics. Turns with durationMs == 0 are excluded from latency and
+// throughput calculations.
+func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
+	metrics := make(map[string]*modelMetrics)
+
+	for _, e := range events {
+		if e.Type != "msg_assistant" {
+			continue
+		}
+
+		var p payload.MsgAssistant
+		if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+			continue
+		}
+		if p.Model == "" {
+			continue
+		}
+
+		provider, model := splitModel(p.Model)
+		key := p.Model // full "provider/model" as map key
+		m, ok := metrics[key]
+		if !ok {
+			m = &modelMetrics{
+				Provider: provider,
+				Model:    model,
+				Sessions: make(map[string]struct{}),
+			}
+			metrics[key] = m
+		}
+
+		m.Turns++
+		m.Sessions[e.SessionName] = struct{}{}
+		m.InputTokens += p.InputTokens
+		m.OutputTokens += p.OutputTokens
+
+		// Cost using the full key (provider/model).
+		if costs, ok := modelCosts[key]; ok {
+			m.Cost += (float64(p.InputTokens)*costs.Input +
+				float64(p.OutputTokens)*costs.Output +
+				float64(p.CacheReadTokens)*costs.CacheRead +
+				float64(p.CacheWriteTokens)*costs.CacheWrite) / 1_000_000
+		}
+
+		// Latency and throughput only for turns with valid duration.
+		if p.DurationMs > 0 {
+			m.DurationsMs = append(m.DurationsMs, float64(p.DurationMs))
+			secs := float64(p.DurationMs) / 1000.0
+			tokPerSec := float64(p.OutputTokens) / secs
+			m.TokPerSec = append(m.TokPerSec, tokPerSec)
+		}
+	}
+
+	return metrics
+}
+
+// formatLatency formats a duration given in milliseconds as "Xs" or "Xm Ys".
+func formatLatency(ms float64) string {
+	secs := int(ms / 1000)
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	mins := secs / 60
+	s := secs % 60
+	return fmt.Sprintf("%dm %ds", mins, s)
+}
+
+var modelCmd = &cobra.Command{
+	Use:   "model",
+	Short: "Per-provider/model performance breakdown",
+	Long: `Show a performance breakdown by provider and model over the specified time window.
+
+By default shows the last 7 days across all repos. Use --days N to change the
+window.
+
+Latency figures (LAT p50) reflect full turn duration (wall-clock time from
+request sent to response received), not time-to-first-token.`,
+	Args: cobra.NoArgs,
+	RunE: runStatsModel,
+}
+
+func init() {
+	modelCmd.Flags().Int("days", 7, "Number of days to include (default 7)")
+	statsCmd.AddCommand(modelCmd)
+}
+
+func runStatsModel(cmd *cobra.Command, _ []string) error {
+	days, _ := cmd.Flags().GetInt("days")
+	if days <= 0 {
+		return fmt.Errorf("--days must be greater than 0")
+	}
+
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("stats model: %w", err)
+	}
+	defer d.Close()
+
+	sinceMs := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+	events, err := d.EventsSince(sinceMs)
+	if err != nil {
+		return fmt.Errorf("stats model: %w", err)
+	}
+
+	metrics := collectModelMetrics(events)
+
+	if len(metrics) == 0 {
+		fmt.Printf("no model data in the last %d days\n", days)
+		return nil
+	}
+
+	renderModelBreakdown(metrics, days)
+	return nil
+}
+
+func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
+	// Convert to slice for sorting.
+	type modelRow struct {
+		key string
+		m   *modelMetrics
+	}
+	var rows []modelRow
+	for key, m := range metrics {
+		rows = append(rows, modelRow{key, m})
+	}
+
+	// Sort by total cost descending; ties sorted by PROVIDER then MODEL ascending.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].m.Cost != rows[j].m.Cost {
+			return rows[i].m.Cost > rows[j].m.Cost
+		}
+		if rows[i].m.Provider != rows[j].m.Provider {
+			return rows[i].m.Provider < rows[j].m.Provider
+		}
+		return rows[i].m.Model < rows[j].m.Model
+	})
+
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleHeaderDim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	fmt.Println(styleHeader.Render(fmt.Sprintf("Model Performance — last %d days", days)))
+	fmt.Println()
+
+	// Column widths.
+	const (
+		wProvider = 18
+		wModel    = 28
+		wTurns    = 6
+		wLat      = 9
+		wTokS     = 10
+		wInput    = 8
+		wOutput   = 8
+		wCost     = 8
+		wSessions = 8
+	)
+
+	// Header row.
+	header := fmt.Sprintf("%-*s  %-*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s",
+		wProvider, "PROVIDER",
+		wModel, "MODEL",
+		wTurns, "TURNS",
+		wLat, "LAT p50",
+		wTokS, "TOK/S p50",
+		wInput, "INPUT",
+		wOutput, "OUTPUT",
+		wCost, "COST",
+		wSessions, "SESSIONS",
+	)
+	fmt.Println(styleHeaderDim.Render(header))
+
+	// Separator.
+	sep := strings.Repeat("─", len(header))
+	fmt.Println(styleDim.Render(sep))
+
+	for _, row := range rows {
+		m := row.m
+
+		// Latency P50.
+		latStr := "-"
+		if len(m.DurationsMs) > 0 {
+			p50ms := percentileFloat64(m.DurationsMs, 50)
+			latStr = formatLatency(p50ms)
+		}
+
+		// Throughput P50.
+		tokStr := "-"
+		if len(m.TokPerSec) > 0 {
+			p50tps := percentileFloat64(m.TokPerSec, 50)
+			tokStr = fmt.Sprintf("%.0f t/s", p50tps)
+		}
+
+		// Cost.
+		costStr := "-"
+		if _, ok := modelCosts[row.key]; ok {
+			costStr = formatCost(m.Cost)
+		}
+
+		provider := m.Provider
+		if provider == "" {
+			provider = "(unknown)"
+		}
+
+		fmt.Printf("%-*s  %-*s  %*d  %*s  %*s  %*s  %*s  %*s  %*d\n",
+			wProvider, provider,
+			wModel, m.Model,
+			wTurns, m.Turns,
+			wLat, latStr,
+			wTokS, tokStr,
+			wInput, formatTokenCount(m.InputTokens),
+			wOutput, formatTokenCount(m.OutputTokens),
+			wCost, costStr,
+			wSessions, len(m.Sessions),
+		)
+	}
+
+	fmt.Println()
+	fmt.Println(styleDim.Render("Note: LAT p50 is full turn duration (request→response), not time-to-first-token."))
 }
