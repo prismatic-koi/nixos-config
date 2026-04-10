@@ -705,6 +705,7 @@ type modelMetrics struct {
 	Turns        int
 	Sessions     map[string]struct{} // distinct session IDs
 	DurationsMs  []float64           // durationMs values for P50 (zero values excluded)
+	TtftMs       []float64           // ttftMs values for P50 (zero/absent values excluded)
 	TokPerSec    []float64           // output tokens/sec per turn (zero-duration turns excluded)
 	InputTokens  int
 	OutputTokens int
@@ -794,6 +795,11 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 			tokPerSec := float64(p.OutputTokens) / secs
 			m.TokPerSec = append(m.TokPerSec, tokPerSec)
 		}
+
+		// TTFT only for turns with a non-zero ttftMs value.
+		if p.TtftMs > 0 {
+			m.TtftMs = append(m.TtftMs, float64(p.TtftMs))
+		}
 	}
 
 	return metrics
@@ -818,8 +824,9 @@ var modelCmd = &cobra.Command{
 By default shows the last 7 days across all repos. Use --days N to change the
 window.
 
-Latency figures (LAT p50) reflect full turn duration (wall-clock time from
-request sent to response received), not time-to-first-token.`,
+TTFT p50 shows median time-to-first-token (request sent → first streaming chunk
+received). DUR p50 shows median full turn duration (request sent → complete
+response received).`,
 	Args: cobra.NoArgs,
 	RunE: runStatsModel,
 }
@@ -893,7 +900,8 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 		wProvider = 18
 		wModel    = 28
 		wTurns    = 6
-		wLat      = 9
+		wTtft     = 9
+		wDur      = 9
 		wTokS     = 10
 		wInput    = 8
 		wOutput   = 8
@@ -902,11 +910,12 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 	)
 
 	// Header row.
-	header := fmt.Sprintf("%-*s  %-*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s",
+	header := fmt.Sprintf("%-*s  %-*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s",
 		wProvider, "PROVIDER",
 		wModel, "MODEL",
 		wTurns, "TURNS",
-		wLat, "LAT p50",
+		wTtft, "TTFT p50",
+		wDur, "DUR p50",
 		wTokS, "TOK/S p50",
 		wInput, "INPUT",
 		wOutput, "OUTPUT",
@@ -922,11 +931,18 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 	for _, row := range rows {
 		m := row.m
 
-		// Latency P50.
-		latStr := "-"
+		// TTFT P50.
+		ttftStr := "-"
+		if len(m.TtftMs) > 0 {
+			p50ms := percentileFloat64(m.TtftMs, 50)
+			ttftStr = formatLatency(p50ms)
+		}
+
+		// Full turn duration P50.
+		durStr := "-"
 		if len(m.DurationsMs) > 0 {
 			p50ms := percentileFloat64(m.DurationsMs, 50)
-			latStr = formatLatency(p50ms)
+			durStr = formatLatency(p50ms)
 		}
 
 		// Throughput P50.
@@ -947,11 +963,12 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 			provider = "(unknown)"
 		}
 
-		fmt.Printf("%-*s  %-*s  %*d  %*s  %*s  %*s  %*s  %*s  %*d\n",
+		fmt.Printf("%-*s  %-*s  %*d  %*s  %*s  %*s  %*s  %*s  %*s  %*d\n",
 			wProvider, provider,
 			wModel, m.Model,
 			wTurns, m.Turns,
-			wLat, latStr,
+			wTtft, ttftStr,
+			wDur, durStr,
 			wTokS, tokStr,
 			wInput, formatTokenCount(m.InputTokens),
 			wOutput, formatTokenCount(m.OutputTokens),
@@ -961,5 +978,5 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 	}
 
 	fmt.Println()
-	fmt.Println(styleDim.Render("Note: LAT p50 is full turn duration (request→response), not time-to-first-token."))
+	fmt.Println(styleDim.Render("Note: TTFT p50 = time to first token (request→first chunk); DUR p50 = full turn duration (request→complete response)."))
 }

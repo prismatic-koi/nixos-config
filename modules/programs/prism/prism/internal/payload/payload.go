@@ -38,6 +38,11 @@ type MsgUser struct {
 // measured from time.created to time.completed on the message. Zero means
 // "not available".
 //
+// TtftMs is the time-to-first-token in milliseconds, measured from
+// time.created on the message to the time.start of the first text part
+// received in the stream. Zero means "not available" (non-streaming responses,
+// pre-enrichment rows, or turns where the first-token timestamp was absent).
+//
 // ContextWindowPct is the context window utilization as a percentage (0-100),
 // calculated as (inputTokens / contextWindowSize) * 100. Zero means
 // "not available" (model context window size unknown or inputTokens absent).
@@ -51,6 +56,7 @@ type MsgAssistant struct {
 	CacheReadTokens  int     `json:"cacheReadTokens,omitempty"`
 	CacheWriteTokens int     `json:"cacheWriteTokens,omitempty"`
 	DurationMs       int64   `json:"durationMs,omitempty"`
+	TtftMs           int64   `json:"ttftMs,omitempty"`
 	ContextWindowPct float64 `json:"contextWindowPct,omitempty"`
 }
 

@@ -130,6 +130,15 @@ type Sidecar struct {
 	opencodeSID     string
 	writtenMessages map[string]bool // dedup message.updated writes
 	textByMessage   map[string]string
+	// msgCreatedAtMs tracks the time.created timestamp (ms since epoch) for
+	// in-flight assistant messages. Used to compute TTFT when the first text
+	// part arrives. Keyed by message ID; entries are deleted when the message
+	// is written (same lifecycle as textByMessage).
+	msgCreatedAtMs map[string]float64
+	// ttftByMessage tracks the computed TTFT (ms) for each assistant message,
+	// set when the first text part with a time.start timestamp arrives.
+	// Zero means "not yet seen" or "unavailable". Keyed by message ID.
+	ttftByMessage map[string]int64
 	// container is set when running in container mode.
 	// Protected by mu.
 	container *containerMgr
@@ -178,6 +187,8 @@ func New(cfg Config) *Sidecar {
 		cfg:             cfg,
 		writtenMessages: make(map[string]bool),
 		textByMessage:   make(map[string]string),
+		msgCreatedAtMs:  make(map[string]float64),
+		ttftByMessage:   make(map[string]int64),
 	}
 	// Pre-set rootAgent from the configured agent role so that subagent user
 	// messages (which have a non-empty agent field in SSE events) do not
@@ -802,7 +813,24 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		s.writtenMessages[info.ID] = true
 		delete(s.textByMessage, info.ID)
 
-	} else if info.Role == "assistant" && info.Time != nil && info.Time.Completed != nil {
+	} else if info.Role == "assistant" {
+		// Store time.created for TTFT computation as soon as we see any
+		// assistant message event (whether or not time.completed is set).
+		// This records the request-sent timestamp that we compare against the
+		// first text-part arrival. Only store once (first seen wins) so that
+		// subsequent message.updated events for the same message don't
+		// overwrite the original created time.
+		if info.Time != nil && info.Time.Created != nil {
+			if _, alreadyStored := s.msgCreatedAtMs[info.ID]; !alreadyStored {
+				s.msgCreatedAtMs[info.ID] = *info.Time.Created
+			}
+		}
+
+		if info.Time == nil || info.Time.Completed == nil {
+			// Message not yet complete — nothing more to do.
+			return
+		}
+
 		if s.writtenMessages[info.ID] {
 			return
 		}
@@ -930,9 +958,15 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 			}
 		}
 
+		if ttft, ok := s.ttftByMessage[info.ID]; ok && ttft > 0 {
+			eventPayload["ttftMs"] = ttft
+		}
+
 		s.writeEvent("msg_assistant", eventPayload, nil)
 		s.writtenMessages[info.ID] = true
 		delete(s.textByMessage, info.ID)
+		delete(s.msgCreatedAtMs, info.ID)
+		delete(s.ttftByMessage, info.ID)
 	}
 }
 
@@ -954,7 +988,8 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 					} `json:"time"`
 				} `json:"state"`
 				Time *struct {
-					End *float64 `json:"end"`
+					Start *float64 `json:"start"`
+					End   *float64 `json:"end"`
 				} `json:"time"`
 			} `json:"part"`
 		} `json:"properties"`
@@ -970,6 +1005,18 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 	case "text":
 		if part.Text != "" {
 			s.textByMessage[part.MessageID] = part.Text
+		}
+		// Capture TTFT from the first text part with a time.start timestamp.
+		// Only record once per message (first text part wins).
+		if _, alreadyRecorded := s.ttftByMessage[part.MessageID]; !alreadyRecorded {
+			if part.Time != nil && part.Time.Start != nil {
+				if createdAt, ok := s.msgCreatedAtMs[part.MessageID]; ok {
+					ttft := *part.Time.Start - createdAt
+					if ttft > 0 {
+						s.ttftByMessage[part.MessageID] = int64(ttft)
+					}
+				}
+			}
 		}
 
 	case "tool":
