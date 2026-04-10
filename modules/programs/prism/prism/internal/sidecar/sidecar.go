@@ -133,11 +133,14 @@ type Sidecar struct {
 	// msgCreatedAtMs tracks the time.created timestamp (ms since epoch) for
 	// in-flight assistant messages. Used to compute TTFT when the first text
 	// part arrives. Keyed by message ID; entries are deleted when the message
-	// is written (same lifecycle as textByMessage).
+	// is written (same lifecycle as textByMessage). Messages abandoned mid-turn
+	// (e.g. opencode interrupted) are not cleaned up; this matches the existing
+	// textByMessage behaviour and is acceptable for short-lived sidecar processes.
 	msgCreatedAtMs map[string]float64
 	// ttftByMessage tracks the computed TTFT (ms) for each assistant message,
 	// set when the first text part with a time.start timestamp arrives.
 	// Zero means "not yet seen" or "unavailable". Keyed by message ID.
+	// Same lifecycle / leak characteristics as msgCreatedAtMs above.
 	ttftByMessage map[string]int64
 	// container is set when running in container mode.
 	// Protected by mu.
