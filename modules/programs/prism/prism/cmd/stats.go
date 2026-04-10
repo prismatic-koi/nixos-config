@@ -826,6 +826,7 @@ request sent to response received), not time-to-first-token.`,
 
 func init() {
 	modelCmd.Flags().Int("days", 7, "Number of days to include (default 7)")
+	modelCmd.Flags().Bool("all", false, "No-op, kept for consistency (always cross-repo)")
 	statsCmd.AddCommand(modelCmd)
 }
 

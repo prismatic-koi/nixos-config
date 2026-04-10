@@ -575,8 +575,10 @@ func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 
 // assistantPayloadWithModel creates an assistant payload with a specific model.
 func assistantPayloadWithModel(model string, inputTokens, outputTokens int, durationMs int64) string {
-	return fmt.Sprintf(`{"messageId":"msg-%d","text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d}`,
-		inputTokens, model, inputTokens, outputTokens, durationMs)
+	// Use a UUID-like ID based on the model and token values to ensure uniqueness.
+	msgID := fmt.Sprintf("%s-%d-%d-%d", model, inputTokens, outputTokens, durationMs)
+	return fmt.Sprintf(`{"messageId":%q,"text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d}`,
+		msgID, model, inputTokens, outputTokens, durationMs)
 }
 
 // TestRunStatsModel_BasicOutput verifies that the model breakdown produces a
@@ -736,6 +738,9 @@ func TestRunStatsModel_ZeroDurationOnlyModel(t *testing.T) {
 	// The LAT p50 and TOK/S p50 columns should show "-" not "0s" or "0 t/s".
 	if strings.Contains(out, "0s") {
 		t.Errorf("output should not contain '0s' for zero-duration-only model\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "0 t/s") {
+		t.Errorf("output should not contain '0 t/s' for zero-duration-only model\ngot:\n%s", out)
 	}
 }
 
