@@ -6,6 +6,29 @@
 }:
 with config.theme;
 let
+  gitCfg = config.home-manager.users.${config.nx.username}.programs.git;
+  # Extract the first includes entry that has user.name and user.email set.
+  # This mirrors the values defined in modules/programs/git.nix.
+  gitUserName =
+    let
+      names = lib.concatMap (
+        inc:
+        lib.optional (
+          inc ? contents && inc.contents ? user && inc.contents.user ? name
+        ) inc.contents.user.name
+      ) gitCfg.includes;
+    in
+    if names != [ ] then builtins.head names else "";
+  gitUserEmail =
+    let
+      emails = lib.concatMap (
+        inc:
+        lib.optional (
+          inc ? contents && inc.contents ? user && inc.contents.user ? email
+        ) inc.contents.user.email
+      ) gitCfg.includes;
+    in
+    if emails != [ ] then builtins.head emails else "";
   prismConfig = {
     color_primary = primary;
     color_secondary = secondary;
@@ -26,6 +49,8 @@ let
     worktree_exclude = config.nx.programs.prism.worktreeExclude;
     project_locations = config.nx.programs.prism.projects.locations;
     project_specific = config.nx.programs.prism.projects.specific;
+    git_user_name = gitUserName;
+    git_user_email = gitUserEmail;
   };
 in
 {

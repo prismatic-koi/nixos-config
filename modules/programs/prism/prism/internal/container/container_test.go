@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -477,8 +478,14 @@ func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
 			v := args[i+1]
-			if strings.Contains(v, "/prism-git") {
-				t.Errorf("unexpected git mount when BareRoot is empty: %q", v)
+			// Check that no mount targets a /prism-git container path.
+			// Note: the volume spec format is "host-path:container-path[:opts]",
+			// so we check the container-side path portion (after the first colon).
+			if idx := strings.Index(v, ":"); idx >= 0 {
+				containerPath := v[idx:]
+				if strings.Contains(containerPath, "/prism-git") {
+					t.Errorf("unexpected git mount when BareRoot is empty: %q", v)
+				}
 			}
 			if strings.HasSuffix(v, ":/workspace/.git:ro") {
 				t.Errorf("unexpected .git file mount when BareRoot is empty: %q", v)
@@ -1096,5 +1103,346 @@ func TestRedactArgs_MultipleEnvVarsAllRedacted(t *testing.T) {
 	}
 	if got[6] != "OPENAI_API_KEY=***" {
 		t.Errorf("expected OPENAI_API_KEY=***, got %q", got[6])
+	}
+}
+
+// ── SSH key simplification tests (AC-5, AC-9) ────────────────────────────────
+
+func TestBuildRunArgs_SSHConfigIsMounted(t *testing.T) {
+	// Verifies that a generated SSH config file is mounted at /root/.ssh/config:ro.
+	// The content of the SSH config (including the IdentityFile = access-key reference
+	// required by AC-9) is tested via the Create() path which writes the config file.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.HasSuffix(args[i+1], ":/root/.ssh/config:ro") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("SSH config mount not found at /root/.ssh/config:ro in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_GitconfigMountedAtRootGitconfig(t *testing.T) {
+	// AC-4: The generated .gitconfig must be mounted at /root/.gitconfig:ro.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.HasSuffix(args[i+1], ":/root/.gitconfig:ro") {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("gitconfig mount not found at /root/.gitconfig:ro in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_NoWholeDirSSHMount(t *testing.T) {
+	// AC-15: The whole ~/.ssh directory must NOT be mounted.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+	args := m.buildRunArgs()
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			// A whole-dir ssh mount has the container path :/root/.ssh (without a
+			// file suffix), not :/root/.ssh/<filename>.
+			if v == ":/root/.ssh:ro" || strings.HasSuffix(v, "/.ssh:/root/.ssh:ro") {
+				t.Errorf("whole ~/.ssh directory is mounted (must use individual key files): %q", v)
+			}
+		}
+	}
+}
+
+// ── credentialEnvVars git identity removal tests (AC-11) ────────────────────
+
+func TestCredentialEnvVars_NoGitIdentityEnvVars(t *testing.T) {
+	// AC-11: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME,
+	// and GIT_COMMITTER_EMAIL must NOT be injected — the container now has
+	// a generated .gitconfig with [user] section.
+	t.Setenv("GIT_AUTHOR_NAME", "Test User")
+	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
+	t.Setenv("GIT_COMMITTER_NAME", "Test User")
+	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000, AgentRole: "worker"})
+	vars := m.credentialEnvVars()
+
+	for _, kv := range vars {
+		if strings.HasPrefix(kv, "GIT_AUTHOR_NAME=") {
+			t.Errorf("GIT_AUTHOR_NAME must not be injected (gitconfig handles identity); got %q", kv)
+		}
+		if strings.HasPrefix(kv, "GIT_AUTHOR_EMAIL=") {
+			t.Errorf("GIT_AUTHOR_EMAIL must not be injected (gitconfig handles identity); got %q", kv)
+		}
+		if strings.HasPrefix(kv, "GIT_COMMITTER_NAME=") {
+			t.Errorf("GIT_COMMITTER_NAME must not be injected (gitconfig handles identity); got %q", kv)
+		}
+		if strings.HasPrefix(kv, "GIT_COMMITTER_EMAIL=") {
+			t.Errorf("GIT_COMMITTER_EMAIL must not be injected (gitconfig handles identity); got %q", kv)
+		}
+	}
+}
+
+// ── writeGitconfig tests (AC-1, AC-13, AC-14) ────────────────────────────────
+
+func TestWriteGitconfig_IncludesPushAndInit(t *testing.T) {
+	// AC-1: generated gitconfig must always include [push] and [init] sections.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "[push]") {
+		t.Errorf("gitconfig missing [push] section; content:\n%s", content)
+	}
+	if !strings.Contains(content, "autoSetupRemote = true") {
+		t.Errorf("gitconfig missing autoSetupRemote; content:\n%s", content)
+	}
+	if !strings.Contains(content, "[init]") {
+		t.Errorf("gitconfig missing [init] section; content:\n%s", content)
+	}
+	if !strings.Contains(content, "defaultBranch = main") {
+		t.Errorf("gitconfig missing defaultBranch; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_NoSigningSectionsWhenKeysUnavailable(t *testing.T) {
+	// AC-13: when signing keys are not resolvable, the generated gitconfig must
+	// NOT contain [commit], [gpg], or signingKey.
+	//
+	// We redirect HOME to a temp dir with no .ssh/ directory so that
+	// filepath.EvalSymlinks cannot find the signing keys, regardless of
+	// what is present on the host running the test.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// These sections must be absent when signing keys can't be resolved.
+	if strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig must not include [commit] when signing keys are absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig must not include [gpg] when signing keys are absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "signingKey") {
+		t.Errorf("gitconfig must not include signingKey when signing keys are absent; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_SigningSectionsWhenKeysAndIdentityPresent(t *testing.T) {
+	// AC-10: when signing keys are resolvable AND identity is set, the generated
+	// gitconfig must contain [commit] gpgsign=true, [gpg] format=ssh, and
+	// user.signingKey = /root/.ssh/signing-key.pub.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig missing [commit] when signing keys and identity are present; content:\n%s", content)
+	}
+	if !strings.Contains(content, "gpgsign = true") {
+		t.Errorf("gitconfig missing gpgsign = true; content:\n%s", content)
+	}
+	if !strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig missing [gpg] when signing keys and identity are present; content:\n%s", content)
+	}
+	if !strings.Contains(content, "format = ssh") {
+		t.Errorf("gitconfig missing format = ssh; content:\n%s", content)
+	}
+	if !strings.Contains(content, "signingKey = /root/.ssh/signing-key.pub") {
+		t.Errorf("gitconfig missing signingKey = /root/.ssh/signing-key.pub; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_UserSectionWhenIdentityPresent(t *testing.T) {
+	// AC-2, AC-14: [user] section present only when both name and email are set.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "[user]") {
+		t.Errorf("gitconfig missing [user] section when identity is set; content:\n%s", content)
+	}
+	if !strings.Contains(content, "name = test-user") {
+		t.Errorf("gitconfig missing name in [user]; content:\n%s", content)
+	}
+	if !strings.Contains(content, "email = test@example.com") {
+		t.Errorf("gitconfig missing email in [user]; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_NoSigningWithoutIdentity(t *testing.T) {
+	// Bug regression: when signing keys are present but identity (name/email)
+	// is empty, the [commit] and [gpg] sections must NOT be written.
+	// Previously only hasSigning was checked, which would produce gpgsign=true
+	// with no signingKey set (since signingKey lives in [user] which requires
+	// identity), causing every git commit to fail.
+	//
+	// We set up a fakeHome with real signing key files so hasSigning=true,
+	// but leave GitUserName/GitUserEmail empty.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Create non-empty stub files (EvalSymlinks just needs them to exist on disk).
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		// GitUserName and GitUserEmail intentionally left empty.
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// Signing sections must be absent — identity is missing so signingKey
+	// would never be set, and gpgsign=true without a key breaks git commit.
+	if strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig must not include [commit] when identity is absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig must not include [gpg] when identity is absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "gpgsign") {
+		t.Errorf("gitconfig must not include gpgsign when identity is absent; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_NoUserSectionWhenIdentityMissing(t *testing.T) {
+	// AC-14: [user] section omitted when GitUserName or GitUserEmail is empty.
+	for _, tc := range []struct {
+		name  string
+		uname string
+		email string
+	}{
+		{"both empty", "", ""},
+		{"name only", "test-user", ""},
+		{"email only", "", "test@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := New(Config{
+				SessionName:   "repo@feat",
+				AllocatedPort: 14000,
+				GitUserName:   tc.uname,
+				GitUserEmail:  tc.email,
+			})
+
+			if err := m.writeGitconfig(); err != nil {
+				t.Fatalf("writeGitconfig returned error: %v", err)
+			}
+			t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+			data, err := os.ReadFile(m.gitconfigFilePath())
+			if err != nil {
+				t.Fatalf("read gitconfig: %v", err)
+			}
+			content := string(data)
+
+			if strings.Contains(content, "[user]") {
+				t.Errorf("[user] section present but identity incomplete (name=%q, email=%q); content:\n%s",
+					tc.uname, tc.email, content)
+			}
+		})
 	}
 }

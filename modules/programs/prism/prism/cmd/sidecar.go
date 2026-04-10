@@ -151,6 +151,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			Variant:                        variant,
 			ContainerWorkerConfigPath:      prismCfg.ContainerWorkerConfigPath,
 			ContainerCoordinatorConfigPath: prismCfg.ContainerCoordinatorConfigPath,
+			GitUserName:                    prismCfg.GitUserName,
+			GitUserEmail:                   prismCfg.GitUserEmail,
 		}
 	}
 

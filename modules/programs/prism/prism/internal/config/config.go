@@ -48,6 +48,12 @@ type Config struct {
 	// /root/.config/opencode inside coordinator containers. Empty string
 	// triggers the legacy fallback.
 	ContainerCoordinatorConfigPath string `json:"container_coordinator_config"`
+	// GitUserName is the git user.name to write into the container's .gitconfig.
+	// Sourced from the host's NixOS/home-manager git configuration.
+	GitUserName string `json:"git_user_name"`
+	// GitUserEmail is the git user.email to write into the container's .gitconfig.
+	// Sourced from the host's NixOS/home-manager git configuration.
+	GitUserEmail string `json:"git_user_email"`
 
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
@@ -72,6 +78,8 @@ type parsedConfig struct {
 	SidecarPluginPath              string    `json:"sidecar_plugin_path"`
 	ContainerWorkerConfigPath      string    `json:"container_worker_config"`
 	ContainerCoordinatorConfigPath string    `json:"container_coordinator_config"`
+	GitUserName                    string    `json:"git_user_name"`
+	GitUserEmail                   string    `json:"git_user_email"`
 	WorktreeExclude                *[]string `json:"worktree_exclude"`
 	ProjectLocations               *[]string `json:"project_locations"`
 	ProjectSpecific                *[]string `json:"project_specific"`
@@ -179,6 +187,12 @@ func load() Config {
 	}
 	if parsed.ContainerCoordinatorConfigPath != "" {
 		cfg.ContainerCoordinatorConfigPath = parsed.ContainerCoordinatorConfigPath
+	}
+	if parsed.GitUserName != "" {
+		cfg.GitUserName = parsed.GitUserName
+	}
+	if parsed.GitUserEmail != "" {
+		cfg.GitUserEmail = parsed.GitUserEmail
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil
