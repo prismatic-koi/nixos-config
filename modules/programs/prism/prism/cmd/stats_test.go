@@ -1028,13 +1028,6 @@ func TestRunStatsModel_ZeroTtftShowsDash(t *testing.T) {
 	if !strings.Contains(out, " - ") {
 		t.Errorf("expected '-' for TTFT p50 in render output\ngot:\n%s", out)
 	}
-	// The TTFT p50 column should show "-"; check that at least one "-" appears in data rows.
-	// We verify by checking that TtftMs slice is empty (already done above) and that
-	// the render function doesn't panic or show a formatted duration for TTFT.
-	// Check via the metrics directly: zero TTFT entries means render shows "-".
-	if len(entry.TtftMs) != 0 {
-		t.Errorf("expected no TTFT entries (all zero), got %d — render would not show '-'", len(entry.TtftMs))
-	}
 }
 
 // TestRunStatsModel_TtftAbsentInOldRows verifies that old DB rows without a
