@@ -1025,6 +1025,28 @@ func (s *Sidecar) currentDBState() agent.AgentState {
 }
 
 func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID *string) {
+	// When AgentRole is set, use UpsertStatusWithRootAgent so that
+	// root_agent_name is seeded from the configured role on the initial INSERT
+	// and preserved via COALESCE on subsequent UPDATEs. This ensures that
+	// `prism prompt` can always find the correct agent to target (#557).
+	// When AgentRole is empty (legacy sessions), fall back to UpsertStatus so
+	// that root_agent_name is left NULL rather than set to an empty string.
+	if s.cfg.AgentRole != "" {
+		agentRole := s.cfg.AgentRole
+		if err := s.cfg.DB.UpsertStatusWithRootAgent(
+			s.cfg.SessionName,
+			s.cfg.Repo,
+			s.cfg.Worktree,
+			string(state),
+			title,
+			opencodeSID,
+			&agentRole,
+			nil,
+		); err != nil {
+			log.Printf("sidecar: UpsertStatusWithRootAgent failed: %v", err)
+		}
+		return
+	}
 	if err := s.cfg.DB.UpsertStatus(
 		s.cfg.SessionName,
 		s.cfg.Repo,

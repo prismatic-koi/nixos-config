@@ -363,10 +363,10 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 // root_agent_name and root_model_id are preserved via COALESCE — once set, they
 // are never overwritten.
 //
-// Note: production root-agent tracking is performed by the TypeScript plugin via
-// the setRootAgentModelIfAbsent UPDATE statement on the first msg_user event.
-// This Go method is used in tests and is available for any future Go-side
-// session-creation paths that need to seed root_agent_name at INSERT time.
+// The Go sidecar is the authoritative source of root_agent_name: it calls this
+// method on every state transition when Config.AgentRole is set, seeding the
+// value from the agent role on the initial INSERT and preserving it on subsequent
+// UPDATEs. The TypeScript plugin (prism-hooks.ts) does not write root_agent_name.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()

@@ -192,8 +192,9 @@
         "go run *" = "allow";
         "go install *" = "allow";
         "goimports *" = "allow";
-        # Prism session management
-        "prism spawn *" = "allow";
+        # Prism session management (worker-safe operations only)
+        # Note: prism spawn is intentionally excluded — spawning agents is a
+        # coordinator responsibility. Workers must never spawn new sessions (#557).
         "prism checkin" = "allow";
         "prism checkin *" = "allow";
         "prism list-sessions" = "allow";
