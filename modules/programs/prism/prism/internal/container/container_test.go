@@ -1275,6 +1275,57 @@ func TestWriteGitconfig_NoSigningSectionsWhenKeysUnavailable(t *testing.T) {
 	}
 }
 
+func TestWriteGitconfig_SigningSectionsWhenKeysAndIdentityPresent(t *testing.T) {
+	// AC-10: when signing keys are resolvable AND identity is set, the generated
+	// gitconfig must contain [commit] gpgsign=true, [gpg] format=ssh, and
+	// user.signingKey = /root/.ssh/signing-key.pub.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig missing [commit] when signing keys and identity are present; content:\n%s", content)
+	}
+	if !strings.Contains(content, "gpgsign = true") {
+		t.Errorf("gitconfig missing gpgsign = true; content:\n%s", content)
+	}
+	if !strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig missing [gpg] when signing keys and identity are present; content:\n%s", content)
+	}
+	if !strings.Contains(content, "format = ssh") {
+		t.Errorf("gitconfig missing format = ssh; content:\n%s", content)
+	}
+	if !strings.Contains(content, "signingKey = /root/.ssh/signing-key.pub") {
+		t.Errorf("gitconfig missing signingKey = /root/.ssh/signing-key.pub; content:\n%s", content)
+	}
+}
+
 func TestWriteGitconfig_UserSectionWhenIdentityPresent(t *testing.T) {
 	// AC-2, AC-14: [user] section present only when both name and email are set.
 	m := New(Config{
