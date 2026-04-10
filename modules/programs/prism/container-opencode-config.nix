@@ -224,10 +224,18 @@
         "tmux switch-client *" = "deny";
       };
 
-      # Additional container-specific deny commands (defence-in-depth)
+      # Additional container-specific deny commands (defence-in-depth).
+      # These override any allow in writeBashCommands / readOnlyBashCommands.
+      # Applied at BOTH the per-agent level and the global permission block.
       containerDenyCommands = {
         "nixos-rebuild *" = "deny";
         "sudo nixos-rebuild *" = "deny";
+        # Workers inside containers must never spawn new agents
+        "prism spawn" = "deny";
+        "prism spawn *" = "deny";
+        # Workers inside containers must never manage PRs
+        "prism pr" = "deny";
+        "prism pr *" = "deny";
       };
 
       # Model identifiers — must stay in sync with opencode.nix.
@@ -509,17 +517,7 @@
           }
           // readOnlyBashCommands
           // writeBashCommands
-          // {
-            # deny PR merge — merging is a coordinator responsibility, never a worker's
-            "gh pr merge" = "deny";
-            "gh pr merge *" = "deny";
-            # git push still requires confirmation
-            "git push" = "ask";
-            "git push *" = "ask";
-            # defence-in-depth: deny nixos-rebuild inside containers
-            "nixos-rebuild *" = "deny";
-            "sudo nixos-rebuild *" = "deny";
-          }
+          // containerDenyCommands
           // tmuxDenyCommands;
         }
         // atlassianPermissions;
