@@ -155,34 +155,70 @@ let
       })
     ];
 
-    extraCommands = ''
-      # Nix experimental features — required for nix build, nix flake, etc.
-      mkdir -p etc/nix
-      echo "experimental-features = nix-command flakes" > etc/nix/nix.conf
+    extraCommands =
+      let
+        # Build nix.conf content from the NixOS module system config so it
+        # stays in sync with the host's nix settings automatically.
+        #
+        # Combine both trusted-substituters (user-addable caches) and
+        # substituters (active caches) so the container nix.conf stays in sync
+        # regardless of which attribute future cachix entries are added to.
+        # cache.nixos.org is excluded since it is always present in the daemon.
+        allSubstituters = lib.unique (
+          config.nix.settings.trusted-substituters ++ config.nix.settings.substituters
+        );
+        cachixSubstituters = builtins.filter (
+          s: s != "https://cache.nixos.org/" && s != "https://cache.nixos.org"
+        ) allSubstituters;
+        nixConfLines = [
+          "experimental-features = nix-command flakes"
+        ]
+        ++ lib.optionals (cachixSubstituters != [ ]) [
+          "extra-substituters = ${lib.concatStringsSep " " cachixSubstituters}"
+          "extra-trusted-public-keys = ${lib.concatStringsSep " " config.nix.settings.trusted-public-keys}"
+        ];
+        nixConfFile = pkgs.writeText "container-nix.conf" (lib.concatStringsSep "\n" nixConfLines + "\n");
+        # nixos-rebuild guard — prevents agents from accidentally trying to apply
+        # NixOS configuration inside a container (which would fail without systemd).
+        nixosRebuildGuard = pkgs.writeShellScript "nixos-rebuild" ''
+          echo "error: nixos-rebuild is not available inside agent containers" >&2
+          echo "Use 'nix build' to validate the flake instead." >&2
+          exit 1
+        '';
+      in
+      ''
+        # Nix configuration — experimental features plus substituters/keys
+        # sourced from the NixOS module system so they stay in sync with the host.
+        mkdir -p etc/nix
+        cp ${nixConfFile} etc/nix/nix.conf
 
-      # Nix wrapper: when the host's nix daemon socket is mounted (by
-      # container.go), transparently inject --eval-store auto so that
-      # "nix build", "nix flake check", etc. evaluate locally (can see
-      # /workspace) but delegate store operations to the host daemon
-      # (reusing cached derivations). Without the socket the wrapper is
-      # a no-op passthrough to the real nix binary.
-      real_nix=$(readlink -f bin/nix)
-      mv bin/nix bin/.nix-real
-      cat > bin/nix << 'WRAPPER'
-      #!/bin/bash
-      SOCKET=/nix/var/nix/daemon-socket/socket
-      if [ -S "$SOCKET" ]; then
-        # Subcommands that accept --eval-store
-        case "''${1:-}" in
-          build|eval|flake|develop|path-info|print-dev-env|log|derivation)
-            exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
-            ;;
-        esac
-      fi
-      exec /bin/.nix-real "$@"
-      WRAPPER
-      chmod +x bin/nix
-    '';
+        # nixos-rebuild guard
+        cp ${nixosRebuildGuard} bin/nixos-rebuild
+        chmod +x bin/nixos-rebuild
+
+        # Nix wrapper: when the host's nix daemon socket is mounted (by
+        # container.go), transparently inject --eval-store auto so that
+        # "nix build", "nix flake check", etc. evaluate locally (can see
+        # /workspace) but delegate store operations to the host daemon
+        # (reusing cached derivations). Without the socket the wrapper is
+        # a no-op passthrough to the real nix binary.
+        real_nix=$(readlink -f bin/nix)
+        mv bin/nix bin/.nix-real
+        cat > bin/nix << 'WRAPPER'
+        #!/bin/bash
+        SOCKET=/nix/var/nix/daemon-socket/socket
+        if [ -S "$SOCKET" ]; then
+          # Subcommands that accept --eval-store
+          case "''${1:-}" in
+            build|eval|flake|develop|path-info|print-dev-env|log|derivation)
+              exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
+              ;;
+          esac
+        fi
+        exec /bin/.nix-real "$@"
+        WRAPPER
+        chmod +x bin/nix
+      '';
 
     config = {
       Cmd = [ "/bin/bash" ];
