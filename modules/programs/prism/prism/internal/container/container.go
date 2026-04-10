@@ -270,8 +270,12 @@ func (m *Manager) writeGitconfig() error {
 			m.cfg.GitUserName, m.cfg.GitUserEmail)
 	}
 
-	// [commit] and [gpg] sections — only when signing keys are available.
-	if hasSigning {
+	// [commit] and [gpg] sections — only when signing keys are available AND
+	// identity is present. Without identity the [user] section is omitted, which
+	// means signingKey is never set; writing gpgsign=true in that case would
+	// cause every git commit to fail.
+	// TODO(#558): set gpg.ssh.allowedSignersFile so git verify-commit works inside containers.
+	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
 		sb.WriteString("\n[commit]\n")
 		sb.WriteString("    gpgsign = true\n")
 		sb.WriteString("\n[gpg]\n")
@@ -619,6 +623,7 @@ func (m *Manager) buildRunArgs() []string {
 	sshDir := filepath.Join(home, ".ssh")
 
 	// Access key (git push/fetch): prismatic-koi-ed25519 → /root/.ssh/access-key
+	// TODO(#560): expose SSH key filenames as Nix module options.
 	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519")); err == nil {
 		args = append(args, "--volume", resolved+":/root/.ssh/access-key:ro")
 	} else {

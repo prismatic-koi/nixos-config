@@ -1306,6 +1306,58 @@ func TestWriteGitconfig_UserSectionWhenIdentityPresent(t *testing.T) {
 	}
 }
 
+func TestWriteGitconfig_NoSigningWithoutIdentity(t *testing.T) {
+	// Bug regression: when signing keys are present but identity (name/email)
+	// is empty, the [commit] and [gpg] sections must NOT be written.
+	// Previously only hasSigning was checked, which would produce gpgsign=true
+	// with no signingKey set (since signingKey lives in [user] which requires
+	// identity), causing every git commit to fail.
+	//
+	// We set up a fakeHome with real signing key files so hasSigning=true,
+	// but leave GitUserName/GitUserEmail empty.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Create non-empty stub files (EvalSymlinks just needs them to exist on disk).
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		// GitUserName and GitUserEmail intentionally left empty.
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// Signing sections must be absent — identity is missing so signingKey
+	// would never be set, and gpgsign=true without a key breaks git commit.
+	if strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig must not include [commit] when identity is absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "[gpg]") {
+		t.Errorf("gitconfig must not include [gpg] when identity is absent; content:\n%s", content)
+	}
+	if strings.Contains(content, "gpgsign") {
+		t.Errorf("gitconfig must not include gpgsign when identity is absent; content:\n%s", content)
+	}
+}
+
 func TestWriteGitconfig_NoUserSectionWhenIdentityMissing(t *testing.T) {
 	// AC-14: [user] section omitted when GitUserName or GitUserEmail is empty.
 	for _, tc := range []struct {
