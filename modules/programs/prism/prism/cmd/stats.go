@@ -670,7 +670,9 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 			// columns. The label is kept short to fit the 20-char STARTED column.
 			// The --detail mode uses the longer "(legacy, pre-sidecar)" label where
 			// there is no width constraint.
-			if modelStr == "" || modelStr == "(legacy)" {
+			// Note: modelStr may be "—" here (assigned above when m.ModelID == ""),
+			// so we also check for "—" to catch the no-model-data case.
+			if modelStr == "—" || modelStr == "" || modelStr == "(legacy)" {
 				modelStr = "(legacy)"
 			}
 			startedStr = "(legacy)"
@@ -865,17 +867,17 @@ func runStatsHistorical(days int) error {
 		totalSessions++
 		// Sum across all opencode sessions within this tmux session.
 		grouped, order := groupEventsByOpencodeSID(evts)
+		// Hoist status lookup outside the inner loop to avoid N+1 queries when
+		// multiple opencode SID groups have no model data.
+		st, _ := d.CurrentStatus(session)
 		var sessionCost float64
 		var sessionDur time.Duration
 		var firstEvent, lastEvent time.Time
 		for _, key := range order {
 			m := collectMetrics(grouped[key], key)
 			// Enrich model from status table for cost calculation.
-			if m.ModelID == "" {
-				st, _ := d.CurrentStatus(session)
-				if st != nil && st.RootModelID != nil && *st.RootModelID != "" {
-					m.ModelID = *st.RootModelID
-				}
+			if m.ModelID == "" && st != nil && st.RootModelID != nil && *st.RootModelID != "" {
+				m.ModelID = *st.RootModelID
 			}
 			sessionCost += m.totalCost()
 			for tool, count := range m.ToolCalls {
