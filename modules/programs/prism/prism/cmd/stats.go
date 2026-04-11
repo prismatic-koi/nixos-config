@@ -356,19 +356,12 @@ func runStatsSession(session string, detail bool) error {
 	var allMetrics []*sessionMetrics
 	for _, key := range order {
 		m := collectMetrics(grouped[key], key)
-		// Overlay status info on the most recent non-legacy group (last non-sentinel key).
-		if status != nil && key != legacySentinel {
-			m.State = status.State
-			if status.RootAgentName != nil && *status.RootAgentName != "" {
-				m.AgentName = *status.RootAgentName
-			}
-			// Only override model from status for the current (most recent) session.
-			// We detect "current" as the last non-legacy key in order.
-		}
 		allMetrics = append(allMetrics, m)
 	}
 
-	// Apply state from status to the last non-legacy session.
+	// Apply live status (state, agent name) to the last non-legacy session only.
+	// Older sessions within the same tmux session should not inherit the current
+	// live state — they are historical and completed.
 	if status != nil {
 		for i := len(allMetrics) - 1; i >= 0; i-- {
 			if !allMetrics[i].isLegacy() {
