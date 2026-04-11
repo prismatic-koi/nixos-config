@@ -127,6 +127,15 @@ type Config struct {
 	// GitUserEmail is the git user.email to write into the container's .gitconfig.
 	// When empty, the [user] section is omitted from the generated gitconfig.
 	GitUserEmail string
+
+	// SshAccessKeyName is the filename (not full path) of the SSH access key in
+	// ~/.ssh/. When empty, defaults to "prismatic-koi-ed25519".
+	SshAccessKeyName string
+
+	// SshSigningKeyName is the base filename (not full path) of the SSH signing
+	// key in ~/.ssh/. The public key is derived by appending ".pub". When empty,
+	// defaults to "prismatic-koi-ed25519-signingkey".
+	SshSigningKeyName string
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -239,8 +248,12 @@ func (m *Manager) writeGitconfig() error {
 	sshDir := filepath.Join(home, ".ssh")
 
 	// Check whether signing keys are resolvable.
-	signingKeyPriv := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey")
-	signingKeyPub := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub")
+	signingKeyName := m.cfg.SshSigningKeyName
+	if signingKeyName == "" {
+		signingKeyName = "prismatic-koi-ed25519-signingkey"
+	}
+	signingKeyPriv := filepath.Join(sshDir, signingKeyName)
+	signingKeyPub := filepath.Join(sshDir, signingKeyName+".pub")
 	_, errPriv := filepath.EvalSymlinks(signingKeyPriv)
 	_, errPub := filepath.EvalSymlinks(signingKeyPub)
 	hasSigning := errPriv == nil && errPub == nil
@@ -622,16 +635,19 @@ func (m *Manager) buildRunArgs() []string {
 	// Note: the whole ~/.ssh directory is NOT mounted — only individual files.
 	sshDir := filepath.Join(home, ".ssh")
 
-	// Access key (git push/fetch): prismatic-koi-ed25519 → /root/.ssh/access-key
-	// TODO(#560): expose SSH key filenames as Nix module options.
-	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519")); err == nil {
+	// Access key (git push/fetch): <SshAccessKeyName> → /root/.ssh/access-key
+	accessKeyName := m.cfg.SshAccessKeyName
+	if accessKeyName == "" {
+		accessKeyName = "prismatic-koi-ed25519"
+	}
+	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, accessKeyName)); err == nil {
 		args = append(args, "--volume", resolved+":/root/.ssh/access-key:ro")
 	} else {
 		log.Printf("container: access key not resolvable (%v); SSH push/fetch will not work", err)
 	}
 
-	// Signing key private (commit signing): prismatic-koi-ed25519-signingkey → /root/.ssh/signing-key
-	// Signing key public (gitconfig signingKey): prismatic-koi-ed25519-signingkey.pub → /root/.ssh/signing-key.pub
+	// Signing key private (commit signing): <SshSigningKeyName> → /root/.ssh/signing-key
+	// Signing key public (gitconfig signingKey): <SshSigningKeyName>.pub → /root/.ssh/signing-key.pub
 	//
 	// Note: writeGitconfig (called immediately before buildRunArgs in Create)
 	// also resolves these symlinks to determine hasSigning. The resolutions are
@@ -639,8 +655,12 @@ func (m *Manager) buildRunArgs() []string {
 	// gitconfig file, while this block decides what volumes to mount. Both must
 	// agree for the container to work, and they do because Create() calls them
 	// sequentially with no symlink changes possible between the two calls.
-	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey"))
-	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub"))
+	signingKeyName := m.cfg.SshSigningKeyName
+	if signingKeyName == "" {
+		signingKeyName = "prismatic-koi-ed25519-signingkey"
+	}
+	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName))
+	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName+".pub"))
 	if errPriv == nil && errPub == nil {
 		args = append(args,
 			"--volume", signingKeyResolved+":/root/.ssh/signing-key:ro",

@@ -82,6 +82,71 @@ func TestEmptyArrayClearsDefault(t *testing.T) {
 	}
 }
 
+func TestSshKeyNameDefaults(t *testing.T) {
+	// When no config file is present, SshAccessKeyName and SshSigningKeyName
+	// should return the compiled-in defaults from defaults().
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "prismatic-koi-ed25519" {
+		t.Errorf("SshAccessKeyName: got %q, want %q", cfg.SshAccessKeyName, "prismatic-koi-ed25519")
+	}
+	if cfg.SshSigningKeyName != "prismatic-koi-ed25519-signingkey" {
+		t.Errorf("SshSigningKeyName: got %q, want %q", cfg.SshSigningKeyName, "prismatic-koi-ed25519-signingkey")
+	}
+}
+
+func TestSshKeyNameOverriddenFromFile(t *testing.T) {
+	// When ssh_access_key_name and ssh_signing_key_name are set in the config
+	// file, the loaded values should override the compiled-in defaults.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{
+		"ssh_access_key_name": "my-access-key",
+		"ssh_signing_key_name": "my-signing-key"
+	}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "my-access-key" {
+		t.Errorf("SshAccessKeyName: got %q, want %q", cfg.SshAccessKeyName, "my-access-key")
+	}
+	if cfg.SshSigningKeyName != "my-signing-key" {
+		t.Errorf("SshSigningKeyName: got %q, want %q", cfg.SshSigningKeyName, "my-signing-key")
+	}
+}
+
+func TestSshKeyNameAbsentKeepsDefault(t *testing.T) {
+	// When ssh_access_key_name and ssh_signing_key_name are absent from the
+	// config file, the compiled-in defaults are kept (not empty string).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Config file exists but doesn't mention SSH key names.
+	raw := `{"color_primary": "#ff0000"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "prismatic-koi-ed25519" {
+		t.Errorf("SshAccessKeyName: got %q, want default %q when absent from config", cfg.SshAccessKeyName, "prismatic-koi-ed25519")
+	}
+	if cfg.SshSigningKeyName != "prismatic-koi-ed25519-signingkey" {
+		t.Errorf("SshSigningKeyName: got %q, want default %q when absent from config", cfg.SshSigningKeyName, "prismatic-koi-ed25519-signingkey")
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

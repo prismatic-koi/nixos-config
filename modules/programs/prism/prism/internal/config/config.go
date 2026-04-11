@@ -54,6 +54,12 @@ type Config struct {
 	// GitUserEmail is the git user.email to write into the container's .gitconfig.
 	// Sourced from the host's NixOS/home-manager git configuration.
 	GitUserEmail string `json:"git_user_email"`
+	// SshAccessKeyName is the filename (not full path) of the SSH access key in ~/.ssh/.
+	// Defaults to "prismatic-koi-ed25519" if empty.
+	SshAccessKeyName string `json:"ssh_access_key_name"`
+	// SshSigningKeyName is the base filename (not full path) of the SSH signing key in ~/.ssh/.
+	// The public key is derived by appending ".pub". Defaults to "prismatic-koi-ed25519-signingkey" if empty.
+	SshSigningKeyName string `json:"ssh_signing_key_name"`
 
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
@@ -80,6 +86,8 @@ type parsedConfig struct {
 	ContainerCoordinatorConfigPath string    `json:"container_coordinator_config"`
 	GitUserName                    string    `json:"git_user_name"`
 	GitUserEmail                   string    `json:"git_user_email"`
+	SshAccessKeyName               string    `json:"ssh_access_key_name"`
+	SshSigningKeyName              string    `json:"ssh_signing_key_name"`
 	WorktreeExclude                *[]string `json:"worktree_exclude"`
 	ProjectLocations               *[]string `json:"project_locations"`
 	ProjectSpecific                *[]string `json:"project_specific"`
@@ -89,19 +97,21 @@ type parsedConfig struct {
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
 	return Config{
-		ColorPrimary:     "#d4be98",
-		ColorSecondary:   "#a89984",
-		ColorPurple:      "#d3869b",
-		ColorYellow:      "#d8a657",
-		ColorGreen:       "#a9b665",
-		ColorBlue:        "#7daea3",
-		ColorRed:         "#ea6962",
-		ColorForeground:  "#d3c6aa",
-		ColorBg0:         "#2d353b",
-		KittyBin:         "kitty",
-		WorktreeExclude:  []string{"obsidian"},
-		ProjectLocations: []string{"~/code"},
-		ProjectSpecific:  []string{"~/documents/obsidian"},
+		ColorPrimary:      "#d4be98",
+		ColorSecondary:    "#a89984",
+		ColorPurple:       "#d3869b",
+		ColorYellow:       "#d8a657",
+		ColorGreen:        "#a9b665",
+		ColorBlue:         "#7daea3",
+		ColorRed:          "#ea6962",
+		ColorForeground:   "#d3c6aa",
+		ColorBg0:          "#2d353b",
+		KittyBin:          "kitty",
+		SshAccessKeyName:  "prismatic-koi-ed25519",
+		SshSigningKeyName: "prismatic-koi-ed25519-signingkey",
+		WorktreeExclude:   []string{"obsidian"},
+		ProjectLocations:  []string{"~/code"},
+		ProjectSpecific:   []string{"~/documents/obsidian"},
 	}
 }
 
@@ -193,6 +203,12 @@ func load() Config {
 	}
 	if parsed.GitUserEmail != "" {
 		cfg.GitUserEmail = parsed.GitUserEmail
+	}
+	if parsed.SshAccessKeyName != "" {
+		cfg.SshAccessKeyName = parsed.SshAccessKeyName
+	}
+	if parsed.SshSigningKeyName != "" {
+		cfg.SshSigningKeyName = parsed.SshSigningKeyName
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil
