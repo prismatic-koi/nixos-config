@@ -6,7 +6,6 @@ package cmd
 //
 //	prism stats                   summary table of all active sessions across all repos
 //	prism stats <session>         per-session detail
-//	prism stats --all             same as no flags (kept for backwards compatibility)
 //	prism stats --days N          historical aggregate over the last N days
 //	prism stats model             per-model performance breakdown over last 7 days
 //	prism stats model --days N    per-model performance breakdown over last N days
@@ -25,6 +24,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
 )
+
+// legacySentinel is the key used to group events that have a NULL opencode_sid.
+// These are pre-sidecar "legacy" events that predate opencode session tracking.
+const legacySentinel = ""
 
 // modelCosts contains per-million-token pricing for known models.
 // Cost is in USD. Keys are "providerID/modelID" exactly as stored in payloads —
@@ -55,10 +58,13 @@ var statsCmd = &cobra.Command{
 	Long: `Display metrics and statistics for agent sessions.
 
 With no arguments, shows a summary table of all active sessions across all repos.
-The --all flag is accepted for backwards compatibility and is a no-op.
 
-With a session name argument, shows detailed per-session metrics including
-token usage, cost, duration, tool breakdown, and turn timing.
+With a session name argument, shows per-session metrics. Long-lived sessions
+(e.g. nixos-config@main) that contain multiple opencode sessions are shown as
+a compact table — one row per opencode session. Short-lived worktree sessions
+with a single opencode session are shown as a detailed block.
+
+Use --detail to force the detailed block format even for multi-session tmux sessions.
 
 Use --days N to show aggregate statistics over the last N days.
 
@@ -68,14 +74,14 @@ Use the 'model' subcommand for a per-provider/model performance breakdown.`,
 }
 
 func init() {
-	statsCmd.Flags().Bool("all", false, "No-op, kept for backwards compatibility (all repos are always shown)")
 	statsCmd.Flags().Int("days", 0, "Show aggregate statistics over the last N days")
+	statsCmd.Flags().Bool("detail", false, "Force detailed block format even for multi-session tmux sessions")
 	rootCmd.AddCommand(statsCmd)
 }
 
 func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
-	showAll, _ := cmd.Flags().GetBool("all")
+	detail, _ := cmd.Flags().GetBool("detail")
 
 	if days > 0 && len(args) > 0 {
 		return fmt.Errorf("--days is mutually exclusive with a session name")
@@ -86,17 +92,18 @@ func runStats(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 1 {
-		return runStatsSession(args[0])
+		return runStatsSession(args[0], detail)
 	}
 
-	return runStatsSummary(showAll)
+	return runStatsSummary()
 }
 
 // ---------- per-session detail ----------
 
-// sessionMetrics holds aggregated metrics for a single session.
+// sessionMetrics holds aggregated metrics for a single opencode session.
 type sessionMetrics struct {
 	SessionName string
+	OpencodeSID string // empty string = legacy sentinel (NULL opencode_sid)
 	AgentName   string
 	ModelID     string
 	State       string
@@ -182,11 +189,29 @@ func (m *sessionMetrics) totalToolCalls() int {
 	return n
 }
 
-func collectMetrics(events []db.Event) *sessionMetrics {
+// isLegacy reports whether this sessionMetrics represents the legacy NULL-sid
+// sentinel group.
+func (m *sessionMetrics) isLegacy() bool {
+	return m.OpencodeSID == legacySentinel
+}
+
+// collectMetrics builds a sessionMetrics from a slice of events that all belong
+// to the same opencode session (or the legacy sentinel group). The opencodeSID
+// parameter is the key used for this group (legacySentinel for NULL-sid events).
+//
+// The model field is set to the coordinator/root agent's model if one is present
+// (agent field == "coordinator"), falling back to the most-frequently-seen model.
+// This gives a more meaningful "session model" than first-seen.
+func collectMetrics(events []db.Event, opencodeSID string) *sessionMetrics {
 	m := &sessionMetrics{
+		OpencodeSID:   opencodeSID,
 		ToolCalls:     make(map[string]int),
 		ToolDurations: make(map[string][]time.Duration),
 	}
+
+	// Track model turn counts and coordinator model for model selection.
+	modelTurnCounts := make(map[string]int)
+	var coordinatorModel string
 
 	for _, e := range events {
 		if m.SessionName == "" {
@@ -217,8 +242,12 @@ func collectMetrics(events []db.Event) *sessionMetrics {
 				if m.AgentName == "" && p.Agent != "" {
 					m.AgentName = p.Agent
 				}
-				if m.ModelID == "" && p.Model != "" {
-					m.ModelID = p.Model
+				if p.Model != "" {
+					modelTurnCounts[p.Model]++
+					// Prefer coordinator model: take the first coordinator model seen.
+					if p.Agent == "coordinator" && coordinatorModel == "" {
+						coordinatorModel = p.Model
+					}
 				}
 			}
 
@@ -252,10 +281,49 @@ func collectMetrics(events []db.Event) *sessionMetrics {
 		}
 	}
 
+	// Determine the best model: coordinator model takes priority, then
+	// fall back to the most-frequently-seen model.
+	if coordinatorModel != "" {
+		m.ModelID = coordinatorModel
+	} else {
+		// Pick most frequent model.
+		var bestModel string
+		var bestCount int
+		for model, count := range modelTurnCounts {
+			if count > bestCount || (count == bestCount && model < bestModel) {
+				bestModel = model
+				bestCount = count
+			}
+		}
+		m.ModelID = bestModel
+	}
+
 	return m
 }
 
-func runStatsSession(session string) error {
+// groupEventsByOpencodeSID partitions events by opencode_sid, preserving
+// insertion order for the first occurrence of each key.
+// Events with a NULL opencode_sid are grouped under legacySentinel ("").
+// Returns the grouped map and the ordered list of keys.
+func groupEventsByOpencodeSID(events []db.Event) (map[string][]db.Event, []string) {
+	grouped := make(map[string][]db.Event)
+	var order []string
+
+	for _, e := range events {
+		key := legacySentinel
+		if e.OpencodeSID != nil {
+			key = *e.OpencodeSID
+		}
+		if _, exists := grouped[key]; !exists {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], e)
+	}
+
+	return grouped, order
+}
+
+func runStatsSession(session string, detail bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
@@ -281,23 +349,83 @@ func runStatsSession(session string) error {
 		return nil
 	}
 
-	m := collectMetrics(events)
+	// Group events by opencode_sid.
+	grouped, order := groupEventsByOpencodeSID(events)
 
-	// Overlay status info.
-	if status != nil {
-		m.State = status.State
-		if status.RootAgentName != nil && *status.RootAgentName != "" {
-			m.AgentName = *status.RootAgentName
+	// Build a sessionMetrics per opencode session.
+	var allMetrics []*sessionMetrics
+	for _, key := range order {
+		m := collectMetrics(grouped[key], key)
+		// Overlay status info on the most recent non-legacy group (last non-sentinel key).
+		if status != nil && key != legacySentinel {
+			m.State = status.State
+			if status.RootAgentName != nil && *status.RootAgentName != "" {
+				m.AgentName = *status.RootAgentName
+			}
+			// Only override model from status for the current (most recent) session.
+			// We detect "current" as the last non-legacy key in order.
 		}
-		if status.RootModelID != nil && *status.RootModelID != "" {
-			m.ModelID = *status.RootModelID
+		allMetrics = append(allMetrics, m)
+	}
+
+	// Apply state from status to the last non-legacy session.
+	if status != nil {
+		for i := len(allMetrics) - 1; i >= 0; i-- {
+			if !allMetrics[i].isLegacy() {
+				allMetrics[i].State = status.State
+				if status.RootAgentName != nil && *status.RootAgentName != "" {
+					allMetrics[i].AgentName = *status.RootAgentName
+				}
+				break
+			}
 		}
 	}
 
-	renderSessionDetail(m)
+	// Determine rendering mode:
+	// - Exactly one opencode session, no legacy group → detailed block
+	// - Only legacy group (all NULL-sid events), no real sessions → detailed block labelled legacy
+	// - Multiple opencode sessions, OR mixed legacy+real, OR --detail flag → compact table or forced detail
+	nonLegacyCount := 0
+	hasLegacy := false
+	for _, key := range order {
+		if key == legacySentinel {
+			hasLegacy = true
+		} else {
+			nonLegacyCount++
+		}
+	}
+
+	// Use detailed block only for pure single-session cases (no mixing with legacy).
+	if !detail && nonLegacyCount == 1 && !hasLegacy {
+		// Exactly one opencode session, no legacy data — detailed block format.
+		for _, m := range allMetrics {
+			if !m.isLegacy() {
+				renderSessionDetail(m)
+				return nil
+			}
+		}
+	}
+
+	if !detail && nonLegacyCount == 0 && hasLegacy {
+		// Only legacy events (all NULL-sid) — render as detailed block with legacy label.
+		if len(allMetrics) == 1 {
+			m := allMetrics[0]
+			// Mark model as legacy if there's no model info.
+			if m.ModelID == "" {
+				m.ModelID = "(legacy)"
+			}
+			m.AgentName = "(legacy, pre-sidecar)"
+			renderSessionDetail(m)
+			return nil
+		}
+	}
+
+	// Multi-session (or --detail forced): render compact table.
+	renderSessionCompactTable(session, allMetrics, status, detail)
 	return nil
 }
 
+// renderSessionDetail renders the detailed block format for a single opencode session.
 func renderSessionDetail(m *sessionMetrics) {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -425,11 +553,158 @@ func renderSessionDetail(m *sessionMetrics) {
 	}
 }
 
+// renderSessionCompactTable renders a compact one-row-per-opencode-session table
+// for tmux sessions that contain multiple opencode sessions. If detail is true,
+// each session is rendered as a full block instead.
+func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, status *db.Status, detail bool) {
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	// Compute summary totals.
+	var totalTurns int
+	var totalCost float64
+	distinctModels := make(map[string]struct{})
+	for _, m := range metrics {
+		totalTurns += m.AssistantTurns
+		totalCost += m.totalCost()
+		if m.ModelID != "" && m.ModelID != "(legacy)" {
+			distinctModels[m.ModelID] = struct{}{}
+		}
+	}
+
+	fmt.Println(styleHeader.Render("session: " + sessionName))
+	if status != nil && status.State != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(status.State).Render(status.State))
+	}
+	fmt.Println()
+
+	// Summary line.
+	modelCountStr := ""
+	if len(distinctModels) > 1 {
+		modelCountStr = fmt.Sprintf(", %d models", len(distinctModels))
+	} else if len(distinctModels) == 1 {
+		for m := range distinctModels {
+			modelCountStr = fmt.Sprintf(", model: %s", m)
+		}
+	}
+	costStr := "—"
+	if totalCost > 0 {
+		costStr = formatCost(totalCost)
+	}
+	fmt.Printf("%s %d opencode sessions%s · %d turns · %s\n",
+		styleLabel.Render("summary:"),
+		len(metrics),
+		modelCountStr,
+		totalTurns,
+		costStr,
+	)
+	fmt.Println()
+
+	if detail {
+		// --detail: render each opencode session as a full block.
+		for i, m := range metrics {
+			if i > 0 {
+				fmt.Println(styleDim.Render(strings.Repeat("─", 60)))
+				fmt.Println()
+			}
+			if m.isLegacy() {
+				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render("(legacy, pre-sidecar)"))
+				if m.ModelID == "" {
+					m.ModelID = "(legacy)"
+				}
+			} else {
+				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render(m.OpencodeSID))
+			}
+			fmt.Println()
+			renderSessionDetail(m)
+		}
+		return
+	}
+
+	// Compact table mode.
+	const (
+		wStarted  = 20
+		wDuration = 10
+		wModel    = 30
+		wTurns    = 6
+		wInput    = 8
+		wOutput   = 8
+		wCost     = 8
+	)
+
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s",
+		wStarted, "STARTED",
+		wDuration, "DURATION",
+		wModel, "MODEL",
+		wTurns, "TURNS",
+		wInput, "INPUT",
+		wOutput, "OUTPUT",
+		wCost, "COST",
+	)
+	fmt.Println(styleDim.Render(header))
+	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
+
+	for _, m := range metrics {
+		// Session identifier label.
+		startedStr := "—"
+		if !m.FirstEvent.IsZero() {
+			startedStr = m.FirstEvent.Format("2006-01-02 15:04")
+		}
+
+		durStr := formatDurationLong(m.duration())
+
+		modelStr := m.ModelID
+		if modelStr == "" {
+			modelStr = "—"
+		}
+		if m.isLegacy() {
+			// For the legacy sentinel row, show model or "(legacy)" in model column.
+			if modelStr == "" || modelStr == "(legacy)" {
+				modelStr = "(legacy)"
+			}
+			startedStr = "(legacy, pre-sidecar)"
+			if len(startedStr) > wStarted {
+				startedStr = startedStr[:wStarted]
+			}
+		}
+		if len(modelStr) > wModel {
+			modelStr = modelStr[:wModel-3] + "..."
+		}
+
+		turnsStr := fmt.Sprintf("%d", m.AssistantTurns)
+		inputStr := "—"
+		if m.InputTokens > 0 {
+			inputStr = formatTokenCount(m.InputTokens)
+		}
+		outputStr := "—"
+		if m.OutputTokens > 0 {
+			outputStr = formatTokenCount(m.OutputTokens)
+		}
+		costStr := "—"
+		if c := m.totalCost(); c > 0 {
+			costStr = formatCost(c)
+		}
+
+		fmt.Printf("%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s\n",
+			wStarted, startedStr,
+			wDuration, durStr,
+			wModel, modelStr,
+			wTurns, turnsStr,
+			wInput, inputStr,
+			wOutput, outputStr,
+			wCost, costStr,
+		)
+	}
+
+	fmt.Println()
+	fmt.Println(styleDim.Render("use --detail to see full metrics for each opencode session"))
+}
+
 // ---------- summary table ----------
 
 // runStatsSummary shows a summary table of all active sessions across all repos.
-// showAll is accepted for backwards compatibility but is now a no-op.
-func runStatsSummary(_ bool) error {
+func runStatsSummary() error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
@@ -459,20 +734,57 @@ func runStatsSummary(_ bool) error {
 	var rows []summaryRow
 	for _, s := range statuses {
 		events, _ := d.AllSessionEvents(s.SessionName)
-		m := collectMetrics(events)
-		if s.RootAgentName != nil && *s.RootAgentName != "" {
-			m.AgentName = *s.RootAgentName
+		grouped, order := groupEventsByOpencodeSID(events)
+		// For the summary table, aggregate across all opencode sessions within
+		// the tmux session to get total tokens/cost/duration.
+		var totalInput, totalOutput, totalCacheRead, totalCacheWrite int
+		var firstEvent, lastEvent time.Time
+		for _, key := range order {
+			m := collectMetrics(grouped[key], key)
+			totalInput += m.InputTokens
+			totalOutput += m.OutputTokens
+			totalCacheRead += m.CacheReadTokens
+			totalCacheWrite += m.CacheWriteTokens
+			if !m.FirstEvent.IsZero() && (firstEvent.IsZero() || m.FirstEvent.Before(firstEvent)) {
+				firstEvent = m.FirstEvent
+			}
+			if m.LastEvent.After(lastEvent) {
+				lastEvent = m.LastEvent
+			}
 		}
+		dur := time.Duration(0)
+		if !firstEvent.IsZero() && !lastEvent.IsZero() {
+			dur = lastEvent.Sub(firstEvent)
+		}
+
+		// Determine model for display from status (most up-to-date).
+		modelID := ""
 		if s.RootModelID != nil && *s.RootModelID != "" {
-			m.ModelID = *s.RootModelID
+			modelID = *s.RootModelID
 		}
+		agentName := ""
+		if s.RootAgentName != nil && *s.RootAgentName != "" {
+			agentName = *s.RootAgentName
+		}
+
+		// Compute cost from accumulated tokens.
+		cost := 0.0
+		if modelID != "" {
+			if costs, ok := modelCosts[modelID]; ok {
+				cost = (float64(totalInput)*costs.Input +
+					float64(totalOutput)*costs.Output +
+					float64(totalCacheRead)*costs.CacheRead +
+					float64(totalCacheWrite)*costs.CacheWrite) / 1_000_000
+			}
+		}
+
 		rows = append(rows, summaryRow{
 			Session:  s.SessionName,
-			Agent:    truncateStr(agentShortName(m.AgentName), 12),
+			Agent:    truncateStr(agentShortName(agentName), 12),
 			State:    s.State,
-			Duration: m.duration(),
-			Tokens:   m.InputTokens + m.OutputTokens,
-			Cost:     m.totalCost(),
+			Duration: dur,
+			Tokens:   totalInput + totalOutput,
+			Cost:     cost,
 		})
 	}
 
@@ -555,24 +867,40 @@ func runStatsHistorical(days int) error {
 	}
 	var sessionCosts []sessionCostEntry
 
-	for session, events := range bySession {
+	for session, evts := range bySession {
 		totalSessions++
-		m := collectMetrics(events)
-		// Enrich from status table for model info.
-		status, _ := d.CurrentStatus(session)
-		if status != nil {
-			if status.RootModelID != nil && *status.RootModelID != "" {
-				m.ModelID = *status.RootModelID
+		// Sum across all opencode sessions within this tmux session.
+		grouped, order := groupEventsByOpencodeSID(evts)
+		var sessionCost float64
+		var sessionDur time.Duration
+		var firstEvent, lastEvent time.Time
+		for _, key := range order {
+			m := collectMetrics(grouped[key], key)
+			// Enrich model from status table for cost calculation.
+			if m.ModelID == "" {
+				st, _ := d.CurrentStatus(session)
+				if st != nil && st.RootModelID != nil && *st.RootModelID != "" {
+					m.ModelID = *st.RootModelID
+				}
+			}
+			sessionCost += m.totalCost()
+			for tool, count := range m.ToolCalls {
+				toolCounts[tool] += count
+			}
+			if !m.FirstEvent.IsZero() && (firstEvent.IsZero() || m.FirstEvent.Before(firstEvent)) {
+				firstEvent = m.FirstEvent
+			}
+			if m.LastEvent.After(lastEvent) {
+				lastEvent = m.LastEvent
 			}
 		}
-		cost := m.totalCost()
-		totalCost += cost
-		totalDuration += m.duration()
-		for tool, count := range m.ToolCalls {
-			toolCounts[tool] += count
+		if !firstEvent.IsZero() && !lastEvent.IsZero() {
+			sessionDur = lastEvent.Sub(firstEvent)
 		}
-		if cost > 0 {
-			sessionCosts = append(sessionCosts, sessionCostEntry{session, cost})
+		totalCost += sessionCost
+		totalDuration += sessionDur
+		if sessionCost > 0 {
+			sessionCosts = append(sessionCosts, sessionCostEntry{session, sessionCost})
 		}
 	}
 
@@ -703,13 +1031,14 @@ type modelMetrics struct {
 	Provider     string
 	Model        string
 	Turns        int
-	Sessions     map[string]struct{} // distinct session IDs
+	Sessions     map[string]struct{} // distinct opencode session IDs
 	DurationsMs  []float64           // durationMs values for P50 (zero values excluded)
 	TtftMs       []float64           // ttftMs values for P50 (zero/absent values excluded)
 	TokPerSec    []float64           // output tokens/sec per turn (zero-duration turns excluded)
 	InputTokens  int
 	OutputTokens int
 	Cost         float64
+	AgentCounts  map[string]int // agent name → turn count for this model
 }
 
 // percentileFloat64 returns the p-th percentile of a sorted (or unsorted) slice.
@@ -747,6 +1076,11 @@ func splitModel(modelID string) (provider, model string) {
 // collectModelMetrics groups msg_assistant events by provider/model and builds
 // per-model metrics. Turns with durationMs == 0 are excluded from latency and
 // throughput calculations.
+//
+// Sessions are counted by distinct opencode_sid (not session_name) so that
+// long-lived tmux sessions with multiple opencode sessions are counted correctly.
+// Events with a NULL opencode_sid are counted as distinct sessions only if the
+// session_name is distinct — they're bucketed by session_name as a fallback.
 func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 	metrics := make(map[string]*modelMetrics)
 
@@ -768,17 +1102,31 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 		m, ok := metrics[key]
 		if !ok {
 			m = &modelMetrics{
-				Provider: provider,
-				Model:    model,
-				Sessions: make(map[string]struct{}),
+				Provider:    provider,
+				Model:       model,
+				Sessions:    make(map[string]struct{}),
+				AgentCounts: make(map[string]int),
 			}
 			metrics[key] = m
 		}
 
 		m.Turns++
-		m.Sessions[e.SessionName] = struct{}{}
+
+		// Count sessions by opencode_sid when available; fall back to session_name
+		// for NULL-sid (legacy) events so they still contribute a session count.
+		if e.OpencodeSID != nil && *e.OpencodeSID != "" {
+			m.Sessions[*e.OpencodeSID] = struct{}{}
+		} else {
+			m.Sessions["legacy:"+e.SessionName] = struct{}{}
+		}
+
 		m.InputTokens += p.InputTokens
 		m.OutputTokens += p.OutputTokens
+
+		// Track agent breakdown.
+		if p.Agent != "" {
+			m.AgentCounts[p.Agent]++
+		}
 
 		// Cost using the full key (provider/model).
 		if costs, ok := modelCosts[key]; ok {
@@ -805,6 +1153,31 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 	return metrics
 }
 
+// formatAgentSummary returns a compact agent summary string for the AGENTS column.
+// Shows the dominant agent name, followed by "(×N)" if there are N distinct agents.
+// Example: "coordinator (×3)" means coordinator ran most turns and 3 distinct
+// agent types ran on this model.
+func formatAgentSummary(agentCounts map[string]int) string {
+	if len(agentCounts) == 0 {
+		return "—"
+	}
+
+	// Find the dominant agent (most turns).
+	var dominant string
+	var dominantCount int
+	for agent, count := range agentCounts {
+		if count > dominantCount || (count == dominantCount && agent < dominant) {
+			dominant = agent
+			dominantCount = count
+		}
+	}
+
+	if len(agentCounts) == 1 {
+		return dominant
+	}
+	return fmt.Sprintf("%s (×%d)", dominant, len(agentCounts))
+}
+
 // formatLatency formats a duration given in milliseconds as "Xs" or "Xm Ys".
 func formatLatency(ms float64) string {
 	secs := int(ms / 1000)
@@ -826,14 +1199,18 @@ window.
 
 TTFT p50 shows median time-to-first-token (request sent → first streaming chunk
 received). DUR p50 shows median full turn duration (request sent → complete
-response received).`,
+response received).
+
+The AGENTS column shows the dominant agent type for each model, with a count of
+distinct agent types in parentheses when more than one agent ran on that model.
+Example: "coordinator (×3)" means the coordinator was dominant and 3 distinct
+agent types used that model.`,
 	Args: cobra.NoArgs,
 	RunE: runStatsModel,
 }
 
 func init() {
 	modelCmd.Flags().Int("days", 7, "Number of days to include (default 7)")
-	modelCmd.Flags().Bool("all", false, "No-op, kept for consistency (always cross-repo)")
 	statsCmd.AddCommand(modelCmd)
 }
 
@@ -907,10 +1284,11 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 		wOutput   = 8
 		wCost     = 8
 		wSessions = 8
+		wAgents   = 20
 	)
 
 	// Header row.
-	header := fmt.Sprintf("%-*s  %-*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s",
+	header := fmt.Sprintf("%-*s  %-*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s  %*s  %-*s",
 		wProvider, "PROVIDER",
 		wModel, "MODEL",
 		wTurns, "TURNS",
@@ -921,6 +1299,7 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 		wOutput, "OUTPUT",
 		wCost, "COST",
 		wSessions, "SESSIONS",
+		wAgents, "AGENTS",
 	)
 	fmt.Println(styleHeaderDim.Render(header))
 
@@ -963,7 +1342,9 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 			provider = "(unknown)"
 		}
 
-		fmt.Printf("%-*s  %-*s  %*d  %*s  %*s  %*s  %*s  %*s  %*s  %*d\n",
+		agentStr := formatAgentSummary(m.AgentCounts)
+
+		fmt.Printf("%-*s  %-*s  %*d  %*s  %*s  %*s  %*s  %*s  %*s  %*d  %-*s\n",
 			wProvider, provider,
 			wModel, m.Model,
 			wTurns, m.Turns,
@@ -974,9 +1355,11 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 			wOutput, formatTokenCount(m.OutputTokens),
 			wCost, costStr,
 			wSessions, len(m.Sessions),
+			wAgents, agentStr,
 		)
 	}
 
 	fmt.Println()
 	fmt.Println(styleDim.Render("Note: TTFT p50 = time to first token (request→first chunk); DUR p50 = full turn duration (request→complete response)."))
+	fmt.Println(styleDim.Render("      SESSIONS = distinct opencode sessions; AGENTS = dominant agent type (×N = N distinct agent types)."))
 }

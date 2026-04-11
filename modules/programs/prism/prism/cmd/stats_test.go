@@ -45,6 +45,24 @@ func writeStatsEvent(t *testing.T, d *db.DB, session, typ, payload string, ts ti
 	}
 }
 
+// writeStatsEventWithSID writes an event with an explicit opencode_sid.
+func writeStatsEventWithSID(t *testing.T, d *db.DB, session, sid, typ, payload string, ts time.Time) {
+	t.Helper()
+	e := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: session,
+		Repo:        "testrepo",
+		Worktree:    "/code/testrepo/main",
+		OpencodeSID: &sid,
+		Type:        typ,
+		Payload:     payload,
+		CreatedAt:   ts,
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+}
+
 func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, cacheRead, cacheWrite int, durationMs int64, contextPct float64) string {
 	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":"opencode","model":"anthropic/claude-sonnet-4-6","inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d,"durationMs":%d,"contextWindowPct":%f}`,
 		msgID, text, inputTokens, outputTokens, cacheRead, cacheWrite, durationMs, contextPct)
@@ -53,6 +71,12 @@ func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, c
 func toolCallPayloadWithDuration(msgID, tool, args string, durationMs int64) string {
 	return fmt.Sprintf(`{"messageId":%q,"tool":%q,"args":%q,"durationMs":%d}`,
 		msgID, tool, args, durationMs)
+}
+
+// assistantPayloadWithAgentModel creates an assistant payload with explicit agent and model fields.
+func assistantPayloadWithAgentModel(msgID, agent, model string, inputTokens, outputTokens int) string {
+	return fmt.Sprintf(`{"messageId":%q,"text":"reply","agent":%q,"model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":5000}`,
+		msgID, agent, model, inputTokens, outputTokens)
 }
 
 // --- per-session detail tests ---
@@ -77,7 +101,7 @@ func TestRunStatsSession_TokenTotals(t *testing.T) {
 		base.Add(10*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -107,7 +131,7 @@ func TestRunStatsSession_CostEstimate(t *testing.T) {
 		base)
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -136,7 +160,7 @@ func TestRunStatsSession_TurnDurations(t *testing.T) {
 		base.Add(20*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -171,7 +195,7 @@ func TestRunStatsSession_ToolBreakdown(t *testing.T) {
 		base.Add(2*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -203,7 +227,7 @@ func TestRunStatsSession_PeakContext(t *testing.T) {
 		base.Add(10*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -230,7 +254,7 @@ func TestRunStatsSession_Compactions(t *testing.T) {
 	writeStatsEvent(t, d, session, "compaction", `{"note":"compaction complete"}`, base.Add(10*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -250,7 +274,7 @@ func TestRunStatsSession_NoData(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -264,12 +288,337 @@ func TestRunStatsSession_NoData(t *testing.T) {
 func TestRunStatsSession_NotFound(t *testing.T) {
 	_ = openStatsTestDB(t)
 
-	err := runStatsSession("nonexistent@main")
+	err := runStatsSession("nonexistent@main", false)
 	if err == nil {
 		t.Error("expected error for nonexistent session, got nil")
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error should mention 'not found'\ngot: %v", err)
+	}
+}
+
+// TestRunStatsSession_MultipleOpencodeSessions verifies that a tmux session
+// with multiple opencode sessions renders a compact table.
+func TestRunStatsSession_MultipleOpencodeSessions(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	sid1 := "ses_aaa111"
+	sid2 := "ses_bbb222"
+
+	// Session 1: coordinator on sonnet.
+	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-1", "coordinator", "anthropic/claude-sonnet-4-6", 1000, 500),
+		base)
+	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-2", "coordinator", "anthropic/claude-sonnet-4-6", 2000, 800),
+		base.Add(10*time.Second))
+
+	// Session 2: coordinator on opus.
+	writeStatsEventWithSID(t, d, session, sid2, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-3", "coordinator", "anthropic/claude-opus-4-6", 5000, 2000),
+		base.Add(1*time.Hour))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// Should show compact table with summary row.
+	if !strings.Contains(out, "summary:") {
+		t.Errorf("output missing 'summary:' line for multi-session\ngot:\n%s", out)
+	}
+	// Should show both models.
+	if !strings.Contains(out, "claude-sonnet-4-6") {
+		t.Errorf("output missing 'claude-sonnet-4-6'\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "claude-opus-4-6") {
+		t.Errorf("output missing 'claude-opus-4-6'\ngot:\n%s", out)
+	}
+	// Should show compact table headers.
+	if !strings.Contains(out, "STARTED") {
+		t.Errorf("output missing 'STARTED' column header\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "DURATION") {
+		t.Errorf("output missing 'DURATION' column header\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_SingleSessionUnchanged verifies that a tmux session with
+// exactly one opencode session renders the pre-existing detailed block format.
+func TestRunStatsSession_SingleSessionUnchanged(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@feature"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/feature", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	sid := "ses_single123"
+	writeStatsEventWithSID(t, d, session, sid, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-1", "coordinator", "anthropic/claude-sonnet-4-6", 1000, 500),
+		base)
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// Should show detailed block, not compact table.
+	if strings.Contains(out, "summary:") {
+		t.Errorf("single session should NOT show 'summary:' compact table header\ngot:\n%s", out)
+	}
+	// Should show detailed block headers.
+	if !strings.Contains(out, "Token Usage") {
+		t.Errorf("output missing 'Token Usage' for single session detailed block\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "Turns") {
+		t.Errorf("output missing 'Turns' for single session detailed block\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_NullSidLegacySentinel verifies that events with NULL
+// opencode_sid are grouped under the legacy sentinel and displayed as "(legacy)".
+func TestRunStatsSession_NullSidLegacySentinel(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Write events with NULL opencode_sid (no SID — uses writeStatsEvent which doesn't set SID).
+	writeStatsEvent(t, d, session, "msg_assistant",
+		`{"messageId":"msg-old","text":"old reply","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":500,"outputTokens":200,"durationMs":3000}`,
+		base)
+	writeStatsEvent(t, d, session, "msg_assistant",
+		`{"messageId":"msg-old2","text":"old reply 2","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":400,"outputTokens":150,"durationMs":2000}`,
+		base.Add(10*time.Second))
+
+	// Also write events with a real SID so we have 2 groups.
+	sid := "ses_real456"
+	writeStatsEventWithSID(t, d, session, sid, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-new", "coordinator", "anthropic/claude-sonnet-4-6", 1000, 500),
+		base.Add(1*time.Hour))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// Should show compact table (2 groups: legacy + real session).
+	if !strings.Contains(out, "summary:") {
+		t.Errorf("output missing 'summary:' for multi-group session\ngot:\n%s", out)
+	}
+	// Legacy row should be labelled.
+	if !strings.Contains(out, "legacy") {
+		t.Errorf("output missing 'legacy' label for NULL-sid group\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_AllNullSidSingleLegacy verifies that a session where ALL
+// events have NULL opencode_sid renders as a detailed block labelled "(legacy)".
+func TestRunStatsSession_AllNullSidSingleLegacy(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@old"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/old", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// All events have NULL opencode_sid.
+	writeStatsEvent(t, d, session, "msg_assistant",
+		`{"messageId":"msg-1","text":"reply","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":500,"outputTokens":200,"durationMs":3000}`,
+		base)
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// All-legacy session: should render as detailed block (not compact table).
+	if strings.Contains(out, "STARTED") {
+		t.Errorf("all-legacy session should use detailed block, not compact table\ngot:\n%s", out)
+	}
+	// Should show legacy label.
+	if !strings.Contains(out, "legacy") {
+		t.Errorf("all-legacy session should show 'legacy' label\ngot:\n%s", out)
+	}
+	// Should show Token Usage block (detailed format).
+	if !strings.Contains(out, "Token Usage") {
+		t.Errorf("all-legacy session should show 'Token Usage' in detailed block\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_DetailFlag verifies that --detail forces detailed block
+// format even for multi-session tmux sessions.
+func TestRunStatsSession_DetailFlag(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	sid1 := "ses_aaa111"
+	sid2 := "ses_bbb222"
+
+	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-1", "coordinator", "anthropic/claude-sonnet-4-6", 1000, 500),
+		base)
+	writeStatsEventWithSID(t, d, session, sid2, "msg_assistant",
+		assistantPayloadWithAgentModel("msg-2", "coordinator", "anthropic/claude-opus-4-6", 5000, 2000),
+		base.Add(1*time.Hour))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, true); err != nil { // detail=true
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// With --detail, should show detailed block format for each session.
+	if !strings.Contains(out, "Token Usage") {
+		t.Errorf("--detail flag should show 'Token Usage' in block format\ngot:\n%s", out)
+	}
+	// Should still show the summary line at top.
+	if !strings.Contains(out, "summary:") {
+		t.Errorf("--detail flag should still show 'summary:' header\ngot:\n%s", out)
+	}
+}
+
+// TestGroupEventsByOpencodeSID verifies event grouping by opencode_sid.
+func TestGroupEventsByOpencodeSID(t *testing.T) {
+	sid1 := "ses_aaa"
+	sid2 := "ses_bbb"
+
+	events := []db.Event{
+		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid1, Payload: `{}`, CreatedAt: time.Now()},
+		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid2, Payload: `{}`, CreatedAt: time.Now()},
+		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: nil, Payload: `{}`, CreatedAt: time.Now()},   // NULL → sentinel
+		{ID: "4", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid1, Payload: `{}`, CreatedAt: time.Now()}, // same as id=1
+	}
+
+	grouped, order := groupEventsByOpencodeSID(events)
+
+	if len(order) != 3 {
+		t.Errorf("expected 3 groups (sid1, sid2, sentinel), got %d: %v", len(order), order)
+	}
+	if len(grouped[sid1]) != 2 {
+		t.Errorf("sid1 group should have 2 events, got %d", len(grouped[sid1]))
+	}
+	if len(grouped[sid2]) != 1 {
+		t.Errorf("sid2 group should have 1 event, got %d", len(grouped[sid2]))
+	}
+	if len(grouped[legacySentinel]) != 1 {
+		t.Errorf("legacy sentinel group should have 1 event, got %d", len(grouped[legacySentinel]))
+	}
+	// Order should be: sid1 first (first seen), then sid2, then sentinel.
+	if order[0] != sid1 {
+		t.Errorf("first group should be %q, got %q", sid1, order[0])
+	}
+	if order[1] != sid2 {
+		t.Errorf("second group should be %q, got %q", sid2, order[1])
+	}
+	if order[2] != legacySentinel {
+		t.Errorf("third group should be legacySentinel %q, got %q", legacySentinel, order[2])
+	}
+}
+
+// TestCollectMetrics_CoordinatorModelPreferred verifies that the coordinator
+// agent's model is preferred over the most-frequent model.
+func TestCollectMetrics_CoordinatorModelPreferred(t *testing.T) {
+	// 3 turns on opus (build/review), 1 turn on sonnet (coordinator).
+	// Coordinator model should win despite being less frequent.
+	events := []db.Event{
+		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"review","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+		{ID: "4", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+	}
+
+	m := collectMetrics(events, "ses_abc")
+
+	if m.ModelID != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("expected coordinator model 'anthropic/claude-sonnet-4-6', got %q", m.ModelID)
+	}
+	if m.AssistantTurns != 4 {
+		t.Errorf("expected 4 assistant turns, got %d", m.AssistantTurns)
+	}
+}
+
+// TestCollectMetrics_FallbackToMostFrequent verifies that when no coordinator
+// turn exists, the most-frequent model is used.
+func TestCollectMetrics_FallbackToMostFrequent(t *testing.T) {
+	events := []db.Event{
+		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"review","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+			Payload: `{"agent":"explore","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+	}
+
+	m := collectMetrics(events, "ses_abc")
+
+	// opus appears 2 times, sonnet 1 time — opus should win.
+	if m.ModelID != "anthropic/claude-opus-4-6" {
+		t.Errorf("expected most-frequent model 'anthropic/claude-opus-4-6', got %q", m.ModelID)
+	}
+}
+
+// TestCollectMetrics_NullSidLegacy verifies that the legacy sentinel is set
+// correctly for NULL-sid events.
+func TestCollectMetrics_NullSidLegacy(t *testing.T) {
+	events := []db.Event{
+		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: nil,
+			Payload: `{"agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
+	}
+
+	m := collectMetrics(events, legacySentinel)
+
+	if !m.isLegacy() {
+		t.Errorf("expected m.isLegacy() == true for legacySentinel key")
+	}
+	if m.OpencodeSID != legacySentinel {
+		t.Errorf("OpencodeSID should be legacySentinel %q, got %q", legacySentinel, m.OpencodeSID)
+	}
+}
+
+// TestRunStatsSession_ZeroEvents verifies that a zero-event tmux session renders
+// without panic.
+func TestRunStatsSession_ZeroEvents(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@empty"
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/empty", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "no metrics data") {
+		t.Errorf("zero-event session should show 'no metrics data'\ngot:\n%s", out)
 	}
 }
 
@@ -293,7 +642,7 @@ func TestRunStatsSummary_ActiveSessions(t *testing.T) {
 		base)
 
 	out := captureStdout(t, func() {
-		if err := runStatsSummary(true); err != nil {
+		if err := runStatsSummary(); err != nil {
 			t.Errorf("runStatsSummary: %v", err)
 		}
 	})
@@ -314,7 +663,7 @@ func TestRunStatsSummary_NoSessions(t *testing.T) {
 	_ = openStatsTestDB(t)
 
 	out := captureStdout(t, func() {
-		if err := runStatsSummary(true); err != nil {
+		if err := runStatsSummary(); err != nil {
 			t.Errorf("runStatsSummary: %v", err)
 		}
 	})
@@ -491,7 +840,7 @@ func TestRunStatsSession_SubagentInvocations(t *testing.T) {
 		base.Add(50*time.Second))
 
 	out := captureStdout(t, func() {
-		if err := runStatsSession(session); err != nil {
+		if err := runStatsSession(session, false); err != nil {
 			t.Errorf("runStatsSession: %v", err)
 		}
 	})
@@ -508,8 +857,7 @@ func TestRunStatsSession_SubagentInvocations(t *testing.T) {
 }
 
 // TestRunStats_DaysMutuallyExclusive verifies that --days is mutually exclusive
-// with a session name argument. --all is now a no-op so --days + --all is
-// allowed.
+// with a session name argument.
 func TestRunStats_DaysMutuallyExclusive(t *testing.T) {
 	_ = openStatsTestDB(t)            // needed so openDB() works in runStats
 	statsCmd.Flags().Set("days", "7") //nolint:errcheck
@@ -523,15 +871,23 @@ func TestRunStats_DaysMutuallyExclusive(t *testing.T) {
 	if !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Errorf("expected 'mutually exclusive' in error for --days+session, got: %v", err)
 	}
+}
 
-	// --days + --all should NOT error (--all is a no-op for backwards compatibility).
-	statsCmd.Flags().Set("all", "true") //nolint:errcheck
-	defer statsCmd.Flags().Set("all", "false")
+// TestRunStats_AllFlagRemoved verifies that --all is no longer a registered flag
+// on statsCmd (passing it should result in an error/unknown flag).
+func TestRunStats_AllFlagRemoved(t *testing.T) {
+	f := statsCmd.Flags().Lookup("all")
+	if f != nil {
+		t.Error("statsCmd should NOT have an --all flag (it was removed), but it is still registered")
+	}
+}
 
-	err = runStats(statsCmd, nil)
-	// May return an error from the DB (no events), but must NOT be a "mutually exclusive" error.
-	if err != nil && strings.Contains(err.Error(), "mutually exclusive") {
-		t.Errorf("--days + --all should not produce a 'mutually exclusive' error, got: %v", err)
+// TestRunStatsModel_AllFlagRemoved verifies that --all is no longer a registered
+// flag on modelCmd.
+func TestRunStatsModel_AllFlagRemoved(t *testing.T) {
+	f := modelCmd.Flags().Lookup("all")
+	if f != nil {
+		t.Error("modelCmd should NOT have an --all flag (it was removed), but it is still registered")
 	}
 }
 
@@ -555,7 +911,7 @@ func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 		t.Fatalf("AllSessionEvents: %v", err)
 	}
 
-	m := collectMetrics(events)
+	m := collectMetrics(events, legacySentinel)
 
 	if m.AssistantTurns != 1 {
 		t.Errorf("AssistantTurns = %d, want 1", m.AssistantTurns)
@@ -619,9 +975,6 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 	if ghEntry.Turns != 2 {
 		t.Errorf("github-copilot turns = %d, want 2", ghEntry.Turns)
 	}
-	if len(ghEntry.Sessions) != 1 {
-		t.Errorf("github-copilot sessions = %d, want 1", len(ghEntry.Sessions))
-	}
 	if ghEntry.InputTokens != 15000 {
 		t.Errorf("github-copilot input tokens = %d, want 15000", ghEntry.InputTokens)
 	}
@@ -640,7 +993,7 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 		renderModelBreakdown(metrics, 7)
 	})
 
-	for _, want := range []string{"PROVIDER", "MODEL", "TURNS", "TTFT p50", "DUR p50", "TOK/S p50", "INPUT", "OUTPUT", "COST", "SESSIONS"} {
+	for _, want := range []string{"PROVIDER", "MODEL", "TURNS", "TTFT p50", "DUR p50", "TOK/S p50", "INPUT", "OUTPUT", "COST", "SESSIONS", "AGENTS"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing column header %q\ngot:\n%s", want, out)
 		}
@@ -650,6 +1003,69 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, "anthropic") {
 		t.Errorf("output missing 'anthropic'\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsModel_SessionCountByOpencodeSID verifies that sessions are counted
+// by opencode_sid (not session_name) so that multi-session tmux sessions are
+// counted correctly.
+func TestRunStatsModel_SessionCountByOpencodeSID(t *testing.T) {
+	sid1 := "ses_opencode_aaa"
+	sid2 := "ses_opencode_bbb"
+	sid3 := "ses_opencode_ccc"
+
+	// Three distinct opencode sessions all within the same tmux session "repo@main",
+	// all using the same model.
+	events := []db.Event{
+		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid1,
+			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+		{ID: "2", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid2,
+			Payload:   `{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid3,
+			Payload:   `{"messageId":"m3","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+	}
+
+	metrics := collectModelMetrics(events)
+	entry, ok := metrics["anthropic/claude-sonnet-4-6"]
+	if !ok {
+		t.Fatal("missing entry for anthropic/claude-sonnet-4-6")
+	}
+
+	// Should count 3 sessions (one per opencode_sid), NOT 1 (session_name).
+	if len(entry.Sessions) != 3 {
+		t.Errorf("expected 3 distinct opencode sessions, got %d", len(entry.Sessions))
+	}
+}
+
+// TestRunStatsModel_NullSidFallbackSessionName verifies that NULL opencode_sid
+// events fall back to counting by session_name as a legacy bucket.
+func TestRunStatsModel_NullSidFallbackSessionName(t *testing.T) {
+	// Two different sessions, both with NULL opencode_sid, same model.
+	events := []db.Event{
+		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: nil,
+			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
+			CreatedAt: time.Now()},
+		{ID: "2", SessionName: "repo@feature", Type: "msg_assistant", OpencodeSID: nil,
+			Payload:   `{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
+			CreatedAt: time.Now()},
+		// Same session_name as first but different event — should NOT add another session count.
+		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: nil,
+			Payload:   `{"messageId":"m3","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
+			CreatedAt: time.Now()},
+	}
+
+	metrics := collectModelMetrics(events)
+	entry, ok := metrics["anthropic/claude-sonnet-4-6"]
+	if !ok {
+		t.Fatal("missing entry for anthropic/claude-sonnet-4-6")
+	}
+
+	// Should count 2 distinct sessions (repo@main and repo@feature), not 3.
+	if len(entry.Sessions) != 2 {
+		t.Errorf("expected 2 distinct legacy sessions, got %d: %v", len(entry.Sessions), entry.Sessions)
 	}
 }
 
@@ -891,9 +1307,8 @@ func TestRunStatsSummary_ShowsAllRepos(t *testing.T) {
 		assistantPayloadWithTokens("msg-2", "reply", 2000, 800, 0, 0, 5000, 0),
 		base.Add(time.Second))
 
-	// showAll=false should still show both repos.
 	out := captureStdout(t, func() {
-		if err := runStatsSummary(false); err != nil {
+		if err := runStatsSummary(); err != nil {
 			t.Errorf("runStatsSummary: %v", err)
 		}
 	})
@@ -903,6 +1318,64 @@ func TestRunStatsSummary_ShowsAllRepos(t *testing.T) {
 	}
 	if !strings.Contains(out, "repo-b@main") {
 		t.Errorf("output missing 'repo-b@main' — should show all repos\ngot:\n%s", out)
+	}
+}
+
+// TestFormatAgentSummary verifies the agent summary formatting helper.
+func TestFormatAgentSummary(t *testing.T) {
+	cases := []struct {
+		agentCounts map[string]int
+		want        string
+	}{
+		{nil, "—"},
+		{map[string]int{}, "—"},
+		{map[string]int{"coordinator": 10}, "coordinator"},
+		{map[string]int{"coordinator": 10, "build": 5}, "coordinator (×2)"},
+		{map[string]int{"coordinator": 5, "build": 10, "review": 3}, "build (×3)"},
+	}
+	for _, tc := range cases {
+		got := formatAgentSummary(tc.agentCounts)
+		if got != tc.want {
+			t.Errorf("formatAgentSummary(%v) = %q, want %q", tc.agentCounts, got, tc.want)
+		}
+	}
+}
+
+// TestRenderModelBreakdown_AgentsColumn verifies that the AGENTS column appears
+// in the model breakdown table with correct values.
+func TestRenderModelBreakdown_AgentsColumn(t *testing.T) {
+	// Two models: sonnet used by coordinator+review, haiku used only by explore.
+	events := []db.Event{
+		{ID: "1", SessionName: "s1", Type: "msg_assistant",
+			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+		{ID: "2", SessionName: "s1", Type: "msg_assistant",
+			Payload:   `{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+		{ID: "3", SessionName: "s1", Type: "msg_assistant",
+			Payload:   `{"messageId":"m3","text":"r","agent":"review","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+		{ID: "4", SessionName: "s1", Type: "msg_assistant",
+			Payload:   `{"messageId":"m4","text":"r","agent":"explore","model":"anthropic/claude-haiku-4-5","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
+			CreatedAt: time.Now()},
+	}
+
+	metrics := collectModelMetrics(events)
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	// AGENTS column header must appear.
+	if !strings.Contains(out, "AGENTS") {
+		t.Errorf("output missing 'AGENTS' column header\ngot:\n%s", out)
+	}
+	// Sonnet: coordinator dominant, 2 agent types → "coordinator (×2)"
+	if !strings.Contains(out, "coordinator (×2)") {
+		t.Errorf("output missing 'coordinator (×2)' for sonnet\ngot:\n%s", out)
+	}
+	// Haiku: only explore → "explore"
+	if !strings.Contains(out, "explore") {
+		t.Errorf("output missing 'explore' agent for haiku\ngot:\n%s", out)
 	}
 }
 
