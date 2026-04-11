@@ -796,7 +796,7 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 
 		agentName := info.Agent
 		model := ""
-		if info.Model != nil {
+		if info.Model != nil && info.Model.ProviderID != "" && info.Model.ModelID != "" {
 			model = info.Model.ProviderID + "/" + info.Model.ModelID
 		}
 

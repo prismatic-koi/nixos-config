@@ -2656,6 +2656,78 @@ func TestMessageUpdated_UserMessage_EmptyModel(t *testing.T) {
 	}
 }
 
+// TestMessageUpdated_UserMessage_PartialModel verifies that a user message with
+// an info.Model where either providerID or modelID is empty does NOT write
+// root_model_id (mirrors the both-fields guard on the assistant path).
+func TestMessageUpdated_UserMessage_PartialModel(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Seed a known model via assistant turn so we have something to preserve.
+	sendEvents(sc, makeUserMessage("msg-user-seed2", "root-agent", "Seed message"))
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-seed2",
+			"text":      "Seed reply.",
+		},
+	}))
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-seed2",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "anthropic",
+			"modelID":    "claude-opus-4-6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	want := "anthropic/claude-opus-4-6"
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after seed: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Fatalf("RootModelID after seed = %v, want %q", status.RootModelID, want)
+	}
+
+	// Fire a user message with a partial model (modelID empty). This must NOT
+	// write a malformed "anthropic/" value to root_model_id.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-user-partial-model",
+			"text":      "Partial model message",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "msg-user-partial-model",
+			"role":  "user",
+			"agent": "root-agent",
+			"model": map[string]string{
+				"providerID": "anthropic",
+				"modelID":    "", // empty — partial data
+			},
+		},
+	}))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after partial-model user msg: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after partial-model user message = %v, want %q (must not write malformed ID)", status.RootModelID, want)
+	}
+}
+
 // ── reconnect recovery timer tests ──────────────────────────────────────────
 
 // TestServerConnected_InitialConnection_NoTimer verifies that server.connected
