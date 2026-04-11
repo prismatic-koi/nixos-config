@@ -51,12 +51,33 @@ let
     project_specific = config.nx.programs.prism.projects.specific;
     git_user_name = gitUserName;
     git_user_email = gitUserEmail;
+    ssh_access_key_name = config.nx.programs.prism.sshAccessKeyName;
+    ssh_signing_key_name = config.nx.programs.prism.sshSigningKeyName;
   };
 in
 {
   options = {
     nx.programs.prism.tui.enable = lib.mkEnableOption "enables prism Go TUI binary" // {
       default = true;
+    };
+
+    nx.programs.prism.sshAccessKeyName = lib.mkOption {
+      type = lib.types.str;
+      default = "prismatic-koi-ed25519";
+      description = ''
+        Filename (not full path) of the SSH access key in ~/.ssh/ to mount
+        into prism containers. Defaults to "prismatic-koi-ed25519".
+      '';
+    };
+
+    nx.programs.prism.sshSigningKeyName = lib.mkOption {
+      type = lib.types.str;
+      default = "prismatic-koi-ed25519-signingkey";
+      description = ''
+        Base filename (not full path) of the SSH signing key in ~/.ssh/ to
+        mount into prism containers. The public key is derived by appending
+        ".pub". Defaults to "prismatic-koi-ed25519-signingkey".
+      '';
     };
   };
 

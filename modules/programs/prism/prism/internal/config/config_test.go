@@ -82,6 +82,48 @@ func TestEmptyArrayClearsDefault(t *testing.T) {
 	}
 }
 
+func TestSshKeyNameDefaults(t *testing.T) {
+	// SshAccessKeyName and SshSigningKeyName have no compiled-in default —
+	// they default to empty string, and the consumer (container.go) applies
+	// the fallback. This test verifies the fields are parsed correctly when set.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{
+		"ssh_access_key_name": "my-access-key",
+		"ssh_signing_key_name": "my-signing-key"
+	}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "my-access-key" {
+		t.Errorf("SshAccessKeyName: got %q, want %q", cfg.SshAccessKeyName, "my-access-key")
+	}
+	if cfg.SshSigningKeyName != "my-signing-key" {
+		t.Errorf("SshSigningKeyName: got %q, want %q", cfg.SshSigningKeyName, "my-signing-key")
+	}
+}
+
+func TestSshKeyNameAbsentIsEmpty(t *testing.T) {
+	// When ssh_access_key_name and ssh_signing_key_name are absent from the
+	// config file, the fields must be empty string (fallback applied by caller).
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "" {
+		t.Errorf("SshAccessKeyName: got %q, want empty string for absent key", cfg.SshAccessKeyName)
+	}
+	if cfg.SshSigningKeyName != "" {
+		t.Errorf("SshSigningKeyName: got %q, want empty string for absent key", cfg.SshSigningKeyName)
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

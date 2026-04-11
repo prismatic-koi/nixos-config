@@ -153,6 +153,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			ContainerCoordinatorConfigPath: prismCfg.ContainerCoordinatorConfigPath,
 			GitUserName:                    prismCfg.GitUserName,
 			GitUserEmail:                   prismCfg.GitUserEmail,
+			SshAccessKeyName:               prismCfg.SshAccessKeyName,
+			SshSigningKeyName:              prismCfg.SshSigningKeyName,
 		}
 	}
 

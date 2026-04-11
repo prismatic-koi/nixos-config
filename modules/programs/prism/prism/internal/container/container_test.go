@@ -1446,3 +1446,93 @@ func TestWriteGitconfig_NoUserSectionWhenIdentityMissing(t *testing.T) {
 		})
 	}
 }
+
+// ── SSH key name configurability tests ──────────────────────────────────────
+
+func TestWriteGitconfig_CustomSigningKeyName(t *testing.T) {
+	// When SshSigningKeyName is set, writeGitconfig should resolve that filename
+	// rather than the hardcoded default.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Create files under the custom name, NOT the default name.
+	for _, name := range []string{"my-custom-signingkey", "my-custom-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:       "repo@feat",
+		AllocatedPort:     14000,
+		GitUserName:       "test-user",
+		GitUserEmail:      "test@example.com",
+		SshSigningKeyName: "my-custom-signingkey",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// Signing sections must be present because the custom-named keys exist.
+	if !strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig missing [commit] for custom signing key; content:\n%s", content)
+	}
+	if !strings.Contains(content, "signingKey = /root/.ssh/signing-key.pub") {
+		t.Errorf("gitconfig missing signingKey; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_FallbackWhenSigningKeyNameEmpty(t *testing.T) {
+	// When SshSigningKeyName is empty, writeGitconfig falls back to the
+	// default name "prismatic-koi-ed25519-signingkey".
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Only the default-named files exist.
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+		// SshSigningKeyName intentionally left empty — must fall back to default.
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	// Fallback to default name means signing keys are found and sections present.
+	if !strings.Contains(content, "[commit]") {
+		t.Errorf("gitconfig missing [commit] with default signing key fallback; content:\n%s", content)
+	}
+	if !strings.Contains(content, "signingKey = /root/.ssh/signing-key.pub") {
+		t.Errorf("gitconfig missing signingKey with default signing key fallback; content:\n%s", content)
+	}
+}
