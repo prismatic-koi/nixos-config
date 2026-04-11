@@ -91,15 +91,17 @@ func restoreSession(d *db.DB, s db.Status) error {
 
 	switch s.SessionName {
 	case "prism-dashboard":
-		// Defensive guard — prism-dashboard is a non-project session and is
-		// never written to agent_status by prism event tmux-session-start (which
-		// exits silently when no .bare marker is found). This case cannot fire in
-		// practice under normal operation.
+		// Defensive guard — prism-dashboard is an internal meta-session
+		// explicitly skipped by name in cmd/event.go:tmux-session-start and
+		// will never appear in agent_status under normal operation. This case
+		// is retained as a safety net.
 		return nil
 
 	case "scratchpad":
-		// Defensive guard — same reasoning as prism-dashboard above: scratchpad
-		// has no .bare ancestor and will never appear in agent_status.
+		// Defensive guard — scratchpad is an internal meta-session explicitly
+		// skipped by name in cmd/event.go:tmux-session-start and will never
+		// appear in agent_status under normal operation. This case is retained
+		// as a safety net.
 		return ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
 
 	default:
