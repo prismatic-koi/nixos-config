@@ -1301,7 +1301,10 @@ func TestWriteGitconfig_SigningSectionsWhenKeysAndIdentityPresent(t *testing.T) 
 	if err := m.writeGitconfig(); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
 
 	data, err := os.ReadFile(m.gitconfigFilePath())
 	if err != nil {

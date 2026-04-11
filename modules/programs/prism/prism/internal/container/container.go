@@ -254,6 +254,10 @@ func (m *Manager) allowedSignersFilePath() string {
 // Missing identity → [user] section omitted, warning logged (AC-14).
 // Missing signing keys → signing sections omitted, warning logged (AC-13).
 func (m *Manager) writeGitconfig() error {
+	// Reset allowedSignersReady so that a retry or second call doesn't carry
+	// stale state from a previous successful write into a new call that may fail.
+	m.allowedSignersReady = false
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
@@ -317,11 +321,13 @@ func (m *Manager) writeGitconfig() error {
 			}
 		}
 
-		sb.WriteString("\n[commit]\n")
-		sb.WriteString("    gpgsign = true\n")
-		sb.WriteString("\n[gpg]\n")
-		sb.WriteString("    format = ssh\n")
+		// Only enable signing config when allowed_signers was successfully
+		// written — without it, commits would be signed but unverifiable.
 		if m.allowedSignersReady {
+			sb.WriteString("\n[commit]\n")
+			sb.WriteString("    gpgsign = true\n")
+			sb.WriteString("\n[gpg]\n")
+			sb.WriteString("    format = ssh\n")
 			sb.WriteString("\n[gpg \"ssh\"]\n")
 			sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
 		}
