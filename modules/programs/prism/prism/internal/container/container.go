@@ -159,6 +159,10 @@ type Manager struct {
 	name           string
 	healthCheckURL string
 	httpClient     *http.Client
+	// allowedSignersReady is true when writeGitconfig successfully wrote the
+	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
+	// so that podman is never given a source path that doesn't exist on disk.
+	allowedSignersReady bool
 }
 
 // New creates a Manager for the given config. It does not start the container.
@@ -187,6 +191,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
+	_ = os.Remove(m.allowedSignersFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -228,6 +233,14 @@ func (m *Manager) gitconfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
 }
 
+// allowedSignersFilePath returns the host path for the temporary
+// allowed_signers file written before container start. The file is mounted
+// read-only at /root/.ssh/allowed_signers and is required for
+// git verify-commit to work with SSH signing.
+func (m *Manager) allowedSignersFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-allowed-signers-"+m.name)
+}
+
 // writeGitconfig generates a minimal .gitconfig for the container and writes
 // it to a temp file. The file is later mounted at /root/.gitconfig:ro.
 //
@@ -241,6 +254,10 @@ func (m *Manager) gitconfigFilePath() string {
 // Missing identity → [user] section omitted, warning logged (AC-14).
 // Missing signing keys → signing sections omitted, warning logged (AC-13).
 func (m *Manager) writeGitconfig() error {
+	// Reset allowedSignersReady so that a retry or second call doesn't carry
+	// stale state from a previous successful write into a new call that may fail.
+	m.allowedSignersReady = false
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
@@ -287,12 +304,33 @@ func (m *Manager) writeGitconfig() error {
 	// identity is present. Without identity the [user] section is omitted, which
 	// means signingKey is never set; writing gpgsign=true in that case would
 	// cause every git commit to fail.
-	// TODO(#558): set gpg.ssh.allowedSignersFile so git verify-commit works inside containers.
 	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
-		sb.WriteString("\n[commit]\n")
-		sb.WriteString("    gpgsign = true\n")
-		sb.WriteString("\n[gpg]\n")
-		sb.WriteString("    format = ssh\n")
+		// Read the signing public key content to build the allowed_signers file.
+		// Only write [gpg "ssh"] allowedSignersFile when the file was actually
+		// produced — if it can't be written, podman must not be given a
+		// bind-mount source path that doesn't exist on disk.
+		pubKeyContent, err := os.ReadFile(signingKeyPub)
+		if err != nil {
+			log.Printf("container: failed to read signing public key %q: %v; skipping allowed_signers", signingKeyPub, err)
+		} else {
+			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
+			if err := os.WriteFile(m.allowedSignersFilePath(), []byte(allowedSignersContent), 0o644); err != nil {
+				log.Printf("container: failed to write allowed_signers file: %v", err)
+			} else {
+				m.allowedSignersReady = true
+			}
+		}
+
+		// Only enable signing config when allowed_signers was successfully
+		// written — without it, commits would be signed but unverifiable.
+		if m.allowedSignersReady {
+			sb.WriteString("\n[commit]\n")
+			sb.WriteString("    gpgsign = true\n")
+			sb.WriteString("\n[gpg]\n")
+			sb.WriteString("    format = ssh\n")
+			sb.WriteString("\n[gpg \"ssh\"]\n")
+			sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
+		}
 	}
 
 	// [push] and [init] — always included.
@@ -450,6 +488,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
+	_ = os.Remove(m.allowedSignersFilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -666,6 +705,13 @@ func (m *Manager) buildRunArgs() []string {
 			"--volume", signingKeyResolved+":/root/.ssh/signing-key:ro",
 			"--volume", signingKeyPubResolved+":/root/.ssh/signing-key.pub:ro",
 		)
+		// allowed_signers file (git verify-commit): only mount when the file
+		// was successfully written by writeGitconfig (tracked via
+		// allowedSignersReady). This ensures podman is never given a
+		// bind-mount source path that doesn't exist on disk.
+		if m.allowedSignersReady {
+			args = append(args, "--volume", m.allowedSignersFilePath()+":/root/.ssh/allowed_signers:ro")
+		}
 	}
 
 	// known_hosts: unchanged
