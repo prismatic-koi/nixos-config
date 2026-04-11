@@ -1321,6 +1321,135 @@ func TestRunStatsSummary_ShowsAllRepos(t *testing.T) {
 	}
 }
 
+// TestRunStatsSummary_MultiModelCost verifies that the summary table sums cost
+// per opencode session (each with its own model pricing) rather than applying
+// a single live model's rate to all accumulated tokens. This is critical for
+// long-lived tmux sessions that span multiple model changes.
+func TestRunStatsSummary_MultiModelCost(t *testing.T) {
+	d := openStatsTestDB(t)
+	base := time.Now().Truncate(time.Second)
+	const session = "testrepo@main"
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	sid1 := "ses_cheap111"
+	sid2 := "ses_expensive222"
+
+	// Session 1: haiku — 100K input @ $0.80/M = $0.08
+	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
+		`{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-haiku-4-5","inputTokens":100000,"outputTokens":0,"durationMs":5000}`,
+		base)
+
+	// Session 2: opus — 100K input @ $15.00/M = $1.50
+	writeStatsEventWithSID(t, d, session, sid2, "msg_assistant",
+		`{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100000,"outputTokens":0,"durationMs":5000}`,
+		base.Add(1*time.Hour))
+
+	// Expected: $0.08 (haiku) + $1.50 (opus) = ~$1.58
+	// Wrong (single-model bug): applying opus rate to all 200K tokens = $3.00
+	out := captureStdout(t, func() {
+		if err := runStatsSummary(); err != nil {
+			t.Errorf("runStatsSummary: %v", err)
+		}
+	})
+
+	// The cost shown should be ~$1.58, not ~$3.00.
+	if !strings.Contains(out, "~$1.58") {
+		t.Errorf("summary cost should be ~$1.58 (per-session pricing), got:\n%s", out)
+	}
+	if strings.Contains(out, "~$3.00") {
+		t.Errorf("summary cost must NOT be ~$3.00 (single-model-all-tokens bug)\ngot:\n%s", out)
+	}
+}
+
+// TestRenderSessionCompactTable_LegacyLabelFits verifies that the legacy row
+// label in the compact table fits within the STARTED column without truncation,
+// and never produces the malformed "(legacy, pre-sidecar" artefact.
+func TestRenderSessionCompactTable_LegacyLabelFits(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Legacy events (NULL sid).
+	writeStatsEvent(t, d, session, "msg_assistant",
+		`{"messageId":"old1","text":"r","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50,"durationMs":3000}`,
+		base)
+
+	// Real session alongside legacy — triggers compact table with legacy row.
+	sid := "ses_real999"
+	writeStatsEventWithSID(t, d, session, sid, "msg_assistant",
+		assistantPayloadWithAgentModel("new1", "coordinator", "anthropic/claude-sonnet-4-6", 500, 200),
+		base.Add(1*time.Hour))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// The compact table must show "(legacy)" — the full word with closing paren.
+	if !strings.Contains(out, "(legacy)") {
+		t.Errorf("compact table should contain '(legacy)' label\ngot:\n%s", out)
+	}
+	// Must NOT contain the truncated artefact "(legacy, pre-sidecar" (missing close paren).
+	if strings.Contains(out, "(legacy, pre-sidecar") {
+		t.Errorf("compact table must NOT contain truncated '(legacy, pre-sidecar' artefact\ngot:\n%s", out)
+	}
+}
+
+// TestRenderSessionCompactTable_SummaryExcludesLegacy verifies that the summary
+// line counts only real opencode sessions, not the legacy sentinel group, and
+// appends "(+ legacy events)" when legacy data is present.
+func TestRenderSessionCompactTable_SummaryExcludesLegacy(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Legacy events (NULL sid) — should NOT count as an opencode session.
+	writeStatsEvent(t, d, session, "msg_assistant",
+		`{"messageId":"old1","text":"r","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50,"durationMs":3000}`,
+		base)
+
+	// Two real opencode sessions.
+	sid1 := "ses_aaa"
+	sid2 := "ses_bbb"
+	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
+		assistantPayloadWithAgentModel("new1", "coordinator", "anthropic/claude-sonnet-4-6", 500, 200),
+		base.Add(1*time.Hour))
+	writeStatsEventWithSID(t, d, session, sid2, "msg_assistant",
+		assistantPayloadWithAgentModel("new2", "coordinator", "anthropic/claude-sonnet-4-6", 500, 200),
+		base.Add(2*time.Hour))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// Summary should say "2 opencode sessions" (not "3").
+	if !strings.Contains(out, "2 opencode sessions") {
+		t.Errorf("summary should say '2 opencode sessions' (excluding legacy), got:\n%s", out)
+	}
+	// Should also mention legacy events.
+	if !strings.Contains(out, "legacy events") {
+		t.Errorf("summary should mention '+ legacy events' when legacy data present\ngot:\n%s", out)
+	}
+	// Must NOT say "3 opencode sessions".
+	if strings.Contains(out, "3 opencode sessions") {
+		t.Errorf("summary must NOT count legacy sentinel as an opencode session\ngot:\n%s", out)
+	}
+}
+
 // TestFormatAgentSummary verifies the agent summary formatting helper.
 func TestFormatAgentSummary(t *testing.T) {
 	cases := []struct {

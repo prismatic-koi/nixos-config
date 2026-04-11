@@ -554,15 +554,24 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	// Compute summary totals.
+	// Compute summary totals. Count real (non-legacy) opencode sessions separately
+	// from the legacy sentinel group — the legacy group is a synthetic bucket for
+	// pre-sidecar events, not a real opencode session.
 	var totalTurns int
 	var totalCost float64
+	var realSessionCount int
+	var hasLegacyGroup bool
 	distinctModels := make(map[string]struct{})
 	for _, m := range metrics {
 		totalTurns += m.AssistantTurns
 		totalCost += m.totalCost()
-		if m.ModelID != "" && m.ModelID != "(legacy)" {
-			distinctModels[m.ModelID] = struct{}{}
+		if m.isLegacy() {
+			hasLegacyGroup = true
+		} else {
+			realSessionCount++
+			if m.ModelID != "" {
+				distinctModels[m.ModelID] = struct{}{}
+			}
 		}
 	}
 
@@ -581,14 +590,19 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 			modelCountStr = fmt.Sprintf(", model: %s", m)
 		}
 	}
+	legacySuffix := ""
+	if hasLegacyGroup {
+		legacySuffix = " (+ legacy events)"
+	}
 	costStr := "—"
 	if totalCost > 0 {
 		costStr = formatCost(totalCost)
 	}
-	fmt.Printf("%s %d opencode sessions%s · %d turns · %s\n",
+	fmt.Printf("%s %d opencode sessions%s%s · %d turns · %s\n",
 		styleLabel.Render("summary:"),
-		len(metrics),
+		realSessionCount,
 		modelCountStr,
+		legacySuffix,
 		totalTurns,
 		costStr,
 	)
@@ -652,14 +666,14 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 			modelStr = "—"
 		}
 		if m.isLegacy() {
-			// For the legacy sentinel row, show model or "(legacy)" in model column.
+			// For the legacy sentinel row, show "(legacy)" in both STARTED and MODEL
+			// columns. The label is kept short to fit the 20-char STARTED column.
+			// The --detail mode uses the longer "(legacy, pre-sidecar)" label where
+			// there is no width constraint.
 			if modelStr == "" || modelStr == "(legacy)" {
 				modelStr = "(legacy)"
 			}
-			startedStr = "(legacy, pre-sidecar)"
-			if len(startedStr) > wStarted {
-				startedStr = startedStr[:wStarted]
-			}
+			startedStr = "(legacy)"
 		}
 		if len(modelStr) > wModel {
 			modelStr = modelStr[:wModel-3] + "..."
@@ -728,16 +742,18 @@ func runStatsSummary() error {
 	for _, s := range statuses {
 		events, _ := d.AllSessionEvents(s.SessionName)
 		grouped, order := groupEventsByOpencodeSID(events)
-		// For the summary table, aggregate across all opencode sessions within
-		// the tmux session to get total tokens/cost/duration.
-		var totalInput, totalOutput, totalCacheRead, totalCacheWrite int
+		// For the summary table, accumulate tokens, cost, and duration across
+		// all opencode sessions within the tmux session. Cost is summed per-session
+		// (each session uses its own model's pricing) rather than applying a single
+		// model's rate to all tokens — critical for sessions that spanned model changes.
+		var totalInput, totalOutput int
+		var totalCost float64
 		var firstEvent, lastEvent time.Time
 		for _, key := range order {
 			m := collectMetrics(grouped[key], key)
 			totalInput += m.InputTokens
 			totalOutput += m.OutputTokens
-			totalCacheRead += m.CacheReadTokens
-			totalCacheWrite += m.CacheWriteTokens
+			totalCost += m.totalCost()
 			if !m.FirstEvent.IsZero() && (firstEvent.IsZero() || m.FirstEvent.Before(firstEvent)) {
 				firstEvent = m.FirstEvent
 			}
@@ -750,25 +766,10 @@ func runStatsSummary() error {
 			dur = lastEvent.Sub(firstEvent)
 		}
 
-		// Determine model for display from status (most up-to-date).
-		modelID := ""
-		if s.RootModelID != nil && *s.RootModelID != "" {
-			modelID = *s.RootModelID
-		}
+		// Determine agent name for display from status (most up-to-date).
 		agentName := ""
 		if s.RootAgentName != nil && *s.RootAgentName != "" {
 			agentName = *s.RootAgentName
-		}
-
-		// Compute cost from accumulated tokens.
-		cost := 0.0
-		if modelID != "" {
-			if costs, ok := modelCosts[modelID]; ok {
-				cost = (float64(totalInput)*costs.Input +
-					float64(totalOutput)*costs.Output +
-					float64(totalCacheRead)*costs.CacheRead +
-					float64(totalCacheWrite)*costs.CacheWrite) / 1_000_000
-			}
 		}
 
 		rows = append(rows, summaryRow{
@@ -777,7 +778,7 @@ func runStatsSummary() error {
 			State:    s.State,
 			Duration: dur,
 			Tokens:   totalInput + totalOutput,
-			Cost:     cost,
+			Cost:     totalCost,
 		})
 	}
 
