@@ -796,7 +796,7 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 
 		agentName := info.Agent
 		model := ""
-		if info.Model != nil {
+		if info.Model != nil && info.Model.ProviderID != "" && info.Model.ModelID != "" {
 			model = info.Model.ProviderID + "/" + info.Model.ModelID
 		}
 
@@ -805,6 +805,20 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 		// be used to detect subagent invocations.
 		if s.rootAgent == "" && agentName != "" {
 			s.rootAgent = agentName
+		}
+
+		// Refresh root_model_id immediately when the user sends a message
+		// with a known model. This captures in-session model picker changes
+		// before any assistant message is produced, so that worker prompts
+		// delivered during the response window read a fresh model value.
+		// Only write for root-agent messages (same gate as the assistant
+		// path below) and only when model is non-empty (AC-1, AC-2, AC-3,
+		// AC-4).
+		isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
+		if model != "" && isRootAgent {
+			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
+				log.Printf("sidecar: UpdateRootModelID (user msg) failed: %v", err)
+			}
 		}
 
 		s.writeEvent("msg_user", map[string]string{

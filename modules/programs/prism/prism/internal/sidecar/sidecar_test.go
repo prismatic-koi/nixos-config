@@ -2479,6 +2479,255 @@ func TestMessageUpdated_SecondSessionUpdatesRootModelID(t *testing.T) {
 	}
 }
 
+// ── user-message root_model_id tests (AC-7, AC-8, AC-9) ─────────────────────
+
+// TestMessageUpdated_UserMessage_UpdatesRootModelID verifies AC-7: a user
+// message.updated event with info.Model set causes root_model_id to be written
+// to the DB immediately (before any assistant turn), so that worker prompts
+// delivered during the response window read the correct model.
+func TestMessageUpdated_UserMessage_UpdatesRootModelID(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Fire a user message with a model set (simulates user switching model in
+	// the opencode picker and then sending a message).
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-user-model-test",
+			"text":      "Hello with new model",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "msg-user-model-test",
+			"role":  "user",
+			"agent": "root-agent",
+			"model": map[string]string{
+				"providerID": "anthropic",
+				"modelID":    "claude-opus-4-6",
+			},
+		},
+	}))
+
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus: got nil status")
+	}
+	if status.RootModelID == nil {
+		t.Fatal("RootModelID: got nil, want non-nil")
+	}
+	want := "anthropic/claude-opus-4-6"
+	if *status.RootModelID != want {
+		t.Errorf("RootModelID = %q, want %q", *status.RootModelID, want)
+	}
+}
+
+// TestMessageUpdated_UserMessage_RootAgentGate verifies AC-8: a user message
+// from a non-root agent does NOT update root_model_id. The root agent's model
+// must not be overwritten by a subagent user message.
+func TestMessageUpdated_UserMessage_RootAgentGate(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Establish root agent via an initial user message (no model).
+	sendEvents(sc, makeUserMessage("msg-user-root-1", "root-agent", "Initial prompt"))
+
+	// Write a known model via a root-agent assistant message.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-root-1",
+			"text":      "Root agent reply.",
+		},
+	}))
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-root-1",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "anthropic",
+			"modelID":    "claude-opus-4-6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after root assistant: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != "anthropic/claude-opus-4-6" {
+		t.Fatalf("RootModelID after root assistant message = %v, want %q", status.RootModelID, "anthropic/claude-opus-4-6")
+	}
+
+	// Now fire a subagent user message with a different model. root_model_id
+	// must NOT be overwritten.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-user-subagent",
+			"text":      "Subagent prompt",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "msg-user-subagent",
+			"role":  "user",
+			"agent": "review-agent",
+			"model": map[string]string{
+				"providerID": "openai",
+				"modelID":    "gpt-4o",
+			},
+		},
+	}))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after subagent user msg: %v", err)
+	}
+	want := "anthropic/claude-opus-4-6"
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after subagent user message = %v, want %q (subagent must not overwrite root model)", status.RootModelID, want)
+	}
+}
+
+// TestMessageUpdated_UserMessage_EmptyModel verifies AC-9: a user message with
+// no model (info.Model == nil) does NOT write root_model_id — the existing
+// value is preserved and not cleared.
+func TestMessageUpdated_UserMessage_EmptyModel(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// First, write a known model via a root-agent assistant message.
+	sendEvents(sc, makeUserMessage("msg-user-seed", "root-agent", "Seed message"))
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-seed",
+			"text":      "First reply.",
+		},
+	}))
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-seed",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "anthropic",
+			"modelID":    "claude-opus-4-6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after seed: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != "anthropic/claude-opus-4-6" {
+		t.Fatalf("RootModelID after seed = %v, want %q", status.RootModelID, "anthropic/claude-opus-4-6")
+	}
+
+	// Now fire a user message with no model field (info.Model == nil). The
+	// root_model_id in the DB must remain unchanged.
+	sendEvents(sc, makeUserMessage("msg-user-no-model", "root-agent", "Follow-up with no model"))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after no-model user msg: %v", err)
+	}
+	want := "anthropic/claude-opus-4-6"
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after no-model user message = %v, want %q (must not be cleared)", status.RootModelID, want)
+	}
+}
+
+// TestMessageUpdated_UserMessage_PartialModel verifies that a user message with
+// an info.Model where either providerID or modelID is empty does NOT write
+// root_model_id (mirrors the both-fields guard on the assistant path).
+func TestMessageUpdated_UserMessage_PartialModel(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Seed a known model via assistant turn so we have something to preserve.
+	sendEvents(sc, makeUserMessage("msg-user-seed2", "root-agent", "Seed message"))
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-asst-seed2",
+			"text":      "Seed reply.",
+		},
+	}))
+	created := 1000.0
+	completed := 2000.0
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":         "msg-asst-seed2",
+			"role":       "assistant",
+			"agent":      "root-agent",
+			"providerID": "anthropic",
+			"modelID":    "claude-opus-4-6",
+			"time": map[string]*float64{
+				"created":   &created,
+				"completed": &completed,
+			},
+		},
+	}))
+
+	want := "anthropic/claude-opus-4-6"
+	status, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after seed: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Fatalf("RootModelID after seed = %v, want %q", status.RootModelID, want)
+	}
+
+	// Fire a user message with a partial model (modelID empty). This must NOT
+	// write a malformed "anthropic/" value to root_model_id.
+	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "text",
+			"messageID": "msg-user-partial-model",
+			"text":      "Partial model message",
+		},
+	}))
+	sc.HandleEvent(makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "msg-user-partial-model",
+			"role":  "user",
+			"agent": "root-agent",
+			"model": map[string]string{
+				"providerID": "anthropic",
+				"modelID":    "", // empty — partial data
+			},
+		},
+	}))
+
+	status, err = sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus after partial-model user msg: %v", err)
+	}
+	if status.RootModelID == nil || *status.RootModelID != want {
+		t.Errorf("RootModelID after partial-model user message = %v, want %q (must not write malformed ID)", status.RootModelID, want)
+	}
+}
+
 // ── reconnect recovery timer tests ──────────────────────────────────────────
 
 // TestServerConnected_InitialConnection_NoTimer verifies that server.connected
