@@ -83,9 +83,23 @@ func TestEmptyArrayClearsDefault(t *testing.T) {
 }
 
 func TestSshKeyNameDefaults(t *testing.T) {
-	// SshAccessKeyName and SshSigningKeyName have no compiled-in default —
-	// they default to empty string, and the consumer (container.go) applies
-	// the fallback. This test verifies the fields are parsed correctly when set.
+	// When no config file is present, SshAccessKeyName and SshSigningKeyName
+	// should return the compiled-in defaults from defaults().
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshAccessKeyName != "prismatic-koi-ed25519" {
+		t.Errorf("SshAccessKeyName: got %q, want %q", cfg.SshAccessKeyName, "prismatic-koi-ed25519")
+	}
+	if cfg.SshSigningKeyName != "prismatic-koi-ed25519-signingkey" {
+		t.Errorf("SshSigningKeyName: got %q, want %q", cfg.SshSigningKeyName, "prismatic-koi-ed25519-signingkey")
+	}
+}
+
+func TestSshKeyNameOverriddenFromFile(t *testing.T) {
+	// When ssh_access_key_name and ssh_signing_key_name are set in the config
+	// file, the loaded values should override the compiled-in defaults.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 
@@ -109,18 +123,27 @@ func TestSshKeyNameDefaults(t *testing.T) {
 	}
 }
 
-func TestSshKeyNameAbsentIsEmpty(t *testing.T) {
+func TestSshKeyNameAbsentKeepsDefault(t *testing.T) {
 	// When ssh_access_key_name and ssh_signing_key_name are absent from the
-	// config file, the fields must be empty string (fallback applied by caller).
-	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+	// config file, the compiled-in defaults are kept (not empty string).
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Config file exists but doesn't mention SSH key names.
+	raw := `{"color_primary": "#ff0000"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
 
 	cfg := config.LoadFresh()
 
-	if cfg.SshAccessKeyName != "" {
-		t.Errorf("SshAccessKeyName: got %q, want empty string for absent key", cfg.SshAccessKeyName)
+	if cfg.SshAccessKeyName != "prismatic-koi-ed25519" {
+		t.Errorf("SshAccessKeyName: got %q, want default %q when absent from config", cfg.SshAccessKeyName, "prismatic-koi-ed25519")
 	}
-	if cfg.SshSigningKeyName != "" {
-		t.Errorf("SshSigningKeyName: got %q, want empty string for absent key", cfg.SshSigningKeyName)
+	if cfg.SshSigningKeyName != "prismatic-koi-ed25519-signingkey" {
+		t.Errorf("SshSigningKeyName: got %q, want default %q when absent from config", cfg.SshSigningKeyName, "prismatic-koi-ed25519-signingkey")
 	}
 }
 

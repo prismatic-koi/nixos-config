@@ -97,19 +97,21 @@ type parsedConfig struct {
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
 	return Config{
-		ColorPrimary:     "#d4be98",
-		ColorSecondary:   "#a89984",
-		ColorPurple:      "#d3869b",
-		ColorYellow:      "#d8a657",
-		ColorGreen:       "#a9b665",
-		ColorBlue:        "#7daea3",
-		ColorRed:         "#ea6962",
-		ColorForeground:  "#d3c6aa",
-		ColorBg0:         "#2d353b",
-		KittyBin:         "kitty",
-		WorktreeExclude:  []string{"obsidian"},
-		ProjectLocations: []string{"~/code"},
-		ProjectSpecific:  []string{"~/documents/obsidian"},
+		ColorPrimary:      "#d4be98",
+		ColorSecondary:    "#a89984",
+		ColorPurple:       "#d3869b",
+		ColorYellow:       "#d8a657",
+		ColorGreen:        "#a9b665",
+		ColorBlue:         "#7daea3",
+		ColorRed:          "#ea6962",
+		ColorForeground:   "#d3c6aa",
+		ColorBg0:          "#2d353b",
+		KittyBin:          "kitty",
+		SshAccessKeyName:  "prismatic-koi-ed25519",
+		SshSigningKeyName: "prismatic-koi-ed25519-signingkey",
+		WorktreeExclude:   []string{"obsidian"},
+		ProjectLocations:  []string{"~/code"},
+		ProjectSpecific:   []string{"~/documents/obsidian"},
 	}
 }
 

@@ -1449,6 +1449,87 @@ func TestWriteGitconfig_NoUserSectionWhenIdentityMissing(t *testing.T) {
 
 // ── SSH key name configurability tests ──────────────────────────────────────
 
+func TestBuildRunArgs_CustomAccessKeyName(t *testing.T) {
+	// When SshAccessKeyName is set, buildRunArgs should resolve and mount that
+	// file at /root/.ssh/access-key:ro rather than the hardcoded default.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Create only the custom-named key (not the default name).
+	customKey := sshDir + "/my-custom-access-key"
+	if err := os.WriteFile(customKey, []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile custom access key: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:      "repo@feat",
+		AllocatedPort:    14000,
+		SshAccessKeyName: "my-custom-access-key",
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasSuffix(v, ":/root/.ssh/access-key:ro") {
+				found = true
+				// The source path must be the resolved real path of the custom key.
+				if !strings.Contains(v, customKey) {
+					t.Errorf("access-key mount source %q does not contain custom key path %q", v, customKey)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("access-key volume mount at /root/.ssh/access-key:ro not found in args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_FallbackWhenAccessKeyNameEmpty(t *testing.T) {
+	// When SshAccessKeyName is empty, buildRunArgs falls back to the default
+	// name "prismatic-koi-ed25519".
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	// Create the default-named key.
+	defaultKey := sshDir + "/prismatic-koi-ed25519"
+	if err := os.WriteFile(defaultKey, []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile default access key: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		// SshAccessKeyName intentionally left empty — must fall back to default.
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasSuffix(v, ":/root/.ssh/access-key:ro") {
+				found = true
+				if !strings.Contains(v, defaultKey) {
+					t.Errorf("access-key mount source %q does not contain default key path %q", v, defaultKey)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("access-key volume mount at /root/.ssh/access-key:ro not found in args with default key: %v", args)
+	}
+}
+
 func TestWriteGitconfig_CustomSigningKeyName(t *testing.T) {
 	// When SshSigningKeyName is set, writeGitconfig should resolve that filename
 	// rather than the hardcoded default.
