@@ -11,8 +11,10 @@
 package cmd
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -268,6 +270,292 @@ func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
 				t.Errorf("session %q: expected no agent_status row, got one (state=%q)", session, status.State)
 			}
 		})
+	}
+}
+
+// TestEventStateChange_TracksNonWorktreeSession verifies that firing
+// state-change for a non-worktree session (e.g. "obsidian") writes/updates a
+// row in agent_status with repo="" and the supplied state, and appends a
+// state_change event row to the events table.
+//
+// Regression guard for issue #576: state-change used to silently drop events
+// for any session whose worktree had no .bare ancestor, leaving the dashboard
+// stuck showing the session as "idle".
+func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
+	const session = "obsidian"
+
+	// Worktree path with no .bare ancestor — deriveRepo returns "".
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "state-change",
+		"--session", session,
+		"--state", "active",
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row for obsidian, got nil")
+	}
+	if status.Repo != "" {
+		t.Errorf("repo = %q, want empty string", status.Repo)
+	}
+	if status.State != "active" {
+		t.Errorf("state = %q, want \"active\"", status.State)
+	}
+
+	events, err := d2.QueryEvents(session, 10, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Type != "state_change" {
+		t.Errorf("event type = %q, want \"state_change\"", ev.Type)
+	}
+	if ev.SessionName != session {
+		t.Errorf("event session_name = %q, want %q", ev.SessionName, session)
+	}
+	if ev.Repo != "" {
+		t.Errorf("event repo = %q, want empty string", ev.Repo)
+	}
+	if !strings.Contains(ev.Payload, `"active"`) {
+		t.Errorf("event payload = %q, want payload containing \"active\"", ev.Payload)
+	}
+}
+
+// TestEventStateChange_SkipsMetaSessions verifies that "scratchpad" and
+// "prism-dashboard" state-change invocations return nil without writing an
+// agent_status row or an events row.
+//
+// Regression guard for issue #576 — the precise name-based skip must still
+// exclude meta-sessions even though the broader repo=="" guard is gone.
+func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
+	for _, session := range []string{"scratchpad", "prism-dashboard"} {
+		t.Run(session, func(t *testing.T) {
+			worktree := t.TempDir()
+
+			dbFile := filepath.Join(t.TempDir(), "prism.db")
+			d, err := db.Open(dbFile)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			d.Close()
+
+			SetTestDBPath(dbFile)
+			t.Cleanup(func() { SetTestDBPath("") })
+
+			rootCmd.SetArgs([]string{
+				"event", "state-change",
+				"--session", session,
+				"--state", "active",
+				"--worktree", worktree,
+			})
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("Execute returned error %v, want nil (silent skip)", err)
+			}
+
+			d2, err := db.Open(dbFile)
+			if err != nil {
+				t.Fatalf("re-open db: %v", err)
+			}
+			defer d2.Close()
+
+			status, err := d2.CurrentStatus(session)
+			if err != nil {
+				t.Fatalf("CurrentStatus: %v", err)
+			}
+			if status != nil {
+				t.Errorf("session %q: expected no agent_status row, got one (state=%q)", session, status.State)
+			}
+
+			events, err := d2.QueryEvents(session, 10, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("QueryEvents: %v", err)
+			}
+			if len(events) != 0 {
+				t.Errorf("session %q: expected 0 events, got %d", session, len(events))
+			}
+		})
+	}
+}
+
+// TestEventStateChange_WorktreeSession verifies the original worktree-backed
+// happy path: a state-change invocation against a path with a .bare ancestor
+// resolves repo via deriveRepo and writes it to both agent_status and the
+// state_change event row.
+//
+// Regression guard for issue #576 — relaxing the guard must not break the
+// existing worktree flow.
+func TestEventStateChange_WorktreeSession(t *testing.T) {
+	const session = "myrepo@main"
+
+	// Build a fake bare repo layout: <tmp>/myrepo/{.bare, worktree}
+	// deriveBareRoot will walk up from the worktree path and find .bare,
+	// yielding repo name "myrepo".
+	root := t.TempDir()
+	bareRoot := filepath.Join(root, "myrepo")
+	worktree := filepath.Join(bareRoot, "main")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(bareRoot, ".bare"), 0o755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
+	}
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "state-change",
+		"--session", session,
+		"--state", "active",
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row, got nil")
+	}
+	if status.Repo != "myrepo" {
+		t.Errorf("repo = %q, want \"myrepo\"", status.Repo)
+	}
+	if status.State != "active" {
+		t.Errorf("state = %q, want \"active\"", status.State)
+	}
+
+	events, err := d2.QueryEvents(session, 10, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Type != "state_change" {
+		t.Errorf("event type = %q, want \"state_change\"", ev.Type)
+	}
+	if ev.Repo != "myrepo" {
+		t.Errorf("event repo = %q, want \"myrepo\"", ev.Repo)
+	}
+	if !strings.Contains(ev.Payload, `"active"`) {
+		t.Errorf("event payload = %q, want payload containing \"active\"", ev.Payload)
+	}
+}
+
+// TestEventStateChange_UpdatesExistingNonWorktreeRow verifies that when
+// tmux-session-start has already created an agent_status row for a
+// non-worktree session, a subsequent state-change for that session updates
+// the existing row's state column rather than inserting a duplicate.
+//
+// This is the primary user-visible bug from issue #576 — the row existed but
+// was never updated, so the dashboard showed "idle" forever.
+func TestEventStateChange_UpdatesExistingNonWorktreeRow(t *testing.T) {
+	const session = "obsidian"
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Simulate the row that tmux-session-start would have written.
+	if err := d.UpsertStatus(session, "", worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "state-change",
+		"--session", session,
+		"--state", "active",
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	// There should still be exactly one row for this session, with its state
+	// updated from "idle" to "active".
+	statuses, err := d2.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	count := 0
+	for _, s := range statuses {
+		if s.SessionName == session {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("found %d agent_status rows for %q, want 1", count, session)
+	}
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row, got nil")
+	}
+	if status.State != "active" {
+		t.Errorf("state = %q, want \"active\" (row was not updated)", status.State)
+	}
+	if status.Repo != "" {
+		t.Errorf("repo = %q, want empty string", status.Repo)
 	}
 }
 
