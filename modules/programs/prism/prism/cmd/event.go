@@ -97,11 +97,18 @@ var eventStateChangeCmd = &cobra.Command{
 		state, _ := cmd.Flags().GetString("state")
 		worktree, _ := cmd.Flags().GetString("worktree")
 
-		repo := deriveRepo(worktree)
-		if repo == "" {
-			// Not inside a project worktree — exit silently.
+		// Skip the meta-sessions (scratchpad and prism-dashboard) that must
+		// not appear in agent_status. All other sessions — including
+		// non-worktree sessions like "obsidian" — are tracked. Mirror the
+		// guard used by tmux-session-start so state transitions flow through
+		// for every session that start already wrote a row for.
+		if session == "scratchpad" || session == "prism-dashboard" {
 			return nil
 		}
+
+		// For non-worktree sessions deriveRepo returns "" — that matches the
+		// row tmux-session-start already wrote, so pass it through as-is.
+		repo := deriveRepo(worktree)
 
 		d, err := openDB()
 		if err != nil {
