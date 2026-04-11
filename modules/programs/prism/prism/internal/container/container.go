@@ -159,6 +159,10 @@ type Manager struct {
 	name           string
 	healthCheckURL string
 	httpClient     *http.Client
+	// allowedSignersReady is true when writeGitconfig successfully wrote the
+	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
+	// so that podman is never given a source path that doesn't exist on disk.
+	allowedSignersReady bool
 }
 
 // New creates a Manager for the given config. It does not start the container.
@@ -298,6 +302,9 @@ func (m *Manager) writeGitconfig() error {
 	// cause every git commit to fail.
 	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
 		// Read the signing public key content to build the allowed_signers file.
+		// Only write [gpg "ssh"] allowedSignersFile when the file was actually
+		// produced — if it can't be written, podman must not be given a
+		// bind-mount source path that doesn't exist on disk.
 		pubKeyContent, err := os.ReadFile(signingKeyPub)
 		if err != nil {
 			log.Printf("container: failed to read signing public key %q: %v; skipping allowed_signers", signingKeyPub, err)
@@ -305,6 +312,8 @@ func (m *Manager) writeGitconfig() error {
 			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
 			if err := os.WriteFile(m.allowedSignersFilePath(), []byte(allowedSignersContent), 0o644); err != nil {
 				log.Printf("container: failed to write allowed_signers file: %v", err)
+			} else {
+				m.allowedSignersReady = true
 			}
 		}
 
@@ -312,8 +321,10 @@ func (m *Manager) writeGitconfig() error {
 		sb.WriteString("    gpgsign = true\n")
 		sb.WriteString("\n[gpg]\n")
 		sb.WriteString("    format = ssh\n")
-		sb.WriteString("\n[gpg \"ssh\"]\n")
-		sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
+		if m.allowedSignersReady {
+			sb.WriteString("\n[gpg \"ssh\"]\n")
+			sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
+		}
 	}
 
 	// [push] and [init] — always included.
@@ -688,10 +699,11 @@ func (m *Manager) buildRunArgs() []string {
 			"--volume", signingKeyResolved+":/root/.ssh/signing-key:ro",
 			"--volume", signingKeyPubResolved+":/root/.ssh/signing-key.pub:ro",
 		)
-		// allowed_signers file (git verify-commit): only present when signing is
-		// available AND identity is set (writeGitconfig writes it only under the
-		// same condition).
-		if cfg.GitUserName != "" && cfg.GitUserEmail != "" {
+		// allowed_signers file (git verify-commit): only mount when the file
+		// was successfully written by writeGitconfig (tracked via
+		// allowedSignersReady). This ensures podman is never given a
+		// bind-mount source path that doesn't exist on disk.
+		if m.allowedSignersReady {
 			args = append(args, "--volume", m.allowedSignersFilePath()+":/root/.ssh/allowed_signers:ro")
 		}
 	}
