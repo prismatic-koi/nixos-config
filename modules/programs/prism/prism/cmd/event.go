@@ -219,11 +219,17 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		session, _ := cmd.Flags().GetString("session")
 		worktree, _ := cmd.Flags().GetString("worktree")
 
-		// If no .bare marker is found, exit 0 silently — this is a non-project
-		// session (scratchpad, prism-dashboard, etc.).
 		repo := deriveRepo(worktree)
 		if repo == "" {
-			return nil
+			// Non-worktree session: skip only the meta-sessions (scratchpad and
+			// prism-dashboard) that must not appear in agent_status. All other
+			// non-worktree sessions (e.g. "obsidian") are legitimate user
+			// sessions and get a row with repo="" — consistent with the port
+			// allocation path in switch.go:allocatePortForSession.
+			if session == "scratchpad" || session == "prism-dashboard" {
+				return nil
+			}
+			// Fall through: UpsertStatus will be called with repo="" below.
 		}
 
 		d, err := openDB()
