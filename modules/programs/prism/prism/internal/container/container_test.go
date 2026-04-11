@@ -1557,7 +1557,10 @@ func TestWriteGitconfig_CustomSigningKeyName(t *testing.T) {
 	if err := m.writeGitconfig(); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
 
 	data, err := os.ReadFile(m.gitconfigFilePath())
 	if err != nil {
@@ -1601,7 +1604,10 @@ func TestWriteGitconfig_FallbackWhenSigningKeyNameEmpty(t *testing.T) {
 	if err := m.writeGitconfig(); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
 
 	data, err := os.ReadFile(m.gitconfigFilePath())
 	if err != nil {
@@ -1615,5 +1621,209 @@ func TestWriteGitconfig_FallbackWhenSigningKeyNameEmpty(t *testing.T) {
 	}
 	if !strings.Contains(content, "signingKey = /root/.ssh/signing-key.pub") {
 		t.Errorf("gitconfig missing signingKey with default signing key fallback; content:\n%s", content)
+	}
+}
+
+// ── allowed_signers tests (AC-7, AC-8, AC-9, AC-10, AC-11) ───────────────────
+
+func TestWriteGitconfig_AllowedSignersFileInGitconfigWhenSigningAvailable(t *testing.T) {
+	// AC-7: generated gitconfig must contain allowedSignersFile = /root/.ssh/allowed_signers
+	// in the [gpg "ssh"] section when signing keys and identity are present.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	pubKeyData := "sk-ssh-ed25519@openssh.com AAAA1234 test@example.com"
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		content := "stub"
+		if name == "prismatic-koi-ed25519-signingkey.pub" {
+			content = pubKeyData
+		}
+		if err := os.WriteFile(sshDir+"/"+name, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, `[gpg "ssh"]`) {
+		t.Errorf("gitconfig missing [gpg \"ssh\"] section; content:\n%s", content)
+	}
+	if !strings.Contains(content, "allowedSignersFile = /root/.ssh/allowed_signers") {
+		t.Errorf("gitconfig missing allowedSignersFile = /root/.ssh/allowed_signers; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_AllowedSignersAbsentWhenSigningUnavailable(t *testing.T) {
+	// AC-8: allowedSignersFile must NOT appear in the gitconfig when signing
+	// keys are not resolvable.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "allowedSignersFile") {
+		t.Errorf("gitconfig must not contain allowedSignersFile when signing keys are absent; content:\n%s", content)
+	}
+	if strings.Contains(content, `[gpg "ssh"]`) {
+		t.Errorf("gitconfig must not contain [gpg \"ssh\"] section when signing keys are absent; content:\n%s", content)
+	}
+}
+
+func TestWriteGitconfig_AllowedSignersFileContent(t *testing.T) {
+	// AC-9: the allowed_signers file must be written with correct
+	// "<email> <pubkey-contents>" content.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	pubKeyData := "sk-ssh-ed25519@openssh.com AAAA5678 user@host"
+	if err := os.WriteFile(sshDir+"/prismatic-koi-ed25519-signingkey", []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile signingkey: %v", err)
+	}
+	if err := os.WriteFile(sshDir+"/prismatic-koi-ed25519-signingkey.pub", []byte(pubKeyData), 0o600); err != nil {
+		t.Fatalf("WriteFile signingkey.pub: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
+
+	asData, err := os.ReadFile(m.allowedSignersFilePath())
+	if err != nil {
+		t.Fatalf("read allowed_signers file: %v", err)
+	}
+	asContent := string(asData)
+
+	expectedLine := "test@example.com " + pubKeyData
+	if !strings.Contains(asContent, expectedLine) {
+		t.Errorf("allowed_signers content %q does not contain expected line %q", asContent, expectedLine)
+	}
+}
+
+func TestBuildRunArgs_AllowedSignersMountedWhenSigningAvailable(t *testing.T) {
+	// AC-10: buildRunArgs must include a bind-mount for the allowed_signers file
+	// at /root/.ssh/allowed_signers:ro when signing keys and identity are present.
+	// writeGitconfig must be called first (as Create() does) to set allowedSignersReady.
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	for _, name := range []string{"prismatic-koi-ed25519", "prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		content := "stub"
+		if name == "prismatic-koi-ed25519-signingkey.pub" {
+			content = "sk-ssh-ed25519@openssh.com AAAA1234"
+		}
+		if err := os.WriteFile(sshDir+"/"+name, []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	// writeGitconfig must be called first — it sets allowedSignersReady which
+	// buildRunArgs uses to gate the bind-mount.
+	if err := m.writeGitconfig(); err != nil {
+		t.Fatalf("writeGitconfig: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
+
+	args := m.buildRunArgs()
+
+	wantMount := m.allowedSignersFilePath() + ":/root/.ssh/allowed_signers:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if args[i+1] == wantMount {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("allowed_signers mount %q not found in args; args: %v", wantMount, args)
+	}
+}
+
+func TestBuildRunArgs_AllowedSignersNotMountedWhenSigningUnavailable(t *testing.T) {
+	// AC-11: buildRunArgs must NOT include the allowed_signers bind-mount when
+	// signing keys are not resolvable.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.HasSuffix(args[i+1], ":/root/.ssh/allowed_signers:ro") {
+				t.Errorf("allowed_signers mount must not be present when signing keys are unavailable; found %q", args[i+1])
+			}
+		}
 	}
 }

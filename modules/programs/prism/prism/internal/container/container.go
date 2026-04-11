@@ -187,6 +187,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
+	_ = os.Remove(m.allowedSignersFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -226,6 +227,14 @@ func (m *Manager) sshConfigFilePath() string {
 // for commit identity and SSH signing. Mounted read-only at /root/.gitconfig.
 func (m *Manager) gitconfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
+}
+
+// allowedSignersFilePath returns the host path for the temporary
+// allowed_signers file written before container start. The file is mounted
+// read-only at /root/.ssh/allowed_signers and is required for
+// git verify-commit to work with SSH signing.
+func (m *Manager) allowedSignersFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-allowed-signers-"+m.name)
 }
 
 // writeGitconfig generates a minimal .gitconfig for the container and writes
@@ -287,12 +296,24 @@ func (m *Manager) writeGitconfig() error {
 	// identity is present. Without identity the [user] section is omitted, which
 	// means signingKey is never set; writing gpgsign=true in that case would
 	// cause every git commit to fail.
-	// TODO(#558): set gpg.ssh.allowedSignersFile so git verify-commit works inside containers.
 	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
+		// Read the signing public key content to build the allowed_signers file.
+		pubKeyContent, err := os.ReadFile(signingKeyPub)
+		if err != nil {
+			log.Printf("container: failed to read signing public key %q: %v; skipping allowed_signers", signingKeyPub, err)
+		} else {
+			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
+			if err := os.WriteFile(m.allowedSignersFilePath(), []byte(allowedSignersContent), 0o644); err != nil {
+				log.Printf("container: failed to write allowed_signers file: %v", err)
+			}
+		}
+
 		sb.WriteString("\n[commit]\n")
 		sb.WriteString("    gpgsign = true\n")
 		sb.WriteString("\n[gpg]\n")
 		sb.WriteString("    format = ssh\n")
+		sb.WriteString("\n[gpg \"ssh\"]\n")
+		sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
 	}
 
 	// [push] and [init] — always included.
@@ -450,6 +471,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.worktreeGitdirFilePath())
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
+	_ = os.Remove(m.allowedSignersFilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -666,6 +688,12 @@ func (m *Manager) buildRunArgs() []string {
 			"--volume", signingKeyResolved+":/root/.ssh/signing-key:ro",
 			"--volume", signingKeyPubResolved+":/root/.ssh/signing-key.pub:ro",
 		)
+		// allowed_signers file (git verify-commit): only present when signing is
+		// available AND identity is set (writeGitconfig writes it only under the
+		// same condition).
+		if cfg.GitUserName != "" && cfg.GitUserEmail != "" {
+			args = append(args, "--volume", m.allowedSignersFilePath()+":/root/.ssh/allowed_signers:ro")
+		}
 	}
 
 	// known_hosts: unchanged
