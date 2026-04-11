@@ -170,3 +170,167 @@ func TestEventTmuxSessionEnd_EmptySession(t *testing.T) {
 		}
 	}
 }
+
+// TestEventTmuxSessionStart_NonWorktreeSession verifies that a non-worktree
+// session (like "obsidian") gets an agent_status row with repo="", state="idle",
+// and ended_at=NULL when tmux-session-start fires.
+//
+// AC-7: new test for the non-worktree session path.
+func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
+	// Does not need a live tmux server — no tmux calls in this path.
+	const session = "obsidian"
+
+	// Use a temp dir as the worktree: no .bare marker present.
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row for obsidian, got nil")
+	}
+	if status.Repo != "" {
+		t.Errorf("repo = %q, want empty string", status.Repo)
+	}
+	if status.State != "idle" {
+		t.Errorf("state = %q, want \"idle\"", status.State)
+	}
+	if status.EndedAt != nil {
+		t.Errorf("ended_at = %v, want NULL", *status.EndedAt)
+	}
+}
+
+// TestEventTmuxSessionStart_SkipsMetaSessions verifies that "scratchpad" and
+// "prism-dashboard" are still silently skipped and do NOT produce an
+// agent_status row.
+//
+// AC-8: meta-sessions must not appear in agent_status.
+func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
+	for _, session := range []string{"scratchpad", "prism-dashboard"} {
+		t.Run(session, func(t *testing.T) {
+			worktree := t.TempDir()
+			dbFile := filepath.Join(t.TempDir(), "prism.db")
+			d, err := db.Open(dbFile)
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			d.Close()
+
+			SetTestDBPath(dbFile)
+			t.Cleanup(func() { SetTestDBPath("") })
+
+			rootCmd.SetArgs([]string{
+				"event", "tmux-session-start",
+				"--session", session,
+				"--worktree", worktree,
+			})
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("Execute returned error %v, want nil (silent skip)", err)
+			}
+
+			d2, err := db.Open(dbFile)
+			if err != nil {
+				t.Fatalf("re-open db: %v", err)
+			}
+			defer d2.Close()
+
+			status, err := d2.CurrentStatus(session)
+			if err != nil {
+				t.Fatalf("CurrentStatus: %v", err)
+			}
+			if status != nil {
+				t.Errorf("session %q: expected no agent_status row, got one (state=%q)", session, status.State)
+			}
+		})
+	}
+}
+
+// TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded verifies that when
+// an agent_status row already exists for a non-worktree session with ended_at
+// set, a new tmux-session-start call clears ended_at (making the session
+// visible to AllActiveStatus again).
+//
+// AC-9: regression protection for PR #475 — ClearEnded must fire for obsidian.
+func TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded(t *testing.T) {
+	const session = "obsidian"
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Pre-seed a row with ended_at set (simulating a cleanup cycle).
+	if err := d.UpsertStatus(session, "", worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetEnded(session); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Verify pre-condition: ended_at is set.
+	pre, err := d.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus (pre): %v", err)
+	}
+	if pre == nil || pre.EndedAt == nil {
+		t.Fatal("pre-condition failed: ended_at should be set after SetEnded")
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus (post): %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row after tmux-session-start, got nil")
+	}
+	if status.EndedAt != nil {
+		t.Errorf("ended_at = %v, want NULL — ClearEnded did not fire", *status.EndedAt)
+	}
+}
