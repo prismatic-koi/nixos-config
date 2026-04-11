@@ -167,7 +167,9 @@ var eventPaneDiedCmd = &cobra.Command{
 			return fmt.Errorf("event pane-died: current status: %w", err)
 		}
 		if s == nil {
-			// No DB record — non-project session; exit silently.
+			// No DB record for this session — exit silently. This can happen
+			// for races (session ended before the hook wrote a row) or for
+			// genuinely untracked sessions.
 			return nil
 		}
 
@@ -302,7 +304,9 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-end: current status: %w", err)
 		}
 		if s == nil {
-			// No DB record for this session — it was a non-project session; exit 0 silently.
+			// No DB record for this session — exit 0 silently. This can happen
+			// for races (session ended before the hook wrote a row) or for
+			// genuinely untracked sessions.
 			return nil
 		}
 

@@ -232,10 +232,9 @@ func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
 //
 // AC-8: meta-sessions must not appear in agent_status.
 func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
-	worktree := t.TempDir()
-
 	for _, session := range []string{"scratchpad", "prism-dashboard"} {
 		t.Run(session, func(t *testing.T) {
+			worktree := t.TempDir()
 			dbFile := filepath.Join(t.TempDir(), "prism.db")
 			d, err := db.Open(dbFile)
 			if err != nil {
