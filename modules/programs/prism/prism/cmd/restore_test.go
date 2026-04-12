@@ -21,9 +21,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// withRestoreConfig overrides loadRestoreConfig for the duration of the test
+// and restores the previous value on cleanup. It is used to exercise the
+// container-mode and host-mode restore paths without touching the
+// process-wide config.Load() singleton cache.
+func withRestoreConfig(t *testing.T, cfg config.Config) {
+	t.Helper()
+	prev := loadRestoreConfig
+	loadRestoreConfig = func() config.Config { return cfg }
+	t.Cleanup(func() { loadRestoreConfig = prev })
+}
+
+// waitForAgentPaneContains polls the agent pane (window 1) for the given
+// session until the substring appears or the deadline is reached. Returns
+// the last captured pane content so the test can produce a useful failure
+// message when the substring is missing.
+func waitForAgentPaneContains(t *testing.T, s *cmdTestServer, sessionName, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	var paneContent string
+	for time.Now().Before(deadline) {
+		out, err := s.output("capture-pane", "-t", sessionName+":1", "-p")
+		if err == nil {
+			paneContent = out
+			if strings.Contains(paneContent, want) {
+				return paneContent
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return paneContent
+}
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -458,5 +491,179 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 				t.Errorf("[%d] %q: window[%d] = %q, want %q", i, tc.sessionName, j, windows[j], w)
 			}
 		}
+	}
+}
+
+// TestRestoreSession_ContainerMode verifies that when cfg.ContainerMode is
+// enabled and the persisted session is not marked host_mode, restore uses
+// the container-mode agent command ("opencode attach http://localhost:<port>")
+// rather than launching opencode directly. It also asserts that the
+// PluginHostPath is propagated from cfg into opts so the sidecar bind-mounts
+// the plugin file.
+//
+// This is the core AC-1 regression guard: restoring a container-mode session
+// must go through the same attach path as spawn.
+func TestRestoreSession_ContainerMode(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	// Override cfg to enable container mode for this test only.
+	pluginPath := "/fake/plugin/path/prism-hooks.ts"
+	withRestoreConfig(t, config.Config{
+		ContainerMode:     true,
+		SidecarPluginPath: pluginPath,
+	})
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@container-restore"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// The agent pane must contain "opencode attach http://localhost:", not
+	// "opencode --agent". Port is assigned by AllocatePort so we match the
+	// attach URL prefix rather than a specific port number.
+	pane := waitForAgentPaneContains(t, s, sessionName, "opencode attach http://localhost:")
+	if !strings.Contains(pane, "opencode attach http://localhost:") {
+		t.Errorf("agent pane missing 'opencode attach http://localhost:' — captured:\n%s", pane)
+	}
+	if strings.Contains(pane, "opencode --agent") {
+		t.Errorf("agent pane contains 'opencode --agent' but should be in container mode — captured:\n%s", pane)
+	}
+}
+
+// TestRestoreSession_HostModeOverride verifies that when a session was
+// explicitly spawned in host mode (host_mode=1 in agent_status), restore
+// preserves that mode even when cfg.ContainerMode is enabled. The agent
+// pane must run "opencode --agent ..." rather than "opencode attach".
+func TestRestoreSession_HostModeOverride(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	// Enable container mode globally — the test verifies the per-session
+	// host_mode flag still overrides it.
+	withRestoreConfig(t, config.Config{ContainerMode: true})
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@host-mode"
+	// Seed the row first, then mark it as host_mode=true. Re-read so the
+	// Status passed to restoreSession has the correct HostMode value.
+	_ = seedStatus(t, d, sessionName, worktreeDir, nil)
+	if err := d.SetHostMode(sessionName, true); err != nil {
+		t.Fatalf("SetHostMode: %v", err)
+	}
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	var status db.Status
+	for _, st := range statuses {
+		if st.SessionName == sessionName {
+			status = st
+			break
+		}
+	}
+	if !status.HostMode {
+		t.Fatalf("seeded status HostMode = false, want true")
+	}
+
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// Agent pane must contain "opencode --agent ...", not "opencode attach".
+	pane := waitForAgentPaneContains(t, s, sessionName, "opencode --agent")
+	if !strings.Contains(pane, "opencode --agent") {
+		t.Errorf("agent pane missing 'opencode --agent' — captured:\n%s", pane)
+	}
+	if strings.Contains(pane, "opencode attach") {
+		t.Errorf("agent pane contains 'opencode attach' but should be in host mode — captured:\n%s", pane)
+	}
+}
+
+// TestRestoreSession_KillsStaleSidecarPID verifies that restore calls
+// KillSidecar before creating the new session, so that any orphaned PID
+// file from a previous lifecycle (e.g. a reboot without clean shutdown)
+// is cleared and StartSidecarWithOpts can write a fresh one.
+//
+// The test writes a fake stale PID file at the path KillSidecar would
+// look at, then invokes restore. After restore, the stale PID file must
+// have been removed.
+func TestRestoreSession_KillsStaleSidecarPID(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@stale-pid"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	// Pre-create a stale sidecar PID file at the path KillSidecar will
+	// look at. Use PID 1 so any /proc/1/cmdline check finds a non-prism
+	// process and the kill is skipped, leaving the file-removal path to
+	// handle cleanup.
+	pidPath, err := session.SidecarPIDPath(sessionName)
+	if err != nil {
+		t.Fatalf("SidecarPIDPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o755); err != nil {
+		t.Fatalf("mkdir pid dir: %v", err)
+	}
+	if err := os.WriteFile(pidPath, []byte("1\n"), 0o644); err != nil {
+		t.Fatalf("write stale pid file: %v", err)
+	}
+
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	// The stale PID file must have been removed by KillSidecar. The new
+	// sidecar that StartSidecarWithOpts tries to launch will itself write
+	// a fresh PID file, but the stale content ("1") must be gone —
+	// verified indirectly by checking that either the file is absent or
+	// the content no longer reads "1".
+	//
+	// In CI environments where the sidecar binary is not installed,
+	// StartSidecarWithOpts fails and does not write a new PID file, so
+	// the file will be absent. In environments where it succeeds, the
+	// file will contain a different PID. Either outcome is acceptable:
+	// the stale PID must not be present.
+	data, err := os.ReadFile(pidPath)
+	if err == nil {
+		pid := strings.TrimSpace(string(data))
+		if pid == "1" {
+			t.Errorf("stale PID file still contains %q after restore — KillSidecar not called", pid)
+		}
+	} else if !os.IsNotExist(err) {
+		t.Errorf("unexpected error reading PID file: %v", err)
+	}
+
+	// Sanity: the session should have been created.
+	if !s.hasSession(sessionName) {
+		t.Errorf("session %q was not created", sessionName)
 	}
 }
