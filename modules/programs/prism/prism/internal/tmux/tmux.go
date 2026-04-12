@@ -209,10 +209,18 @@ func RenameWindow(target, name string) error {
 }
 
 // NewWindow creates a new window in a session. name may be empty.
-func NewWindow(session string, idx int, name, dir string) error {
+// When cmd is non-empty, the window starts executing that command immediately
+// via "sh -c <cmd>", bypassing tmux's command parser entirely. This avoids
+// semicolons in the command being treated as tmux command separators (which
+// would happen with SendKeys). Note: when a command is given, the pane exits
+// when the command exits — the user's default shell is NOT started.
+func NewWindow(session string, idx int, name, dir string, cmd string) error {
 	args := []string{"new-window", "-t", fmt.Sprintf("%s:%d", session, idx), "-n", name}
 	if dir != "" {
 		args = append(args, "-c", dir)
+	}
+	if cmd != "" {
+		args = append(args, "sh", "-c", cmd)
 	}
 	_, err := run(args...)
 	return err
