@@ -45,8 +45,7 @@ func agentPaneStartCmd(t *testing.T, s *cmdTestServer, sessionName string) strin
 	t.Helper()
 	out, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
 	if err != nil {
-		t.Errorf("display-message pane_start_command for %q: %v", sessionName, err)
-		return ""
+		t.Fatalf("display-message pane_start_command for %q: %v", sessionName, err)
 	}
 	return out
 }
