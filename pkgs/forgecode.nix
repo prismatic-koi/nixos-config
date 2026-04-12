@@ -7,16 +7,16 @@
 }:
 
 let
-  version = "2.4.1";
+  version = "2.9.9";
 
   sources = {
     "x86_64-linux" = {
       url = "https://github.com/antinomyhq/forgecode/releases/download/v${version}/forge-x86_64-unknown-linux-gnu";
-      hash = "sha256-PZUZrjhHtgLoN127iYsbLceSO75DPWjnBRyiNiIFPCw=";
+      hash = "sha256-P95V3bXqOlqGpxCDzZ2q7yIIwqecSktTrPaSjXWDIhk=";
     };
     "aarch64-darwin" = {
       url = "https://github.com/antinomyhq/forgecode/releases/download/v${version}/forge-aarch64-apple-darwin";
-      hash = "sha256-E7/tjwGKwd06x9vy0bRbMjz9I596/eufmDWOqbMwHAI=";
+      hash = "sha256-KeAZTzLdrjKvOWjJl1EKp6vLgUKhYhtdSPQbgB6izsU=";
     };
   };
 
