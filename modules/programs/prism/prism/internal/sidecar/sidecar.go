@@ -1511,17 +1511,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	}
 
 	// POST /spawn
-	// Request:  {"repo":"nixos-config","branch":"my-feature","prompt":"...","agent":"worker"}
+	// Request:  {"repo":"nixos-config","branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid"}
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
 		}
 		var req struct {
-			Repo   string `json:"repo"`
-			Branch string `json:"branch"`
-			Prompt string `json:"prompt"`
-			Agent  string `json:"agent"`
+			Repo    string `json:"repo"`
+			Branch  string `json:"branch"`
+			Prompt  string `json:"prompt"`
+			Agent   string `json:"agent"`
+			Profile string `json:"profile"`
+			Model   string `json:"model"`
+			Variant string `json:"variant"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1543,6 +1546,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Agent != "" {
 			args = append(args, "--agent", req.Agent)
 		}
+		if req.Profile != "" {
+			args = append(args, "--profile", req.Profile)
+		}
+		if req.Model != "" {
+			args = append(args, "--model", req.Model)
+		}
+		if req.Variant != "" {
+			args = append(args, "--variant", req.Variant)
+		}
 		args = append(args, req.Repo)
 
 		// Log without the prompt value — it may contain sensitive context.
@@ -1552,6 +1564,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Agent != "" {
 			logArgs = append(logArgs, "--agent", req.Agent)
+		}
+		if req.Profile != "" {
+			logArgs = append(logArgs, "--profile", req.Profile)
+		}
+		if req.Model != "" {
+			logArgs = append(logArgs, "--model", req.Model)
+		}
+		if req.Variant != "" {
+			logArgs = append(logArgs, "--variant", req.Variant)
 		}
 		logArgs = append(logArgs, req.Repo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
