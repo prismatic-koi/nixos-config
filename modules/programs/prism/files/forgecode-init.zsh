@@ -36,21 +36,18 @@ zmodload zsh/datetime 2>/dev/null
 zmodload zsh/stat     2>/dev/null
 
 # ---- section 1: cached plugin loader ----
-# Hash-keyed cache of `forge zsh plugin` output. Shared across all shells on
-# this host since the content is deterministic per forge binary.
-_forge_plugin_init() {
-  [[ -n "$_FORGE_PLUGIN_LOADED" ]] && return 0
-
+# Populates the cache if missing or stale. Does NOT source the plugin —
+# sourcing happens at top level below so that the plugin's typeset declarations
+# are not scoped to this function.
+_forge_plugin_cache_populate() {
   local forge_bin cache_dir plugin_cache key_file current_key
   forge_bin=${FORGE_BIN:-forge}
-  command -v "$forge_bin" >/dev/null 2>&1 || return 0
+  command -v "$forge_bin" >/dev/null 2>&1 || return 1
 
   cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/forgecode"
   plugin_cache="$cache_dir/plugin.zsh"
   key_file="$cache_dir/plugin.key"
 
-  # Key: resolved absolute path + version. Nix store path changes on every
-  # forgecode bump, so this automatically invalidates the cache.
   current_key="$(readlink -f "$(command -v "$forge_bin")"):$("$forge_bin" --version 2>/dev/null)"
 
   if [[ ! -f "$plugin_cache" || ! -f "$key_file" || "$(<"$key_file")" != "$current_key" ]]; then
@@ -58,11 +55,12 @@ _forge_plugin_init() {
     "$forge_bin" zsh plugin > "$plugin_cache" 2>/dev/null || return 1
     printf '%s\n' "$current_key" > "$key_file"
   fi
-
-  source "$plugin_cache"
-  typeset -g _FORGE_PLUGIN_LOADED=1
 }
-_forge_plugin_init
+
+# Source the cached plugin at top level so that the plugin's global typeset
+# declarations (_FORGE_BIN, _FORGE_CONVERSATION_ID, etc.) are not scoped
+# to a function call and are properly exported into the shell environment.
+_forge_plugin_cache_populate && source "${XDG_CACHE_HOME:-$HOME/.cache}/forgecode/plugin.zsh"
 
 # ---- section 2: per-shell rprompt cache ----
 # Generate a unique ID for this shell session. PID + microsecond timestamp is
