@@ -22,7 +22,22 @@ let
         import json
         import os
         import subprocess
+        import sys
         from pathlib import Path
+
+
+        def log_event(device, event, **fields):
+            """Emit a single-line event log to stderr for the systemd journal.
+
+            Every line starts with "device=<name> event=<event>" so multi-device
+            greps (e.g. `journalctl --user -u battery-notifier-* | grep mouse`)
+            reliably pick up all events for a given device. Only called on state
+            transitions and notification events — never on uneventful polls.
+            """
+            parts = [f"device={device}", f"event={event}"]
+            for key, value in fields.items():
+                parts.append(f"{key}={value}")
+            print(" ".join(parts), file=sys.stderr, flush=True)
 
 
         def get_command_output(cmd):
@@ -146,11 +161,25 @@ let
                 state["last_notification"] = "none"
                 state["last_id"] = "0"
                 state["full_notification_done"] = True
+                log_event(
+                    args.name,
+                    "notification_dismissed",
+                    notification="full",
+                    level=level,
+                    status=status,
+                )
 
             if last_notification_type == "low" and level >= args.dismiss_threshold:
                 close_notification(state["last_id"])
                 state["last_notification"] = "none"
                 state["last_id"] = "0"
+                log_event(
+                    args.name,
+                    "notification_dismissed",
+                    notification="low",
+                    level=level,
+                    status=status,
+                )
 
             # Reset full_notification_done flag if battery drops below re-notify threshold
             if is_discharging and level <= args.re_notify_threshold:
@@ -158,7 +187,17 @@ let
 
             # Re-read last notification type in case it was changed by dismissal logic
             last_notification_type = state["last_notification"]
-            status_has_changed = status != state["last_status"]
+            previous_status = state["last_status"]
+            status_has_changed = status != previous_status
+
+            # Log status transitions (but not the very first run where the
+            # previous status is "Unknown" — that isn't a real transition).
+            if status_has_changed and previous_status != "Unknown":
+                log_event(
+                    args.name,
+                    "status_transition",
+                    **{"from": previous_status, "to": status, "level": level},
+                )
 
             # 2. Handle notification creation/update conditions
             if level <= args.low_threshold:
@@ -182,6 +221,13 @@ let
                     new_id = send_notification(id_to_replace, icon, title, body)
                     state["last_notification"] = "low"
                     state["last_id"] = new_id
+                    log_event(
+                        args.name,
+                        "notification_sent",
+                        notification="low",
+                        level=level,
+                        status=status,
+                    )
 
             elif level >= args.full_threshold and is_charging:
                 if last_notification_type != "full" and not state["full_notification_done"]:
@@ -191,6 +237,13 @@ let
                     state["last_notification"] = "full"
                     state["last_id"] = new_id
                     state["full_notification_done"] = True
+                    log_event(
+                        args.name,
+                        "notification_sent",
+                        notification="full",
+                        level=level,
+                        status=status,
+                    )
 
             # 3. Always save the final state
             state["last_status"] = status
@@ -395,7 +448,7 @@ in
         enable = true;
         udevTrigger = false; # The mouse doesn't have a standard udev event
         levelCmd = "${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep Battery | sed 's/[^0-9]*//g' || echo 100";
-        statusCmd = "if ${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep -q '\\(charging\\)'; then echo 'Charging'; else echo 'Discharging'; fi";
+        statusCmd = "if ${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep -q '[(]charging[)]'; then echo 'Charging'; else echo 'Discharging'; fi";
         lowThreshold = 20;
         dismissThreshold = 50;
         ignoreZero = true;
