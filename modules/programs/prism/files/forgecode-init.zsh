@@ -55,12 +55,15 @@ _forge_plugin_cache_populate() {
     "$forge_bin" zsh plugin > "$plugin_cache" 2>/dev/null || return 1
     printf '%s\n' "$current_key" > "$key_file"
   fi
+
+  # Export the resolved path so the top-level source call doesn't duplicate it.
+  typeset -g _FORGE_PLUGIN_CACHE="$plugin_cache"
 }
 
 # Source the cached plugin at top level so that the plugin's global typeset
 # declarations (_FORGE_BIN, _FORGE_CONVERSATION_ID, etc.) are not scoped
 # to a function call and are properly exported into the shell environment.
-_forge_plugin_cache_populate && source "${XDG_CACHE_HOME:-$HOME/.cache}/forgecode/plugin.zsh"
+_forge_plugin_cache_populate && source "$_FORGE_PLUGIN_CACHE"
 
 # ---- section 2: per-shell rprompt cache ----
 # Generate a unique ID for this shell session. PID + microsecond timestamp is
