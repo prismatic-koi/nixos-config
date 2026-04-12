@@ -21,11 +21,11 @@
 
       # Order 1100 runs after the base zsh init (order 1000) so we can safely
       # reference the forge binary, XDG dirs, and any zsh hooks set up earlier.
-      # Note: p10k itself is sourced by home-manager as a plugin (see
-      # modules/programs/zsh.nix), not via initContent — so POWERLEVEL9K_* arrays
-      # are not yet populated at this point. The `forge` segment is therefore
-      # appended to POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS directly in
-      # modules/programs/files/p10k.zsh, not from this init script.
+      # Note: p10k plugins are sourced before initContent in the generated
+      # .zshrc, so POWERLEVEL9K_* arrays are already populated at this point.
+      # Nevertheless, the `forge` segment is registered statically in
+      # modules/programs/files/p10k.zsh rather than appended here — this keeps
+      # its position explicit and reviewable in the diff.
       programs.zsh.initContent = lib.mkOrder 1100 (builtins.readFile ./files/forgecode-init.zsh);
 
       # Persist all forgecode state — credentials, config, conversation history,

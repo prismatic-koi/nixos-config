@@ -21,14 +21,16 @@
 # forgecode.nix module for related notes on the ~/forge/ state directory
 # itself.
 #
-# Note on registration with p10k: the `forge` segment is appended to
-# POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS statically in
-# modules/programs/files/p10k.zsh, NOT from this file. home-manager sources
-# p10k plugins in a separate section of .zshrc that runs AFTER all initContent
-# blocks, so at the moment this file executes the right-prompt array does not
-# yet exist. Function definitions (prompt_forge / instant_prompt_forge) made
-# here persist across that later section, so p10k picks them up correctly
-# when it finally renders.
+# Note on registration with p10k: the `forge` segment is registered
+# statically in modules/programs/files/p10k.zsh rather than appended from
+# this init script. While home-manager sources p10k plugins before
+# initContent (so POWERLEVEL9K_RIGHT_PROMPT_ELEMENTS is already populated
+# when this file runs), keeping the registration in p10k.zsh makes the
+# segment's position explicit and reviewable in the diff, with no
+# dependency on runtime array mutation. Function definitions
+# (prompt_forge / instant_prompt_forge) made here are available by the
+# time p10k renders the first prompt because the full .zshrc completes
+# before any prompt is drawn.
 
 zmodload zsh/datetime 2>/dev/null
 zmodload zsh/stat     2>/dev/null
