@@ -98,7 +98,6 @@
     ./sessioniser.nix
     ./context-switcher.nix
     ./claude-code.nix
-    ./forgecode.nix
     ./prism-tui.nix
   ];
 
