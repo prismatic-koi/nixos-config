@@ -478,7 +478,7 @@
         # reasoning as secondary worker + Haiku for lightweight tasks.
         gemini-hybrid = {
           primary = {
-            model = "anthropic/claude-opus-4-6";
+            model = "anthropic/claude-sonnet-4-6";
           };
           secondary = {
             model = "google/gemini-3.1-pro-preview-customtools";
