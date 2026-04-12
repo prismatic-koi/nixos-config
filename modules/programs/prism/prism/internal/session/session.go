@@ -191,9 +191,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	nvimCmd := NvimCmd(directory)
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
-	_ = tmux.NewWindow(name, 1, "agent", directory)
-
-	// Start the sidecar before sending the agent window command.
+	// Start the sidecar before creating the agent window.
 	// In container mode the sidecar creates the container; we must start it
 	// before the attach command is queued so readiness signalling works.
 	if opts.Port == 0 {
@@ -215,9 +213,12 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		}
 	}
 
-	// Build and send the agent window command.
+	// Build the agent window command.
 	// In container mode, prepend a readiness wait so the pane blocks until
 	// the sidecar has health-checked the container (AC-18, AC-19, AC-20).
+	// opts.SessionName must be set by the caller before setupFullLayout is
+	// invoked — both ensureAndSwitch and restoreProjectSession do this.
+	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	agentCmd := BuildOpencodeCmd(opts)
 	if opts.ContainerMode && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
@@ -236,10 +237,12 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			agentCmd = buildReadinessWaitCmd(readyPath, sidPath, agentCmd)
 		}
 	}
-	// opts.SessionName must be set by the caller before setupFullLayout is
-	// invoked — both ensureAndSwitch and restoreProjectSession do this.
-	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
-	_ = tmux.SendKeys(name+":1", agentCmd)
+
+	// Create the agent window with the command passed directly at window
+	// creation time. This runs the command via "sh -c <cmd>", bypassing
+	// tmux's command parser — semicolons in the readiness-wait script are
+	// delivered verbatim to the shell instead of being consumed by tmux.
+	_ = tmux.NewWindow(name, 1, "agent", directory, agentCmd)
 
 	if !opts.SkipStatusSeed {
 		self, selfErr := os.Executable()
@@ -253,7 +256,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		}
 	}
 
-	_ = tmux.NewWindow(name, 2, "term", directory)
+	_ = tmux.NewWindow(name, 2, "term", directory, "")
 
 	focusIdx := 1
 	if strings.Contains(directory, "obsidian") {

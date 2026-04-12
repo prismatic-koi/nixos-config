@@ -37,16 +37,18 @@ func withRestoreConfig(t *testing.T, cfg config.Config) {
 	t.Cleanup(func() { loadRestoreConfig = prev })
 }
 
-// waitForAgentPaneContains polls the agent pane (window 1) for the given
-// session until the substring appears or the deadline is reached. Returns
-// the last captured pane content so the test can produce a useful failure
-// message when the substring is missing.
+// waitForAgentPaneContains polls the agent pane (window 1) start command for
+// the given session until the substring appears or the deadline is reached.
+// The agent window is now created with "new-window ... sh -c <cmd>" so the
+// command is delivered via #{pane_start_command}, not via send-keys echoing in
+// the pane. Returns the last captured pane_start_command value so the test can
+// produce a useful failure message when the substring is missing.
 func waitForAgentPaneContains(t *testing.T, s *cmdTestServer, sessionName, want string) string {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var paneContent string
 	for time.Now().Before(deadline) {
-		out, err := s.output("capture-pane", "-t", sessionName+":1", "-p")
+		out, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
 		if err == nil {
 			paneContent = out
 			if strings.Contains(paneContent, want) {
@@ -383,11 +385,12 @@ func TestRestoreSession_EmptyWorktree(t *testing.T) {
 }
 
 // TestRestoreSession_OpencodeSessionResumed verifies that when a stored
-// OpencodeSID is present, the opencode launch command sent to the agent window
-// includes the session ID (-s flag).
+// OpencodeSID is present, the opencode launch command delivered to the agent
+// window includes the session ID (-s flag).
 //
-// It captures the actual text typed into the agent pane (window 1) via
-// capture-pane and asserts the session ID appears in the captured output.
+// It reads #{pane_start_command} from the agent window (window 1) — the agent
+// window is now created with "new-window ... sh -c <cmd>" so the command is
+// embedded in the pane's start command, not echoed via send-keys.
 func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
@@ -413,24 +416,15 @@ func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Poll the agent window (index 1) until the session ID appears in the pane
-	// content. send-keys is asynchronous so we allow up to 3 seconds for the
-	// text to land in the shell's input buffer / history.
-	deadline := time.Now().Add(3 * time.Second)
-	var paneContent string
-	for time.Now().Before(deadline) {
-		out, err := s.output("capture-pane", "-t", sessionName+":1", "-p")
-		if err == nil {
-			paneContent = out
-			if strings.Contains(paneContent, "-s "+sid) {
-				break
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	// Read the pane start command — the agent window is created via
+	// "new-window ... sh -c <cmd>" so the command appears in #{pane_start_command}.
+	paneCmd, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
+	if err != nil {
+		t.Fatalf("display-message pane_start_command: %v", err)
 	}
 
-	if !strings.Contains(paneContent, "-s "+sid) {
-		t.Errorf("agent pane does not contain '-s %s'; captured output:\n%s", sid, paneContent)
+	if !strings.Contains(paneCmd, "-s "+sid) {
+		t.Errorf("agent pane_start_command does not contain '-s %s'; got:\n%s", sid, paneCmd)
 	}
 }
 
