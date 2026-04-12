@@ -86,7 +86,7 @@ func LoadProfiles() (*ProfilesFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("profiles: %s not found — run `darwin-rebuild switch` to generate it", path)
+			return nil, fmt.Errorf("profiles: %s not found — run the system rebuild to generate it", path)
 		}
 		return nil, fmt.Errorf("profiles: read %s: %w", path, err)
 	}
