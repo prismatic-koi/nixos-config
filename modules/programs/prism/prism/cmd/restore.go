@@ -14,10 +14,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// loadRestoreConfig returns the active prism configuration for restore.
+// It is a package-level variable so tests can override it to exercise
+// container-mode and host-mode restore paths without depending on the
+// process-wide config.Load() singleton cache.
+var loadRestoreConfig = func() config.Config { return config.Load() }
 
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
@@ -138,6 +145,14 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
 	// setupFullLayout from forking "prism event tmux-session-start" — we
 	// manage agent_status directly below via the open DB handle.
+	//
+	// ContainerMode is derived from both the global cfg and the per-session
+	// s.HostMode flag: a session that was explicitly spawned with --host-mode
+	// must be restored in host mode regardless of the current cfg setting.
+	// When ContainerMode is enabled, PluginHostPath is also copied from cfg so
+	// the sidecar can bind-mount the plugin into the container.
+	cfg := loadRestoreConfig()
+	containerMode := cfg.ContainerMode && !s.HostMode
 	opencodeSession := ""
 	if s.OpencodeSID != nil {
 		opencodeSession = *s.OpencodeSID
@@ -149,6 +164,10 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		SessionName:     s.SessionName,
 		Layout:          session.LayoutFull,
 		SkipStatusSeed:  true,
+		ContainerMode:   containerMode,
+	}
+	if containerMode {
+		opts.PluginHostPath = cfg.SidecarPluginPath
 	}
 
 	// Re-check for a race immediately before DB writes: if the session has
@@ -159,6 +178,24 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	// unavoidable and is handled by Create's own inner guard.
 	if tmux.HasSession(s.SessionName) {
 		return nil
+	}
+
+	// Kill any orphaned sidecar left over from a previous lifecycle (e.g. a
+	// reboot or crash without clean shutdown). KillSidecar is a no-op when
+	// no PID file is present or the process is already gone, so it is safe
+	// to call unconditionally for both host-mode and container-mode sessions.
+	// Clearing the PID file here ensures StartSidecarWithOpts can write a
+	// fresh one below.
+	session.KillSidecar(s.SessionName)
+
+	// For container-mode sessions, also remove any stale container left over
+	// from the previous lifecycle. Without this, `podman create` inside the
+	// new sidecar would fail with "container name already in use".
+	// removeContainerIfExists is idempotent and logs non-fatal errors
+	// internally, so it is safe to call even when no container exists.
+	// Host-mode sessions never have a container, so this step is skipped.
+	if containerMode {
+		removeContainerIfExists(s.SessionName)
 	}
 
 	// Refresh agent_status and allocate a port before calling session.Create,
