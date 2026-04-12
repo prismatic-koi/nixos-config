@@ -94,6 +94,7 @@
     ./container-opencode-config.nix
     ./neovim
     ./opencode.nix
+    ./profiles.nix
     ./tmux.nix
     ./sessioniser.nix
     ./context-switcher.nix

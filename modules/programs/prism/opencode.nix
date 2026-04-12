@@ -10,13 +10,7 @@
       default = true;
     };
     nx.programs.prism.opencode.provider = lib.mkOption {
-      type = lib.types.enum [
-        "anthropic"
-        "anthropic-opus"
-        "gemini-hybrid"
-        "github-copilot"
-        "google"
-      ];
+      type = lib.types.enum (builtins.attrNames config.nx.programs.prism.profiles.data.profiles);
       default = "anthropic";
       description = ''
         The model profile to use for baked-in opencode agent config.
@@ -416,131 +410,12 @@
         - If Ben uses Te Reo in a prompt, mirror it back. If he doesn't, still lead occasionally.
         - Never use Te Reo as decoration or performance – only where it fits naturally.
       '';
-      # Role-to-agent mapping: used when generating profiles.json so the Go CLI
-      # knows which agents map to which roles.
-      roleMapping = {
-        primary = [
-          "coordinator"
-          "plan"
-        ];
-        secondary = [
-          "worker"
-          "review"
-          "ac"
-        ];
-        lightweight = [
-          "explore"
-          "title"
-          "summary"
-          "compaction"
-        ];
-      };
-
-      # Model profiles: map profile names to role → { model, variant? } configs.
-      #
-      # "primary"     — capable reasoning model for coordinator and plan agents.
-      # "secondary"   — capable model for worker, review, and ac agents
-      #                 (lighter than primary; Sonnet for Anthropic, Sonnet for Copilot).
-      # "lightweight" — cheaper/faster model for mechanical subagents
-      #                 (explore, title, summary, compaction).
-      #
-      # Note: Anthropic uses hyphens as version separators (e.g. claude-sonnet-4-6),
-      # while GitHub Copilot uses dots (e.g. claude-sonnet-4.6). This is intentional —
-      # the two providers report different identifier formats from `opencode models`.
-      #
-      # Gemini 3.x models use thinkingLevel (string: "low"/"medium"/"high") expressed
-      # as opencode variant names. opencode has built-in variants for these on
-      # Gemini 3.1 models. Setting variant = "medium" enables medium reasoning.
-      profiles = {
-        anthropic = {
-          primary = {
-            model = "anthropic/claude-opus-4-6";
-          };
-          secondary = {
-            model = "anthropic/claude-sonnet-4-6";
-          };
-          lightweight = {
-            model = "anthropic/claude-haiku-4-5";
-          };
-        };
-        anthropic-opus = {
-          primary = {
-            model = "anthropic/claude-opus-4-6";
-          };
-          secondary = {
-            model = "anthropic/claude-opus-4-6";
-          };
-          lightweight = {
-            model = "anthropic/claude-haiku-4-5";
-          };
-        };
-        # gemini-hybrid: Opus as primary coordinator + Gemini 3.1 Pro with medium
-        # reasoning as secondary worker + Haiku for lightweight tasks.
-        gemini-hybrid = {
-          primary = {
-            model = "anthropic/claude-sonnet-4-6";
-          };
-          secondary = {
-            model = "google/gemini-3.1-pro-preview-customtools";
-            variant = "medium";
-          };
-          lightweight = {
-            model = "anthropic/claude-haiku-4-5";
-          };
-        };
-        github-copilot = {
-          primary = {
-            model = "github-copilot/claude-sonnet-4.6";
-          };
-          secondary = {
-            model = "github-copilot/claude-sonnet-4.6";
-          };
-          lightweight = {
-            model = "github-copilot/claude-haiku-4.5";
-          };
-        };
-        # Flash for primary is a deliberate cost/capability tradeoff for the Google tier —
-        # Gemini Flash is capable enough for coordinator/plan while remaining cost-effective.
-        # Note: gemini-3-flash-preview and gemini-3.1-flash-lite-preview are distinct model
-        # families; there is no gemini-3.1-flash-preview available via opencode models.
-        google = {
-          primary = {
-            model = "google/gemini-3-flash-preview";
-          };
-          secondary = {
-            model = "google/gemini-3.1-flash-lite-preview";
-          };
-          lightweight = {
-            model = "google/gemini-3.1-flash-lite-preview";
-          };
-        };
-      };
-
-      # Convenience accessor: model strings for the currently selected profile.
-      # Used for the baked-in opencode.json config (same as before).
-      # We extract just the model string (ignoring variant) for backwards compat
-      # with the existing opencode.json generation code below.
-      currentProfile = profiles.${config.nx.programs.prism.opencode.provider};
+      currentProfile =
+        config.nx.programs.prism.profiles.data.profiles.${config.nx.programs.prism.opencode.provider};
       models = {
         primary = currentProfile.primary.model;
         secondary = currentProfile.secondary.model;
         lightweight = currentProfile.lightweight.model;
-      };
-
-      # profiles.json content: the full profile definitions plus role mapping.
-      # This file is the contract between Nix (source of truth) and the Go CLI.
-      # Nix generates it; Go reads it at runtime when --profile is used.
-      profilesJson = builtins.toJSON {
-        default = config.nx.programs.prism.opencode.provider;
-        role_mapping = roleMapping;
-        profiles = lib.mapAttrs (
-          _name: profileEntry:
-          lib.mapAttrs (
-            _role: roleCfg:
-            # Only emit the variant key when it's present in the role config.
-            { model = roleCfg.model; } // (lib.optionalAttrs (roleCfg ? variant) { variant = roleCfg.variant; })
-          ) profileEntry
-        ) profiles;
       };
 
       # Authentication plugins — all provider auth plugins are always loaded so
@@ -618,9 +493,8 @@
             settings = {
               autoupdate = false;
               model = models.primary;
-              agent = {
+              agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
                 worker = {
-                  model = models.secondary;
                   description = "Default worker agent with full tool access";
                   mode = "primary";
                   color = config.theme.red;
@@ -635,7 +509,6 @@
                   };
                 };
                 plan = {
-                  model = models.primary;
                   description = "Planning and analysis agent with read-only access";
                   mode = "primary";
                   color = config.theme.blue;
@@ -660,7 +533,6 @@
                   };
                 };
                 coordinator = {
-                  model = models.primary;
                   description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
                   mode = "primary";
                   color = config.theme.purple;
@@ -694,24 +566,18 @@
                   };
                 };
                 review = {
-                  model = models.secondary;
                 };
                 ac = {
-                  model = models.secondary;
                 };
                 # Lightweight built-in subagents — use a cheaper/faster model since these
                 # do simple, mechanical tasks that don't require deep reasoning.
                 explore = {
-                  model = models.lightweight;
                 };
                 title = {
-                  model = models.lightweight;
                 };
                 summary = {
-                  model = models.lightweight;
                 };
                 compaction = {
-                  model = models.lightweight;
                 };
               };
               mcp = {
@@ -795,7 +661,7 @@
           # The Go CLI reads this at runtime when --profile is passed to
           # prism spawn. It contains all profile definitions and the role-to-agent
           # mapping, and records which profile is the current default.
-          xdg.configFile."prism/profiles.json".text = profilesJson;
+          xdg.configFile."prism/profiles.json".text = config.nx.programs.prism.profiles.json;
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"
