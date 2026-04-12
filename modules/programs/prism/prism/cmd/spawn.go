@@ -10,8 +10,9 @@ package cmd
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
 //	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
-//	--model <name>        model identifier to pass to opencode (e.g. anthropic/claude-sonnet-4-6)
-//	--variant <name>      model variant / reasoning effort (e.g. high, max, minimal)
+//	--profile <name>      model profile to use (from ~/.config/prism/profiles.json)
+//	--model <name>        model identifier override (overrides profile's primary model)
+//	--variant <name>      model variant override (overrides all agents' variant)
 //	--host-mode           bypass container mode and run opencode directly in the tmux pane
 
 import (
@@ -35,6 +36,7 @@ import (
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	agentFlag, _ := cmd.Flags().GetString("agent")
+	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
@@ -56,6 +58,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"branch":    branchFlag,
 		"prompt":    promptFlag,
 		"agent":     agentFlag,
+		"profile":   profileFlag,
 		"model":     modelFlag,
 		"variant":   variantFlag,
 		"host_mode": hostModeFlag,
@@ -78,8 +81,9 @@ func init() {
 	addPromptFlags(spawnCmd)
 	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
-	spawnCmd.Flags().String("model", "", "Model identifier to pass to opencode (e.g. anthropic/claude-sonnet-4-6)")
-	spawnCmd.Flags().String("variant", "", "Model variant / reasoning effort (e.g. high, max, minimal)")
+	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
+	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
+	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().Bool("host-mode", false, "Bypass container mode and run opencode directly in the tmux pane")
 	rootCmd.AddCommand(spawnCmd)
 }
@@ -92,6 +96,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
 	agentFlag, _ := cmd.Flags().GetString("agent")
+	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
@@ -122,11 +127,25 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Resolve model profile into OPENCODE_CONFIG_CONTENT.
+	// Load the profiles file only when --profile is set (to produce good errors).
+	var pf *config.ProfilesFile
+	if profileFlag != "" {
+		var loadErr error
+		pf, loadErr = config.LoadProfiles()
+		if loadErr != nil {
+			return loadErr
+		}
+	}
+	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
+	if err != nil {
+		return err
+	}
+
 	opts := session.Opts{
 		Prompt:         promptFlag,
 		Agent:          agentFlag,
-		Model:          modelFlag,
-		Variant:        variantFlag,
+		ConfigContent:  configContent,
 		Headless:       !fromKeybind && !attachFlag,
 		ContainerMode:  effectiveContainerMode,
 		PluginHostPath: cfg.SidecarPluginPath,

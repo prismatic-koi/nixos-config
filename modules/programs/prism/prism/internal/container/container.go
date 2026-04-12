@@ -63,15 +63,15 @@ type Config struct {
 	// opencode config and cause "model not supported" errors).
 	AgentModel string
 
-	// Model is the model identifier to pass to opencode serve at container
-	// startup via --model (e.g. "anthropic/claude-sonnet-4-6"). When empty,
-	// opencode's default model is used.
-	Model string
-
-	// Variant is the model variant to pass to opencode serve at container
-	// startup via --variant (e.g. "high", "max"). When empty, no --variant
-	// flag is passed.
-	Variant string
+	// ConfigContent is the JSON blob for the OPENCODE_CONFIG_CONTENT environment
+	// variable. When non-empty, it is injected as an env var into the container
+	// so that opencode serve picks up the correct model and variant overrides at
+	// runtime (precedence level 6 in opencode's config merge).
+	//
+	// Previously this was done via --model and --variant flags on opencode serve,
+	// but those flags are not accepted by the serve subcommand. Using
+	// OPENCODE_CONFIG_CONTENT works for both serve and the TUI/attach path.
+	ConfigContent string
 
 	// PluginHostPath is the absolute path to the prism-hooks plugin file on the
 	// host (e.g. ~/.config/opencode/plugins/prism-hooks.ts). It is mounted
@@ -774,19 +774,21 @@ func (m *Manager) buildRunArgs() []string {
 		args = append(args, "--env", kv)
 	}
 
+	// OPENCODE_CONFIG_CONTENT: inject as an env var when set. This overrides
+	// model and variant at runtime (precedence level 6 in opencode's config
+	// merge). Previously --model and --variant were appended to the opencode
+	// serve command, but serve does not accept those flags — env var injection
+	// is the correct and more general approach.
+	if cfg.ConfigContent != "" {
+		args = append(args, "--env", "OPENCODE_CONFIG_CONTENT="+cfg.ConfigContent)
+	}
+
 	// Image and command: opencode serve on the container port.
 	args = append(args, Image,
 		"opencode", "serve",
 		"--port", fmt.Sprintf("%d", ContainerPort),
 		"--hostname", "0.0.0.0",
 	)
-
-	if cfg.Model != "" {
-		args = append(args, "--model", cfg.Model)
-	}
-	if cfg.Variant != "" {
-		args = append(args, "--variant", cfg.Variant)
-	}
 
 	return args
 }

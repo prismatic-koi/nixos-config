@@ -239,6 +239,9 @@
       };
 
       # Model identifiers — must stay in sync with opencode.nix.
+      # Mirrors the profiles structure in opencode.nix; extracts only the model
+      # string for baked-in container config generation (variant is injected at
+      # runtime via OPENCODE_CONFIG_CONTENT, not baked in here).
       providerModels = {
         anthropic = {
           primary = "anthropic/claude-opus-4-6";
@@ -248,6 +251,14 @@
         anthropic-opus = {
           primary = "anthropic/claude-opus-4-6";
           secondary = "anthropic/claude-opus-4-6";
+          lightweight = "anthropic/claude-haiku-4-5";
+        };
+        # gemini-hybrid: primary uses Opus, secondary uses Gemini 3.1 Pro.
+        # The variant (medium reasoning) is injected at runtime via
+        # OPENCODE_CONFIG_CONTENT, not baked into the container config.
+        gemini-hybrid = {
+          primary = "anthropic/claude-opus-4-6";
+          secondary = "google/gemini-3.1-pro-preview-customtools";
           lightweight = "anthropic/claude-haiku-4-5";
         };
         github-copilot = {

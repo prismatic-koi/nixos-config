@@ -13,15 +13,17 @@
       type = lib.types.enum [
         "anthropic"
         "anthropic-opus"
+        "gemini-hybrid"
         "github-copilot"
         "google"
       ];
       default = "anthropic";
       description = ''
-        The LLM provider to use for opencode agents.
-        Switching providers updates the model strings only. All provider
-        auth plugins and config blocks are always present so any provider
-        can be used mid-session.
+        The model profile to use for baked-in opencode agent config.
+        This selects the default profile recorded in profiles.json and drives
+        the model strings written into opencode.json. All provider auth plugins
+        are always present so any provider can be used mid-session regardless
+        of which profile is active.
       '';
     };
   };
@@ -414,7 +416,28 @@
         - If Ben uses Te Reo in a prompt, mirror it back. If he doesn't, still lead occasionally.
         - Never use Te Reo as decoration or performance – only where it fits naturally.
       '';
-      # Model identifiers for the selected provider.
+      # Role-to-agent mapping: used when generating profiles.json so the Go CLI
+      # knows which agents map to which roles.
+      roleMapping = {
+        primary = [
+          "coordinator"
+          "plan"
+        ];
+        secondary = [
+          "worker"
+          "review"
+          "ac"
+        ];
+        lightweight = [
+          "explore"
+          "title"
+          "summary"
+          "compaction"
+        ];
+      };
+
+      # Model profiles: map profile names to role → { model, variant? } configs.
+      #
       # "primary"     — capable reasoning model for coordinator and plan agents.
       # "secondary"   — capable model for worker, review, and ac agents
       #                 (lighter than primary; Sonnet for Anthropic, Sonnet for Copilot).
@@ -424,33 +447,101 @@
       # Note: Anthropic uses hyphens as version separators (e.g. claude-sonnet-4-6),
       # while GitHub Copilot uses dots (e.g. claude-sonnet-4.6). This is intentional —
       # the two providers report different identifier formats from `opencode models`.
-      providerModels = {
+      #
+      # Gemini 3.x models use thinkingLevel (string: "low"/"medium"/"high") expressed
+      # as opencode variant names. opencode has built-in variants for these on
+      # Gemini 3.1 models. Setting variant = "medium" enables medium reasoning.
+      profiles = {
         anthropic = {
-          primary = "anthropic/claude-opus-4-6";
-          secondary = "anthropic/claude-sonnet-4-6";
-          lightweight = "anthropic/claude-haiku-4-5";
+          primary = {
+            model = "anthropic/claude-opus-4-6";
+          };
+          secondary = {
+            model = "anthropic/claude-sonnet-4-6";
+          };
+          lightweight = {
+            model = "anthropic/claude-haiku-4-5";
+          };
         };
         anthropic-opus = {
-          primary = "anthropic/claude-opus-4-6";
-          secondary = "anthropic/claude-opus-4-6";
-          lightweight = "anthropic/claude-haiku-4-5";
+          primary = {
+            model = "anthropic/claude-opus-4-6";
+          };
+          secondary = {
+            model = "anthropic/claude-opus-4-6";
+          };
+          lightweight = {
+            model = "anthropic/claude-haiku-4-5";
+          };
+        };
+        # gemini-hybrid: Opus as primary coordinator + Gemini 3.1 Pro with medium
+        # reasoning as secondary worker + Haiku for lightweight tasks.
+        gemini-hybrid = {
+          primary = {
+            model = "anthropic/claude-sonnet-4-6";
+          };
+          secondary = {
+            model = "google/gemini-3.1-pro-preview-customtools";
+            variant = "medium";
+          };
+          lightweight = {
+            model = "anthropic/claude-haiku-4-5";
+          };
         };
         github-copilot = {
-          primary = "github-copilot/claude-sonnet-4.6";
-          secondary = "github-copilot/claude-sonnet-4.6";
-          lightweight = "github-copilot/claude-haiku-4.5";
+          primary = {
+            model = "github-copilot/claude-sonnet-4.6";
+          };
+          secondary = {
+            model = "github-copilot/claude-sonnet-4.6";
+          };
+          lightweight = {
+            model = "github-copilot/claude-haiku-4.5";
+          };
         };
         # Flash for primary is a deliberate cost/capability tradeoff for the Google tier —
         # Gemini Flash is capable enough for coordinator/plan while remaining cost-effective.
         # Note: gemini-3-flash-preview and gemini-3.1-flash-lite-preview are distinct model
         # families; there is no gemini-3.1-flash-preview available via opencode models.
         google = {
-          primary = "google/gemini-3-flash-preview";
-          secondary = "google/gemini-3.1-flash-lite-preview";
-          lightweight = "google/gemini-3.1-flash-lite-preview";
+          primary = {
+            model = "google/gemini-3-flash-preview";
+          };
+          secondary = {
+            model = "google/gemini-3.1-flash-lite-preview";
+          };
+          lightweight = {
+            model = "google/gemini-3.1-flash-lite-preview";
+          };
         };
       };
-      models = providerModels.${config.nx.programs.prism.opencode.provider};
+
+      # Convenience accessor: model strings for the currently selected profile.
+      # Used for the baked-in opencode.json config (same as before).
+      # We extract just the model string (ignoring variant) for backwards compat
+      # with the existing opencode.json generation code below.
+      currentProfile = profiles.${config.nx.programs.prism.opencode.provider};
+      models = {
+        primary = currentProfile.primary.model;
+        secondary = currentProfile.secondary.model;
+        lightweight = currentProfile.lightweight.model;
+      };
+
+      # profiles.json content: the full profile definitions plus role mapping.
+      # This file is the contract between Nix (source of truth) and the Go CLI.
+      # Nix generates it; Go reads it at runtime when --profile is used.
+      profilesJson = builtins.toJSON {
+        default = config.nx.programs.prism.opencode.provider;
+        role_mapping = roleMapping;
+        profiles = lib.mapAttrs (
+          _name: profileEntry:
+          lib.mapAttrs (
+            _role: roleCfg:
+            # Only emit the variant key when it's present in the role config.
+            { model = roleCfg.model; } // (lib.optionalAttrs (roleCfg ? variant) { variant = roleCfg.variant; })
+          ) profileEntry
+        ) profiles;
+      };
 
       # Authentication plugins — all provider auth plugins are always loaded so
       # any provider can be used mid-session regardless of which provider is the
@@ -462,6 +553,11 @@
           "opencode-claude-auth@latest"
         ];
         anthropic-opus = [
+          "opencode-claude-auth@latest"
+        ];
+        # gemini-hybrid uses both Anthropic (Opus primary) and Google (Gemini secondary).
+        # Both auth plugins are needed; they are both loaded globally anyway.
+        gemini-hybrid = [
           "opencode-claude-auth@latest"
         ];
         github-copilot = [ ];
@@ -695,6 +791,11 @@
           # Skills — mounted as a single directory (like agents/) so
           # impermanence does not create dangling symlinks after GC (#501).
           xdg.configFile."opencode/skills".source = skillsDir;
+          # Model profiles — written to ~/.config/prism/profiles.json.
+          # The Go CLI reads this at runtime when --profile is passed to
+          # prism spawn. It contains all profile definitions and the role-to-agent
+          # mapping, and records which profile is the current default.
+          xdg.configFile."prism/profiles.json".text = profilesJson;
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"
