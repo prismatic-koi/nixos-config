@@ -688,13 +688,20 @@ func removeContainerIfExists(sessionName string) {
 		}
 	}
 
-	// Clean up temp files created by container.Manager.Create.
+	// Clean up temp files created by container.Manager.Create. This list must
+	// stay in sync with container.Manager.EnsureRemoved / Shutdown so that
+	// a direct cleanup path (sidecar already dead) leaves no stale files
+	// behind that a subsequent Create would otherwise overwrite.
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitdir-"+name))
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-wt-gitdir-"+name))
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-ssh-config-"+name))
+	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitconfig-"+name))
+	_ = os.Remove(filepath.Join(os.TempDir(), "prism-allowed-signers-"+name))
 
-	// TODO(#507): clean up the host-API socket file once SidecarHostAPIPath is available.
-	// if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
-	// 	_ = os.Remove(sockPath)
-	// }
+	// Clean up the host-API Unix socket file created by the sidecar. The
+	// sidecar's own shutdown path would normally remove it, but cleanup runs
+	// after KillSidecar so we cannot rely on that — remove it directly.
+	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
+		_ = os.Remove(sockPath)
+	}
 }
