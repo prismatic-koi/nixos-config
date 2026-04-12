@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -37,27 +36,19 @@ func withRestoreConfig(t *testing.T, cfg config.Config) {
 	t.Cleanup(func() { loadRestoreConfig = prev })
 }
 
-// waitForAgentPaneContains polls the agent pane (window 1) start command for
-// the given session until the substring appears or the deadline is reached.
-// The agent window is now created with "new-window ... sh -c <cmd>" so the
-// command is delivered via #{pane_start_command}, not via send-keys echoing in
-// the pane. Returns the last captured pane_start_command value so the test can
-// produce a useful failure message when the substring is missing.
-func waitForAgentPaneContains(t *testing.T, s *cmdTestServer, sessionName, want string) string {
+// agentPaneStartCmd reads #{pane_start_command} from the agent window (window 1)
+// of the named session. The agent window is created with "new-window ... sh -c
+// <cmd>", so the command is embedded in the pane's start command synchronously
+// at window creation — no polling is required. Returns the start command string
+// so callers can assert substrings.
+func agentPaneStartCmd(t *testing.T, s *cmdTestServer, sessionName string) string {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	var paneContent string
-	for time.Now().Before(deadline) {
-		out, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
-		if err == nil {
-			paneContent = out
-			if strings.Contains(paneContent, want) {
-				return paneContent
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
+	out, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
+	if err != nil {
+		t.Errorf("display-message pane_start_command for %q: %v", sessionName, err)
+		return ""
 	}
-	return paneContent
+	return out
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -525,10 +516,10 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The agent pane must contain "opencode attach http://localhost:", not
-	// "opencode --agent". Port is assigned by AllocatePort so we match the
+	// The agent pane start command must contain "opencode attach http://localhost:",
+	// not "opencode --agent". Port is assigned by AllocatePort so we match the
 	// attach URL prefix rather than a specific port number.
-	pane := waitForAgentPaneContains(t, s, sessionName, "opencode attach http://localhost:")
+	pane := agentPaneStartCmd(t, s, sessionName)
 	if !strings.Contains(pane, "opencode attach http://localhost:") {
 		t.Errorf("agent pane missing 'opencode attach http://localhost:' — captured:\n%s", pane)
 	}
@@ -585,8 +576,8 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Agent pane must contain "opencode --agent ...", not "opencode attach".
-	pane := waitForAgentPaneContains(t, s, sessionName, "opencode --agent")
+	// Agent pane start command must contain "opencode --agent ...", not "opencode attach".
+	pane := agentPaneStartCmd(t, s, sessionName)
 	if !strings.Contains(pane, "opencode --agent") {
 		t.Errorf("agent pane missing 'opencode --agent' — captured:\n%s", pane)
 	}
