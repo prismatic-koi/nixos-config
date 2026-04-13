@@ -94,6 +94,7 @@
     ./container-opencode-config.nix
     ./neovim
     ./opencode.nix
+    ./pi.nix
     ./profiles.nix
     ./tmux.nix
     ./sessioniser.nix
@@ -110,6 +111,7 @@
     nx.programs.prism.sessioniser.enable = lib.mkDefault true;
     nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
     nx.programs.prism.claude-code.enable = lib.mkDefault true;
+    nx.programs.prism.pi.enable = lib.mkDefault true;
     nx.programs.prism.tui.enable = lib.mkDefault true;
 
     # Auto-enable choose on Darwin when contextSwitcher is enabled
