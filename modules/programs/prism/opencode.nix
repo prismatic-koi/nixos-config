@@ -339,8 +339,9 @@
       # symlinks dangle after nix-collect-garbage removes the store paths
       # they pointed to.
       skillsDir = pkgs.runCommand "opencode-skills" { } ''
-        mkdir -p $out/prism $out/aws
+        mkdir -p $out/prism $out/prism-db $out/aws
         cp -r ${./opencode/skills/prism}/* $out/prism/
+        cp -r ${./opencode/skills/prism-db}/* $out/prism-db/
         ${lib.optionalString pkgs.stdenv.isLinux ''
           cp -r ${./opencode/skills/playwright-cli} $out/playwright-cli
         ''}
@@ -449,6 +450,7 @@
         github-copilot = { };
         google = { };
       };
+      hmUser = config.home-manager.users.${config.nx.username};
     in
     lib.mkMerge [
       # Common configuration for both platforms
@@ -578,6 +580,42 @@
                 summary = {
                 };
                 compaction = {
+                };
+                retro = {
+                  description = "Analyses agent sessions for quality patterns and improvement opportunities";
+                  mode = "subagent";
+                  tools = {
+                    read = true;
+                    grep = true;
+                    glob = true;
+                    list = true;
+                    bash = true;
+                    # No write/edit tools — retro is read-only
+                    write = false;
+                    edit = false;
+                    patch = false;
+                    webfetch = false;
+                  };
+                  permission = {
+                    bash = {
+                      # Default deny (MUST be first - last match wins)
+                      "*" = "deny";
+                    }
+                    // readOnlyBashCommands
+                    // {
+                      # Prism read-only commands
+                      "prism stats" = "allow";
+                      "prism stats *" = "allow";
+                      "prism checkin" = "allow";
+                      "prism checkin *" = "allow";
+                      "prism list-sessions" = "allow";
+                      # SQLite read-only access to prism DB — the ?mode=ro flag enforces
+                      # read-only at the SQLite engine level, rejecting all write operations.
+                      # The path is baked in at Nix eval time via hmUser.xdg.stateHome.
+                      "sqlite3 file:${hmUser.xdg.stateHome}/prism/prism.db?mode=ro *" = "allow";
+                    }
+                    // tmuxDenyCommands;
+                  };
                 };
               };
               mcp = {

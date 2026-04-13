@@ -36,6 +36,7 @@
             "worker"
             "review"
             "ac"
+            "retro"
           ];
           lightweight = [
             "explore"
