@@ -28,6 +28,7 @@ rec {
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
       opencode = masterPkgs.opencode;
+      pi-coding-agent = masterPkgs.pi-coding-agent;
 
       # packages not yet in nixpkgs; use local definitions
       # playwright-cli depends on chromium which is Linux-only
