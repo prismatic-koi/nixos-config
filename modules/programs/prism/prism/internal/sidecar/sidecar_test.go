@@ -4694,8 +4694,8 @@ func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
 	var body map[string]any
 	decodeJSONBody(t, rr, &body)
 	events, _ := body["events"].([]any)
-	if len(events) > 2 {
-		t.Errorf("got %d events with last=2, want at most 2", len(events))
+	if len(events) != 2 {
+		t.Errorf("got %d events with last=2, want exactly 2", len(events))
 	}
 }
 

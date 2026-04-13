@@ -674,7 +674,7 @@ func renderProxiedCheckin(raw []byte, verbose bool) error {
 	inlineByMsgID := make(map[string][]inlineEvent)
 	for _, e := range resp.Events {
 		switch e.Type {
-		case "tool_call", "tool_result", "permission_ask", "permission_denied":
+		case "tool_call", "tool_result", "permission_ask", "permission_denied", "thinking":
 			msgID := extractMessageID(e.Payload)
 			if msgID != "" {
 				inlineByMsgID[msgID] = append(inlineByMsgID[msgID], inlineEvent{e.Type, e.Payload})
@@ -763,6 +763,13 @@ func renderProxiedCheckin(raw []byte, verbose bool) error {
 				continue
 			}
 			renderChildEvent("permission_denied", e.Payload, verbose, "")
+
+		case "thinking":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" && assistantMsgIDs[msgID] {
+				continue
+			}
+			renderChildEvent("thinking", e.Payload, verbose, "")
 
 		default:
 			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
