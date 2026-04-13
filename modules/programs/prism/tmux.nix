@@ -43,6 +43,7 @@ in
             # tmux
             ''
               # appearance
+              set -g extended-keys on
               set -g status-interval 5
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "

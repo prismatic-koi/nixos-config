@@ -45,7 +45,10 @@
     in
     {
       home-manager.users.${config.nx.username} = {
-        home.packages = [ pkgs.pi-coding-agent ];
+        home.packages = with pkgs; [
+          pi-coding-agent
+          fd
+        ];
 
         programs.zsh.shellAliases = {
           pi = "${envPrefix} pi";
