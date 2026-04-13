@@ -191,7 +191,11 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 
 // TestProxySpawn_SendsCorrectPayload verifies AC-11 for spawn: when
 // PRISM_HOST_API is set and proxySpawn is called, the mock server receives
-// the expected JSON payload.
+// the expected JSON payload. Setting PRISM_BARE_ROOT to a container mount path
+// (e.g. "/prism-git" whose filepath.Base differs from the actual repo name)
+// confirms that the client-side repo derivation defect (issue #616) is no
+// longer exercised: the client does not send a "repo" field at all, and the
+// server substitutes its own repo name.
 func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	type spawnReq struct {
 		Repo   string `json:"repo"`
@@ -212,16 +216,21 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 		reqCh <- req
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"session_name":"myrepo@test-branch"}`))
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@test-branch"}`))
 	})
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
-	t.Setenv("PRISM_BARE_ROOT", "/home/user/code/myrepo")
+	// Set PRISM_BARE_ROOT to a container mount path whose filepath.Base
+	// ("prism-git") does not match the actual repo name ("nixos-config").
+	// The client must NOT derive the repo from this value — it should omit
+	// the repo field entirely, leaving the server to substitute ownRepo.
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
 
 	// Build a cobra command with the same flags as spawnCmd.
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
 	cmd.Flags().String("agent", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
 	_ = cmd.Flags().Set("agent", "worker")
@@ -233,8 +242,9 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 
 	select {
 	case req := <-reqCh:
-		if req.Repo != "myrepo" {
-			t.Errorf("repo = %q, want %q", req.Repo, "myrepo")
+		// The client must NOT send a repo field (empty string in decoded struct).
+		if req.Repo != "" {
+			t.Errorf("repo = %q, want empty (client must not send repo; server derives it)", req.Repo)
 		}
 		if req.Branch != "test-branch" {
 			t.Errorf("branch = %q, want %q", req.Branch, "test-branch")
