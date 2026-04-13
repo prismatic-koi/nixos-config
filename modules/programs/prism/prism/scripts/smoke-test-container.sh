@@ -6,7 +6,7 @@
 #   ./scripts/smoke-test-container.sh [image:tag]
 #
 # Arguments:
-#   image:tag  Optional. The container image to test (default: prism-agent:latest).
+#   image:tag  Optional. The container image to test (default: localhost/prism-agent:latest).
 #
 # Requirements:
 #   - podman must be running and the target image must be loaded.
@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-IMAGE="${1:-prism-agent:latest}"
+IMAGE="${1:-localhost/prism-agent:latest}"
 
 # ── Preflight: skip gracefully if podman is unavailable ──────────────────────
 

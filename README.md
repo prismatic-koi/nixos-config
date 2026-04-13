@@ -28,11 +28,11 @@ nix build .#prismAgentImage
 # Load it into podman (on Darwin, start the VM first: podman machine start)
 podman load < result
 
-# Run the smoke test (defaults to prism-agent:latest)
+# Run the smoke test (defaults to localhost/prism-agent:latest)
 ./modules/programs/prism/prism/scripts/smoke-test-container.sh
 
 # Or test a specific image
-./modules/programs/prism/prism/scripts/smoke-test-container.sh prism-agent:latest
+./modules/programs/prism/prism/scripts/smoke-test-container.sh localhost/prism-agent:latest
 ```
 
 The script exits `0` if all checks pass and non-zero if any fail. It skips gracefully if `podman` is not in PATH.
