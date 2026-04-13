@@ -111,9 +111,9 @@ type Config struct {
 	WorktreeGitDir string
 
 	// HostAPISockPath is the absolute host path to the sidecar's host-API Unix socket.
-	// When non-empty, the socket is bind-mounted into the container at
-	// /var/run/prism-hostapi.sock and PRISM_HOST_API is set to
-	// unix:///var/run/prism-hostapi.sock so that prism CLI commands inside
+	// When non-empty, the socket's parent directory is bind-mounted into the container
+	// at /var/run/prism-host and PRISM_HOST_API is set to
+	// unix:///var/run/prism-host/<sockfilename> so that prism CLI commands inside
 	// the container can proxy tmux operations to the host sidecar.
 	HostAPISockPath string
 

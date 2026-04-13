@@ -4,7 +4,8 @@ package cmd
 //
 // When PRISM_HOST_API is set, prism commands running inside a container
 // cannot reach tmux directly. Instead they POST their operation to the host
-// sidecar over the Unix socket that A-2 mounts at /var/run/prism-hostapi.sock.
+// sidecar over the Unix socket accessible inside the container at
+// /var/run/prism-host/<sockfilename> (the parent directory is bind-mounted by A-2).
 //
 // The host sidecar (A-1) listens on that socket and executes the real tmux
 // operations on the host side.
@@ -23,7 +24,7 @@ import (
 
 // proxyToHostAPI sends a request to the host-API Unix socket server and returns
 // the parsed response. apiURL is the value of PRISM_HOST_API
-// (e.g. "unix:///var/run/prism-hostapi.sock"). endpoint is the path
+// (e.g. "unix:///var/run/prism-host/nixos-config@main-hostapi.sock"). endpoint is the path
 // (e.g. "/spawn"). body is marshalled to JSON and sent as the request body.
 // On success, response JSON is unmarshalled into respDst (may be nil).
 func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
