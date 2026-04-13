@@ -496,7 +496,7 @@ func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
 
 func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
 	// AC-1, AC-2: when HostAPISockPath is non-empty, buildRunArgs must include
-	// the socket volume mount and the PRISM_HOST_API env var.
+	// the socket directory volume mount and the PRISM_HOST_API env var.
 	m := New(Config{
 		SessionName:     "repo@feat",
 		AllocatedPort:   14000,
@@ -504,12 +504,12 @@ func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
 	})
 	args := m.buildRunArgs()
 
-	// AC-1: --volume <host-sock>:/var/run/prism-hostapi.sock:Z must be present.
+	// AC-1: --volume <host-dir>:/var/run/prism-host:Z must be present.
 	foundMount := false
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
 			v := args[i+1]
-			if v == "/home/user/.local/state/prism/run/repo@feat-hostapi.sock:/var/run/prism-hostapi.sock:Z" {
+			if v == "/home/user/.local/state/prism/run:/var/run/prism-host:Z" {
 				foundMount = true
 				break
 			}
@@ -519,11 +519,11 @@ func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
 		t.Errorf("host-API socket volume mount not found in args: %v", args)
 	}
 
-	// AC-2: --env PRISM_HOST_API=unix:///var/run/prism-hostapi.sock must be present.
+	// AC-2: --env PRISM_HOST_API=unix:///var/run/prism-host/<sockfilename> must be present.
 	foundEnv := false
 	for i, arg := range args {
 		if arg == "--env" && i+1 < len(args) {
-			if args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock" {
+			if args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-host/repo@feat-hostapi.sock" {
 				foundEnv = true
 				break
 			}
@@ -535,7 +535,7 @@ func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
 }
 
 func TestBuildRunArgs_HostAPISockVolumeBeforeEnv(t *testing.T) {
-	// AC-3: the --volume for the socket must appear before the --env PRISM_HOST_API.
+	// AC-3: the --volume for the socket directory must appear before the --env PRISM_HOST_API.
 	m := New(Config{
 		SessionName:     "repo@feat",
 		AllocatedPort:   14000,
@@ -547,11 +547,11 @@ func TestBuildRunArgs_HostAPISockVolumeBeforeEnv(t *testing.T) {
 	envIdx := -1
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) &&
-			strings.Contains(args[i+1], "/var/run/prism-hostapi.sock") {
+			strings.Contains(args[i+1], "/var/run/prism-host") {
 			mountIdx = i
 		}
 		if arg == "--env" && i+1 < len(args) &&
-			args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock" {
+			args[i+1] == "PRISM_HOST_API=unix:///var/run/prism-host/test-hostapi.sock" {
 			envIdx = i
 		}
 	}
@@ -582,7 +582,7 @@ func TestBuildRunArgs_HostAPISockAfterPrismBareRoot(t *testing.T) {
 			bareRootIdx = i
 		}
 		if arg == "--volume" && i+1 < len(args) &&
-			strings.Contains(args[i+1], "/var/run/prism-hostapi.sock") {
+			strings.Contains(args[i+1], "/var/run/prism-host") {
 			hostAPIVolumeIdx = i
 		}
 	}
@@ -609,7 +609,7 @@ func TestBuildRunArgs_NoHostAPISockWhenEmpty(t *testing.T) {
 
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
-			if strings.Contains(args[i+1], "prism-hostapi") {
+			if strings.Contains(args[i+1], "prism-host") {
 				t.Errorf("unexpected host-API socket mount when HostAPISockPath is empty: %q", args[i+1])
 			}
 		}

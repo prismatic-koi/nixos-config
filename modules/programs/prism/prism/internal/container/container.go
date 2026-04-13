@@ -601,8 +601,8 @@ func (m *Manager) buildRunArgs() []string {
 	// the nix-daemon socket mount already in use above).
 	if cfg.HostAPISockPath != "" {
 		args = append(args,
-			"--volume", cfg.HostAPISockPath+":/var/run/prism-hostapi.sock:Z",
-			"--env", "PRISM_HOST_API=unix:///var/run/prism-hostapi.sock",
+			"--volume", filepath.Dir(cfg.HostAPISockPath)+":/var/run/prism-host:Z",
+			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+filepath.Base(cfg.HostAPISockPath),
 		)
 	}
 
