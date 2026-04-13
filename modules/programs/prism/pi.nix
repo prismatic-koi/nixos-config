@@ -13,6 +13,7 @@
 
   config = lib.mkIf config.nx.programs.prism.pi.enable (
     let
+      envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
 
       workerSystemPrompt = ''
@@ -225,6 +226,10 @@
     {
       home-manager.users.${config.nx.username} = {
         home.packages = [ pkgs.pi-coding-agent ];
+
+        programs.zsh.shellAliases = {
+          pi = "${envPrefix} pi";
+        };
 
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
         home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
