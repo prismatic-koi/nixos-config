@@ -64,9 +64,13 @@ export const PrismHooks: Plugin = async (input) => {
         `Mark all todos as completed or cancelled before opening a PR.\n\n` +
         `Incomplete items:\n${itemList}`;
 
+      // Use printf with single-quote escaping so real newlines in the message
+      // are preserved in the shell output. JSON.stringify would encode them as
+      // \n (two chars) which echo prints literally rather than as newlines.
+      const shellEscaped = message.replace(/'/g, "'\\''");
       output.args = {
         ...(output.args as any),
-        command: `echo ${JSON.stringify(message)}`,
+        command: `printf '%s\n' '${shellEscaped}'`,
       };
 
       // Store the block message so the next system transform can inject it.
