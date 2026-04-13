@@ -4653,3 +4653,48 @@ func TestHostAPI_Prompt_WrongMethod(t *testing.T) {
 		t.Fatalf("status = %d, want 405", rr.Code)
 	}
 }
+
+func TestHostAPI_Prompt_EmptyPromptReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	// Session is set but prompt is empty string.
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@feature","prompt":""}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for empty prompt", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "prompt is required") {
+		t.Errorf("error %q should mention 'prompt is required'", errResp["error"])
+	}
+}
+
+func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
+	d := openTestDB(t)
+	// Seed several assistant events at distinct timestamps.
+	base := time.Now().Truncate(time.Second)
+	for i := 0; i < 5; i++ {
+		_ = d.WriteEvent(db.Event{
+			ID:          fmt.Sprintf("evt-%d", i),
+			SessionName: "myrepo@feature",
+			Repo:        "myrepo",
+			Worktree:    "/wt",
+			Type:        "msg_assistant",
+			Payload:     fmt.Sprintf(`{"messageId":"msg-%d","text":"turn %d"}`, i, i),
+			CreatedAt:   base.Add(time.Duration(i) * time.Second),
+		})
+	}
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@feature&last=2", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var body map[string]any
+	decodeJSONBody(t, rr, &body)
+	events, _ := body["events"].([]any)
+	if len(events) > 2 {
+		t.Errorf("got %d events with last=2, want at most 2", len(events))
+	}
+}

@@ -18,22 +18,16 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
-// proxyToHostAPI sends a request to the host-API Unix socket server and returns
-// the parsed response. apiURL is the value of PRISM_HOST_API
-// (e.g. "unix:///var/run/prism-host/nixos-config@main-hostapi.sock"). endpoint is the path
-// (e.g. "/spawn"). body is marshalled to JSON and sent as the request body.
-// On success, response JSON is unmarshalled into respDst (may be nil).
-func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
-	sockPath, err := parseUnixSocketURL(apiURL)
-	if err != nil {
-		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
-	}
-
-	client := &http.Client{
+// newHostAPIClient returns an *http.Client that dials sockPath over a Unix
+// socket. Both proxyToHostAPI and proxyGetFromHostAPI share this client to
+// avoid duplicating the transport configuration.
+func newHostAPIClient(sockPath string) *http.Client {
+	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				d := &net.Dialer{Timeout: 5 * time.Second}
@@ -46,6 +40,49 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 		},
 		Timeout: 60 * time.Second,
 	}
+}
+
+// readHostAPIResponse reads the response body and returns an error if the
+// status code is >= 400, surfacing the JSON "error" field when present.
+// On success (status < 400), it unmarshals into respDst when non-nil.
+func readHostAPIResponse(endpoint string, resp *http.Response, respDst any) error {
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("host-API %s: read response: %w", endpoint, err)
+	}
+
+	if resp.StatusCode >= 400 {
+		// Try to extract an "error" field from the JSON response.
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
+			return fmt.Errorf("host-API %s: %s", endpoint, errResp.Error)
+		}
+		return fmt.Errorf("host-API %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	if respDst != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, respDst); err != nil {
+			return fmt.Errorf("host-API %s: unmarshal response: %w", endpoint, err)
+		}
+	}
+	return nil
+}
+
+// proxyToHostAPI sends a request to the host-API Unix socket server and returns
+// the parsed response. apiURL is the value of PRISM_HOST_API
+// (e.g. "unix:///var/run/prism-host/nixos-config@main-hostapi.sock"). endpoint is the path
+// (e.g. "/spawn"). body is marshalled to JSON and sent as the request body.
+// On success, response JSON is unmarshalled into respDst (may be nil).
+func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
+	sockPath, err := parseUnixSocketURL(apiURL)
+	if err != nil {
+		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
+	}
+
+	client := newHostAPIClient(sockPath)
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -64,73 +101,33 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("proxyToHostAPI: read response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		// Try to extract an "error" field from the JSON response.
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
-			return fmt.Errorf("host-API %s: %s", endpoint, errResp.Error)
-		}
-		return fmt.Errorf("host-API %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	if respDst != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, respDst); err != nil {
-			return fmt.Errorf("proxyToHostAPI: unmarshal response: %w", err)
-		}
-	}
-
-	return nil
+	return readHostAPIResponse(endpoint, resp, respDst)
 }
 
 // proxyGetFromHostAPI sends a GET request to the host-API Unix socket server
 // with optional query parameters and returns the parsed response. apiURL is the
 // value of PRISM_HOST_API. endpoint is the path (e.g. "/list-sessions").
-// params are appended as URL query parameters. On success, response JSON is
-// unmarshalled into respDst (may be nil).
+// params are appended as properly-encoded URL query parameters. On success,
+// response JSON is unmarshalled into respDst (may be nil).
 func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, respDst any) error {
 	sockPath, err := parseUnixSocketURL(apiURL)
 	if err != nil {
 		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
 	}
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second}
-				conn, dialErr := d.DialContext(ctx, "unix", sockPath)
-				if dialErr != nil {
-					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
-				}
-				return conn, nil
-			},
-		},
-		Timeout: 60 * time.Second,
-	}
+	client := newHostAPIClient(sockPath)
 
-	// Build URL with query parameters.
+	// Build URL with properly percent-encoded query parameters.
 	rawURL := "http://prism-hostapi" + endpoint
 	if len(params) > 0 {
-		first := true
+		q := url.Values{}
 		for k, v := range params {
-			if v == "" {
-				continue
+			if v != "" {
+				q.Set(k, v)
 			}
-			if first {
-				rawURL += "?"
-				first = false
-			} else {
-				rawURL += "&"
-			}
-			rawURL += k + "=" + v
+		}
+		if len(q) > 0 {
+			rawURL += "?" + q.Encode()
 		}
 	}
 
@@ -143,31 +140,7 @@ func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, resp
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("proxyGetFromHostAPI: read response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		// Try to extract an "error" field from the JSON response.
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
-			return fmt.Errorf("host-API %s: %s", endpoint, errResp.Error)
-		}
-		return fmt.Errorf("host-API %s: HTTP %d: %s", endpoint, resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	if respDst != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, respDst); err != nil {
-			return fmt.Errorf("proxyGetFromHostAPI: unmarshal response: %w", err)
-		}
-	}
-
-	return nil
+	return readHostAPIResponse(endpoint, resp, respDst)
 }
 
 // proxyListSessions proxies a list-sessions request to the host-API sidecar.

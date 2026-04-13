@@ -541,9 +541,9 @@ func TestProxyCheckin_SendsCorrectQueryParams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxyCheckin: %v", err)
 	}
-	if !strings.Contains(capturedQuery, "session=myrepo%40main") &&
-		!strings.Contains(capturedQuery, "session=myrepo@main") {
-		t.Errorf("query %q does not contain session param", capturedQuery)
+	// url.Values.Encode() percent-encodes the "@" as "%40".
+	if !strings.Contains(capturedQuery, "session=myrepo%40main") {
+		t.Errorf("query %q does not contain properly encoded session param (want session=myrepo%%40main)", capturedQuery)
 	}
 	if !strings.Contains(capturedQuery, "last=5") {
 		t.Errorf("query %q does not contain last=5", capturedQuery)

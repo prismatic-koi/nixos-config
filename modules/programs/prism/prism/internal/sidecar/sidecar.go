@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1465,22 +1466,6 @@ func marshalTruncated(v any, maxLen int) string {
 
 // ── host-API handler ─────────────────────────────────────────────────────────
 
-// parseInt parses a decimal integer from s. Returns an error for non-numeric
-// or empty strings.
-func parseInt(s string) (int, error) {
-	n := 0
-	if len(s) == 0 {
-		return 0, fmt.Errorf("empty string")
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("non-numeric character %q", c)
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n, nil
-}
-
 // repoFromSession extracts the repo prefix from a session name (e.g.
 // "nixos-config" from "nixos-config@main"). Returns an error when the session
 // name contains no "@" — this indicates a misconfigured or non-worktree session.
@@ -1661,7 +1646,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// Parse limit (default 10).
 		limit := 10
 		if lastStr := q.Get("last"); lastStr != "" {
-			if n, parseErr := parseInt(lastStr); parseErr == nil && n > 0 {
+			if n, parseErr := strconv.Atoi(lastStr); parseErr == nil && n > 0 {
 				limit = n
 			}
 		}
@@ -1732,6 +1717,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		if req.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "prompt is required")
 			return
 		}
 

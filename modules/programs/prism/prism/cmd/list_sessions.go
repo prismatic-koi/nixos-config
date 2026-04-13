@@ -55,13 +55,6 @@ var listSessionsCmd = &cobra.Command{
 		}
 		defer d.Close()
 
-		type row struct {
-			name  string
-			state string
-			port  string
-			title string
-		}
-
 		var ss []db.Status
 		if showAll {
 			ss, err = d.AllActiveStatus()
@@ -72,66 +65,7 @@ var listSessionsCmd = &cobra.Command{
 			return fmt.Errorf("list-sessions: query db: %w", err)
 		}
 
-		var rows []row
-		for _, s := range ss {
-			title := "—"
-			if s.Title != nil && *s.Title != "" {
-				title = *s.Title
-			}
-			port := ""
-			if s.OpencodePort != nil {
-				port = fmt.Sprintf("%d", *s.OpencodePort)
-			}
-			rows = append(rows, row{name: s.SessionName, state: s.State, port: port, title: title})
-		}
-
-		// Sort rows alphabetically by session name for stable, predictable output.
-		for i := 1; i < len(rows); i++ {
-			key := rows[i]
-			j := i - 1
-			for j >= 0 && rows[j].name > key.name {
-				rows[j+1] = rows[j]
-				j--
-			}
-			rows[j+1] = key
-		}
-
-		if len(rows) == 0 {
-			fmt.Println("no agent sessions found")
-			return nil
-		}
-
-		styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
-		styleName := lipgloss.NewStyle().Bold(true)
-		styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-
-		fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %-6s  %s", "SESSION", "STATE", "PORT", "TITLE")))
-		for _, r := range rows {
-			state := r.state
-			if state == "" {
-				state = string(agent.StateIdle)
-			}
-			title := r.title
-			if runes := []rune(title); len(runes) > 60 {
-				title = string(runes[:57]) + "..."
-			}
-			// Colour the state field.
-			stateStyled := stateStyle(state).Render(fmt.Sprintf("%-8s", state))
-
-			// Only bold worktree sessions (project@branch).
-			nameStyle := styleTitle
-			if strings.Contains(r.name, "@") {
-				nameStyle = styleName
-			}
-
-			fmt.Printf("%s  %s  %s  %s\n",
-				nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
-				stateStyled,
-				styleTitle.Render(fmt.Sprintf("%-6s", r.port)),
-				styleTitle.Render(title),
-			)
-		}
-		return nil
+		return renderSessionTable(ss)
 	},
 }
 
@@ -140,19 +74,10 @@ func init() {
 	rootCmd.AddCommand(listSessionsCmd)
 }
 
-// proxyListSessionsAndRender proxies a list-sessions request to the host-API
-// sidecar and renders the result as a session table.
-func proxyListSessionsAndRender(apiURL string, showAll bool) error {
-	raw, err := proxyListSessions(apiURL, showAll)
-	if err != nil {
-		return err
-	}
-
-	var ss []db.Status
-	if err := json.Unmarshal(raw, &ss); err != nil {
-		return fmt.Errorf("list-sessions proxy: unmarshal response: %w", err)
-	}
-
+// renderSessionTable renders a []db.Status as a sorted SESSION/STATE/PORT/TITLE
+// table to stdout. Both the direct DB path and the host-API proxy path use
+// this shared renderer.
+func renderSessionTable(ss []db.Status) error {
 	type row struct {
 		name  string
 		state string
@@ -203,11 +128,15 @@ func proxyListSessionsAndRender(apiURL string, showAll bool) error {
 		if runes := []rune(title); len(runes) > 60 {
 			title = string(runes[:57]) + "..."
 		}
+		// Colour the state field.
 		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-8s", state))
+
+		// Only bold worktree sessions (project@branch).
 		nameStyle := styleTitle
 		if strings.Contains(r.name, "@") {
 			nameStyle = styleName
 		}
+
 		fmt.Printf("%s  %s  %s  %s\n",
 			nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
 			stateStyled,
@@ -216,4 +145,20 @@ func proxyListSessionsAndRender(apiURL string, showAll bool) error {
 		)
 	}
 	return nil
+}
+
+// proxyListSessionsAndRender proxies a list-sessions request to the host-API
+// sidecar and renders the result as a session table.
+func proxyListSessionsAndRender(apiURL string, showAll bool) error {
+	raw, err := proxyListSessions(apiURL, showAll)
+	if err != nil {
+		return err
+	}
+
+	var ss []db.Status
+	if err := json.Unmarshal(raw, &ss); err != nil {
+		return fmt.Errorf("list-sessions proxy: unmarshal response: %w", err)
+	}
+
+	return renderSessionTable(ss)
 }
