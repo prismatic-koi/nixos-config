@@ -910,7 +910,7 @@ func CheckAvailability() error {
 		)
 	}
 
-	// 3. prism-agent:latest image loaded.
+	// 3. localhost/prism-agent:latest image loaded.
 	imagesCtx, imagesCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer imagesCancel()
 	imagesCmd := exec.CommandContext(imagesCtx, "podman", "images", "--quiet", Image)
