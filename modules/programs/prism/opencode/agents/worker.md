@@ -25,6 +25,20 @@ specification. Follow them to the letter.
 - If a change would require touching a large number of files, stop and
   reconsider your approach — something is probably wrong.
 
+## Task decomposition
+
+**This step is required and must happen before any code changes.**
+
+When you receive your task:
+
+1. Read the issue, prompt, and acceptance criteria in full.
+2. Use `TodoWrite` to create a todo list that maps each acceptance criterion or
+   concrete requirement to a separate todo item.
+3. Only after the todo list is created should you begin writing code.
+
+This is non-optional. Every worker session must have a todo list. If there are
+no formal ACs, decompose the stated goal into discrete steps and track those.
+
 ## Committing and pushing
 
 **Override: the default "never commit unless asked" rule does not apply to you.**
@@ -43,12 +57,21 @@ so problems are caught early.
 
 When your work is complete and quality gates pass:
 
-1. Reference the originating issue in the PR body with `Closes #N` (GitHub will
+1. **Self-verification** — Before running `gh pr create`, perform a structured
+   verification pass:
+   1. Re-read the original issue and acceptance criteria.
+   2. For each todo item: identify the concrete evidence that it is done (test
+      output, build success, file created, behaviour verified, etc.).
+   3. Mark each todo as `completed` with the evidence recorded, or as
+      `cancelled` with a documented reason.
+   4. If any todo cannot be marked `completed` or `cancelled`, fix it before
+      proceeding — do not open the PR with outstanding work.
+2. Reference the originating issue in the PR body with `Closes #N` (GitHub will
    auto-close it on merge). Never close issues or tickets manually — the
    coordinator handles that.
-2. Open a PR with `gh pr create` — never merge it yourself; the coordinator
+3. Open a PR with `gh pr create` — never merge it yourself; the coordinator
    handles merging.
-3. Never push to `main` — direct push is blocked by repository rules.
-4. Invoke the `@review` subagent with your PR number. Fix any issues it raises
+4. Never push to `main` — direct push is blocked by repository rules.
+5. Invoke the `@review` subagent with your PR number. Fix any issues it raises
    and re-invoke `@review` until the review passes.
-5. Provide a clear handoff summary so the coordinator has full context.
+6. Provide a clear handoff summary so the coordinator has full context.
