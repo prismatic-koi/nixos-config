@@ -295,18 +295,18 @@ in
                     EXPECTED_ID=$(${pkgs.gnutar}/bin/tar -xf ${prismAgentImage} --to-stdout manifest.json 2>/dev/null \
                       | ${pkgs.jq}/bin/jq -r '.[0].Config // empty' 2>/dev/null \
                       | ${pkgs.gnused}/bin/sed 's/\.json$//')
-                    CURRENT_ID=$($PODMAN image inspect prism-agent:latest --format '{{.Id}}' 2>/dev/null || true)
+                    CURRENT_ID=$($PODMAN image inspect localhost/prism-agent:latest --format '{{.Id}}' 2>/dev/null || true)
 
                     if [ -n "$EXPECTED_ID" ] && [ "$CURRENT_ID" = "$EXPECTED_ID" ]; then
-                      echo "prism: prism-agent:latest is up to date ($EXPECTED_ID), skipping load." >&2
+                      echo "prism: localhost/prism-agent:latest is up to date ($EXPECTED_ID), skipping load." >&2
                       exit 0
                     fi
 
-                    echo "prism: loading prism-agent:latest into podman..." >&2
-                    $PODMAN image rm prism-agent:latest 2>/dev/null || true
+                    echo "prism: loading localhost/prism-agent:latest into podman..." >&2
+                    $PODMAN image rm localhost/prism-agent:latest 2>/dev/null || true
                     $PODMAN load < ${prismAgentImage}
                     $PODMAN image prune --force 2>/dev/null || true
-                    echo "prism: prism-agent:latest loaded successfully." >&2
+                    echo "prism: localhost/prism-agent:latest loaded successfully." >&2
                   '';
                 in
                 script;
@@ -372,12 +372,12 @@ in
             echo "podman-machine-start: loading prism-agent image into VM..." >&2
             # Remove the old tag first so it does not become a dangling <none>:<none>
             # after the new image is loaded.
-            "$PODMAN" machine ssh -- podman image rm prism-agent:latest 2>/dev/null || true
+            "$PODMAN" machine ssh -- podman image rm localhost/prism-agent:latest 2>/dev/null || true
             # Stream the image tarball into the VM via podman machine ssh.
             "$PODMAN" machine ssh -- podman load < ${prismAgentImage}
             "$PODMAN" machine ssh -- podman image prune --force 2>/dev/null || true
 
-            echo "podman-machine-start: prism-agent:latest loaded successfully." >&2
+            echo "podman-machine-start: localhost/prism-agent:latest loaded successfully." >&2
           '';
         in
         {

@@ -30,7 +30,11 @@ const (
 	ContainerPort = 4096
 
 	// Image is the container image name used for all agent containers.
-	Image = "prism-agent:latest"
+	// The localhost/ prefix is required for podman to resolve locally-loaded
+	// images correctly on both Linux and Darwin. Without it, podman falls
+	// through to unqualified-search registries and tries docker.io/library/,
+	// which fails for images that were loaded via `podman load`.
+	Image = "localhost/prism-agent:latest"
 
 	// DefaultHealthCheckTimeout is the maximum time to wait for the container
 	// to become healthy before giving up.
@@ -880,7 +884,7 @@ func IsNoSuchContainerError(output string) bool {
 // CheckAvailability verifies that:
 //  1. podman is on PATH,
 //  2. the podman socket is reachable (podman info succeeds), and
-//  3. the prism-agent:latest image is loaded.
+//  3. the localhost/prism-agent:latest image is loaded.
 //
 // Returns a descriptive error for the first failing check, including a hint to
 // use --host-mode as an escape hatch. Returns nil when all checks pass.

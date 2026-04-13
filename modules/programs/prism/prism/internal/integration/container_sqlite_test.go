@@ -86,15 +86,15 @@ func requirePodman(t *testing.T) string {
 	return bin
 }
 
-// requirePrismAgentImage skips the test if the prism-agent:latest image is not
+// requirePrismAgentImage skips the test if the localhost/prism-agent:latest image is not
 // present locally. The image must be built before container mode can be used;
 // this guard prevents the test from failing with a confusing "pull" error.
 func requirePrismAgentImage(t *testing.T, podmanBin string) {
 	t.Helper()
-	out, err := exec.Command(podmanBin, "image", "inspect", "prism-agent:latest",
+	out, err := exec.Command(podmanBin, "image", "inspect", "localhost/prism-agent:latest",
 		"--format", "{{.ID}}").CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) == "" {
-		t.Skip("prism-agent:latest image not found — build the image first to run container concurrency tests")
+		t.Skip("localhost/prism-agent:latest image not found — build the image first to run container concurrency tests")
 	}
 }
 
@@ -175,7 +175,7 @@ func runConcurrentContainers(t *testing.T, podmanBin string, n int) []containerR
 				// start, open its DB, and sit idle. That is sufficient to
 				// exercise startup SQLite contention (see file-level doc comment
 				// for the rationale on why idle startup is the key scenario).
-				"prism-agent:latest",
+				"localhost/prism-agent:latest",
 				"opencode", "serve",
 				"--port", "4096",
 				"--hostname", "0.0.0.0",
