@@ -95,6 +95,13 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // a secondary query keyed by messageId. msg_user events within the time window
 // of the fetched assistant turns are also included.
 func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		raw, err := proxyCheckin(apiURL, session, limit, before, after, types, verbose)
+		if err != nil {
+			return err
+		}
+		return renderProxiedCheckin(raw, verbose)
+	}
 	// When --types is explicitly set, use the old raw-event query path.
 	// The new assistant-turn-centric path only applies to the default view.
 	if len(types) > 0 {
@@ -620,6 +627,144 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 
 		default:
 			// state_change, compaction, error, etc.
+			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
+		}
+	}
+
+	fmt.Println("── end of event log ──")
+	return nil
+}
+
+// renderProxiedCheckin renders checkin output from the raw JSON returned by the
+// host-API /checkin endpoint. The JSON has the shape:
+//
+//	{"session":"<name>", "state":"<state>", "events":[...db.Event...]}
+//
+// It follows the same rendering logic as runCheckinSession but works from
+// pre-fetched events rather than the local DB.
+func renderProxiedCheckin(raw []byte, verbose bool) error {
+	var resp struct {
+		Session string     `json:"session"`
+		State   string     `json:"state"`
+		Events  []db.Event `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("checkin proxy: unmarshal response: %w", err)
+	}
+
+	state := resp.State
+	if state == "" {
+		state = "idle"
+	}
+
+	fmt.Printf("checkin: %s\n\n", resp.Session)
+	fmt.Printf("state: %s\n\n", state)
+
+	if len(resp.Events) == 0 {
+		fmt.Println("── end of event log ──")
+		return nil
+	}
+
+	// Use the raw-event renderer for simplicity — the sidecar returns raw events.
+	// Build a map for inline children keyed by messageId.
+	type inlineEvent struct {
+		eventType string
+		payload   string
+	}
+	inlineByMsgID := make(map[string][]inlineEvent)
+	for _, e := range resp.Events {
+		switch e.Type {
+		case "tool_call", "tool_result", "permission_ask", "permission_denied":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" {
+				inlineByMsgID[msgID] = append(inlineByMsgID[msgID], inlineEvent{e.Type, e.Payload})
+			}
+		}
+	}
+
+	assistantMsgIDs := make(map[string]bool)
+	for _, e := range resp.Events {
+		if e.Type == "msg_assistant" {
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" {
+				assistantMsgIDs[msgID] = true
+			}
+		}
+	}
+
+	for _, e := range resp.Events {
+		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
+
+		switch e.Type {
+		case "msg_user":
+			var up payload.MsgUser
+			if err := json.Unmarshal([]byte(e.Payload), &up); err != nil {
+				up.Text = e.Payload
+			}
+			text := up.Text
+			if text == "" {
+				text = "(no text)"
+			}
+			label := turnLabel(up.Agent, up.Model)
+			if label != "" {
+				fmt.Printf("[%s] user  [%s]\n%s\n\n", ts, label, text)
+			} else {
+				fmt.Printf("[%s] user\n%s\n\n", ts, text)
+			}
+
+		case "msg_assistant":
+			var ap payload.MsgAssistant
+			if err := json.Unmarshal([]byte(e.Payload), &ap); err != nil {
+				ap.Text = e.Payload
+			}
+			text := ap.Text
+			if text == "" {
+				text = "(no text)"
+			}
+			label := turnLabel(ap.Agent, ap.Model)
+			if label != "" {
+				fmt.Printf("[%s] assistant  [%s]\n%s\n", ts, label, text)
+			} else {
+				fmt.Printf("[%s] assistant\n%s\n", ts, text)
+			}
+
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" {
+				for _, ie := range inlineByMsgID[msgID] {
+					renderChildEvent(ie.eventType, ie.payload, verbose, "")
+				}
+			}
+			fmt.Println()
+
+		case "tool_call":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" && assistantMsgIDs[msgID] {
+				continue
+			}
+			renderChildEvent("tool_call", e.Payload, verbose, "")
+
+		case "tool_result":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" && assistantMsgIDs[msgID] {
+				continue
+			}
+			renderChildEvent("tool_result", e.Payload, verbose, "")
+
+		case "permission_ask":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" && assistantMsgIDs[msgID] {
+				continue
+			}
+			renderChildEvent("permission_ask", e.Payload, verbose, "")
+
+		case "permission_denied":
+			msgID := extractMessageID(e.Payload)
+			if msgID != "" && assistantMsgIDs[msgID] {
+				continue
+			}
+			renderChildEvent("permission_denied", e.Payload, verbose, "")
+
+		default:
 			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
 		}
 	}

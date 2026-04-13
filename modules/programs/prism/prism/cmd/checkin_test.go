@@ -44,8 +44,12 @@ func captureStdout(t *testing.T, fn func()) string {
 }
 
 // openCheckinTestDB opens a temp DB and registers t.Cleanup to close it.
+// It also unsets PRISM_HOST_API for the duration of the test so that
+// runCheckinSession and renderCheckinTurns use the local DB path, not the proxy.
 func openCheckinTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	// Ensure the host-API proxy is not active for these unit tests.
+	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
 	if err != nil {

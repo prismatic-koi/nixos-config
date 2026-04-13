@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -4135,5 +4136,520 @@ func TestTtft_NoTimeStart(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected msg_assistant event to be written")
+	}
+}
+
+// ── Host-API handler tests ────────────────────────────────────────────────────
+//
+// These tests exercise the hostAPIHandler() method directly, without starting
+// a real Unix socket server. They use httptest.NewRecorder to capture responses.
+
+// newHostAPIRequest builds an http.Request for the hostAPIHandler tests.
+func newHostAPIRequest(t *testing.T, method, path, body string) *http.Request {
+	t.Helper()
+	var bodyReader io.Reader
+	if body != "" {
+		bodyReader = strings.NewReader(body)
+	}
+	req, err := http.NewRequest(method, "http://prism-hostapi"+path, bodyReader)
+	if err != nil {
+		t.Fatalf("newHostAPIRequest: %v", err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return req
+}
+
+// doHostAPI sends a request to the hostAPIHandler and returns the response recorder.
+func doHostAPI(t *testing.T, sc *Sidecar, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := sc.hostAPIHandler()
+	req := newHostAPIRequest(t, method, path, body)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
+// decodeJSONBody decodes the response recorder body into v.
+func decodeJSONBody(t *testing.T, rr *httptest.ResponseRecorder, v any) {
+	t.Helper()
+	if err := json.Unmarshal(rr.Body.Bytes(), v); err != nil {
+		t.Fatalf("unmarshal response JSON %q: %v", rr.Body.String(), err)
+	}
+}
+
+// newSidecarWithRole creates a Sidecar with the given session name, role, and DB.
+func newSidecarWithRole(t *testing.T, sessionName, repo, role string, d *db.DB) *Sidecar {
+	t.Helper()
+	clk := newTestClock()
+	cfg := Config{
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    "/tmp/" + sessionName,
+		OpencodeURL: "http://localhost:14000",
+		DB:          d,
+		Clock:       clk,
+		AgentRole:   role,
+	}
+	return New(cfg)
+}
+
+// newSidecarWithRoleAndBinary creates a Sidecar that uses a stub binary for
+// host-API shell-out operations (spawn, cleanup, prompt). This avoids
+// blocking on the real prism binary in unit tests.
+// The stub binary is written to a temp file that exits immediately with code 1
+// (so the operation "fails" with a 500, not hangs or produces misleading output).
+func newSidecarWithRoleAndBinary(t *testing.T, sessionName, repo, role string, d *db.DB) *Sidecar {
+	t.Helper()
+	// Write a minimal shell script that exits immediately with failure.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     sessionName,
+		Repo:            repo,
+		Worktree:        "/tmp/" + sessionName,
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       role,
+		PrismBinaryPath: stubPath,
+	}
+	return New(cfg)
+}
+
+// ── /list-sessions ────────────────────────────────────────────────────────────
+
+func TestHostAPI_ListSessions_WorkerOwnRepo(t *testing.T) {
+	d := openTestDB(t)
+	// Seed two sessions: one in "myrepo" and one in "otherrepo".
+	_ = d.UpsertStatus("myrepo@feature", "myrepo", "/wt1", "active", nil, nil)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var sessions []map[string]any
+	decodeJSONBody(t, rr, &sessions)
+
+	// Only myrepo sessions should appear.
+	for _, s := range sessions {
+		name, _ := s["SessionName"].(string)
+		if strings.HasPrefix(name, "otherrepo") {
+			t.Errorf("worker got cross-repo session %q in list-sessions", name)
+		}
+	}
+	// myrepo@feature must be present.
+	found := false
+	for _, s := range sessions {
+		if s["SessionName"] == "myrepo@feature" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("myrepo@feature not found in list-sessions response")
+	}
+}
+
+func TestHostAPI_ListSessions_WorkerAllForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions?all=true", "")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+func TestHostAPI_ListSessions_CoordinatorOwnRepo(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("myrepo@main", "myrepo", "/wt1", "active", nil, nil)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var sessions []map[string]any
+	decodeJSONBody(t, rr, &sessions)
+
+	// Default should only show own repo.
+	for _, s := range sessions {
+		name, _ := s["SessionName"].(string)
+		if strings.HasPrefix(name, "otherrepo") {
+			t.Errorf("coordinator got cross-repo session %q in default list-sessions", name)
+		}
+	}
+}
+
+func TestHostAPI_ListSessions_CoordinatorAll(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("myrepo@main", "myrepo", "/wt1", "active", nil, nil)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions?all=true", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var sessions []map[string]any
+	decodeJSONBody(t, rr, &sessions)
+
+	foundMyRepo := false
+	foundOtherRepo := false
+	for _, s := range sessions {
+		name, _ := s["SessionName"].(string)
+		if name == "myrepo@main" {
+			foundMyRepo = true
+		}
+		if name == "otherrepo@main" {
+			foundOtherRepo = true
+		}
+	}
+	if !foundMyRepo {
+		t.Error("myrepo@main not found in all list-sessions")
+	}
+	if !foundOtherRepo {
+		t.Error("otherrepo@main not found in all list-sessions")
+	}
+}
+
+// ── /checkin ──────────────────────────────────────────────────────────────────
+
+func TestHostAPI_Checkin_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@main", "")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+func TestHostAPI_Checkin_MissingSession(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin", "")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestHostAPI_Checkin_CoordinatorOwnRepo(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("myrepo@feature", "myrepo", "/wt", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@feature", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var body map[string]any
+	decodeJSONBody(t, rr, &body)
+	if body["session"] != "myrepo@feature" {
+		t.Errorf("session = %v, want myrepo@feature", body["session"])
+	}
+}
+
+func TestHostAPI_Checkin_CoordinatorCrossRepoCoordinator(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=otherrepo@main", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+}
+
+func TestHostAPI_Checkin_CoordinatorCrossRepoNonCoordinatorForbidden(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("otherrepo@feature", "otherrepo", "/wt", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=otherrepo@feature", "")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "cross-repo") {
+		t.Errorf("error %q should mention cross-repo", errResp["error"])
+	}
+}
+
+// ── /prompt ───────────────────────────────────────────────────────────────────
+
+func TestHostAPI_Prompt_MissingSession(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt", `{"prompt":"hello"}`)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_WorkerOwnCoordinatorAllowed(t *testing.T) {
+	// Use a stub binary so the test doesn't block waiting for the real prism binary.
+	// The stub exits with code 1 (delivery fails → 500), but the permission check
+	// (not 403) is what matters here.
+	d := openTestDB(t)
+	sc := newSidecarWithRoleAndBinary(t, "myrepo@feature", "myrepo", "worker", d)
+	// "myrepo@main" is the expected own coordinator for "myrepo@feature".
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@main","prompt":"hello"}`)
+
+	// Permission check should pass (not 403). The stub binary exits with code 1,
+	// so the actual delivery fails with 500, but the role check allows it through.
+	if rr.Code == http.StatusForbidden {
+		var errResp map[string]string
+		decodeJSONBody(t, rr, &errResp)
+		t.Fatalf("got unexpected 403: %s", errResp["error"])
+	}
+	// Should be 500 (stub binary failed), not 403.
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (stub binary failure, not permission error)", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_WorkerWrongTargetForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{"own feature branch", "myrepo@other-feature"},
+		{"cross-repo coordinator", "otherrepo@main"},
+		{"cross-repo feature", "otherrepo@feature"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+				fmt.Sprintf(`{"session":%q,"prompt":"hello"}`, tc.target))
+			if rr.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403 for target %q", rr.Code, tc.target)
+			}
+		})
+	}
+}
+
+func TestHostAPI_Prompt_CoordinatorOwnRepoAnySession(t *testing.T) {
+	d := openTestDB(t)
+	// Use stub binary so the test doesn't block.
+	sc := newSidecarWithRoleAndBinary(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	// Coordinator prompting own feature branch: should pass permission check.
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@feature","prompt":"hello"}`)
+	// Permission allowed (not 403). Stub binary fails → 500.
+	if rr.Code == http.StatusForbidden {
+		var errResp map[string]string
+		decodeJSONBody(t, rr, &errResp)
+		t.Fatalf("got unexpected 403: %s", errResp["error"])
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (stub binary failure)", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_CoordinatorCrossRepoCoordinatorAllowed(t *testing.T) {
+	d := openTestDB(t)
+	// Use stub binary so the test doesn't block.
+	sc := newSidecarWithRoleAndBinary(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"otherrepo@main","prompt":"hello"}`)
+	// Permission allowed (not 403). Stub binary fails → 500.
+	if rr.Code == http.StatusForbidden {
+		var errResp map[string]string
+		decodeJSONBody(t, rr, &errResp)
+		t.Fatalf("got unexpected 403: %s", errResp["error"])
+	}
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (stub binary failure)", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_CoordinatorCrossRepoNonCoordinatorForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"otherrepo@feature","prompt":"hello"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "cross-repo") {
+		t.Errorf("error %q should mention cross-repo", errResp["error"])
+	}
+}
+
+// ── /spawn and /cleanup role enforcement ──────────────────────────────────────
+
+func TestHostAPI_Spawn_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"repo":"myrepo","branch":"new-branch"}`)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/cleanup",
+		`{"session":"myrepo@feature","yes":true}`)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+// ── Edge cases ────────────────────────────────────────────────────────────────
+
+func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
+	d := openTestDB(t)
+	// Session name without "@" — edge case for repoFromSession.
+	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
+	// The sidecar's own session has no "@", which will fail repoFromSession.
+	// The handler should return 500 (internal error deriving repo), not panic.
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@main", "")
+	if rr.Code == 0 {
+		t.Fatal("got zero status — possible panic")
+	}
+	// Should be 500 (cannot derive repo from sidecar's own session name).
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for no-@ session name", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_InvalidTargetNoAt(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	// Target session has no "@" — should return 400.
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"nosession","prompt":"hello"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for no-@ target session", rr.Code)
+	}
+}
+
+func TestHostAPI_RepoFromSession(t *testing.T) {
+	tests := []struct {
+		session string
+		want    string
+		wantErr bool
+	}{
+		{"myrepo@main", "myrepo", false},
+		{"nixos-config@feature/foo", "nixos-config", false},
+		{"norepo", "", true},
+		{"", "", true},
+	}
+	for _, tc := range tests {
+		got, err := repoFromSession(tc.session)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("repoFromSession(%q): expected error, got nil", tc.session)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("repoFromSession(%q): unexpected error: %v", tc.session, err)
+			}
+			if got != tc.want {
+				t.Errorf("repoFromSession(%q) = %q, want %q", tc.session, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestHostAPI_IsCoordinator(t *testing.T) {
+	tests := []struct {
+		session string
+		want    bool
+	}{
+		{"myrepo@main", true},
+		{"myrepo@feature", false},
+		{"myrepo@main-old", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		got := isCoordinator(tc.session)
+		if got != tc.want {
+			t.Errorf("isCoordinator(%q) = %v, want %v", tc.session, got, tc.want)
+		}
+	}
+}
+
+func TestHostAPI_ListSessions_WrongMethod(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/list-sessions", `{}`)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHostAPI_Checkin_WrongMethod(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/checkin?session=myrepo@main", `{}`)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+func TestHostAPI_Prompt_WrongMethod(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/prompt", "")
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
 	}
 }

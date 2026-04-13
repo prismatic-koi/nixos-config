@@ -416,3 +416,200 @@ func TestProxyToHostAPI_NotCalledWhenEnvUnset(t *testing.T) {
 
 	_ = srv // keep compiler happy
 }
+
+// ── proxyGetFromHostAPI unit tests ────────────────────────────────────────────
+
+// TestProxyGetFromHostAPI_SendsGETWithQueryParams verifies that
+// proxyGetFromHostAPI sends a GET request with the correct query parameters.
+func TestProxyGetFromHostAPI_SendsGETWithQueryParams(t *testing.T) {
+	var capturedMethod string
+	var capturedPath string
+	var capturedQuery string
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	})
+
+	var got []any
+	err := proxyGetFromHostAPI(srv.apiURL(), "/list-sessions",
+		map[string]string{"all": "true"}, &got)
+	if err != nil {
+		t.Fatalf("proxyGetFromHostAPI: %v", err)
+	}
+
+	if capturedMethod != http.MethodGet {
+		t.Errorf("method = %q, want GET", capturedMethod)
+	}
+	if capturedPath != "/list-sessions" {
+		t.Errorf("path = %q, want /list-sessions", capturedPath)
+	}
+	if capturedQuery != "all=true" {
+		t.Errorf("query = %q, want all=true", capturedQuery)
+	}
+}
+
+// TestProxyGetFromHostAPI_Returns403AsError verifies that a 403 response from
+// the server is surfaced as an error with the error message.
+func TestProxyGetFromHostAPI_Returns403AsError(t *testing.T) {
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"workers cannot list sessions across all repos"}`))
+	})
+
+	err := proxyGetFromHostAPI(srv.apiURL(), "/list-sessions",
+		map[string]string{"all": "true"}, nil)
+	if err == nil {
+		t.Fatal("expected non-nil error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "workers cannot list") {
+		t.Errorf("error %q does not contain expected message", err.Error())
+	}
+}
+
+// ── proxyListSessions unit tests ──────────────────────────────────────────────
+
+// TestProxyListSessions_SendsGetRequest verifies that proxyListSessions sends
+// a GET /list-sessions request (no all param by default).
+func TestProxyListSessions_SendsGetRequest(t *testing.T) {
+	var capturedPath string
+	var capturedQuery string
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[{"SessionName":"myrepo@main","State":"active"}]`))
+	})
+
+	raw, err := proxyListSessions(srv.apiURL(), false)
+	if err != nil {
+		t.Fatalf("proxyListSessions: %v", err)
+	}
+	if capturedPath != "/list-sessions" {
+		t.Errorf("path = %q, want /list-sessions", capturedPath)
+	}
+	if capturedQuery != "" {
+		t.Errorf("query = %q, want empty (all=false)", capturedQuery)
+	}
+	if len(raw) == 0 {
+		t.Error("expected non-empty raw response")
+	}
+}
+
+// TestProxyListSessions_SendsAllParam verifies that showAll=true adds all=true.
+func TestProxyListSessions_SendsAllParam(t *testing.T) {
+	var capturedQuery string
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	})
+
+	_, err := proxyListSessions(srv.apiURL(), true)
+	if err != nil {
+		t.Fatalf("proxyListSessions: %v", err)
+	}
+	if capturedQuery != "all=true" {
+		t.Errorf("query = %q, want all=true", capturedQuery)
+	}
+}
+
+// ── proxyCheckin unit tests ───────────────────────────────────────────────────
+
+// TestProxyCheckin_SendsCorrectQueryParams verifies that proxyCheckin sends the
+// correct GET /checkin request with session and last params.
+func TestProxyCheckin_SendsCorrectQueryParams(t *testing.T) {
+	var capturedQuery string
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session":"myrepo@main","state":"active","events":[]}`))
+	})
+
+	raw, err := proxyCheckin(srv.apiURL(), "myrepo@main", 5, nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("proxyCheckin: %v", err)
+	}
+	if !strings.Contains(capturedQuery, "session=myrepo%40main") &&
+		!strings.Contains(capturedQuery, "session=myrepo@main") {
+		t.Errorf("query %q does not contain session param", capturedQuery)
+	}
+	if !strings.Contains(capturedQuery, "last=5") {
+		t.Errorf("query %q does not contain last=5", capturedQuery)
+	}
+	if len(raw) == 0 {
+		t.Error("expected non-empty raw response")
+	}
+}
+
+// ── proxyPrompt unit tests ────────────────────────────────────────────────────
+
+// TestProxyPrompt_SendsCorrectPayload verifies that proxyPrompt POSTs to
+// /prompt with the correct JSON body.
+func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
+	type promptReq struct {
+		Session string `json:"session"`
+		Prompt  string `json:"prompt"`
+		Urgent  bool   `json:"urgent"`
+	}
+
+	reqCh := make(chan promptReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/prompt" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		var req promptReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})
+
+	if err := proxyPrompt(srv.apiURL(), "myrepo@main", "do the thing", false); err != nil {
+		t.Fatalf("proxyPrompt: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Session != "myrepo@main" {
+			t.Errorf("session = %q, want myrepo@main", req.Session)
+		}
+		if req.Prompt != "do the thing" {
+			t.Errorf("prompt = %q, want 'do the thing'", req.Prompt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+// TestProxyPrompt_Returns403AsError verifies that a 403 from the server
+// (e.g. worker trying wrong target) is surfaced as an error.
+func TestProxyPrompt_Returns403AsError(t *testing.T) {
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"workers can only prompt their own coordinator"}`))
+	})
+
+	err := proxyPrompt(srv.apiURL(), "otherrepo@main", "hello", false)
+	if err == nil {
+		t.Fatal("expected non-nil error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "workers can only prompt") {
+		t.Errorf("error %q does not contain expected message", err.Error())
+	}
+}

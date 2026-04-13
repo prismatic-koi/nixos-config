@@ -14,9 +14,12 @@ import (
 )
 
 // openPromptTestDB opens a temp DB, registers cleanup, and overrides the
-// package-level testDBPath so openDB() uses it.
+// package-level testDBPath so openDB() uses it. It also unsets PRISM_HOST_API
+// so runPrompt uses the local DB path, not the host-API proxy.
 func openPromptTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	// Ensure the host-API proxy is not active for these unit tests.
+	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
 	if err != nil {

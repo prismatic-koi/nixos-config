@@ -114,6 +114,10 @@ type Config struct {
 	// container readiness. This is the mechanism for prompt delivery in container
 	// mode, where the TUI runs "opencode attach" and cannot accept --prompt (#487).
 	InitialPrompt string
+	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
+	// used by the host-API handler to delegate operations (/spawn, /cleanup,
+	// /prompt). Used in tests to inject a stub binary.
+	PrismBinaryPath string
 }
 
 // Sidecar is the core event processor. It consumes SSE events from the
@@ -1461,14 +1465,52 @@ func marshalTruncated(v any, maxLen int) string {
 
 // ── host-API handler ─────────────────────────────────────────────────────────
 
+// parseInt parses a decimal integer from s. Returns an error for non-numeric
+// or empty strings.
+func parseInt(s string) (int, error) {
+	n := 0
+	if len(s) == 0 {
+		return 0, fmt.Errorf("empty string")
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-numeric character %q", c)
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
+}
+
+// repoFromSession extracts the repo prefix from a session name (e.g.
+// "nixos-config" from "nixos-config@main"). Returns an error when the session
+// name contains no "@" — this indicates a misconfigured or non-worktree session.
+func repoFromSession(sessionName string) (string, error) {
+	idx := strings.Index(sessionName, "@")
+	if idx < 0 {
+		return "", fmt.Errorf("session name %q contains no '@' — cannot derive repo", sessionName)
+	}
+	return sessionName[:idx], nil
+}
+
+// isCoordinator returns true when the session name ends with "@main", which is
+// the convention for coordinator sessions in the prism model.
+func isCoordinator(sessionName string) bool {
+	return strings.HasSuffix(sessionName, "@main")
+}
+
 // hostAPIHandler returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
-//	POST /spawn   — spawn a new worktree session
-//	POST /cleanup — clean up an existing session
-//	POST /switch  — switch the tmux client to a session
+//	POST /spawn        — spawn a new worktree session
+//	POST /cleanup      — clean up an existing session
+//	POST /switch       — switch the tmux client to a session
+//	GET  /list-sessions — list active sessions (role-scoped)
+//	GET  /checkin      — return conversation history for a session (coordinator only)
+//	POST /prompt       — deliver a prompt to a target session (role-scoped)
 //
-// AC-11: returns HTTP 400 for malformed JSON, HTTP 405 for non-POST methods.
+// Role-based permissions are enforced based on s.cfg.AgentRole and
+// s.cfg.SessionName. Workers have restricted access; coordinators have broader
+// access. All denied requests return HTTP 403 with a structured JSON error.
 func (s *Sidecar) hostAPIHandler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -1499,10 +1541,35 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		return true
 	}
 
+	// requireGet writes a 405 and returns false if the method is not GET.
+	// Returns true when the method is GET (caller should proceed).
+	requireGet := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return false
+		}
+		return true
+	}
+
+	// requireCoordinator checks that the calling sidecar's AgentRole is
+	// "coordinator". Returns false and writes HTTP 403 if not.
+	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
+		if s.cfg.AgentRole != "coordinator" {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("workers cannot perform %s", operation))
+			return false
+		}
+		return true
+	}
+
 	// prismBinary returns the path to the prism binary (this process).
 	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
 	// the absolute path at binary launch time, avoiding CWD-relative resolution.
+	// When Config.PrismBinaryPath is set (e.g. in tests), it is used instead.
 	prismBinary := func() string {
+		if s.cfg.PrismBinaryPath != "" {
+			return s.cfg.PrismBinaryPath
+		}
 		self, err := os.Executable()
 		if err != nil {
 			return os.Args[0]
@@ -1510,11 +1577,216 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		return self
 	}
 
+	// GET /list-sessions
+	// Query param: all=true (optional, coordinator only)
+	// Response: JSON array of session status objects
+	mux.HandleFunc("/list-sessions", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+
+		showAll := r.URL.Query().Get("all") == "true"
+
+		// Workers cannot use all=true.
+		if showAll && s.cfg.AgentRole != "coordinator" {
+			writeError(w, http.StatusForbidden, "workers cannot list sessions across all repos (all=true requires coordinator role)")
+			return
+		}
+
+		var (
+			sessions []db.Status
+			err      error
+		)
+		if showAll {
+			sessions, err = s.cfg.DB.AllActiveStatus()
+		} else {
+			// Scope to own repo by default.
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			if repoErr != nil {
+				writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+				return
+			}
+			sessions, err = s.cfg.DB.AllActiveStatusForRepo(ownRepo)
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+			return
+		}
+
+		// Return empty array rather than null when no sessions found.
+		if sessions == nil {
+			sessions = []db.Status{}
+		}
+		writeJSON(w, http.StatusOK, sessions)
+	})
+
+	// GET /checkin
+	// Query params: session (required), last (default 10), types (optional),
+	//               from (optional cursor), before (optional cursor)
+	// Permission: coordinator only; own repo sessions or cross-repo @main sessions.
+	mux.HandleFunc("/checkin", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "checkin") {
+			return
+		}
+
+		q := r.URL.Query()
+		targetSession := q.Get("session")
+		if targetSession == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Permission check: coordinator can access own-repo sessions and
+		// any cross-repo coordinator (@main) session.
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+		targetRepo, targetRepoErr := repoFromSession(targetSession)
+		if targetRepoErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			return
+		}
+		crossRepo := targetRepo != ownRepo
+		if crossRepo && !isCoordinator(targetSession) {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("cross-repo checkin can only target coordinators (<repo>@main), got %q", targetSession))
+			return
+		}
+
+		// Parse limit (default 10).
+		limit := 10
+		if lastStr := q.Get("last"); lastStr != "" {
+			if n, parseErr := parseInt(lastStr); parseErr == nil && n > 0 {
+				limit = n
+			}
+		}
+
+		// Parse optional cursor params.
+		var afterPtr, beforePtr *string
+		if fromStr := q.Get("from"); fromStr != "" {
+			afterPtr = &fromStr
+		}
+		if beforeStr := q.Get("before"); beforeStr != "" {
+			beforePtr = &beforeStr
+		}
+
+		// Parse optional types filter.
+		var types []string
+		if typesStr := q.Get("types"); typesStr != "" {
+			for _, t := range strings.Split(typesStr, ",") {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					types = append(types, t)
+				}
+			}
+		}
+
+		// Fetch events.
+		events, err := s.cfg.DB.QueryEvents(targetSession, limit, beforePtr, afterPtr, types)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+			return
+		}
+
+		// Fetch session state.
+		status, statusErr := s.cfg.DB.CurrentStatus(targetSession)
+		var state string
+		if statusErr == nil && status != nil {
+			state = status.State
+		}
+
+		// Ensure empty arrays rather than null.
+		if events == nil {
+			events = []db.Event{}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"session": targetSession,
+			"state":   state,
+			"events":  events,
+		})
+	})
+
+	// POST /prompt
+	// Request:  {"session":"<target>", "prompt":"<text>", "urgent": false}
+	// Permission: worker → own coordinator (@main) only;
+	//             coordinator → own repo any session, cross-repo coordinator only.
+	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req struct {
+			Session string `json:"session"`
+			Prompt  string `json:"prompt"`
+			Urgent  bool   `json:"urgent"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+
+		targetRepo, targetRepoErr := repoFromSession(req.Session)
+		if targetRepoErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			return
+		}
+		crossRepo := targetRepo != ownRepo
+
+		if s.cfg.AgentRole == "coordinator" {
+			// Coordinator: own repo any session allowed; cross-repo only @main.
+			if crossRepo && !isCoordinator(req.Session) {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("cross-repo prompts can only target coordinators (<repo>@main), got %q", req.Session))
+				return
+			}
+		} else {
+			// Worker: only own coordinator (@main) allowed.
+			ownCoordinator := ownRepo + "@main"
+			if req.Session != ownCoordinator {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("workers can only prompt their own coordinator (%s), got %q", ownCoordinator, req.Session))
+				return
+			}
+		}
+
+		// Deliver via prism prompt on the host.
+		args := []string{"prompt", req.Session, "--prompt", req.Prompt}
+		log.Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
+		cmd := exec.Command(prismBinary(), args...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("sidecar: host-API /prompt: %v: %s", err, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prompt delivery failed: %v", err))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
 	// POST /spawn
 	// Request:  {"repo":"nixos-config","branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid"}
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "spawn") {
 			return
 		}
 		var req struct {
@@ -1599,6 +1871,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Response: {} | {"error":"..."}
 	mux.HandleFunc("/cleanup", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "cleanup") {
 			return
 		}
 		var req struct {
