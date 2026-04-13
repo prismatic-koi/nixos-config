@@ -20,11 +20,12 @@ export const PrismHooks: Plugin = async (input) => {
 
       const command: string = (output.args as any)?.command ?? "";
 
-      // Match `gh pr create` with or without preceding chained commands.
-      // Uses a word-boundary anchor so it doesn't match gh pr create-something.
+      // Match `gh pr create` with or without preceding chained commands or
+      // trailing flags. The lookahead (?=\s|$) ensures we don't match a
+      // hypothetical `gh pr create-something` subcommand.
       // Intentionally does NOT match: gh pr view, gh pr list, gh pr merge,
       // gh pr close, gh pr checkout.
-      const isPrCreate = /\bgh\s+pr\s+create\b/.test(command);
+      const isPrCreate = /\bgh\s+pr\s+create(?=\s|$)/.test(command);
       if (!isPrCreate) return;
 
       // Fail-open guards: if client or session is unavailable, allow through.
