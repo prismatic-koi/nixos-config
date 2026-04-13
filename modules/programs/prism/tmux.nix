@@ -44,6 +44,7 @@ in
             ''
               # appearance
               set -g extended-keys on
+              set -g extended-keys-format csi-u
               set -g status-interval 5
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
