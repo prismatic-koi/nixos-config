@@ -237,42 +237,13 @@
         "prism pr" = "deny";
         "prism pr *" = "deny";
       };
-
-      # Model identifiers — must stay in sync with opencode.nix.
-      # Mirrors the profiles structure in opencode.nix; extracts only the model
-      # string for baked-in container config generation (variant is injected at
-      # runtime via OPENCODE_CONFIG_CONTENT, not baked in here).
-      providerModels = {
-        anthropic = {
-          primary = "anthropic/claude-opus-4-6";
-          secondary = "anthropic/claude-sonnet-4-6";
-          lightweight = "anthropic/claude-haiku-4-5";
-        };
-        anthropic-opus = {
-          primary = "anthropic/claude-opus-4-6";
-          secondary = "anthropic/claude-opus-4-6";
-          lightweight = "anthropic/claude-haiku-4-5";
-        };
-        # gemini-hybrid: primary uses Opus, secondary uses Gemini 3.1 Pro.
-        # The variant (medium reasoning) is injected at runtime via
-        # OPENCODE_CONFIG_CONTENT, not baked into the container config.
-        gemini-hybrid = {
-          primary = "anthropic/claude-opus-4-6";
-          secondary = "google/gemini-3.1-pro-preview-customtools";
-          lightweight = "anthropic/claude-haiku-4-5";
-        };
-        github-copilot = {
-          primary = "github-copilot/claude-sonnet-4.6";
-          secondary = "github-copilot/claude-sonnet-4.6";
-          lightweight = "github-copilot/claude-haiku-4.5";
-        };
-        google = {
-          primary = "google/gemini-3-flash-preview";
-          secondary = "google/gemini-3.1-flash-lite-preview";
-          lightweight = "google/gemini-3.1-flash-lite-preview";
-        };
+      currentProfile =
+        config.nx.programs.prism.profiles.data.profiles.${config.nx.programs.prism.opencode.provider};
+      models = {
+        primary = currentProfile.primary.model;
+        secondary = currentProfile.secondary.model;
+        lightweight = currentProfile.lightweight.model;
       };
-      models = providerModels.${config.nx.programs.prism.opencode.provider};
 
       # Providers to expose in containers — restricts model list to these 3.
       enabledProviders = [
@@ -482,9 +453,8 @@
         default_agent = "worker";
         enabled_providers = enabledProviders;
         model = models.secondary;
-        agent = {
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
           worker = {
-            model = models.secondary;
             description = "Default worker agent with full tool access";
             mode = "primary";
             color = config.theme.red;
@@ -500,22 +470,16 @@
             };
           };
           review = {
-            model = models.secondary;
           };
           ac = {
-            model = models.secondary;
           };
           explore = {
-            model = models.lightweight;
           };
           title = {
-            model = models.lightweight;
           };
           summary = {
-            model = models.lightweight;
           };
           compaction = {
-            model = models.lightweight;
           };
         };
         mcp = atlassianMcp;
@@ -543,9 +507,8 @@
         default_agent = "coordinator";
         enabled_providers = enabledProviders;
         model = models.primary;
-        agent = {
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
           coordinator = {
-            model = models.primary;
             description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
             mode = "primary";
             color = config.theme.purple;
@@ -579,7 +542,6 @@
             };
           };
           plan = {
-            model = models.primary;
             description = "Planning and analysis agent with read-only access";
             mode = "primary";
             color = config.theme.blue;
@@ -603,22 +565,16 @@
             };
           };
           review = {
-            model = models.secondary;
           };
           ac = {
-            model = models.secondary;
           };
           explore = {
-            model = models.lightweight;
           };
           title = {
-            model = models.lightweight;
           };
           summary = {
-            model = models.lightweight;
           };
           compaction = {
-            model = models.lightweight;
           };
         };
         mcp = atlassianMcp;
