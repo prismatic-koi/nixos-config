@@ -81,7 +81,8 @@ func SidecarPIDPath(sessionName string) (string, error) {
 }
 
 // SidecarHostAPIPath returns the Unix socket path for the session's host-API server.
-// The sidecar creates this socket and the container mounts it at /var/run/prism-hostapi.sock.
+// The sidecar creates this socket; the container mounts its parent directory at
+// /var/run/prism-host and accesses the socket at /var/run/prism-host/<sockfilename>.
 //
 // Socket path: $XDG_STATE_HOME/prism/run/<session>-hostapi.sock
 func SidecarHostAPIPath(sessionName string) (string, error) {

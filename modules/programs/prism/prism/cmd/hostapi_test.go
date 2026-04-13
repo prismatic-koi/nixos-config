@@ -163,7 +163,7 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 		wantErr bool
 		want    string
 	}{
-		{"unix:///var/run/prism-hostapi.sock", false, "/var/run/prism-hostapi.sock"},
+		{"unix:///var/run/prism-host/test-hostapi.sock", false, "/var/run/prism-host/test-hostapi.sock"},
 		{"unix:///tmp/foo.sock", false, "/tmp/foo.sock"},
 		{"http://localhost:1234", true, ""},
 		{"unix://", true, ""},
