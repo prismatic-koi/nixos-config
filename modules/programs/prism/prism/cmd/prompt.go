@@ -62,7 +62,12 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	// --urgent is accepted but ignored (HTTP delivery is instant).
-	_ = cmd.Flags().Lookup("urgent")
+	urgentFlag, _ := cmd.Flags().GetBool("urgent")
+	_ = urgentFlag
+
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return proxyPrompt(apiURL, sessionName, promptText, urgentFlag)
+	}
 
 	// Open DB.
 	database, err := openDB()
