@@ -40,8 +40,7 @@ let
     color_foreground = foreground;
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
-    # Disabled pending container-mode fixes — see #595, #596, #597
-    container_mode = false;
+    container_mode = true;
     sidecar_plugin_path = "${
       config.home-manager.users.${config.nx.username}.xdg.configHome
     }/opencode/plugins/prism-hooks.ts";

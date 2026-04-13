@@ -389,6 +389,11 @@ in
               # agent does not restart on failure — a broken VM should not create
               # a restart loop.
               RunAtLoad = true;
+              # AbandonProcessGroup allows the podman VM processes (vfkit,
+              # gvproxy) to survive after the startup script exits.  Without
+              # this, launchd kills the entire process group on job completion,
+              # tearing down the VM immediately after it starts.
+              AbandonProcessGroup = true;
               # Capture output for debugging; visible via:
               #   tail -f /tmp/podman-machine-start.log
               StandardOutPath = "/tmp/podman-machine-start.log";
