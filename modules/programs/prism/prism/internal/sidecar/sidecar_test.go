@@ -4877,6 +4877,86 @@ echo "session \"${last}@cross-branch\" created"
 	}
 }
 
+// TestHostAPI_Spawn_HostModeForwarded verifies that when a client sends
+// {"host_mode":true}, the sidecar includes "--host-mode" in the args passed to
+// the prism binary. This ensures the HostMode field added in issue #616 is
+// actually forwarded to the spawned process.
+func TestHostAPI_Spawn_HostModeForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	// Stub that echoes all its arguments to stdout so we can inspect them,
+	// then prints the success line expected by parseSpawnSessionName.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "ARGS: $*"
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@host-mode-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	// Send host_mode: true — the stub should receive "--host-mode" in its args.
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"host-mode-branch","host_mode":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]string
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["session_name"] != "nixos-config@host-mode-branch" {
+		t.Errorf("session_name = %q, want %q", respBody["session_name"], "nixos-config@host-mode-branch")
+	}
+
+	// The stub echoes "ARGS: ..." on its first line — check that --host-mode
+	// was passed to it.
+	output := rr.Body.String()
+	_ = output // rr.Body is the HTTP response body, not the stub's stdout.
+	// We must check via a different mechanism: use a capturing stub.
+	// Re-run with a stub that writes args to a temp file.
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath2 := filepath.Join(t.TempDir(), "prism-stub2")
+	stubScript2 := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@host-mode-branch\" created"
+`
+	if err := os.WriteFile(stubPath2, []byte(stubScript2), 0o755); err != nil {
+		t.Fatalf("write stub2: %v", err)
+	}
+	cfg2 := cfg
+	cfg2.PrismBinaryPath = stubPath2
+	sc2 := New(cfg2)
+
+	rr2 := doHostAPI(t, sc2, http.MethodPost, "/spawn",
+		`{"branch":"host-mode-branch","host_mode":true}`)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr2.Code, rr2.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--host-mode") {
+		t.Errorf("captured args %q do not contain --host-mode; host_mode:true was not forwarded", string(capturedArgs))
+	}
+}
+
 func TestHostAPI_Cleanup_CoordinatorCrossRepoForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)

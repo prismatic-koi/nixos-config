@@ -198,10 +198,14 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 // server substitutes its own repo name.
 func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	type spawnReq struct {
-		Repo   string `json:"repo"`
-		Branch string `json:"branch"`
-		Prompt string `json:"prompt"`
-		Agent  string `json:"agent"`
+		Repo     string `json:"repo"`
+		Branch   string `json:"branch"`
+		Prompt   string `json:"prompt"`
+		Agent    string `json:"agent"`
+		Profile  string `json:"profile"`
+		Model    string `json:"model"`
+		Variant  string `json:"variant"`
+		HostMode bool   `json:"host_mode"`
 	}
 
 	reqCh := make(chan spawnReq, 1)
@@ -230,11 +234,18 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
 	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
 	cmd.Flags().Bool("host-mode", false, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
 	_ = cmd.Flags().Set("agent", "worker")
 	_ = cmd.Flags().Set("prompt", "hello world")
+	_ = cmd.Flags().Set("profile", "gemini-hybrid")
+	_ = cmd.Flags().Set("model", "anthropic/claude-sonnet-4-6")
+	_ = cmd.Flags().Set("variant", "high")
+	_ = cmd.Flags().Set("host-mode", "true")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -254,6 +265,18 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 		}
 		if req.Agent != "worker" {
 			t.Errorf("agent = %q, want %q", req.Agent, "worker")
+		}
+		if req.Profile != "gemini-hybrid" {
+			t.Errorf("profile = %q, want %q", req.Profile, "gemini-hybrid")
+		}
+		if req.Model != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("model = %q, want %q", req.Model, "anthropic/claude-sonnet-4-6")
+		}
+		if req.Variant != "high" {
+			t.Errorf("variant = %q, want %q", req.Variant, "high")
+		}
+		if !req.HostMode {
+			t.Errorf("host_mode = false, want true")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
