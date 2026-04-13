@@ -20,10 +20,12 @@ On NixOS, `XDG_STATE_HOME` is set to `$HOME/.local/state`. The database path is 
 **All access MUST use SQLite read-only mode:**
 
 ```bash
-sqlite3 "file:~/.local/state/prism/prism.db?mode=ro" "<query>"
+sqlite3 "file:$HOME/.local/state/prism/prism.db?mode=ro" "<query>"
 ```
 
 The `?mode=ro` flag enforces read-only access at the SQLite engine level. `INSERT`, `UPDATE`, `DELETE`, `DROP`, and all other write operations will be rejected with "attempt to write a readonly database". This is a safety requirement, not a suggestion.
+
+**Important:** Use `$HOME` (shell-expanded) rather than `~` in the URI. SQLite does not expand `~` in `file:` URIs, so a literal `~` causes "unable to open database file". The permission system also expects an absolute path — `$HOME` expands correctly; `~` does not match the permission pattern and will be denied.
 
 ## Schema
 
