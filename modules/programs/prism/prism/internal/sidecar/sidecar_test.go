@@ -4698,3 +4698,111 @@ func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
 		t.Errorf("got %d events with last=2, want at most 2", len(events))
 	}
 }
+
+// ── Bug fix tests: /spawn and /cleanup own-repo restriction ───────────────────
+
+func TestHostAPI_Spawn_CoordinatorCrossRepoForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	// Coordinator in myrepo tries to spawn into otherrepo — must be 403.
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"repo":"otherrepo","branch":"new-branch"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for cross-repo spawn", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "own repo") {
+		t.Errorf("error %q should mention 'own repo'", errResp["error"])
+	}
+}
+
+func TestHostAPI_Cleanup_CoordinatorCrossRepoForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	// Coordinator in myrepo tries to clean up otherrepo@feature — must be 403.
+	rr := doHostAPI(t, sc, http.MethodPost, "/cleanup",
+		`{"session":"otherrepo@feature","yes":true}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for cross-repo cleanup", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "own repo") {
+		t.Errorf("error %q should mention 'own repo'", errResp["error"])
+	}
+}
+
+// ── Bug fix test: /checkin default returns turn-centric events, not raw ───────
+
+func TestHostAPI_Checkin_DefaultReturnsAssistantTurnsNotRawEvents(t *testing.T) {
+	d := openTestDB(t)
+	base := time.Now().Truncate(time.Second)
+
+	// Seed: msg_user, msg_assistant (with messageId), tool_call (same messageId).
+	_ = d.WriteEvent(db.Event{
+		ID:          "u1",
+		SessionName: "myrepo@feature",
+		Repo:        "myrepo",
+		Worktree:    "/wt",
+		Type:        "msg_user",
+		Payload:     `{"messageId":"umsg1","text":"do something"}`,
+		CreatedAt:   base,
+	})
+	_ = d.WriteEvent(db.Event{
+		ID:          "a1",
+		SessionName: "myrepo@feature",
+		Repo:        "myrepo",
+		Worktree:    "/wt",
+		Type:        "msg_assistant",
+		Payload:     `{"messageId":"amsg1","text":"doing it"}`,
+		CreatedAt:   base.Add(time.Second),
+	})
+	_ = d.WriteEvent(db.Event{
+		ID:          "tc1",
+		SessionName: "myrepo@feature",
+		Repo:        "myrepo",
+		Worktree:    "/wt",
+		Type:        "tool_call",
+		Payload:     `{"messageId":"amsg1","tool":"bash","args":"ls"}`,
+		CreatedAt:   base.Add(2 * time.Second),
+	})
+
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	// last=1 with no types: should return 1 assistant turn's full context
+	// (the assistant event + its child tool_call + the user event in window).
+	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@feature&last=1", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var body map[string]any
+	decodeJSONBody(t, rr, &body)
+	events, _ := body["events"].([]any)
+
+	// We expect 3 events: msg_user (in window), msg_assistant, tool_call.
+	// NOT just 1 raw event.
+	if len(events) < 2 {
+		t.Errorf("got %d events, want at least 2 (turn-centric: assistant + child tool_call)", len(events))
+	}
+
+	// Verify the tool_call is present (child of the assistant turn).
+	foundToolCall := false
+	foundAssistant := false
+	for _, ev := range events {
+		evMap, _ := ev.(map[string]any)
+		switch evMap["Type"] {
+		case "tool_call":
+			foundToolCall = true
+		case "msg_assistant":
+			foundAssistant = true
+		}
+	}
+	if !foundAssistant {
+		t.Error("msg_assistant event not found in response")
+	}
+	if !foundToolCall {
+		t.Error("tool_call child event not found in response (turn-centric query should include it)")
+	}
+}

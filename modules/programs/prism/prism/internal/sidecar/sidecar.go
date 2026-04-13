@@ -1466,6 +1466,19 @@ func marshalTruncated(v any, maxLen int) string {
 
 // ── host-API handler ─────────────────────────────────────────────────────────
 
+// extractMessageIDFromPayload returns the "messageId" field from a raw event
+// payload JSON string. Returns an empty string when the field is absent or the
+// JSON cannot be parsed. Used by the /checkin handler's turn-centric logic.
+func extractMessageIDFromPayload(raw string) string {
+	var p struct {
+		MessageID string `json:"messageId"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return ""
+	}
+	return p.MessageID
+}
+
 // repoFromSession extracts the repo prefix from a session name (e.g.
 // "nixos-config" from "nixos-config@main"). Returns an error when the session
 // name contains no "@" — this indicates a misconfigured or non-worktree session.
@@ -1671,18 +1684,84 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
-		// Fetch events.
-		events, err := s.cfg.DB.QueryEvents(targetSession, limit, beforePtr, afterPtr, types)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
-			return
-		}
-
 		// Fetch session state.
 		status, statusErr := s.cfg.DB.CurrentStatus(targetSession)
 		var state string
 		if statusErr == nil && status != nil {
 			state = status.State
+		}
+
+		var events []db.Event
+		if len(types) > 0 {
+			// Explicit --types: return raw events with the type filter, same as
+			// the runCheckinSessionRaw path in the CLI.
+			var err error
+			events, err = s.cfg.DB.QueryEvents(targetSession, limit, beforePtr, afterPtr, types)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+		} else {
+			// Default (no --types): replicate the assistant-turn-centric logic from
+			// runCheckinSession / renderCheckinTurns so that --last N means N
+			// assistant turns, not N raw events.
+
+			// Primary query: fetch last N msg_assistant events.
+			assistantEvents, err := s.cfg.DB.QueryEvents(targetSession, limit, beforePtr, afterPtr, []string{"msg_assistant"})
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+
+			if len(assistantEvents) > 0 {
+				// Collect all messageIds from the assistant events.
+				messageIDs := make([]string, 0, len(assistantEvents))
+				for _, e := range assistantEvents {
+					msgID := extractMessageIDFromPayload(e.Payload)
+					if msgID != "" {
+						messageIDs = append(messageIDs, msgID)
+					}
+				}
+
+				// Secondary query: fetch tool calls, results, permission events, and
+				// thinking events that share a messageId with one of the assistant events.
+				childTypes := []string{"tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
+				childEvents, _ := s.cfg.DB.QueryEventsByMessageIDs(targetSession, messageIDs, childTypes)
+
+				// Determine the time window for msg_user events.
+				earliest := assistantEvents[0].CreatedAt
+				latest := assistantEvents[len(assistantEvents)-1].CreatedAt
+				for _, ae := range assistantEvents {
+					if ae.CreatedAt.Before(earliest) {
+						earliest = ae.CreatedAt
+					}
+					if ae.CreatedAt.After(latest) {
+						latest = ae.CreatedAt
+					}
+				}
+
+				// Fetch msg_user events and filter to the time window.
+				allUserEvents, _ := s.cfg.DB.QueryEvents(targetSession, 0, nil, nil, []string{"msg_user"})
+				var userEvents []db.Event
+				for _, ue := range allUserEvents {
+					if !ue.CreatedAt.Before(earliest) && !ue.CreatedAt.After(latest) {
+						userEvents = append(userEvents, ue)
+					}
+				}
+
+				// Merge all into a single sorted timeline (insertion sort, ASC).
+				merged := make([]db.Event, 0, len(assistantEvents)+len(childEvents)+len(userEvents))
+				merged = append(merged, assistantEvents...)
+				merged = append(merged, childEvents...)
+				merged = append(merged, userEvents...)
+				for i := 1; i < len(merged); i++ {
+					for j := i; j > 0 && merged[j].CreatedAt.Before(merged[j-1].CreatedAt); j-- {
+						merged[j], merged[j-1] = merged[j-1], merged[j]
+					}
+				}
+				events = merged
+			}
+			// If no assistant events exist, events stays nil → returned as [].
 		}
 
 		// Ensure empty arrays rather than null.
@@ -1800,6 +1879,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Own-repo restriction: coordinators may only spawn into their own repo.
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+		if req.Repo != ownRepo {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("coordinators can only spawn sessions in their own repo (%s), got %q", ownRepo, req.Repo))
+			return
+		}
+
 		args := []string{"spawn", "--branch", req.Branch}
 		if req.Prompt != "" {
 			args = append(args, "--prompt", req.Prompt)
@@ -1875,6 +1966,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Session == "" {
 			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Own-repo restriction: coordinators may only clean up sessions in their own repo.
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+		targetRepo, targetRepoErr := repoFromSession(req.Session)
+		if targetRepoErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			return
+		}
+		if targetRepo != ownRepo {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("coordinators can only clean up sessions in their own repo (%s), got %q", ownRepo, req.Session))
 			return
 		}
 
