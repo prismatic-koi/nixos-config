@@ -42,6 +42,73 @@
         ''}
         cp ${awsSkillFile} $out/aws/SKILL.md
       '';
+      piTheme =
+        with config.theme;
+        builtins.toJSON {
+          "$schema" =
+            "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
+          name = config.theme.name;
+          colors = {
+            # Core UI
+            accent = primary;
+            border = primary;
+            borderAccent = secondary;
+            borderMuted = grey0;
+            success = green;
+            error = red;
+            warning = orange;
+            muted = grey0;
+            dim = grey1;
+            text = "";
+            thinkingText = grey0;
+            # Backgrounds & Content
+            selectedBg = bg_visual;
+            userMessageBg = bg1;
+            userMessageText = "";
+            customMessageBg = bg1;
+            customMessageText = "";
+            customMessageLabel = primary;
+            toolPendingBg = bg_dim;
+            toolSuccessBg = bg_green;
+            toolErrorBg = bg_red;
+            toolTitle = primary;
+            toolOutput = "";
+            # Markdown
+            mdHeading = orange;
+            mdLink = blue;
+            mdLinkUrl = grey0;
+            mdCode = aqua;
+            mdCodeBlock = "";
+            mdCodeBlockBorder = grey0;
+            mdQuote = grey0;
+            mdQuoteBorder = grey0;
+            mdHr = grey0;
+            mdListBullet = aqua;
+            # Tool Diffs
+            toolDiffAdded = green;
+            toolDiffRemoved = red;
+            toolDiffContext = grey0;
+            # Syntax Highlighting
+            syntaxComment = grey0;
+            syntaxKeyword = red;
+            syntaxFunction = blue;
+            syntaxVariable = orange;
+            syntaxString = green;
+            syntaxNumber = purple;
+            syntaxType = aqua;
+            syntaxOperator = primary;
+            syntaxPunctuation = grey1;
+            # Thinking Level Borders
+            thinkingOff = grey0;
+            thinkingMinimal = primary;
+            thinkingLow = blue;
+            thinkingMedium = aqua;
+            thinkingHigh = purple;
+            thinkingXhigh = red;
+            # Bash Mode
+            bashMode = orange;
+          };
+        };
     in
     {
       home-manager.users.${config.nx.username} = {
@@ -56,10 +123,10 @@
 
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
         home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
-        # Themes are bundled inside the nixpkgs pi-coding-agent package at
-        # lib/node_modules/pi-monorepo/dist/modes/interactive/theme/ and are
-        # resolved from there at runtime. ~/.pi/agent/themes/ is only for
-        # custom user overrides — no module-managed theme files are needed.
+        # Custom theme derived from config.theme, deployed so pi picks it up
+        # from ~/.pi/agent/themes/ at runtime. The theme name matches
+        # config.theme.name and all colour values come from the system palette.
+        home.file.".pi/agent/themes/${config.theme.name}.json".text = piTheme;
         home.file.".pi/agent/skills".source = skillsDir;
 
         home.persistence."/persist" = {
