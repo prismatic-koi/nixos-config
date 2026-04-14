@@ -167,10 +167,10 @@ type StartSidecarOpts struct {
 	// readiness. Passed via --initial-prompt in container mode (#487).
 	// Empty string means no prompt delivery.
 	InitialPrompt string
-	// ConfigContent is the JSON blob for the OPENCODE_CONFIG_CONTENT environment
-	// variable. When non-empty and ContainerMode is true, it is forwarded to
-	// the sidecar via --config-content so the container can inject the correct
-	// model/variant overrides as an env var on podman run.
+	// ConfigContent is the JSON blob for the container's opencode.json config
+	// file. When non-empty and ContainerMode is true, it is forwarded to
+	// the sidecar via --config-content so the container can write it to a
+	// temp file and mount it at /root/.config/opencode/opencode.json.
 	//
 	// In non-container mode, OPENCODE_CONFIG_CONTENT is injected directly by
 	// buildDirectOpencodeCmd (prepended to the opencode shell command) and does

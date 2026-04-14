@@ -67,19 +67,20 @@ type Config struct {
 	// opencode config and cause "model not supported" errors).
 	AgentModel string
 
-	// ConfigContent is the JSON blob for the OPENCODE_CONFIG_CONTENT environment
-	// variable. When non-empty, it is injected as an env var into the container
-	// so that opencode serve picks up the correct model and variant overrides at
-	// runtime (precedence level 6 in opencode's config merge).
+	// ConfigContent is the JSON blob for the container's opencode.json config
+	// file. When non-empty, it is written to a temp file and bind-mounted into
+	// the container at /root/.config/opencode/opencode.json so that opencode
+	// serve picks up the correct model, variant, and plugin overrides at runtime.
 	//
-	// Previously this was done via --model and --variant flags on opencode serve,
-	// but those flags are not accepted by the serve subcommand. Using
-	// OPENCODE_CONFIG_CONTENT works for both serve and the TUI/attach path.
+	// Using a mounted config file (rather than the OPENCODE_CONFIG_CONTENT env
+	// var) allows plugin paths to be specified as relative paths (e.g.
+	// "./plugins/my-plugin") that resolve correctly relative to the config
+	// file's location inside the container.
 	ConfigContent string
 
-	// PluginHostPath is the absolute path to the prism-hooks plugin file on the
-	// host (e.g. ~/.config/opencode/plugins/prism-hooks.ts). It is mounted
-	// read-only into the container's opencode plugin directory.
+	// PluginHostPath is retained for compatibility but is no longer used by
+	// the container — the entire plugins/ directory is now mounted read-only
+	// via the config allowlist in buildRunArgs.
 	PluginHostPath string
 
 	// BareRoot is the absolute path to the bare git repo root on the host
@@ -184,6 +185,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
+	_ = os.Remove(m.opencodeConfigFilePath())
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -231,6 +233,15 @@ func (m *Manager) gitconfigFilePath() string {
 // git verify-commit to work with SSH signing.
 func (m *Manager) allowedSignersFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-allowed-signers-"+m.name)
+}
+
+// opencodeConfigFilePath returns the host path for the temporary opencode.json
+// config file written before container start. The file is mounted read-only
+// at /root/.config/opencode/opencode.json inside the container so that plugin
+// paths (e.g. "./plugins/my-plugin") resolve correctly relative to the config
+// file location.
+func (m *Manager) opencodeConfigFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-opencode-config-"+m.name)
 }
 
 // writeGitconfig generates a minimal .gitconfig for the container and writes
@@ -397,6 +408,16 @@ func (m *Manager) Create(ctx context.Context) error {
 		return fmt.Errorf("container: write gitconfig: %w", err)
 	}
 
+	// Write the opencode config file for the container. This replaces the
+	// previous OPENCODE_CONFIG_CONTENT env var approach so that relative plugin
+	// paths (e.g. "./plugins/my-plugin") resolve correctly from the config
+	// file's location at /root/.config/opencode/opencode.json.
+	if m.cfg.ConfigContent != "" {
+		if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
+			return fmt.Errorf("container: write opencode config: %w", err)
+		}
+	}
+
 	// Build the podman run arguments.
 	args := m.buildRunArgs()
 
@@ -481,6 +502,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
+	_ = os.Remove(m.opencodeConfigFilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -503,8 +525,8 @@ func (m *Manager) buildRunArgs() []string {
 		":/root/.local/share/opencode:Z"
 	// opencodeConfigDir is the host's opencode config directory, mounted
 	// item-by-item so that agents/ files, skills/, etc. are available inside
-	// the container. opencode.json is NOT mounted (it is superseded by
-	// OPENCODE_CONFIG_CONTENT injected via --env below).
+	// the container. opencode.json is NOT mounted from the host — the container
+	// gets its own generated opencode.json via the ConfigContent temp file.
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 
 	// opencode cache — mount the whole directory so plugins, models.json,
@@ -605,8 +627,10 @@ func (m *Manager) buildRunArgs() []string {
 	// container actually needs.
 	//
 	// Excluded intentionally:
-	//   - opencode.json  — superseded by OPENCODE_CONFIG_CONTENT env var
-	//   - plugins/       — mounted separately via PluginHostPath
+	//   - opencode.json  — mounted separately from the ConfigContent temp file
+	//                      (not from the host's opencode.json) so that the
+	//                      container gets the role-specific config with correct
+	//                      relative plugin paths
 	//   - package.json, bun.lock, package-lock.json, node_modules/ — bun
 	//                      ecosystem files the container manages itself
 	//
@@ -617,6 +641,7 @@ func (m *Manager) buildRunArgs() []string {
 	configAllowlist := []string{
 		"AGENTS.md",
 		"agents",
+		"plugins",
 		"skills",
 		"command",
 		"tui.json",
@@ -734,27 +759,18 @@ func (m *Manager) buildRunArgs() []string {
 		)
 	}
 
-	// Plugin mount (AC-5): mount the prism-hooks plugin if a path was provided.
-	if cfg.PluginHostPath != "" {
-		// The container's opencode config is at /root/.config/opencode (from the
-		// opencode config volume). The plugin lives at the same relative path
-		// inside the container.
-		containerPluginPath := "/root/.config/opencode/plugins/" + filepath.Base(cfg.PluginHostPath)
-		args = append(args, "--volume", cfg.PluginHostPath+":"+containerPluginPath+":ro")
-	}
-
 	// Inject credentials as environment variables (AC-10, AC-11).
 	for _, kv := range m.credentialEnvVars() {
 		args = append(args, "--env", kv)
 	}
 
-	// OPENCODE_CONFIG_CONTENT: inject as an env var when set. This overrides
-	// model and variant at runtime (precedence level 6 in opencode's config
-	// merge). Previously --model and --variant were appended to the opencode
-	// serve command, but serve does not accept those flags — env var injection
-	// is the correct and more general approach.
+	// opencode.json: mount the generated config file when ConfigContent is set.
+	// The file is written by Create() to a temp path and mounted read-only at
+	// /root/.config/opencode/opencode.json. This replaces the previous
+	// OPENCODE_CONFIG_CONTENT env var so that relative plugin paths (e.g.
+	// "./plugins/my-plugin") resolve correctly from the config file's directory.
 	if cfg.ConfigContent != "" {
-		args = append(args, "--env", "OPENCODE_CONFIG_CONTENT="+cfg.ConfigContent)
+		args = append(args, "--volume", m.opencodeConfigFilePath()+":/root/.config/opencode/opencode.json:ro")
 	}
 
 	// Image and command: opencode serve on the container port.

@@ -321,49 +321,46 @@ func TestBuildRunArgs_DetachedFlag(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_PluginMount(t *testing.T) {
+func TestBuildRunArgs_PluginDirMountedViaAllowlist(t *testing.T) {
+	// plugins/ is a directory on disk — it should be mounted read-only via
+	// the config allowlist (--mount type=bind,ro), not as a single file.
+	fakeHome := t.TempDir()
+	pluginDir := filepath.Join(fakeHome, ".config", "opencode", "plugins")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll plugins: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "my-plugin.ts"), []byte("stub"), 0o644); err != nil {
+		t.Fatalf("WriteFile my-plugin.ts: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
 	m := New(Config{
-		SessionName:    "repo@feat",
-		AllocatedPort:  14000,
-		PluginHostPath: "/home/user/.config/opencode/plugins/prism-hooks.ts",
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
 	})
 	args := m.buildRunArgs()
 
+	// Must be mounted via --mount type=bind (directory path), read-only.
 	found := false
 	for i, arg := range args {
-		if arg == "--volume" && i+1 < len(args) {
+		if arg == "--mount" && i+1 < len(args) {
 			v := args[i+1]
-			if strings.Contains(v, "prism-hooks.ts") {
+			if strings.Contains(v, "/root/.config/opencode/plugins") && strings.Contains(v, ",ro") {
 				found = true
-				// Must be read-only.
-				if !strings.HasSuffix(v, ":ro") {
-					t.Errorf("plugin mount %q should be read-only (:ro)", v)
-				}
-				// Must map to container plugin dir.
-				if !strings.Contains(v, "/root/.config/opencode/plugins/prism-hooks.ts") {
-					t.Errorf("plugin mount %q should target /root/.config/opencode/plugins/", v)
-				}
 				break
 			}
 		}
 	}
 	if !found {
-		t.Errorf("plugin volume mount not found in args: %v", args)
+		t.Errorf("plugins/ not mounted via --mount type=bind,ro; args: %v", args)
 	}
-}
 
-func TestBuildRunArgs_NoPluginMountWhenEmpty(t *testing.T) {
-	m := New(Config{
-		SessionName:    "repo@feat",
-		AllocatedPort:  14000,
-		PluginHostPath: "",
-	})
-	args := m.buildRunArgs()
-
+	// Must NOT appear as an individual --volume file mount.
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
-			if strings.Contains(args[i+1], "prism-hooks") {
-				t.Errorf("unexpected plugin mount in args when PluginHostPath is empty: %v", args)
+			v := args[i+1]
+			if strings.Contains(v, "plugins/my-plugin.ts") {
+				t.Errorf("plugin should not be mounted as individual file: %q", v)
 			}
 		}
 	}
@@ -950,11 +947,9 @@ func TestRedactArgs_EnvAsLastArgNoPanic(t *testing.T) {
 
 // ── opencode config mount tests ──────────────────────────────────────────────
 
-func TestBuildRunArgs_OpencodeJsonSkippedInItemByItemMount(t *testing.T) {
-	// opencode.json must never be mounted — agent identity and permissions are
-	// set authoritatively via OPENCODE_CONFIG_CONTENT (injected as --env).
-	// Any on-disk opencode.json would be superseded anyway, but skipping the
-	// mount is belt-and-suspenders and avoids polluting the container.
+func TestBuildRunArgs_HostOpencodeJsonNotMountedFromAllowlist(t *testing.T) {
+	// The host's opencode.json must NOT be mounted via the config allowlist.
+	// When ConfigContent is empty, no opencode.json should appear at all.
 	m := New(Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14000,
@@ -966,7 +961,57 @@ func TestBuildRunArgs_OpencodeJsonSkippedInItemByItemMount(t *testing.T) {
 		if (arg == "--volume" || arg == "--mount") && i+1 < len(args) {
 			v := args[i+1]
 			if strings.Contains(v, "opencode.json") {
-				t.Errorf("opencode.json must not be mounted into the container, got: %q", v)
+				t.Errorf("opencode.json must not be mounted when ConfigContent is empty, got: %q", v)
+			}
+		}
+	}
+}
+
+func TestBuildRunArgs_OpencodeJsonMountedWhenConfigContentSet(t *testing.T) {
+	// When ConfigContent is set, the generated temp file must be mounted
+	// at /root/.config/opencode/opencode.json:ro.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+		ConfigContent: `{"model":"anthropic/claude-sonnet-4-6"}`,
+	})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasSuffix(v, ":/root/.config/opencode/opencode.json:ro") {
+				found = true
+				// Source must be the temp file path.
+				if !strings.Contains(v, "prism-opencode-config-") {
+					t.Errorf("opencode.json mount source should be temp file, got: %q", v)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("opencode.json mount not found when ConfigContent is set; args: %v", args)
+	}
+}
+
+func TestBuildRunArgs_NoConfigContentEnvVar(t *testing.T) {
+	// OPENCODE_CONFIG_CONTENT must NOT be injected as an env var — the config
+	// is now delivered via a mounted opencode.json file.
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+		ConfigContent: `{"model":"anthropic/claude-sonnet-4-6"}`,
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			if strings.HasPrefix(args[i+1], "OPENCODE_CONFIG_CONTENT=") {
+				t.Errorf("OPENCODE_CONFIG_CONTENT must not be injected as env var, got: %q", args[i+1])
 			}
 		}
 	}
@@ -994,43 +1039,15 @@ func TestBuildRunArgs_NoSingleWholeDirConfigMount(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_PluginMountedSeparately(t *testing.T) {
-	// The prism-hooks plugin file is mounted separately via --volume.
-	m := New(Config{
-		SessionName:    "repo@feat",
-		AllocatedPort:  14000,
-		AgentRole:      "worker",
-		PluginHostPath: "/home/user/.config/opencode/plugins/prism-hooks.ts",
-	})
-	args := m.buildRunArgs()
-
-	foundPlugin := false
-	for i, arg := range args {
-		if arg == "--volume" && i+1 < len(args) {
-			v := args[i+1]
-			if strings.Contains(v, "prism-hooks.ts") &&
-				strings.Contains(v, "/root/.config/opencode/plugins/prism-hooks.ts") {
-				foundPlugin = true
-				if !strings.HasSuffix(v, ":ro") {
-					t.Errorf("plugin mount %q must be read-only", v)
-				}
-				break
-			}
-		}
-	}
-	if !foundPlugin {
-		t.Errorf("plugin file not mounted separately; args: %v", args)
-	}
-}
-
 func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 	// Verifies that the config mount block uses an explicit allowlist:
-	// - All 7 allowlisted entries present on disk ARE mounted read-only.
+	// - All 8 allowlisted entries present on disk ARE mounted read-only.
 	// - Bun ecosystem files (package.json, bun.lock, package-lock.json,
 	//   node_modules/) are NOT mounted.
-	// - opencode.json is NOT mounted even when present on disk.
+	// - The host's opencode.json is NOT mounted via the allowlist (it is
+	//   delivered separately via the ConfigContent temp file mechanism).
 	//
-	// Previous tests (TestBuildRunArgs_OpencodeJsonSkippedInItemByItemMount,
+	// Previous tests (TestBuildRunArgs_HostOpencodeJsonNotMountedFromAllowlist,
 	// TestBuildRunArgs_NoSingleWholeDirConfigMount) ran against an empty home dir,
 	// so filepath.EvalSymlinks always failed and the config block produced zero
 	// mount args — the allowlist was never actually exercised. This test populates
@@ -1042,7 +1059,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		t.Fatalf("MkdirAll configDir: %v", err)
 	}
 
-	// Allowlisted files/dirs that should be mounted (all 7 entries from configAllowlist).
+	// Allowlisted files/dirs that should be mounted (all 8 entries from configAllowlist).
 	allowlisted := []struct {
 		name  string
 		isDir bool
@@ -1054,6 +1071,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		{"agents", true},
 		{"skills", true},
 		{"command", true},
+		{"plugins", true},
 	}
 	for _, e := range allowlisted {
 		p := filepath.Join(configDir, e.name)

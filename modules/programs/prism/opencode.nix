@@ -24,19 +24,19 @@
     # Set by opencode.nix and consumed by profiles.nix to embed them into
     # profiles.json under container_worker_config / container_coordinator_config.
     # The Go CLI reads those keys and passes the appropriate blob to the sidecar
-    # as --config-content, which injects it as OPENCODE_CONFIG_CONTENT (precedence
-    # level 6 — above any project-level opencode.jsonc).
+    # as --config-content, which writes it to a temp file and mounts it as
+    # /root/.config/opencode/opencode.json inside the container.
     nx.programs.prism.opencode.containerWorkerConfigJson = lib.mkOption {
       type = lib.types.str;
       default = "";
       internal = true;
-      description = "Serialised opencode.json blob for worker containers (OPENCODE_CONFIG_CONTENT).";
+      description = "Serialised opencode.json blob for worker containers (mounted as config file).";
     };
     nx.programs.prism.opencode.containerCoordinatorConfigJson = lib.mkOption {
       type = lib.types.str;
       default = "";
       internal = true;
-      description = "Serialised opencode.json blob for coordinator containers (OPENCODE_CONFIG_CONTENT).";
+      description = "Serialised opencode.json blob for coordinator containers (mounted as config file).";
     };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
@@ -363,15 +363,19 @@
         anthropic = [
           # use existing Claude Code credentials (via claude login OAuth)
           # no separate proxy or API key needed
-          "opencode-claude-auth@latest"
+          # "opencode-claude-auth@latest"
+          "./plugins/opencode-claude-auth"
         ];
         anthropic-opus = [
-          "opencode-claude-auth@latest"
+          # "opencode-claude-auth@latest"
+          "./plugins/opencode-claude-auth"
         ];
         # gemini-hybrid uses both Anthropic (Opus primary) and Google (Gemini secondary).
         # Both auth plugins are needed; they are both loaded globally anyway.
         gemini-hybrid = [
-          "opencode-claude-auth@latest"
+          # "opencode-claude-auth@latest"
+          "./plugins/opencode-claude-auth"
+
         ];
         github-copilot = [ ];
         google = [ ];
@@ -480,9 +484,11 @@
       ];
 
       # Plugins for containers: claude-auth only (no gemini-auth noise).
+      # Relative paths resolve from the opencode.json config file location
+      # (/root/.config/opencode/) where the plugins/ directory is mounted.
       containerPlugins = [
-        "opencode-claude-auth@latest"
-        "./plugins/prism-hooks"
+        "./plugins/opencode-claude-auth"
+        "./plugins/prism-hooks.ts"
       ];
 
       # Worker container opencode.json blob.
