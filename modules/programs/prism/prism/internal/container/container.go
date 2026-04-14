@@ -445,9 +445,11 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		if time.Now().After(deadline) {
+			m.dumpLogs()
 			return fmt.Errorf("container: health check timed out after %s for %q", timeout, m.name)
 		}
 		if ctx.Err() != nil {
+			m.dumpLogs()
 			return ctx.Err()
 		}
 
@@ -455,12 +457,52 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 			return nil
 		}
 
+		// Check if the container exited early — no point polling a dead
+		// container until the timeout expires.
+		if exited, code := m.hasExited(); exited {
+			m.dumpLogs()
+			return fmt.Errorf("container: %q exited with code %d before becoming healthy", m.name, code)
+		}
+
 		select {
 		case <-ctx.Done():
+			m.dumpLogs()
 			return ctx.Err()
 		case <-time.After(healthCheckInterval):
 		}
 	}
+}
+
+// dumpLogs writes the container's stdout/stderr to the sidecar log so that
+// startup failures are visible without needing to race `podman logs` before
+// the container is removed by Shutdown.
+func (m *Manager) dumpLogs() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "podman", "logs", m.name).CombinedOutput()
+	if err != nil {
+		log.Printf("container: could not fetch logs for %q: %v", m.name, err)
+		return
+	}
+	log.Printf("container: logs for %q:\n%s", m.name, string(out))
+}
+
+// hasExited checks whether the container has already stopped. Returns true and
+// the exit code if the container is in an exited state.
+func (m *Manager) hasExited() (bool, int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", m.name).Output()
+	if err != nil {
+		return false, 0
+	}
+	fields := strings.Fields(strings.TrimSpace(string(out)))
+	if len(fields) == 2 && fields[0] == "exited" {
+		code := 0
+		fmt.Sscanf(fields[1], "%d", &code)
+		return true, code
+	}
+	return false, 0
 }
 
 // isHealthy performs a single HTTP probe and returns true on success.
@@ -588,7 +630,15 @@ func (m *Manager) buildRunArgs() []string {
 		// that automatically injects --eval-store auto when the socket is
 		// present, so evaluation happens locally (can see /workspace) while
 		// builds/fetches go through the daemon.
-		"--volume", "/nix/var/nix/daemon-socket/socket:/nix/var/nix/daemon-socket/socket",
+		//
+		// Mount the parent directory rather than the socket file itself.
+		// On Darwin, podman runs inside a VM with virtiofs host shares;
+		// statfs on a Unix socket through virtiofs returns ENOTSUP, causing
+		// podman to reject the mount. Mounting the directory avoids the
+		// socket-level statfs and lets the container reach the socket via
+		// the live directory mount — the same pattern used for the host-API
+		// socket (see #611 / #612).
+		"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
 		"--env", "NIX_CONFIG=store = daemon",
 
 		// Prism context — tells prism CLI commands running inside the container
