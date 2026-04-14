@@ -416,6 +416,27 @@ func promptBranchInput(prompt string) string {
 
 // ── session management ────────────────────────────────────────────────────────
 
+// injectContainerConfig loads the role-specific opencode.json blob from
+// profiles.json and sets opts.ConfigContent when container mode is active.
+// This mirrors the pattern in spawn.go and must be called after the final
+// worktree path is known (path is the directory passed to ensureAndSwitch).
+//
+// pf must be non-nil when called; callers are responsible for loading it when
+// cfg.ContainerMode is true.
+func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, cmdName string) error {
+	effectiveRole := session.DefaultAgent(path, opts.Agent)
+	roleConfig, err := config.ContainerConfigForRole(pf, effectiveRole)
+	if err != nil {
+		return err
+	}
+	if roleConfig != "" {
+		opts.ConfigContent = roleConfig
+	} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+		fmt.Fprintf(os.Stderr, "[%s] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", cmdName, effectiveRole)
+	}
+	return nil
+}
+
 // ensureAndSwitch creates the session if it doesn't exist (with the appropriate
 // layout) and then switches the current client to it, unless opts.Headless is set.
 // For full-layout sessions, a port is allocated from the 14000–14999 range and
@@ -509,7 +530,7 @@ func allocatePortForSession(sessionName, directory string) (int, error) {
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string, opts session.Opts) error {
+func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts) error {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -537,15 +558,30 @@ func handleBareRepo(projectPath string, opts session.Opts) error {
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
+		if opts.ContainerMode && pf != nil {
+			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
+				return err
+			}
+		}
 		return ensureAndSwitch(worktreePath, projectPath, opts)
 	}
 
+	if opts.ContainerMode && pf != nil {
+		if err := injectContainerConfig(chosen.path, pf, &opts, "prism switch"); err != nil {
+			return err
+		}
+	}
 	return ensureAndSwitch(chosen.path, projectPath, opts)
 }
 
-func handleRegularRepo(path string, opts session.Opts) error {
+func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
+		if opts.ContainerMode && pf != nil {
+			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
+				return err
+			}
+		}
 		return ensureAndSwitch(path, "", opts)
 	}
 
@@ -566,6 +602,11 @@ func handleRegularRepo(path string, opts session.Opts) error {
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
+			if opts.ContainerMode && pf != nil {
+				if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
+					return err
+				}
+			}
 			return ensureAndSwitch(path, "", opts)
 		}
 
@@ -595,15 +636,25 @@ func handleRegularRepo(path string, opts session.Opts) error {
 			removeContainerIfExists(oldSessionName)
 		}
 
+		if opts.ContainerMode && pf != nil {
+			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
+				return err
+			}
+		}
 		return ensureAndSwitch(worktreePath, path, opts)
 	default:
+		if opts.ContainerMode && pf != nil {
+			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
+				return err
+			}
+		}
 		return ensureAndSwitch(path, "", opts)
 	}
 }
 
 // ── clone repo ────────────────────────────────────────────────────────────────
 
-func handleCloneRepo(opts session.Opts) error {
+func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts) error {
 	repoURL := promptInput("clone url> ")
 	if repoURL == "" {
 		return nil
@@ -633,6 +684,11 @@ func handleCloneRepo(opts session.Opts) error {
 	worktrees := git.Worktrees(targetDir)
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
+	}
+	if opts.ContainerMode && pf != nil {
+		if err := injectContainerConfig(worktrees[0], pf, &opts, "prism switch"); err != nil {
+			return err
+		}
 	}
 	return ensureAndSwitch(worktrees[0], targetDir, opts)
 }
@@ -665,6 +721,19 @@ var switchCmd = &cobra.Command{
 
 		fresh, _ := cmd.Flags().GetBool("fresh")
 		cfg := config.Load()
+
+		// In container mode, load profiles.json once for config injection.
+		// The profiles file is threaded through to each ensureAndSwitch call
+		// site so that injectContainerConfig can derive the role-scoped blob.
+		var pf *config.ProfilesFile
+		if cfg.ContainerMode {
+			var pfErr error
+			pf, pfErr = config.LoadProfiles()
+			if pfErr != nil {
+				return pfErr
+			}
+		}
+
 		opts := session.Opts{
 			Fresh:          fresh,
 			ContainerMode:  cfg.ContainerMode,
@@ -683,12 +752,30 @@ var switchCmd = &cobra.Command{
 				if len(worktrees) == 0 {
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
-				return ensureAndSwitch(worktrees[0], p, opts)
+				o := opts
+				if cfg.ContainerMode && pf != nil {
+					if err := injectContainerConfig(worktrees[0], pf, &o, "prism switch"); err != nil {
+						return err
+					}
+				}
+				return ensureAndSwitch(worktrees[0], p, o)
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
-				return ensureAndSwitch(p, bareRoot, opts)
+				o := opts
+				if cfg.ContainerMode && pf != nil {
+					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
+						return err
+					}
+				}
+				return ensureAndSwitch(p, bareRoot, o)
 			}
-			return ensureAndSwitch(p, "", opts)
+			o := opts
+			if cfg.ContainerMode && pf != nil {
+				if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
+					return err
+				}
+			}
+			return ensureAndSwitch(p, "", o)
 		}
 
 		// Ensure dashboard exists in background.
@@ -718,17 +805,23 @@ var switchCmd = &cobra.Command{
 			return ensureAndSwitch("[scratchpad]", "", opts)
 
 		case "[+ clone repo]":
-			return handleCloneRepo(opts)
+			return handleCloneRepo(pf, opts)
 
 		default:
 			p := chosen.path
 			switch {
 			case git.IsBareRepo(p):
-				return handleBareRepo(p, opts)
+				return handleBareRepo(p, pf, opts)
 			case git.IsRegularRepo(p):
-				return handleRegularRepo(p, opts)
+				return handleRegularRepo(p, pf, opts)
 			default:
-				return ensureAndSwitch(p, "", opts)
+				o := opts
+				if cfg.ContainerMode && pf != nil {
+					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
+						return err
+					}
+				}
+				return ensureAndSwitch(p, "", o)
 			}
 		}
 	},

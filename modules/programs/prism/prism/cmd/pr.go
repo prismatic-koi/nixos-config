@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -79,10 +80,36 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
+		cfg := config.Load()
+
+		// In container mode, inject the role-specific opencode.json blob as
+		// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
+		var configContent string
+		if cfg.ContainerMode {
+			pf, pfErr := config.LoadProfiles()
+			if pfErr != nil {
+				return pfErr
+			}
+			effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
+			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+			if roleErr != nil {
+				return roleErr
+			}
+			if roleConfig != "" {
+				configContent = roleConfig
+			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+				fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+			}
+		}
+
 		opts := session.Opts{
-			Prompt:   promptFlag,
-			Agent:    agentFlag,
-			Headless: !attachFlag,
+			Prompt:         promptFlag,
+			Agent:          agentFlag,
+			Headless:       !attachFlag,
+			ContainerMode:  cfg.ContainerMode,
+			PluginHostPath: cfg.SidecarPluginPath,
+			ConfigContent:  configContent,
 		}
 		return ensureAndSwitch(worktreePath, bareRoot, opts)
 	},

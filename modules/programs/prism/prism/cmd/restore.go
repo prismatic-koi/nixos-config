@@ -168,6 +168,26 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	}
 	if containerMode {
 		opts.PluginHostPath = cfg.SidecarPluginPath
+
+		// In container mode, inject the role-specific opencode.json blob as
+		// OPENCODE_CONFIG_CONTENT. This mirrors the pattern in spawn.go.
+		// Profile load errors are non-fatal for restore: log and skip
+		// config injection so the session is still recreated without it,
+		// rather than aborting the entire restore run.
+		pf, pfErr := config.LoadProfiles()
+		if pfErr != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
+		} else {
+			effectiveRole := session.DefaultAgent(directory, "")
+			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+			if roleErr != nil {
+				fmt.Fprintf(os.Stderr, "restore %q: container config for role %q: %v — skipping config injection\n", s.SessionName, effectiveRole, roleErr)
+			} else if roleConfig != "" {
+				opts.ConfigContent = roleConfig
+			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+				fmt.Fprintf(os.Stderr, "[prism restore] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+			}
+		}
 	}
 
 	// Re-check for a race immediately before DB writes: if the session has
