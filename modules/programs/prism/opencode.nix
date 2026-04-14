@@ -20,6 +20,24 @@
         of which profile is active.
       '';
     };
+    # Serialised opencode.json blobs for container roles.
+    # Set by opencode.nix and consumed by profiles.nix to embed them into
+    # profiles.json under container_worker_config / container_coordinator_config.
+    # The Go CLI reads those keys and passes the appropriate blob to the sidecar
+    # as --config-content, which injects it as OPENCODE_CONFIG_CONTENT (precedence
+    # level 6 — above any project-level opencode.jsonc).
+    nx.programs.prism.opencode.containerWorkerConfigJson = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      internal = true;
+      description = "Serialised opencode.json blob for worker containers (OPENCODE_CONFIG_CONTENT).";
+    };
+    nx.programs.prism.opencode.containerCoordinatorConfigJson = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      internal = true;
+      description = "Serialised opencode.json blob for coordinator containers (OPENCODE_CONFIG_CONTENT).";
+    };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
@@ -370,8 +388,211 @@
         google = { };
       };
       hmUser = config.home-manager.users.${config.nx.username};
+
+      # Container-specific permission sets (fresh design — not derived from host).
+      # These are independent of the host command sets above.
+
+      # Worker container: almost fully open because the sandbox is the safety net.
+      # bash default = allow-all; only deny coordinator-domain operations.
+      containerWorkerBashCommands = {
+        # Default: allow everything not explicitly denied
+        "*" = "allow";
+        # Coordinator-domain operations — deny
+        "prism spawn" = "deny";
+        "prism spawn *" = "deny";
+        "prism pr" = "deny";
+        "prism pr *" = "deny";
+        "gh pr merge" = "deny";
+        "gh pr merge *" = "deny";
+        "nixos-rebuild *" = "deny";
+        "sudo nixos-rebuild *" = "deny";
+      };
+
+      # Coordinator container: strict deny-by-default allowlist.
+      containerCoordinatorBashCommands = {
+        # Default: deny everything not explicitly allowed
+        "*" = "deny";
+        # GitHub CLI — full suite (token scoping is the safety net)
+        "gh *" = "allow";
+        # Prism — full orchestration suite
+        "prism *" = "allow";
+        # Nix validation
+        "nix build *" = "allow";
+        # Git read-only operations
+        "git pull" = "allow";
+        "git pull *" = "allow";
+        "git log *" = "allow";
+        "git diff *" = "allow";
+        "git show *" = "allow";
+        "git status" = "allow";
+        "git status *" = "allow";
+        "git fetch *" = "allow";
+        "git branch" = "allow";
+        "git branch *" = "allow";
+        "git remote" = "allow";
+        "git remote *" = "allow";
+        # Standard read-only tools
+        "cat *" = "allow";
+        "ls *" = "allow";
+        "ls" = "allow";
+        "grep *" = "allow";
+        "rg *" = "allow";
+        "find *" = "allow";
+        "jq *" = "allow";
+        "yq *" = "allow";
+        "date *" = "allow";
+        "date" = "allow";
+        "echo *" = "allow";
+        "echo" = "allow";
+        "basename *" = "allow";
+        "dirname *" = "allow";
+        "wc *" = "allow";
+        "diff *" = "allow";
+        "head *" = "allow";
+        "tail *" = "allow";
+        "sort *" = "allow";
+        "sed *" = "allow";
+        "awk *" = "allow";
+        "cut *" = "allow";
+        "tr *" = "allow";
+        "xargs *" = "allow";
+        "env *" = "allow";
+        "printenv *" = "allow";
+        "printenv" = "allow";
+        "pwd" = "allow";
+        "pwd *" = "allow";
+        "which *" = "allow";
+        "type *" = "allow";
+        "uname *" = "allow";
+        # Belt-and-suspenders denies over deny-all
+        "nixos-rebuild *" = "deny";
+        "sudo nixos-rebuild *" = "deny";
+        "rm *" = "deny";
+        "mv *" = "deny";
+        "mkdir *" = "deny";
+      };
+
+      # Providers to expose in containers — restricts model list to these 3.
+      containerEnabledProviders = [
+        "anthropic"
+        "github-copilot"
+        "google"
+      ];
+
+      # Plugins for containers: claude-auth only (no gemini-auth noise).
+      containerPlugins = [
+        "opencode-claude-auth@latest"
+        "./plugins/prism-hooks"
+      ];
+
+      # Worker container opencode.json blob.
+      # All tools enabled; bash is allow-all with explicit denies for
+      # coordinator-domain operations. No tmux deny commands (no tmux in container).
+      workerContainerOpencodeJson = {
+        "$schema" = "https://opencode.ai/opencode.json";
+        autoupdate = false;
+        default_agent = "worker";
+        enabled_providers = containerEnabledProviders;
+        model = models.secondary;
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
+          worker = {
+            description = "Default worker agent with full tool access";
+            mode = "primary";
+            color = config.theme.red;
+            permission = {
+              bash = containerWorkerBashCommands;
+            };
+          };
+          review = { };
+          ac = { };
+          explore = { };
+          title = { };
+          summary = { };
+          compaction = { };
+        };
+        permission = {
+          edit = "allow";
+          webfetch = "allow";
+          bash = containerWorkerBashCommands;
+        };
+        plugin = containerPlugins;
+        provider = providerSettings;
+      };
+
+      # Coordinator container opencode.json blob.
+      # Write/edit tools disabled; bash is deny-by-default with explicit allowlist
+      # for read + orchestration operations. No tmux deny commands (no tmux in container).
+      coordinatorContainerOpencodeJson = {
+        "$schema" = "https://opencode.ai/opencode.json";
+        autoupdate = false;
+        default_agent = "coordinator";
+        enabled_providers = containerEnabledProviders;
+        model = models.primary;
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
+          coordinator = {
+            description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
+            mode = "primary";
+            color = config.theme.purple;
+            tools = {
+              read = true;
+              grep = true;
+              glob = true;
+              list = true;
+              webfetch = true;
+              bash = true;
+              write = false;
+              edit = false;
+              patch = false;
+            };
+            permission = {
+              bash = containerCoordinatorBashCommands;
+            };
+          };
+          plan = {
+            description = "Planning and analysis agent with read-only access";
+            mode = "primary";
+            color = config.theme.blue;
+            tools = {
+              read = true;
+              grep = true;
+              glob = true;
+              list = true;
+              webfetch = true;
+              bash = true;
+              write = false;
+              edit = false;
+              patch = false;
+            };
+            permission = {
+              bash = containerCoordinatorBashCommands;
+            };
+          };
+          explore = { };
+          review = { };
+          ac = { };
+          title = { };
+          summary = { };
+          compaction = { };
+        };
+        permission = {
+          edit = "deny";
+          webfetch = "allow";
+          bash = containerCoordinatorBashCommands;
+        };
+        plugin = containerPlugins;
+        provider = providerSettings;
+      };
     in
     lib.mkMerge [
+      # Set container config JSON blobs as options so profiles.nix can embed
+      # them into profiles.json under container_worker_config /
+      # container_coordinator_config.
+      {
+        nx.programs.prism.opencode.containerWorkerConfigJson = builtins.toJSON workerContainerOpencodeJson;
+        nx.programs.prism.opencode.containerCoordinatorConfigJson =
+          builtins.toJSON coordinatorContainerOpencodeJson;
+      }
+
       # Common configuration for both platforms
       {
         home-manager.users.${config.nx.username} = {

@@ -60,6 +60,31 @@ type ProfilesFile struct {
 	Default     string                  `json:"default"`
 	RoleMapping map[string][]string     `json:"role_mapping"`
 	Profiles    map[string]ProfileEntry `json:"profiles"`
+	// ContainerWorkerConfig is the full opencode.json blob (serialised JSON
+	// string) to inject as OPENCODE_CONFIG_CONTENT for worker containers.
+	// Written by Nix under container_worker_config.
+	ContainerWorkerConfig string `json:"container_worker_config"`
+	// ContainerCoordinatorConfig is the full opencode.json blob (serialised
+	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for coordinator
+	// containers. Written by Nix under container_coordinator_config.
+	ContainerCoordinatorConfig string `json:"container_coordinator_config"`
+}
+
+// ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
+// given agent role ("worker" or "coordinator"). Returns ("", nil) when pf is
+// nil (no profiles file loaded). Returns an error when role is unrecognised.
+func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
+	if pf == nil {
+		return "", nil
+	}
+	switch role {
+	case "worker":
+		return pf.ContainerWorkerConfig, nil
+	case "coordinator":
+		return pf.ContainerCoordinatorConfig, nil
+	default:
+		return "", fmt.Errorf("profiles: unrecognised container role %q — expected \"worker\" or \"coordinator\"", role)
+	}
 }
 
 // profilesFilePath returns the path to profiles.json.

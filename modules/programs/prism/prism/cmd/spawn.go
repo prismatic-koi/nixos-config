@@ -125,10 +125,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Resolve model profile into OPENCODE_CONFIG_CONTENT.
-	// Load the profiles file only when --profile is set (to produce good errors).
+	// Always load the profiles file when container mode is active — it carries
+	// the container role configs (container_worker_config /
+	// container_coordinator_config) that must be injected as
+	// OPENCODE_CONFIG_CONTENT to fix agent identity in containers.
+	// Also load when --profile is set to apply model overrides.
 	var pf *config.ProfilesFile
-	if profileFlag != "" {
+	if effectiveContainerMode || profileFlag != "" {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
@@ -138,6 +141,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
 	if err != nil {
 		return err
+	}
+
+	// In container mode, inject the role-specific opencode.json blob as
+	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+	// project-level opencode.jsonc. This ensures agent identity is always
+	// determined by Nix config, not by the project file.
+	// The role-based config is merged on top of (or replaces) any
+	// --profile/--model/--variant configContent built above.
+	if effectiveContainerMode && pf != nil {
+		// Determine effective agent role for this spawn.
+		effectiveRole := agentFlag
+		if effectiveRole == "" {
+			effectiveRole = "worker" // default
+		}
+		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+		if roleErr != nil {
+			return roleErr
+		}
+		if roleConfig != "" {
+			// Role config supersedes profile/model overrides for identity &
+			// permissions; use it as the primary config content.
+			configContent = roleConfig
+		}
 	}
 
 	opts := session.Opts{

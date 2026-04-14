@@ -121,7 +121,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
 	}
 
-	// Load prism runtime config — needed for container config derivation paths.
+	// Load prism runtime config — needed for git identity and SSH key names.
 	prismCfg := config.Load()
 
 	// Build container config if container mode is enabled.
@@ -139,21 +139,19 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
 		}
 		ctrCfg = &container.Config{
-			SessionName:                    sessionName,
-			Worktree:                       worktree,
-			BareRoot:                       bareRoot,
-			WorktreeGitDir:                 worktreeGitDir,
-			AllocatedPort:                  port,
-			AgentRole:                      agentRole,
-			AgentModel:                     opencodeAgentModel(agentRole),
-			PluginHostPath:                 pluginPath,
-			ConfigContent:                  configContent,
-			ContainerWorkerConfigPath:      prismCfg.ContainerWorkerConfigPath,
-			ContainerCoordinatorConfigPath: prismCfg.ContainerCoordinatorConfigPath,
-			GitUserName:                    prismCfg.GitUserName,
-			GitUserEmail:                   prismCfg.GitUserEmail,
-			SshAccessKeyName:               prismCfg.SshAccessKeyName,
-			SshSigningKeyName:              prismCfg.SshSigningKeyName,
+			SessionName:       sessionName,
+			Worktree:          worktree,
+			BareRoot:          bareRoot,
+			WorktreeGitDir:    worktreeGitDir,
+			AllocatedPort:     port,
+			AgentRole:         agentRole,
+			AgentModel:        opencodeAgentModel(agentRole),
+			PluginHostPath:    pluginPath,
+			ConfigContent:     configContent,
+			GitUserName:       prismCfg.GitUserName,
+			GitUserEmail:      prismCfg.GitUserEmail,
+			SshAccessKeyName:  prismCfg.SshAccessKeyName,
+			SshSigningKeyName: prismCfg.SshSigningKeyName,
 		}
 	}
 

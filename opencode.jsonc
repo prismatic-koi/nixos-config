@@ -5,13 +5,15 @@
   // the remote will reject anything that hasn't gone through a PR. This reduces
   // friction for the worker agent when landing work.
   "$schema": "https://opencode.ai/config.json",
-  // Use coordinator as default agent for interactive sessions in this repo.
-  // (prism spawn already defaults spawned agents to "worker" via its own --agent flag.)
-  "default_agent": "coordinator",
   // Agent-scoped permissions are merged with the global config and take precedence
   // (per opencode docs: "Agent permissions are merged with the global config, and
   // agent rules take precedence"). Overriding within `agent.worker` is therefore
   // sufficient to shadow the global `permission.bash` entries that set push to "ask".
+  //
+  // Note: default_agent is intentionally absent here. Container sessions have
+  // OPENCODE_CONFIG_CONTENT injected with the correct default_agent (worker or
+  // coordinator) at precedence level 6, which beats any project-level config.
+  // Interactive host sessions use whatever agent the user selects.
   "agent": {
     "worker": {
       "permission": {
