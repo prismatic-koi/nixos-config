@@ -557,8 +557,9 @@
       };
 
       # Coordinator container opencode.json blob.
-      # Write/edit tools disabled; bash is deny-by-default with explicit allowlist
-      # for read + orchestration operations. No tmux deny commands (no tmux in container).
+      # The coordinator and plan agents are read-only (write/edit tools disabled,
+      # deny-by-default bash). The build agent has full write access with an
+      # ask-default bash, matching host worker permissions.
       coordinatorContainerOpencodeJson = {
         "$schema" = "https://opencode.ai/opencode.json";
         autoupdate = false;
