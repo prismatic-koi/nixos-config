@@ -363,18 +363,15 @@
         anthropic = [
           # use existing Claude Code credentials (via claude login OAuth)
           # no separate proxy or API key needed
-          # "opencode-claude-auth@latest"
-          "./plugins/opencode-claude-auth"
+          "opencode-claude-auth@latest"
         ];
         anthropic-opus = [
-          # "opencode-claude-auth@latest"
-          "./plugins/opencode-claude-auth"
+          "opencode-claude-auth@latest"
         ];
         # gemini-hybrid uses both Anthropic (Opus primary) and Google (Gemini secondary).
         # Both auth plugins are needed; they are both loaded globally anyway.
         gemini-hybrid = [
-          # "opencode-claude-auth@latest"
-          "./plugins/opencode-claude-auth"
+          "opencode-claude-auth@latest"
 
         ];
         github-copilot = [ ];
@@ -483,11 +480,10 @@
         "google"
       ];
 
-      # Plugins for containers: claude-auth only (no gemini-auth noise).
       # Relative paths resolve from the opencode.json config file location
       # (/root/.config/opencode/) where the plugins/ directory is mounted.
       containerPlugins = [
-        "./plugins/opencode-claude-auth"
+        "opencode-claude-auth@latest"
         "./plugins/prism-hooks.ts"
       ];
 
@@ -918,6 +914,7 @@
                 # alternative provider regardless of which provider is the primary.
                 # It does not conflict with the provider-specific auth in authPlugins.
                 "opencode-gemini-auth@latest"
+                "opencode-claude-auth@latest"
                 # tmux window status colours based on agent state
                 "./plugins/prism-hooks"
               ]
