@@ -9,12 +9,14 @@
 //   - Already-existing sessions are skipped (idempotent)
 //   - Sessions with missing/inaccessible worktrees are skipped and marked ended
 //     in the DB, not left as zombies
+//   - Container-mode sessions have ConfigContent populated from profiles.json
 //
 // All tests use an isolated tmux server (cmdTestServer) and an isolated DB
 // (SetTestDBPath) so they do not touch the live environment.
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +36,26 @@ func withRestoreConfig(t *testing.T, cfg config.Config) {
 	prev := loadRestoreConfig
 	loadRestoreConfig = func() config.Config { return cfg }
 	t.Cleanup(func() { loadRestoreConfig = prev })
+}
+
+// withRestoreProfiles overrides loadRestoreProfiles for the duration of the
+// test and restores the previous value on cleanup. Pass nil to simulate a
+// missing or unreadable profiles.json.
+func withRestoreProfiles(t *testing.T, pf *config.ProfilesFile, loadErr error) {
+	t.Helper()
+	prev := loadRestoreProfiles
+	loadRestoreProfiles = func() (*config.ProfilesFile, error) { return pf, loadErr }
+	t.Cleanup(func() { loadRestoreProfiles = prev })
+}
+
+// withCreateSessionHook installs onRestoreSessionCreate for the duration of the
+// test and restores it to nil on cleanup. The hook is called with the opts
+// snapshot just before session.Create is invoked inside restoreProjectSession.
+func withCreateSessionHook(t *testing.T, fn func(opts session.Opts)) {
+	t.Helper()
+	prev := onRestoreSessionCreate
+	onRestoreSessionCreate = fn
+	t.Cleanup(func() { onRestoreSessionCreate = prev })
 }
 
 // agentPaneStartCmd reads #{pane_start_command} from the agent window (window 1)
@@ -649,5 +671,164 @@ func TestRestoreSession_KillsStaleSidecarPID(t *testing.T) {
 	// Sanity: the session should have been created.
 	if !s.hasSession(sessionName) {
 		t.Errorf("session %q was not created", sessionName)
+	}
+}
+
+// fakeProfilesFile returns a *config.ProfilesFile with known worker and
+// coordinator container config blobs for use in container-mode tests.
+func fakeProfilesFile() *config.ProfilesFile {
+	return &config.ProfilesFile{
+		ContainerWorkerConfig:      `{"model":"worker-model"}`,
+		ContainerCoordinatorConfig: `{"model":"coordinator-model"}`,
+	}
+}
+
+// TestRestoreSession_ContainerMode_WorkerConfigContent verifies that when
+// cfg.ContainerMode is true and profiles.json contains a worker config blob,
+// restoreProjectSession populates opts.ConfigContent with the worker blob for
+// a non-main worktree directory (DefaultAgent returns "worker").
+//
+// This is the AC regression guard for restore: ConfigContent must flow from
+// profiles.json through opts into session.Create (and on to StartSidecarWithOpts
+// as --config-content) so the container runs with its role identity locked.
+func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	pluginPath := "/fake/plugin/path/prism-hooks.ts"
+	withRestoreConfig(t, config.Config{
+		ContainerMode:     true,
+		SidecarPluginPath: pluginPath,
+	})
+
+	// Inject a fake profiles file so tests do not require a real profiles.json.
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	// Use a non-main worktree directory so DefaultAgent returns "worker".
+	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@feature"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	// Capture the opts passed to session.Create via the test hook.
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// The worker blob must be in ConfigContent.
+	if capturedOpts.ConfigContent != pf.ContainerWorkerConfig {
+		t.Errorf("opts.ConfigContent = %q, want %q (worker blob)",
+			capturedOpts.ConfigContent, pf.ContainerWorkerConfig)
+	}
+}
+
+// TestRestoreSession_ContainerMode_CoordinatorConfigContent verifies that the
+// coordinator blob is selected when the worktree directory is named "main"
+// (DefaultAgent returns "coordinator" for directories whose base is "main").
+func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	withRestoreConfig(t, config.Config{
+		ContainerMode: true,
+	})
+
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	// "main" as the base name causes DefaultAgent to return "coordinator".
+	worktreeDir := filepath.Join(t.TempDir(), "main")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@main"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// The coordinator blob must be in ConfigContent.
+	if capturedOpts.ConfigContent != pf.ContainerCoordinatorConfig {
+		t.Errorf("opts.ConfigContent = %q, want %q (coordinator blob)",
+			capturedOpts.ConfigContent, pf.ContainerCoordinatorConfig)
+	}
+}
+
+// TestRestoreSession_ContainerMode_ProfilesError verifies that a profiles.json
+// load error is non-fatal for restore: the session is still created and
+// opts.ConfigContent is left empty (no injection), rather than aborting the
+// entire restore run.
+func TestRestoreSession_ContainerMode_ProfilesError(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	withRestoreConfig(t, config.Config{
+		ContainerMode: true,
+	})
+
+	// Simulate a missing/unreadable profiles.json.
+	withRestoreProfiles(t, nil, fmt.Errorf("profiles: not found"))
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@profiles-error"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	// restoreSession must NOT return an error — the profiles load failure is
+	// logged to stderr but must not abort the session recreation.
+	if err := restoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession returned error on profiles load failure: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	// The session must still have been created.
+	if !s.hasSession(sessionName) {
+		t.Errorf("session %q was not created despite profiles error (should be non-fatal)", sessionName)
+	}
+
+	// ConfigContent must be empty — no injection when profiles are unavailable.
+	if capturedOpts.ConfigContent != "" {
+		t.Errorf("opts.ConfigContent = %q, want empty (profiles load failed — injection must be skipped)",
+			capturedOpts.ConfigContent)
 	}
 }
