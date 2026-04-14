@@ -529,6 +529,7 @@
           edit = "allow";
           webfetch = "allow";
           bash = containerWorkerBashCommands;
+          external_directory = "allow"; # safe because inside container
         };
         plugin = containerPlugins;
         provider = providerSettings;
@@ -579,7 +580,42 @@
               patch = false;
             };
             permission = {
-              bash = containerCoordinatorBashCommands;
+              bash = {
+                # Default deny everything else for plan agent (MUST be first - last match wins)
+                "*" = "deny";
+              }
+              // readOnlyBashCommands
+              // tmuxDenyCommands;
+            };
+          };
+          build = {
+            mode = "primary";
+            color = config.theme.red;
+            permission = {
+              edit = "allow";
+              webfetch = "allow";
+              # Atlassian MCP permissions
+              # fallback to ask
+              "atlasian_*" = "ask";
+              # Read operations (allow)
+              "atlasian_atlassianUserInfo" = "allow";
+              "atlasian_get*" = "allow";
+              "atlasian_lookup*" = "allow";
+              "atlasian_search*" = "allow";
+              "atlasian_fetch" = "allow";
+              "atlasian_fetchAtlassian" = "allow";
+              # Write operations (ask)
+              "atlasian_create*" = "ask";
+              "atlasian_edit*" = "ask";
+              "atlasian_update*" = "ask";
+              "atlasian_add*" = "ask";
+              "atlasian_transition*" = "ask";
+              bash = {
+                # default for any command not listed is ask (MUST be first - last match wins)
+                "*" = "ask";
+              }
+              // readOnlyBashCommands
+              // writeBashCommands;
             };
           };
           explore = { };
@@ -593,6 +629,7 @@
           edit = "deny";
           webfetch = "allow";
           bash = containerCoordinatorBashCommands;
+          external_directory = "allow"; # safe because inside container
         };
         plugin = containerPlugins;
         provider = providerSettings;
