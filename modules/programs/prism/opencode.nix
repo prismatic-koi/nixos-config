@@ -525,18 +525,41 @@
             disable = true;
           };
         };
+        # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
+        # not processed by the module system. Use optionalAttrs so the key is
+        # absent entirely on Linux rather than emitting a malformed _type object.
+        mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
+          atlasian = {
+            type = "local";
+            enabled = true;
+            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            environment = {
+              ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+            };
+          };
+        };
         permission = {
           edit = "allow";
           webfetch = "allow";
+          # Atlassian MCP permissions — workers read freely, no writes
+          "atlasian_*" = "deny";
+          "atlasian_atlassianUserInfo" = "allow";
+          "atlasian_get*" = "allow";
+          "atlasian_lookup*" = "allow";
+          "atlasian_search*" = "allow";
+          "atlasian_fetch" = "allow";
+          "atlasian_fetchAtlassian" = "allow";
           bash = containerWorkerBashCommands;
+          external_directory = "allow"; # safe because inside container
         };
         plugin = containerPlugins;
         provider = providerSettings;
       };
 
       # Coordinator container opencode.json blob.
-      # Write/edit tools disabled; bash is deny-by-default with explicit allowlist
-      # for read + orchestration operations. No tmux deny commands (no tmux in container).
+      # The coordinator and plan agents are read-only (write/edit tools disabled,
+      # deny-by-default bash). The build agent has full write access with an
+      # ask-default bash, matching host worker permissions.
       coordinatorContainerOpencodeJson = {
         "$schema" = "https://opencode.ai/opencode.json";
         autoupdate = false;
@@ -579,7 +602,54 @@
               patch = false;
             };
             permission = {
-              bash = containerCoordinatorBashCommands;
+              bash = {
+                # Default deny everything else for plan agent (MUST be first - last match wins)
+                "*" = "deny";
+              }
+              // readOnlyBashCommands
+              // tmuxDenyCommands;
+            };
+          };
+          build = {
+            description = "Implementation agent with full write access";
+            mode = "primary";
+            color = config.theme.red;
+            # No tools block: all tools enabled by default (unlike coordinator/plan
+            # which explicitly disable write/edit). Full access is intentional here.
+            permission = {
+              edit = "allow";
+              webfetch = "allow";
+              # Atlassian MCP permissions — same ask set as host coordinator
+              "atlasian_*" = "ask";
+              "atlasian_atlassianUserInfo" = "allow";
+              "atlasian_get*" = "allow";
+              "atlasian_lookup*" = "allow";
+              "atlasian_search*" = "allow";
+              "atlasian_fetch" = "allow";
+              "atlasian_fetchAtlassian" = "allow";
+              "atlasian_create*" = "ask";
+              "atlasian_edit*" = "ask";
+              "atlasian_update*" = "ask";
+              "atlasian_add*" = "ask";
+              "atlasian_transition*" = "ask";
+              bash = {
+                # default for any command not listed is ask (MUST be first - last match wins)
+                "*" = "ask";
+              }
+              // readOnlyBashCommands
+              // writeBashCommands
+              // {
+                # Belt-and-suspenders: explicitly deny PR merge even though writeBashCommands
+                # already includes these denies — merging is a coordinator responsibility.
+                "gh pr merge" = "deny";
+                "gh pr merge *" = "deny";
+                # Spawning agents is a coordinator responsibility, never a worker's (#557).
+                "prism spawn" = "deny";
+                "prism spawn *" = "deny";
+                "prism pr" = "deny";
+                "prism pr *" = "deny";
+              }
+              // tmuxDenyCommands;
             };
           };
           explore = { };
@@ -589,10 +659,37 @@
           summary = { };
           compaction = { };
         };
+        # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
+        # not processed by the module system. Use optionalAttrs so the key is
+        # absent entirely on Linux rather than emitting a malformed _type object.
+        mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
+          atlasian = {
+            type = "local";
+            enabled = true;
+            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            environment = {
+              ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+            };
+          };
+        };
         permission = {
           edit = "deny";
           webfetch = "allow";
+          # Atlassian MCP permissions — same ask set as host coordinator
+          "atlasian_*" = "ask";
+          "atlasian_atlassianUserInfo" = "allow";
+          "atlasian_get*" = "allow";
+          "atlasian_lookup*" = "allow";
+          "atlasian_search*" = "allow";
+          "atlasian_fetch" = "allow";
+          "atlasian_fetchAtlassian" = "allow";
+          "atlasian_create*" = "ask";
+          "atlasian_edit*" = "ask";
+          "atlasian_update*" = "ask";
+          "atlasian_add*" = "ask";
+          "atlasian_transition*" = "ask";
           bash = containerCoordinatorBashCommands;
+          external_directory = "allow"; # safe because inside container
         };
         plugin = containerPlugins;
         provider = providerSettings;
@@ -814,11 +911,6 @@
                 }
                 // readOnlyBashCommands
                 // writeBashCommands
-                // {
-                  # deny PR merge — merging is a coordinator responsibility, never a worker's
-                  "gh pr merge" = "deny";
-                  "gh pr merge *" = "deny";
-                }
                 // tmuxDenyCommands;
               };
               plugin = [
