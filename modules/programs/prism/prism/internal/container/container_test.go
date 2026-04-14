@@ -1023,6 +1023,106 @@ func TestBuildRunArgs_PluginMountedSeparately(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
+	// Verifies that the config mount block uses an explicit allowlist:
+	// - Allowlisted entries present on disk ARE mounted read-only.
+	// - Bun ecosystem files (package.json, bun.lock, node_modules/) are NOT mounted.
+	// - opencode.json is NOT mounted even when present on disk.
+	//
+	// Previous tests (TestBuildRunArgs_OpencodeJsonSkippedInItemByItemMount,
+	// TestBuildRunArgs_NoSingleWholeDirConfigMount) ran against an empty home dir,
+	// so filepath.EvalSymlinks always failed and the config block produced zero
+	// mount args — the allowlist was never actually exercised. This test populates
+	// the config dir so the allowlist logic is fully covered.
+
+	fakeHome := t.TempDir()
+	configDir := filepath.Join(fakeHome, ".config", "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll configDir: %v", err)
+	}
+
+	// Allowlisted files/dirs that should be mounted.
+	allowlisted := []struct {
+		name  string
+		isDir bool
+	}{
+		{"AGENTS.md", false},
+		{"tui.json", false},
+		{"mcp-atlassian-slim-proxy.mjs", false},
+		{"agents", true},
+	}
+	for _, e := range allowlisted {
+		p := filepath.Join(configDir, e.name)
+		if e.isDir {
+			if err := os.MkdirAll(p, 0o755); err != nil {
+				t.Fatalf("MkdirAll %s: %v", e.name, err)
+			}
+		} else {
+			if err := os.WriteFile(p, []byte("stub"), 0o644); err != nil {
+				t.Fatalf("WriteFile %s: %v", e.name, err)
+			}
+		}
+	}
+
+	// Files that must NOT be mounted.
+	excluded := []string{"package.json", "bun.lock", "opencode.json"}
+	for _, name := range excluded {
+		if err := os.WriteFile(filepath.Join(configDir, name), []byte("stub"), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	// node_modules/ as a directory must also not be mounted.
+	if err := os.MkdirAll(filepath.Join(configDir, "node_modules"), 0o755); err != nil {
+		t.Fatalf("MkdirAll node_modules: %v", err)
+	}
+
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+	})
+	args := m.buildRunArgs()
+
+	// Collect all mount/volume values for inspection.
+	var mountValues []string
+	for i, arg := range args {
+		if (arg == "--volume" || arg == "--mount") && i+1 < len(args) {
+			mountValues = append(mountValues, args[i+1])
+		}
+	}
+
+	// Assert allowlisted entries ARE present (as :ro mounts).
+	for _, e := range allowlisted {
+		found := false
+		containerPath := "/root/.config/opencode/" + e.name
+		for _, v := range mountValues {
+			if strings.Contains(v, containerPath) {
+				if !strings.Contains(v, ":ro") && !strings.Contains(v, ",ro") {
+					t.Errorf("mount for %q is not read-only: %q", e.name, v)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("allowlisted entry %q was not mounted; mount values: %v", e.name, mountValues)
+		}
+	}
+
+	// Assert excluded entries are NOT present.
+	excluded = append(excluded, "node_modules")
+	for _, name := range excluded {
+		containerPath := "/root/.config/opencode/" + name
+		for _, v := range mountValues {
+			if strings.Contains(v, containerPath) {
+				t.Errorf("excluded entry %q must not be mounted, but found: %q", name, v)
+			}
+		}
+	}
+}
+
 func TestRedactArgs_MultipleEnvVarsAllRedacted(t *testing.T) {
 	args := []string{
 		"run",
