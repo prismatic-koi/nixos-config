@@ -322,8 +322,8 @@ func TestBuildRunArgs_DetachedFlag(t *testing.T) {
 }
 
 func TestBuildRunArgs_PluginsDirMountedViaAllowlist(t *testing.T) {
-	// The plugins/ directory is now mounted via the config allowlist (as a
-	// whole directory), not as an individual file via PluginHostPath.
+	// The plugins/ directory is mounted read-write (not via the ro allowlist)
+	// so plugin packages can write back runtime state.
 	fakeHome := t.TempDir()
 	pluginsDir := filepath.Join(fakeHome, ".config", "opencode", "plugins")
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
@@ -346,15 +346,16 @@ func TestBuildRunArgs_PluginsDirMountedViaAllowlist(t *testing.T) {
 			v := args[i+1]
 			if strings.Contains(v, "dst=/root/.config/opencode/plugins") {
 				found = true
-				if !strings.Contains(v, ",ro") {
-					t.Errorf("plugins dir mount %q should be read-only (,ro)", v)
+				// Must be read-write — plugin packages write runtime state.
+				if strings.Contains(v, ",ro") {
+					t.Errorf("plugins dir mount %q must be read-write (no ,ro)", v)
 				}
 				break
 			}
 		}
 	}
 	if !found {
-		t.Errorf("plugins dir not mounted via allowlist; args: %v", args)
+		t.Errorf("plugins dir not mounted; args: %v", args)
 	}
 }
 
@@ -984,8 +985,8 @@ func TestBuildRunArgs_NoSingleWholeDirConfigMount(t *testing.T) {
 }
 
 func TestBuildRunArgs_PluginsWholeDir(t *testing.T) {
-	// The whole plugins/ directory is mounted via the allowlist when it exists.
-	// PluginHostPath is no longer used for mounting.
+	// The whole plugins/ directory is mounted read-write (not via the ro
+	// allowlist) so that plugin packages can write back runtime state.
 	fakeHome := t.TempDir()
 	pluginsDir := filepath.Join(fakeHome, ".config", "opencode", "plugins")
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
@@ -1006,21 +1007,23 @@ func TestBuildRunArgs_PluginsWholeDir(t *testing.T) {
 			v := args[i+1]
 			if strings.Contains(v, "dst=/root/.config/opencode/plugins") {
 				foundDir = true
-				if !strings.Contains(v, ",ro") {
-					t.Errorf("plugins dir mount %q must be read-only", v)
+				// Must NOT be read-only — plugins write runtime state.
+				if strings.Contains(v, ",ro") {
+					t.Errorf("plugins dir mount %q must be read-write (no ,ro)", v)
 				}
 				break
 			}
 		}
 	}
 	if !foundDir {
-		t.Errorf("plugins dir not mounted via allowlist; args: %v", args)
+		t.Errorf("plugins dir not mounted; args: %v", args)
 	}
 }
 
 func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 	// Verifies that the config mount block uses an explicit allowlist:
-	// - All 8 allowlisted entries present on disk ARE mounted read-only.
+	// - All 7 allowlisted entries present on disk ARE mounted read-only.
+	// - plugins/ is mounted separately as read-write (not in the ro allowlist).
 	// - Bun ecosystem files (package.json, bun.lock, package-lock.json,
 	//   node_modules/) are NOT mounted.
 	// - opencode.json is NOT mounted even when present on disk.
@@ -1037,7 +1040,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		t.Fatalf("MkdirAll configDir: %v", err)
 	}
 
-	// Allowlisted files/dirs that should be mounted (all 8 entries from configAllowlist).
+	// Allowlisted files/dirs that should be mounted read-only (7 entries).
 	allowlisted := []struct {
 		name  string
 		isDir bool
@@ -1047,7 +1050,6 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		{"mcp-atlassian-slim-proxy.mjs", false},
 		{".gitignore", false},
 		{"agents", true},
-		{"plugins", true},
 		{"skills", true},
 		{"command", true},
 	}
@@ -1062,6 +1064,11 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 				t.Fatalf("WriteFile %s: %v", e.name, err)
 			}
 		}
+	}
+
+	// plugins/ should be mounted read-write separately.
+	if err := os.MkdirAll(filepath.Join(configDir, "plugins"), 0o755); err != nil {
+		t.Fatalf("MkdirAll plugins: %v", err)
 	}
 
 	// Files that must NOT be mounted — bun ecosystem files and opencode.json.
@@ -1093,7 +1100,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		}
 	}
 
-	// Assert allowlisted entries ARE present (as :ro mounts).
+	// Assert allowlisted entries ARE present as read-only mounts.
 	for _, e := range allowlisted {
 		found := false
 		containerPath := "/root/.config/opencode/" + e.name
@@ -1109,6 +1116,21 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		if !found {
 			t.Errorf("allowlisted entry %q was not mounted; mount values: %v", e.name, mountValues)
 		}
+	}
+
+	// Assert plugins/ IS mounted and is NOT read-only.
+	foundPlugins := false
+	for _, v := range mountValues {
+		if strings.Contains(v, "/root/.config/opencode/plugins") {
+			foundPlugins = true
+			if strings.Contains(v, ":ro") || strings.Contains(v, ",ro") {
+				t.Errorf("plugins mount %q must be read-write (no :ro/,ro)", v)
+			}
+			break
+		}
+	}
+	if !foundPlugins {
+		t.Errorf("plugins dir not mounted; mount values: %v", mountValues)
 	}
 
 	// Assert excluded entries are NOT present.

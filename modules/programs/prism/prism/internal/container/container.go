@@ -606,6 +606,10 @@ func (m *Manager) buildRunArgs() []string {
 	//
 	// Excluded intentionally:
 	//   - opencode.json  — superseded by OPENCODE_CONFIG_CONTENT env var
+	//   - plugins/       — mounted separately below as read-write; npm plugin
+	//                      packages (e.g. opencode-claude-auth) write to their
+	//                      own directories at runtime (token refresh etc.) so
+	//                      read-only would cause EROFS errors.
 	//   - package.json, bun.lock, package-lock.json, node_modules/ — bun
 	//                      ecosystem files the container manages itself
 	//
@@ -616,7 +620,6 @@ func (m *Manager) buildRunArgs() []string {
 	configAllowlist := []string{
 		"AGENTS.md",
 		"agents",
-		"plugins",
 		"skills",
 		"command",
 		"tui.json",
@@ -637,6 +640,16 @@ func (m *Manager) buildRunArgs() []string {
 		} else {
 			args = append(args, "--volume", resolved+":"+containerPath+":ro")
 		}
+	}
+
+	// plugins/ — mounted read-write separately from the ro allowlist above.
+	// Plugin packages (e.g. opencode-claude-auth) write back refreshed tokens
+	// and other runtime state into their own directories, so read-only would
+	// cause EROFS errors. Symlinks are resolved so Nix store paths work.
+	pluginsHostPath := filepath.Join(opencodeConfigDir, "plugins")
+	if resolvedPlugins, err := filepath.EvalSymlinks(pluginsHostPath); err == nil {
+		args = append(args, "--mount",
+			"type=bind,src="+resolvedPlugins+",dst=/root/.config/opencode/plugins")
 	}
 
 	// Mount individual SSH keys and a generated config for git push/fetch and
