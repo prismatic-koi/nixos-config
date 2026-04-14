@@ -647,9 +647,8 @@
                 "prism spawn *" = "deny";
                 "prism pr" = "deny";
                 "prism pr *" = "deny";
-                # No tmuxDenyCommands: tmux is not present in the coordinator container,
-                # so those deny entries would be inert. Omission is intentional.
-              };
+              }
+              // tmuxDenyCommands;
             };
           };
           explore = { };
