@@ -595,41 +595,47 @@ func (m *Manager) buildRunArgs() []string {
 		)
 	}
 
-	// Mount the host opencode config directory item-by-item into
-	// /root/.config/opencode so that agents/, skills/, command/, tui.json,
-	// plugins/, and other assets are available inside the container.
+	// Mount an explicit allowlist of host opencode config entries into
+	// /root/.config/opencode inside the container.
 	//
-	// opencode.json is intentionally skipped — agent identity and permissions
-	// are set authoritatively via OPENCODE_CONFIG_CONTENT (injected below),
-	// which takes precedence at level 6 over any on-disk opencode.json.
+	// An allowlist (not a denylist) is used deliberately: the bun runtime
+	// inside the container writes to package.json and related files at
+	// request time, so mounting those read-only causes EROFS errors and
+	// HTTP 500 responses that break the health check. Only mount what the
+	// container actually needs.
 	//
-	// For each entry:
+	// Excluded intentionally:
+	//   - opencode.json  — superseded by OPENCODE_CONFIG_CONTENT env var
+	//   - plugins/       — mounted separately via PluginHostPath
+	//   - package.json, bun.lock, package-lock.json, node_modules/ — bun
+	//                      ecosystem files the container manages itself
+	//
+	// For each entry that exists on the host:
 	//   - Symlinks → resolve to real Nix store path and mount that
-	//   - Real entries → mount directly
 	//   - Directories → use --mount type=bind (podman creates dest automatically)
 	//   - Regular files → use --volume
-	if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
-		for _, entry := range entries {
-			// Skip plugins — mounted separately via PluginHostPath.
-			if entry.Name() == "plugins" {
-				continue
-			}
-			// Skip opencode.json — superseded by OPENCODE_CONFIG_CONTENT.
-			if entry.Name() == "opencode.json" {
-				continue
-			}
-			hostPath := filepath.Join(opencodeConfigDir, entry.Name())
-			resolved, err := filepath.EvalSymlinks(hostPath)
-			if err != nil {
-				continue
-			}
-			containerPath := "/root/.config/opencode/" + entry.Name()
-			if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
-				args = append(args, "--mount",
-					"type=bind,src="+resolved+",dst="+containerPath+",ro")
-			} else {
-				args = append(args, "--volume", resolved+":"+containerPath+":ro")
-			}
+	configAllowlist := []string{
+		"AGENTS.md",
+		"agents",
+		"skills",
+		"command",
+		"tui.json",
+		".gitignore",
+		"mcp-atlassian-slim-proxy.mjs",
+	}
+	for _, name := range configAllowlist {
+		hostPath := filepath.Join(opencodeConfigDir, name)
+		resolved, err := filepath.EvalSymlinks(hostPath)
+		if err != nil {
+			// Entry does not exist or symlink is dangling — skip silently.
+			continue
+		}
+		containerPath := "/root/.config/opencode/" + name
+		if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
+			args = append(args, "--mount",
+				"type=bind,src="+resolved+",dst="+containerPath+",ro")
+		} else {
+			args = append(args, "--volume", resolved+":"+containerPath+":ro")
 		}
 	}
 
