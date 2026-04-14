@@ -74,10 +74,7 @@
 
   imports = [
     ./container-image.nix
-    # container-tokens.nix is imported after the user adds the 4 GitHub PAT
-    # values to modules/programs/secrets/github.sops.yaml (see PR #618).
-    # Uncomment this import once the sops file has been updated.
-    # ./container-tokens.nix
+    ./container-tokens.nix
     ./neovim
     ./opencode.nix
     ./pi.nix
