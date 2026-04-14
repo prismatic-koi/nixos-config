@@ -69,29 +69,12 @@
         internal = true;
         description = "Internal computed values, do not set directly";
       };
-
-      # Nix store paths for the role-specific opencode config directories built
-      # by container-opencode-config.nix. Empty string when opencode is disabled.
-      # Exposed via prism-tui.nix as container_worker_config /
-      # container_coordinator_config in the prism JSON config.
-      containerWorkerConfigPath = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        internal = true;
-        description = "Nix store path to the pre-built worker opencode config directory";
-      };
-      containerCoordinatorConfigPath = lib.mkOption {
-        type = lib.types.str;
-        default = "";
-        internal = true;
-        description = "Nix store path to the pre-built coordinator opencode config directory";
-      };
     };
   };
 
   imports = [
     ./container-image.nix
-    ./container-opencode-config.nix
+    ./container-tokens.nix
     ./neovim
     ./opencode.nix
     ./pi.nix

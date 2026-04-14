@@ -115,6 +115,11 @@
             { model = roleCfg.model; } // (lib.optionalAttrs (roleCfg ? variant) { variant = roleCfg.variant; })
           ) profileEntry
         ) config.nx.programs.prism.profiles.data.profiles;
+        # Container role configs — full opencode.json blobs injected as
+        # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
+        # opencode.jsonc can override agent identity or permissions.
+        container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
+        container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
       };
 
       applyProfile =

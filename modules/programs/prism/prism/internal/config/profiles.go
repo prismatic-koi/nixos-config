@@ -60,6 +60,36 @@ type ProfilesFile struct {
 	Default     string                  `json:"default"`
 	RoleMapping map[string][]string     `json:"role_mapping"`
 	Profiles    map[string]ProfileEntry `json:"profiles"`
+	// ContainerWorkerConfig is the full opencode.json blob (serialised JSON
+	// string) to inject as OPENCODE_CONFIG_CONTENT for worker containers.
+	// Written by Nix under container_worker_config.
+	ContainerWorkerConfig string `json:"container_worker_config"`
+	// ContainerCoordinatorConfig is the full opencode.json blob (serialised
+	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for coordinator
+	// containers. Written by Nix under container_coordinator_config.
+	ContainerCoordinatorConfig string `json:"container_coordinator_config"`
+}
+
+// ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
+// given agent role ("worker" or "coordinator"). Returns ("", nil) when pf is
+// nil (no profiles file loaded) or when the role is not a recognised container
+// role (only "worker" and "coordinator" have dedicated container configs;
+// subagent names like "plan", "review", etc. are valid opencode agents but do
+// not have their own container configs — they inherit from the session default).
+func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
+	if pf == nil {
+		return "", nil
+	}
+	switch role {
+	case "worker":
+		return pf.ContainerWorkerConfig, nil
+	case "coordinator":
+		return pf.ContainerCoordinatorConfig, nil
+	default:
+		// Not a container-level role (e.g. "plan", "review", "explore").
+		// Return empty string — no config injection — without error.
+		return "", nil
+	}
 }
 
 // profilesFilePath returns the path to profiles.json.

@@ -82,18 +82,6 @@ type Config struct {
 	// read-only into the container's opencode plugin directory.
 	PluginHostPath string
 
-	// ContainerWorkerConfigPath is the Nix store path to the pre-built worker
-	// opencode config directory. When non-empty and AgentRole is not
-	// "coordinator", this directory is bind-mounted at /root/.config/opencode
-	// (read-only) instead of mirroring the host config item-by-item.
-	ContainerWorkerConfigPath string
-
-	// ContainerCoordinatorConfigPath is the Nix store path to the pre-built
-	// coordinator opencode config directory. When non-empty and AgentRole is
-	// "coordinator", this directory is bind-mounted at /root/.config/opencode
-	// (read-only) instead of mirroring the host config item-by-item.
-	ContainerCoordinatorConfigPath string
-
 	// BareRoot is the absolute path to the bare git repo root on the host
 	// (the directory containing .bare/). When set, the bare repo and the
 	// worktree's private git state are mounted into the container so that
@@ -513,9 +501,10 @@ func (m *Manager) buildRunArgs() []string {
 	worktreeMount := cfg.Worktree + ":/workspace:Z"
 	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
 		":/root/.local/share/opencode:Z"
-	// opencodeConfigDir is the host's opencode config directory, used only in
-	// the legacy fallback path when role-specific config derivation paths are
-	// not configured (ContainerWorkerConfigPath / ContainerCoordinatorConfigPath).
+	// opencodeConfigDir is the host's opencode config directory, mounted
+	// item-by-item so that agents/ files, skills/, etc. are available inside
+	// the container. opencode.json is NOT mounted (it is superseded by
+	// OPENCODE_CONFIG_CONTENT injected via --env below).
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 
 	// opencode cache — mount the whole directory so plugins, models.json,
@@ -606,65 +595,40 @@ func (m *Manager) buildRunArgs() []string {
 		)
 	}
 
-	// Mount the opencode config directory into /root/.config/opencode.
+	// Mount the host opencode config directory item-by-item into
+	// /root/.config/opencode so that agents/, skills/, command/, tui.json,
+	// plugins/, and other assets are available inside the container.
 	//
-	// Preferred path: use the role-appropriate pre-built Nix derivation as a
-	// single read-only bind mount. This avoids symlink-resolution complexity
-	// and ensures worker/coordinator containers get distinct, minimal configs.
+	// opencode.json is intentionally skipped — agent identity and permissions
+	// are set authoritatively via OPENCODE_CONFIG_CONTENT (injected below),
+	// which takes precedence at level 6 over any on-disk opencode.json.
 	//
-	// Fallback (backward compat): when the role-appropriate config path is
-	// empty (old config without the new keys, or opencode.enable = false),
-	// mirror the host config item-by-item, resolving Nix store symlinks so
-	// they are accessible inside the container.
-	//
-	// AC-18: if either role-specific path is absent, fall back. In particular:
-	//   - coordinator role + empty coordinator path → fallback (not worker path)
-	//   - worker/unknown role + empty worker path → fallback
-	var roleConfigPath string
-	if cfg.AgentRole == "coordinator" {
-		roleConfigPath = cfg.ContainerCoordinatorConfigPath
-		// empty → stays "" → legacy fallback
-	} else {
-		roleConfigPath = cfg.ContainerWorkerConfigPath
-		// empty → stays "" → legacy fallback
-	}
-
-	if roleConfigPath != "" {
-		// Single bind mount of the pre-built config derivation (read-only).
-		args = append(args, "--mount",
-			"type=bind,src="+roleConfigPath+",dst=/root/.config/opencode,ro")
-	} else {
-		// Legacy fallback: mount each ~/.config/opencode entry individually,
-		// resolving Nix store symlinks so they are accessible inside the container.
-		// The whole-dir mount is intentionally omitted — it would create a
-		// read-only container directory that prevents --mount from adding
-		// resolved symlink targets inside it.
-		//
-		// For each entry:
-		//   - Symlinks → resolve to real Nix store path and mount that
-		//   - Real entries → mount directly
-		//   - Directories → use --mount type=bind (podman creates dest automatically)
-		//   - Regular files → use --volume
-		if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
-			for _, entry := range entries {
-				// Skip the plugins directory — it contains symlinks into the Nix
-				// store that are not available inside the container. Individual
-				// plugin files are mounted separately below (see PluginHostPath).
-				if entry.Name() == "plugins" {
-					continue
-				}
-				hostPath := filepath.Join(opencodeConfigDir, entry.Name())
-				resolved, err := filepath.EvalSymlinks(hostPath)
-				if err != nil {
-					continue
-				}
-				containerPath := "/root/.config/opencode/" + entry.Name()
-				if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
-					args = append(args, "--mount",
-						"type=bind,src="+resolved+",dst="+containerPath+",ro")
-				} else {
-					args = append(args, "--volume", resolved+":"+containerPath+":ro")
-				}
+	// For each entry:
+	//   - Symlinks → resolve to real Nix store path and mount that
+	//   - Real entries → mount directly
+	//   - Directories → use --mount type=bind (podman creates dest automatically)
+	//   - Regular files → use --volume
+	if entries, err := os.ReadDir(opencodeConfigDir); err == nil {
+		for _, entry := range entries {
+			// Skip plugins — mounted separately via PluginHostPath.
+			if entry.Name() == "plugins" {
+				continue
+			}
+			// Skip opencode.json — superseded by OPENCODE_CONFIG_CONTENT.
+			if entry.Name() == "opencode.json" {
+				continue
+			}
+			hostPath := filepath.Join(opencodeConfigDir, entry.Name())
+			resolved, err := filepath.EvalSymlinks(hostPath)
+			if err != nil {
+				continue
+			}
+			containerPath := "/root/.config/opencode/" + entry.Name()
+			if fi, err := os.Stat(resolved); err == nil && fi.IsDir() {
+				args = append(args, "--mount",
+					"type=bind,src="+resolved+",dst="+containerPath+",ro")
+			} else {
+				args = append(args, "--volume", resolved+":"+containerPath+":ro")
 			}
 		}
 	}
@@ -797,9 +761,74 @@ func (m *Manager) buildRunArgs() []string {
 	return args
 }
 
+// githubAccountFromBareRoot returns the GitHub account (organisation or user)
+// for the repo by reading the origin remote URL from the bare git dir.
+// Returns "" when the bare root is empty, git is unavailable, or the remote
+// URL does not match a github.com URL pattern.
+//
+// Supported URL formats:
+//
+//	git@github.com:<account>/<repo>.git   (SSH)
+//	https://github.com/<account>/<repo>   (HTTPS, with or without .git)
+func githubAccountFromBareRoot(bareRoot string) string {
+	if bareRoot == "" {
+		return ""
+	}
+	// The bare git dir lives at <bareRoot>/.bare — use --git-dir to run git
+	// against it directly without needing to be inside a worktree.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	cmd := exec.Command("git", "--git-dir", bareDir, "remote", "get-url", "origin")
+	out, err := cmd.Output()
+	if err != nil {
+		// Also try the bareRoot itself in case it IS the raw bare git dir.
+		cmd2 := exec.Command("git", "--git-dir", bareRoot, "remote", "get-url", "origin")
+		out, err = cmd2.Output()
+		if err != nil {
+			return ""
+		}
+	}
+	return githubAccountFromURL(strings.TrimSpace(string(out)))
+}
+
+// githubAccountFromURL parses a git remote URL and returns the GitHub account
+// (the path segment immediately after "github.com"). Returns "" if the URL is
+// not a recognisable github.com URL.
+func githubAccountFromURL(remoteURL string) string {
+	// SSH: git@github.com:<account>/<repo>[.git]
+	if strings.HasPrefix(remoteURL, "git@github.com:") {
+		rest := strings.TrimPrefix(remoteURL, "git@github.com:")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) >= 1 && parts[0] != "" {
+			return parts[0]
+		}
+	}
+	// HTTPS: https://github.com/<account>/<repo>[.git]
+	//        https://x-access-token:TOKEN@github.com/<account>/<repo>[.git]
+	if idx := strings.Index(remoteURL, "github.com/"); idx >= 0 {
+		rest := remoteURL[idx+len("github.com/"):]
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) >= 1 && parts[0] != "" {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
 // credentialEnvVars returns the environment variable assignments to inject into
 // the container based on the agent role and current host environment.
 // Only vars that are set on the host are forwarded — unset vars are skipped.
+//
+// GitHub token selection (4-PAT architecture):
+// The correct token is chosen based on the GitHub account (derived from the
+// repo's origin remote URL) and the agent role:
+//
+//	PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR   — prismatic-koi + coordinator
+//	PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER        — prismatic-koi + worker
+//	PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_COORDINATOR — thankyou-payroll + coordinator
+//	PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
+//
+// Falls back to host GITHUB_TOKEN if the specific token is not set
+// (supports host-mode, --host-mode spawns, and migration period).
 func (m *Manager) credentialEnvVars() []string {
 	var vars []string
 
@@ -819,23 +848,32 @@ func (m *Manager) credentialEnvVars() []string {
 		}
 	}
 
-	// GitHub token — scope differs by role (AC-11).
-	// Workers use PRISM_WORKER_GITHUB_TOKEN (read + PR scope).
-	// Coordinators use PRISM_COORDINATOR_GITHUB_TOKEN (broader merge scope).
-	// Both fall back to GITHUB_TOKEN if the role-specific var is unset.
-	switch m.cfg.AgentRole {
-	case "coordinator":
-		if tok := os.Getenv("PRISM_COORDINATOR_GITHUB_TOKEN"); tok != "" {
-			vars = append(vars, "GITHUB_TOKEN="+tok)
-		} else if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-			vars = append(vars, "GITHUB_TOKEN="+tok)
+	// GitHub token — 4-PAT architecture: account × role → specific token.
+	// Derive the account from the repo's git remote URL.
+	account := githubAccountFromBareRoot(m.cfg.BareRoot)
+	role := m.cfg.AgentRole
+
+	// Build the env var name: PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>
+	// where account is uppercased with hyphens replaced by underscores.
+	var tokenEnvVar string
+	if account != "" {
+		accountKey := strings.ToUpper(strings.ReplaceAll(account, "-", "_"))
+		roleKey := strings.ToUpper(role)
+		if roleKey == "WORKER" || roleKey == "COORDINATOR" {
+			tokenEnvVar = "PRISM_GITHUB_TOKEN_" + accountKey + "_" + roleKey
 		}
-	default: // worker and unknown roles
-		if tok := os.Getenv("PRISM_WORKER_GITHUB_TOKEN"); tok != "" {
+	}
+
+	// Try specific token first, then fall back to host GITHUB_TOKEN.
+	if tokenEnvVar != "" {
+		if tok := os.Getenv(tokenEnvVar); tok != "" {
 			vars = append(vars, "GITHUB_TOKEN="+tok)
-		} else if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
-			vars = append(vars, "GITHUB_TOKEN="+tok)
+			return vars
 		}
+	}
+	// Fallback: use host GITHUB_TOKEN (supports --host-mode and migration period).
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		vars = append(vars, "GITHUB_TOKEN="+tok)
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and

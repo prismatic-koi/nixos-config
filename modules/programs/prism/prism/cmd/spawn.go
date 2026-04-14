@@ -125,10 +125,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Resolve model profile into OPENCODE_CONFIG_CONTENT.
-	// Load the profiles file only when --profile is set (to produce good errors).
+	// Load the profiles file when container mode is active (carries container
+	// role configs) or when --profile is set (for model overrides).
 	var pf *config.ProfilesFile
-	if profileFlag != "" {
+	if effectiveContainerMode || profileFlag != "" {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
@@ -138,15 +138,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
 	if err != nil {
 		return err
-	}
-
-	opts := session.Opts{
-		Prompt:         promptFlag,
-		Agent:          agentFlag,
-		ConfigContent:  configContent,
-		Headless:       !fromKeybind && !attachFlag,
-		ContainerMode:  effectiveContainerMode,
-		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
 	// Resolve the bare repo root from the current pane path.
@@ -165,6 +156,43 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	worktreePath, err := git.CreateWorktree(bareRoot, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
+	}
+
+	// In container mode, inject the role-specific opencode.json blob as
+	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+	// project-level opencode.jsonc. This ensures agent identity is always
+	// determined by Nix config, not by the project file.
+	//
+	// effectiveRole is derived the same way the session uses: explicit --agent
+	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere.
+	// This must run after worktreePath is known so that DefaultAgent can inspect
+	// the directory name (e.g. "main").
+	if effectiveContainerMode && pf != nil {
+		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
+		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+		if roleErr != nil {
+			return roleErr
+		}
+		if roleConfig != "" {
+			// Role config supersedes profile/model overrides for identity &
+			// permissions; use it as the primary config content.
+			configContent = roleConfig
+		} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+			// worker and coordinator are container-level roles that must have a
+			// config blob; an empty result means the system config is stale.
+			fmt.Fprintf(os.Stderr, "[prism spawn] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+		}
+		// Other agent names (plan, review, explore, …) are subagents that
+		// don't have dedicated container blobs — empty result is expected.
+	}
+
+	opts := session.Opts{
+		Prompt:         promptFlag,
+		Agent:          agentFlag,
+		ConfigContent:  configContent,
+		Headless:       !fromKeybind && !attachFlag,
+		ContainerMode:  effectiveContainerMode,
+		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
 	if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
