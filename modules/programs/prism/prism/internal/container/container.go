@@ -606,7 +606,6 @@ func (m *Manager) buildRunArgs() []string {
 	//
 	// Excluded intentionally:
 	//   - opencode.json  — superseded by OPENCODE_CONFIG_CONTENT env var
-	//   - plugins/       — mounted separately via PluginHostPath
 	//   - package.json, bun.lock, package-lock.json, node_modules/ — bun
 	//                      ecosystem files the container manages itself
 	//
@@ -617,6 +616,7 @@ func (m *Manager) buildRunArgs() []string {
 	configAllowlist := []string{
 		"AGENTS.md",
 		"agents",
+		"plugins",
 		"skills",
 		"command",
 		"tui.json",
@@ -732,15 +732,6 @@ func (m *Manager) buildRunArgs() []string {
 			"--volume", gitdirMount,
 			"--volume", wtGitdirMount,
 		)
-	}
-
-	// Plugin mount (AC-5): mount the prism-hooks plugin if a path was provided.
-	if cfg.PluginHostPath != "" {
-		// The container's opencode config is at /root/.config/opencode (from the
-		// opencode config volume). The plugin lives at the same relative path
-		// inside the container.
-		containerPluginPath := "/root/.config/opencode/plugins/" + filepath.Base(cfg.PluginHostPath)
-		args = append(args, "--volume", cfg.PluginHostPath+":"+containerPluginPath+":ro")
 	}
 
 	// Inject credentials as environment variables (AC-10, AC-11).
