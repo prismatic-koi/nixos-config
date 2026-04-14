@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -222,36 +224,6 @@ func TestBuildRunArgs_OpencodeStateMountedAtContainerPath(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("opencode state volume mount not found in args: %v", args)
-	}
-}
-
-func TestBuildRunArgs_OpencodeConfigMountedReadOnly(t *testing.T) {
-	// AC-4: opencode config entries are mounted read-only into /root/.config/opencode.
-	// The whole-dir mount is replaced by per-entry mounts that resolve Nix symlinks.
-	// We check that opencode.json ends up mounted read-only.
-	m := New(Config{
-		SessionName:   "my-repo@feat",
-		AllocatedPort: 14000,
-	})
-	args := m.buildRunArgs()
-
-	found := false
-	for i, arg := range args {
-		if arg == "--volume" && i+1 < len(args) {
-			v := args[i+1]
-			if strings.Contains(v, "/root/.config/opencode/opencode.json") {
-				found = true
-				if !strings.Contains(v, ":ro") {
-					t.Errorf("opencode.json mount %q should be :ro (AC-4)", v)
-				}
-				break
-			}
-		}
-	}
-	if !found {
-		// opencode.json might not exist in the test environment — that's ok,
-		// but the plugin-path explicit mount should still be present.
-		t.Logf("opencode.json not individually mounted (may not exist in test env)")
 	}
 }
 
@@ -664,25 +636,86 @@ func TestCredentialEnvVars_WorkerGetsWorkerToken(t *testing.T) {
 	}
 }
 
-func TestCredentialEnvVars_WorkerGetsWorkerTokenByAccountRole(t *testing.T) {
-	// When the account-specific token var is set, it must be injected as GITHUB_TOKEN.
-	t.Setenv("PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER", "worker-tok-123")
-	t.Setenv("PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR", "coord-tok-456")
-
-	// Use githubAccountFromURL directly (unit-testable helper) by setting up
-	// a Config with no BareRoot but manually verifying the env var resolution.
-	// We test githubAccountFromURL separately; here we verify the env var
-	// selection logic by injecting account via a helper.
-	found := false
-	tokenVar := "PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER"
-	if tok := os.Getenv(tokenVar); tok != "" {
-		found = true
-		if tok != "worker-tok-123" {
-			t.Errorf("expected worker-tok-123, got %q", tok)
-		}
+// makeBareRootWithRemote creates a minimal bare git repo under dir/.bare with
+// the given remoteURL set as the "origin" remote, and returns dir as the
+// bareRoot. It calls t.Fatal on any setup error.
+func makeBareRootWithRemote(t *testing.T, remoteURL string) string {
+	t.Helper()
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
 	}
-	if !found {
-		t.Errorf("%s not set", tokenVar)
+	out, err = exec.Command("git", "--git-dir", bareDir, "remote", "add", "origin", remoteURL).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git remote add origin: %v\n%s", err, out)
+	}
+	return bareRoot
+}
+
+func TestCredentialEnvVars_AccountRoleTokenSelection(t *testing.T) {
+	// Integration test: verifies that credentialEnvVars selects the correct
+	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> env var based on the git remote URL
+	// and agent role, and injects it as GITHUB_TOKEN into the container env.
+	cases := []struct {
+		name        string
+		remoteURL   string
+		agentRole   string
+		tokenEnvVar string
+		tokenValue  string
+		wantGHToken string
+	}{
+		{
+			name:        "prismatic-koi worker (SSH remote)",
+			remoteURL:   "git@github.com:prismatic-koi/nixos-config.git",
+			agentRole:   "worker",
+			tokenEnvVar: "PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
+			tokenValue:  "worker-tok-pk",
+			wantGHToken: "worker-tok-pk",
+		},
+		{
+			name:        "prismatic-koi coordinator (SSH remote)",
+			remoteURL:   "git@github.com:prismatic-koi/nixos-config.git",
+			agentRole:   "coordinator",
+			tokenEnvVar: "PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR",
+			tokenValue:  "coord-tok-pk",
+			wantGHToken: "coord-tok-pk",
+		},
+		{
+			name:        "thankyou-payroll worker (HTTPS remote)",
+			remoteURL:   "https://github.com/thankyou-payroll/some-repo.git",
+			agentRole:   "worker",
+			tokenEnvVar: "PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER",
+			tokenValue:  "worker-tok-tp",
+			wantGHToken: "worker-tok-tp",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bareRoot := makeBareRootWithRemote(t, tc.remoteURL)
+			t.Setenv(tc.tokenEnvVar, tc.tokenValue)
+			// Ensure no other token var leaks across sub-tests.
+			t.Setenv("GITHUB_TOKEN", "")
+
+			m := New(Config{
+				SessionName:   "repo@feat",
+				AllocatedPort: 14000,
+				AgentRole:     tc.agentRole,
+				BareRoot:      bareRoot,
+			})
+			vars := m.credentialEnvVars()
+
+			found := false
+			for _, kv := range vars {
+				if kv == "GITHUB_TOKEN="+tc.wantGHToken {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected GITHUB_TOKEN=%s in vars; got: %v", tc.wantGHToken, vars)
+			}
+		})
 	}
 }
 

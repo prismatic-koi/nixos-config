@@ -177,6 +177,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			// Role config supersedes profile/model overrides for identity &
 			// permissions; use it as the primary config content.
 			configContent = roleConfig
+		} else {
+			fmt.Fprintf(os.Stderr, "[prism spawn] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
 		}
 	}
 
