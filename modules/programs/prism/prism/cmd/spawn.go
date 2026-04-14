@@ -177,9 +177,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			// Role config supersedes profile/model overrides for identity &
 			// permissions; use it as the primary config content.
 			configContent = roleConfig
-		} else {
+		} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+			// worker and coordinator are container-level roles that must have a
+			// config blob; an empty result means the system config is stale.
 			fmt.Fprintf(os.Stderr, "[prism spawn] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
 		}
+		// Other agent names (plan, review, explore, …) are subagents that
+		// don't have dedicated container blobs — empty result is expected.
 	}
 
 	opts := session.Opts{
