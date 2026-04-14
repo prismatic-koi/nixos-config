@@ -420,7 +420,6 @@
         "gh *" = "allow";
         # Prism — full orchestration suite
         "prism *" = "allow";
-        "sqlite3 *" = "allow";
         # Nix validation
         "nix build *" = "allow";
         # Git read-only operations
@@ -526,7 +525,10 @@
             disable = true;
           };
         };
-        mcp = lib.mkIf pkgs.stdenv.isDarwin {
+        # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
+        # not processed by the module system. Use optionalAttrs so the key is
+        # absent entirely on Linux rather than emitting a malformed _type object.
+        mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
           atlasian = {
             type = "local";
             enabled = true;
@@ -657,7 +659,10 @@
           summary = { };
           compaction = { };
         };
-        mcp = lib.mkIf pkgs.stdenv.isDarwin {
+        # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
+        # not processed by the module system. Use optionalAttrs so the key is
+        # absent entirely on Linux rather than emitting a malformed _type object.
+        mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
           atlasian = {
             type = "local";
             enabled = true;
