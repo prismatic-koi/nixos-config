@@ -420,6 +420,7 @@
         "gh *" = "allow";
         # Prism — full orchestration suite
         "prism *" = "allow";
+        "sqlite3 *" = "ask";
         # Nix validation
         "nix build *" = "allow";
         # Git read-only operations
@@ -610,6 +611,8 @@
             description = "Implementation agent with full write access";
             mode = "primary";
             color = config.theme.red;
+            # No tools block: all tools enabled by default (unlike coordinator/plan
+            # which explicitly disable write/edit). Full access is intentional here.
             permission = {
               edit = "allow";
               webfetch = "allow";
