@@ -4699,21 +4699,230 @@ func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
 	}
 }
 
-// ── Bug fix tests: /spawn and /cleanup own-repo restriction ───────────────────
+// ── Bug fix tests: /spawn repo substitution (issue #616) ────────────────────
 
-func TestHostAPI_Spawn_CoordinatorCrossRepoForbidden(t *testing.T) {
+// TestHostAPI_Spawn_ClientRepoIsIgnoredServerUsesOwnRepo verifies the fix for
+// issue #616: when a client sends an arbitrary "repo" value (e.g. a container
+// mount-path name like "prism-git"), the server ignores it and substitutes its
+// own repo derived from its session name ("nixos-config").
+//
+// The test uses a stub binary that echoes a spawn success line containing the
+// repo argument passed to it, so we can verify which repo was used.
+func TestHostAPI_Spawn_ClientRepoIsIgnoredServerUsesOwnRepo(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
-	// Coordinator in myrepo tries to spawn into otherrepo — must be 403.
+
+	// Write a stub that prints a success line with the last argument (the repo).
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// prism spawn ... <repo> — the repo is always the last argument.
+	// The stub prints the success line that parseSpawnSessionName expects.
+	stubScript := `#!/bin/sh
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@test-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	// Client sends "repo":"prism-git" (a container mount-path name).
+	// Server must ignore this and use "nixos-config" (from session name).
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"repo":"otherrepo","branch":"new-branch"}`)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403 for cross-repo spawn", rr.Code)
+		`{"repo":"prism-git","branch":"test-branch"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]string
+	decodeJSONBody(t, rr, &respBody)
+	// Session name must reflect the actual repo, not the mount-path name.
+	if respBody["session_name"] != "nixos-config@test-branch" {
+		t.Errorf("session_name = %q, want %q (server must use ownRepo, not client-supplied repo)",
+			respBody["session_name"], "nixos-config@test-branch")
+	}
+}
+
+// TestHostAPI_Spawn_EmptyRepoFieldSucceeds verifies AC: a request with an
+// absent or empty "repo" field is accepted (the server derives the repo from
+// its own session name, so the client does not need to supply it).
+func TestHostAPI_Spawn_EmptyRepoFieldSucceeds(t *testing.T) {
+	d := openTestDB(t)
+
+	// Stub that echoes the success line using the repo arg.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@new-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	// No "repo" field sent at all.
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"new-branch"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for empty repo field; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]string
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["session_name"] != "nixos-config@new-branch" {
+		t.Errorf("session_name = %q, want %q", respBody["session_name"], "nixos-config@new-branch")
+	}
+}
+
+// TestHostAPI_Spawn_EmptyBranchReturns400 verifies AC: a request with a
+// missing or empty "branch" field still returns 400 "branch is required".
+func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"repo":"nixos-config"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for missing branch", rr.Code)
 	}
 	var errResp map[string]string
 	decodeJSONBody(t, rr, &errResp)
-	if !strings.Contains(errResp["error"], "own repo") {
-		t.Errorf("error %q should mention 'own repo'", errResp["error"])
+	if !strings.Contains(errResp["error"], "branch is required") {
+		t.Errorf("error %q should mention 'branch is required'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Spawn_SidecarNoAtSign_Returns500 verifies AC edge case: if the
+// sidecar's own session name contains no "@", /spawn returns 500 with a
+// message indicating the repo cannot be derived, and no spawn is attempted.
+func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
+	d := openTestDB(t)
+	// Session name without "@" — repoFromSession will fail.
+	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 when sidecar session has no '@'", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "cannot derive repo") {
+		t.Errorf("error %q should mention 'cannot derive repo'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Spawn_CoordinatorCrossRepoClientFieldIgnored verifies the
+// security property: a client sending "repo":"otherrepo" does NOT get a 403
+// (the field is ignored). The spawn runs against ownRepo instead, making the
+// own-repo restriction implicit and unforgeable.
+func TestHostAPI_Spawn_CoordinatorCrossRepoClientFieldIgnored(t *testing.T) {
+	d := openTestDB(t)
+
+	// Stub that echoes the repo argument used by the server.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@cross-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "myrepo@main",
+		Repo:            "myrepo",
+		Worktree:        "/tmp/myrepo@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	// Client sends "repo":"otherrepo" — this should be ignored, not rejected.
+	// The spawn runs with ownRepo ("myrepo"), so session_name must reflect myrepo.
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"repo":"otherrepo","branch":"cross-branch"}`)
+	if rr.Code == http.StatusForbidden {
+		t.Fatalf("status = 403 (Forbidden), but client-supplied repo must be ignored, not rejected")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]string
+	decodeJSONBody(t, rr, &respBody)
+	// Must use ownRepo ("myrepo"), not the client-supplied "otherrepo".
+	if respBody["session_name"] != "myrepo@cross-branch" {
+		t.Errorf("session_name = %q, want %q (server must use ownRepo, not client-supplied repo)",
+			respBody["session_name"], "myrepo@cross-branch")
+	}
+}
+
+// TestHostAPI_Spawn_HostModeForwarded verifies that when a client sends
+// {"host_mode":true}, the sidecar includes "--host-mode" in the args passed to
+// the prism binary. This ensures the HostMode field added in issue #616 is
+// actually forwarded to the spawned process.
+func TestHostAPI_Spawn_HostModeForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	// Use a stub that writes all its arguments to a temp file so we can
+	// assert that --host-mode was included, then prints the success line
+	// expected by parseSpawnSessionName.
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@host-mode-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"host-mode-branch","host_mode":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--host-mode") {
+		t.Errorf("captured args %q do not contain --host-mode; host_mode:true was not forwarded", string(capturedArgs))
 	}
 }
 

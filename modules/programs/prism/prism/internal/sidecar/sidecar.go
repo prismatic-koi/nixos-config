@@ -1848,7 +1848,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /spawn
-	// Request:  {"repo":"nixos-config","branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid"}
+	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","host_mode":false}
+	// The "repo" field is accepted but ignored — the sidecar always substitutes
+	// its own repo (derived from its session name) so that a client sending a
+	// mount-path name (e.g. "prism-git") still spawns into the correct repo
+	// (e.g. "nixos-config"). See issue #616.
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
@@ -1858,20 +1862,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Repo    string `json:"repo"`
-			Branch  string `json:"branch"`
-			Prompt  string `json:"prompt"`
-			Agent   string `json:"agent"`
-			Profile string `json:"profile"`
-			Model   string `json:"model"`
-			Variant string `json:"variant"`
+			Repo     string `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch   string `json:"branch"`
+			Prompt   string `json:"prompt"`
+			Agent    string `json:"agent"`
+			Profile  string `json:"profile"`
+			Model    string `json:"model"`
+			Variant  string `json:"variant"`
+			HostMode bool   `json:"host_mode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-			return
-		}
-		if req.Repo == "" {
-			writeError(w, http.StatusBadRequest, "repo is required")
 			return
 		}
 		if req.Branch == "" {
@@ -1879,15 +1880,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Own-repo restriction: coordinators may only spawn into their own repo.
+		// Always derive the repo from the sidecar's own session name.
+		// This means a client that sends the wrong repo (e.g. a container
+		// mount-path name instead of the actual repo name) is silently
+		// corrected. The own-repo restriction is enforced implicitly: the
+		// sidecar can only spawn into its own repo.
 		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
-			return
-		}
-		if req.Repo != ownRepo {
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("coordinators can only spawn sessions in their own repo (%s), got %q", ownRepo, req.Repo))
 			return
 		}
 
@@ -1907,7 +1907,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Variant != "" {
 			args = append(args, "--variant", req.Variant)
 		}
-		args = append(args, req.Repo)
+		if req.HostMode {
+			args = append(args, "--host-mode")
+		}
+		args = append(args, ownRepo)
 
 		// Log without the prompt value — it may contain sensitive context.
 		logArgs := []string{"spawn", "--branch", req.Branch}
@@ -1926,7 +1929,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Variant != "" {
 			logArgs = append(logArgs, "--variant", req.Variant)
 		}
-		logArgs = append(logArgs, req.Repo)
+		if req.HostMode {
+			logArgs = append(logArgs, "--host-mode")
+		}
+		logArgs = append(logArgs, ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
@@ -1940,8 +1946,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// Parse the session name from the output.
 		sessionName := parseSpawnSessionName(string(out))
 		if sessionName == "" {
-			// Fallback: derive from repo@branch (branch already sanitised by spawn).
-			sessionName = req.Repo + "@" + req.Branch
+			// Fallback: derive from ownRepo@branch (branch already sanitised by spawn).
+			sessionName = ownRepo + "@" + req.Branch
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
 	})

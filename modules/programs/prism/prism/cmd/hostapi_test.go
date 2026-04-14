@@ -191,13 +191,21 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 
 // TestProxySpawn_SendsCorrectPayload verifies AC-11 for spawn: when
 // PRISM_HOST_API is set and proxySpawn is called, the mock server receives
-// the expected JSON payload.
+// the expected JSON payload. Setting PRISM_BARE_ROOT to a container mount path
+// (e.g. "/prism-git" whose filepath.Base differs from the actual repo name)
+// confirms that the client-side repo derivation defect (issue #616) is no
+// longer exercised: the client does not send a "repo" field at all, and the
+// server substitutes its own repo name.
 func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	type spawnReq struct {
-		Repo   string `json:"repo"`
-		Branch string `json:"branch"`
-		Prompt string `json:"prompt"`
-		Agent  string `json:"agent"`
+		Repo     string `json:"repo"`
+		Branch   string `json:"branch"`
+		Prompt   string `json:"prompt"`
+		Agent    string `json:"agent"`
+		Profile  string `json:"profile"`
+		Model    string `json:"model"`
+		Variant  string `json:"variant"`
+		HostMode bool   `json:"host_mode"`
 	}
 
 	reqCh := make(chan spawnReq, 1)
@@ -212,20 +220,32 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 		reqCh <- req
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"session_name":"myrepo@test-branch"}`))
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@test-branch"}`))
 	})
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
-	t.Setenv("PRISM_BARE_ROOT", "/home/user/code/myrepo")
+	// Set PRISM_BARE_ROOT to a container mount path whose filepath.Base
+	// ("prism-git") does not match the actual repo name ("nixos-config").
+	// The client must NOT derive the repo from this value — it should omit
+	// the repo field entirely, leaving the server to substitute ownRepo.
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
 
 	// Build a cobra command with the same flags as spawnCmd.
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
 	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
 	_ = cmd.Flags().Set("agent", "worker")
 	_ = cmd.Flags().Set("prompt", "hello world")
+	_ = cmd.Flags().Set("profile", "gemini-hybrid")
+	_ = cmd.Flags().Set("model", "anthropic/claude-sonnet-4-6")
+	_ = cmd.Flags().Set("variant", "high")
+	_ = cmd.Flags().Set("host-mode", "true")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -233,8 +253,9 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 
 	select {
 	case req := <-reqCh:
-		if req.Repo != "myrepo" {
-			t.Errorf("repo = %q, want %q", req.Repo, "myrepo")
+		// The client must NOT send a repo field (empty string in decoded struct).
+		if req.Repo != "" {
+			t.Errorf("repo = %q, want empty (client must not send repo; server derives it)", req.Repo)
 		}
 		if req.Branch != "test-branch" {
 			t.Errorf("branch = %q, want %q", req.Branch, "test-branch")
@@ -244,6 +265,18 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 		}
 		if req.Agent != "worker" {
 			t.Errorf("agent = %q, want %q", req.Agent, "worker")
+		}
+		if req.Profile != "gemini-hybrid" {
+			t.Errorf("profile = %q, want %q", req.Profile, "gemini-hybrid")
+		}
+		if req.Model != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("model = %q, want %q", req.Model, "anthropic/claude-sonnet-4-6")
+		}
+		if req.Variant != "high" {
+			t.Errorf("variant = %q, want %q", req.Variant, "high")
+		}
+		if !req.HostMode {
+			t.Errorf("host_mode = false, want true")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")

@@ -33,6 +33,11 @@ import (
 // proxySpawn forwards a spawn request to the host-API sidecar when running
 // inside a container (PRISM_HOST_API is set). It reads the same flags as
 // runSpawn and POSTs them to /spawn, then prints the returned session name.
+//
+// The "repo" field is intentionally omitted from the request: the sidecar
+// derives the repo from its own session name, so a client running inside a
+// container where PRISM_BARE_ROOT is a mount-path name (e.g. "/prism-git")
+// does not need to supply the correct repo name. See issue #616.
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	agentFlag, _ := cmd.Flags().GetString("agent")
@@ -44,17 +49,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	// repo is derived from PRISM_BARE_ROOT (injected by A-2/sidecar).
-	bareRoot := os.Getenv("PRISM_BARE_ROOT")
-	if bareRoot == "" {
-		return fmt.Errorf("PRISM_BARE_ROOT is not set — cannot determine repo name in container mode")
-	}
-	repo := filepath.Base(bareRoot)
 	var resp struct {
 		SessionName string `json:"session_name"`
 	}
 	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-		"repo":      repo,
 		"branch":    branchFlag,
 		"prompt":    promptFlag,
 		"agent":     agentFlag,
