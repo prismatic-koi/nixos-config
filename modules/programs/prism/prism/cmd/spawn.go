@@ -125,11 +125,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Always load the profiles file when container mode is active — it carries
-	// the container role configs (container_worker_config /
-	// container_coordinator_config) that must be injected as
-	// OPENCODE_CONFIG_CONTENT to fix agent identity in containers.
-	// Also load when --profile is set to apply model overrides.
+	// Load the profiles file when container mode is active (carries container
+	// role configs) or when --profile is set (for model overrides).
 	var pf *config.ProfilesFile
 	if effectiveContainerMode || profileFlag != "" {
 		var loadErr error
@@ -141,38 +138,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
 	if err != nil {
 		return err
-	}
-
-	// In container mode, inject the role-specific opencode.json blob as
-	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
-	// project-level opencode.jsonc. This ensures agent identity is always
-	// determined by Nix config, not by the project file.
-	// The role-based config is merged on top of (or replaces) any
-	// --profile/--model/--variant configContent built above.
-	if effectiveContainerMode && pf != nil {
-		// Determine effective agent role for this spawn.
-		effectiveRole := agentFlag
-		if effectiveRole == "" {
-			effectiveRole = "worker" // default
-		}
-		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
-		if roleErr != nil {
-			return roleErr
-		}
-		if roleConfig != "" {
-			// Role config supersedes profile/model overrides for identity &
-			// permissions; use it as the primary config content.
-			configContent = roleConfig
-		}
-	}
-
-	opts := session.Opts{
-		Prompt:         promptFlag,
-		Agent:          agentFlag,
-		ConfigContent:  configContent,
-		Headless:       !fromKeybind && !attachFlag,
-		ContainerMode:  effectiveContainerMode,
-		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
 	// Resolve the bare repo root from the current pane path.
@@ -191,6 +156,37 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	worktreePath, err := git.CreateWorktree(bareRoot, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
+	}
+
+	// In container mode, inject the role-specific opencode.json blob as
+	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+	// project-level opencode.jsonc. This ensures agent identity is always
+	// determined by Nix config, not by the project file.
+	//
+	// effectiveRole is derived the same way the session uses: explicit --agent
+	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere.
+	// This must run after worktreePath is known so that DefaultAgent can inspect
+	// the directory name (e.g. "main").
+	if effectiveContainerMode && pf != nil {
+		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
+		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+		if roleErr != nil {
+			return roleErr
+		}
+		if roleConfig != "" {
+			// Role config supersedes profile/model overrides for identity &
+			// permissions; use it as the primary config content.
+			configContent = roleConfig
+		}
+	}
+
+	opts := session.Opts{
+		Prompt:         promptFlag,
+		Agent:          agentFlag,
+		ConfigContent:  configContent,
+		Headless:       !fromKeybind && !attachFlag,
+		ContainerMode:  effectiveContainerMode,
+		PluginHostPath: cfg.SidecarPluginPath,
 	}
 
 	if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {

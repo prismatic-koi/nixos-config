@@ -72,7 +72,10 @@ type ProfilesFile struct {
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
 // given agent role ("worker" or "coordinator"). Returns ("", nil) when pf is
-// nil (no profiles file loaded). Returns an error when role is unrecognised.
+// nil (no profiles file loaded) or when the role is not a recognised container
+// role (only "worker" and "coordinator" have dedicated container configs;
+// subagent names like "plan", "review", etc. are valid opencode agents but do
+// not have their own container configs — they inherit from the session default).
 func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 	if pf == nil {
 		return "", nil
@@ -83,7 +86,9 @@ func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 	case "coordinator":
 		return pf.ContainerCoordinatorConfig, nil
 	default:
-		return "", fmt.Errorf("profiles: unrecognised container role %q — expected \"worker\" or \"coordinator\"", role)
+		// Not a container-level role (e.g. "plan", "review", "explore").
+		// Return empty string — no config injection — without error.
+		return "", nil
 	}
 }
 
