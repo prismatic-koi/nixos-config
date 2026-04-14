@@ -1025,8 +1025,9 @@ func TestBuildRunArgs_PluginMountedSeparately(t *testing.T) {
 
 func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 	// Verifies that the config mount block uses an explicit allowlist:
-	// - Allowlisted entries present on disk ARE mounted read-only.
-	// - Bun ecosystem files (package.json, bun.lock, node_modules/) are NOT mounted.
+	// - All 7 allowlisted entries present on disk ARE mounted read-only.
+	// - Bun ecosystem files (package.json, bun.lock, package-lock.json,
+	//   node_modules/) are NOT mounted.
 	// - opencode.json is NOT mounted even when present on disk.
 	//
 	// Previous tests (TestBuildRunArgs_OpencodeJsonSkippedInItemByItemMount,
@@ -1041,7 +1042,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		t.Fatalf("MkdirAll configDir: %v", err)
 	}
 
-	// Allowlisted files/dirs that should be mounted.
+	// Allowlisted files/dirs that should be mounted (all 7 entries from configAllowlist).
 	allowlisted := []struct {
 		name  string
 		isDir bool
@@ -1049,7 +1050,10 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		{"AGENTS.md", false},
 		{"tui.json", false},
 		{"mcp-atlassian-slim-proxy.mjs", false},
+		{".gitignore", false},
 		{"agents", true},
+		{"skills", true},
+		{"command", true},
 	}
 	for _, e := range allowlisted {
 		p := filepath.Join(configDir, e.name)
@@ -1064,8 +1068,8 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 		}
 	}
 
-	// Files that must NOT be mounted.
-	excluded := []string{"package.json", "bun.lock", "opencode.json"}
+	// Files that must NOT be mounted — bun ecosystem files and opencode.json.
+	excluded := []string{"package.json", "bun.lock", "package-lock.json", "opencode.json"}
 	for _, name := range excluded {
 		if err := os.WriteFile(filepath.Join(configDir, name), []byte("stub"), 0o644); err != nil {
 			t.Fatalf("WriteFile %s: %v", name, err)
@@ -1112,7 +1116,7 @@ func TestBuildRunArgs_ConfigMountAllowlist(t *testing.T) {
 	}
 
 	// Assert excluded entries are NOT present.
-	excluded = append(excluded, "node_modules")
+	excluded = append(excluded, "node_modules") // dir also covered
 	for _, name := range excluded {
 		containerPath := "/root/.config/opencode/" + name
 		for _, v := range mountValues {
