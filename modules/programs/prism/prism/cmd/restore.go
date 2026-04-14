@@ -26,6 +26,17 @@ import (
 // process-wide config.Load() singleton cache.
 var loadRestoreConfig = func() config.Config { return config.Load() }
 
+// loadRestoreProfiles loads profiles.json for the restore code path.
+// It is a package-level variable so tests can inject a fake profiles file
+// without depending on XDG_CONFIG_HOME or the filesystem.
+var loadRestoreProfiles = func() (*config.ProfilesFile, error) { return config.LoadProfiles() }
+
+// onRestoreSessionCreate is called just before session.Create in
+// restoreProjectSession. In production it is nil (no-op). Tests may set it to
+// capture the session.Opts and assert that ConfigContent is populated correctly.
+// The hook is invoked with a snapshot of opts before Create is called.
+var onRestoreSessionCreate func(opts session.Opts)
+
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Recreate tmux sessions from prism.db",
@@ -174,7 +185,7 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		// Profile load errors are non-fatal for restore: log and skip
 		// config injection so the session is still recreated without it,
 		// rather than aborting the entire restore run.
-		pf, pfErr := config.LoadProfiles()
+		pf, pfErr := loadRestoreProfiles()
 		if pfErr != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
 		} else {
@@ -262,6 +273,13 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
 	// session is still created with the full layout; it just won't have an
 	// opencode serve port allocated.
+
+	// Invoke the test hook (nil in production) with a snapshot of opts
+	// so tests can assert ConfigContent and other fields without intercepting
+	// session.Create.
+	if onRestoreSessionCreate != nil {
+		onRestoreSessionCreate(opts)
+	}
 
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
 		return fmt.Errorf("create session: %w", err)
