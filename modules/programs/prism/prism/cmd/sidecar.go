@@ -15,8 +15,9 @@ package cmd
 //	--port <n>                allocated host port (required in container mode)
 //	--plugin-path <path>      host path to the prism-hooks.ts plugin; mounted
 //	                          read-only into the container (container mode only)
-//	--config-content <json>   JSON blob for OPENCODE_CONFIG_CONTENT; injected
-//	                          into the container environment (container mode only)
+//	--config-content <json>   JSON blob for the container's opencode.json;
+//	                          written to a temp file and mounted into the
+//	                          container (container mode only)
 //
 // The sidecar connects to <opencode-url>/event and maps opencode SSE events to
 // agent state transitions, writing them to prism.db. It handles idle debounce,
@@ -73,7 +74,7 @@ func init() {
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
-	sidecarCmd.Flags().String("config-content", "", "JSON blob for OPENCODE_CONFIG_CONTENT; injected into container environment (container mode only)")
+	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
