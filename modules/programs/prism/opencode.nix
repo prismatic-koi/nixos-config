@@ -420,7 +420,7 @@
         "gh *" = "allow";
         # Prism — full orchestration suite
         "prism *" = "allow";
-        "sqlite3 *" = "ask";
+        "sqlite3 *" = "allow";
         # Nix validation
         "nix build *" = "allow";
         # Git read-only operations
@@ -640,6 +640,11 @@
                 # already includes these denies — merging is a coordinator responsibility.
                 "gh pr merge" = "deny";
                 "gh pr merge *" = "deny";
+                # Spawning agents is a coordinator responsibility, never a worker's (#557).
+                "prism spawn" = "deny";
+                "prism spawn *" = "deny";
+                "prism pr" = "deny";
+                "prism pr *" = "deny";
                 # No tmuxDenyCommands: tmux is not present in the coordinator container,
                 # so those deny entries would be inert. Omission is intentional.
               };
