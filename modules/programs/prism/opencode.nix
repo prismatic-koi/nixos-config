@@ -482,11 +482,15 @@
         "google"
       ];
 
-      # Plugins for containers: claude-auth only (no gemini-auth noise).
+      # Plugins for containers: use absolute paths because the plugin list is
+      # injected via OPENCODE_CONFIG_CONTENT (an env var, not a file on disk).
+      # opencode only resolves relative plugin paths when loading from a file
+      # (isFile=true); env-var config has isFile=false so "./plugins/..." would
+      # be resolved relative to the project working directory and fail to load.
       containerPlugins = [
         # TODO: re-enable once https://github.com/griffinmartin/opencode-claude-auth/pull/191 lands on npm
-        # "opencode-claude-auth@latest"
-        "./plugins/prism-hooks"
+        # "/root/.config/opencode/plugins/opencode-claude-auth"
+        "/root/.config/opencode/plugins/prism-hooks"
       ];
 
       # Worker container opencode.json blob.
