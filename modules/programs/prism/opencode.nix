@@ -509,6 +509,15 @@
           title = { };
           summary = { };
           compaction = { };
+          coordinator = {
+            disable = true;
+          };
+          build = {
+            disable = true;
+          };
+          plan = {
+            disable = true;
+          };
         };
         permission = {
           edit = "allow";
