@@ -363,15 +363,18 @@
         anthropic = [
           # use existing Claude Code credentials (via claude login OAuth)
           # no separate proxy or API key needed
-          "opencode-claude-auth@latest"
+          # TODO: re-enable once https://github.com/griffinmartin/opencode-claude-auth/pull/191 lands on npm
+          # "opencode-claude-auth@latest"
         ];
         anthropic-opus = [
-          "opencode-claude-auth@latest"
+          # TODO: re-enable once https://github.com/griffinmartin/opencode-claude-auth/pull/191 lands on npm
+          # "opencode-claude-auth@latest"
         ];
         # gemini-hybrid uses both Anthropic (Opus primary) and Google (Gemini secondary).
         # Both auth plugins are needed; they are both loaded globally anyway.
         gemini-hybrid = [
-          "opencode-claude-auth@latest"
+          # TODO: re-enable once https://github.com/griffinmartin/opencode-claude-auth/pull/191 lands on npm
+          # "opencode-claude-auth@latest"
         ];
         github-copilot = [ ];
         google = [ ];
@@ -481,7 +484,8 @@
 
       # Plugins for containers: claude-auth only (no gemini-auth noise).
       containerPlugins = [
-        "opencode-claude-auth@latest"
+        # TODO: re-enable once https://github.com/griffinmartin/opencode-claude-auth/pull/191 lands on npm
+        # "opencode-claude-auth@latest"
         "./plugins/prism-hooks"
       ];
 
