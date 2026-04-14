@@ -525,9 +525,27 @@
             disable = true;
           };
         };
+        mcp = lib.mkIf pkgs.stdenv.isDarwin {
+          atlasian = {
+            type = "local";
+            enabled = true;
+            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            environment = {
+              ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+            };
+          };
+        };
         permission = {
           edit = "allow";
           webfetch = "allow";
+          # Atlassian MCP permissions — workers read freely, no writes
+          "atlasian_*" = "deny";
+          "atlasian_atlassianUserInfo" = "allow";
+          "atlasian_get*" = "allow";
+          "atlasian_lookup*" = "allow";
+          "atlasian_search*" = "allow";
+          "atlasian_fetch" = "allow";
+          "atlasian_fetchAtlassian" = "allow";
           bash = containerWorkerBashCommands;
           external_directory = "allow"; # safe because inside container
         };
@@ -589,22 +607,20 @@
             };
           };
           build = {
+            description = "Implementation agent with full write access";
             mode = "primary";
             color = config.theme.red;
             permission = {
               edit = "allow";
               webfetch = "allow";
-              # Atlassian MCP permissions
-              # fallback to ask
+              # Atlassian MCP permissions — same ask set as host coordinator
               "atlasian_*" = "ask";
-              # Read operations (allow)
               "atlasian_atlassianUserInfo" = "allow";
               "atlasian_get*" = "allow";
               "atlasian_lookup*" = "allow";
               "atlasian_search*" = "allow";
               "atlasian_fetch" = "allow";
               "atlasian_fetchAtlassian" = "allow";
-              # Write operations (ask)
               "atlasian_create*" = "ask";
               "atlasian_edit*" = "ask";
               "atlasian_update*" = "ask";
@@ -615,7 +631,15 @@
                 "*" = "ask";
               }
               // readOnlyBashCommands
-              // writeBashCommands;
+              // writeBashCommands
+              // {
+                # Belt-and-suspenders: explicitly deny PR merge even though writeBashCommands
+                # already includes these denies — merging is a coordinator responsibility.
+                "gh pr merge" = "deny";
+                "gh pr merge *" = "deny";
+                # No tmuxDenyCommands: tmux is not present in the coordinator container,
+                # so those deny entries would be inert. Omission is intentional.
+              };
             };
           };
           explore = { };
@@ -625,9 +649,32 @@
           summary = { };
           compaction = { };
         };
+        mcp = lib.mkIf pkgs.stdenv.isDarwin {
+          atlasian = {
+            type = "local";
+            enabled = true;
+            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            environment = {
+              ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+            };
+          };
+        };
         permission = {
           edit = "deny";
           webfetch = "allow";
+          # Atlassian MCP permissions — same ask set as host coordinator
+          "atlasian_*" = "ask";
+          "atlasian_atlassianUserInfo" = "allow";
+          "atlasian_get*" = "allow";
+          "atlasian_lookup*" = "allow";
+          "atlasian_search*" = "allow";
+          "atlasian_fetch" = "allow";
+          "atlasian_fetchAtlassian" = "allow";
+          "atlasian_create*" = "ask";
+          "atlasian_edit*" = "ask";
+          "atlasian_update*" = "ask";
+          "atlasian_add*" = "ask";
+          "atlasian_transition*" = "ask";
           bash = containerCoordinatorBashCommands;
           external_directory = "allow"; # safe because inside container
         };
@@ -851,11 +898,6 @@
                 }
                 // readOnlyBashCommands
                 // writeBashCommands
-                // {
-                  # deny PR merge — merging is a coordinator responsibility, never a worker's
-                  "gh pr merge" = "deny";
-                  "gh pr merge *" = "deny";
-                }
                 // tmuxDenyCommands;
               };
               plugin = [
