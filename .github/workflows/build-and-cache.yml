@@ -7,13 +7,23 @@ name: build-and-cache
       - '.github/workflows/**'
   workflow_dispatch:
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build:
     strategy:
       matrix:
-        config: [navi, tui]
+        include:
+          - os: ubuntu-latest
+            target: nixosConfigurations.navi
+            name: navi
+          - os: ubuntu-latest
+            target: nixosConfigurations.tui
+            name: tui
+          - os: macos-15
+            target: darwinConfigurations.m4mac
+            name: m4mac
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: jlumbroso/free-disk-space@v1.3.1
+        if: runner.os == 'Linux'
         with:
           swap-storage: false
           tool-cache: true
@@ -29,22 +39,5 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: Build NixOS config for ${{ matrix.config }}
-        run: nix build --print-build-logs '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
-  build-darwin:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v6
-      - uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |-
-            accept-flake-config = true
-            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-          nix_path: nixpkgs=channel:nixos-unstable
-      - uses: cachix/cachix-action@v17
-        with:
-          authToken: ${{ secrets.CACHIX_TOKEN }}
-          extraPullNames: nix-community
-          name: lucidph3nx-nixos-config
-      - name: Build Darwin config for m4mac
-        run: nix build --print-build-logs '.#darwinConfigurations.m4mac.config.system.build.toplevel'
+      - name: Build config for ${{ matrix.name }}
+        run: nix build --print-build-logs '.#${{ matrix.target }}.config.system.build.toplevel'
