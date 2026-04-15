@@ -145,6 +145,8 @@
         let
           # Substituter config baked into the image's nix.conf so that agents
           # running inside the container can pull from Cachix without extra setup.
+          # Keep these in sync with nixConfig.extra-substituters and
+          # nixConfig.extra-trusted-public-keys at the top of this file.
           cachixSubstituters = [
             "https://nix-community.cachix.org"
             "https://lucidph3nx-nixos-config.cachix.org"

@@ -8,16 +8,18 @@
 # in the same mkIf guard as the rest of the prism module (see default.nix).
 #
 # On Linux, the prism-agent image is pulled from GHCR into the user's rootless
-# podman store via a systemd user service that runs at every login. The pull is
-# guarded so it is a no-op when the image is already present.
+# podman store via a systemd user service that runs at every login. `podman pull`
+# is unconditional — it checks the manifest digest and skips downloading layers
+# that are already cached, so it is fast when nothing has changed and always
+# picks up new image versions when they are published.
 #
 # On Darwin, podman runs inside a Linux VM managed by `podman machine`.
 # A Home Manager LaunchAgent fires at login to:
 #   1. Start the podman machine (guarded: checks state first and skips start
 #      if already running, since `podman machine start` exits non-zero when the
 #      VM is already up).
-#   2. Pull the prism-agent image into the VM from GHCR (guarded: skipped when
-#      the image is already present).
+#   2. Pull the prism-agent image into the VM from GHCR unconditionally (same
+#      rationale as Linux: fast when unchanged, always picks up new versions).
 # Failures are captured in /tmp/podman-machine-start.log so they are visible
 # for debugging; the prism fallback-to-host-mode mechanism (#472) handles the
 # case where the VM is unavailable at spawn time.
@@ -39,12 +41,13 @@ in
         #
         # The service is declared as oneshot with RemainAfterExit=yes: systemd
         # considers it "active" once ExecStart returns successfully and will NOT
-        # re-run it within the same login session, satisfying the idempotency
-        # requirement.  On the next login (e.g. after a reboot) the unit is in
-        # the "inactive" state again and will re-run.
+        # re-run it within the same login session.  On the next login (e.g. after
+        # a reboot) the unit is in the "inactive" state again and will re-run.
         #
-        # Idempotency: the script checks `podman image exists` first and skips
-        # the pull when the image is already present.
+        # `podman pull` is unconditional: it compares the remote manifest digest
+        # against what is stored locally and skips layer downloads when nothing
+        # has changed.  This keeps the image up to date automatically on every
+        # login without requiring manual intervention.
         home-manager.users.${username} = {
           home.persistence."/persist" = {
             directories = [
@@ -54,9 +57,6 @@ in
           systemd.user.services.prism-agent-image = {
             Unit = {
               Description = "Pull prism-agent container image from GHCR into rootless podman storage";
-              # Wait for the network to be ready before attempting the pull.
-              After = [ "network-online.target" ];
-              Wants = [ "network-online.target" ];
               # Run before prism session restore so the image is available when
               # the first container spawn happens.
               Before = [ "prism-restore.service" ];
@@ -68,13 +68,8 @@ in
                 let
                   script = pkgs.writeShellScript "pull-prism-agent-image" ''
                     PODMAN="${pkgs.podman}/bin/podman"
-
-                    if $PODMAN image exists ${image}; then
-                      echo "prism: ${image} already present, skipping pull." >&2
-                    else
-                      echo "prism: pulling ${image}..." >&2
-                      $PODMAN pull ${image}
-                    fi
+                    echo "prism: pulling ${image}..." >&2
+                    $PODMAN pull ${image}
                   '';
                 in
                 script;
@@ -111,7 +106,9 @@ in
           #   - We pull the image inside the VM via `podman machine ssh -- podman pull`
           #     rather than calling `podman pull` directly on the host, because on Darwin
           #     `podman pull` routes through the machine socket and the image must reside
-          #     inside the Linux VM.
+          #     inside the Linux VM.  `podman pull` is idempotent: it compares the remote
+          #     manifest digest against the local cache and skips layer downloads when
+          #     nothing has changed.
           #   - All output goes to stdout/stderr which the LaunchAgent captures in
           #     StandardOutPath / StandardErrorPath below.
           podmanMachineStartScript = pkgs.writeShellScript "podman-machine-start" ''
@@ -136,14 +133,9 @@ in
               }
             fi
 
-            echo "podman-machine-start: checking prism-agent image in VM..." >&2
-            if "$PODMAN" machine ssh -- podman image exists ${image}; then
-              echo "podman-machine-start: ${image} already present in VM, skipping pull." >&2
-            else
-              echo "podman-machine-start: pulling ${image} into VM..." >&2
-              "$PODMAN" machine ssh -- podman pull ${image}
-              echo "podman-machine-start: ${image} pulled successfully." >&2
-            fi
+            echo "podman-machine-start: pulling ${image} into VM..." >&2
+            "$PODMAN" machine ssh -- podman pull ${image}
+            echo "podman-machine-start: ${image} pulled successfully." >&2
           '';
         in
         {

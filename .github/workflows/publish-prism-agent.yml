@@ -5,6 +5,7 @@ name: publish-prism-agent
       - main
     paths:
       - 'images/prism-agent.nix'
+      - 'flake.nix'
       - 'flake.lock'
   workflow_dispatch:
 
