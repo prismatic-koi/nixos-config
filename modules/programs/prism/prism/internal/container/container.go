@@ -29,6 +29,11 @@ const (
 	// ContainerPort is the port opencode serve listens on inside the container.
 	ContainerPort = 4096
 
+	// HostAPIContainerPort is the port the host-API TCP listener is mapped to
+	// inside the container on Darwin. Distinct from ContainerPort (4096) so the
+	// two services can coexist.
+	HostAPIContainerPort = 4097
+
 	// Image is the container image name used for all agent containers.
 	// The image is published to GHCR as a multi-arch image by CI and pulled
 	// on first use by the systemd/launchd service. podman resolves the correct
@@ -99,11 +104,19 @@ type Config struct {
 	WorktreeGitDir string
 
 	// HostAPISockPath is the absolute host path to the sidecar's host-API Unix socket.
-	// When non-empty, the socket's parent directory is bind-mounted into the container
-	// at /var/run/prism-host and PRISM_HOST_API is set to
-	// unix:///var/run/prism-host/<sockfilename> so that prism CLI commands inside
-	// the container can proxy tmux operations to the host sidecar.
+	// When non-empty and HostAPITCPPort is zero, the socket's parent directory is
+	// bind-mounted into the container at /var/run/prism-host and PRISM_HOST_API is set
+	// to unix:///var/run/prism-host/<sockfilename> so that prism CLI commands inside
+	// the container can proxy tmux operations to the host sidecar. On Darwin this field
+	// is still set but HostAPITCPPort takes precedence over the Unix socket.
 	HostAPISockPath string
+
+	// HostAPITCPPort is the host-side TCP port allocated by the sidecar for the
+	// host-API TCP listener (Darwin only). When non-zero, buildRunArgs emits a
+	// --publish 127.0.0.1:<HostAPITCPPort>:HostAPIContainerPort flag and sets
+	// PRISM_HOST_API=http://127.0.0.1:HostAPIContainerPort instead of using the
+	// Unix socket path. On Linux this field is zero and the Unix socket is used.
+	HostAPITCPPort int
 
 	// InstanceID is the UUID instance identifier for the prism session that owns
 	// this container. When non-empty it is written as a
@@ -717,11 +730,24 @@ func (m *Manager) buildRunArgs() []string {
 		"--workdir", "/workspace",
 	)
 
-	// Host-API socket: mount the sidecar's Unix socket into the container and
-	// tell prism CLI where to find it. Container root can access the socket because
-	// rootless podman maps container root to the host user UID (same mechanism as
-	// the nix-daemon socket mount already in use above).
-	if cfg.HostAPISockPath != "" {
+	// Host-API: tell the container how to reach the host-API server.
+	//
+	// On Darwin (cfg.HostAPITCPPort != 0): TCP port forwarding is used because
+	// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
+	// container. The sidecar binds a TCP listener on 127.0.0.1:0 before container
+	// creation, records the allocated port, and passes it here. We emit a
+	// --publish flag to forward that host port to HostAPIContainerPort inside the
+	// container, and set PRISM_HOST_API to the container-side http:// address.
+	//
+	// On Linux (cfg.HostAPITCPPort == 0): the Unix socket directory is mounted
+	// and PRISM_HOST_API is set to the unix:// path (existing behaviour).
+	if cfg.HostAPITCPPort != 0 {
+		hostAPIPortBinding := fmt.Sprintf("127.0.0.1:%d:%d", cfg.HostAPITCPPort, HostAPIContainerPort)
+		args = append(args,
+			"--publish", hostAPIPortBinding,
+			"--env", fmt.Sprintf("PRISM_HOST_API=http://127.0.0.1:%d", HostAPIContainerPort),
+		)
+	} else if cfg.HostAPISockPath != "" {
 		args = append(args,
 			"--volume", filepath.Dir(cfg.HostAPISockPath)+":/var/run/prism-host:Z",
 			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+filepath.Base(cfg.HostAPISockPath),

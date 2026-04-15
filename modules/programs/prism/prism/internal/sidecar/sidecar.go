@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,6 +111,10 @@ type Config struct {
 	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
 	// to agents running inside the container.
 	HostAPISockPath string
+	// HostAPITCPPort is the OS-allocated TCP port used on Darwin for the host-API
+	// listener. It is set by Run() after binding the listener and recorded here for
+	// reference. Zero means no TCP listener was started (Linux path).
+	HostAPITCPPort int
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
 	// readiness signal file that unblocks the tmux pane running "opencode attach".
@@ -163,6 +168,13 @@ type Sidecar struct {
 	// Stored so Shutdown() can drain in-flight requests gracefully.
 	// Protected by mu.
 	hostAPISrv *http.Server
+	// hostAPITCPListener is the TCP listener for the host-API HTTP server on Darwin.
+	// Started in Run() before container creation so the allocated port is known before
+	// the container is launched. Protected by mu.
+	hostAPITCPListener net.Listener
+	// hostAPITCPSrv is the HTTP server for the host-API TCP listener (Darwin only).
+	// Stored so Shutdown() can drain in-flight requests gracefully. Protected by mu.
+	hostAPITCPSrv *http.Server
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during podman stop's grace period. Protected by mu.
@@ -231,6 +243,26 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// Container mode: create and health-check the container before connecting.
 	if s.cfg.Container != nil {
 		sessionStart := time.Now()
+
+		// On Darwin, start a TCP listener on 127.0.0.1:0 BEFORE container creation
+		// so the OS-allocated port is known when buildRunArgs() emits --publish.
+		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
+		// container VM, so TCP port forwarding is used instead (#661).
+		// Failure to bind is fatal — we must not silently fall back to Unix-socket-only
+		// mode, which would reproduce the ENOTSUP bug.
+		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
+			tcpLn, tcpErr := net.Listen("tcp", "127.0.0.1:0")
+			if tcpErr != nil {
+				return fmt.Errorf("sidecar: host-API TCP listener: %w", tcpErr)
+			}
+			port := tcpLn.Addr().(*net.TCPAddr).Port
+			log.Printf("sidecar: host-API TCP listener bound on 127.0.0.1:%d", port)
+			s.cfg.HostAPITCPPort = port
+			s.cfg.Container.HostAPITCPPort = port
+			s.mu.Lock()
+			s.hostAPITCPListener = tcpLn
+			s.mu.Unlock()
+		}
 
 		mgr := container.New(*s.cfg.Container)
 		s.mu.Lock()
@@ -306,16 +338,19 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			}
 		}
 
-		// Start the host-API Unix socket server (AC-1, AC-9).
+		// Start the host-API servers (AC-1, AC-9).
 		// Guard with !isShuttingDown: if SIGTERM arrived between WaitHealthy
-		// and here, Shutdown() will have already run and we must not create a
-		// new listener that would never be closed.
+		// and here, Shutdown() will have already run and we must not create
+		// listeners that would never be closed.
 		if !isShuttingDown && s.cfg.HostAPISockPath != "" {
-			// Remove stale socket file from a previous crashed session.
+			// Unix socket server — always started when HostAPISockPath is set,
+			// regardless of platform. On Darwin the container uses TCP
+			// (HostAPITCPPort), but the Unix socket is still available for
+			// host-side tooling.
 			_ = os.Remove(s.cfg.HostAPISockPath)
 			ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 			if listenErr != nil {
-				log.Printf("sidecar: host-API server: listen: %v", listenErr)
+				log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
 			} else {
 				srv := &http.Server{Handler: s.hostAPIHandler()}
 				s.mu.Lock()
@@ -326,9 +361,30 @@ func (s *Sidecar) Run(ctx context.Context) error {
 					if err := srv.Serve(ln); err != nil &&
 						!errors.Is(err, http.ErrServerClosed) &&
 						!errors.Is(err, net.ErrClosed) {
-						log.Printf("sidecar: host-API server: %v", err)
+						log.Printf("sidecar: host-API server (unix): %v", err)
 					}
 				}()
+			}
+
+			// TCP server — Darwin only, when the TCP listener was bound before
+			// container creation. Uses a separate http.Server with the same handler
+			// so both transports serve identical API endpoints.
+			s.mu.Lock()
+			tcpLn := s.hostAPITCPListener
+			s.mu.Unlock()
+			if tcpLn != nil {
+				tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
+				s.mu.Lock()
+				s.hostAPITCPSrv = tcpSrv
+				s.mu.Unlock()
+				go func() {
+					if err := tcpSrv.Serve(tcpLn); err != nil &&
+						!errors.Is(err, http.ErrServerClosed) &&
+						!errors.Is(err, net.ErrClosed) {
+						log.Printf("sidecar: host-API server (tcp): %v", err)
+					}
+				}()
+				log.Printf("sidecar: host-API TCP server serving on 127.0.0.1:%d", s.cfg.HostAPITCPPort)
 			}
 		} else if s.cfg.HostAPISockPath == "" {
 			log.Printf("sidecar: host-API server: HostAPISockPath is empty — skipping (container mode active but no socket path configured)")
@@ -449,6 +505,8 @@ func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
 	ln := s.hostAPIListener
 	srv := s.hostAPISrv
+	tcpLn := s.hostAPITCPListener
+	tcpSrv := s.hostAPITCPSrv
 	s.mu.Unlock()
 	if srv != nil {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -459,6 +517,16 @@ func (s *Sidecar) Shutdown() {
 	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
+	}
+	// Close the TCP host-API listener/server (Darwin only). Idempotent when
+	// the listener was never started (both are nil on Linux or when container
+	// mode is inactive).
+	if tcpSrv != nil {
+		shutCtx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		_ = tcpSrv.Shutdown(shutCtx2)
+	} else if tcpLn != nil {
+		_ = tcpLn.Close()
 	}
 
 	s.mu.Lock()
