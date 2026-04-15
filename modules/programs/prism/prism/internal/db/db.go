@@ -361,9 +361,10 @@ ON CONFLICT(session_name) DO UPDATE SET
 }
 
 // UpdateRootModelID unconditionally sets root_model_id for sessionName to the
-// given model value. Unlike UpsertStatusWithRootAgent (which uses COALESCE to
-// preserve the existing value), this method always overwrites, allowing the
-// current session's model to replace a stale value from a prior session.
+// given model value. Unlike UpsertStatusWithRootAgent (which falls back to the
+// existing value when the incoming value is nil), this method always overwrites,
+// allowing the current session's model to replace a stale value from a prior
+// session.
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 // Called by the sidecar when a completed assistant message from the root agent
@@ -381,14 +382,16 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 }
 
 // UpsertStatusWithRootAgent is like UpsertStatusWithAgent but also writes
-// root_agent_name and root_model_id on the initial INSERT. On conflict (update),
-// root_agent_name and root_model_id are preserved via COALESCE — once set, they
-// are never overwritten.
+// root_agent_name and root_model_id. On conflict (update), root_agent_name and
+// root_model_id prefer the incoming (excluded) value via COALESCE — the sidecar
+// is authoritative and can correct a stale or wrong value on every state update.
 //
 // The Go sidecar is the authoritative source of root_agent_name: it calls this
-// method on every state transition when Config.AgentRole is set, seeding the
-// value from the agent role on the initial INSERT and preserving it on subsequent
-// UPDATEs. The TypeScript plugin (prism-hooks.ts) does not write root_agent_name.
+// method on every state transition when Config.AgentRole is set. Because the
+// sidecar value takes precedence, a row written with the wrong root_agent_name
+// (e.g. from a legacy or race-condition write) is corrected on the very next
+// sidecar call. The TypeScript plugin (prism-hooks.ts) does not write
+// root_agent_name.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()
@@ -401,8 +404,8 @@ ON CONFLICT(session_name) DO UPDATE SET
   opencode_sid    = COALESCE(excluded.opencode_sid, opencode_sid),
   agent_name      = COALESCE(excluded.agent_name, agent_name),
   model_id        = COALESCE(excluded.model_id, model_id),
-  root_agent_name = COALESCE(root_agent_name, excluded.root_agent_name),
-  root_model_id   = COALESCE(root_model_id, excluded.root_model_id),
+  root_agent_name = COALESCE(excluded.root_agent_name, root_agent_name),
+  root_model_id   = COALESCE(excluded.root_model_id, root_model_id),
   last_seen       = excluded.last_seen`
 	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, agentName, modelID, now)
 	if err != nil {

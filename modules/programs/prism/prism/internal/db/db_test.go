@@ -881,7 +881,8 @@ func TestUpsertStatusWithAgent(t *testing.T) {
 }
 
 // TestUpsertStatusWithRootAgent verifies that root_agent_name and root_model_id
-// are set on initial insert and never overwritten on subsequent upserts.
+// are set on insert and that a subsequent UpsertStatusWithRootAgent call with a
+// non-nil value overwrites them (sidecar is authoritative).
 func TestUpsertStatusWithRootAgent(t *testing.T) {
 	d := openTestDB(t)
 
@@ -930,7 +931,8 @@ func TestUpsertStatusWithRootAgent(t *testing.T) {
 		t.Errorf("RootModelID after subagent: got %v, want preserved original model", s2.RootModelID)
 	}
 
-	// UpsertStatusWithRootAgent on existing row must also not overwrite root fields.
+	// UpsertStatusWithRootAgent on existing row must overwrite root fields with
+	// the new sidecar-provided values (sidecar is authoritative, corrects stale values).
 	newAgent := strPtr("coordinator")
 	newModel := strPtr("github-copilot/gpt-4o")
 	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, newAgent, newModel); err != nil {
@@ -940,11 +942,51 @@ func TestUpsertStatusWithRootAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus (second root upsert): %v", err)
 	}
-	if s3.RootAgentName == nil || *s3.RootAgentName != "worker" {
-		t.Errorf("RootAgentName after second root upsert: got %v, want still \"worker\"", s3.RootAgentName)
+	if s3.RootAgentName == nil || *s3.RootAgentName != "coordinator" {
+		t.Errorf("RootAgentName after second root upsert: got %v, want \"coordinator\" (sidecar value wins)", s3.RootAgentName)
+	}
+	if s3.RootModelID == nil || *s3.RootModelID != "github-copilot/gpt-4o" {
+		t.Errorf("RootModelID after second root upsert: got %v, want \"github-copilot/gpt-4o\" (sidecar value wins)", s3.RootModelID)
 	}
 	if s3.AgentName == nil || *s3.AgentName != "coordinator" {
 		t.Errorf("AgentName after second root upsert: got %v, want \"coordinator\" (current agent updated)", s3.AgentName)
+	}
+}
+
+// TestUpsertStatusWithRootAgent_SidecarWins verifies that calling
+// UpsertStatusWithRootAgent twice — first with agentName="worker", then with
+// agentName="coordinator" — results in root_agent_name="coordinator".
+// The sidecar is authoritative and must be able to correct a stale or wrong value.
+func TestUpsertStatusWithRootAgent_SidecarWins(t *testing.T) {
+	d := openTestDB(t)
+
+	// First call: write with "worker" (simulating a stale/wrong initial value).
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "idle", nil, nil, strPtr("worker"), strPtr("model-old")); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent (first call): %v", err)
+	}
+
+	s1, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (first call): %v", err)
+	}
+	if s1.RootAgentName == nil || *s1.RootAgentName != "worker" {
+		t.Errorf("RootAgentName after first call: got %v, want \"worker\"", s1.RootAgentName)
+	}
+
+	// Second call: sidecar corrects with "coordinator". The new value must win.
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, strPtr("coordinator"), strPtr("model-new")); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent (second call): %v", err)
+	}
+
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (second call): %v", err)
+	}
+	if s2.RootAgentName == nil || *s2.RootAgentName != "coordinator" {
+		t.Errorf("RootAgentName after second call: got %v, want \"coordinator\" (sidecar value must win)", s2.RootAgentName)
+	}
+	if s2.RootModelID == nil || *s2.RootModelID != "model-new" {
+		t.Errorf("RootModelID after second call: got %v, want \"model-new\" (sidecar value must win)", s2.RootModelID)
 	}
 }
 
