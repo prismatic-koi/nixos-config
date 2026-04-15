@@ -42,6 +42,7 @@ jobs:
       - name: Push amd64 image to GHCR
         run: |
           nix run nixpkgs#skopeo -- copy \
+            --insecure-policy \
             oci-archive:$(readlink result) \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-amd64
 
@@ -77,6 +78,7 @@ jobs:
       - name: Push arm64 image to GHCR
         run: |
           nix run nixpkgs#skopeo -- copy \
+            --insecure-policy \
             oci-archive:$(readlink result) \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-arm64
 
