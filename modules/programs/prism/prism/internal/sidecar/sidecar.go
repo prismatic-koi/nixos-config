@@ -94,6 +94,11 @@ type Config struct {
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
 	AgentModel string
+	// InstanceID is the UUID assigned to this session incarnation by the
+	// tmux-session-start event handler. When non-empty it is written as
+	// to_instance_id on bus messages addressed to the coordinator, so that the
+	// coordinator only receives messages intended for its current instance.
+	InstanceID string
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
@@ -340,6 +345,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sidecar: connect to SSE stream: %w", err)
 	}
+
+	// opencode_sid gap detection: warn if opencode_sid stays NULL for more than
+	// 30 seconds after session start. A missing opencode_sid means events from
+	// this session are invisible to forensics tools (checkin, stats) because
+	// they cannot be correlated to an opencode session.
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(30 * time.Second):
+		}
+		s.mu.Lock()
+		sid := s.opencodeSID
+		s.mu.Unlock()
+		if sid == "" {
+			log.Printf("[warning] opencode_sid not received after 30s — session may be invisible to forensics")
+		}
+	}()
 
 	for evt := range ch {
 		s.HandleEvent(evt)
@@ -1267,14 +1290,24 @@ func (s *Sidecar) notifyCoordinator() {
 
 	notifyText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
 
+	// Capture the coordinator's current instance_id so the message is scoped
+	// to the correct incarnation of the coordinator. If the coordinator has no
+	// instance_id (e.g. legacy row), ToInstanceID remains nil and the message
+	// is delivered to any coordinator instance (backward-compatible).
+	var coordInstanceID *string
+	if coordStatus.InstanceID != nil {
+		coordInstanceID = coordStatus.InstanceID
+	}
+
 	msg := db.BusMessage{
-		ID:          uuid.New().String(),
-		FromSession: s.cfg.SessionName,
-		ToSession:   coordinatorName,
-		Repo:        s.cfg.Repo,
-		Text:        notifyText,
-		Urgency:     "normal",
-		SentAt:      time.Now(),
+		ID:           uuid.New().String(),
+		FromSession:  s.cfg.SessionName,
+		ToSession:    coordinatorName,
+		ToInstanceID: coordInstanceID,
+		Repo:         s.cfg.Repo,
+		Text:         notifyText,
+		Urgency:      "normal",
+		SentAt:       time.Now(),
 	}
 
 	// Try HTTP delivery if coordinator has port and session ID.

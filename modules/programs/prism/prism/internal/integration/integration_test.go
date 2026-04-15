@@ -254,7 +254,7 @@ func TestDBLifecycle_BusMessage(t *testing.T) {
 	}
 
 	// Must appear as a pending message for the target session.
-	pending, err := d.PendingMessages("myrepo@main", "normal")
+	pending, err := d.PendingMessages("myrepo@main", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestDBLifecycle_BusMessage(t *testing.T) {
 	}
 
 	// Messages to a different session must not appear.
-	otherPending, err := d.PendingMessages("myrepo@feat", "normal")
+	otherPending, err := d.PendingMessages("myrepo@feat", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages (wrong session): %v", err)
 	}

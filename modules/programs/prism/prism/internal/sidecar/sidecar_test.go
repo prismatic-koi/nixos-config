@@ -1595,7 +1595,7 @@ func waitForBusMessage(t *testing.T, d *db.DB, toSession string) *db.BusMessage 
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		msgs, err := d.PendingMessages(toSession, "normal")
+		msgs, err := d.PendingMessages(toSession, "normal", "")
 		if err != nil {
 			t.Fatalf("PendingMessages: %v", err)
 		}
@@ -1869,7 +1869,7 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	}
 
 	// Verify no undelivered message was written.
-	undelivered, err := d.PendingMessages("test-repo@main", "normal")
+	undelivered, err := d.PendingMessages("test-repo@main", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}

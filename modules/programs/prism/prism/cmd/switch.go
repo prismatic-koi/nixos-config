@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
@@ -463,6 +464,45 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	opts.Agent = session.DefaultAgent(directory, opts.Agent)
+
+	// Open the DB for the startup guard, instance ID generation, and port
+	// allocation. The DB handle is passed into opts.DB so that session.Create
+	// can check whether an existing tmux session with the same name is a live
+	// instance that needs to be force-killed before a new one is created.
+	d, dbErr := openDB()
+	if dbErr != nil {
+		// Non-fatal: log and continue without a DB. The startup guard will fall
+		// back to the simple HasSession check (legacy no-op behaviour).
+		fmt.Fprintf(os.Stderr, "warning: could not open DB for startup guard: %v\n", dbErr)
+	} else {
+		defer d.Close()
+		opts.DB = d
+	}
+
+	// Pre-generate a UUID instance_id and write it to agent_status before
+	// starting the sidecar. The sidecar is launched inside session.Create
+	// (before tmux-session-start fires), so the instance_id must be in the DB
+	// before the sidecar reads it. We also pass it via opts.InstanceID so
+	// StartSidecarWithOpts can forward it as --instance-id to the sidecar
+	// process without needing a DB read.
+	if d != nil && opts.Layout == session.LayoutFull {
+		instanceID := uuid.New().String()
+		// Ensure the agent_status row exists before writing instance_id.
+		// allocatePortForSession already upserts it, but call UpsertStatus
+		// here defensively in case port allocation is skipped.
+		repo := deriveRepo(directory)
+		if repo == "" {
+			if idx := strings.Index(sessionName, "@"); idx > 0 {
+				repo = sessionName[:idx]
+			}
+		}
+		_ = d.UpsertStatus(sessionName, repo, directory, "idle", nil, nil)
+		if err := d.SetInstanceID(sessionName, instanceID); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not set instance_id for %q: %v\n", sessionName, err)
+		} else {
+			opts.InstanceID = instanceID
+		}
+	}
 
 	// Allocate a port for full-layout sessions. The agent_status row must
 	// exist before we can write opencode_port to it, so we allocate after

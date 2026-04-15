@@ -277,7 +277,7 @@ func TestRunPrompt_HTTPDelivery(t *testing.T) {
 	}
 
 	// Verify an audit bus_messages row was written with delivered_at set.
-	pending, err := d.PendingMessages("repo@main", "normal")
+	pending, err := d.PendingMessages("repo@main", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestRunPrompt_BusFallback_NoPort(t *testing.T) {
 		t.Errorf("output should mention queued: got %q", output)
 	}
 
-	pending, err := d.PendingMessages("repo@legacy", "normal")
+	pending, err := d.PendingMessages("repo@legacy", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestRunPrompt_BusFallback_HTTPError(t *testing.T) {
 		t.Errorf("output should mention queued: got %q", output)
 	}
 
-	pending, err := d.PendingMessages("repo@fail", "normal")
+	pending, err := d.PendingMessages("repo@fail", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}
@@ -446,7 +446,7 @@ func TestWriteBusMessageDelivered(t *testing.T) {
 	}
 
 	// Must NOT appear in pending messages (delivered_at is set).
-	pending, err := d.PendingMessages("repo@receiver", "normal")
+	pending, err := d.PendingMessages("repo@receiver", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}

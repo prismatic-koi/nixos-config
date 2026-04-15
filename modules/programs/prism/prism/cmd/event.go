@@ -254,6 +254,29 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
 		}
 
+		// Determine the instance_id for this session incarnation. When the
+		// caller (ensureAndSwitch) has already written an instance_id to the DB
+		// (e.g. before starting the sidecar), we preserve it so the sidecar and
+		// the DB remain in sync. For standalone invocations (tmux hook, restore
+		// path) where no instance_id has been pre-written, generate a fresh UUID.
+		var instanceID string
+		if existing, stErr := d.CurrentStatus(session); stErr == nil && existing != nil && existing.InstanceID != nil {
+			instanceID = *existing.InstanceID
+		} else {
+			instanceID = uuid.New().String()
+			if err := d.SetInstanceID(session, instanceID); err != nil {
+				// Non-fatal: instance isolation degrades gracefully.
+				fmt.Fprintf(os.Stderr, "prism event tmux-session-start: set instance_id: %v\n", err)
+			}
+		}
+
+		// Purge any undelivered bus messages addressed to a previous incarnation
+		// of this session so stale messages don't leak into the new instance.
+		if err := d.PurgeStaleInstanceMessages(session, instanceID); err != nil {
+			// Non-fatal: log and continue.
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: purge stale instance messages: %v\n", err)
+		}
+
 		e := db.Event{
 			ID:          uuid.New().String(),
 			SessionName: session,
@@ -322,6 +345,13 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		}
 		if err := d.SetEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
+		}
+		// Clear instance_id so the session is no longer associated with a
+		// specific incarnation. Any undelivered bus messages for this instance
+		// are purged below via PurgeBusMessages.
+		if err := d.ClearInstanceID(session); err != nil {
+			// Non-fatal: log and continue.
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-end: clear instance_id: %v\n", err)
 		}
 		if err := d.PurgeBusMessages(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)

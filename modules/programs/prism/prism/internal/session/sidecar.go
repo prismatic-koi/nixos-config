@@ -176,6 +176,12 @@ type StartSidecarOpts struct {
 	// buildDirectOpencodeCmd (prepended to the opencode shell command) and does
 	// not need to go through the sidecar.
 	ConfigContent string
+	// InstanceID is the UUID instance identifier for this session incarnation.
+	// When non-empty, it is passed to the sidecar via --instance-id so that
+	// the sidecar can use it for container labels and bus message scoping
+	// without needing to read it back from the DB (which would race with the
+	// tmux-session-start event that writes instance_id to agent_status).
+	InstanceID string
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -246,6 +252,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 		if opts.ConfigContent != "" {
 			cmdArgs = append(cmdArgs, "--config-content", opts.ConfigContent)
 		}
+	}
+	if opts.InstanceID != "" {
+		cmdArgs = append(cmdArgs, "--instance-id", opts.InstanceID)
 	}
 
 	cmd := exec.Command(self, cmdArgs...)

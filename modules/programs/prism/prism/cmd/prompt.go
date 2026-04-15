@@ -127,13 +127,14 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	msg := db.BusMessage{
-		ID:          uuid.New().String(),
-		FromSession: fromSession,
-		ToSession:   sessionName,
-		Repo:        repo,
-		Text:        promptText,
-		Urgency:     "normal",
-		SentAt:      time.Now(),
+		ID:           uuid.New().String(),
+		FromSession:  fromSession,
+		ToSession:    sessionName,
+		ToInstanceID: status.InstanceID,
+		Repo:         repo,
+		Text:         promptText,
+		Urgency:      "normal",
+		SentAt:       time.Now(),
 	}
 
 	// Try HTTP delivery if port and session ID are available.
