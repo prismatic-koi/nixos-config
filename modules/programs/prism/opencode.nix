@@ -921,7 +921,7 @@
               ++ authPlugins;
               provider = providerSettings;
             };
-            rules = agentInstructions;
+            context = agentInstructions;
           };
           # Copy the MCP proxy script
           xdg.configFile."opencode/mcp-atlassian-slim-proxy.mjs" = {
