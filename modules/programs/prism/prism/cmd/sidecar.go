@@ -75,6 +75,7 @@ func init() {
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
 	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
+	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -89,6 +90,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 	configContent, _ := cmd.Flags().GetString("config-content")
+	instanceID, _ := cmd.Flags().GetString("instance-id")
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -120,14 +122,6 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// repo/worktree — mirroring what tmux-session-start does.
 	if err := d.UpsertStatus(sessionName, repo, worktree, "idle", nil, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
-	}
-
-	// Read the session's instance_id from agent_status. This is written by
-	// tmux-session-start and used to tag container labels and bus messages so
-	// they can be scoped to the correct session incarnation.
-	var instanceID string
-	if st, stErr := d.CurrentStatus(sessionName); stErr == nil && st != nil && st.InstanceID != nil {
-		instanceID = *st.InstanceID
 	}
 
 	// Load prism runtime config — needed for git identity and SSH key names.
