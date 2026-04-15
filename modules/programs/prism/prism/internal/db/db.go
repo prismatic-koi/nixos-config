@@ -1040,6 +1040,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 //     contains this substring (case-insensitive)
 //   - limit: when > 0, return at most this many events (default 20 when both
 //     limit==0 and sessionName=="")
+//
+// Note: audit events are subject to the same 90-day Prune() threshold as all
+// other agent_events rows. For the forensic use-case described in issue #642,
+// 90 days is sufficient, but audit events are not retained indefinitely.
 func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string, limit int) ([]Event, error) {
 	args := []any{}
 	conditions := []string{"type = 'audit'"}

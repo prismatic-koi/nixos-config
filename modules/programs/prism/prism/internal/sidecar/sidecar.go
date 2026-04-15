@@ -1081,15 +1081,11 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 			// Promote high-impact bash commands to the persistent audit log.
 			if part.Tool == "bash" {
 				if cmd := extractBashCommand(part.State.Input); isHighImpactCommand(cmd) {
-					opencodeSID := ""
-					if s.opencodeSID != "" {
-						opencodeSID = s.opencodeSID
-					}
 					s.writeEvent("audit", map[string]any{
 						"tool":        "bash",
 						"command":     cmd,
 						"sessionName": s.cfg.SessionName,
-						"opencodeSID": opencodeSID,
+						"opencodeSID": s.opencodeSID,
 						"messageId":   part.MessageID,
 					}, nil)
 					log.Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
@@ -1512,6 +1508,13 @@ var highImpactPrefixes = []string{
 
 // isHighImpactCommand reports whether cmd matches any high-impact prefix.
 // Matching is case-insensitive and ignores leading whitespace.
+//
+// Limitation: only the first (trimmed) line of the command is considered.
+// Multi-line shell scripts where a high-impact command appears after an earlier
+// line (e.g. "set -e\ngh pr merge 42") will not be matched. This is an
+// accepted trade-off: simple prefix matching is sufficient for the forensic
+// use-case and avoids false positives from subcommand arguments that happen to
+// start with a matched prefix.
 func isHighImpactCommand(cmd string) bool {
 	lower := strings.ToLower(strings.TrimSpace(cmd))
 	for _, prefix := range highImpactPrefixes {
