@@ -10,7 +10,9 @@
 //   - The container name is derived from the prism session name so it is
 //     predictable and idempotent.
 //   - Credentials are injected as environment variables, never as mounted files.
-//   - The container port is bound to 127.0.0.1 only — not 0.0.0.0.
+//   - The opencode serve container port (ContainerPort) is bound to 127.0.0.1
+//     only — not 0.0.0.0. The host-API TCP listener (Darwin only) intentionally
+//     binds 0.0.0.0 so the gvproxy bridge interface can reach it from the VM.
 package container
 
 import (

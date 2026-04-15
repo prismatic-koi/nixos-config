@@ -606,13 +606,15 @@ func TestBuildRunArgs_HostAPITCPPortPublishAndEnv(t *testing.T) {
 	})
 	args := m.buildRunArgs()
 
-	// Must NOT have --publish for the host-API port (no port forwarding needed;
-	// the container reaches the sidecar via host.containers.internal).
+	// Must NOT have --publish referencing the host-API port (no port forwarding
+	// needed; the container reaches the sidecar via host.containers.internal).
+	// AllocatedPort (14000) != hostPort (51234), so the opencode --publish is
+	// unambiguously distinct and needs no special carve-out.
 	for i, arg := range args {
 		if arg == "--publish" && i+1 < len(args) {
 			v := args[i+1]
-			if strings.Contains(v, fmt.Sprintf(":%d", hostPort)) && v != fmt.Sprintf("127.0.0.1:%d:%d", hostPort, ContainerPort) {
-				t.Errorf("unexpected --publish for host-API port when HostAPITCPPort is set: %q", v)
+			if strings.Contains(v, fmt.Sprintf(":%d", hostPort)) || strings.Contains(v, fmt.Sprintf("%d:", hostPort)) {
+				t.Errorf("unexpected --publish referencing host-API TCP port %d: %q", hostPort, v)
 			}
 		}
 	}
