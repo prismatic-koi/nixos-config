@@ -55,7 +55,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyPrompt(apiURL, sessionName, promptText, false)
+		return proxyPrompt(apiURL, sessionName, promptText)
 	}
 
 	// Open DB.

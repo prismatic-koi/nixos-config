@@ -184,11 +184,10 @@ func proxyCheckin(apiURL, session string, limit int, before, after *string, type
 
 // proxyPrompt proxies a prompt delivery request to the host-API sidecar.
 // apiURL is the value of PRISM_HOST_API.
-func proxyPrompt(apiURL, session, prompt string, urgent bool) error {
+func proxyPrompt(apiURL, session, prompt string) error {
 	return proxyToHostAPI(apiURL, "/prompt", map[string]any{
 		"session": session,
 		"prompt":  prompt,
-		"urgent":  urgent,
 	}, nil)
 }
 

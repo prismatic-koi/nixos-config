@@ -1887,7 +1887,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /prompt
-	// Request:  {"session":"<target>", "prompt":"<text>", "urgent": false}
+	// Request:  {"session":"<target>", "prompt":"<text>"}
 	// Permission: worker → own coordinator (@main) only;
 	//             coordinator → own repo any session, cross-repo coordinator only.
 	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
@@ -1898,7 +1898,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 			Prompt  string `json:"prompt"`
-			Urgent  bool   `json:"urgent"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
