@@ -48,7 +48,8 @@
         profiles = {
           anthropic = {
             primary = {
-              model = "anthropic/claude-opus-4-6";
+              model = "anthropic/claude-sonnet-4-6";
+              variant = "medium";
             };
             secondary = {
               model = "anthropic/claude-sonnet-4-6";
