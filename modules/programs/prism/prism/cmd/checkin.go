@@ -330,6 +330,8 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			// Collapse consecutive subagent turns into a single summary line.
 			// Count tool calls across all subagent entries in this run and
 			// measure the duration from first to last event.
+			// state_change events that fall between subagent turns are rendered
+			// inline before being consumed so they are not silently dropped.
 			runStart := entry.event.CreatedAt
 			runEnd := entry.event.CreatedAt
 			toolCalls := 0
@@ -338,6 +340,21 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			j := i
 			for j < len(timeline) && (timeline[j].entryKind == entryStateChange || isSubagentEntry(timeline[j])) {
 				e := timeline[j]
+				if e.entryKind == entryStateChange {
+					// Render state_change inline rather than silently dropping it.
+					var sc payload.StateChange
+					if jerr := json.Unmarshal([]byte(e.event.Payload), &sc); jerr != nil {
+						sc.State = e.event.Payload
+					}
+					scTS := e.event.CreatedAt.Local().Format("15:04:05")
+					scState := sc.State
+					if scState == "" {
+						scState = "(unknown)"
+					}
+					fmt.Printf("[%s] ● %s\n\n", scTS, scState)
+					j++
+					continue
+				}
 				if e.event.CreatedAt.After(runEnd) {
 					runEnd = e.event.CreatedAt
 				}
@@ -690,10 +707,15 @@ func renderChildEventsDefault(children []childEventItem, prefix string) {
 		}
 
 		keyArg := toolKeyArg(tc.tool, tc.args)
-		if resultSummary != "" {
+		switch {
+		case keyArg != "" && resultSummary != "":
 			fmt.Printf("%s  → %s: %s %s\n", prefix, tc.tool, keyArg, resultSummary)
-		} else {
+		case keyArg != "":
 			fmt.Printf("%s  → %s: %s\n", prefix, tc.tool, keyArg)
+		case resultSummary != "":
+			fmt.Printf("%s  → %s: %s\n", prefix, tc.tool, resultSummary)
+		default:
+			fmt.Printf("%s  → %s\n", prefix, tc.tool)
 		}
 	}
 
@@ -848,11 +870,24 @@ func bashResultSummary(result string) string {
 }
 
 // isErrorResult returns true if the result string looks like an error.
+// Uses conservative heuristics to avoid false positives — e.g. a file named
+// "error_handler.go" or a commit message containing "error" should not trigger
+// this. We require the error marker to appear at the start of the result, at
+// the start of a line, or as part of a well-known error pattern.
 func isErrorResult(result string) bool {
+	if strings.Contains(result, "✗") {
+		return true
+	}
 	lower := strings.ToLower(result)
-	return strings.Contains(lower, "error") ||
-		strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "✗")
+	// "Error:" at the beginning of the result or after a newline.
+	if strings.HasPrefix(lower, "error") ||
+		strings.Contains(lower, "\nerror") {
+		return true
+	}
+	// Explicit failure patterns.
+	return strings.Contains(lower, "failed:") ||
+		strings.Contains(lower, "failed\n") ||
+		strings.HasSuffix(lower, "failed")
 }
 
 // matchCountSummary returns "N matches" or "no matches" from a glob/grep result.
@@ -1079,8 +1114,13 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 //
 //	{"session":"<name>", "state":"<state>", "events":[...db.Event...]}
 //
-// It follows the same rendering logic as runCheckinSession but works from
-// pre-fetched events rather than the local DB.
+// NOTE: This function uses the legacy raw-event rendering (separate tool_call
+// and tool_result lines) rather than the rich default one-liner format. The
+// sidecar /checkin endpoint returns flat raw events, and the assistant-turn-centric
+// pairing logic used by renderCheckinTurns requires either a live DB connection
+// or a secondary query to resolve children by messageId — both of which are
+// unavailable in the proxy context. Upgrading this path to match the rich default
+// is tracked as future work.
 func renderProxiedCheckin(raw []byte, verbose bool) error {
 	var resp struct {
 		Session string     `json:"session"`

@@ -1199,6 +1199,49 @@ func TestToolKeyArg(t *testing.T) {
 	}
 }
 
+// TestRenderCheckinTurns_StateChangeInsideSubagentCollapse verifies that
+// state_change events between subagent turns are rendered inline rather than
+// silently dropped when the subagent collapse logic fires (bug regression test).
+func TestRenderCheckinTurns_StateChangeInsideSubagentCollapse(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	// Two subagent turns that bracket a state_change event.
+	sub1MsgID := "msg-sub1"
+	sub2MsgID := "msg-sub2"
+	sub1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub1MsgID, "sub turn 1", subAgent), base.Add(time.Second))
+	sub2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub2MsgID, "sub turn 2", subAgent), base.Add(3*time.Second))
+
+	// state_change at t=2s — between sub1 (t=1s) and sub2 (t=3s), so it falls
+	// within the [t=1s, t=3s] window and enters the timeline.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("finished"), base.Add(2*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{sub1, sub2}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// The state_change must appear even though the surrounding entries are
+	// subagent turns (which would otherwise be collapsed).
+	if !strings.Contains(out, "● finished") {
+		t.Errorf("state_change inside subagent collapse was silently dropped\ngot:\n%s", out)
+	}
+
+	// The subagent summary line must still appear.
+	if !strings.Contains(out, "└─ review") {
+		t.Errorf("subagent summary line missing\ngot:\n%s", out)
+	}
+}
+
 // TestToolResultSummary verifies result summary generation for various tool types.
 func TestToolResultSummary(t *testing.T) {
 	cases := []struct {
