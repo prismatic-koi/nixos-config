@@ -13,8 +13,6 @@
 #   trustedPublicKeys  — list of trusted public keys for the above substituters
 #
 # This function is called by:
-#   - modules/programs/prism/container-image.nix (NixOS module, passes values from
-#     config.nix.settings)
 #   - flake.nix (exposes packages.x86_64-linux.prismAgentImage and
 #     packages.aarch64-linux.prismAgentImage for CI to build and push to GHCR)
 {
