@@ -1032,6 +1032,71 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	return nil
 }
 
+// QueryAuditEvents returns audit events from agent_events, ordered by
+// created_at DESC. Optional filters:
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+//   - pattern: when non-empty, restrict to events whose payload command field
+//     contains this substring (case-insensitive)
+//   - limit: when > 0, return at most this many events (default 20 when both
+//     limit==0 and sessionName=="")
+//
+// Note: audit events are subject to the same 90-day Prune() threshold as all
+// other agent_events rows. For the forensic use-case described in issue #642,
+// 90 days is sufficient, but audit events are not retained indefinitely.
+func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string, limit int) ([]Event, error) {
+	args := []any{}
+	conditions := []string{"type = 'audit'"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	if pattern != "" {
+		conditions = append(conditions, "LOWER(JSON_EXTRACT(payload, '$.command')) LIKE ?")
+		args = append(args, "%"+strings.ToLower(pattern)+"%")
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+		where + " ORDER BY created_at DESC"
+
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	} else if sessionName == "" {
+		// Default: return the last 20 audit events when no session filter.
+		q += " LIMIT 20"
+	}
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query audit events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("db: scan audit event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate audit events: %w", err)
+	}
+	return events, nil
+}
+
 // Prune deletes agent_events older than olderThan, and delivered bus_messages
 // older than olderThan. It does NOT delete agent_status rows or undelivered
 // bus_messages.

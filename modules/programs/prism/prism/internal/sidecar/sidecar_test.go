@@ -868,6 +868,208 @@ func TestMessagePartUpdated_ToolCall(t *testing.T) {
 	}
 }
 
+// TestIsHighImpactCommand verifies the command pattern matching logic.
+func TestIsHighImpactCommand(t *testing.T) {
+	cases := []struct {
+		cmd      string
+		wantHigh bool
+	}{
+		// High-impact commands.
+		{"gh pr merge 42 --squash", true},
+		{"gh pr create --title 'foo'", true},
+		{"gh issue close 99", true},
+		{"git push", true},
+		{"git push origin main", true},
+		{"git push --force", true},
+		{"prism spawn nixos-config@feature", true},
+		{"prism cleanup nixos-config@feature", true},
+		{"prism prompt nixos-config@feature --prompt done", true},
+		// Case-insensitive.
+		{"GH PR MERGE 42", true},
+		{"GIT PUSH", true},
+		// Leading whitespace ignored.
+		{"  git push origin", true},
+		// Non-high-impact commands.
+		{"ls -la", false},
+		{"git status", false},
+		{"gh pr view 42", false},
+		{"git commit -m 'test'", false},
+		{"prism stats", false},
+		{"echo hello", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		got := isHighImpactCommand(tc.cmd)
+		if got != tc.wantHigh {
+			t.Errorf("isHighImpactCommand(%q) = %v, want %v", tc.cmd, got, tc.wantHigh)
+		}
+	}
+}
+
+// TestExtractBashCommand verifies bash input extraction.
+func TestExtractBashCommand(t *testing.T) {
+	t.Run("map input", func(t *testing.T) {
+		input := map[string]any{"command": "git push origin main"}
+		got := extractBashCommand(input)
+		if got != "git push origin main" {
+			t.Errorf("got %q, want %q", got, "git push origin main")
+		}
+	})
+
+	t.Run("nil input", func(t *testing.T) {
+		got := extractBashCommand(nil)
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("non-map input", func(t *testing.T) {
+		got := extractBashCommand("not a map")
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+
+	t.Run("map without command key", func(t *testing.T) {
+		input := map[string]any{"other": "value"}
+		got := extractBashCommand(input)
+		if got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+}
+
+// TestMessagePartUpdated_HighImpactBashCommand verifies that completing a
+// high-impact bash tool call also writes an audit event alongside the regular
+// tool_call and tool_result events.
+func TestMessagePartUpdated_HighImpactBashCommand(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	start := 1000.0
+	end := 2500.0
+	evt := makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-audit-1",
+			"tool":      "bash",
+			"state": map[string]any{
+				"status": "completed",
+				"input":  map[string]string{"command": "gh pr merge 42 --squash"},
+				"output": "Merged pull request #42",
+				"time":   map[string]*float64{"start": &start, "end": &end},
+			},
+		},
+	})
+	sc.HandleEvent(evt)
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var toolCalls, toolResults, auditEvents int
+	for _, e := range events {
+		switch e.Type {
+		case "tool_call":
+			toolCalls++
+		case "tool_result":
+			toolResults++
+		case "audit":
+			auditEvents++
+			// Verify audit payload fields.
+			var p map[string]any
+			if err := json.Unmarshal([]byte(e.Payload), &p); err != nil {
+				t.Errorf("unmarshal audit payload: %v", err)
+				continue
+			}
+			if p["tool"] != "bash" {
+				t.Errorf("audit tool = %v, want bash", p["tool"])
+			}
+			if p["command"] != "gh pr merge 42 --squash" {
+				t.Errorf("audit command = %v, want 'gh pr merge 42 --squash'", p["command"])
+			}
+			if p["sessionName"] != sc.cfg.SessionName {
+				t.Errorf("audit sessionName = %v, want %q", p["sessionName"], sc.cfg.SessionName)
+			}
+			if p["messageId"] != "msg-audit-1" {
+				t.Errorf("audit messageId = %v, want msg-audit-1", p["messageId"])
+			}
+		}
+	}
+	if toolCalls != 1 {
+		t.Errorf("tool_call count = %d, want 1", toolCalls)
+	}
+	if toolResults != 1 {
+		t.Errorf("tool_result count = %d, want 1", toolResults)
+	}
+	if auditEvents != 1 {
+		t.Errorf("audit event count = %d, want 1", auditEvents)
+	}
+}
+
+// TestMessagePartUpdated_NonHighImpactBashCommand verifies that low-impact
+// bash commands do NOT produce an audit event.
+func TestMessagePartUpdated_NonHighImpactBashCommand(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	start := 1000.0
+	end := 2000.0
+	evt := makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-noaudit-1",
+			"tool":      "bash",
+			"state": map[string]any{
+				"status": "completed",
+				"input":  map[string]string{"command": "ls -la"},
+				"output": "total 0",
+				"time":   map[string]*float64{"start": &start, "end": &end},
+			},
+		},
+	})
+	sc.HandleEvent(evt)
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	for _, e := range events {
+		if e.Type == "audit" {
+			t.Errorf("unexpected audit event for low-impact command 'ls -la': payload=%s", e.Payload)
+		}
+	}
+}
+
+// TestMessagePartUpdated_NonBashToolNoAudit verifies that high-impact-looking
+// args on non-bash tools do NOT trigger an audit event.
+func TestMessagePartUpdated_NonBashToolNoAudit(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	start := 1000.0
+	end := 2000.0
+	evt := makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-nontool-1",
+			"tool":      "read", // non-bash tool
+			"state": map[string]any{
+				"status": "completed",
+				"input":  map[string]string{"command": "gh pr merge 42"},
+				"output": "file contents",
+				"time":   map[string]*float64{"start": &start, "end": &end},
+			},
+		},
+	})
+	sc.HandleEvent(evt)
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	for _, e := range events {
+		if e.Type == "audit" {
+			t.Errorf("unexpected audit event for non-bash tool: payload=%s", e.Payload)
+		}
+	}
+}
+
 func TestMessagePartUpdated_Thinking(t *testing.T) {
 	sc, _ := newTestSidecar(t)
 

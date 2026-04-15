@@ -1728,3 +1728,156 @@ func setPort(d *db.DB, sessionName string, port int) error {
 	).Scan(&dummy)
 	return err
 }
+
+// ── QueryAuditEvents tests ────────────────────────────────────────────────────
+
+// writeAuditEvent is a test helper that writes an audit event to the DB.
+func writeAuditEvent(t *testing.T, d *db.DB, sessionName, repo, command string, createdAt time.Time) {
+	t.Helper()
+	e := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    "/code/" + repo + "/main",
+		Type:        "audit",
+		Payload:     fmt.Sprintf(`{"tool":"bash","command":%q,"sessionName":%q}`, command, sessionName),
+		CreatedAt:   createdAt,
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent audit: %v", err)
+	}
+}
+
+func TestQueryAuditEvents_NoFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 1", now.Add(-3*time.Hour))
+	writeAuditEvent(t, d, "repo@feat", "repo", "git push origin feat", now.Add(-2*time.Hour))
+	writeAuditEvent(t, d, "repo@feat", "repo", "gh pr create --title foo", now.Add(-1*time.Hour))
+
+	// Also write a non-audit event — should not appear.
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/code/repo/main",
+		Type:        "tool_call",
+		Payload:     `{"tool":"bash","args":"ls"}`,
+		CreatedAt:   now,
+	}); err != nil {
+		t.Fatalf("WriteEvent tool_call: %v", err)
+	}
+
+	events, err := d.QueryAuditEvents("", 0, "", 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	// Default limit is 20; all 3 audit events should be present.
+	if len(events) != 3 {
+		t.Errorf("got %d events, want 3", len(events))
+	}
+	// Verify all returned events have type=audit.
+	for _, e := range events {
+		if e.Type != "audit" {
+			t.Errorf("unexpected event type %q", e.Type)
+		}
+	}
+}
+
+func TestQueryAuditEvents_SessionFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 1", now.Add(-2*time.Hour))
+	writeAuditEvent(t, d, "repo@feat", "repo", "git push origin feat", now.Add(-1*time.Hour))
+
+	events, err := d.QueryAuditEvents("repo@main", 0, "", 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if events[0].SessionName != "repo@main" {
+		t.Errorf("sessionName = %q, want repo@main", events[0].SessionName)
+	}
+}
+
+func TestQueryAuditEvents_SinceFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	old := now.Add(-48 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 1", old)
+	writeAuditEvent(t, d, "repo@main", "repo", "git push origin main", recent)
+
+	// Filter to last 24h.
+	sinceMs := now.Add(-24 * time.Hour).UnixMilli()
+	events, err := d.QueryAuditEvents("", sinceMs, "", 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1 (only recent)", len(events))
+	}
+}
+
+func TestQueryAuditEvents_PatternFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 1 --squash", now.Add(-3*time.Hour))
+	writeAuditEvent(t, d, "repo@main", "repo", "git push origin main", now.Add(-2*time.Hour))
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr create --title foo", now.Add(-1*time.Hour))
+
+	// Pattern matching "merge" should match only the first.
+	events, err := d.QueryAuditEvents("", 0, "merge", 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if !strings.Contains(events[0].Payload, "merge") {
+		t.Errorf("event payload does not contain 'merge': %s", events[0].Payload)
+	}
+}
+
+func TestQueryAuditEvents_LimitFilter(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		writeAuditEvent(t, d, "repo@main", "repo", fmt.Sprintf("gh pr merge %d", i), now.Add(time.Duration(i)*time.Minute))
+	}
+
+	events, err := d.QueryAuditEvents("", 0, "", 3)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	if len(events) != 3 {
+		t.Errorf("got %d events, want 3", len(events))
+	}
+}
+
+func TestQueryAuditEvents_OrderedDescending(t *testing.T) {
+	d := openTestDB(t)
+
+	now := time.Now()
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 1", now.Add(-2*time.Hour))
+	writeAuditEvent(t, d, "repo@main", "repo", "gh pr merge 2", now.Add(-1*time.Hour))
+
+	events, err := d.QueryAuditEvents("", 0, "", 0)
+	if err != nil {
+		t.Fatalf("QueryAuditEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2", len(events))
+	}
+	// Results should be DESC (newest first).
+	if !events[0].CreatedAt.After(events[1].CreatedAt) {
+		t.Errorf("events not in DESC order: [0]=%v [1]=%v", events[0].CreatedAt, events[1].CreatedAt)
+	}
+}

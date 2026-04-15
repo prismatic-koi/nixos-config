@@ -158,3 +158,23 @@ type SubagentEnd struct {
 	DurationMs int64  `json:"durationMs,omitempty"`
 	MessageID  string `json:"messageId"`
 }
+
+// Audit is the payload for audit events, written when a high-impact bash
+// command is executed (e.g. gh pr merge, git push, prism spawn). These events
+// are promoted from the ephemeral opencode DB to the persistent prism DB so
+// they survive worktree cleanup.
+//
+// The Command field contains the full command string as passed to the bash tool.
+// SessionName, OpencodeSID, and MessageID provide forensic attribution.
+//
+// Note: an instanceId field (per issue #641) is intentionally absent until
+// the instance-ID feature lands. Once #641 is implemented, add an InstanceID
+// field here and populate it from the sidecar's instance ID so that audit
+// events can be attributed to a specific sidecar process invocation.
+type Audit struct {
+	Tool        string `json:"tool"`
+	Command     string `json:"command"`
+	SessionName string `json:"sessionName"`
+	OpencodeSID string `json:"opencodeSID,omitempty"`
+	MessageID   string `json:"messageId,omitempty"`
+}
