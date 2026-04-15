@@ -5227,3 +5227,200 @@ func TestHostAPI_Checkin_DefaultReturnsAssistantTurnsNotRawEvents(t *testing.T) 
 		t.Error("tool_call child event not found in response (turn-centric query should include it)")
 	}
 }
+
+// ── /logs ─────────────────────────────────────────────────────────────────────
+
+// TestHostAPI_Logs_WorkerForbidden verifies that a worker container receives
+// HTTP 403 when it tries to fetch logs.
+func TestHostAPI_Logs_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@main", "")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+// TestHostAPI_Logs_MissingSessionParam verifies that omitting the session
+// parameter returns HTTP 400.
+func TestHostAPI_Logs_MissingSessionParam(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs", "")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+// TestHostAPI_Logs_MissingLogFile verifies that a missing log file returns
+// HTTP 404 with the expected JSON error body.
+func TestHostAPI_Logs_MissingLogFile(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@main", "")
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "no log file for session") {
+		t.Errorf("error %q should mention 'no log file for session'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Logs_CoordinatorOwnRepo verifies that a coordinator can fetch
+// logs for a session in its own repo.
+func TestHostAPI_Logs_CoordinatorOwnRepo(t *testing.T) {
+	logContent := "2026-01-01 sidecar: starting\n2026-01-01 sidecar: event: session.created\n"
+	logPath := writeSidecarLogFile(t, "myrepo@feature", logContent)
+	_ = logPath // used via the sidecar's SidecarLogPath resolution
+
+	// Override XDG_STATE_HOME so the sidecar resolves the log to our temp file.
+	logDir := filepath.Dir(logPath)
+	stateDir := filepath.Dir(filepath.Dir(logDir)) // …/prism → parent of prism
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@feature", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != logContent {
+		t.Errorf("body = %q, want %q", rr.Body.String(), logContent)
+	}
+}
+
+// TestHostAPI_Logs_CoordinatorCrossRepoCoordinator verifies that a coordinator
+// can fetch logs for a cross-repo @main session.
+func TestHostAPI_Logs_CoordinatorCrossRepoCoordinator(t *testing.T) {
+	logContent := "cross-repo log line\n"
+	logPath := writeSidecarLogFile(t, "otherrepo@main", logContent)
+	_ = logPath
+	logDir := filepath.Dir(logPath)
+	stateDir := filepath.Dir(filepath.Dir(logDir))
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=otherrepo@main", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != logContent {
+		t.Errorf("body = %q, want %q", rr.Body.String(), logContent)
+	}
+}
+
+// TestHostAPI_Logs_CoordinatorCrossRepoNonCoordinatorForbidden verifies that a
+// coordinator cannot fetch logs for a cross-repo non-@main session.
+func TestHostAPI_Logs_CoordinatorCrossRepoNonCoordinatorForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=otherrepo@feature", "")
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "cross-repo") {
+		t.Errorf("error %q should mention 'cross-repo'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Logs_TailParam verifies that tail=N returns only the last N lines.
+func TestHostAPI_Logs_TailParam(t *testing.T) {
+	logContent := "alpha\nbeta\ngamma\ndelta\n"
+	logPath := writeSidecarLogFile(t, "myrepo@feature", logContent)
+	_ = logPath
+	logDir := filepath.Dir(logPath)
+	stateDir := filepath.Dir(filepath.Dir(logDir))
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@feature&tail=2", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	want := "gamma\ndelta\n"
+	if rr.Body.String() != want {
+		t.Errorf("body = %q, want %q", rr.Body.String(), want)
+	}
+}
+
+// TestHostAPI_Logs_TailZero verifies that tail=0 returns an empty body.
+func TestHostAPI_Logs_TailZero(t *testing.T) {
+	logContent := "line1\nline2\n"
+	logPath := writeSidecarLogFile(t, "myrepo@feature", logContent)
+	_ = logPath
+	logDir := filepath.Dir(logPath)
+	stateDir := filepath.Dir(filepath.Dir(logDir))
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@feature&tail=0", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.Body.String() != "" {
+		t.Errorf("body = %q, want empty (tail=0)", rr.Body.String())
+	}
+}
+
+// TestHostAPI_Logs_TailMoreThanLines verifies that tail=N where N > line count
+// returns all lines.
+func TestHostAPI_Logs_TailMoreThanLines(t *testing.T) {
+	logContent := "only\ntwo\nlines\n"
+	logPath := writeSidecarLogFile(t, "myrepo@feature", logContent)
+	_ = logPath
+	logDir := filepath.Dir(logPath)
+	stateDir := filepath.Dir(filepath.Dir(logDir))
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/logs?session=myrepo@feature&tail=100", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.Body.String() != logContent {
+		t.Errorf("body = %q, want %q", rr.Body.String(), logContent)
+	}
+}
+
+// writeSidecarLogFile creates a temporary sidecar log file for a session in a
+// temp state directory and returns its path. The caller must set XDG_STATE_HOME
+// to the parent of the "prism" directory so that SidecarLogPath resolves to it.
+func writeSidecarLogFile(t *testing.T, sessionName, content string) string {
+	t.Helper()
+	stateHome := t.TempDir()
+	logDir := filepath.Join(stateHome, "prism", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir log dir: %v", err)
+	}
+	logPath := filepath.Join(logDir, sessionName+"-sidecar.log")
+	if err := os.WriteFile(logPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+	// Return the stateHome so callers can set XDG_STATE_HOME.
+	// The logPath is: stateHome/prism/logs/<session>-sidecar.log
+	// But callers need stateHome itself for XDG_STATE_HOME.
+	// Return logPath; caller derives stateHome via filepath.Dir x3.
+	return logPath
+}

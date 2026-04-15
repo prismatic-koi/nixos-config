@@ -19,7 +19,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -189,6 +192,101 @@ func proxyPrompt(apiURL, session, prompt string) error {
 		"session": session,
 		"prompt":  prompt,
 	}, nil)
+}
+
+// proxyLogsFromHostAPI proxies a GET /logs request to the host-API sidecar
+// and streams the response body directly to w. For follow mode, it handles
+// Ctrl-C gracefully by cancelling the request context.
+func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, follow bool, w io.Writer) error {
+	sockPath, err := parseUnixSocketURL(apiURL)
+	if err != nil {
+		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
+	}
+
+	// Build URL with query parameters.
+	q := url.Values{}
+	q.Set("session", sessionName)
+	if tailSet {
+		q.Set("tail", fmt.Sprintf("%d", tail))
+	}
+	if follow {
+		q.Set("follow", "true")
+	}
+	rawURL := "http://prism-hostapi/logs?" + q.Encode()
+
+	// For follow mode, use a cancellable context so Ctrl-C exits cleanly.
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if follow {
+		ctx, cancel = context.WithCancel(ctx)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			select {
+			case <-sigCh:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		defer signal.Stop(sigCh)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("proxyLogsFromHostAPI: build request: %w", err)
+	}
+
+	// No timeout for follow (streaming); 60 s for one-shot reads.
+	var clientTimeout time.Duration
+	if !follow {
+		clientTimeout = 60 * time.Second
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				d := &net.Dialer{Timeout: 5 * time.Second}
+				conn, dialErr := d.DialContext(dialCtx, "unix", sockPath)
+				if dialErr != nil {
+					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
+				}
+				return conn, nil
+			},
+		},
+		Timeout: clientTimeout,
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		// Ctrl-C in follow mode: treat as clean exit.
+		if follow && ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("host-API /logs: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Error != "" {
+			return fmt.Errorf("host-API /logs: %s", errResp.Error)
+		}
+		return fmt.Errorf("host-API /logs: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	_, copyErr := io.Copy(w, resp.Body)
+	if copyErr != nil {
+		// Ctrl-C in follow mode: treat as clean exit.
+		if follow && ctx.Err() != nil {
+			return nil
+		}
+		return copyErr
+	}
+	return nil
 }
 
 // parseUnixSocketURL extracts the filesystem path from a unix:///path URL.

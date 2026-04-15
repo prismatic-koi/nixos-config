@@ -1606,6 +1606,133 @@ func isCoordinator(sessionName string) bool {
 	return strings.HasSuffix(sessionName, "@main")
 }
 
+// isHostAPITerminalState returns true when the agent state is a terminal state
+// for the purpose of the host-API /logs follow handler.
+func isHostAPITerminalState(state agent.AgentState) bool {
+	return state == agent.StateFinished ||
+		state == agent.StateInterrupted ||
+		state == agent.StateDeleted ||
+		state == agent.StateError
+}
+
+// hostAPIServeLogsTail writes the last n lines of the log file to w.
+// When n == 0, the response body is empty.
+func hostAPIServeLogsTail(w http.ResponseWriter, logPath string, n int) {
+	if n == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		http.Error(w, `{"error":"cannot open log"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		http.Error(w, `{"error":"cannot read log"}`, http.StatusInternalServerError)
+		return
+	}
+
+	content := string(data)
+	lines := strings.Split(content, "\n")
+	// Remove trailing empty entry produced when the file ends with a newline.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	if n < len(lines) {
+		lines = lines[len(lines)-n:]
+	}
+
+	w.WriteHeader(http.StatusOK)
+	for _, line := range lines {
+		_, _ = fmt.Fprintln(w, line)
+	}
+}
+
+// hostAPIServeLogsFollow streams the log file to w, keeping the connection
+// open until the session reaches a terminal state and 5 seconds of silence
+// elapse, or the client disconnects.
+func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSession, logPath string, s *Sidecar) {
+	f, err := os.Open(logPath)
+	if err != nil {
+		http.Error(w, `{"error":"cannot open log"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	flusher, canFlush := w.(http.Flusher)
+
+	// isTerminal checks the DB for a terminal agent state.
+	isTerminal := func() bool {
+		st, dbErr := s.cfg.DB.CurrentStatus(targetSession)
+		if dbErr != nil || st == nil {
+			return false
+		}
+		return isHostAPITerminalState(agent.AgentState(st.State))
+	}
+
+	// If the session is already in a terminal state, send the full existing
+	// log and return immediately.
+	if isTerminal() {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, f)
+		if canFlush {
+			flusher.Flush()
+		}
+		return
+	}
+
+	// Stream the existing content first, then poll for new lines.
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
+	if canFlush {
+		flusher.Flush()
+	}
+
+	ctx := r.Context()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	var (
+		terminalDetected bool
+		silenceDeadline  time.Time
+	)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, readErr := io.Copy(w, f)
+			if readErr != nil {
+				return
+			}
+			if n > 0 && canFlush {
+				flusher.Flush()
+			}
+
+			if terminalDetected {
+				// Reset the silence deadline each time new content arrives.
+				if n > 0 {
+					silenceDeadline = time.Now().Add(5 * time.Second)
+				} else if time.Now().After(silenceDeadline) {
+					// 5 s of silence after terminal state: close the connection.
+					return
+				}
+			} else {
+				if isTerminal() {
+					terminalDetected = true
+					silenceDeadline = time.Now().Add(5 * time.Second)
+				}
+			}
+		}
+	}
+}
+
 // hostAPIHandler returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
@@ -1884,6 +2011,90 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			"state":   state,
 			"events":  events,
 		})
+	})
+
+	// GET /logs
+	// Query params: session (required), tail (optional int ≥ 0), follow (optional bool)
+	// Permission: coordinator only; own-repo sessions or cross-repo @main sessions.
+	// Returns 404 with JSON error when the log file does not exist.
+	// When follow=true, streams new lines and closes after the session reaches a
+	// terminal state and 5 s of silence elapse.
+	mux.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "logs") {
+			return
+		}
+
+		q := r.URL.Query()
+		targetSession := q.Get("session")
+		if targetSession == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Permission check: own-repo sessions or cross-repo @main sessions.
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+		targetRepo, targetRepoErr := repoFromSession(targetSession)
+		if targetRepoErr != nil {
+			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			return
+		}
+		if targetRepo != ownRepo && !isCoordinator(targetSession) {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("cross-repo logs can only target coordinators (<repo>@main), got %q", targetSession))
+			return
+		}
+
+		// Resolve log file path.
+		logPath, pathErr := session.SidecarLogPath(targetSession)
+		if pathErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot resolve log path: "+pathErr.Error())
+			return
+		}
+		if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
+			writeError(w, http.StatusNotFound, fmt.Sprintf("no log file for session %s", targetSession))
+			return
+		}
+
+		// Parse optional tail param (non-negative integer).
+		tailN := 0
+		tailSet := false
+		if tailStr := q.Get("tail"); tailStr != "" {
+			if n, parseErr := strconv.Atoi(tailStr); parseErr == nil && n >= 0 {
+				tailN = n
+				tailSet = true
+			}
+		}
+
+		follow := q.Get("follow") == "true"
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+		if follow {
+			hostAPIServeLogsFollow(w, r, targetSession, logPath, s)
+			return
+		}
+
+		if tailSet {
+			hostAPIServeLogsTail(w, logPath, tailN)
+			return
+		}
+
+		// Full log: stream the whole file.
+		f, openErr := os.Open(logPath)
+		if openErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot open log: "+openErr.Error())
+			return
+		}
+		defer f.Close()
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.Copy(w, f)
 	})
 
 	// POST /prompt
