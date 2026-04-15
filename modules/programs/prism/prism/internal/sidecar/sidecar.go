@@ -1261,8 +1261,7 @@ func touchDashboardSentinel() {
 // coordinator has an opencode_port and opencode_sid, the notification is
 // delivered via HTTP POST to /session/<sid>/prompt_async. On success, an audit
 // row is written via WriteBusMessageDelivered. If the coordinator has no port
-// or the HTTP call fails, the notification falls back to WriteBusMessage
-// (undelivered, for plugin polling).
+// or the HTTP call fails, the error is logged.
 //
 // If no coordinator exists, it has ended, or this session IS the coordinator,
 // the call is a silent no-op.
@@ -1310,23 +1309,21 @@ func (s *Sidecar) notifyCoordinator() {
 		SentAt:       time.Now(),
 	}
 
-	// Try HTTP delivery if coordinator has port and session ID.
-	if coordStatus.OpencodePort != nil && coordStatus.OpencodeSID != nil {
-		httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus, s.cfg.HTTPClient)
-		if httpErr == nil {
-			// HTTP succeeded — write audit trail with delivered_at set.
-			if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
-				log.Printf("sidecar: notifyCoordinator: write audit bus message: %v", err)
-			}
-			return
-		}
-		// HTTP failed — log and fall through to bus_messages fallback.
-		log.Printf("sidecar: notifyCoordinator: HTTP delivery failed, falling back to bus: %v", httpErr)
+	// Require port and session ID for HTTP delivery.
+	if coordStatus.OpencodePort == nil || coordStatus.OpencodeSID == nil {
+		log.Printf("sidecar: notifyCoordinator: coordinator has no opencode port or session ID — cannot deliver notification")
+		return
 	}
 
-	// Fallback: write to bus_messages for plugin-based delivery.
-	if err := s.cfg.DB.WriteBusMessage(msg); err != nil {
-		log.Printf("sidecar: notifyCoordinator: write bus message: %v", err)
+	httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus, s.cfg.HTTPClient)
+	if httpErr != nil {
+		log.Printf("sidecar: notifyCoordinator: HTTP delivery failed: %v", httpErr)
+		return
+	}
+
+	// HTTP succeeded — write audit trail with delivered_at set.
+	if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
+		log.Printf("sidecar: notifyCoordinator: write audit bus message: %v", err)
 	}
 }
 

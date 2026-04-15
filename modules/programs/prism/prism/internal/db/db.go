@@ -961,49 +961,6 @@ func (d *DB) WaitingCount() (int, error) {
 	return n, nil
 }
 
-// PendingMessages returns undelivered bus_messages for toSession with the given
-// urgency. When instanceID is non-empty, only messages whose to_instance_id
-// matches are returned (messages addressed to a prior instance are excluded).
-// When instanceID is empty (legacy / no instance isolation), all undelivered
-// messages for toSession are returned regardless of to_instance_id.
-func (d *DB) PendingMessages(toSession string, urgency string, instanceID string) ([]BusMessage, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	if instanceID != "" {
-		const q = `
-SELECT id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at
-FROM bus_messages
-WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL
-  AND (to_instance_id IS NULL OR to_instance_id = ?)`
-		rows, err = d.conn.Query(q, toSession, urgency, instanceID)
-	} else {
-		const q = `
-SELECT id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at
-FROM bus_messages
-WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL`
-		rows, err = d.conn.Query(q, toSession, urgency)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("db: pending messages: %w", err)
-	}
-	defer rows.Close()
-
-	var msgs []BusMessage
-	for rows.Next() {
-		m, err := scanBusMessage(rows)
-		if err != nil {
-			return nil, fmt.Errorf("db: scan bus message: %w", err)
-		}
-		msgs = append(msgs, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("db: iterate bus messages: %w", err)
-	}
-	return msgs, nil
-}
-
 // SetInstanceID writes a UUID instance_id to the agent_status row for
 // sessionName. Called on tmux-session-start to uniquely identify this session
 // incarnation.
@@ -1048,19 +1005,6 @@ WHERE to_session = ?
   AND to_instance_id != ?`
 	if _, err := d.conn.Exec(q, toSession, currentInstanceID); err != nil {
 		return fmt.Errorf("db: purge stale instance messages: %w", err)
-	}
-	return nil
-}
-
-// MarkDelivered sets delivered_at on the given bus message.
-func (d *DB) MarkDelivered(messageID string) error {
-	now := time.Now().UnixMilli()
-	_, err := d.conn.Exec(
-		"UPDATE bus_messages SET delivered_at = ? WHERE id = ?",
-		now, messageID,
-	)
-	if err != nil {
-		return fmt.Errorf("db: mark delivered: %w", err)
 	}
 	return nil
 }

@@ -253,9 +253,6 @@ prism prompt nixos-config@update-plex --prompt-file /tmp/p.txt
 prism prompt nixos-config@update-plex --prompt - <<'EOF'
 run `make test` and fix any failures
 EOF
-
-# Urgent delivery — interrupt the agent within ~2 seconds
-prism prompt nixos-config@update-plex --urgent --prompt 'stop what you are doing and open the PR now'
 ```
 
 The same shell-escaping conventions that apply to `prism spawn` apply here —
@@ -267,9 +264,8 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 |---|---|
 | `--prompt <text>` | Prompt text to send. Supports `-` to read from stdin. |
 | `--prompt-file <path>` | Read prompt from a file. Mutually exclusive with `--prompt`. |
-| `--urgent` | Deliver within ~2 seconds via interrupt polling instead of waiting for the next idle event. |
 
-The prompt is written to the message bus and delivered by the opencode plugin. The session must exist and have an agent window — use `prism list-sessions` to check first.
+The prompt is delivered directly via HTTP to the opencode session. The session must exist and have an active opencode port — use `prism list-sessions` to check first.
 
 ### Waiting state guard
 

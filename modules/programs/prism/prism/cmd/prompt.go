@@ -7,7 +7,6 @@ package cmd
 //	prism prompt <session> --prompt <text>
 //	prism prompt <session> --prompt - < /tmp/prompt.txt
 //	prism prompt <session> --prompt-file /tmp/prompt.txt
-//	prism prompt <session> --urgent --prompt <text>
 
 import (
 	"bytes"
@@ -15,7 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,20 +34,15 @@ var promptCmd = &cobra.Command{
 	Long: `Send a follow-up message to the opencode agent running in the named tmux
 session. The session must already exist and have an agent window.
 
-When the target session has an opencode HTTP port, the prompt is delivered
-directly via POST /session/:id/prompt_async for instant delivery. A record
-is also written to bus_messages (with delivered_at set) for audit.
-
-If the target session has no port (pre-port-allocation sessions) or the
-HTTP request fails, the prompt falls back to writing to bus_messages for
-the plugin to deliver on its next poll cycle.`,
+The prompt is delivered directly via POST /session/:id/prompt_async for
+instant delivery. A record is also written to bus_messages (with delivered_at
+set) for audit. If HTTP delivery fails, an error is returned.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPrompt,
 }
 
 func init() {
 	addPromptFlags(promptCmd)
-	promptCmd.Flags().Bool("urgent", false, "Accepted for backward compatibility (no-op — HTTP delivery is instant)")
 	rootCmd.AddCommand(promptCmd)
 }
 
@@ -61,12 +54,8 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --urgent is accepted but ignored (HTTP delivery is instant).
-	urgentFlag, _ := cmd.Flags().GetBool("urgent")
-	_ = urgentFlag
-
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyPrompt(apiURL, sessionName, promptText, urgentFlag)
+		return proxyPrompt(apiURL, sessionName, promptText, false)
 	}
 
 	// Open DB.
@@ -137,34 +126,22 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		SentAt:       time.Now(),
 	}
 
-	// Try HTTP delivery if port and session ID are available.
-	if status.OpencodePort != nil && status.OpencodeSID != nil {
-		httpErr := deliverViaHTTP(*status.OpencodePort, *status.OpencodeSID, promptText, status)
-		if httpErr == nil {
-			// HTTP delivery succeeded — write audit trail with delivered_at set.
-			if err := database.WriteBusMessageDelivered(msg); err != nil {
-				// Non-fatal: HTTP delivery succeeded; audit write is best-effort.
-				fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
-			}
-			fmt.Printf("prompt delivered to %s via HTTP\n", sessionName)
-			return nil
-		}
-		// HTTP failed — log and fall through to bus_messages.
-		fmt.Fprintf(os.Stderr, "warning: HTTP delivery failed, falling back to bus: %v\n", httpErr)
+	// Require port and session ID for HTTP delivery.
+	if status.OpencodePort == nil || status.OpencodeSID == nil {
+		return fmt.Errorf("session %q has no opencode port or session ID — cannot deliver prompt", sessionName)
 	}
 
-	// Fallback: write to bus_messages for plugin-based delivery.
-	if err := database.WriteBusMessage(msg); err != nil {
-		return fmt.Errorf("write bus message: %w", err)
+	httpErr := deliverViaHTTP(*status.OpencodePort, *status.OpencodeSID, promptText, status)
+	if httpErr != nil {
+		return fmt.Errorf("HTTP delivery failed: %w", httpErr)
 	}
 
-	// Touch sentinel file so the Stage 8 dashboard watcher can react.
-	if err := touchBusSentinel(sessionName); err != nil {
-		// Non-fatal: DB write succeeded; sentinel is best-effort.
-		fmt.Fprintf(os.Stderr, "warning: could not touch bus sentinel: %v\n", err)
+	// HTTP delivery succeeded — write audit trail with delivered_at set.
+	if err := database.WriteBusMessageDelivered(msg); err != nil {
+		// Non-fatal: HTTP delivery succeeded; audit write is best-effort.
+		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
 	}
-
-	fmt.Printf("prompt queued for %s\n", sessionName)
+	fmt.Printf("prompt delivered to %s via HTTP\n", sessionName)
 	return nil
 }
 
@@ -245,32 +222,4 @@ func deriveSessionNameFromCWD(cwd string) string {
 		return ""
 	}
 	return session.NameFor(cwd, bareRoot)
-}
-
-// touchBusSentinel creates/updates the sentinel file at
-// $XDG_STATE_HOME/prism/bus/<session>.signal. The directory is created if
-// it does not exist.
-func touchBusSentinel(sessionName string) error {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("home dir: %w", err)
-		}
-		stateHome = filepath.Join(home, ".local", "state")
-	}
-	busDir := filepath.Join(stateHome, "prism", "bus")
-	if err := os.MkdirAll(busDir, 0o755); err != nil {
-		return fmt.Errorf("mkdir bus: %w", err)
-	}
-	sentinelPath := filepath.Join(busDir, sessionName+".signal")
-	f, err := os.OpenFile(sentinelPath, os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	now := time.Now()
-	return os.Chtimes(sentinelPath, now, now)
 }

@@ -234,8 +234,9 @@ func TestDBLifecycle_IdleActiveFinished(t *testing.T) {
 	}
 }
 
-// TestDBLifecycle_BusMessage verifies WriteBusMessage and PendingMessages.
-func TestDBLifecycle_BusMessage(t *testing.T) {
+// TestDBLifecycle_BusMessageDelivered verifies WriteBusMessageDelivered writes
+// an audit row with delivered_at set (HTTP-delivered prompt audit trail).
+func TestDBLifecycle_BusMessageDelivered(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -249,38 +250,18 @@ func TestDBLifecycle_BusMessage(t *testing.T) {
 		Urgency:     "normal",
 		SentAt:      time.Now(),
 	}
-	if err := d.WriteBusMessage(msg); err != nil {
-		t.Fatalf("WriteBusMessage: %v", err)
+	if err := d.WriteBusMessageDelivered(msg); err != nil {
+		t.Fatalf("WriteBusMessageDelivered: %v", err)
 	}
 
-	// Must appear as a pending message for the target session.
-	pending, err := d.PendingMessages("myrepo@main", "normal", "")
+	// Row must exist with delivered_at set.
+	var deliveredAt *int64
+	err := d.QueryRow("SELECT delivered_at FROM bus_messages WHERE id = ?", msgID).Scan(&deliveredAt)
 	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+		t.Fatalf("query delivered_at: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Fatalf("pending count: got %d, want 1", len(pending))
-	}
-	if pending[0].ID != msgID {
-		t.Errorf("message ID: got %q, want %q", pending[0].ID, msgID)
-	}
-	if pending[0].ToSession != "myrepo@main" {
-		t.Errorf("to_session: got %q, want %q", pending[0].ToSession, "myrepo@main")
-	}
-	if pending[0].Urgency != "normal" {
-		t.Errorf("urgency: got %q, want %q", pending[0].Urgency, "normal")
-	}
-	if pending[0].DeliveredAt != nil {
-		t.Error("DeliveredAt: got non-nil, want nil (undelivered)")
-	}
-
-	// Messages to a different session must not appear.
-	otherPending, err := d.PendingMessages("myrepo@feat", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages (wrong session): %v", err)
-	}
-	if len(otherPending) != 0 {
-		t.Errorf("wrong session pending count: got %d, want 0", len(otherPending))
+	if deliveredAt == nil {
+		t.Error("delivered_at: got nil, want non-nil (message delivered via HTTP)")
 	}
 }
 

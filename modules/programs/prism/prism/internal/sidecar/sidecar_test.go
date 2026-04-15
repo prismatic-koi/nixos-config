@@ -1589,24 +1589,6 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	}
 }
 
-// waitForBusMessage polls the DB for a bus message to toSession, with a short
-// timeout. Returns the first message found or nil.
-func waitForBusMessage(t *testing.T, d *db.DB, toSession string) *db.BusMessage {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		msgs, err := d.PendingMessages(toSession, "normal", "")
-		if err != nil {
-			t.Fatalf("PendingMessages: %v", err)
-		}
-		if len(msgs) > 0 {
-			return &msgs[0]
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return nil
-}
-
 // waitForBusMessageDelivered polls the DB for a delivered bus message
 // (delivered_at IS NOT NULL) to toSession.
 func waitForBusMessageDelivered(t *testing.T, d *db.DB, toSession string) *db.BusMessage {
@@ -1868,13 +1850,13 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 		t.Fatal("expected delivered audit bus message")
 	}
 
-	// Verify no undelivered message was written.
-	undelivered, err := d.PendingMessages("test-repo@main", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// Verify no undelivered message was written (only the audit delivered row).
+	var undeliveredCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NULL", "test-repo@main").Scan(&undeliveredCount); err != nil {
+		t.Fatalf("count undelivered: %v", err)
 	}
-	if len(undelivered) != 0 {
-		t.Errorf("expected no undelivered messages after HTTP success, got %d", len(undelivered))
+	if undeliveredCount != 0 {
+		t.Errorf("expected no undelivered messages after HTTP success, got %d", undeliveredCount)
 	}
 
 	// Verify the HTTP body contained the notification text.
@@ -1903,7 +1885,9 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	}
 }
 
-func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
+// TestNotifyCoordinator_HTTPFailure_NoFallback verifies that when HTTP delivery
+// fails, no bus message is written (no fallback — error is logged).
+func TestNotifyCoordinator_HTTPFailure_NoFallback(t *testing.T) {
 	d := openTestDB(t)
 
 	// Use a server that returns an error status.
@@ -1921,7 +1905,7 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 		t.Fatalf("parse test server port: %v", err)
 	}
 
-	coordSID := "coord-sid-fallback"
+	coordSID := "coord-sid-http-fail"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with the test server's HTTP client (returns 500).
@@ -1936,14 +1920,16 @@ func TestNotifyCoordinator_WriteBusMessageFallbackOnHTTPFailure(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Wait for fallback bus message (undelivered).
-	msg := waitForBusMessage(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected fallback bus message after HTTP failure")
+	// Give a brief window for the async notification goroutine to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// No bus messages should be written — HTTP failure is logged, not fallen back.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	wantText := "Agent test-repo@feature has finished its current task"
-	if msg.Text != wantText {
-		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages after HTTP failure (no fallback), got %d", totalMsgs)
 	}
 }
 
@@ -2093,7 +2079,10 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	}
 }
 
-func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
+// TestNotifyCoordinator_PortSetButNoSID_NoNotification verifies that when
+// the coordinator has a port but no opencode_sid, no notification is sent
+// and no bus message is written.
+func TestNotifyCoordinator_PortSetButNoSID_NoNotification(t *testing.T) {
 	d := openTestDB(t)
 	worker, clk := newWorkerSidecar(t, d, nil)
 
@@ -2120,14 +2109,16 @@ func TestNotifyCoordinator_PortSetButNoSID_FallsBackToBus(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Should fall back to undelivered bus message since opencode_sid is nil.
-	msg := waitForBusMessage(t, d, coordName)
-	if msg == nil {
-		t.Fatal("expected fallback bus message when coordinator has port but no sid")
+	// Give a brief window for the async notification goroutine to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// No bus messages should be written since port+sid combination is incomplete.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", coordName).Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
 	}
-	wantText := "Agent test-repo@feature has finished its current task"
-	if msg.Text != wantText {
-		t.Errorf("bus message text = %q, want %q", msg.Text, wantText)
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages when coordinator has port but no sid, got %d", totalMsgs)
 	}
 }
 
