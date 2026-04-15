@@ -2034,6 +2034,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Validate session name format before semantic permission checks.
+		// Valid session names are "repo@branch" — slashes and dot-segments are
+		// not valid and would escape the logs directory via filepath.Join.
+		if strings.Contains(targetSession, "/") || strings.Contains(targetSession, "..") {
+			writeError(w, http.StatusBadRequest, "invalid session name: must not contain '/' or '..'")
+			return
+		}
+
 		// Permission check: own-repo sessions or cross-repo @main sessions.
 		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
 		if repoErr != nil {
@@ -2048,14 +2056,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if targetRepo != ownRepo && !isCoordinator(targetSession) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("cross-repo logs can only target coordinators (<repo>@main), got %q", targetSession))
-			return
-		}
-
-		// Guard against path traversal: session names must not contain "/" or "..".
-		// Valid session names are "repo@branch" — slashes and dot-segments are not
-		// part of the format and would escape the logs directory via filepath.Join.
-		if strings.Contains(targetSession, "/") || strings.Contains(targetSession, "..") {
-			writeError(w, http.StatusBadRequest, "invalid session name: must not contain '/' or '..'")
 			return
 		}
 

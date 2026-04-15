@@ -237,24 +237,12 @@ func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, fo
 		return fmt.Errorf("proxyLogsFromHostAPI: build request: %w", err)
 	}
 
-	// No timeout for follow (streaming); 60 s for one-shot reads.
-	var clientTimeout time.Duration
-	if !follow {
-		clientTimeout = 60 * time.Second
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
-				d := &net.Dialer{Timeout: 5 * time.Second}
-				conn, dialErr := d.DialContext(dialCtx, "unix", sockPath)
-				if dialErr != nil {
-					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
-				}
-				return conn, nil
-			},
-		},
-		Timeout: clientTimeout,
+	// Reuse the shared client configuration from newHostAPIClient. For follow
+	// mode (streaming), override the default 60 s timeout to 0 (no timeout)
+	// so the connection is not cut while waiting for new log lines.
+	client := newHostAPIClient(sockPath)
+	if follow {
+		client.Timeout = 0
 	}
 
 	resp, err := client.Do(req)
