@@ -361,9 +361,10 @@ ON CONFLICT(session_name) DO UPDATE SET
 }
 
 // UpdateRootModelID unconditionally sets root_model_id for sessionName to the
-// given model value. Like UpsertStatusWithRootAgent, this always reflects the
-// latest sidecar-provided model, ensuring coordinator notifications always
-// reflect the live model configuration.
+// given model value. Unlike UpsertStatusWithRootAgent (which falls back to the
+// existing value when the incoming value is nil), this method always overwrites,
+// allowing the current session's model to replace a stale value from a prior
+// session.
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 // Called by the sidecar when a completed assistant message from the root agent
