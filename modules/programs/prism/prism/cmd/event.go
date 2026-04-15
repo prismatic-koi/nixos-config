@@ -254,13 +254,20 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
 		}
 
-		// Generate a new instance_id UUID for this session incarnation and write
-		// it to agent_status. This uniquely identifies this invocation so that
-		// bus messages and container labels can be scoped to the correct instance.
-		instanceID := uuid.New().String()
-		if err := d.SetInstanceID(session, instanceID); err != nil {
-			// Non-fatal: instance isolation degrades gracefully.
-			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: set instance_id: %v\n", err)
+		// Determine the instance_id for this session incarnation. When the
+		// caller (ensureAndSwitch) has already written an instance_id to the DB
+		// (e.g. before starting the sidecar), we preserve it so the sidecar and
+		// the DB remain in sync. For standalone invocations (tmux hook, restore
+		// path) where no instance_id has been pre-written, generate a fresh UUID.
+		var instanceID string
+		if existing, stErr := d.CurrentStatus(session); stErr == nil && existing != nil && existing.InstanceID != nil {
+			instanceID = *existing.InstanceID
+		} else {
+			instanceID = uuid.New().String()
+			if err := d.SetInstanceID(session, instanceID); err != nil {
+				// Non-fatal: instance isolation degrades gracefully.
+				fmt.Fprintf(os.Stderr, "prism event tmux-session-start: set instance_id: %v\n", err)
+			}
 		}
 
 		// Purge any undelivered bus messages addressed to a previous incarnation
