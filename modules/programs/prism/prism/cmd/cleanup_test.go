@@ -485,7 +485,7 @@ func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	sessionName := "obsidian"
+	sessionName := fmt.Sprintf("prism-test-headless-%d", time.Now().UnixNano())
 	if err := d.UpsertStatus(sessionName, "", "", "running", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
 // TestHeadlessCloseSession_NonWorktree_NoDB verifies that headlessCloseSession
 // exits 0 even when no DB row exists for the session (never recorded).
 func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
-	// Point openDB at an empty temp DB (no row for "obsidian").
+	// Point openDB at an empty temp DB (no row for the session).
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {
@@ -529,7 +529,8 @@ func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	if err := headlessCloseSession("obsidian"); err != nil {
+	sessionName := fmt.Sprintf("prism-test-headless-%d", time.Now().UnixNano())
+	if err := headlessCloseSession(sessionName); err != nil {
 		t.Errorf("headlessCloseSession returned error %v, want nil (no DB row)", err)
 	}
 }
