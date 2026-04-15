@@ -364,8 +364,11 @@ func (m *Manager) worktreeGitdirFilePath() string {
 // It first calls EnsureRemoved to handle any stale container with the same name.
 // Returns an error if podman create or start fails.
 func (m *Manager) Create(ctx context.Context) error {
+	createStart := time.Now()
+
 	// Remove any stale container first (AC-15).
 	m.EnsureRemoved(ctx)
+	log.Printf("[timing] EnsureRemoved: %s", time.Since(createStart).Round(time.Millisecond))
 
 	// Write corrected git pointer files for the container.
 	if m.cfg.BareRoot != "" && m.cfg.WorktreeGitDir != "" {
@@ -404,9 +407,11 @@ func (m *Manager) Create(ctx context.Context) error {
 	// in ~/.config/git/config (managed by home-manager) and is not mounted into
 	// containers. We generate a minimal config with identity, signing, and
 	// convenience settings.
+	t0 := time.Now()
 	if err := m.writeGitconfig(); err != nil {
 		return fmt.Errorf("container: write gitconfig: %w", err)
 	}
+	log.Printf("[timing] writeGitconfig: %s", time.Since(t0).Round(time.Millisecond))
 
 	// Write the opencode config file for the container. This replaces the
 	// previous OPENCODE_CONFIG_CONTENT env var approach so that relative plugin
@@ -419,16 +424,23 @@ func (m *Manager) Create(ctx context.Context) error {
 	}
 
 	// Build the podman run arguments.
+	t0 = time.Now()
 	args := m.buildRunArgs()
+	log.Printf("[timing] buildRunArgs: %s", time.Since(t0).Round(time.Millisecond))
 
 	log.Printf("container: creating %q: podman %s", m.name, strings.Join(redactArgs(args), " "))
 
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout = os.Stderr // forward container stdout to sidecar's stderr log
 	cmd.Stderr = os.Stderr
+	podmanStart := time.Now()
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("container: podman run %q: %w", m.name, err)
 	}
+	log.Printf("[timing] podman run: %s (total to here: %s)",
+		time.Since(podmanStart).Round(time.Millisecond),
+		time.Since(createStart).Round(time.Millisecond))
+	log.Printf("[timing] Create total: %s", time.Since(createStart).Round(time.Millisecond))
 
 	return nil
 }
@@ -442,7 +454,9 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 		timeout = DefaultHealthCheckTimeout
 	}
 
-	deadline := time.Now().Add(timeout)
+	waitStart := time.Now()
+	probeCount := 0
+	deadline := waitStart.Add(timeout)
 	for {
 		if time.Now().After(deadline) {
 			m.dumpLogs()
@@ -453,9 +467,15 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		if m.isHealthy(ctx) {
+		probeCount++
+		healthy := m.isHealthy(ctx)
+		elapsed := time.Since(waitStart).Round(time.Millisecond)
+		if healthy {
+			log.Printf("[timing] WaitHealthy probe %d: %s elapsed — ok", probeCount, elapsed)
+			log.Printf("[timing] WaitHealthy: %s (%d probes)", time.Since(waitStart).Round(time.Millisecond), probeCount)
 			return nil
 		}
+		log.Printf("[timing] WaitHealthy probe %d: %s elapsed — fail", probeCount, elapsed)
 
 		// Check if the container exited early — no point polling a dead
 		// container until the timeout expires.
