@@ -42,8 +42,10 @@ jobs:
       - name: Push amd64 image to GHCR
         run: |
           set -euo pipefail
+          archive=$(readlink result)
           nix run nixpkgs#skopeo -- copy \
-            docker-archive:$(readlink result) \
+            --insecure-policy \
+            "docker-archive:${archive}" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-amd64
 
   build-arm64:
@@ -78,8 +80,10 @@ jobs:
       - name: Push arm64 image to GHCR
         run: |
           set -euo pipefail
+          archive=$(readlink result)
           nix run nixpkgs#skopeo -- copy \
-            docker-archive:$(readlink result) \
+            --insecure-policy \
+            "docker-archive:${archive}" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-arm64
 
   publish-manifest:
