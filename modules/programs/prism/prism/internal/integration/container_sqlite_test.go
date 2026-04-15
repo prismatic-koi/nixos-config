@@ -2,13 +2,18 @@ package integration_test
 
 // TestConcurrentContainerSQLite validates that two (and four) concurrent
 // container sessions sharing the same host opencode state directory
-// (~/.local/share/opencode) do not produce SQLite lock errors.
+// do not produce SQLite lock errors.
 //
-// Background: every container mounts ~/.local/share/opencode read-write into
-// /root/.local/share/opencode inside the container (container.go:319–320).
+// Background: every container mounts an opencode state directory read-write
+// into /root/.local/share/opencode inside the container (container.go:319–320).
 // opencode uses SQLite for its state DB inside that directory. If opencode uses
 // the default journal mode (exclusive write locks), two concurrent writers
 // produce SQLITE_BUSY errors immediately. This test validates the scenario.
+//
+// A temporary directory (t.TempDir()) is used as the shared state directory
+// rather than ~/.local/share/opencode. This keeps the test hermetic and
+// prevents the :Z SELinux relabel from stealing the SELinux context of live
+// prism session containers that also mount ~/.local/share/opencode.
 //
 // # Scope and rationale
 //
@@ -48,9 +53,7 @@ package integration_test
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -98,16 +101,6 @@ func requirePrismAgentImage(t *testing.T, podmanBin string) {
 	}
 }
 
-// opencodeStateDir returns the host path that containers mount as the shared
-// opencode state directory. Mirrors container.go:319–320.
-func opencodeStateDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = os.Getenv("HOME")
-	}
-	return filepath.Join(home, ".local", "share", "opencode")
-}
-
 // containerResult holds the collected output and any error from a single
 // concurrent container run.
 type containerResult struct {
@@ -116,13 +109,18 @@ type containerResult struct {
 	err error
 }
 
-// runConcurrentContainers starts n containers, each mounting the shared
-// opencode state dir, lets them run for observationWindow, then collects logs.
-// Returns the collected results.
+// runConcurrentContainers starts n containers, each mounting a shared
+// temporary opencode state dir, lets them run for observationWindow, then
+// collects logs. Returns the collected results.
 func runConcurrentContainers(t *testing.T, podmanBin string, n int) []containerResult {
 	t.Helper()
 
-	stateDir := opencodeStateDir()
+	// Use an isolated temp directory as the shared opencode state dir.
+	// t.TempDir() is created automatically and cleaned up by the test framework.
+	// This keeps the test hermetic and avoids the :Z SELinux relabel from
+	// affecting ~/.local/share/opencode or any live prism session containers
+	// that mount that path.
+	stateDir := t.TempDir()
 
 	// Use a stable, test-unique prefix so cleanup is reliable.
 	prefix := fmt.Sprintf("prism-sqlite-concurrency-test-%d", time.Now().UnixNano())
@@ -144,15 +142,6 @@ func runConcurrentContainers(t *testing.T, podmanBin string, n int) []containerR
 			}
 		}
 	})
-
-	// Ensure the state directory exists on the host so the mount succeeds.
-	// This mirrors what the prism sidecar relies on (the host user's opencode
-	// state dir is always present after opencode has been run at least once).
-	// t.Cleanup is already registered above, so if MkdirAll fails here no
-	// containers exist yet — the cleanup loop's --ignore flag handles that.
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
-		t.Fatalf("create opencode state dir %q: %v", stateDir, err)
-	}
 
 	// Start all N containers concurrently. Each mounts the shared opencode
 	// state dir and runs opencode serve, exactly as the prism sidecar does.
@@ -249,8 +238,8 @@ func assertNoSQLiteLockErrors(t *testing.T, results []containerResult) {
 				foundError = true
 				t.Errorf(
 					"container %d: SQLite lock error %q detected in logs.\n"+
-						"This indicates the shared ~/.local/share/opencode state "+
-						"directory causes lock contention when accessed from "+
+						"This indicates the shared opencode state directory "+
+						"causes lock contention when accessed from "+
 						"multiple concurrent containers.\n\n"+
 						"Container log excerpt:\n%s",
 					r.id, pat, truncateLog(r.log, 2000),
@@ -272,7 +261,7 @@ func truncateLog(log string, n int) string {
 }
 
 // TestConcurrentContainerSQLite_TwoSessions spawns two concurrent container
-// sessions sharing the same opencode state directory and verifies no SQLite
+// sessions sharing a temporary opencode state directory and verifies no SQLite
 // lock errors occur. This is the minimum concurrent load scenario (AC-1).
 //
 // Skipped automatically when podman is not available or the prism-agent image
@@ -281,13 +270,13 @@ func TestConcurrentContainerSQLite_TwoSessions(t *testing.T) {
 	podmanBin := requirePodman(t)
 	requirePrismAgentImage(t, podmanBin)
 
-	t.Log("starting 2 concurrent containers sharing ~/.local/share/opencode")
+	t.Log("starting 2 concurrent containers sharing a temporary opencode state directory")
 	results := runConcurrentContainers(t, podmanBin, 2)
 	assertNoSQLiteLockErrors(t, results)
 }
 
 // TestConcurrentContainerSQLite_FourSessions extends the two-session test to
-// four concurrent sessions (AC-4). Heavier concurrent load surfaces
+// four concurrent sessions (AC-4). Heavier concurrent load surfaces lock
 // contention that may not appear with just two writers.
 //
 // Skipped automatically when podman is not available or the prism-agent image
@@ -296,7 +285,7 @@ func TestConcurrentContainerSQLite_FourSessions(t *testing.T) {
 	podmanBin := requirePodman(t)
 	requirePrismAgentImage(t, podmanBin)
 
-	t.Log("starting 4 concurrent containers sharing ~/.local/share/opencode")
+	t.Log("starting 4 concurrent containers sharing a temporary opencode state directory")
 	results := runConcurrentContainers(t, podmanBin, 4)
 	assertNoSQLiteLockErrors(t, results)
 }
