@@ -590,6 +590,149 @@ func TestBuildRunArgs_NoHostAPISockWhenEmpty(t *testing.T) {
 	}
 }
 
+// ── HostAPITCPPort / Darwin TCP path tests ───────────────────────────────────
+
+// TestBuildRunArgs_HostAPITCPPortPublishAndEnv asserts that when HostAPITCPPort
+// is non-zero, buildRunArgs emits --publish 127.0.0.1:<port>:4097 and
+// PRISM_HOST_API=http://127.0.0.1:4097, and that NO unix:// env var or
+// socket-directory volume is present.
+func TestBuildRunArgs_HostAPITCPPortPublishAndEnv(t *testing.T) {
+	const hostPort = 51234
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "/home/user/.local/state/prism/run/repo@feat-hostapi.sock",
+		HostAPITCPPort:  hostPort,
+	})
+	args := m.buildRunArgs()
+
+	// Must have --publish 127.0.0.1:51234:4097.
+	wantPublish := fmt.Sprintf("127.0.0.1:%d:%d", hostPort, HostAPIContainerPort)
+	foundPublish := false
+	for i, arg := range args {
+		if arg == "--publish" && i+1 < len(args) && args[i+1] == wantPublish {
+			foundPublish = true
+			break
+		}
+	}
+	if !foundPublish {
+		t.Errorf("expected --publish %s in args, not found: %v", wantPublish, args)
+	}
+
+	// Must have PRISM_HOST_API=http://127.0.0.1:4097.
+	wantEnv := fmt.Sprintf("PRISM_HOST_API=http://127.0.0.1:%d", HostAPIContainerPort)
+	foundEnv := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == wantEnv {
+			foundEnv = true
+			break
+		}
+	}
+	if !foundEnv {
+		t.Errorf("expected --env %s in args, not found: %v", wantEnv, args)
+	}
+
+	// Must NOT have unix:// env var.
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "unix://") {
+				t.Errorf("unexpected unix:// in PRISM_HOST_API when HostAPITCPPort is set: %q", args[i+1])
+			}
+		}
+	}
+
+	// Must NOT have socket-directory volume mount (/var/run/prism-host).
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "prism-host") {
+				t.Errorf("unexpected socket-directory volume mount when HostAPITCPPort is set: %q", args[i+1])
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_HostAPISockUnixPathLinux asserts that when HostAPITCPPort is
+// zero and HostAPISockPath is non-empty (Linux path), the args still include the
+// unix:// env var and socket-directory volume, and no --publish flag for port
+// 4097 is present.
+func TestBuildRunArgs_HostAPISockUnixPathLinux(t *testing.T) {
+	const sockPath = "/home/user/.local/state/prism/run/repo@feat-hostapi.sock"
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: sockPath,
+		HostAPITCPPort:  0, // Linux path
+	})
+	args := m.buildRunArgs()
+
+	// Must have unix:// env var.
+	wantEnv := "PRISM_HOST_API=unix:///var/run/prism-host/repo@feat-hostapi.sock"
+	foundEnv := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == wantEnv {
+			foundEnv = true
+			break
+		}
+	}
+	if !foundEnv {
+		t.Errorf("expected --env %s in args, not found: %v", wantEnv, args)
+	}
+
+	// Must have socket-directory volume mount.
+	wantMount := "/home/user/.local/state/prism/run:/var/run/prism-host:Z"
+	foundMount := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && args[i+1] == wantMount {
+			foundMount = true
+			break
+		}
+	}
+	if !foundMount {
+		t.Errorf("expected --volume %s in args, not found: %v", wantMount, args)
+	}
+
+	// Must NOT have --publish for port 4097.
+	wantNoPublish := fmt.Sprintf(":%d", HostAPIContainerPort)
+	for i, arg := range args {
+		if arg == "--publish" && i+1 < len(args) {
+			if strings.Contains(args[i+1], wantNoPublish) {
+				t.Errorf("unexpected --publish for port %d when HostAPITCPPort is zero: %q", HostAPIContainerPort, args[i+1])
+			}
+		}
+	}
+
+	// Must NOT have http:// in PRISM_HOST_API.
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			if strings.HasPrefix(args[i+1], "PRISM_HOST_API=http://") {
+				t.Errorf("unexpected http:// PRISM_HOST_API when HostAPITCPPort is zero: %q", args[i+1])
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_HostAPITCPPort_LoopbackOnly asserts that the --publish flag
+// for the host-API TCP port is constrained to 127.0.0.1 (never 0.0.0.0).
+func TestBuildRunArgs_HostAPITCPPort_LoopbackOnly(t *testing.T) {
+	m := New(Config{
+		SessionName:    "repo@feat",
+		AllocatedPort:  14000,
+		HostAPITCPPort: 51234,
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--publish" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, fmt.Sprintf(":%d", HostAPIContainerPort)) {
+				if !strings.HasPrefix(v, "127.0.0.1:") {
+					t.Errorf("host-API --publish is not loopback-only: %q", v)
+				}
+			}
+		}
+	}
+}
+
 // ── credentialEnvVars tests ──────────────────────────────────────────────────
 
 func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {

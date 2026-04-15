@@ -27,8 +27,7 @@ import (
 )
 
 // newHostAPIClient returns an *http.Client that dials sockPath over a Unix
-// socket. Both proxyToHostAPI and proxyGetFromHostAPI share this client to
-// avoid duplicating the transport configuration.
+// socket. Used when PRISM_HOST_API begins with "unix://".
 func newHostAPIClient(sockPath string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -41,6 +40,15 @@ func newHostAPIClient(sockPath string) *http.Client {
 				return conn, nil
 			},
 		},
+		Timeout: 60 * time.Second,
+	}
+}
+
+// newTCPHostAPIClient returns a standard *http.Client that dials over TCP.
+// Used when PRISM_HOST_API begins with "http://". No custom DialContext is
+// needed — the default transport resolves and dials the host:port from the URL.
+func newTCPHostAPIClient() *http.Client {
+	return &http.Client{
 		Timeout: 60 * time.Second,
 	}
 }
@@ -74,27 +82,37 @@ func readHostAPIResponse(endpoint string, resp *http.Response, respDst any) erro
 	return nil
 }
 
-// proxyToHostAPI sends a request to the host-API Unix socket server and returns
-// the parsed response. apiURL is the value of PRISM_HOST_API
-// (e.g. "unix:///var/run/prism-host/nixos-config@main-hostapi.sock"). endpoint is the path
-// (e.g. "/spawn"). body is marshalled to JSON and sent as the request body.
-// On success, response JSON is unmarshalled into respDst (may be nil).
+// proxyToHostAPI sends a request to the host-API server and returns the parsed
+// response. apiURL is the value of PRISM_HOST_API — either a unix:// URL (Linux)
+// or an http:// URL (Darwin TCP path). endpoint is the path (e.g. "/spawn").
+// body is marshalled to JSON and sent as the request body. On success, response
+// JSON is unmarshalled into respDst (may be nil).
 func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
-	sockPath, err := parseUnixSocketURL(apiURL)
-	if err != nil {
-		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
-	}
-
-	client := newHostAPIClient(sockPath)
-
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("proxyToHostAPI: marshal request body: %w", err)
 	}
 
-	// Use "prism-hostapi" as the Host header — it is irrelevant for Unix socket
-	// connections but required by http.Client for a valid HTTP/1.1 request.
-	req, err := http.NewRequest(http.MethodPost, "http://prism-hostapi"+endpoint, bytes.NewReader(bodyBytes))
+	var client *http.Client
+	var reqURL string
+
+	if strings.HasPrefix(apiURL, "http://") {
+		// TCP path (Darwin): use the http:// URL directly — standard TCP dial.
+		client = newTCPHostAPIClient()
+		reqURL = apiURL + endpoint
+	} else {
+		// Unix socket path (Linux): extract socket path and use a fake host.
+		sockPath, parseErr := parseUnixSocketURL(apiURL)
+		if parseErr != nil {
+			return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+		}
+		client = newHostAPIClient(sockPath)
+		// "prism-hostapi" is a placeholder Host header — irrelevant for Unix
+		// socket connections but required for a valid HTTP/1.1 request.
+		reqURL = "http://prism-hostapi" + endpoint
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return fmt.Errorf("proxyToHostAPI: build request: %w", err)
 	}
@@ -107,21 +125,28 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 	return readHostAPIResponse(endpoint, resp, respDst)
 }
 
-// proxyGetFromHostAPI sends a GET request to the host-API Unix socket server
-// with optional query parameters and returns the parsed response. apiURL is the
-// value of PRISM_HOST_API. endpoint is the path (e.g. "/list-sessions").
-// params are appended as properly-encoded URL query parameters. On success,
-// response JSON is unmarshalled into respDst (may be nil).
+// proxyGetFromHostAPI sends a GET request to the host-API server with optional
+// query parameters and returns the parsed response. apiURL is the value of
+// PRISM_HOST_API — either unix:// or http://. endpoint is the path (e.g.
+// "/list-sessions"). params are appended as properly-encoded URL query
+// parameters. On success, response JSON is unmarshalled into respDst (may be nil).
 func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, respDst any) error {
-	sockPath, err := parseUnixSocketURL(apiURL)
-	if err != nil {
-		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
+	var client *http.Client
+	var rawURL string
+
+	if strings.HasPrefix(apiURL, "http://") {
+		client = newTCPHostAPIClient()
+		rawURL = apiURL + endpoint
+	} else {
+		sockPath, parseErr := parseUnixSocketURL(apiURL)
+		if parseErr != nil {
+			return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+		}
+		client = newHostAPIClient(sockPath)
+		rawURL = "http://prism-hostapi" + endpoint
 	}
 
-	client := newHostAPIClient(sockPath)
-
-	// Build URL with properly percent-encoded query parameters.
-	rawURL := "http://prism-hostapi" + endpoint
+	// Append properly percent-encoded query parameters.
 	if len(params) > 0 {
 		q := url.Values{}
 		for k, v := range params {
@@ -194,13 +219,24 @@ func proxyPrompt(apiURL, session, prompt string) error {
 	}, nil)
 }
 
-// proxyLogsFromHostAPI proxies a GET /logs request to the host-API sidecar
-// and streams the response body directly to w. For follow mode, it handles
-// Ctrl-C gracefully by cancelling the request context.
+// proxyLogsFromHostAPI proxies a GET /logs request to the host-API server and
+// streams the response body directly to w. For follow mode, it handles Ctrl-C
+// gracefully by cancelling the request context. apiURL is either a unix:// or
+// http:// URL depending on the platform.
 func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, follow bool, w io.Writer) error {
-	sockPath, err := parseUnixSocketURL(apiURL)
-	if err != nil {
-		return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, err)
+	var client *http.Client
+	var baseURL string
+
+	if strings.HasPrefix(apiURL, "http://") {
+		client = newTCPHostAPIClient()
+		baseURL = apiURL
+	} else {
+		sockPath, parseErr := parseUnixSocketURL(apiURL)
+		if parseErr != nil {
+			return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+		}
+		client = newHostAPIClient(sockPath)
+		baseURL = "http://prism-hostapi"
 	}
 
 	// Build URL with query parameters.
@@ -212,7 +248,7 @@ func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, fo
 	if follow {
 		q.Set("follow", "true")
 	}
-	rawURL := "http://prism-hostapi/logs?" + q.Encode()
+	rawURL := baseURL + "/logs?" + q.Encode()
 
 	// For follow mode, use a cancellable context so Ctrl-C exits cleanly.
 	ctx := context.Background()
@@ -237,10 +273,8 @@ func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, fo
 		return fmt.Errorf("proxyLogsFromHostAPI: build request: %w", err)
 	}
 
-	// Reuse the shared client configuration from newHostAPIClient. For follow
-	// mode (streaming), override the default 60 s timeout to 0 (no timeout)
-	// so the connection is not cut while waiting for new log lines.
-	client := newHostAPIClient(sockPath)
+	// For follow mode (streaming), override the default 60 s timeout to 0
+	// (no timeout) so the connection is not cut while waiting for new log lines.
 	if follow {
 		client.Timeout = 0
 	}

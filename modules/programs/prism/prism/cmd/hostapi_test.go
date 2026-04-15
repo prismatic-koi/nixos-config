@@ -58,6 +58,34 @@ func (m *mockUnixServer) apiURL() string {
 	return "unix://" + m.sockPath
 }
 
+// newMockTCPServer starts a minimal HTTP server on a real TCP listener bound to
+// 127.0.0.1:0 and returns the server. The allocated address (including port) is
+// available via srv.Addr().
+type mockTCPServer struct {
+	listener net.Listener
+	server   *http.Server
+}
+
+func newMockTCPServer(t *testing.T, handlerFn http.HandlerFunc) *mockTCPServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	srv := &http.Server{Handler: handlerFn}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	})
+	return &mockTCPServer{listener: ln, server: srv}
+}
+
+// apiURL returns the http:// URL for this TCP server.
+func (m *mockTCPServer) apiURL() string {
+	return "http://" + m.listener.Addr().String()
+}
+
 // ── proxyToHostAPI unit tests ─────────────────────────────────────────────────
 
 // TestProxyToHostAPI_SendsCorrectRequestAndParsesResponse verifies AC-4 and
@@ -131,10 +159,11 @@ func TestProxyToHostAPI_ReturnsErrorOnHTTP500(t *testing.T) {
 	}
 }
 
-// TestProxyToHostAPI_MalformedURL verifies AC-8: a URL that does not start
-// with "unix://" returns a clear error rather than panicking.
+// TestProxyToHostAPI_MalformedURL verifies that a URL with an unsupported scheme
+// (neither "unix://" nor "http://") returns a clear "unsupported scheme" error.
 func TestProxyToHostAPI_MalformedURL(t *testing.T) {
-	err := proxyToHostAPI("http://localhost:1234", "/spawn", map[string]any{}, nil)
+	// "ftp://" is neither unix:// nor http:// — should return unsupported scheme.
+	err := proxyToHostAPI("ftp://localhost:1234", "/spawn", map[string]any{}, nil)
 	if err == nil {
 		t.Fatal("expected non-nil error for unsupported scheme")
 	}
@@ -642,6 +671,146 @@ func TestProxyPrompt_Returns403AsError(t *testing.T) {
 		t.Fatal("expected non-nil error for 403 response")
 	}
 	if !strings.Contains(err.Error(), "workers can only prompt") {
+		t.Errorf("error %q does not contain expected message", err.Error())
+	}
+}
+
+// ── TCP (http://) scheme tests ────────────────────────────────────────────────
+
+// TestProxyToHostAPI_TCPScheme starts a real TCP server, sets PRISM_HOST_API
+// to http://127.0.0.1:<port>, calls proxyToHostAPI, and asserts the request is
+// received and the response is parsed correctly.
+func TestProxyToHostAPI_TCPScheme(t *testing.T) {
+	type reqBody struct {
+		Session string `json:"session"`
+		Prompt  string `json:"prompt"`
+	}
+	type respBody struct {
+		OK bool `json:"ok"`
+	}
+
+	var capturedMethod string
+	var capturedPath string
+	var capturedBody reqBody
+
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+
+	var got respBody
+	err := proxyToHostAPI(srv.apiURL(), "/prompt",
+		reqBody{Session: "myrepo@main", Prompt: "do the thing"}, &got)
+	if err != nil {
+		t.Fatalf("proxyToHostAPI (TCP): %v", err)
+	}
+
+	if capturedMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", capturedMethod)
+	}
+	if capturedPath != "/prompt" {
+		t.Errorf("path = %q, want /prompt", capturedPath)
+	}
+	if capturedBody.Session != "myrepo@main" {
+		t.Errorf("body.session = %q, want myrepo@main", capturedBody.Session)
+	}
+	if capturedBody.Prompt != "do the thing" {
+		t.Errorf("body.prompt = %q, want 'do the thing'", capturedBody.Prompt)
+	}
+	if !got.OK {
+		t.Error("response ok = false, want true")
+	}
+}
+
+// TestProxyGetFromHostAPI_TCPScheme verifies that proxyGetFromHostAPI routes
+// through the TCP client when PRISM_HOST_API is an http:// address.
+func TestProxyGetFromHostAPI_TCPScheme(t *testing.T) {
+	var capturedMethod string
+	var capturedPath string
+	var capturedQuery string
+
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	})
+
+	var got []any
+	err := proxyGetFromHostAPI(srv.apiURL(), "/list-sessions",
+		map[string]string{"all": "true"}, &got)
+	if err != nil {
+		t.Fatalf("proxyGetFromHostAPI (TCP): %v", err)
+	}
+
+	if capturedMethod != http.MethodGet {
+		t.Errorf("method = %q, want GET", capturedMethod)
+	}
+	if capturedPath != "/list-sessions" {
+		t.Errorf("path = %q, want /list-sessions", capturedPath)
+	}
+	if capturedQuery != "all=true" {
+		t.Errorf("query = %q, want all=true", capturedQuery)
+	}
+}
+
+// TestProxyLogsFromHostAPI_TCPScheme starts a real TCP server, sets
+// PRISM_HOST_API to an http:// address, calls proxyLogsFromHostAPI, and asserts
+// the request reaches the TCP server and the response body is streamed correctly.
+func TestProxyLogsFromHostAPI_TCPScheme(t *testing.T) {
+	const logBody = "line1\nline2\nline3\n"
+
+	var capturedPath string
+	var capturedQuery string
+
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(logBody))
+	})
+
+	var buf strings.Builder
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 20, true, false, &buf)
+	if err != nil {
+		t.Fatalf("proxyLogsFromHostAPI (TCP): %v", err)
+	}
+
+	if capturedPath != "/logs" {
+		t.Errorf("path = %q, want /logs", capturedPath)
+	}
+	if !strings.Contains(capturedQuery, "session=myrepo%40main") {
+		t.Errorf("query %q does not contain encoded session param", capturedQuery)
+	}
+	if !strings.Contains(capturedQuery, "tail=20") {
+		t.Errorf("query %q does not contain tail=20", capturedQuery)
+	}
+	if buf.String() != logBody {
+		t.Errorf("streamed body = %q, want %q", buf.String(), logBody)
+	}
+}
+
+// TestProxyToHostAPI_TCPScheme_ErrorResponse verifies that a non-2xx response
+// from a TCP server is surfaced as an error with the server's error message.
+func TestProxyToHostAPI_TCPScheme_ErrorResponse(t *testing.T) {
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"tcp server error"}`))
+	})
+
+	err := proxyToHostAPI(srv.apiURL(), "/spawn", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("expected non-nil error from TCP server 500 response")
+	}
+	if !strings.Contains(err.Error(), "tcp server error") {
 		t.Errorf("error %q does not contain expected message", err.Error())
 	}
 }
