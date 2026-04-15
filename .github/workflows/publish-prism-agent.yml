@@ -1,0 +1,111 @@
+name: publish-prism-agent
+"on":
+  push:
+    branches:
+      - main
+    paths:
+      - 'images/prism-agent.nix'
+      - 'flake.nix'
+      - 'flake.lock'
+  workflow_dispatch:
+
+jobs:
+  build-amd64:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          swap-storage: false
+          tool-cache: true
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
+      - name: Build prism-agent image (amd64)
+        run: nix build --print-build-logs '.#packages.x86_64-linux.prismAgentImage'
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push amd64 image to GHCR
+        run: |
+          nix run nixpkgs#skopeo -- copy \
+            oci-archive:$(readlink result) \
+            docker://ghcr.io/prismatic-koi/prism-agent:latest-amd64
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          swap-storage: false
+          tool-cache: true
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
+      - name: Build prism-agent image (arm64)
+        run: nix build --print-build-logs '.#packages.aarch64-linux.prismAgentImage'
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push arm64 image to GHCR
+        run: |
+          nix run nixpkgs#skopeo -- copy \
+            oci-archive:$(readlink result) \
+            docker://ghcr.io/prismatic-koi/prism-agent:latest-arm64
+
+  publish-manifest:
+    runs-on: ubuntu-24.04
+    needs:
+      - build-amd64
+      - build-arm64
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and push multi-arch manifest
+        run: |
+          # --amend allows overwriting an existing local manifest (needed on
+          # subsequent runs when :latest already exists in the local store).
+          docker manifest create --amend \
+            ghcr.io/prismatic-koi/prism-agent:latest \
+            ghcr.io/prismatic-koi/prism-agent:latest-amd64 \
+            ghcr.io/prismatic-koi/prism-agent:latest-arm64
+          docker manifest push ghcr.io/prismatic-koi/prism-agent:latest
+
+          docker manifest create --amend \
+            ghcr.io/prismatic-koi/prism-agent:${{ github.sha }} \
+            ghcr.io/prismatic-koi/prism-agent:latest-amd64 \
+            ghcr.io/prismatic-koi/prism-agent:latest-arm64
+          docker manifest push ghcr.io/prismatic-koi/prism-agent:${{ github.sha }}
