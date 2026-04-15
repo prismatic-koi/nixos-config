@@ -254,6 +254,22 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
 		}
 
+		// Generate a new instance_id UUID for this session incarnation and write
+		// it to agent_status. This uniquely identifies this invocation so that
+		// bus messages and container labels can be scoped to the correct instance.
+		instanceID := uuid.New().String()
+		if err := d.SetInstanceID(session, instanceID); err != nil {
+			// Non-fatal: instance isolation degrades gracefully.
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: set instance_id: %v\n", err)
+		}
+
+		// Purge any undelivered bus messages addressed to a previous incarnation
+		// of this session so stale messages don't leak into the new instance.
+		if err := d.PurgeStaleInstanceMessages(session, instanceID); err != nil {
+			// Non-fatal: log and continue.
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: purge stale instance messages: %v\n", err)
+		}
+
 		e := db.Event{
 			ID:          uuid.New().String(),
 			SessionName: session,
@@ -322,6 +338,13 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		}
 		if err := d.SetEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
+		}
+		// Clear instance_id so the session is no longer associated with a
+		// specific incarnation. Any undelivered bus messages for this instance
+		// are purged below via PurgeBusMessages.
+		if err := d.ClearInstanceID(session); err != nil {
+			// Non-fatal: log and continue.
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-end: clear instance_id: %v\n", err)
 		}
 		if err := d.PurgeBusMessages(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)

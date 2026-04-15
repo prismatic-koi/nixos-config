@@ -105,6 +105,12 @@ type Config struct {
 	// the container can proxy tmux operations to the host sidecar.
 	HostAPISockPath string
 
+	// InstanceID is the UUID instance identifier for the prism session that owns
+	// this container. When non-empty it is written as a
+	// "prism.instance-id=<uuid>" label on the container so that EnsureRemoved
+	// can verify ownership before killing it.
+	InstanceID string
+
 	// HealthCheckTimeout overrides DefaultHealthCheckTimeout when non-zero.
 	HealthCheckTimeout time.Duration
 
@@ -177,6 +183,12 @@ func (m *Manager) Name() string { return m.name }
 // EnsureRemoved stops and removes any existing container with the same name,
 // and cleans up any temp files created by Create. It is safe to call when no
 // such container exists — errors for "no such container" are silently ignored.
+//
+// When the Manager was created with a non-empty Config.InstanceID, EnsureRemoved
+// first inspects the container's "prism.instance-id" label. If the label exists
+// and does not match the current InstanceID, a warning is logged indicating
+// that the container belongs to a different session instance. Removal still
+// proceeds regardless — the new session needs the container name.
 func (m *Manager) EnsureRemoved(ctx context.Context) {
 	// Clean up temp files created by Create.
 	_ = os.Remove(m.gitdirFilePath())
@@ -185,6 +197,26 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
+
+	// Check the container's instance label when we have our own InstanceID.
+	// This detects ownership mismatches where a container from a previous
+	// session incarnation is being cleaned up by a new one.
+	if m.cfg.InstanceID != "" {
+		inspectCtx, inspectCancel := context.WithTimeout(ctx, 5*time.Second)
+		out, inspectErr := exec.CommandContext(inspectCtx, "podman", "inspect",
+			"--format", `{{index .Config.Labels "prism.instance-id"}}`,
+			m.name,
+		).Output()
+		inspectCancel()
+		if inspectErr == nil {
+			containerInstanceID := strings.TrimSpace(string(out))
+			if containerInstanceID != "" && containerInstanceID != m.cfg.InstanceID {
+				log.Printf("container: warning: container %q has instance-id %q but current session has %q — removing anyway",
+					m.name, containerInstanceID, m.cfg.InstanceID)
+			}
+		}
+	}
+
 	// Stop the container (ignore errors — may not be running).
 	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
 	if out, err := stopCmd.CombinedOutput(); err != nil {
@@ -613,7 +645,17 @@ func (m *Manager) buildRunArgs() []string {
 		"run",
 		"--detach",
 		"--name", m.name,
+	}
 
+	// Tag the container with the session instance ID when available. This
+	// allows EnsureRemoved to detect ownership mismatches (a container that
+	// belongs to a previous incarnation of the session being cleaned up by a
+	// new one). The label is informational — it does not gate removal.
+	if cfg.InstanceID != "" {
+		args = append(args, "--label", "prism.instance-id="+cfg.InstanceID)
+	}
+
+	args = append(args,
 		// Network: pasta (rootless default on podman 5.x) provides outbound
 		// NAT via the host's network, but the container cannot reach host
 		// loopback services or other containers directly. Declaring it explicitly
@@ -673,7 +715,7 @@ func (m *Manager) buildRunArgs() []string {
 
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
-	}
+	)
 
 	// Host-API socket: mount the sidecar's Unix socket into the container and
 	// tell prism CLI where to find it. Container root can access the socket because

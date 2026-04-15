@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -52,6 +54,12 @@ type Opts struct {
 	// Used by the restore path, which manages agent_status directly via the
 	// already-open DB handle rather than forking a subprocess.
 	SkipStatusSeed bool
+	// DB, when non-nil, is used by Create's startup guard to check whether an
+	// existing tmux session with the same name is live (last_seen within 60s).
+	// If a live session is found, the old tmux session is force-killed and a
+	// warning is logged before the new session is created. Pass nil to skip the
+	// DB-based liveness check (the simple HasSession guard is still applied).
+	DB *db.DB
 	// ConfigContent is the JSON blob for the OPENCODE_CONFIG_CONTENT environment
 	// variable. When non-empty, it is injected into the opencode process
 	// environment to override model and variant settings at runtime (precedence
@@ -149,12 +157,56 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
+// startupGuardKillOld implements the session instance startup guard. It checks
+// whether a tmux session with the given name is already alive and, if so,
+// determines whether it is "live" (last_seen within 60s) by querying the DB.
+// A live session is force-killed with a warning logged. A stale session is
+// killed silently. Returns true if the caller should proceed to create a new
+// session.
+//
+// When d is nil, falls back to the simple HasSession check: returns false when
+// the session exists (no-op, legacy behaviour) and true otherwise.
+func startupGuardKillOld(name string, d *db.DB) bool {
+	if !tmux.HasSession(name) {
+		return true // session does not exist — safe to create
+	}
+
+	// Session exists in tmux. Check DB liveness if a DB handle was provided.
+	if d != nil {
+		st, err := d.CurrentStatus(name)
+		if err == nil && st != nil {
+			age := time.Since(st.LastSeen)
+			if age < 60*time.Second {
+				fmt.Fprintf(os.Stderr,
+					"[prism] warning: killing live session %q (last_seen %v ago) to start new instance\n",
+					name, age.Round(time.Second))
+			}
+			// Kill the old session regardless of staleness — a new instance
+			// needs the name.
+			if killErr := tmux.KillSession(name); killErr != nil {
+				fmt.Fprintf(os.Stderr,
+					"[prism] warning: could not kill existing session %q: %v\n", name, killErr)
+				return false
+			}
+			return true
+		}
+	}
+
+	// No DB handle or no DB record — fall back to the legacy no-op behaviour:
+	// treat an existing session as a signal to skip creation.
+	return false
+}
+
 // Create creates a new tmux session at the given directory with the given name
 // and sets up the window layout specified by opts.Layout.
 //
-// If the session already exists, Create is a no-op and returns nil.
+// If the session already exists and opts.DB is nil, Create is a no-op and
+// returns nil (legacy behaviour). When opts.DB is non-nil, Create runs a
+// startup guard: any existing tmux session with the same name is force-killed
+// (with a warning if last_seen is within 60s) before the new session is
+// created, ensuring each invocation gets a fresh, uniquely-identified instance.
 func Create(name, directory string, opts Opts) error {
-	if tmux.HasSession(name) {
+	if !startupGuardKillOld(name, opts.DB) {
 		return nil
 	}
 

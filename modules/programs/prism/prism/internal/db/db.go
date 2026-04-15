@@ -67,20 +67,22 @@ type Status struct {
 	RootModelID   *string
 	OpencodePort  *int
 	HostMode      bool
+	InstanceID    *string
 	LastSeen      time.Time
 	EndedAt       *time.Time
 }
 
 // BusMessage represents a row in the bus_messages table.
 type BusMessage struct {
-	ID          string
-	FromSession string
-	ToSession   string
-	Repo        string
-	Text        string
-	Urgency     string
-	SentAt      time.Time
-	DeliveredAt *time.Time
+	ID           string
+	FromSession  string
+	ToSession    string
+	ToInstanceID *string
+	Repo         string
+	Text         string
+	Urgency      string
+	SentAt       time.Time
+	DeliveredAt  *time.Time
 }
 
 const schema = `
@@ -110,19 +112,21 @@ CREATE TABLE IF NOT EXISTS agent_status (
   root_model_id   TEXT,
   opencode_port   INTEGER,
   host_mode       INTEGER NOT NULL DEFAULT 0,
+  instance_id     TEXT,
   last_seen       INTEGER NOT NULL,
   ended_at        INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
-  id           TEXT PRIMARY KEY,
-  from_session TEXT NOT NULL,
-  to_session   TEXT NOT NULL,
-  repo         TEXT NOT NULL,
-  text         TEXT NOT NULL,
-  urgency      TEXT NOT NULL DEFAULT 'normal',
-  sent_at      INTEGER NOT NULL,
-  delivered_at INTEGER
+  id               TEXT PRIMARY KEY,
+  from_session     TEXT NOT NULL,
+  to_session       TEXT NOT NULL,
+  to_instance_id   TEXT,
+  repo             TEXT NOT NULL,
+  text             TEXT NOT NULL,
+  urgency          TEXT NOT NULL DEFAULT 'normal',
+  sent_at          INTEGER NOT NULL,
+  delivered_at     INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_bus_pending ON bus_messages(to_session, delivered_at)
   WHERE delivered_at IS NULL;
@@ -134,10 +138,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=5 if the table is empty. Pending migrations
+// schema, and sets schema_version=6 if the table is empty. Pending migrations
 // are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
 // root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status;
-// v4→v5 adds host_mode to agent_status.
+// v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id to
+// agent_status and to_instance_id to bus_messages.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -167,15 +172,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=5 if the table is empty (fresh database already has
-	// all columns including the v2, v3, v4, and v5 additions, so no migration is needed).
+	// Set schema_version=6 if the table is empty (fresh database already has
+	// all columns including the v2, v3, v4, v5, and v6 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (5)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (6)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -244,6 +249,23 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 5
+	}
+	if version == 5 {
+		// Migration v5 → v6: add instance_id to agent_status and
+		// to_instance_id to bus_messages for session instance isolation.
+		// Both columns are nullable so existing rows are unaffected.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN instance_id TEXT",
+			"ALTER TABLE bus_messages ADD COLUMN to_instance_id TEXT",
+			"UPDATE schema_version SET version = 6",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v5→v6: %w", err)
+			}
+		}
+		version = 6
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -859,7 +881,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -876,7 +898,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -885,7 +907,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, last_seen, ended_at
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -939,13 +961,30 @@ func (d *DB) WaitingCount() (int, error) {
 	return n, nil
 }
 
-// PendingMessages returns undelivered bus_messages for toSession with the given urgency.
-func (d *DB) PendingMessages(toSession string, urgency string) ([]BusMessage, error) {
-	const q = `
-SELECT id, from_session, to_session, repo, text, urgency, sent_at, delivered_at
+// PendingMessages returns undelivered bus_messages for toSession with the given
+// urgency. When instanceID is non-empty, only messages whose to_instance_id
+// matches are returned (messages addressed to a prior instance are excluded).
+// When instanceID is empty (legacy / no instance isolation), all undelivered
+// messages for toSession are returned regardless of to_instance_id.
+func (d *DB) PendingMessages(toSession string, urgency string, instanceID string) ([]BusMessage, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if instanceID != "" {
+		const q = `
+SELECT id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at
+FROM bus_messages
+WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL
+  AND (to_instance_id IS NULL OR to_instance_id = ?)`
+		rows, err = d.conn.Query(q, toSession, urgency, instanceID)
+	} else {
+		const q = `
+SELECT id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at
 FROM bus_messages
 WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL`
-	rows, err := d.conn.Query(q, toSession, urgency)
+		rows, err = d.conn.Query(q, toSession, urgency)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("db: pending messages: %w", err)
 	}
@@ -963,6 +1002,54 @@ WHERE to_session = ? AND urgency = ? AND delivered_at IS NULL`
 		return nil, fmt.Errorf("db: iterate bus messages: %w", err)
 	}
 	return msgs, nil
+}
+
+// SetInstanceID writes a UUID instance_id to the agent_status row for
+// sessionName. Called on tmux-session-start to uniquely identify this session
+// incarnation.
+func (d *DB) SetInstanceID(sessionName, instanceID string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET instance_id = ? WHERE session_name = ?",
+		instanceID, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set instance_id: %w", err)
+	}
+	return nil
+}
+
+// ClearInstanceID sets instance_id to NULL for sessionName. Called on
+// tmux-session-end to mark the session incarnation as over.
+func (d *DB) ClearInstanceID(sessionName string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET instance_id = NULL WHERE session_name = ?",
+		sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: clear instance_id: %w", err)
+	}
+	return nil
+}
+
+// PurgeStaleInstanceMessages deletes all undelivered bus_messages addressed to
+// toSession whose to_instance_id does not match currentInstanceID. This purges
+// messages written to a previous incarnation of the session that never got
+// delivered. Messages with to_instance_id IS NULL (legacy / no instance
+// tagging) are left intact.
+//
+// It is safe to call when no matching rows exist — the operation is a no-op
+// and returns nil.
+func (d *DB) PurgeStaleInstanceMessages(toSession, currentInstanceID string) error {
+	const q = `
+DELETE FROM bus_messages
+WHERE to_session = ?
+  AND delivered_at IS NULL
+  AND to_instance_id IS NOT NULL
+  AND to_instance_id != ?`
+	if _, err := d.conn.Exec(q, toSession, currentInstanceID); err != nil {
+		return fmt.Errorf("db: purge stale instance messages: %w", err)
+	}
+	return nil
 }
 
 // MarkDelivered sets delivered_at on the given bus message.
@@ -994,6 +1081,8 @@ WHERE delivered_at IS NULL
 }
 
 // WriteBusMessage inserts a new row into bus_messages with delivered_at=NULL.
+// When msg.ToInstanceID is non-nil, it is written to to_instance_id so that
+// delivery can be filtered to the correct session incarnation.
 func (d *DB) WriteBusMessage(msg BusMessage) error {
 	var sentAt int64
 	if msg.SentAt.IsZero() {
@@ -1002,9 +1091,9 @@ func (d *DB) WriteBusMessage(msg BusMessage) error {
 		sentAt = msg.SentAt.UnixMilli()
 	}
 	const q = `
-INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, NULL)`
-	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.Repo, msg.Text, msg.Urgency, sentAt)
+INSERT INTO bus_messages (id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.ToInstanceID, msg.Repo, msg.Text, msg.Urgency, sentAt)
 	if err != nil {
 		return fmt.Errorf("db: write bus message: %w", err)
 	}
@@ -1023,9 +1112,9 @@ func (d *DB) WriteBusMessageDelivered(msg BusMessage) error {
 		sentAt = msg.SentAt.UnixMilli()
 	}
 	const q = `
-INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.Repo, msg.Text, msg.Urgency, sentAt, now)
+INSERT INTO bus_messages (id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.ToInstanceID, msg.Repo, msg.Text, msg.Urgency, sentAt, now)
 	if err != nil {
 		return fmt.Errorf("db: write bus message delivered: %w", err)
 	}
@@ -1151,10 +1240,11 @@ func scanStatus(s scanner) (*Status, error) {
 	var endedAt sql.NullInt64
 	var port sql.NullInt64
 	var hostMode sql.NullInt64
+	var instanceID sql.NullString
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &lastSeen, &endedAt,
+		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &instanceID, &lastSeen, &endedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -1172,6 +1262,10 @@ func scanStatus(s scanner) (*Status, error) {
 	if hostMode.Valid {
 		st.HostMode = hostMode.Int64 != 0
 	}
+	if instanceID.Valid {
+		id := instanceID.String
+		st.InstanceID = &id
+	}
 	return &st, nil
 }
 
@@ -1179,8 +1273,9 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 	var m BusMessage
 	var sentAt int64
 	var deliveredAt sql.NullInt64
+	var toInstanceID sql.NullString
 	err := s.Scan(
-		&m.ID, &m.FromSession, &m.ToSession, &m.Repo, &m.Text, &m.Urgency,
+		&m.ID, &m.FromSession, &m.ToSession, &toInstanceID, &m.Repo, &m.Text, &m.Urgency,
 		&sentAt, &deliveredAt,
 	)
 	if err != nil {
@@ -1190,6 +1285,10 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 	if deliveredAt.Valid {
 		t := time.UnixMilli(deliveredAt.Int64)
 		m.DeliveredAt = &t
+	}
+	if toInstanceID.Valid {
+		id := toInstanceID.String
+		m.ToInstanceID = &id
 	}
 	return m, nil
 }

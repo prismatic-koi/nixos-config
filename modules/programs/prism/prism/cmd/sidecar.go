@@ -122,6 +122,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
 	}
 
+	// Read the session's instance_id from agent_status. This is written by
+	// tmux-session-start and used to tag container labels and bus messages so
+	// they can be scoped to the correct session incarnation.
+	var instanceID string
+	if st, stErr := d.CurrentStatus(sessionName); stErr == nil && st != nil && st.InstanceID != nil {
+		instanceID = *st.InstanceID
+	}
+
 	// Load prism runtime config — needed for git identity and SSH key names.
 	prismCfg := config.Load()
 
@@ -147,6 +155,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			AllocatedPort:     port,
 			AgentRole:         agentRole,
 			AgentModel:        opencodeAgentModel(agentRole),
+			InstanceID:        instanceID,
 			PluginHostPath:    pluginPath,
 			ConfigContent:     configContent,
 			GitUserName:       prismCfg.GitUserName,
@@ -202,6 +211,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		Clock:           sidecar.RealClock(),
 		AgentRole:       agentRole,
 		AgentModel:      opencodeAgentModel(agentRole),
+		InstanceID:      instanceID,
 		Container:       ctrCfg,
 		HostAPISockPath: hostAPISockPath,
 		OnReady:         onReady,

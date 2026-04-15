@@ -49,8 +49,8 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema_version: got %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema_version: got %d, want 6", version)
 	}
 
 	// Verify WAL mode.
@@ -618,7 +618,7 @@ func TestPurgeBusMessages(t *testing.T) {
 	}
 
 	// After purge, pending messages for target must be empty (to_session path).
-	pending, err := d.PendingMessages(target, "normal")
+	pending, err := d.PendingMessages(target, "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages(target): %v", err)
 	}
@@ -639,7 +639,7 @@ func TestPurgeBusMessages(t *testing.T) {
 	}
 
 	// Pending messages for other sessions must be unaffected.
-	pendingOther, err := d.PendingMessages("repo@third", "normal")
+	pendingOther, err := d.PendingMessages("repo@third", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages(other): %v", err)
 	}
@@ -715,7 +715,7 @@ func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
 	}
 
 	// Must appear in pending messages.
-	pending, err := d.PendingMessages("repo@main", "normal")
+	pending, err := d.PendingMessages("repo@main", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages: %v", err)
 	}
@@ -735,7 +735,7 @@ func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
 	}
 
 	// Must no longer appear in pending messages.
-	pending2, err := d.PendingMessages("repo@main", "normal")
+	pending2, err := d.PendingMessages("repo@main", "normal", "")
 	if err != nil {
 		t.Fatalf("PendingMessages after deliver: %v", err)
 	}
@@ -780,20 +780,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, and v4→v5 migrations.
+	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, v4→v5, and v5→v6 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=5.
+	// Verify schema_version=6.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema_version after migration: got %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema_version after migration: got %d, want 6", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -867,8 +867,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema_version after migration: got %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema_version after migration: got %d, want 6", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1326,8 +1326,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema_version after migration: got %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema_version after migration: got %d, want 6", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1392,8 +1392,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 5 {
-		t.Errorf("schema_version after migration: got %d, want 5", version)
+	if version != 6 {
+		t.Errorf("schema_version after migration: got %d, want 6", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1412,6 +1412,97 @@ func TestMigration_V4ToV5(t *testing.T) {
 	}
 	if s.State != "active" {
 		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestMigration_V5ToV6 verifies that Open applies the v5→v6 migration to an
+// existing DB that was created at schema_version=5 (no instance_id / to_instance_id columns).
+func TestMigration_V5ToV6(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v5.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (5);
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 0, 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v5 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v5 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 6 {
+		t.Errorf("schema_version after migration: got %d, want 6", version)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	// instance_id should be NULL for migrated rows.
+	if s.InstanceID != nil {
+		t.Errorf("InstanceID: got %v, want nil (newly added column)", s.InstanceID)
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+
+	// Verify that to_instance_id was added to bus_messages by writing and reading a message.
+	msg := db.BusMessage{
+		ID:          "test-instance-migration",
+		FromSession: "repo@feat",
+		ToSession:   "repo@main",
+		Repo:        "repo",
+		Text:        "migration test",
+		Urgency:     "normal",
+	}
+	if err := d.WriteBusMessage(msg); err != nil {
+		t.Fatalf("WriteBusMessage after v5→v6 migration: %v", err)
+	}
+	pending, err := d.PendingMessages("repo@main", "normal", "")
+	if err != nil {
+		t.Fatalf("PendingMessages after v5→v6 migration: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending count: got %d, want 1", len(pending))
+	}
+	// to_instance_id should be NULL (not set).
+	if pending[0].ToInstanceID != nil {
+		t.Errorf("ToInstanceID: got %v, want nil", pending[0].ToInstanceID)
 	}
 }
 

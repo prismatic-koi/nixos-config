@@ -464,6 +464,20 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 
 	opts.Agent = session.DefaultAgent(directory, opts.Agent)
 
+	// Open the DB for the startup guard and port allocation. The DB handle is
+	// passed into opts.DB so that session.Create can check whether an existing
+	// tmux session with the same name is a live instance that needs to be
+	// force-killed before a new one is created.
+	d, dbErr := openDB()
+	if dbErr != nil {
+		// Non-fatal: log and continue without a DB. The startup guard will fall
+		// back to the simple HasSession check (legacy no-op behaviour).
+		fmt.Fprintf(os.Stderr, "warning: could not open DB for startup guard: %v\n", dbErr)
+	} else {
+		defer d.Close()
+		opts.DB = d
+	}
+
 	// Allocate a port for full-layout sessions. The agent_status row must
 	// exist before we can write opencode_port to it, so we allocate after
 	// session.Create (which seeds agent_status via `prism event
