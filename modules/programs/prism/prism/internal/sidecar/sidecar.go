@@ -225,17 +225,23 @@ type containerMgr struct {
 func (s *Sidecar) Run(ctx context.Context) error {
 	// Container mode: create and health-check the container before connecting.
 	if s.cfg.Container != nil {
+		sessionStart := time.Now()
+
 		mgr := container.New(*s.cfg.Container)
 		s.mu.Lock()
 		s.container = &containerMgr{mgr: mgr}
 		s.mu.Unlock()
 
+		log.Printf("[timing] pre-Create: %s", time.Since(sessionStart).Round(time.Millisecond))
 		log.Printf("sidecar: creating container %q", mgr.Name())
+		t0 := time.Now()
 		if err := mgr.Create(ctx); err != nil {
 			return fmt.Errorf("sidecar: container create: %w", err)
 		}
+		log.Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
 
 		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
+		t0 = time.Now()
 		if err := mgr.WaitHealthy(ctx); err != nil {
 			log.Printf("sidecar: health check failed: %v", err)
 			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
@@ -251,6 +257,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("sidecar: container health check: %w", err)
 		}
+		log.Printf("[timing] WaitHealthy: %s", time.Since(t0).Round(time.Millisecond))
 		log.Printf("sidecar: container %q is healthy", mgr.Name())
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
@@ -278,12 +285,17 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				}
 			}
 			if !isShuttingDown && s.cfg.OnReady != nil {
+				log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 				s.cfg.OnReady()
 			}
 			if createErr == nil {
-				go s.deliverInitialPrompt(s.cfg.OpencodeURL, sid, s.cfg.InitialPrompt, s.cfg.HTTPClient)
+				go func() {
+					s.deliverInitialPrompt(s.cfg.OpencodeURL, sid, s.cfg.InitialPrompt, s.cfg.HTTPClient)
+					log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+				}()
 			}
 		} else if !isShuttingDown && s.cfg.OnReady != nil {
+			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			s.cfg.OnReady()
 		}
 
