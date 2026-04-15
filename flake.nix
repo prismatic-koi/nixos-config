@@ -141,6 +141,37 @@
         };
       };
 
+      packages =
+        let
+          # Substituter config baked into the image's nix.conf so that agents
+          # running inside the container can pull from Cachix without extra setup.
+          cachixSubstituters = [
+            "https://nix-community.cachix.org"
+            "https://lucidph3nx-nixos-config.cachix.org"
+          ];
+          trustedPublicKeys = [
+            "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+            "lucidph3nx-nixos-config.cachix.org-1:gXiGMMDnozkXCjvOs9fOwKPZNIqf94ZA/YksjrKekHE="
+          ];
+          mkPrismAgentImage =
+            system:
+            let
+              pkgs = import nixpkgs {
+                inherit system;
+                config.allowUnfree = true;
+                overlays = [ self.overlays.modifications ];
+              };
+            in
+            import ./images/prism-agent.nix {
+              inherit pkgs cachixSubstituters trustedPublicKeys;
+              lib = nixpkgs.lib;
+            };
+        in
+        {
+          x86_64-linux.prismAgentImage = mkPrismAgentImage "x86_64-linux";
+          aarch64-linux.prismAgentImage = mkPrismAgentImage "aarch64-linux";
+        };
+
       devShells = forEachSystem (pkgs: {
         default = pkgs.mkShell {
           buildInputs = [

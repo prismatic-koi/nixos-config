@@ -7,247 +7,35 @@
 # This module is imported unconditionally but its config block is wrapped
 # in the same mkIf guard as the rest of the prism module (see default.nix).
 #
-# On Linux, the prism-agent image is loaded into the user's rootless podman
-# store via a systemd user service that runs at every login.
+# On Linux, the prism-agent image is pulled from GHCR into the user's rootless
+# podman store via a systemd user service that runs at every login. The pull is
+# guarded so it is a no-op when the image is already present.
 #
 # On Darwin, podman runs inside a Linux VM managed by `podman machine`.
 # A Home Manager LaunchAgent fires at login to:
 #   1. Start the podman machine (guarded: checks state first and skips start
 #      if already running, since `podman machine start` exits non-zero when the
 #      VM is already up).
-#   2. Load the prism-agent image into the VM.
+#   2. Pull the prism-agent image into the VM from GHCR (guarded: skipped when
+#      the image is already present).
 # Failures are captured in /tmp/podman-machine-start.log so they are visible
 # for debugging; the prism fallback-to-host-mode mechanism (#472) handles the
 # case where the VM is unavailable at spawn time.
 let
   username = config.nx.username;
 
-  # Ubuntu 24.04 LTS base image pulled at evaluation time.
-  # Re-run nix-prefetch-docker to refresh when the upstream image changes:
-  #   nix run nixpkgs#nix-prefetch-docker -- ubuntu 24.04 --os linux --arch amd64
-  ubuntuBase = pkgs.dockerTools.pullImage {
-    imageName = "ubuntu";
-    imageDigest = "sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c";
-    hash = "sha256-8DXLXnojKTuXpneMIHCEvcqJRHyA4dAKmMYE36QGMMU=";
-    finalImageName = "ubuntu";
-    finalImageTag = "24.04";
-  };
-
-  # The prism agent container image.
-  # Built with buildLayeredImage so each Nix package gets its own layer —
-  # podman can cache unchanged layers and only reload what changed.
-  #
-  # `contents` accepts a list of derivations to copy to the image root.
-  # Wrapping packages in buildEnv merges them into a single /bin, /lib,
-  # etc. symlink farm so binaries land on PATH. Passing raw package
-  # derivations directly would place them at their Nix store paths only,
-  # leaving them unreachable via PATH.
-  #
-  # The packages are split into two buildEnv groups.  buildLayeredImage merges
-  # all contents entries via symlinkJoin into one customisation layer, but the
-  # per-package layers come from the Nix store closure graph — each store path
-  # gets its own layer.  By isolating opencode/claude-code/prism into their own
-  # buildEnv, the ai-tooling store path (and its closure) changes independently
-  # from the stable-infra store path.  When only the AI tools bump, only those
-  # layers in the closure are invalidated; the stable-infra closure layers
-  # remain cache-hits in podman.
-  prismAgentImage = pkgs.dockerTools.buildLayeredImage {
-    name = "prism-agent";
-    tag = "latest";
-
-    # Ubuntu 24.04 base provides apt, standard system libs, and a familiar
-    # runtime environment.  Agents may apt-get install additional tools at
-    # runtime; those changes are discarded with the container.
-    fromImage = ubuntuBase;
-
-    contents = [
-      # CA certificates — places bundles at /etc/ssl/certs/ca-bundle.crt and
-      # /etc/ssl/certs/ca-certificates.crt so curl, git, gh, and opencode all
-      # find them without needing env var overrides.
-      pkgs.dockerTools.caCertificates
-
-      # Stable infrastructure tools — rarely change, so this layer is almost
-      # always cache-hit when only AI tooling is updated.
-      (pkgs.buildEnv {
-        name = "prism-agent-stable-infra";
-        paths = with pkgs; [
-          # Shell and core utilities — pin the Nix versions so PATH is consistent
-          # regardless of what Ubuntu provides
-          bash
-          coreutils
-
-          # Development tools
-          git
-          openssh # git push/fetch over SSH remotes
-          gh
-          go
-          gcc # C compiler — required for cgo
-          nodejs # LTS Node.js for JavaScript/TypeScript tooling
-          bun # Fast JavaScript runtime / bundler
-          jq
-          yq-go
-          ripgrep
-          fd
-          curl
-          wget
-          unzip
-          sqlite # prism uses SQLite; agents may query it directly
-          python3 # scripting, data processing, quick automation
-
-          # Browser automation — playwright-cli wraps chromium
-          playwright-cli
-
-          # Cloud and infrastructure
-          kubectl
-          kubernetes-helm
-          awscli2
-          opentofu
-          fluxcd
-
-          # Secrets tooling — agents may read or edit sops-encrypted files
-          sops
-          age
-          openssl
-
-          # Per-project environment management
-          direnv
-
-          # Nix toolchain — agents run nix build/eval/flake check and nixfmt
-          nix
-          nixfmt
-
-          # cacert — Nix itself needs NIX_SSL_CERT_FILE to point at the bundle.
-          # dockerTools.caCertificates (added as a top-level content entry below)
-          # handles the /etc/ssl/certs layout that other tools expect.
-          cacert
-
-          # LSP servers
-          gopls
-          typescript-language-server
-          nil # Nix LSP
-        ];
-        pathsToLink = [
-          "/bin"
-          "/lib"
-          "/share"
-          "/etc"
-        ];
-      })
-
-      # AI tooling — updated frequently; isolated so the stable-infra layer
-      # above is unaffected when opencode, claude-code, or prism bump versions.
-      # Note: /etc is intentionally omitted from pathsToLink — these packages
-      # don't install to /etc, and including it would risk a symlinkJoin
-      # collision with cacert's /etc/ssl/certs/ from the stable-infra group.
-      (pkgs.buildEnv {
-        name = "prism-agent-ai-tooling";
-        paths = with pkgs; [
-          opencode
-          claude-code
-          # Prism CLI — agents need prism spawn, prompt, checkin, etc.
-          prism
-        ];
-        pathsToLink = [
-          "/bin"
-          "/lib"
-          "/share"
-        ];
-      })
-    ];
-
-    extraCommands =
-      let
-        # Build nix.conf content from the NixOS module system config so it
-        # stays in sync with the host's nix settings automatically.
-        #
-        # Combine both trusted-substituters (user-addable caches) and
-        # substituters (active caches) so the container nix.conf stays in sync
-        # regardless of which attribute future cachix entries are added to.
-        # cache.nixos.org is excluded since it is always present in the daemon.
-        allSubstituters = lib.unique (
-          config.nix.settings.trusted-substituters ++ config.nix.settings.substituters
-        );
-        cachixSubstituters = builtins.filter (
-          s: s != "https://cache.nixos.org/" && s != "https://cache.nixos.org"
-        ) allSubstituters;
-        nixConfLines = [
-          "experimental-features = nix-command flakes"
-        ]
-        ++ lib.optionals (cachixSubstituters != [ ]) [
-          "extra-substituters = ${lib.concatStringsSep " " cachixSubstituters}"
-          "extra-trusted-public-keys = ${lib.concatStringsSep " " config.nix.settings.trusted-public-keys}"
-        ];
-        nixConfFile = pkgs.writeText "container-nix.conf" (lib.concatStringsSep "\n" nixConfLines + "\n");
-        # nixos-rebuild guard — prevents agents from accidentally trying to apply
-        # NixOS configuration inside a container (which would fail without systemd).
-        nixosRebuildGuard = pkgs.writeShellScript "nixos-rebuild" ''
-          echo "error: nixos-rebuild is not available inside agent containers" >&2
-          echo "Use 'nix build' to validate the flake instead." >&2
-          exit 1
-        '';
-      in
-      ''
-        # Nix configuration — experimental features plus substituters/keys
-        # sourced from the NixOS module system so they stay in sync with the host.
-        mkdir -p etc/nix
-        cp ${nixConfFile} etc/nix/nix.conf
-
-        # nixos-rebuild guard
-        cp ${nixosRebuildGuard} bin/nixos-rebuild
-        chmod +x bin/nixos-rebuild
-
-        # Nix wrapper: when the host's nix daemon socket is mounted (by
-        # container.go), transparently inject --eval-store auto so that
-        # "nix build", "nix flake check", etc. evaluate locally (can see
-        # /workspace) but delegate store operations to the host daemon
-        # (reusing cached derivations). Without the socket the wrapper is
-        # a no-op passthrough to the real nix binary.
-        real_nix=$(readlink -f bin/nix)
-        mv bin/nix bin/.nix-real
-        cat > bin/nix << 'WRAPPER'
-        #!/bin/bash
-        SOCKET=/nix/var/nix/daemon-socket/socket
-        if [ -S "$SOCKET" ]; then
-          # Subcommands that accept --eval-store
-          case "''${1:-}" in
-            build|eval|flake|develop|path-info|print-dev-env|log|derivation)
-              exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
-              ;;
-          esac
-        fi
-        exec /bin/.nix-real "$@"
-        WRAPPER
-        chmod +x bin/nix
-      '';
-
-    config = {
-      Cmd = [ "/bin/bash" ];
-      Env = [
-        # /bin first so Nix-installed tools shadow Ubuntu's equivalents
-        "PATH=/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        # CA bundle — used by Nix itself (other tools find certs via the
-        # standard /etc/ssl/certs/ paths placed by dockerTools.caCertificates).
-        "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-      ];
-    };
-  };
-
+  image = "ghcr.io/prismatic-koi/prism-agent:latest";
 in
 {
   config = lib.mkIf config.nx.programs.prism.enable (
     lib.mkMerge [
       # ── Linux ────────────────────────────────────────────────────────────────
-      # Load the image via a systemd user service at every login.
+      # Pull the image from GHCR via a systemd user service at every login.
       # podman.enable is included in the guard so the service is skipped
       # entirely when the user has explicitly disabled podman.
       (lib.mkIf (pkgs.stdenv.isLinux && config.nx.programs.podman.enable) {
-        # Load the prism-agent container image into the user's podman store on
-        # login via a systemd user service.
-        #
-        # This replaces the former nixos-rebuild activation script, which only ran
-        # at switch time.  ~/.local/share/containers/ is now persisted by
-        # impermanence, so the image survives reboots and only needs reloading
-        # when the image definition changes (incremental, layer-cached).
+        # Pull the prism-agent container image from GHCR into the user's podman
+        # store on login via a systemd user service.
         #
         # The service is declared as oneshot with RemainAfterExit=yes: systemd
         # considers it "active" once ExecStart returns successfully and will NOT
@@ -255,12 +43,8 @@ in
         # requirement.  On the next login (e.g. after a reboot) the unit is in
         # the "inactive" state again and will re-run.
         #
-        # Idempotency:
-        #   1. Remove the existing tag first — prevents the old manifest becoming a
-        #      dangling <none>:<none> image when the tag is moved to the new image.
-        #   2. Prune dangling images after load — cleans up any layers that were
-        #      previously unreferenced (e.g. from an interrupted switch).
-        #   Both commands use `|| true` so a missing image or empty prune is not fatal.
+        # Idempotency: the script checks `podman image exists` first and skips
+        # the pull when the image is already present.
         home-manager.users.${username} = {
           home.persistence."/persist" = {
             directories = [
@@ -269,44 +53,25 @@ in
           };
           systemd.user.services.prism-agent-image = {
             Unit = {
-              Description = "Load prism-agent container image into rootless podman storage";
+              Description = "Pull prism-agent container image from GHCR into rootless podman storage";
               # Run before prism session restore so the image is available when
               # the first container spawn happens.
               Before = [ "prism-restore.service" ];
-              # Only restart the service when the image derivation itself changes,
-              # not on every home-manager switch.  Passing prismAgentImage as a
-              # derivation (not a string interpolation) ensures home-manager hashes
-              # the store path and triggers a restart only when it changes.
-              X-Restart-Triggers = [ prismAgentImage ];
             };
             Service = {
               Type = "oneshot";
               RemainAfterExit = true;
               ExecStart =
                 let
-                  # The expected image ID is derived from the Nix store path at
-                  # build time. podman load prints "Loaded image: <id>" on the
-                  # last line — we extract the sha256 digest from the archive
-                  # manifest so we can skip the load when the image is unchanged.
-                  script = pkgs.writeShellScript "load-prism-agent-image" ''
+                  script = pkgs.writeShellScript "pull-prism-agent-image" ''
                     PODMAN="${pkgs.podman}/bin/podman"
 
-                    # Extract the expected image ID from the archive manifest.
-                    EXPECTED_ID=$(${pkgs.gnutar}/bin/tar -xf ${prismAgentImage} --to-stdout manifest.json 2>/dev/null \
-                      | ${pkgs.jq}/bin/jq -r '.[0].Config // empty' 2>/dev/null \
-                      | ${pkgs.gnused}/bin/sed 's/\.json$//')
-                    CURRENT_ID=$($PODMAN image inspect localhost/prism-agent:latest --format '{{.Id}}' 2>/dev/null || true)
-
-                    if [ -n "$EXPECTED_ID" ] && [ "$CURRENT_ID" = "$EXPECTED_ID" ]; then
-                      echo "prism: localhost/prism-agent:latest is up to date ($EXPECTED_ID), skipping load." >&2
-                      exit 0
+                    if $PODMAN image exists ${image}; then
+                      echo "prism: ${image} already present, skipping pull." >&2
+                    else
+                      echo "prism: pulling ${image}..." >&2
+                      $PODMAN pull ${image}
                     fi
-
-                    echo "prism: loading localhost/prism-agent:latest into podman..." >&2
-                    $PODMAN image rm localhost/prism-agent:latest 2>/dev/null || true
-                    $PODMAN load < ${prismAgentImage}
-                    $PODMAN image prune --force 2>/dev/null || true
-                    echo "prism: localhost/prism-agent:latest loaded successfully." >&2
                   '';
                 in
                 script;
@@ -319,7 +84,7 @@ in
       })
 
       # ── Darwin ───────────────────────────────────────────────────────────────
-      # Start the podman machine VM and load the image at login via a
+      # Start the podman machine VM and pull the image at login via a
       # Home Manager LaunchAgent.  Home Manager writes the plist to
       # ~/Library/LaunchAgents/ and loads/unloads it automatically;
       # after `darwin-rebuild switch` the plist is updated in place.
@@ -332,7 +97,7 @@ in
       # enabled.
       (lib.mkIf pkgs.stdenv.isDarwin (
         let
-          # Shell script that starts the podman machine then loads the prism-agent
+          # Shell script that starts the podman machine then pulls the prism-agent
           # image into it.  Written as a separate derivation so the LaunchAgent
           # ProgramArguments array can reference it directly.
           #
@@ -340,11 +105,10 @@ in
           #   - `podman machine start` exits non-zero (exit 125) if the VM is already
           #     running.  We check state explicitly via `podman machine inspect` before
           #     calling start so that a running VM is treated as a success, not a failure.
-          #   - We pipe the image tarball through `podman machine ssh` rather than
-          #     calling `podman load` directly, because on Darwin `podman load` routes
-          #     through the socket and cannot stream from stdin reliably at login time.
-          #     `podman machine ssh -- podman load` runs inside the VM where stdin is
-          #     a proper pipe.
+          #   - We pull the image inside the VM via `podman machine ssh -- podman pull`
+          #     rather than calling `podman pull` directly on the host, because on Darwin
+          #     `podman pull` routes through the machine socket and the image must reside
+          #     inside the Linux VM.
           #   - All output goes to stdout/stderr which the LaunchAgent captures in
           #     StandardOutPath / StandardErrorPath below.
           podmanMachineStartScript = pkgs.writeShellScript "podman-machine-start" ''
@@ -364,20 +128,19 @@ in
               echo "podman-machine-start: machine is already running, skipping start." >&2
             else
               "$PODMAN" machine start || {
-                echo "podman-machine-start: 'podman machine start' failed, aborting image load." >&2
+                echo "podman-machine-start: 'podman machine start' failed, aborting image pull." >&2
                 exit 1
               }
             fi
 
-            echo "podman-machine-start: loading prism-agent image into VM..." >&2
-            # Remove the old tag first so it does not become a dangling <none>:<none>
-            # after the new image is loaded.
-            "$PODMAN" machine ssh -- podman image rm localhost/prism-agent:latest 2>/dev/null || true
-            # Stream the image tarball into the VM via podman machine ssh.
-            "$PODMAN" machine ssh -- podman load < ${prismAgentImage}
-            "$PODMAN" machine ssh -- podman image prune --force 2>/dev/null || true
-
-            echo "podman-machine-start: localhost/prism-agent:latest loaded successfully." >&2
+            echo "podman-machine-start: checking prism-agent image in VM..." >&2
+            if "$PODMAN" machine ssh -- podman image exists ${image}; then
+              echo "podman-machine-start: ${image} already present in VM, skipping pull." >&2
+            else
+              echo "podman-machine-start: pulling ${image} into VM..." >&2
+              "$PODMAN" machine ssh -- podman pull ${image}
+              echo "podman-machine-start: ${image} pulled successfully." >&2
+            fi
           '';
         in
         {
