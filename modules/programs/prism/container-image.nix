@@ -54,6 +54,9 @@ in
           systemd.user.services.prism-agent-image = {
             Unit = {
               Description = "Pull prism-agent container image from GHCR into rootless podman storage";
+              # Wait for the network to be ready before attempting the pull.
+              After = [ "network-online.target" ];
+              Wants = [ "network-online.target" ];
               # Run before prism session restore so the image is available when
               # the first container spawn happens.
               Before = [ "prism-restore.service" ];

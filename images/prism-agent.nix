@@ -26,15 +26,33 @@
 
 let
   # Ubuntu 24.04 LTS base image pulled at evaluation time.
-  # Re-run nix-prefetch-docker to refresh when the upstream image changes:
-  #   nix run nixpkgs#nix-prefetch-docker -- ubuntu 24.04 --os linux --arch amd64
-  ubuntuBase = pkgs.dockerTools.pullImage {
-    imageName = "ubuntu";
-    imageDigest = "sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c";
-    hash = "sha256-8DXLXnojKTuXpneMIHCEvcqJRHyA4dAKmMYE36QGMMU=";
-    finalImageName = "ubuntu";
-    finalImageTag = "24.04";
-  };
+  # Architecture-aware: selects the correct digest for the target platform so
+  # that both the base layer and the Nix-built contents are for the same arch.
+  #
+  # To refresh these digests when the upstream image changes:
+  #   amd64: nix run nixpkgs#nix-prefetch-docker -- ubuntu 24.04 --os linux --arch amd64
+  #   arm64: nix run nixpkgs#nix-prefetch-docker -- ubuntu 24.04 --os linux --arch arm64
+  ubuntuBase =
+    if pkgs.stdenv.hostPlatform.system == "aarch64-linux" then
+      pkgs.dockerTools.pullImage {
+        imageName = "ubuntu";
+        imageDigest = "sha256:11c7dd0cbd7effee6cd4f11811caffb5fdf682f1667c7f152c5cee7d32cc337c";
+        hash = "sha256-F36by0wuN+sFI/9f7U+73TLh8tn1LVThRm7FQVXo6AU=";
+        finalImageName = "ubuntu";
+        finalImageTag = "24.04";
+        os = "linux";
+        arch = "arm64";
+      }
+    else
+      pkgs.dockerTools.pullImage {
+        imageName = "ubuntu";
+        imageDigest = "sha256:186072bba1b2f436cbb91ef2567abca677337cfc786c86e107d25b7072feef0c";
+        hash = "sha256-8DXLXnojKTuXpneMIHCEvcqJRHyA4dAKmMYE36QGMMU=";
+        finalImageName = "ubuntu";
+        finalImageTag = "24.04";
+        os = "linux";
+        arch = "amd64";
+      };
 
   # Build nix.conf content from the provided substituter config so it stays in
   # sync with the caller's nix settings.

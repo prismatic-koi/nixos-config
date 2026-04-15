@@ -1039,7 +1039,7 @@ func CheckAvailability() error {
 		)
 	}
 
-	// 3. localhost/prism-agent:latest image loaded.
+	// 3. ghcr.io/prismatic-koi/prism-agent:latest image present locally.
 	imagesCtx, imagesCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer imagesCancel()
 	imagesCmd := exec.CommandContext(imagesCtx, "podman", "images", "--quiet", Image)

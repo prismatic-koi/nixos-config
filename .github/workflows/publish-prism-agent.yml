@@ -95,7 +95,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Create and push multi-arch manifest
         run: |
-          docker manifest create \
+          # --amend allows overwriting an existing local manifest (needed on
+          # subsequent runs when :latest already exists in the local store).
+          docker manifest create --amend \
             ghcr.io/prismatic-koi/prism-agent:latest \
             ghcr.io/prismatic-koi/prism-agent:latest-amd64 \
             ghcr.io/prismatic-koi/prism-agent:latest-arm64
