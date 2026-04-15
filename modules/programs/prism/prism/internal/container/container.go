@@ -29,11 +29,6 @@ const (
 	// ContainerPort is the port opencode serve listens on inside the container.
 	ContainerPort = 4096
 
-	// HostAPIContainerPort is the port the host-API TCP listener is mapped to
-	// inside the container on Darwin. Distinct from ContainerPort (4096) so the
-	// two services can coexist.
-	HostAPIContainerPort = 4097
-
 	// Image is the container image name used for all agent containers.
 	// The image is published to GHCR as a multi-arch image by CI and pulled
 	// on first use by the systemd/launchd service. podman resolves the correct
@@ -112,10 +107,10 @@ type Config struct {
 	HostAPISockPath string
 
 	// HostAPITCPPort is the host-side TCP port allocated by the sidecar for the
-	// host-API TCP listener (Darwin only). When non-zero, buildRunArgs emits a
-	// --publish 127.0.0.1:<HostAPITCPPort>:HostAPIContainerPort flag and sets
-	// PRISM_HOST_API=http://127.0.0.1:HostAPIContainerPort instead of using the
-	// Unix socket path. On Linux this field is zero and the Unix socket is used.
+	// host-API TCP listener (Darwin only). When non-zero, buildRunArgs sets
+	// PRISM_HOST_API=http://host.containers.internal:<HostAPITCPPort> so the
+	// container reaches the sidecar via the gvproxy bridge — no --publish flag
+	// is needed. On Linux this field is zero and the Unix socket is used.
 	HostAPITCPPort int
 
 	// InstanceID is the UUID instance identifier for the prism session that owns
@@ -732,20 +727,18 @@ func (m *Manager) buildRunArgs() []string {
 
 	// Host-API: tell the container how to reach the host-API server.
 	//
-	// On Darwin (cfg.HostAPITCPPort != 0): TCP port forwarding is used because
-	// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
-	// container. The sidecar binds a TCP listener on 127.0.0.1:0 before container
-	// creation, records the allocated port, and passes it here. We emit a
-	// --publish flag to forward that host port to HostAPIContainerPort inside the
-	// container, and set PRISM_HOST_API to the container-side http:// address.
+	// On Darwin (cfg.HostAPITCPPort != 0): TCP is used because virtiofs returns
+	// ENOTSUP on connect() for Unix sockets mounted into the VM. The sidecar
+	// binds a TCP listener on 0.0.0.0:<port> before container creation and passes
+	// the port here. The container reaches the sidecar via host.containers.internal
+	// (192.168.127.254, the gvproxy bridge IP) — no --publish flag is needed
+	// because this is container→host outbound traffic, not inbound port forwarding.
 	//
 	// On Linux (cfg.HostAPITCPPort == 0): the Unix socket directory is mounted
 	// and PRISM_HOST_API is set to the unix:// path (existing behaviour).
 	if cfg.HostAPITCPPort != 0 {
-		hostAPIPortBinding := fmt.Sprintf("127.0.0.1:%d:%d", cfg.HostAPITCPPort, HostAPIContainerPort)
 		args = append(args,
-			"--publish", hostAPIPortBinding,
-			"--env", fmt.Sprintf("PRISM_HOST_API=http://127.0.0.1:%d", HostAPIContainerPort),
+			"--env", fmt.Sprintf("PRISM_HOST_API=http://host.containers.internal:%d", cfg.HostAPITCPPort),
 		)
 	} else if cfg.HostAPISockPath != "" {
 		args = append(args,
