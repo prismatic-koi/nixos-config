@@ -31,3 +31,20 @@ jobs:
           name: lucidph3nx-nixos-config
       - name: Build NixOS config for ${{ matrix.config }}
         run: nix build --print-build-logs '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+  build-darwin:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
+      - name: Build Darwin config for m4mac
+        run: nix build --print-build-logs '.#darwinConfigurations.m4mac.config.system.build.toplevel'
