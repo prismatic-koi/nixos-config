@@ -1189,10 +1189,12 @@ func TestFormatLatency(t *testing.T) {
 		ms   float64
 		want string
 	}{
-		{0, "0s"},
-		{1000, "1s"},
-		{22000, "22s"},
-		{59999, "59s"},
+		{0, "0.0s"},
+		{500, "0.5s"},
+		{1000, "1.0s"},
+		{4612, "4.6s"},
+		{22000, "22.0s"},
+		{59999, "60.0s"},
 		{60000, "1m 0s"},
 		{90000, "1m 30s"},
 		{124000, "2m 4s"},
@@ -1591,9 +1593,9 @@ func TestRunStatsModel_TtftP50(t *testing.T) {
 	if !strings.Contains(out, "DUR p50") {
 		t.Errorf("output missing 'DUR p50' column header\ngot:\n%s", out)
 	}
-	// "2s" should appear as TTFT p50 value.
-	if !strings.Contains(out, "2s") {
-		t.Errorf("output missing '2s' for TTFT p50\ngot:\n%s", out)
+	// "2.0s" should appear as TTFT p50 value.
+	if !strings.Contains(out, "2.0s") {
+		t.Errorf("output missing '2.0s' for TTFT p50\ngot:\n%s", out)
 	}
 }
 

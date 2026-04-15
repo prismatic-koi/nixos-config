@@ -1174,15 +1174,14 @@ func formatAgentSummary(agentCounts map[string]int) string {
 	return fmt.Sprintf("%s (×%d)", dominant, len(agentCounts))
 }
 
-// formatLatency formats a duration given in milliseconds as "Xs" or "Xm Ys".
+// formatLatency formats a duration given in milliseconds as "X.Xs" or "Xm Ys".
 func formatLatency(ms float64) string {
-	secs := int(ms / 1000)
-	if secs < 60 {
-		return fmt.Sprintf("%ds", secs)
+	if ms < 60_000 {
+		return fmt.Sprintf("%.1fs", ms/1000)
 	}
-	mins := secs / 60
-	s := secs % 60
-	return fmt.Sprintf("%dm %ds", mins, s)
+	mins := int(ms / 60_000)
+	s := math.Mod(ms, 60_000) / 1000
+	return fmt.Sprintf("%dm %.0fs", mins, s)
 }
 
 var modelCmd = &cobra.Command{
