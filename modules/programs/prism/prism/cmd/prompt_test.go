@@ -276,16 +276,7 @@ func TestRunPrompt_HTTPDelivery(t *testing.T) {
 		t.Errorf("output should mention HTTP: got %q", output)
 	}
 
-	// Verify an audit bus_messages row was written with delivered_at set.
-	pending, err := d.PendingMessages("repo@main", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Errorf("pending messages should be 0 (delivered_at set): got %d", len(pending))
-	}
-
-	// Verify the audit row exists (delivered).
+	// Verify the audit row exists (delivered_at set).
 	var count int
 	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "repo@main").Scan(&count); err != nil {
 		t.Fatalf("count audit row: %v", err)
@@ -295,35 +286,25 @@ func TestRunPrompt_HTTPDelivery(t *testing.T) {
 	}
 }
 
-// TestRunPrompt_BusFallback_NoPort verifies that prompts fall back to
-// bus_messages when opencode_port is NULL.
-func TestRunPrompt_BusFallback_NoPort(t *testing.T) {
+// TestRunPrompt_NoPort_ReturnsError verifies that prompts return an error
+// when opencode_port is NULL (no HTTP delivery possible).
+func TestRunPrompt_NoPort_ReturnsError(t *testing.T) {
 	d := openPromptTestDB(t)
 	seedSession(t, d, "repo@legacy", "active", nil, nil, nil, nil)
 
-	rootCmd.SetArgs([]string{"prompt", "repo@legacy", "--prompt", "fallback test"})
-	output := captureStdout(t, func() {
-		if err := rootCmd.Execute(); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "queued") {
-		t.Errorf("output should mention queued: got %q", output)
+	rootCmd.SetArgs([]string{"prompt", "repo@legacy", "--prompt", "test"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when session has no port, got nil")
 	}
-
-	pending, err := d.PendingMessages("repo@legacy", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Errorf("pending count: got %d, want 1", len(pending))
+	if !strings.Contains(err.Error(), "no opencode port") {
+		t.Errorf("error should mention missing port: got %q", err.Error())
 	}
 }
 
-// TestRunPrompt_BusFallback_HTTPError verifies that when HTTP delivery fails,
-// the prompt falls back to bus_messages.
-func TestRunPrompt_BusFallback_HTTPError(t *testing.T) {
+// TestRunPrompt_HTTPError_ReturnsError verifies that when HTTP delivery fails,
+// an error is returned (no fallback to bus).
+func TestRunPrompt_HTTPError_ReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 	}))
@@ -339,22 +320,21 @@ func TestRunPrompt_BusFallback_HTTPError(t *testing.T) {
 	seedSession(t, d, "repo@fail", "active", intPtr(port), strPtr("oc-sid-2"), strPtr("worker"), strPtr("anthropic/claude-sonnet-4.6"))
 
 	rootCmd.SetArgs([]string{"prompt", "repo@fail", "--prompt", "retry me"})
-	output := captureStdout(t, func() {
-		if err := rootCmd.Execute(); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "queued") {
-		t.Errorf("output should mention queued: got %q", output)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when HTTP delivery fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP delivery failed") {
+		t.Errorf("error should mention HTTP delivery failure: got %q", err.Error())
 	}
 
-	pending, err := d.PendingMessages("repo@fail", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
+	// Verify no undelivered bus_messages row was written.
+	var count int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NULL", "repo@fail").Scan(&count); err != nil {
+		t.Fatalf("count undelivered: %v", err)
 	}
-	if len(pending) != 1 {
-		t.Errorf("pending count: got %d, want 1", len(pending))
+	if count != 0 {
+		t.Errorf("no undelivered bus messages expected after HTTP failure, got %d", count)
 	}
 }
 
@@ -408,26 +388,8 @@ func TestRunPrompt_SessionNotFound(t *testing.T) {
 	}
 }
 
-// TestRunPrompt_UrgentFlagAccepted verifies that --urgent is accepted without
-// error (backward compatibility) even though it's now a no-op.
-func TestRunPrompt_UrgentFlagAccepted(t *testing.T) {
-	d := openPromptTestDB(t)
-	seedSession(t, d, "repo@urgent", "active", nil, nil, nil, nil)
-
-	rootCmd.SetArgs([]string{"prompt", "repo@urgent", "--urgent", "--prompt", "urgent test"})
-	output := captureStdout(t, func() {
-		if err := rootCmd.Execute(); err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-	})
-
-	if !strings.Contains(output, "queued") {
-		t.Errorf("output should mention queued: got %q", output)
-	}
-}
-
 // TestWriteBusMessageDelivered verifies that WriteBusMessageDelivered inserts
-// a row with delivered_at set (not pending).
+// a row with delivered_at set (audit trail for HTTP-delivered prompts).
 func TestWriteBusMessageDelivered(t *testing.T) {
 	d := openPromptTestDB(t)
 
@@ -445,18 +407,9 @@ func TestWriteBusMessageDelivered(t *testing.T) {
 		t.Fatalf("WriteBusMessageDelivered: %v", err)
 	}
 
-	// Must NOT appear in pending messages (delivered_at is set).
-	pending, err := d.PendingMessages("repo@receiver", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Errorf("pending count: got %d, want 0 (message is already delivered)", len(pending))
-	}
-
 	// Verify the row exists with delivered_at set.
 	var deliveredAt *int64
-	err = d.QueryRow("SELECT delivered_at FROM bus_messages WHERE id = ?", "test-delivered-1").Scan(&deliveredAt)
+	err := d.QueryRow("SELECT delivered_at FROM bus_messages WHERE id = ?", "test-delivered-1").Scan(&deliveredAt)
 	if err != nil {
 		t.Fatalf("query delivered_at: %v", err)
 	}

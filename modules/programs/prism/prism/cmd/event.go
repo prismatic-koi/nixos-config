@@ -357,12 +357,12 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-end: purge bus messages: %w", err)
 		}
 
-		// Clean up the per-session bus sentinel written by `prism prompt`
-		// (Stage 7). This file is named <session>.signal and is separate from
-		// the shared .dashboard.signal used by Stage 8. Removing it here
-		// prevents stale sentinel files accumulating after a session ends.
-		// The removal is best-effort — the file may not exist if Stage 7 was
-		// never exercised.
+		// Clean up any per-session bus sentinel files that may have been written
+		// by older versions of `prism prompt`. The sentinel (<session>.signal in
+		// prism/bus/) is no longer created as of the HTTP-only delivery refactor,
+		// but the removal is retained to clean up files left from prior runs.
+		// It is separate from the shared .dashboard.signal used by the dashboard
+		// watcher. The removal is best-effort — the file may not exist.
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, _ := os.UserHomeDir()

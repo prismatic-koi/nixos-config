@@ -588,12 +588,13 @@ func TestPurgeBusMessages(t *testing.T) {
 			Urgency:     "normal",
 			SentAt:      time.Now(),
 		}
-		if err := d.WriteBusMessage(msg); err != nil {
-			t.Fatalf("WriteBusMessage %s: %v", id, err)
-		}
 		if delivered {
-			if err := d.MarkDelivered(id); err != nil {
-				t.Fatalf("MarkDelivered %s: %v", id, err)
+			if err := d.WriteBusMessageDelivered(msg); err != nil {
+				t.Fatalf("WriteBusMessageDelivered %s: %v", id, err)
+			}
+		} else {
+			if err := d.WriteBusMessage(msg); err != nil {
+				t.Fatalf("WriteBusMessage %s: %v", id, err)
 			}
 		}
 	}
@@ -617,17 +618,18 @@ func TestPurgeBusMessages(t *testing.T) {
 		t.Fatalf("PurgeBusMessages: %v", err)
 	}
 
-	// After purge, pending messages for target must be empty (to_session path).
-	pending, err := d.PendingMessages(target, "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages(target): %v", err)
+	// After purge, undelivered messages for target must be gone (to_session path).
+	var toTargetCount int
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NULL", target,
+	).Scan(&toTargetCount); err != nil {
+		t.Fatalf("count to-target undelivered: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Errorf("pending messages for target after purge: got %d, want 0", len(pending))
+	if toTargetCount != 0 {
+		t.Errorf("undelivered messages for target after purge: got %d, want 0", toTargetCount)
 	}
 
-	// Explicitly verify the from_session row was also deleted (PendingMessages
-	// only queries to_session, so we must check via a direct row count).
+	// Explicitly verify the from_session row was also deleted.
 	var fromCount int
 	if err := d.QueryRow(
 		"SELECT COUNT(*) FROM bus_messages WHERE id = ?", "from-target-undelivered",
@@ -638,13 +640,15 @@ func TestPurgeBusMessages(t *testing.T) {
 		t.Errorf("from-target-undelivered row still present after purge: got %d, want 0", fromCount)
 	}
 
-	// Pending messages for other sessions must be unaffected.
-	pendingOther, err := d.PendingMessages("repo@third", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages(other): %v", err)
+	// Undelivered messages for other sessions must be unaffected.
+	var otherCount int
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NULL", "repo@third",
+	).Scan(&otherCount); err != nil {
+		t.Fatalf("count other undelivered: %v", err)
 	}
-	if len(pendingOther) != 1 {
-		t.Errorf("pending messages for other after purge: got %d, want 1", len(pendingOther))
+	if otherCount != 1 {
+		t.Errorf("undelivered messages for other after purge: got %d, want 1", otherCount)
 	}
 }
 
@@ -674,11 +678,8 @@ func TestPurgeBusMessages_PreservesDelivered(t *testing.T) {
 		Urgency:     "normal",
 		SentAt:      time.Now(),
 	}
-	if err := d.WriteBusMessage(msg); err != nil {
-		t.Fatalf("WriteBusMessage: %v", err)
-	}
-	if err := d.MarkDelivered(msgID); err != nil {
-		t.Fatalf("MarkDelivered: %v", err)
+	if err := d.WriteBusMessageDelivered(msg); err != nil {
+		t.Fatalf("WriteBusMessageDelivered: %v", err)
 	}
 
 	if err := d.PurgeBusMessages("repo@target"); err != nil {
@@ -692,55 +693,6 @@ func TestPurgeBusMessages_PreservesDelivered(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("delivered row count after purge: got %d, want 1", count)
-	}
-}
-
-// TestWriteBusMessage_PendingMessages_MarkDelivered tests the full bus message lifecycle.
-func TestWriteBusMessage_PendingMessages_MarkDelivered(t *testing.T) {
-	d := openTestDB(t)
-
-	msgID := uuid.New().String()
-	msg := db.BusMessage{
-		ID:          msgID,
-		FromSession: "repo@feat",
-		ToSession:   "repo@main",
-		Repo:        "repo",
-		Text:        "hello coordinator",
-		Urgency:     "normal",
-		SentAt:      time.Now(),
-	}
-
-	if err := d.WriteBusMessage(msg); err != nil {
-		t.Fatalf("WriteBusMessage: %v", err)
-	}
-
-	// Must appear in pending messages.
-	pending, err := d.PendingMessages("repo@main", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("pending count: got %d, want 1", len(pending))
-	}
-	if pending[0].ID != msgID {
-		t.Errorf("message ID: got %q, want %q", pending[0].ID, msgID)
-	}
-	if pending[0].DeliveredAt != nil {
-		t.Error("DeliveredAt: got non-nil, want nil")
-	}
-
-	// Mark delivered.
-	if err := d.MarkDelivered(msgID); err != nil {
-		t.Fatalf("MarkDelivered: %v", err)
-	}
-
-	// Must no longer appear in pending messages.
-	pending2, err := d.PendingMessages("repo@main", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages after deliver: %v", err)
-	}
-	if len(pending2) != 0 {
-		t.Errorf("pending count after deliver: got %d, want 0", len(pending2))
 	}
 }
 
@@ -1481,7 +1433,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 		t.Errorf("State preserved: got %q, want \"active\"", s.State)
 	}
 
-	// Verify that to_instance_id was added to bus_messages by writing and reading a message.
+	// Verify that to_instance_id was added to bus_messages by writing a message
+	// and checking that the column exists with a NULL value.
 	msg := db.BusMessage{
 		ID:          "test-instance-migration",
 		FromSession: "repo@feat",
@@ -1493,16 +1446,16 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.WriteBusMessage(msg); err != nil {
 		t.Fatalf("WriteBusMessage after v5→v6 migration: %v", err)
 	}
-	pending, err := d.PendingMessages("repo@main", "normal", "")
-	if err != nil {
-		t.Fatalf("PendingMessages after v5→v6 migration: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("pending count: got %d, want 1", len(pending))
+	// Query to_instance_id directly to confirm the column exists and is NULL.
+	var toInstanceID *string
+	if err := d.QueryRow(
+		"SELECT to_instance_id FROM bus_messages WHERE id = ?", "test-instance-migration",
+	).Scan(&toInstanceID); err != nil {
+		t.Fatalf("query to_instance_id after v5→v6 migration: %v", err)
 	}
 	// to_instance_id should be NULL (not set).
-	if pending[0].ToInstanceID != nil {
-		t.Errorf("ToInstanceID: got %v, want nil", pending[0].ToInstanceID)
+	if toInstanceID != nil {
+		t.Errorf("ToInstanceID: got %v, want nil", toInstanceID)
 	}
 }
 

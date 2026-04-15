@@ -594,7 +594,6 @@ func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
 	type promptReq struct {
 		Session string `json:"session"`
 		Prompt  string `json:"prompt"`
-		Urgent  bool   `json:"urgent"`
 	}
 
 	reqCh := make(chan promptReq, 1)
@@ -612,7 +611,7 @@ func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 
-	if err := proxyPrompt(srv.apiURL(), "myrepo@main", "do the thing", false); err != nil {
+	if err := proxyPrompt(srv.apiURL(), "myrepo@main", "do the thing"); err != nil {
 		t.Fatalf("proxyPrompt: %v", err)
 	}
 
@@ -638,7 +637,7 @@ func TestProxyPrompt_Returns403AsError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"workers can only prompt their own coordinator"}`))
 	})
 
-	err := proxyPrompt(srv.apiURL(), "otherrepo@main", "hello", false)
+	err := proxyPrompt(srv.apiURL(), "otherrepo@main", "hello")
 	if err == nil {
 		t.Fatal("expected non-nil error for 403 response")
 	}
