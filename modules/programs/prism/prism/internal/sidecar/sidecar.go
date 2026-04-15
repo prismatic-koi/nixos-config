@@ -1077,6 +1077,24 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 				"result":    result,
 				"messageId": part.MessageID,
 			}, nil)
+
+			// Promote high-impact bash commands to the persistent audit log.
+			if part.Tool == "bash" {
+				if cmd := extractBashCommand(part.State.Input); isHighImpactCommand(cmd) {
+					opencodeSID := ""
+					if s.opencodeSID != "" {
+						opencodeSID = s.opencodeSID
+					}
+					s.writeEvent("audit", map[string]any{
+						"tool":        "bash",
+						"command":     cmd,
+						"sessionName": s.cfg.SessionName,
+						"opencodeSID": opencodeSID,
+						"messageId":   part.MessageID,
+					}, nil)
+					log.Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
+				}
+			}
 		}
 
 	case "reasoning":
@@ -1476,6 +1494,51 @@ func marshalTruncated(v any, maxLen int) string {
 		return "{}"
 	}
 	return truncate(string(data), maxLen)
+}
+
+// ── audit helpers ────────────────────────────────────────────────────────────
+
+// highImpactPrefixes lists the command prefixes that trigger an audit event.
+// Each entry is lowercased and compared against the trimmed, lowercased command.
+var highImpactPrefixes = []string{
+	"gh pr merge",
+	"gh pr create",
+	"gh issue close",
+	"git push",
+	"prism spawn",
+	"prism cleanup",
+	"prism prompt",
+}
+
+// isHighImpactCommand reports whether cmd matches any high-impact prefix.
+// Matching is case-insensitive and ignores leading whitespace.
+func isHighImpactCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	for _, prefix := range highImpactPrefixes {
+		if lower == prefix || strings.HasPrefix(lower, prefix+" ") || strings.HasPrefix(lower, prefix+"\t") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractBashCommand extracts the "command" field from the bash tool's input.
+// The input is the raw value of part.State.Input, which is a map[string]any
+// after JSON unmarshalling by the SSE parser. Returns an empty string when the
+// input is not a map or does not contain a "command" key with a string value.
+func extractBashCommand(input any) string {
+	if input == nil {
+		return ""
+	}
+	m, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	cmd, ok := m["command"].(string)
+	if !ok {
+		return ""
+	}
+	return cmd
 }
 
 // ── host-API handler ─────────────────────────────────────────────────────────
