@@ -35,7 +35,7 @@ let
       pkgs.dockerTools.pullImage {
         imageName = "ubuntu";
         imageDigest = "sha256:11c7dd0cbd7effee6cd4f11811caffb5fdf682f1667c7f152c5cee7d32cc337c";
-        hash = "sha256-F36by0wuN+sFI/9f7U+73TLh8tn1LVThRm7FQVXo6AU=";
+        hash = "sha256-IbZLKzBX0herRzTZqhr/ORNwiPnrnmlQq1i2TxbEt4g=";
         finalImageName = "ubuntu";
         finalImageTag = "24.04";
         os = "linux";
