@@ -1059,8 +1059,9 @@ func TestRenderCheckinTurns_StateChangeInWindow(t *testing.T) {
 	}
 }
 
-// TestRenderCheckinTurns_StateChangeAfterTurn verifies that a state_change
-// just after the last assistant turn IS included when it falls at the window boundary.
+// TestRenderCheckinTurns_StateChangeMultipleTurns verifies that state_change events
+// within [earliest, +∞) are shown inline, including terminal transitions that
+// follow the last assistant turn.
 func TestRenderCheckinTurns_StateChangeMultipleTurns(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -1074,13 +1075,19 @@ func TestRenderCheckinTurns_StateChangeMultipleTurns(t *testing.T) {
 	ae2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
 		assistantPayload(msg2, "second turn"), base.Add(15*time.Second))
 
-	// State change at t=10s — inside [5s, 15s] window, should appear.
+	// State change at t=10s — inside [5s, ∞), should appear.
 	writeEvent(t, d, uuid.New().String(), session, "state_change",
 		stateChangePayload("paused"), base.Add(10*time.Second))
 
-	// State change at t=20s — after window, should NOT appear.
+	// State change at t=20s — after last assistant turn, but still inside [5s, ∞).
+	// This is the primary fix: terminal transitions SHOULD appear even when they
+	// follow the last assistant turn in the window.
 	writeEvent(t, d, uuid.New().String(), session, "state_change",
 		stateChangePayload("finished"), base.Add(20*time.Second))
+
+	// State change at t=1s — before earliest (5s), should NOT appear.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("idle"), base.Add(time.Second))
 
 	out := captureStdout(t, func() {
 		if err := renderCheckinTurns(session, d, []db.Event{ae1, ae2}, false); err != nil {
@@ -1091,8 +1098,13 @@ func TestRenderCheckinTurns_StateChangeMultipleTurns(t *testing.T) {
 	if !strings.Contains(out, "● paused") {
 		t.Errorf("output missing in-window '● paused'\ngot:\n%s", out)
 	}
-	if strings.Contains(out, "● finished") {
-		t.Errorf("output unexpectedly contains out-of-window '● finished'\ngot:\n%s", out)
+	// ● finished should appear: it's after the last turn but within [earliest, ∞).
+	if !strings.Contains(out, "● finished") {
+		t.Errorf("output missing post-turn '● finished' (terminal state should always appear)\ngot:\n%s", out)
+	}
+	// ● idle should NOT appear: it's before earliest.
+	if strings.Contains(out, "● idle") {
+		t.Errorf("output unexpectedly contains pre-earliest '● idle'\ngot:\n%s", out)
 	}
 	// ● marker should appear BETWEEN the two assistant turns.
 	firstTurnPos := strings.Index(out, "first turn")
@@ -1113,10 +1125,15 @@ func TestToolOneLiner_Bash(t *testing.T) {
 		result string
 		want   string
 	}{
+		// Plain string args (legacy / test shape)
 		{"echo hello", "hello\n", "bash: echo hello — hello"},
 		{"go build ./...", "", "bash: go build ./... ✓"},
 		{strings.Repeat("x", 100), "", "bash: " + strings.Repeat("x", 80) + "... ✓"},
 		{"ls", "file1\nfile2\nfile3", "bash: ls — file1"},
+		// JSON-object args (real sidecar shape: {"command":"..."})
+		{`{"command":"echo hello"}`, "hello\n", "bash: echo hello — hello"},
+		{`{"command":"go build ./..."}`, "", "bash: go build ./... ✓"},
+		{`{"command":"` + strings.Repeat("x", 100) + `"}`, "", "bash: " + strings.Repeat("x", 80) + "... ✓"},
 	}
 	for _, tc := range cases {
 		got := toolOneLiner("bash", tc.args, tc.result)
@@ -1134,9 +1151,13 @@ func TestToolOneLiner_Read(t *testing.T) {
 		result string
 		want   string
 	}{
+		// Plain string args
 		{"read_file", "main.go", "line1\nline2\nline3", "read_file: main.go ✓ (3 lines)"},
 		{"read_file", "main.go", "", "read_file: main.go ✓"},
 		{"read", "/path/to/db.go", "a\nb", "read: db.go ✓ (2 lines)"},
+		// JSON-object args (real sidecar shape: {"filePath":"..."})
+		{"read_file", `{"filePath":"internal/db/db.go"}`, "a\nb\nc", "read_file: db.go ✓ (3 lines)"},
+		{"read", `{"path":"/home/user/main.go"}`, "", "read: main.go ✓"},
 	}
 	for _, tc := range cases {
 		got := toolOneLiner(tc.tool, tc.args, tc.result)
@@ -1154,10 +1175,17 @@ func TestToolOneLiner_EditWrite(t *testing.T) {
 		result string
 		want   string
 	}{
+		// Plain string args
 		{"edit", "container.go", "ok", "edit: container.go ✓"},
 		{"edit", "container.go", "error: file not found", "edit: container.go ✗"},
 		{"write", "output.json", "", "write: output.json ✓"},
 		{"write_file", "/path/to/file.go", "failed: permission denied", "write_file: file.go ✗"},
+		// JSON-object args (real sidecar shape: {"filePath":"..."})
+		{"edit", `{"filePath":"internal/container.go"}`, "ok", "edit: container.go ✓"},
+		{"write", `{"filePath":"output/result.json"}`, "error: disk full", "write: result.json ✗"},
+		// looksLikeToolError false-positive regression cases
+		{"edit", "file.go", "Replaced 3 occurrences. No errors.", "edit: file.go ✓"},
+		{"task", "run tests", "Ran 42 tests, 0 failed.", "task: run tests ✓"},
 	}
 	for _, tc := range cases {
 		got := toolOneLiner(tc.tool, tc.args, tc.result)
@@ -1175,10 +1203,14 @@ func TestToolOneLiner_GlobGrep(t *testing.T) {
 		result string
 		want   string
 	}{
+		// Plain string args
 		{"glob", "**/*.go", "a.go\nb.go\nc.go", "glob: **/*.go 3 matches"},
 		{"glob", "**/*.go", "", "glob: **/*.go no matches"},
 		{"grep", "TODO", "file1:1:TODO fix\nfile2:3:TODO check", "grep: TODO 2 matches"},
 		{"grep", "TODO", "", "grep: TODO no matches"},
+		// JSON-object args (real sidecar shape)
+		{"glob", `{"pattern":"**/*.go"}`, "a.go\nb.go", "glob: **/*.go 2 matches"},
+		{"grep", `{"pattern":"TODO","path":"."}`, "a:1:TODO\nb:2:TODO", "grep: TODO 2 matches"},
 	}
 	for _, tc := range cases {
 		got := toolOneLiner(tc.tool, tc.args, tc.result)
@@ -1277,5 +1309,40 @@ func TestRenderCheckinTurns_VerboseToolCallAndResult(t *testing.T) {
 	}
 	if strings.Contains(outDefault, "→ result: hi") {
 		t.Errorf("default: should not show separate result line\ngot:\n%s", outDefault)
+	}
+}
+
+// TestLooksLikeToolError verifies that looksLikeToolError distinguishes actual
+// errors from output that merely mentions error-related words in passing.
+func TestLooksLikeToolError(t *testing.T) {
+	truePositives := []string{
+		"error: file not found",
+		"Error: permission denied",
+		"failed: could not write",
+		"Failed to open file",
+		"exception: nil pointer",
+		"error",
+		"failed",
+	}
+	for _, s := range truePositives {
+		if !looksLikeToolError(s) {
+			t.Errorf("looksLikeToolError(%q) = false, want true", s)
+		}
+	}
+
+	falsePositives := []string{
+		"Replaced 3 occurrences. No errors.",
+		"Ran 42 tests, 0 failed.",
+		"No errors found.",
+		"error_handler.go was modified.",
+		"The operation succeeded without exception.",
+		"",
+		"ok",
+		"File written successfully.",
+	}
+	for _, s := range falsePositives {
+		if looksLikeToolError(s) {
+			t.Errorf("looksLikeToolError(%q) = true, want false (false positive)", s)
+		}
 	}
 }

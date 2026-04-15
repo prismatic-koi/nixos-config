@@ -244,10 +244,15 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 
 	// Fetch state_change events within [earliest, latest] and include them in
 	// the timeline so state transitions are visible in the default view.
+	// Fetch state_change events from [earliest, +∞) with an open upper bound.
+	// The terminal state transition (e.g. active → finished) almost always
+	// occurs after the last assistant turn and would be excluded by a closed
+	// upper bound. Since there are typically only 2–3 state_change events per
+	// session, fetching all and filtering by lower bound is inexpensive.
 	stateChangeEventsAll, _ := d.QueryEvents(session, 0, nil, nil, []string{"state_change"})
 	var stateChangeEventsInWindow []db.Event
 	for _, sc := range stateChangeEventsAll {
-		if !sc.CreatedAt.Before(earliest) && !sc.CreatedAt.After(latest) {
+		if !sc.CreatedAt.Before(earliest) {
 			stateChangeEventsInWindow = append(stateChangeEventsInWindow, sc)
 		}
 	}
@@ -597,9 +602,9 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 			}
 			label := turnLabel(up.Agent, up.Model)
 			if label != "" {
-				fmt.Printf("[%s] user  [%s]\n%s\n\n", ts, label, text)
+				fmt.Printf("[%s] ▶ user  [%s]\n%s\n\n", ts, label, text)
 			} else {
-				fmt.Printf("[%s] user\n%s\n\n", ts, text)
+				fmt.Printf("[%s] ▶ user\n%s\n\n", ts, text)
 			}
 
 		case "msg_assistant":
@@ -744,9 +749,9 @@ func renderProxiedCheckin(raw []byte, verbose bool) error {
 			}
 			label := turnLabel(up.Agent, up.Model)
 			if label != "" {
-				fmt.Printf("[%s] user  [%s]\n%s\n\n", ts, label, text)
+				fmt.Printf("[%s] ▶ user  [%s]\n%s\n\n", ts, label, text)
 			} else {
-				fmt.Printf("[%s] user\n%s\n\n", ts, text)
+				fmt.Printf("[%s] ▶ user\n%s\n\n", ts, text)
 			}
 
 		case "msg_assistant":
@@ -1030,7 +1035,22 @@ func renderChildEventsForTurn(children []childEvent, verbose bool, prefix string
 func toolOneLiner(toolName, args, result string) string {
 	switch toolName {
 	case "bash":
-		cmd := truncateRunes(args, 80)
+		// The sidecar stores bash args as a JSON object {"command":"..."}.
+		// Extract the command string; fall back to raw args if not JSON.
+		cmd := args
+		trimmedArgs := strings.TrimSpace(args)
+		if len(trimmedArgs) > 0 && trimmedArgs[0] == '{' {
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(trimmedArgs), &obj); err == nil {
+				if raw, ok := obj["command"]; ok {
+					var s string
+					if json.Unmarshal(raw, &s) == nil && s != "" {
+						cmd = s
+					}
+				}
+			}
+		}
+		cmd = truncateRunes(cmd, 80)
 		summary := bashResultSummary(result)
 		return fmt.Sprintf("bash: %s %s", cmd, summary)
 
@@ -1190,9 +1210,23 @@ func countResultLines(result string) int {
 }
 
 // looksLikeToolError returns true when a tool result appears to indicate failure.
+// It checks for error/failed/exception as a line prefix, not anywhere in the text,
+// to avoid false positives from output that merely mentions these words
+// (e.g. "Ran 42 tests, 0 failed." or "No errors found.").
 func looksLikeToolError(result string) bool {
-	lower := strings.ToLower(result)
-	return strings.Contains(lower, "error") ||
-		strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "exception")
+	if result == "" {
+		return false
+	}
+	for _, line := range strings.Split(result, "\n") {
+		l := strings.TrimSpace(strings.ToLower(line))
+		if l == "" {
+			continue
+		}
+		if l == "error" || strings.HasPrefix(l, "error:") || strings.HasPrefix(l, "error ") ||
+			l == "failed" || strings.HasPrefix(l, "failed:") || strings.HasPrefix(l, "failed ") ||
+			l == "exception" || strings.HasPrefix(l, "exception:") || strings.HasPrefix(l, "exception ") {
+			return true
+		}
+	}
+	return false
 }
