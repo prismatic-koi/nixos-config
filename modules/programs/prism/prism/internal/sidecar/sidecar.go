@@ -248,8 +248,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// so the OS-allocated port is known when buildRunArgs() emits --publish.
 		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
 		// container VM, so TCP port forwarding is used instead (#661).
-		// Failure to bind is fatal — we must not silently fall back to Unix-socket-only
-		// mode, which would reproduce the ENOTSUP bug.
+		//
+		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode would
+		// reproduce the ENOTSUP bug (#661) — the container would start without a
+		// working host-API channel. Returning an error here aborts container startup
+		// with a clear message rather than creating a silently broken session.
 		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
 			tcpLn, tcpErr := net.Listen("tcp", "127.0.0.1:0")
 			if tcpErr != nil {
@@ -264,6 +267,25 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			s.mu.Unlock()
 		}
 
+		// closeTCPListenerOnEarlyReturn closes the TCP listener (Darwin only) when
+		// Run() returns an error before the SSE loop — i.e. before Shutdown() has been
+		// (or will be) called by the signal handler. We use a flag rather than a
+		// defer-always so that the normal success path leaves the listener open for the
+		// running HTTP server (which is closed by Shutdown() later).
+		tcpListenerClosed := false
+		closeTCPListenerOnError := func() {
+			if tcpListenerClosed {
+				return
+			}
+			s.mu.Lock()
+			ln := s.hostAPITCPListener
+			s.mu.Unlock()
+			if ln != nil {
+				_ = ln.Close()
+				tcpListenerClosed = true
+			}
+		}
+
 		mgr := container.New(*s.cfg.Container)
 		s.mu.Lock()
 		s.container = &containerMgr{mgr: mgr}
@@ -273,6 +295,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		log.Printf("sidecar: creating container %q", mgr.Name())
 		t0 := time.Now()
 		if err := mgr.Create(ctx); err != nil {
+			closeTCPListenerOnError()
 			return fmt.Errorf("sidecar: container create: %w", err)
 		}
 		log.Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
@@ -291,6 +314,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// (no Shutdown yet), avoiding a double-Shutdown with spurious log lines.
 			if ctx.Err() == nil {
 				mgr.Shutdown()
+				closeTCPListenerOnError()
 			}
 			return fmt.Errorf("sidecar: container health check: %w", err)
 		}
