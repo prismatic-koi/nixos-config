@@ -148,7 +148,8 @@ func TestRenderCheckinTurns_AllAssistantTurnsShown(t *testing.T) {
 }
 
 // TestRenderCheckinTurns_ToolChildrenIndented verifies AC-2:
-// each assistant turn is followed by its own indented tool_call/tool_result children.
+// each assistant turn is followed by its own indented tool one-liner children.
+// In default mode, tool_call and tool_result are paired into a single line.
 func TestRenderCheckinTurns_ToolChildrenIndented(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
@@ -187,15 +188,18 @@ func TestRenderCheckinTurns_ToolChildrenIndented(t *testing.T) {
 		t.Errorf("missing 'second assistant'\ngot:\n%s", out)
 	}
 
-	// Tool children rendered with indentation.
+	// Default mode: tool_call + tool_result paired into a single one-liner.
+	// bash: "echo hello" (key arg) + "hello" (result summary from output).
 	if !strings.Contains(out, "  → bash: echo hello") {
-		t.Errorf("missing indented bash tool_call\ngot:\n%s", out)
+		t.Errorf("missing indented bash tool one-liner\ngot:\n%s", out)
 	}
-	if !strings.Contains(out, "  → result: hello") {
-		t.Errorf("missing indented tool_result\ngot:\n%s", out)
+	// Separate "result:" lines must NOT appear in default mode — they are now
+	// folded into the tool one-liner.
+	if strings.Contains(out, "  → result:") {
+		t.Errorf("default mode must not show separate '→ result:' lines\ngot:\n%s", out)
 	}
 	if !strings.Contains(out, "  → read_file: main.go") {
-		t.Errorf("missing indented read_file tool_call\ngot:\n%s", out)
+		t.Errorf("missing indented read_file tool one-liner\ngot:\n%s", out)
 	}
 
 	// The bash tool should appear before read_file in output (ae1 before ae2).
@@ -1011,5 +1015,255 @@ func TestRenderChildEvent_PermissionAsk_AbsentTool(t *testing.T) {
 	}
 	if !strings.Contains(out, "unknown") {
 		t.Errorf("output should use 'unknown' fallback\ngot: %s", out)
+	}
+}
+
+// stateChangePayload returns a minimal state_change JSON payload.
+func stateChangePayload(state string) string {
+	return fmt.Sprintf(`{"state":%q}`, state)
+}
+
+// TestRenderCheckinTurns_StateChangesInWindow verifies that state_change events
+// within the assistant-turn time window are interleaved chronologically with a
+// ● marker in the default output.
+func TestRenderCheckinTurns_StateChangesInWindow(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// Assistant turn at t=5s.
+	msgID := "msg-sc"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msgID, "working on it"), base.Add(5*time.Second))
+
+	// state_change at t=3s — BEFORE window (should NOT appear).
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("active"), base.Add(3*time.Second))
+
+	// state_change at t=5s — AT start of window (should appear).
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("active"), base.Add(5*time.Second))
+
+	// state_change at t=8s — AFTER window (should NOT appear).
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("finished"), base.Add(8*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// The in-window state_change (t=5s) should appear with ● marker.
+	if !strings.Contains(out, "● active") {
+		t.Errorf("output missing in-window state_change '● active'\ngot:\n%s", out)
+	}
+
+	// Out-of-window state_change (t=3s, t=8s) must NOT appear.
+	// The "active" at t=3s would overlap with the in-window one, so we just
+	// check that "finished" doesn't appear.
+	if strings.Contains(out, "● finished") {
+		t.Errorf("output unexpectedly contains out-of-window '● finished'\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_UserMsgVisuallyDistinct verifies that msg_user events
+// appear with the ▶ prefix to distinguish them from assistant messages.
+func TestRenderCheckinTurns_UserMsgVisuallyDistinct(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// User message at t=10s (within window), assistant at t=11s.
+	umsgID := "umsg-distinct"
+	amsgID := "amsg-distinct"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(amsgID, "here is the answer"), base.Add(11*time.Second))
+	writeEvent(t, d, uuid.New().String(), session, "msg_user",
+		userPayload(umsgID, "what is 2+2?"), base.Add(11*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// msg_user must carry the ▶ prefix for visual distinction.
+	if !strings.Contains(out, "▶ user") {
+		t.Errorf("output missing '▶ user' prefix for msg_user event\ngot:\n%s", out)
+	}
+	// Assistant header must NOT carry the ▶ prefix.
+	if strings.Contains(out, "▶ assistant") {
+		t.Errorf("output unexpectedly has '▶ assistant' prefix\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_ToolOneLinerReadFile verifies that a read-file tool
+// call produces a one-liner with line count result summary.
+func TestRenderCheckinTurns_ToolOneLinerReadFile(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	msgID := "msg-read"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msgID, "reading file"), base)
+
+	// Tool call/result for a read tool. Args is stored as a JSON-encoded string
+	// containing a JSON object (as the opencode plugin produces).
+	readResult := "line1\nline2\nline3\n"
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(msgID, "read", `{"filePath":"/workspace/main.go"}`),
+		base.Add(100*time.Millisecond))
+	writeEvent(t, d, uuid.New().String(), session, "tool_result",
+		toolResultPayload(msgID, "read", readResult),
+		base.Add(200*time.Millisecond))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// One-liner: → read: /workspace/main.go ✓ (3 lines)
+	if !strings.Contains(out, "→ read: /workspace/main.go") {
+		t.Errorf("output missing read file path\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "✓ (3 lines)") {
+		t.Errorf("output missing line count '✓ (3 lines)'\ngot:\n%s", out)
+	}
+	// Separate result line must not appear in default mode.
+	if strings.Contains(out, "→ result:") {
+		t.Errorf("default mode must not show separate '→ result:' lines\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_ToolOneLinerVerboseShowsSeparateLines verifies that
+// in verbose mode, tool_call and tool_result are still rendered as separate lines.
+func TestRenderCheckinTurns_ToolOneLinerVerboseShowsSeparateLines(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	msgID := "msg-verbose-pair"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msgID, "verbose pair test"), base)
+
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(msgID, "bash", "go test ./..."), base.Add(100*time.Millisecond))
+	writeEvent(t, d, uuid.New().String(), session, "tool_result",
+		toolResultPayload(msgID, "bash", "ok  github.com/foo/bar"), base.Add(200*time.Millisecond))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, true); err != nil {
+			t.Errorf("renderCheckinTurns (verbose): %v", err)
+		}
+	})
+
+	// In verbose mode, tool_call line present.
+	if !strings.Contains(out, "→ bash: go test ./...") {
+		t.Errorf("verbose: missing tool_call line\ngot:\n%s", out)
+	}
+	// In verbose mode, tool_result shown on separate line.
+	if !strings.Contains(out, "→ result: ok  github.com/foo/bar") {
+		t.Errorf("verbose: missing separate tool_result line\ngot:\n%s", out)
+	}
+}
+
+// TestToolKeyArg verifies key argument extraction for various tool types.
+func TestToolKeyArg(t *testing.T) {
+	cases := []struct {
+		tool    string
+		args    string
+		wantSub string // substring that should appear in the result
+	}{
+		{"bash", "go build ./...", "go build ./..."},
+		{"bash", `{"command":"npm install"}`, "npm install"},
+		{"Read", `{"filePath":"/workspace/foo.go"}`, "/workspace/foo.go"},
+		{"edit", `{"filePath":"bar.go"}`, "bar.go"},
+		{"write", `{"filePath":"out.txt"}`, "out.txt"},
+		{"task", `{"description":"check the PR"}`, "check the PR"},
+		{"glob", `{"pattern":"**/*.go"}`, "**/*.go"},
+		{"grep", `{"pattern":"func main"}`, "func main"},
+		{"todowrite", `{"todos":[]}`, ""},
+	}
+	for _, tc := range cases {
+		got := toolKeyArg(tc.tool, tc.args)
+		if tc.wantSub == "" {
+			if got != "" {
+				t.Errorf("toolKeyArg(%q, %q) = %q, want empty", tc.tool, tc.args, got)
+			}
+		} else if !strings.Contains(got, tc.wantSub) {
+			t.Errorf("toolKeyArg(%q, %q) = %q, want to contain %q", tc.tool, tc.args, got, tc.wantSub)
+		}
+	}
+}
+
+// TestRenderCheckinTurns_StateChangeInsideSubagentCollapse verifies that
+// state_change events between subagent turns are rendered inline rather than
+// silently dropped when the subagent collapse logic fires (bug regression test).
+func TestRenderCheckinTurns_StateChangeInsideSubagentCollapse(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	const rootAgent = "opencode"
+	const subAgent = "review"
+	base := time.Now().Truncate(time.Second)
+
+	setRootAgent(t, d, session, rootAgent)
+
+	// Two subagent turns that bracket a state_change event.
+	sub1MsgID := "msg-sub1"
+	sub2MsgID := "msg-sub2"
+	sub1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub1MsgID, "sub turn 1", subAgent), base.Add(time.Second))
+	sub2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayloadWithAgent(sub2MsgID, "sub turn 2", subAgent), base.Add(3*time.Second))
+
+	// state_change at t=2s — between sub1 (t=1s) and sub2 (t=3s), so it falls
+	// within the [t=1s, t=3s] window and enters the timeline.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("finished"), base.Add(2*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{sub1, sub2}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// The state_change must appear even though the surrounding entries are
+	// subagent turns (which would otherwise be collapsed).
+	if !strings.Contains(out, "● finished") {
+		t.Errorf("state_change inside subagent collapse was silently dropped\ngot:\n%s", out)
+	}
+
+	// The subagent summary line must still appear.
+	if !strings.Contains(out, "└─ review") {
+		t.Errorf("subagent summary line missing\ngot:\n%s", out)
+	}
+}
+
+// TestToolResultSummary verifies result summary generation for various tool types.
+func TestToolResultSummary(t *testing.T) {
+	cases := []struct {
+		tool   string
+		result string
+		want   string
+	}{
+		{"bash", "", "✓"},
+		{"bash", "hello\nworld", "hello"},
+		{"read", "line1\nline2\nline3\n", "✓ (3 lines)"},
+		{"read", "", "✓ (0 lines)"},
+		{"edit", "", "✓"},
+		{"write", "", "✓"},
+		{"glob", "a.go\nb.go\n", "2 matches"},
+		{"glob", "", "no matches"},
+		{"grep", "match1", "1 match"},
+		{"todowrite", "anything", "✓"},
+	}
+	for _, tc := range cases {
+		got := toolResultSummary(tc.tool, tc.result)
+		if got != tc.want {
+			t.Errorf("toolResultSummary(%q, %q) = %q, want %q", tc.tool, tc.result, got, tc.want)
+		}
 	}
 }
