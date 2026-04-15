@@ -634,7 +634,7 @@ func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	sessionName := "obsidian"
+	sessionName := fmt.Sprintf("prism-test-headless-%d", time.Now().UnixNano())
 	if err := d.UpsertStatus(sessionName, "", "", "running", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
