@@ -41,9 +41,21 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push amd64 image to GHCR
         run: |
+          set -euo pipefail
+          # skopeo copy from oci-archive: untars the archive to /var/tmp and
+          # tries to chown entries to restore tar-header ownership, which fails
+          # on unprivileged GitHub Actions runners.  Pre-extract with GNU tar's
+          # --no-same-owner to strip the ownership metadata, then copy from the
+          # resulting directory using the oci: scheme (no untar needed).
+          # -xf (without -z) lets GNU tar auto-detect compression so this works
+          # whether the Nix output is a plain .tar or a .tar.gz.
+          archive=$(readlink result)
+          tmpdir=$(mktemp -d)
+          trap 'rm -rf "$tmpdir"' EXIT
+          tar --no-same-owner -xf "$archive" -C "$tmpdir"
           nix run nixpkgs#skopeo -- copy \
             --insecure-policy \
-            oci-archive:$(readlink result) \
+            oci:"$tmpdir" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-amd64
 
   build-arm64:
@@ -77,9 +89,18 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push arm64 image to GHCR
         run: |
+          set -euo pipefail
+          # Same workaround as amd64: pre-extract with --no-same-owner to avoid
+          # the chown failure skopeo hits when unpacking oci-archive: sources on
+          # unprivileged runners.  Use -xf (no -z) for auto-detection of
+          # compression format, and trap EXIT to ensure cleanup on failure.
+          archive=$(readlink result)
+          tmpdir=$(mktemp -d)
+          trap 'rm -rf "$tmpdir"' EXIT
+          tar --no-same-owner -xf "$archive" -C "$tmpdir"
           nix run nixpkgs#skopeo -- copy \
             --insecure-policy \
-            oci-archive:$(readlink result) \
+            oci:"$tmpdir" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-arm64
 
   publish-manifest:
