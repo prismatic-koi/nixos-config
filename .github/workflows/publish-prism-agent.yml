@@ -103,7 +103,7 @@ jobs:
             ghcr.io/prismatic-koi/prism-agent:latest-arm64
           docker manifest push ghcr.io/prismatic-koi/prism-agent:latest
 
-          docker manifest create \
+          docker manifest create --amend \
             ghcr.io/prismatic-koi/prism-agent:${{ github.sha }} \
             ghcr.io/prismatic-koi/prism-agent:latest-amd64 \
             ghcr.io/prismatic-koi/prism-agent:latest-arm64
