@@ -717,22 +717,9 @@
               playwright-cli
             ];
           programs.zsh.shellAliases = {
-            # set environment variables for opencode
+            # set environment variables for opencode when run directly (not via prism spawn)
             opencode = "${envPrefix} opencode";
           };
-          programs.neovim.initLua =
-            lib.mkAfter
-              # lua
-              ''
-                -- open current project in new kitty window with opencode
-                -- disabled in favor of tmux shortcut (leader a)
-                -- vim.keymap.set(
-                --   "n",
-                --   "<leader>oa",
-                --   ":!kitty -d $(pwd) env ${envPrefix} opencode . &<CR><CR>",
-                --   { silent = true, desc = "[O]pen project with [A]I agent" }
-                -- )
-              '';
           # Theme is configured in tui.json, not opencode.json
           xdg.configFile."opencode/tui.json".text = builtins.toJSON {
             "$schema" = "https://opencode.ai/tui.json";

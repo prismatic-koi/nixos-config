@@ -68,6 +68,12 @@ type ProfilesFile struct {
 	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for coordinator
 	// containers. Written by Nix under container_coordinator_config.
 	ContainerCoordinatorConfig string `json:"container_coordinator_config"`
+	// AgentEnvVars holds environment variables to inject into host-mode
+	// opencode processes. Values are fully expanded absolute paths (no $HOME).
+	// Written by Nix under agent_env_vars. These are prepended to the
+	// opencode command string in buildDirectOpencodeCmd so that sh -c
+	// sessions (which do not load .zshrc or zsh aliases) receive them.
+	AgentEnvVars map[string]string `json:"agent_env_vars,omitempty"`
 }
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
