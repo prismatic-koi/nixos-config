@@ -200,7 +200,7 @@ Use `prism list-sessions` to see all active agent sessions with their state and 
 prism list-sessions
 ```
 
-Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. Output is structured as message turns (user and assistant pairs) with tool calls, tool results, and permission events rendered inline under their parent assistant message:
+Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically.
 
 ```bash
 prism checkin nixos-config@update-plex
@@ -209,18 +209,37 @@ prism checkin nixos-config@update-plex
 ```
 checkin: nixos-config@update-plex
 
-state: active
+state: finished
 
-[2026-04-03 14:22:01] user
-implement the feature and open a PR
+[18:48:35] assistant
+I'll fix both issues from the review.
+  → edit: container.go ✓
+  → edit: sidecar.go ✓
+  → bash: go build ./... ✓
+  → bash: go test ./internal/... ok (9.2s)
 
-[2026-04-03 14:22:05] assistant
-I'll implement this now.
-  → Bash: ls src/
-  → result: main.go utils.go
+[18:49:16] assistant
+Tests pass. Committing and pushing.
+  → bash: git commit -m "fix: capture elapsed..." ✓
+  → bash: git push ✓
+
+[18:50:25] ● finished
 
 ── end of event log ──
 ```
+
+**Tool one-liner format**: `→ <tool>: <key_arg> <result_summary>`
+
+- **bash** — key arg is the command (first ~80 chars); result is first meaningful output line, `✓` for empty stdout, `✗ <message>` on error
+- **read** — key arg is the file path; result is `✓ (N lines)`
+- **edit / write** — key arg is the file path; result is `✓` or `✗`
+- **task** — key arg is the description; result is `✓` or `✗`
+- **glob / grep** — key arg is the pattern; result is `N matches` or `no matches`
+- **todowrite** — result is `✓` (key arg omitted)
+
+**State changes** appear inline as `● <state>` (e.g. `● finished`) with a timestamp.
+
+**User messages** (`▶ user`) are visually distinct from assistant turns so coordinator prompts and bus notifications are easy to spot.
 
 With no argument, `prism checkin` lists available sessions and exits with a hint.
 
@@ -231,8 +250,8 @@ With no argument, `prism checkin` lists available sessions and exits with a hint
 | `--last <N>` | Number of message turns to show (default 10) |
 | `--from <id>` | Show N events forward from this event ID |
 | `--before <id>` | Show N events backward from this event ID |
-| `--types <list>` | Comma-separated event types to filter (default: `msg_user,msg_assistant,tool_call,tool_result,permission_ask,permission_denied`) |
-| `--verbose` | Show full tool args/results without truncation |
+| `--verbose` / `-v` | Full forensic output: full tool args and full results with no truncation |
+| `--types <list>` | Orthogonal event-type filter — routes to the raw-event path (e.g. `--types audit`, `--types state_change`). Not needed for the narrative view; tool calls are included by default. |
 | `--all` | (no-arg mode only) List all sessions across all repos |
 
 These commands are useful when you need to know where a spawned agent is at without switching to its session.

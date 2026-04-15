@@ -9,9 +9,13 @@ package cmd
 //	prism checkin <session> --last N          show last N turns (default 10)
 //	prism checkin <session> --from <id>       show N events forward from event ID
 //	prism checkin <session> --before <id>     show N events backward from event ID
-//	prism checkin <session> --types <list>    comma-separated event types
-//	prism checkin <session> --verbose         full tool args/results (no truncation)
+//	prism checkin <session> --types <list>    comma-separated event types (orthogonal filter)
+//	prism checkin <session> --verbose / -v    full tool args/results (no truncation)
 //	prism checkin --all                       (no-arg) list all sessions across all repos
+//
+// Default output (no flags): interleaved assistant messages + state changes +
+// tool call one-liners with truncated results. --verbose shows full forensic
+// output. --types is an orthogonal filter for targeted queries (e.g. --types audit).
 
 import (
 	"encoding/json"
@@ -45,8 +49,8 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of conversation turns to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask, permission_denied)")
-	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
+	checkinCmd.Flags().String("types", "", "Orthogonal event-type filter (e.g. --types audit, --types state_change). When set, routes to the raw-event path instead of the rich default view.")
+	checkinCmd.Flags().BoolP("verbose", "v", false, "Show full tool args/results without truncation (forensic mode)")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
 }
@@ -150,10 +154,17 @@ func runCheckinSessionRaw(session string, limit int, before, after *string, type
 // approach: one turn = one assistant message + its tool/permission/thinking children.
 // msg_user events whose created_at falls within the time window of the fetched
 // assistant turns are also rendered, immediately before the assistant turn that
-// follows them in the timeline.
+// follows them in the timeline. state_change events within the window are also
+// interleaved with a ● marker.
 //
 // assistantEvents may be nil (session has events but no assistant turns yet);
 // in that case only the header and footer are rendered.
+//
+// Default mode (verbose=false): rich one-liner per tool call, state changes
+// shown inline, msg_user shown with ▶ prefix.
+//
+// Verbose mode (verbose=true): full tool args + full results, no truncation;
+// same as prior behaviour. Subagent turns shown inline with │ prefix.
 //
 // Subagent turns (where the agent field differs from the session's root agent)
 // are collapsed into a single summary line in default mode. In verbose mode they
@@ -199,23 +210,19 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
 	// Organise children by messageId.
-	type childEvent struct {
-		eventType string
-		payload   string
-	}
-	childrenByMsgID := make(map[string][]childEvent)
+	childrenByMsgID := make(map[string][]childEventItem)
 	if serr == nil {
 		for _, e := range secondary {
 			msgID := extractMessageID(e.Payload)
 			if msgID == "" {
 				continue
 			}
-			childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEvent{e.Type, e.Payload})
+			childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEventItem{e.Type, e.Payload})
 		}
 	}
 
 	// Determine the time window spanned by the fetched assistant turns so that
-	// we can include msg_user events that fall within it.
+	// we can include msg_user and state_change events that fall within it.
 	earliest := assistantEvents[0].CreatedAt
 	latest := assistantEvents[len(assistantEvents)-1].CreatedAt
 	for _, ae := range assistantEvents {
@@ -228,8 +235,6 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	}
 
 	// Fetch msg_user events within [earliest, latest] (inclusive).
-	// We use QueryEventsByMessageIDs with no messageID filter — instead we do a
-	// plain QueryEvents for msg_user and filter by timestamp in Go.
 	userEventsAll, _ := d.QueryEvents(session, 0, nil, nil, []string{"msg_user"})
 	var userEventsInWindow []db.Event
 	for _, ue := range userEventsAll {
@@ -238,20 +243,38 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 	}
 
-	// Merge assistant events and user events into a single timeline sorted ASC.
-	// assistantEvents is already ASC from QueryEvents; userEventsInWindow is also ASC.
-	type timelineEntry struct {
-		isUser bool
-		event  db.Event
+	// Fetch state_change events within [earliest, latest] (inclusive).
+	// These are interleaved chronologically with ● markers in the default view.
+	stateChangeEventsAll, _ := d.QueryEvents(session, 0, nil, nil, []string{"state_change"})
+	var stateChangeEventsInWindow []db.Event
+	for _, se := range stateChangeEventsAll {
+		if !se.CreatedAt.Before(earliest) && !se.CreatedAt.After(latest) {
+			stateChangeEventsInWindow = append(stateChangeEventsInWindow, se)
+		}
 	}
-	timeline := make([]timelineEntry, 0, len(assistantEvents)+len(userEventsInWindow))
+
+	// Merge assistant events, user events, and state_change events into a
+	// single timeline sorted ASC.
+	const (
+		entryAssistant   = 0
+		entryUser        = 1
+		entryStateChange = 2
+	)
+	type timelineEntry struct {
+		entryKind int // entryAssistant, entryUser, or entryStateChange
+		event     db.Event
+	}
+	timeline := make([]timelineEntry, 0, len(assistantEvents)+len(userEventsInWindow)+len(stateChangeEventsInWindow))
 	for _, ae := range assistantEvents {
-		timeline = append(timeline, timelineEntry{isUser: false, event: ae})
+		timeline = append(timeline, timelineEntry{entryKind: entryAssistant, event: ae})
 	}
 	for _, ue := range userEventsInWindow {
-		timeline = append(timeline, timelineEntry{isUser: true, event: ue})
+		timeline = append(timeline, timelineEntry{entryKind: entryUser, event: ue})
 	}
-	// Sort by created_at ASC (stable, preserving insertion order for ties).
+	for _, se := range stateChangeEventsInWindow {
+		timeline = append(timeline, timelineEntry{entryKind: entryStateChange, event: se})
+	}
+	// Sort by created_at ASC (stable insertion sort, preserving insertion order for ties).
 	for i := 1; i < len(timeline); i++ {
 		for j := i; j > 0 && timeline[j].event.CreatedAt.Before(timeline[j-1].event.CreatedAt); j-- {
 			timeline[j], timeline[j-1] = timeline[j-1], timeline[j]
@@ -267,12 +290,13 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			return false
 		}
 		var entryAgent string
-		if entry.isUser {
+		switch entry.entryKind {
+		case entryUser:
 			var up payload.MsgUser
 			if err := json.Unmarshal([]byte(entry.event.Payload), &up); err == nil {
 				entryAgent = up.Agent
 			}
-		} else {
+		case entryAssistant:
 			var ap payload.MsgAssistant
 			if err := json.Unmarshal([]byte(entry.event.Payload), &ap); err == nil {
 				entryAgent = ap.Agent
@@ -286,6 +310,22 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	for i < len(timeline) {
 		entry := timeline[i]
 
+		// state_change events are never considered subagent entries — render them always.
+		if entry.entryKind == entryStateChange {
+			var sc payload.StateChange
+			if jerr := json.Unmarshal([]byte(entry.event.Payload), &sc); jerr != nil {
+				sc.State = entry.event.Payload
+			}
+			ts := entry.event.CreatedAt.Local().Format("15:04:05")
+			newState := sc.State
+			if newState == "" {
+				newState = "(unknown)"
+			}
+			fmt.Printf("[%s] ● %s\n\n", ts, newState)
+			i++
+			continue
+		}
+
 		if isSubagentEntry(entry) && !verbose {
 			// Collapse consecutive subagent turns into a single summary line.
 			// Count tool calls across all subagent entries in this run and
@@ -296,12 +336,12 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			subagentName := ""
 
 			j := i
-			for j < len(timeline) && isSubagentEntry(timeline[j]) {
+			for j < len(timeline) && (timeline[j].entryKind == entryStateChange || isSubagentEntry(timeline[j])) {
 				e := timeline[j]
 				if e.event.CreatedAt.After(runEnd) {
 					runEnd = e.event.CreatedAt
 				}
-				if !e.isUser {
+				if e.entryKind == entryAssistant {
 					var ap payload.MsgAssistant
 					if err := json.Unmarshal([]byte(e.event.Payload), &ap); err == nil {
 						if subagentName == "" {
@@ -338,7 +378,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 
 		e := entry.event
-		ts := e.CreatedAt.Local().Format("2006-01-02 15:04:05")
+		ts := e.CreatedAt.Local().Format("15:04:05")
 
 		// In verbose mode, prefix subagent lines with an indent marker.
 		prefix := ""
@@ -346,7 +386,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			prefix = "  │ "
 		}
 
-		if entry.isUser {
+		if entry.entryKind == entryUser {
 			var up payload.MsgUser
 			if jerr := json.Unmarshal([]byte(e.Payload), &up); jerr != nil {
 				up.Text = e.Payload
@@ -357,9 +397,9 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			}
 			label := turnLabel(up.Agent, up.Model)
 			if label != "" {
-				fmt.Printf("%s[%s] user  [%s]\n", prefix, ts, label)
+				fmt.Printf("%s[%s] ▶ user  [%s]\n", prefix, ts, label)
 			} else {
-				fmt.Printf("%s[%s] user\n", prefix, ts)
+				fmt.Printf("%s[%s] ▶ user\n", prefix, ts)
 			}
 			fmt.Printf("%s%s\n\n", prefix, text)
 			i++
@@ -384,8 +424,15 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		fmt.Printf("%s%s\n", prefix, atext)
 
 		msgID := extractMessageID(e.Payload)
-		for _, child := range childrenByMsgID[msgID] {
-			renderChildEvent(child.eventType, child.payload, verbose, prefix)
+		children := childrenByMsgID[msgID]
+		if verbose {
+			// Verbose mode: render each child event individually (full args/results).
+			for _, child := range children {
+				renderChildEventVerbose(child.eventType, child.payload, prefix)
+			}
+		} else {
+			// Default mode: render paired tool one-liners + permission/thinking events.
+			renderChildEventsDefault(children, prefix)
 		}
 		fmt.Println()
 		i++
@@ -424,9 +471,9 @@ func turnLabel(agent, model string) string {
 	return agent + " · " + model
 }
 
-// renderChildEvent prints a single child event (tool call, result, permission,
-// or thinking) indented under its parent assistant turn. prefix is prepended
-// before the leading spaces (used for verbose subagent indentation).
+// renderChildEvent prints a single child event using the legacy raw-event style.
+// Used by renderCheckinEventsRaw (--types path) and renderProxiedCheckin.
+// prefix is prepended before the leading spaces (used for subagent indentation).
 func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string) {
 	switch eventType {
 	case "tool_call":
@@ -494,6 +541,398 @@ func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string)
 			fmt.Printf("%s  [thinking: %s]\n", prefix, t)
 		}
 	}
+}
+
+// renderChildEventVerbose prints a single child event with full args/results
+// (no truncation). Used in verbose mode under renderCheckinTurns.
+func renderChildEventVerbose(eventType, rawPayload string, prefix string) {
+	switch eventType {
+	case "tool_call":
+		var p payload.ToolCall
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("%s  → (tool_call parse error)\n", prefix)
+			return
+		}
+		fmt.Printf("%s  → %s: %s\n", prefix, p.Tool, p.Args)
+
+	case "tool_result":
+		var p payload.ToolResult
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("%s  → (tool_result parse error)\n", prefix)
+			return
+		}
+		fmt.Printf("%s  → result: %s\n", prefix, p.Result)
+
+	case "permission_ask":
+		var p payload.PermissionAsk
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("%s  [⏳ waiting for approval: (parse error)]\n", prefix)
+			return
+		}
+		tool := string(p.Tool)
+		if tool == "" {
+			tool = "unknown"
+		}
+		if len(p.Patterns) > 0 {
+			fmt.Printf("%s  [⏳ waiting for approval: %s — %s]\n", prefix, tool, strings.Join(p.Patterns, ", "))
+		} else {
+			fmt.Printf("%s  [⏳ waiting for approval: %s]\n", prefix, tool)
+		}
+
+	case "permission_denied":
+		var p payload.PermissionDenied
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			fmt.Printf("%s  [❌ denied: (parse error)]\n", prefix)
+			return
+		}
+		tool := p.Tool
+		if tool == "" {
+			tool = "unknown"
+		}
+		fmt.Printf("%s  [❌ denied: %s]\n", prefix, tool)
+
+	case "thinking":
+		var p payload.Thinking
+		if err := json.Unmarshal([]byte(rawPayload), &p); err != nil {
+			return
+		}
+		if p.Text != "" {
+			fmt.Printf("%s  [thinking: %s]\n", prefix, p.Text)
+		}
+	}
+}
+
+// childEventItem holds an event type and its raw payload JSON.
+// Used for grouping child events (tool_call, tool_result, permission_ask,
+// permission_denied, thinking) under their parent assistant turn.
+type childEventItem struct {
+	eventType string
+	payload   string
+}
+
+// renderChildEventsDefault renders child events under an assistant turn in the
+// rich default mode (no --verbose). Tool calls and their results are paired
+// into a single one-liner: `→ <tool>: <key_arg> <result_summary>`.
+//
+// The key arg and result summary format per tool:
+//   - bash:      first ~80 chars of command | first meaningful output line or ✓ (empty) or ✗ + stderr
+//   - read:      file path | ✓ (N lines)
+//   - edit/write: file path | ✓ or ✗
+//   - task:      description | ✓ or ✗
+//   - glob/grep: pattern | N matches or no matches
+//   - todowrite: (dim or omit key arg) | ✓
+//
+// Tool results are matched positionally to tool calls of the same tool name
+// within the message. Permission and thinking events are rendered as before.
+func renderChildEventsDefault(children []childEventItem, prefix string) {
+	// Split children into tool_calls, tool_results (by tool name for pairing),
+	// and other events (permission_ask, permission_denied, thinking).
+	//
+	// Pairing strategy: maintain a per-tool FIFO queue of results. When we
+	// encounter a tool_call for tool T, dequeue the next result for T (if any).
+	// This handles the common case where results appear in the same order as calls.
+	type toolCallEntry struct {
+		tool    string
+		args    string
+		payload string
+	}
+	type toolResultEntry struct {
+		tool    string
+		result  string
+		payload string
+	}
+
+	// Collect tool calls and results in order.
+	var toolCalls []toolCallEntry
+	resultsByTool := make(map[string][]toolResultEntry)
+
+	// Also collect other events in order (permission_ask, permission_denied, thinking)
+	// to be rendered after the tool one-liners.
+	type otherEvent struct {
+		eventType string
+		payload   string
+	}
+	var others []otherEvent
+
+	for _, c := range children {
+		switch c.eventType {
+		case "tool_call":
+			var p payload.ToolCall
+			if err := json.Unmarshal([]byte(c.payload), &p); err == nil {
+				toolCalls = append(toolCalls, toolCallEntry{tool: p.Tool, args: p.Args, payload: c.payload})
+				// Pre-index result slot (will be filled when result arrives).
+			} else {
+				toolCalls = append(toolCalls, toolCallEntry{tool: "?", args: "", payload: c.payload})
+			}
+		case "tool_result":
+			var p payload.ToolResult
+			if err := json.Unmarshal([]byte(c.payload), &p); err == nil {
+				resultsByTool[p.Tool] = append(resultsByTool[p.Tool], toolResultEntry{tool: p.Tool, result: p.Result, payload: c.payload})
+			}
+		default:
+			others = append(others, otherEvent{c.eventType, c.payload})
+		}
+	}
+
+	// Render tool one-liners, consuming results from the per-tool FIFO queue.
+	usedResults := make(map[string]int) // tool → count consumed
+	for _, tc := range toolCalls {
+		// Dequeue the next result for this tool.
+		resultList := resultsByTool[tc.tool]
+		usedIdx := usedResults[tc.tool]
+		var resultSummary string
+		if usedIdx < len(resultList) {
+			resultSummary = toolResultSummary(tc.tool, resultList[usedIdx].result)
+			usedResults[tc.tool] = usedIdx + 1
+		} else {
+			// No result available (still running or not recorded).
+			resultSummary = ""
+		}
+
+		keyArg := toolKeyArg(tc.tool, tc.args)
+		if resultSummary != "" {
+			fmt.Printf("%s  → %s: %s %s\n", prefix, tc.tool, keyArg, resultSummary)
+		} else {
+			fmt.Printf("%s  → %s: %s\n", prefix, tc.tool, keyArg)
+		}
+	}
+
+	// Render other events (permission_ask, permission_denied, thinking).
+	for _, o := range others {
+		renderChildEvent(o.eventType, o.payload, false, prefix)
+	}
+}
+
+// toolKeyArg extracts the key argument for the one-liner display per tool type.
+// For bash: first ~80 chars of the command string.
+// For read/edit/write: the file path.
+// For task: the description.
+// For glob/grep: the pattern.
+// For todowrite: empty string (tool name alone is sufficient).
+// For unknown tools: first ~80 chars of args.
+func toolKeyArg(tool, args string) string {
+	switch tool {
+	case "bash", "Bash":
+		// Args for bash is typically the command string directly.
+		cmd := extractBashCommand(args)
+		if len([]rune(cmd)) > 80 {
+			runes := []rune(cmd)
+			return string(runes[:80]) + "..."
+		}
+		return cmd
+
+	case "read", "Read":
+		return extractStringField(args, "filePath", "path", "file_path")
+
+	case "edit", "Edit":
+		return extractStringField(args, "filePath", "path", "file_path")
+
+	case "write", "Write":
+		return extractStringField(args, "filePath", "path", "file_path")
+
+	case "task", "Task":
+		desc := extractStringField(args, "description", "desc", "prompt")
+		if len([]rune(desc)) > 80 {
+			runes := []rune(desc)
+			return string(runes[:80]) + "..."
+		}
+		return desc
+
+	case "glob", "Glob":
+		return extractStringField(args, "pattern", "glob")
+
+	case "grep", "Grep":
+		return extractStringField(args, "pattern", "regex", "query")
+
+	case "todowrite", "TodoWrite", "Todowrite":
+		return ""
+
+	default:
+		// Generic: first ~80 chars of raw args.
+		if len([]rune(args)) > 80 {
+			runes := []rune(args)
+			return string(runes[:80]) + "..."
+		}
+		return args
+	}
+}
+
+// toolResultSummary produces a one-line result summary for the given tool and
+// raw result string.
+func toolResultSummary(tool, result string) string {
+	switch tool {
+	case "bash", "Bash":
+		return bashResultSummary(result)
+
+	case "read", "Read":
+		// Count lines in result.
+		if result == "" {
+			return "✓ (0 lines)"
+		}
+		n := strings.Count(result, "\n") + 1
+		// If result ends with a trailing newline, don't count the empty last line.
+		if strings.HasSuffix(result, "\n") && n > 1 {
+			n--
+		}
+		return fmt.Sprintf("✓ (%d lines)", n)
+
+	case "edit", "Edit":
+		if isErrorResult(result) {
+			return "✗"
+		}
+		return "✓"
+
+	case "write", "Write":
+		if isErrorResult(result) {
+			return "✗"
+		}
+		return "✓"
+
+	case "task", "Task":
+		if isErrorResult(result) {
+			return "✗"
+		}
+		return "✓"
+
+	case "glob", "Glob":
+		return matchCountSummary(result)
+
+	case "grep", "Grep":
+		return matchCountSummary(result)
+
+	case "todowrite", "TodoWrite", "Todowrite":
+		return "✓"
+
+	default:
+		// Generic: first meaningful line or ✓ if empty.
+		if result == "" {
+			return "✓"
+		}
+		line := firstMeaningfulLine(result)
+		if len([]rune(line)) > 60 {
+			runes := []rune(line)
+			return string(runes[:60]) + "..."
+		}
+		return line
+	}
+}
+
+// bashResultSummary extracts a one-line summary from a bash tool result.
+// Returns ✓ for empty output, ✗ + first stderr line for errors, or the
+// first meaningful output line otherwise.
+func bashResultSummary(result string) string {
+	if result == "" {
+		return "✓"
+	}
+	// Check for common error indicators in the result.
+	lower := strings.ToLower(result)
+	isErr := strings.Contains(lower, "error:") ||
+		strings.Contains(lower, "command not found") ||
+		strings.Contains(lower, "exit status") ||
+		strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "no such file")
+
+	line := firstMeaningfulLine(result)
+	if isErr {
+		if len([]rune(line)) > 60 {
+			runes := []rune(line)
+			return "✗ " + string(runes[:60]) + "..."
+		}
+		return "✗ " + line
+	}
+	if len([]rune(line)) > 60 {
+		runes := []rune(line)
+		return string(runes[:60]) + "..."
+	}
+	return line
+}
+
+// isErrorResult returns true if the result string looks like an error.
+func isErrorResult(result string) bool {
+	lower := strings.ToLower(result)
+	return strings.Contains(lower, "error") ||
+		strings.Contains(lower, "failed") ||
+		strings.Contains(lower, "✗")
+}
+
+// matchCountSummary returns "N matches" or "no matches" from a glob/grep result.
+func matchCountSummary(result string) string {
+	if result == "" {
+		return "no matches"
+	}
+	// Count non-empty lines as matches.
+	count := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	if count == 0 {
+		return "no matches"
+	}
+	if count == 1 {
+		return "1 match"
+	}
+	return fmt.Sprintf("%d matches", count)
+}
+
+// firstMeaningfulLine returns the first non-empty, non-whitespace line from s.
+func firstMeaningfulLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return s
+}
+
+// extractBashCommand extracts the command string from bash tool args.
+// The args may be a plain string (the command itself) or a JSON object
+// with a "command" or "cmd" field.
+func extractBashCommand(args string) string {
+	// Try JSON object first.
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err == nil {
+		for _, key := range []string{"command", "cmd"} {
+			if raw, ok := obj[key]; ok {
+				var s string
+				if err := json.Unmarshal(raw, &s); err == nil {
+					return s
+				}
+			}
+		}
+	}
+	// Try plain JSON string.
+	var s string
+	if err := json.Unmarshal([]byte(args), &s); err == nil {
+		return s
+	}
+	// Fall back to raw args.
+	return args
+}
+
+// extractStringField extracts a string value from a JSON object by trying
+// each key in order. Returns the raw string if none match or if args is not JSON.
+func extractStringField(args string, keys ...string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		// Not a JSON object — try plain JSON string.
+		var s string
+		if err2 := json.Unmarshal([]byte(args), &s); err2 == nil {
+			return s
+		}
+		return args
+	}
+	for _, key := range keys {
+		if raw, ok := obj[key]; ok {
+			var s string
+			if err := json.Unmarshal(raw, &s); err == nil {
+				return s
+			}
+		}
+	}
+	return args
 }
 
 // extractMessageID returns the messageId field from a payload JSON string.
