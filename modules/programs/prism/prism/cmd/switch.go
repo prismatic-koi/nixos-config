@@ -783,7 +783,9 @@ var switchCmd = &cobra.Command{
 			ContainerMode:  cfg.ContainerMode,
 			PluginHostPath: cfg.SidecarPluginPath,
 		}
-		if pf != nil {
+		// AgentEnvVars only applies to host-mode sessions; container sessions
+		// receive env vars via podman --env flags in the sidecar.
+		if pf != nil && !cfg.ContainerMode {
 			opts.AgentEnvVars = pf.AgentEnvVars
 		}
 

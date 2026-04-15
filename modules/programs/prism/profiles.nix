@@ -126,9 +126,20 @@
           container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
           container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
           # Agent environment variables to inject into host-mode opencode processes.
-          # $HOME is expanded at Nix eval time so the JSON contains absolute paths.
+          # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
+          # always contains absolute paths regardless of which form is used.
           agent_env_vars = lib.mapAttrs (
-            _name: value: lib.strings.replaceStrings [ "$HOME" ] [ homeDir ] value
+            _name: value:
+            lib.strings.replaceStrings
+              [
+                "$HOME"
+                "\${HOME}"
+              ]
+              [
+                homeDir
+                homeDir
+              ]
+              value
           ) config.nx.programs.prism.agent.envVars;
         };
 

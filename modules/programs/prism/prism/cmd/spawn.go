@@ -202,7 +202,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		ContainerMode:  effectiveContainerMode,
 		PluginHostPath: cfg.SidecarPluginPath,
 	}
-	if pf != nil {
+	// AgentEnvVars only applies to host-mode sessions; container sessions
+	// receive env vars via podman --env flags in the sidecar.
+	if pf != nil && !effectiveContainerMode {
 		opts.AgentEnvVars = pf.AgentEnvVars
 	}
 
