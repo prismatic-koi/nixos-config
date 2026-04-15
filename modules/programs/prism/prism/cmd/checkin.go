@@ -1093,7 +1093,7 @@ func toolOneLiner(toolName, args, result string) string {
 		return fmt.Sprintf("grep: %s %d matches", pat, n)
 
 	case "task":
-		desc := truncateRunes(args, 60)
+		desc := extractFirstArgument(args)
 		if looksLikeToolError(result) {
 			return fmt.Sprintf("task: %s ✗", desc)
 		}
@@ -1181,7 +1181,7 @@ func extractFirstArgument(args string) string {
 	if len(args) > 0 && args[0] == '{' {
 		var obj map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(args), &obj); err == nil {
-			for _, key := range []string{"pattern", "query", "glob", "regex", "include"} {
+			for _, key := range []string{"pattern", "query", "glob", "regex", "include", "description"} {
 				if raw, ok := obj[key]; ok {
 					var s string
 					if err := json.Unmarshal(raw, &s); err == nil && s != "" {

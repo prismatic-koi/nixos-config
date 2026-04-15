@@ -1229,6 +1229,28 @@ func TestToolOneLiner_Todowrite(t *testing.T) {
 	}
 }
 
+// TestToolOneLiner_Task verifies task one-liner formatting, including JSON-object args.
+func TestToolOneLiner_Task(t *testing.T) {
+	cases := []struct {
+		args   string
+		result string
+		want   string
+	}{
+		// Plain string args (fallback)
+		{"run tests", "ok", "task: run tests ✓"},
+		{"run tests", "error: tests failed", "task: run tests ✗"},
+		// JSON-object args (real sidecar shape: {"description":"..."})
+		{`{"description":"implement the feature"}`, "ok", "task: implement the feature ✓"},
+		{`{"description":"run the test suite"}`, "failed: 3 tests failed", "task: run the test suite ✗"},
+	}
+	for _, tc := range cases {
+		got := toolOneLiner("task", tc.args, tc.result)
+		if got != tc.want {
+			t.Errorf("toolOneLiner(task, %q, %q) = %q, want %q", tc.args, tc.result, got, tc.want)
+		}
+	}
+}
+
 // TestRenderCheckinTurns_UserDistinct verifies that msg_user messages use
 // the ▶ prefix to distinguish them from assistant messages.
 func TestRenderCheckinTurns_UserDistinct(t *testing.T) {
