@@ -187,15 +187,17 @@ func TestRenderCheckinTurns_ToolChildrenIndented(t *testing.T) {
 		t.Errorf("missing 'second assistant'\ngot:\n%s", out)
 	}
 
-	// Tool children rendered with indentation.
-	if !strings.Contains(out, "  → bash: echo hello") {
-		t.Errorf("missing indented bash tool_call\ngot:\n%s", out)
+	// bash one-liner: call and result merged — "bash: echo hello — hello"
+	if !strings.Contains(out, "  → bash: echo hello — hello") {
+		t.Errorf("missing bash one-liner with result\ngot:\n%s", out)
 	}
-	if !strings.Contains(out, "  → result: hello") {
-		t.Errorf("missing indented tool_result\ngot:\n%s", out)
+	// result should NOT appear as a separate line in default mode
+	if strings.Contains(out, "  → result: hello") {
+		t.Errorf("tool_result should be merged into one-liner in default mode, not shown separately\ngot:\n%s", out)
 	}
+	// read_file one-liner: no result event, so just ✓
 	if !strings.Contains(out, "  → read_file: main.go") {
-		t.Errorf("missing indented read_file tool_call\ngot:\n%s", out)
+		t.Errorf("missing read_file one-liner\ngot:\n%s", out)
 	}
 
 	// The bash tool should appear before read_file in output (ae1 before ae2).
@@ -1011,5 +1013,269 @@ func TestRenderChildEvent_PermissionAsk_AbsentTool(t *testing.T) {
 	}
 	if !strings.Contains(out, "unknown") {
 		t.Errorf("output should use 'unknown' fallback\ngot: %s", out)
+	}
+}
+
+// stateChangePayload returns a minimal state_change JSON payload.
+func stateChangePayload(state string) string {
+	return fmt.Sprintf(`{"state":%q}`, state)
+}
+
+// TestRenderCheckinTurns_StateChangeInWindow verifies that state_change events
+// within the assistant-turn time window are shown inline with a ● marker.
+func TestRenderCheckinTurns_StateChangeInWindow(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// Assistant turn at t=10s.
+	msgID := "msg-sc"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msgID, "doing work"), base.Add(10*time.Second))
+
+	// State change at t=15s — inside [t=10s, t=10s] window... wait, window is just the turn.
+	// Since window is [earliest, latest] and there's only one assistant turn, window=[10s,10s].
+	// State change AT t=10s should be included (at boundary).
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("finished"), base.Add(10*time.Second))
+
+	// State change at t=5s — BEFORE window, should not appear.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("active"), base.Add(5*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// "● finished" must appear (at boundary).
+	if !strings.Contains(out, "● finished") {
+		t.Errorf("output missing '● finished'\ngot:\n%s", out)
+	}
+	// "● active" must NOT appear (before window).
+	if strings.Contains(out, "● active") {
+		t.Errorf("output unexpectedly contains out-of-window '● active'\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_StateChangeAfterTurn verifies that a state_change
+// just after the last assistant turn IS included when it falls at the window boundary.
+func TestRenderCheckinTurns_StateChangeMultipleTurns(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// Two assistant turns at t=5s and t=15s.
+	msg1 := "msg-1"
+	msg2 := "msg-2"
+	ae1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msg1, "first turn"), base.Add(5*time.Second))
+	ae2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msg2, "second turn"), base.Add(15*time.Second))
+
+	// State change at t=10s — inside [5s, 15s] window, should appear.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("paused"), base.Add(10*time.Second))
+
+	// State change at t=20s — after window, should NOT appear.
+	writeEvent(t, d, uuid.New().String(), session, "state_change",
+		stateChangePayload("finished"), base.Add(20*time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae1, ae2}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "● paused") {
+		t.Errorf("output missing in-window '● paused'\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "● finished") {
+		t.Errorf("output unexpectedly contains out-of-window '● finished'\ngot:\n%s", out)
+	}
+	// ● marker should appear BETWEEN the two assistant turns.
+	firstTurnPos := strings.Index(out, "first turn")
+	statePos := strings.Index(out, "● paused")
+	secondTurnPos := strings.Index(out, "second turn")
+	if firstTurnPos < 0 || statePos < 0 || secondTurnPos < 0 {
+		t.Fatalf("missing expected content\ngot:\n%s", out)
+	}
+	if !(firstTurnPos < statePos && statePos < secondTurnPos) {
+		t.Errorf("state change should appear between turns\ngot:\n%s", out)
+	}
+}
+
+// TestToolOneLiner_Bash verifies bash one-liner formatting.
+func TestToolOneLiner_Bash(t *testing.T) {
+	cases := []struct {
+		args   string
+		result string
+		want   string
+	}{
+		{"echo hello", "hello\n", "bash: echo hello — hello"},
+		{"go build ./...", "", "bash: go build ./... ✓"},
+		{strings.Repeat("x", 100), "", "bash: " + strings.Repeat("x", 80) + "... ✓"},
+		{"ls", "file1\nfile2\nfile3", "bash: ls — file1"},
+	}
+	for _, tc := range cases {
+		got := toolOneLiner("bash", tc.args, tc.result)
+		if got != tc.want {
+			t.Errorf("toolOneLiner(bash, %q, %q) = %q, want %q", tc.args, tc.result, got, tc.want)
+		}
+	}
+}
+
+// TestToolOneLiner_Read verifies read/read_file one-liner formatting.
+func TestToolOneLiner_Read(t *testing.T) {
+	cases := []struct {
+		tool   string
+		args   string
+		result string
+		want   string
+	}{
+		{"read_file", "main.go", "line1\nline2\nline3", "read_file: main.go ✓ (3 lines)"},
+		{"read_file", "main.go", "", "read_file: main.go ✓"},
+		{"read", "/path/to/db.go", "a\nb", "read: db.go ✓ (2 lines)"},
+	}
+	for _, tc := range cases {
+		got := toolOneLiner(tc.tool, tc.args, tc.result)
+		if got != tc.want {
+			t.Errorf("toolOneLiner(%s, %q, ...) = %q, want %q", tc.tool, tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestToolOneLiner_EditWrite verifies edit/write one-liner formatting.
+func TestToolOneLiner_EditWrite(t *testing.T) {
+	cases := []struct {
+		tool   string
+		args   string
+		result string
+		want   string
+	}{
+		{"edit", "container.go", "ok", "edit: container.go ✓"},
+		{"edit", "container.go", "error: file not found", "edit: container.go ✗"},
+		{"write", "output.json", "", "write: output.json ✓"},
+		{"write_file", "/path/to/file.go", "failed: permission denied", "write_file: file.go ✗"},
+	}
+	for _, tc := range cases {
+		got := toolOneLiner(tc.tool, tc.args, tc.result)
+		if got != tc.want {
+			t.Errorf("toolOneLiner(%s, %q, %q) = %q, want %q", tc.tool, tc.args, tc.result, got, tc.want)
+		}
+	}
+}
+
+// TestToolOneLiner_GlobGrep verifies glob/grep one-liner formatting.
+func TestToolOneLiner_GlobGrep(t *testing.T) {
+	cases := []struct {
+		tool   string
+		args   string
+		result string
+		want   string
+	}{
+		{"glob", "**/*.go", "a.go\nb.go\nc.go", "glob: **/*.go 3 matches"},
+		{"glob", "**/*.go", "", "glob: **/*.go no matches"},
+		{"grep", "TODO", "file1:1:TODO fix\nfile2:3:TODO check", "grep: TODO 2 matches"},
+		{"grep", "TODO", "", "grep: TODO no matches"},
+	}
+	for _, tc := range cases {
+		got := toolOneLiner(tc.tool, tc.args, tc.result)
+		if got != tc.want {
+			t.Errorf("toolOneLiner(%s, %q, ...) = %q, want %q", tc.tool, tc.args, got, tc.want)
+		}
+	}
+}
+
+// TestToolOneLiner_Todowrite verifies todowrite one-liner.
+func TestToolOneLiner_Todowrite(t *testing.T) {
+	got := toolOneLiner("todowrite", "some todos json", "ok")
+	want := "todowrite ✓"
+	if got != want {
+		t.Errorf("toolOneLiner(todowrite) = %q, want %q", got, want)
+	}
+}
+
+// TestRenderCheckinTurns_UserDistinct verifies that msg_user messages use
+// the ▶ prefix to distinguish them from assistant messages.
+func TestRenderCheckinTurns_UserDistinct(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	// Write user message at t=0 and assistant at t=1s (within window).
+	umsgID := uuid.New().String()
+	amsgID := uuid.New().String()
+	writeEvent(t, d, uuid.New().String(), session, "msg_user",
+		userPayload(umsgID, "please do something"), base)
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(amsgID, "on it"), base.Add(time.Second))
+
+	// User at t=0 is at the boundary (earliest assistant = t=1s), so it is
+	// NOT in window. Write one at t=1s that IS in window.
+	umsgID2 := uuid.New().String()
+	writeEvent(t, d, uuid.New().String(), session, "msg_user",
+		userPayload(umsgID2, "confirm please"), base.Add(time.Second))
+
+	out := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns: %v", err)
+		}
+	})
+
+	// User messages must use ▶ prefix.
+	if !strings.Contains(out, "▶ user") {
+		t.Errorf("output missing '▶ user' prefix for msg_user\ngot:\n%s", out)
+	}
+	// Assistant messages must NOT use ▶ prefix.
+	if strings.Contains(out, "▶ assistant") {
+		t.Errorf("output should not prefix assistant with ▶\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "] assistant") {
+		t.Errorf("output missing '] assistant' header\ngot:\n%s", out)
+	}
+}
+
+// TestRenderCheckinTurns_VerboseToolCallAndResult verifies that in verbose mode
+// tool_call and tool_result render as separate lines (not merged).
+func TestRenderCheckinTurns_VerboseToolCallAndResult(t *testing.T) {
+	d := openCheckinTestDB(t)
+	const session = "repo@main"
+	base := time.Now().Truncate(time.Second)
+
+	msgID := "msg-verbose-pair"
+	ae := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
+		assistantPayload(msgID, "verbose test"), base)
+	writeEvent(t, d, uuid.New().String(), session, "tool_call",
+		toolCallPayload(msgID, "bash", "echo hi"), base.Add(100*time.Millisecond))
+	writeEvent(t, d, uuid.New().String(), session, "tool_result",
+		toolResultPayload(msgID, "bash", "hi"), base.Add(200*time.Millisecond))
+
+	outVerbose := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, true); err != nil {
+			t.Errorf("renderCheckinTurns (verbose): %v", err)
+		}
+	})
+
+	// In verbose mode, tool_call and tool_result appear as separate lines.
+	if !strings.Contains(outVerbose, "→ bash: echo hi") {
+		t.Errorf("verbose: missing tool_call line\ngot:\n%s", outVerbose)
+	}
+	if !strings.Contains(outVerbose, "→ result: hi") {
+		t.Errorf("verbose: missing separate tool_result line\ngot:\n%s", outVerbose)
+	}
+
+	// Default mode merges them into one line.
+	outDefault := captureStdout(t, func() {
+		if err := renderCheckinTurns(session, d, []db.Event{ae}, false); err != nil {
+			t.Errorf("renderCheckinTurns (default): %v", err)
+		}
+	})
+	if !strings.Contains(outDefault, "→ bash: echo hi — hi") {
+		t.Errorf("default: missing merged one-liner\ngot:\n%s", outDefault)
+	}
+	if strings.Contains(outDefault, "→ result: hi") {
+		t.Errorf("default: should not show separate result line\ngot:\n%s", outDefault)
 	}
 }

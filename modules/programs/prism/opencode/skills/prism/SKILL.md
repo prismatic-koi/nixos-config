@@ -200,7 +200,7 @@ Use `prism list-sessions` to see all active agent sessions with their state and 
 prism list-sessions
 ```
 
-Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. Output is structured as message turns (user and assistant pairs) with tool calls, tool results, and permission events rendered inline under their parent assistant message:
+Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default view shows assistant messages, state changes, and tool call one-liners interleaved chronologically — giving a full narrative without the noise of raw event dumps:
 
 ```bash
 prism checkin nixos-config@update-plex
@@ -211,16 +211,27 @@ checkin: nixos-config@update-plex
 
 state: active
 
-[2026-04-03 14:22:01] user
+[2026-04-03 14:22:01] ▶ user
 implement the feature and open a PR
 
 [2026-04-03 14:22:05] assistant
 I'll implement this now.
-  → Bash: ls src/
-  → result: main.go utils.go
+  → read: main.go ✓ (42 lines)
+  → edit: main.go ✓
+  → bash: go build ./... ✓
+  → bash: go test ./... — ok (3.2s)
+
+[2026-04-03 14:23:10] assistant
+Tests pass. Opening PR.
+  → bash: git commit -m "implement feature" ✓
+  → bash: gh pr create ... ✓
+
+[2026-04-03 14:23:15] ● finished
 
 ── end of event log ──
 ```
+
+Tool call one-liners show: tool name, key argument (file path or command), and a one-line result summary. Use `--verbose` for full forensic output with complete args and results.
 
 With no argument, `prism checkin` lists available sessions and exits with a hint.
 
@@ -231,8 +242,8 @@ With no argument, `prism checkin` lists available sessions and exits with a hint
 | `--last <N>` | Number of message turns to show (default 10) |
 | `--from <id>` | Show N events forward from this event ID |
 | `--before <id>` | Show N events backward from this event ID |
-| `--types <list>` | Comma-separated event types to filter (default: `msg_user,msg_assistant,tool_call,tool_result,permission_ask,permission_denied`) |
-| `--verbose` | Show full tool args/results without truncation |
+| `--types <list>` | Orthogonal escape hatch for targeted queries (e.g. `--types audit`). Bypasses the default rich view. |
+| `--verbose` | Full tool args/results without truncation — use for forensic investigation |
 | `--all` | (no-arg mode only) List all sessions across all repos |
 
 These commands are useful when you need to know where a spawned agent is at without switching to its session.

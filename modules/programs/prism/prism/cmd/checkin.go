@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,6 +29,13 @@ import (
 	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// childEvent holds a single child event (tool_call, tool_result, permission_ask,
+// permission_denied, or thinking) associated with a parent assistant turn.
+type childEvent struct {
+	eventType string
+	payload   string
+}
 
 var checkinCmd = &cobra.Command{
 	Use:   "checkin [session]",
@@ -45,7 +53,7 @@ func init() {
 	checkinCmd.Flags().Int("last", 10, "Number of conversation turns to show")
 	checkinCmd.Flags().String("from", "", "Show events forward from this event ID")
 	checkinCmd.Flags().String("before", "", "Show events backward from this event ID")
-	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter (default includes msg_user, msg_assistant, tool_call, tool_result, permission_ask, permission_denied)")
+	checkinCmd.Flags().String("types", "", "Comma-separated event types to filter. Orthogonal escape hatch for targeted queries (e.g. --types audit). The default rich view already includes state_change, msg_user, msg_assistant, tool_call, tool_result, permission_ask, and permission_denied.")
 	checkinCmd.Flags().Bool("verbose", false, "Show full tool args/results without truncation")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	rootCmd.AddCommand(checkinCmd)
@@ -199,10 +207,6 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
 	// Organise children by messageId.
-	type childEvent struct {
-		eventType string
-		payload   string
-	}
 	childrenByMsgID := make(map[string][]childEvent)
 	if serr == nil {
 		for _, e := range secondary {
@@ -215,7 +219,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	}
 
 	// Determine the time window spanned by the fetched assistant turns so that
-	// we can include msg_user events that fall within it.
+	// we can include msg_user and state_change events that fall within it.
 	earliest := assistantEvents[0].CreatedAt
 	latest := assistantEvents[len(assistantEvents)-1].CreatedAt
 	for _, ae := range assistantEvents {
@@ -238,18 +242,32 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 	}
 
-	// Merge assistant events and user events into a single timeline sorted ASC.
+	// Fetch state_change events within [earliest, latest] and include them in
+	// the timeline so state transitions are visible in the default view.
+	stateChangeEventsAll, _ := d.QueryEvents(session, 0, nil, nil, []string{"state_change"})
+	var stateChangeEventsInWindow []db.Event
+	for _, sc := range stateChangeEventsAll {
+		if !sc.CreatedAt.Before(earliest) && !sc.CreatedAt.After(latest) {
+			stateChangeEventsInWindow = append(stateChangeEventsInWindow, sc)
+		}
+	}
+
+	// Merge assistant, user, and state_change events into a single timeline sorted ASC.
 	// assistantEvents is already ASC from QueryEvents; userEventsInWindow is also ASC.
 	type timelineEntry struct {
-		isUser bool
-		event  db.Event
+		isUser        bool
+		isStateChange bool
+		event         db.Event
 	}
-	timeline := make([]timelineEntry, 0, len(assistantEvents)+len(userEventsInWindow))
+	timeline := make([]timelineEntry, 0, len(assistantEvents)+len(userEventsInWindow)+len(stateChangeEventsInWindow))
 	for _, ae := range assistantEvents {
 		timeline = append(timeline, timelineEntry{isUser: false, event: ae})
 	}
 	for _, ue := range userEventsInWindow {
 		timeline = append(timeline, timelineEntry{isUser: true, event: ue})
+	}
+	for _, sc := range stateChangeEventsInWindow {
+		timeline = append(timeline, timelineEntry{isStateChange: true, event: sc})
 	}
 	// Sort by created_at ASC (stable, preserving insertion order for ties).
 	for i := 1; i < len(timeline); i++ {
@@ -261,8 +279,12 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	// isSubagentEntry returns true when an entry's agent differs from the root
 	// agent, indicating it belongs to a subagent invocation. When rootAgentName
 	// is empty (pre-migration sessions), all entries are treated as root-agent
-	// entries to preserve current behaviour.
+	// entries to preserve current behaviour. state_change entries are never
+	// considered subagent entries.
 	isSubagentEntry := func(entry timelineEntry) bool {
+		if entry.isStateChange {
+			return false
+		}
 		if rootAgentName == "" {
 			return false
 		}
@@ -346,6 +368,16 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			prefix = "  │ "
 		}
 
+		// State-change entries render inline with a ● marker (session-level, no agent prefix).
+		if entry.isStateChange {
+			var sc payload.StateChange
+			if jerr := json.Unmarshal([]byte(e.Payload), &sc); jerr == nil && sc.State != "" {
+				fmt.Printf("[%s] ● %s\n\n", ts, sc.State)
+			}
+			i++
+			continue
+		}
+
 		if entry.isUser {
 			var up payload.MsgUser
 			if jerr := json.Unmarshal([]byte(e.Payload), &up); jerr != nil {
@@ -357,9 +389,9 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 			}
 			label := turnLabel(up.Agent, up.Model)
 			if label != "" {
-				fmt.Printf("%s[%s] user  [%s]\n", prefix, ts, label)
+				fmt.Printf("%s[%s] ▶ user  [%s]\n", prefix, ts, label)
 			} else {
-				fmt.Printf("%s[%s] user\n", prefix, ts)
+				fmt.Printf("%s[%s] ▶ user\n", prefix, ts)
 			}
 			fmt.Printf("%s%s\n\n", prefix, text)
 			i++
@@ -384,9 +416,7 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		fmt.Printf("%s%s\n", prefix, atext)
 
 		msgID := extractMessageID(e.Payload)
-		for _, child := range childrenByMsgID[msgID] {
-			renderChildEvent(child.eventType, child.payload, verbose, prefix)
-		}
+		renderChildEventsForTurn(childrenByMsgID[msgID], verbose, prefix)
 		fmt.Println()
 		i++
 	}
@@ -626,7 +656,14 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 			renderChildEvent("permission_denied", e.Payload, verbose, "")
 
 		default:
-			// state_change, compaction, error, etc.
+			if e.Type == "state_change" {
+				var sc payload.StateChange
+				if err := json.Unmarshal([]byte(e.Payload), &sc); err == nil && sc.State != "" {
+					fmt.Printf("[%s] ● %s\n\n", ts, sc.State)
+					continue
+				}
+			}
+			// compaction, error, etc.
 			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
 		}
 	}
@@ -770,6 +807,12 @@ func renderProxiedCheckin(raw []byte, verbose bool) error {
 				continue
 			}
 			renderChildEvent("thinking", e.Payload, verbose, "")
+
+		case "state_change":
+			var sc payload.StateChange
+			if err := json.Unmarshal([]byte(e.Payload), &sc); err == nil && sc.State != "" {
+				fmt.Printf("[%s] ● %s\n\n", ts, sc.State)
+			}
 
 		default:
 			fmt.Printf("[%s] %s: %s\n", ts, e.Type, e.Payload)
@@ -920,4 +963,236 @@ func printSessionTable(ss []db.Status) error {
 	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Render(hint))
 
 	return nil
+}
+
+// renderChildEventsForTurn renders all child events for an assistant turn.
+//
+// Default mode: tool_call+result pairs are combined into one-liners using
+// toolOneLiner. Each tool_call is matched with the first unused tool_result
+// for the same tool name that appears after it in the list.
+//
+// Verbose mode: full args and full result for each event, rendered separately
+// using renderChildEvent (existing behaviour).
+func renderChildEventsForTurn(children []childEvent, verbose bool, prefix string) {
+	if verbose {
+		for _, c := range children {
+			renderChildEvent(c.eventType, c.payload, verbose, prefix)
+		}
+		return
+	}
+
+	// Default mode: pair tool_calls with results into one-liners.
+	used := make([]bool, len(children))
+	for i, c := range children {
+		if used[i] {
+			continue
+		}
+		switch c.eventType {
+		case "tool_call":
+			var tc payload.ToolCall
+			if err := json.Unmarshal([]byte(c.payload), &tc); err != nil {
+				fmt.Printf("%s  → (tool_call parse error)\n", prefix)
+				used[i] = true
+				continue
+			}
+			// Find the first matching unused tool_result after this call.
+			result := ""
+			for j := i + 1; j < len(children); j++ {
+				if used[j] || children[j].eventType != "tool_result" {
+					continue
+				}
+				var tr payload.ToolResult
+				if err := json.Unmarshal([]byte(children[j].payload), &tr); err != nil {
+					continue
+				}
+				if tr.Tool == tc.Tool {
+					result = tr.Result
+					used[j] = true
+					break
+				}
+			}
+			line := toolOneLiner(tc.Tool, tc.Args, result)
+			fmt.Printf("%s  → %s\n", prefix, line)
+			used[i] = true
+		case "tool_result":
+			// Orphaned result (no matching call) — skip in default mode.
+			used[i] = true
+		default:
+			// permission_ask, permission_denied, thinking
+			renderChildEvent(c.eventType, c.payload, verbose, prefix)
+			used[i] = true
+		}
+	}
+}
+
+// toolOneLiner returns a single-line summary for a tool call + result pair.
+// Format: "<tool>: <key_arg> <result_summary>"
+func toolOneLiner(toolName, args, result string) string {
+	switch toolName {
+	case "bash":
+		cmd := truncateRunes(args, 80)
+		summary := bashResultSummary(result)
+		return fmt.Sprintf("bash: %s %s", cmd, summary)
+
+	case "read", "read_file":
+		fp := extractToolFilePath(args)
+		if result == "" {
+			return fmt.Sprintf("%s: %s ✓", toolName, fp)
+		}
+		n := countResultLines(result)
+		return fmt.Sprintf("%s: %s ✓ (%d lines)", toolName, fp, n)
+
+	case "edit", "edit_file":
+		fp := extractToolFilePath(args)
+		if looksLikeToolError(result) {
+			return fmt.Sprintf("%s: %s ✗", toolName, fp)
+		}
+		return fmt.Sprintf("%s: %s ✓", toolName, fp)
+
+	case "write", "write_file":
+		fp := extractToolFilePath(args)
+		if looksLikeToolError(result) {
+			return fmt.Sprintf("%s: %s ✗", toolName, fp)
+		}
+		return fmt.Sprintf("%s: %s ✓", toolName, fp)
+
+	case "glob":
+		pat := extractFirstArgument(args)
+		n := countResultLines(result)
+		if n == 0 {
+			return fmt.Sprintf("glob: %s no matches", pat)
+		}
+		return fmt.Sprintf("glob: %s %d matches", pat, n)
+
+	case "grep", "ripgrep":
+		pat := extractFirstArgument(args)
+		n := countResultLines(result)
+		if n == 0 {
+			return fmt.Sprintf("grep: %s no matches", pat)
+		}
+		return fmt.Sprintf("grep: %s %d matches", pat, n)
+
+	case "task":
+		desc := truncateRunes(args, 60)
+		if looksLikeToolError(result) {
+			return fmt.Sprintf("task: %s ✗", desc)
+		}
+		return fmt.Sprintf("task: %s ✓", desc)
+
+	case "todowrite", "todo_write":
+		return "todowrite ✓"
+
+	default:
+		keyArg := truncateRunes(args, 60)
+		if result == "" {
+			return fmt.Sprintf("%s: %s ✓", toolName, keyArg)
+		}
+		first := firstMeaningfulLine(result, 80)
+		if first == "" {
+			return fmt.Sprintf("%s: %s ✓", toolName, keyArg)
+		}
+		return fmt.Sprintf("%s: %s — %s", toolName, keyArg, first)
+	}
+}
+
+// truncateRunes truncates s to at most n runes, appending "..." if truncated.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "..."
+}
+
+// bashResultSummary returns the result summary portion for a bash one-liner.
+// Returns "✓" for empty output; "— <first line>" for non-empty output.
+func bashResultSummary(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "✓"
+	}
+	line := firstMeaningfulLine(result, 80)
+	if line == "" {
+		return "✓"
+	}
+	return "— " + line
+}
+
+// firstMeaningfulLine returns the first non-empty, non-whitespace line of s,
+// truncated to maxLen runes. Returns "" if no such line exists.
+func firstMeaningfulLine(s string, maxLen int) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return truncateRunes(line, maxLen)
+		}
+	}
+	return ""
+}
+
+// extractToolFilePath extracts a file path from tool args.
+// Tries JSON parsing first (for {filePath:...} shapes), falls back to raw string.
+// Returns the base filename component for brevity.
+func extractToolFilePath(args string) string {
+	args = strings.TrimSpace(args)
+	if len(args) > 0 && args[0] == '{' {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(args), &obj); err == nil {
+			for _, key := range []string{"filePath", "file_path", "path", "filename"} {
+				if raw, ok := obj[key]; ok {
+					var s string
+					if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+						return filepath.Base(s)
+					}
+				}
+			}
+		}
+	}
+	if args == "" {
+		return args
+	}
+	return filepath.Base(args)
+}
+
+// extractFirstArgument extracts the primary argument (pattern, query, etc.)
+// from tool args. Tries JSON parsing first, falls back to the raw string.
+func extractFirstArgument(args string) string {
+	args = strings.TrimSpace(args)
+	if len(args) > 0 && args[0] == '{' {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(args), &obj); err == nil {
+			for _, key := range []string{"pattern", "query", "glob", "regex", "include"} {
+				if raw, ok := obj[key]; ok {
+					var s string
+					if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+						return truncateRunes(s, 60)
+					}
+				}
+			}
+		}
+	}
+	return truncateRunes(args, 60)
+}
+
+// countResultLines counts non-empty lines in the result string.
+func countResultLines(result string) int {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return 0
+	}
+	n := 0
+	for _, line := range strings.Split(result, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// looksLikeToolError returns true when a tool result appears to indicate failure.
+func looksLikeToolError(result string) bool {
+	lower := strings.ToLower(result)
+	return strings.Contains(lower, "error") ||
+		strings.Contains(lower, "failed") ||
+		strings.Contains(lower, "exception")
 }
