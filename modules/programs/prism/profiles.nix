@@ -106,22 +106,42 @@
         };
       };
 
-      json = builtins.toJSON {
-        default = config.nx.programs.prism.opencode.provider;
-        role_mapping = config.nx.programs.prism.profiles.data.roleMapping;
-        profiles = lib.mapAttrs (
-          _name: profileEntry:
-          lib.mapAttrs (
-            _role: roleCfg:
-            { model = roleCfg.model; } // (lib.optionalAttrs (roleCfg ? variant) { variant = roleCfg.variant; })
-          ) profileEntry
-        ) config.nx.programs.prism.profiles.data.profiles;
-        # Container role configs — full opencode.json blobs injected as
-        # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
-        # opencode.jsonc can override agent identity or permissions.
-        container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
-        container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
-      };
+      json =
+        let
+          homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
+        in
+        builtins.toJSON {
+          default = config.nx.programs.prism.opencode.provider;
+          role_mapping = config.nx.programs.prism.profiles.data.roleMapping;
+          profiles = lib.mapAttrs (
+            _name: profileEntry:
+            lib.mapAttrs (
+              _role: roleCfg:
+              { model = roleCfg.model; } // (lib.optionalAttrs (roleCfg ? variant) { variant = roleCfg.variant; })
+            ) profileEntry
+          ) config.nx.programs.prism.profiles.data.profiles;
+          # Container role configs — full opencode.json blobs injected as
+          # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
+          # opencode.jsonc can override agent identity or permissions.
+          container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
+          container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
+          # Agent environment variables to inject into host-mode opencode processes.
+          # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
+          # always contains absolute paths regardless of which form is used.
+          agent_env_vars = lib.mapAttrs (
+            _name: value:
+            lib.strings.replaceStrings
+              [
+                "$HOME"
+                "\${HOME}"
+              ]
+              [
+                homeDir
+                homeDir
+              ]
+              value
+          ) config.nx.programs.prism.agent.envVars;
+        };
 
       applyProfile =
         profileName: baseAgents:

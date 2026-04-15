@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -77,6 +78,16 @@ type Opts struct {
 	// --variant flags. When empty, no OPENCODE_CONFIG_CONTENT is injected and
 	// opencode uses its baked-in config unchanged.
 	ConfigContent string
+	// AgentEnvVars holds environment variables to prepend to the opencode
+	// command string in host-mode (ContainerMode = false) sessions. Each
+	// entry is emitted as KEY=<quoted-value> before PRISM_SESSION_NAME so
+	// that the sh -c invocation in tmux new-window receives the restricted
+	// env vars without needing zsh aliases.
+	//
+	// Loaded from the agent_env_vars key of profiles.json (written by Nix).
+	// Ignored when ContainerMode is true — container sessions are handled via
+	// podman --env flags in the sidecar.
+	AgentEnvVars map[string]string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -156,6 +167,24 @@ func buildDirectOpencodeCmd(opts Opts) string {
 	}
 	if opts.SessionName != "" {
 		cmd = "PRISM_SESSION_NAME=" + shellQuote(opts.SessionName) + " " + cmd
+	}
+	// Prepend agent env vars before PRISM_SESSION_NAME, in sorted key order
+	// for determinism. Only applies to host-mode sessions — container sessions
+	// receive env vars via podman --env flags in the sidecar.
+	if !opts.ContainerMode && len(opts.AgentEnvVars) > 0 {
+		keys := make([]string, 0, len(opts.AgentEnvVars))
+		for k := range opts.AgentEnvVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var prefix strings.Builder
+		for _, k := range keys {
+			prefix.WriteString(k)
+			prefix.WriteString("=")
+			prefix.WriteString(shellQuote(opts.AgentEnvVars[k]))
+			prefix.WriteString(" ")
+		}
+		cmd = prefix.String() + cmd
 	}
 	return cmd
 }

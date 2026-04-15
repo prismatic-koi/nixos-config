@@ -125,14 +125,22 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Load the profiles file when container mode is active (carries container
-	// role configs) or when --profile is set (for model overrides).
+	// Load the profiles file. It carries container role configs, model profile
+	// overrides, and agent_env_vars for host-mode injection. Always attempt to
+	// load; treat missing file as fatal only when container mode or --profile
+	// is active (those paths strictly require the file). For host-mode sessions
+	// without a profile flag, a missing file is non-fatal — agent env vars
+	// simply won't be injected.
 	var pf *config.ProfilesFile
-	if effectiveContainerMode || profileFlag != "" {
+	{
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			return loadErr
+			if effectiveContainerMode || profileFlag != "" {
+				return loadErr
+			}
+			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
+			pf = nil
 		}
 	}
 	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
@@ -193,6 +201,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Headless:       !fromKeybind && !attachFlag,
 		ContainerMode:  effectiveContainerMode,
 		PluginHostPath: cfg.SidecarPluginPath,
+	}
+	// AgentEnvVars only applies to host-mode sessions; container sessions
+	// receive env vars via podman --env flags in the sidecar.
+	if pf != nil && !effectiveContainerMode {
+		opts.AgentEnvVars = pf.AgentEnvVars
 	}
 
 	if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {

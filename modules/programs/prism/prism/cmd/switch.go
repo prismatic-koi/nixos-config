@@ -762,15 +762,19 @@ var switchCmd = &cobra.Command{
 		fresh, _ := cmd.Flags().GetBool("fresh")
 		cfg := config.Load()
 
-		// In container mode, load profiles.json once for config injection.
-		// The profiles file is threaded through to each ensureAndSwitch call
-		// site so that injectContainerConfig can derive the role-scoped blob.
+		// Load profiles.json for container config injection (container mode)
+		// and agent env var injection (host mode). Always attempt to load;
+		// treat missing file as fatal only in container mode.
 		var pf *config.ProfilesFile
-		if cfg.ContainerMode {
+		{
 			var pfErr error
 			pf, pfErr = config.LoadProfiles()
 			if pfErr != nil {
-				return pfErr
+				if cfg.ContainerMode {
+					return pfErr
+				}
+				fmt.Fprintf(os.Stderr, "[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
+				pf = nil
 			}
 		}
 
@@ -778,6 +782,11 @@ var switchCmd = &cobra.Command{
 			Fresh:          fresh,
 			ContainerMode:  cfg.ContainerMode,
 			PluginHostPath: cfg.SidecarPluginPath,
+		}
+		// AgentEnvVars only applies to host-mode sessions; container sessions
+		// receive env vars via podman --env flags in the sidecar.
+		if pf != nil && !cfg.ContainerMode {
+			opts.AgentEnvVars = pf.AgentEnvVars
 		}
 
 		// --path: open a specific path directly.
