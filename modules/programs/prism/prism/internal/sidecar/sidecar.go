@@ -284,8 +284,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 					_ = os.WriteFile(sidPath, []byte(sid), 0o644)
 				}
 			}
+			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
-				log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 				s.cfg.OnReady()
 			}
 			if createErr == nil {
@@ -294,9 +294,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 					log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 				}()
 			}
-		} else if !isShuttingDown && s.cfg.OnReady != nil {
+		} else if !isShuttingDown {
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
-			s.cfg.OnReady()
+			if s.cfg.OnReady != nil {
+				s.cfg.OnReady()
+			}
 		}
 
 		// Start the host-API Unix socket server (AC-1, AC-9).

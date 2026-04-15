@@ -468,8 +468,9 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 		}
 
 		probeCount++
+		healthy := m.isHealthy(ctx)
 		elapsed := time.Since(waitStart).Round(time.Millisecond)
-		if m.isHealthy(ctx) {
+		if healthy {
 			log.Printf("[timing] WaitHealthy probe %d: %s elapsed — ok", probeCount, elapsed)
 			log.Printf("[timing] WaitHealthy: %s (%d probes)", time.Since(waitStart).Round(time.Millisecond), probeCount)
 			return nil
