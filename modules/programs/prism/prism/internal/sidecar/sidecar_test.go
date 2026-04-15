@@ -1890,8 +1890,13 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 func TestNotifyCoordinator_HTTPFailure_NoFallback(t *testing.T) {
 	d := openTestDB(t)
 
-	// Use a server that returns an error status.
+	// requestReceived is closed when the test server receives the HTTP request.
+	// This gives us a reliable synchronisation point: once the server has responded
+	// (with 500), the notifyCoordinator goroutine has finished its work and will
+	// not write anything further.
+	requestReceived := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestReceived)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -1920,8 +1925,13 @@ func TestNotifyCoordinator_HTTPFailure_NoFallback(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Give a brief window for the async notification goroutine to complete.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the HTTP request to be received by the test server. Once the
+	// server has replied (with 500), the goroutine has completed its work.
+	select {
+	case <-requestReceived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for HTTP request to coordinator")
+	}
 
 	// No bus messages should be written — HTTP failure is logged, not fallen back.
 	var totalMsgs int
@@ -2109,8 +2119,17 @@ func TestNotifyCoordinator_PortSetButNoSID_NoNotification(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Give a brief window for the async notification goroutine to complete.
-	time.Sleep(100 * time.Millisecond)
+	// Verify state transitioned to finished — this DB write is synchronous and
+	// happens before go s.notifyCoordinator() is launched, so it serves as a
+	// reliable anchor that the goroutine has been started. The goroutine returns
+	// immediately (early-exit: no opencode_sid), so a brief sleep is sufficient
+	// to let it complete before the absence assertion. This matches the same
+	// pattern used by TestNotifyCoordinator_SilentSkipWhenNoCoordinator and
+	// other no-notification tests in this file.
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+	time.Sleep(50 * time.Millisecond)
 
 	// No bus messages should be written since port+sid combination is incomplete.
 	var totalMsgs int
