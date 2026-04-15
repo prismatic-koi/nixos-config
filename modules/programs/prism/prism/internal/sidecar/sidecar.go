@@ -2051,6 +2051,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Guard against path traversal: session names must not contain "/" or "..".
+		// Valid session names are "repo@branch" — slashes and dot-segments are not
+		// part of the format and would escape the logs directory via filepath.Join.
+		if strings.Contains(targetSession, "/") || strings.Contains(targetSession, "..") {
+			writeError(w, http.StatusBadRequest, "invalid session name: must not contain '/' or '..'")
+			return
+		}
+
 		// Resolve log file path.
 		logPath, pathErr := session.SidecarLogPath(targetSession)
 		if pathErr != nil {

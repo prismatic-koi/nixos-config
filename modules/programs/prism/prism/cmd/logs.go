@@ -52,7 +52,7 @@ container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).
 }
 
 func init() {
-	logsCmd.Flags().Int("tail", 0, "Number of lines to show from the end of the log (0 = all)")
+	logsCmd.Flags().Int("tail", 0, "Number of lines to show from the end of the log; 0 prints nothing (omit flag to show all)")
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
 	rootCmd.AddCommand(logsCmd)
 }
@@ -65,13 +65,11 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	tailSet := cmd.Flags().Changed("tail")
 
 	if tailSet && follow {
-		fmt.Fprintln(os.Stderr, "error: --tail and --follow are mutually exclusive")
-		os.Exit(1)
+		return fmt.Errorf("--tail and --follow are mutually exclusive")
 	}
 
 	if tailSet && tailN < 0 {
-		fmt.Fprintln(os.Stderr, "error: --tail must be a non-negative integer")
-		os.Exit(1)
+		return fmt.Errorf("--tail must be a non-negative integer")
 	}
 
 	// Container proxy path: delegate to the host-API sidecar.
@@ -86,8 +84,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
-		fmt.Fprintf(os.Stderr, "no log file found for session %q\n", sessionName)
-		os.Exit(1)
+		return fmt.Errorf("no log file found for session %q", sessionName)
 	}
 
 	if follow {
@@ -193,8 +190,9 @@ func runLogsFollow(sessionName, logPath string) error {
 			return nil
 		case <-ticker.C:
 			// Read any new content written since the last tick.
+			// io.Copy translates EOF to nil, so any non-nil error is real.
 			n, readErr := io.Copy(os.Stdout, f)
-			if readErr != nil && readErr != io.EOF {
+			if readErr != nil {
 				return fmt.Errorf("stream log: %w", readErr)
 			}
 
