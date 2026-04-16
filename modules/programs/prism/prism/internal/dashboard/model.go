@@ -60,6 +60,14 @@ type GhTickMsg time.Time
 // GitStatTickMsg is sent on the 5-second git stat refresh timer.
 type GitStatTickMsg time.Time
 
+// GitStatsOnlyMsg carries only the result of git.Stat calls, without a fresh
+// session list from the DB. It is used by the persistent dashboard's 5-second
+// git stat ticker to update diff counters in-place, leaving session states
+// (which may have been updated by push events) untouched.
+type GitStatsOnlyMsg struct {
+	GitStats map[string]GitStatResult // keyed by AgentPath
+}
+
 // CursorTimeoutMsg is sent when the cursor auto-hide timeout fires.
 type CursorTimeoutMsg struct{}
 

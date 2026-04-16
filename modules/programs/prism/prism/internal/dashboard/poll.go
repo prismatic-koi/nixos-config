@@ -74,15 +74,52 @@ func FetchSessionsFromDB() tea.Msg {
 	return SessionsMsg{Sessions: sessions, GitStats: stats}
 }
 
-// FetchSessionsWithGitStats queries agent_status for all active sessions and
-// enriches them with git diff stats. Used by the persistent dashboard's 5s
-// git stat ticker to keep diff counts up to date independently of state
-// transition rendering.
-func FetchSessionsWithGitStats() tea.Msg {
-	// Delegates to FetchSessionsFromDB which includes git stats.
-	// Having a separate function pointer allows tests to stub just the ticker
-	// path without affecting the on-demand refresh path.
-	return FetchSessionsFromDB()
+// FetchGitStatsOnly queries the current set of active sessions from the DB
+// solely to discover their AgentPath values, then runs git.Stat on each unique
+// path concurrently and returns a GitStatsOnlyMsg. It does NOT update the
+// session list or agent states — those are managed by FetchSessionsFromDB and
+// push events. This is what the persistent dashboard's 5-second git stat ticker
+// calls so that diff-counter updates never overwrite push-event state changes.
+func FetchGitStatsOnly() tea.Msg {
+	d, err := openDB()
+	if err != nil {
+		return GitStatsOnlyMsg{}
+	}
+	defer d.Close()
+
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		return GitStatsOnlyMsg{}
+	}
+
+	// Collect unique agent paths.
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range statuses {
+		if s.Worktree != "" && !seen[s.Worktree] {
+			seen[s.Worktree] = true
+			paths = append(paths, s.Worktree)
+		}
+	}
+
+	// Run git.Stat for each unique path concurrently.
+	stats := make(map[string]GitStatResult, len(paths))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, p := range paths {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			diffStat, err := git.Stat(path)
+			result := GitStatResult{Stat: diffStat, Ok: err == nil}
+			mu.Lock()
+			stats[path] = result
+			mu.Unlock()
+		}(p)
+	}
+	wg.Wait()
+
+	return GitStatsOnlyMsg{GitStats: stats}
 }
 
 // FetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
@@ -266,6 +303,13 @@ func handlePushConn(conn net.Conn, p *tea.Program) {
 // RemoveStaleSocket removes the dashboard socket at DashSocketPath() if it
 // exists but has no listening process. Used by prism restore to clean up
 // sockets left behind by a crashed dashboard.
+//
+// Liveness detection: a short dial is attempted. If the dial fails (connection
+// refused or timeout), the socket is stale and is removed. If the dial succeeds
+// the socket is live — the connection is immediately closed; the dashboard's
+// handlePushConn goroutine will receive an empty read and return silently after
+// its 2-second read deadline. This is a known and accepted side-effect
+// (restore runs once at login; the cost is one benign no-op goroutine).
 func RemoveStaleSocket() {
 	sockPath := DashSocketPath()
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
@@ -277,6 +321,6 @@ func RemoveStaleSocket() {
 		_ = os.Remove(sockPath)
 		return
 	}
-	// Socket is live — leave it alone.
+	// Socket is live — close immediately and leave the socket in place.
 	_ = conn.Close()
 }

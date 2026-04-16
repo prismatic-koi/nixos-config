@@ -58,9 +58,21 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, FetchSessionsFromDB
 
 	case GitStatTickMsg:
-		// 5-second git stat refresh: fetch sessions with git diff stats, then
-		// schedule the next tick.
-		return m, tea.Batch(FetchSessionsWithGitStats, GitStatTick())
+		// 5-second git stat refresh: fetch only git stats (not session states),
+		// then schedule the next tick. Using FetchGitStatsOnly ensures that
+		// push-event state updates are never overwritten by the ticker.
+		return m, tea.Batch(FetchGitStatsOnly, GitStatTick())
+
+	case GitStatsOnlyMsg:
+		// Apply updated git diff stats without touching session states.
+		if msg.GitStats != nil {
+			if m.GitStats == nil {
+				m.GitStats = make(map[string]GitStatResult)
+			}
+			for k, v := range msg.GitStats {
+				m.GitStats[k] = v
+			}
+		}
 
 	case PushEventMsg:
 		// A sidecar pushed a state-change event directly to the dashboard socket.
