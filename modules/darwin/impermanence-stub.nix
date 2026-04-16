@@ -56,6 +56,18 @@
       description = "Stub for boot.initrd.postDeviceCommands (darwin compatibility)";
     };
 
+    boot.initrd.systemd.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Stub for boot.initrd.systemd.enable (darwin compatibility)";
+    };
+
+    boot.initrd.systemd.services = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Stub for boot.initrd.systemd.services (darwin compatibility)";
+    };
+
     boot.loader.grub = lib.mkOption {
       type = lib.types.submodule {
         options = {
