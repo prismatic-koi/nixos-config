@@ -162,12 +162,17 @@ type Config struct {
 }
 
 // NameForSession returns the stable podman container name for a session.
-// The name is derived from the session name with "@", "/", and "." replaced
-// by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
+// The name is derived from the session name with "@", "/", ".", and "~"
+// replaced by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
+//
+// The "~" replacement is needed for review agent session names which are
+// structured as "<parent>~review-<N>~<agentName>" — without it, podman would
+// reject the container name (allowed charset: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
 func NameForSession(sessionName string) string {
 	safe := strings.ReplaceAll(sessionName, "@", "-")
 	safe = strings.ReplaceAll(safe, "/", "-")
 	safe = strings.ReplaceAll(safe, ".", "-")
+	safe = strings.ReplaceAll(safe, "~", "-")
 	return "prism-" + safe
 }
 

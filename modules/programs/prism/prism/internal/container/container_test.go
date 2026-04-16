@@ -74,12 +74,23 @@ func TestNameForSession_ReplacesDot(t *testing.T) {
 	}
 }
 
+func TestNameForSession_ReplacesTilde(t *testing.T) {
+	// Review agent session names contain "~" (e.g. "nixos-config@feature~review-1~review-code").
+	// Podman rejects "~" in container names (allowed: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
+	name := NameForSession("nixos-config@feature~review-1~review-code")
+	want := "prism-nixos-config-feature-review-1-review-code"
+	if name != want {
+		t.Errorf("NameForSession(%q) = %q, want %q", "nixos-config@feature~review-1~review-code", name, want)
+	}
+}
+
 func TestNameForSession_MatchesContainerName(t *testing.T) {
 	sessions := []string{
 		"nixos-config@main",
 		"repo@feat/sub",
 		"repo.git@main",
 		"a@b/c.d",
+		"nixos-config@feature~review-1~review-code",
 	}
 	for _, s := range sessions {
 		exported := NameForSession(s)

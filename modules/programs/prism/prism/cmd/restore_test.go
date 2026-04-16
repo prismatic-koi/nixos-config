@@ -502,13 +502,13 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 
 // TestRestoreSession_ContainerMode verifies that when cfg.ContainerMode is
 // enabled and the persisted session is not marked host_mode, restore uses
-// the container-mode agent command ("opencode attach http://localhost:<port>")
+// the container-mode agent command ("podman attach <container-name>")
 // rather than launching opencode directly. It also asserts that the
 // PluginHostPath is propagated from cfg into opts so the sidecar bind-mounts
 // the plugin file.
 //
 // This is the core AC-1 regression guard: restoring a container-mode session
-// must go through the same attach path as spawn.
+// must go through the same podman-attach path as spawn (RFC #691, Phase 1a).
 func TestRestoreSession_ContainerMode(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -537,22 +537,25 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The agent pane start command must contain "opencode attach http://localhost:",
-	// not "opencode --agent". Port is assigned by AllocatePort so we match the
-	// attach URL prefix rather than a specific port number.
+	// The agent pane start command must contain "podman attach prism-myrepo-container-restore",
+	// not "opencode --agent". The container name is derived from the session name via
+	// container.NameForSession("myrepo@container-restore") = "prism-myrepo-container-restore".
 	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "opencode attach http://localhost:") {
-		t.Errorf("agent pane missing 'opencode attach http://localhost:' — captured:\n%s", pane)
+	if !strings.Contains(pane, "podman attach prism-myrepo-container-restore") {
+		t.Errorf("agent pane missing 'podman attach prism-myrepo-container-restore' — captured:\n%s", pane)
 	}
 	if strings.Contains(pane, "opencode --agent") {
 		t.Errorf("agent pane contains 'opencode --agent' but should be in container mode — captured:\n%s", pane)
+	}
+	if strings.Contains(pane, "opencode attach") {
+		t.Errorf("agent pane contains old 'opencode attach' command — should now use 'podman attach' (RFC #691)")
 	}
 }
 
 // TestRestoreSession_HostModeOverride verifies that when a session was
 // explicitly spawned in host mode (host_mode=1 in agent_status), restore
 // preserves that mode even when cfg.ContainerMode is enabled. The agent
-// pane must run "opencode --agent ..." rather than "opencode attach".
+// pane must run "opencode --agent ..." rather than "podman attach".
 func TestRestoreSession_HostModeOverride(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -597,13 +600,13 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Agent pane start command must contain "opencode --agent ...", not "opencode attach".
+	// Agent pane start command must contain "opencode --agent ...", not "podman attach".
 	pane := agentPaneStartCmd(t, s, sessionName)
 	if !strings.Contains(pane, "opencode --agent") {
 		t.Errorf("agent pane missing 'opencode --agent' — captured:\n%s", pane)
 	}
-	if strings.Contains(pane, "opencode attach") {
-		t.Errorf("agent pane contains 'opencode attach' but should be in host mode — captured:\n%s", pane)
+	if strings.Contains(pane, "podman attach") {
+		t.Errorf("agent pane contains 'podman attach' but should be in host mode — captured:\n%s", pane)
 	}
 }
 
