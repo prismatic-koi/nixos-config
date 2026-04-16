@@ -1956,6 +1956,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // to agents running inside the container via a Unix socket. Routes:
 //
 //	POST /spawn        — spawn a new worktree session
+//	POST /review       — run review agents against a PR (coordinator only)
 //	POST /cleanup      — clean up an existing session
 //	POST /switch       — switch the tmux client to a session
 //	GET  /list-sessions — list active sessions (role-scoped)
@@ -2509,6 +2510,95 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			sessionName = ownRepo + "@" + req.Branch
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
+	})
+
+	// POST /review
+	// Request:  {"pr_number":"123","agents":["review-code","review-goal"],"timeout":"10m"}
+	// agents is optional (all enhanced agents run by default).
+	// timeout is optional (default: 10m).
+	// Response: {"output":"...","passed":true} | {"error":"..."}
+	//
+	// This endpoint is called by workers running inside containers that cannot
+	// reach tmux directly. The sidecar runs on the host where tmux is
+	// available, so it delegates to `prism review` on the host side.
+	// Workers require coordinator role because review sessions are spawned
+	// under the coordinator's session namespace — same restriction as /spawn.
+	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "review") {
+			return
+		}
+		var req struct {
+			PRNumber string   `json:"pr_number"`
+			Agents   []string `json:"agents"`
+			Timeout  string   `json:"timeout"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.PRNumber == "" {
+			writeError(w, http.StatusBadRequest, "pr_number is required")
+			return
+		}
+
+		args := []string{"review", req.PRNumber}
+		if len(req.Agents) > 0 {
+			args = append(args, "--only", strings.Join(req.Agents, ","))
+		}
+		if req.Timeout != "" {
+			args = append(args, "--timeout", req.Timeout)
+		}
+
+		log.Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
+
+		// Parse the timeout to determine an appropriate exec deadline.
+		// Default to 10 minutes per agent; add 2 minutes of overhead.
+		// We must not cut off the prism review process before its own timeout fires.
+		execTimeout := 12 * time.Minute
+		if req.Timeout != "" {
+			if d, parseErr := time.ParseDuration(req.Timeout); parseErr == nil {
+				// Add 2 minutes overhead so the HTTP request outlives the review timeout.
+				execTimeout = d + 2*time.Minute
+			}
+		}
+
+		cmd := exec.Command(prismBinary(), args...)
+		// Use a context with deadline so hung review processes don't block forever.
+		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, prismBinary(), args...)
+
+		// Capture both stdout (formatted results) and stderr (progress messages).
+		out, err := cmd.Output()
+		stderr := ""
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			stderr = string(exitErr.Stderr)
+		}
+
+		// prism review exits non-zero when one or more agents fail (exit 1).
+		// This is expected and not an infrastructure error — return the output
+		// with passed=false. Only treat it as a hard error if there is no output.
+		passed := err == nil
+		output := strings.TrimRight(string(out), "\n")
+
+		if output == "" && err != nil {
+			// No output produced — infrastructure failure.
+			errMsg := fmt.Sprintf("review failed: %v", err)
+			if stderr != "" {
+				errMsg += ": " + strings.TrimSpace(stderr)
+			}
+			log.Printf("sidecar: host-API /review: %v: %s", err, stderr)
+			writeError(w, http.StatusInternalServerError, errMsg)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"output": output,
+			"passed": passed,
+		})
 	})
 
 	// POST /cleanup

@@ -59,6 +59,32 @@ func runReview(cmd *cobra.Command, args []string) error {
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 	onlyFlag, _ := cmd.Flags().GetString("only")
 
+	// Container-mode detection: when PRISM_HOST_API is set the process is
+	// running inside a container where tmux is not available. Route the review
+	// through the host sidecar instead of calling review.Run() directly.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		var agents []string
+		if onlyFlag != "" {
+			agents = splitCSV(onlyFlag)
+		}
+		timeoutStr := ""
+		if timeoutFlag > 0 {
+			timeoutStr = timeoutFlag.String()
+		}
+		output, passed, err := proxyReview(apiURL, prNumber, agents, timeoutStr)
+		if err != nil {
+			return fmt.Errorf("prism review: host API: %w", err)
+		}
+		fmt.Print(output)
+		if output != "" && !strings.HasSuffix(output, "\n") {
+			fmt.Println()
+		}
+		if !passed {
+			os.Exit(1)
+		}
+		return nil
+	}
+
 	// Resolve the parent session name.
 	parentSession := review.LookupParentSession()
 	if parentSession == "" {

@@ -6059,3 +6059,223 @@ echo "session \"${last}@no-harness-branch\" created"
 		t.Errorf("captured args %q do not contain '--harness opencode' (harness was not defaulted or forwarded)", string(capturedArgs))
 	}
 }
+
+// ── /review endpoint ──────────────────────────────────────────────────────────
+
+// TestHostAPI_Review_WorkerForbidden verifies that a worker-role sidecar
+// cannot call /review (coordinators only).
+func TestHostAPI_Review_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"123"}`)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+// TestHostAPI_Review_WrongMethod verifies that GET /review returns 405.
+func TestHostAPI_Review_WrongMethod(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/review", "")
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+// TestHostAPI_Review_MissingPRNumber verifies that a request without pr_number
+// returns 400.
+func TestHostAPI_Review_MissingPRNumber(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for missing pr_number", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "pr_number is required") {
+		t.Errorf("error %q should mention 'pr_number is required'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_PassesArgsToReview verifies that /review delegates to
+// `prism review` with the correct arguments and returns the output.
+func TestHostAPI_Review_PassesArgsToReview(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub echoes args to argsFile and prints review-like output to stdout.
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+echo "✓ review               passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"456"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]any
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["passed"] != true {
+		t.Errorf("passed = %v, want true", respBody["passed"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "passed") {
+		t.Errorf("output %q should contain 'passed'", respBody["output"])
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "review 456") {
+		t.Errorf("captured args %q do not contain 'review 456'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Review_OnlyFlagForwarded verifies that when agents are specified
+// in the request, --only is passed to `prism review`.
+func TestHostAPI_Review_OnlyFlagForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+echo "✓ review-code          passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"789","agents":["review-code","review-goal"]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--only review-code,review-goal") {
+		t.Errorf("captured args %q do not contain '--only review-code,review-goal'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse verifies that
+// when `prism review` exits non-zero with output, the response has passed=false
+// and the output is included (this is the normal "agents found issues" case).
+func TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Exit 1 with output: indicates agents found issues (not an infra failure).
+	stubScript := `#!/bin/sh
+echo "✗ review-code"
+echo "  blocking issue found"
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"100"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for agent failure (not infra failure); body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]any
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["passed"] != false {
+		t.Errorf("passed = %v, want false", respBody["passed"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "blocking issue found") {
+		t.Errorf("output %q should contain 'blocking issue found'", respBody["output"])
+	}
+}
+
+// TestHostAPI_Review_InfraFailureReturns500 verifies that when `prism review`
+// exits non-zero with no output, the response is HTTP 500 (infra failure).
+func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Exit non-zero with no stdout output: infra failure.
+	stubScript := "#!/bin/sh\nexit 2\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"999"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for infra failure (no output); body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 500 response")
+	}
+}
