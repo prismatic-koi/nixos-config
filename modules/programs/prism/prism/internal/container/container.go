@@ -723,6 +723,31 @@ func (m *Manager) buildRunArgs() []string {
 	// evaluation; the :Z label handles SELinux relabeling.
 	nixCacheMount := filepath.Join(home, ".cache", "nix") + ":/root/.cache/nix:Z"
 
+	// AWS — individual files mounted at /root/.aws (the default location the
+	// AWS CLI looks in) so `aws` works inside the container without any env var
+	// configuration. Only least-privilege files are mounted:
+	//
+	//   ~/.config/aws/readonly-config  → /root/.aws/config      (profiles/settings)
+	//   ~/.config/aws/credentials      → /root/.aws/credentials  (static creds, if present)
+	//   ~/.aws/sso                     → /root/.aws/sso          (SSO token cache from `aws sso login`)
+	//   ~/.aws/cli                     → /root/.aws/cli          (CLI session cache)
+	//
+	// The config and credentials files live in the XDG location (managed by
+	// sops-nix). The sso/ and cli/ cache dirs are always written to ~/.aws/ by
+	// the AWS CLI regardless of AWS_CONFIG_FILE, so they are sourced from there.
+	// Admin credentials (the full config, credentials with write-capable roles)
+	// are never mounted — only the readonly-config is exposed.
+	awsReadonlyConfig := filepath.Join(home, ".config", "aws", "readonly-config")
+	awsCredentials := filepath.Join(home, ".config", "aws", "credentials")
+	awsSSOCacheDir := filepath.Join(home, ".aws", "sso")
+	awsCLICacheDir := filepath.Join(home, ".aws", "cli")
+	// Kube agents config — the host stores this at ~/.config/kube/agents-config
+	// (XDG-compliant, managed by sops-nix). Mount it at /root/.kube/config (the
+	// default path kubectl reads) so `kubectl` works inside the container without
+	// any env var configuration. Only the agents/readonly kubeconfig is mounted —
+	// the admin kubeconfig is never exposed to agents.
+	kubeAgentsConfig := filepath.Join(home, ".config", "kube", "agents-config")
+
 	args := []string{
 		"run",
 		"--detach",
@@ -765,6 +790,34 @@ func (m *Manager) buildRunArgs() []string {
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 	)
+
+	// AWS: mount individual files/dirs into /root/.aws so the AWS CLI works at
+	// its default paths with no env var configuration. Each mount is conditional
+	// on the source path existing — hosts without AWS configured are unaffected.
+	if resolved, err := filepath.EvalSymlinks(awsReadonlyConfig); err == nil {
+		args = append(args, "--volume", resolved+":/root/.aws/config:ro")
+	}
+	if resolved, err := filepath.EvalSymlinks(awsCredentials); err == nil {
+		args = append(args, "--volume", resolved+":/root/.aws/credentials:ro")
+	}
+	// SSO and CLI cache dirs — written to ~/.aws/ by the AWS CLI regardless of
+	// AWS_CONFIG_FILE. Mount read-only so the container can use SSO tokens
+	// obtained on the host via `aws sso login` without needing network access
+	// to re-authenticate. Mounted as directories (conditional on existence).
+	if _, err := os.Stat(awsSSOCacheDir); err == nil {
+		args = append(args, "--volume", awsSSOCacheDir+":/root/.aws/sso:ro")
+	}
+	if _, err := os.Stat(awsCLICacheDir); err == nil {
+		args = append(args, "--volume", awsCLICacheDir+":/root/.aws/cli:ro")
+	}
+
+	// Kube agents config: mount ~/.config/kube/agents-config at
+	// /root/.kube/config (the default file kubectl reads) when the file exists
+	// on the host. Only the agents/readonly kubeconfig is exposed — the admin
+	// kubeconfig is never mounted into agent containers.
+	if resolved, err := filepath.EvalSymlinks(kubeAgentsConfig); err == nil {
+		args = append(args, "--volume", resolved+":/root/.kube/config:ro")
+	}
 
 	// Darwin: bind-mount the extracted Keychain credentials over
 	// /root/.claude/.credentials.json so opencode-claude-auth can find them.
