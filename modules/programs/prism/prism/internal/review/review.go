@@ -96,6 +96,43 @@ func EnhancedAgents() []Agent {
 	}
 }
 
+// CheckAgentAvailability verifies that the opencode agent definition files for
+// all given agents exist on the host filesystem. Returns a descriptive error
+// listing any missing agents; returns nil when all are present.
+//
+// This performs a best-effort pre-flight check by looking for agent .md files
+// in $XDG_CONFIG_HOME/opencode/agents/ (or ~/.config/opencode/agents/). It is
+// intentionally skipped in container mode because the check cannot reliably
+// inspect the container filesystem.
+func CheckAgentAvailability(agents []Agent) error {
+	dir := opencodeAgentsDir()
+	var missing []string
+	for _, ag := range agents {
+		path := filepath.Join(dir, ag.Name+".md")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			missing = append(missing, ag.Name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"enhanced review requires opencode agent definitions that are not present in %s: %s\n"+
+				"hint: ensure the enhancedReview Nix option is enabled and the system has been rebuilt",
+			dir, strings.Join(missing, ", "),
+		)
+	}
+	return nil
+}
+
+// opencodeAgentsDir returns the path to the opencode agents directory.
+func opencodeAgentsDir() string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, _ := os.UserHomeDir()
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "opencode", "agents")
+}
+
 // AgentsByName filters the agents slice to only those whose Name is in the
 // allowedNames set. Returns an error if any name in allowedNames does not exist
 // in agents.

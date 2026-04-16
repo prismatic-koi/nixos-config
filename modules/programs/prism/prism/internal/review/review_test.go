@@ -1,6 +1,7 @@
 package review_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -217,6 +218,116 @@ func TestAgentsByName_MixedNames(t *testing.T) {
 	_, err := review.AgentsByName(agents, []string{"review", "nonexistent"})
 	if err == nil {
 		t.Error("AgentsByName should return error when any name is unknown")
+	}
+}
+
+// ── EnhancedAgents ────────────────────────────────────────────────────────────
+
+func TestEnhancedAgents_ReturnsFiveAgents(t *testing.T) {
+	agents := review.EnhancedAgents()
+	if len(agents) != 5 {
+		t.Fatalf("EnhancedAgents() returned %d agents, want 5", len(agents))
+	}
+}
+
+func TestEnhancedAgents_AgentNames(t *testing.T) {
+	agents := review.EnhancedAgents()
+	want := []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"}
+	for i, name := range want {
+		if agents[i].Name != name {
+			t.Errorf("agents[%d].Name = %q, want %q", i, agents[i].Name, name)
+		}
+		if agents[i].OpencodeName != name {
+			t.Errorf("agents[%d].OpencodeName = %q, want %q", i, agents[i].OpencodeName, name)
+		}
+	}
+}
+
+func TestDefaultAgents_StillReturnsSingleAgent(t *testing.T) {
+	agents := review.DefaultAgents()
+	if len(agents) != 1 {
+		t.Fatalf("DefaultAgents() returned %d agents, want 1", len(agents))
+	}
+	if agents[0].Name != "review" {
+		t.Errorf("DefaultAgents()[0].Name = %q, want %q", agents[0].Name, "review")
+	}
+}
+
+// ── CheckAgentAvailability ────────────────────────────────────────────────────
+
+func TestCheckAgentAvailability_AllPresent(t *testing.T) {
+	// Create a temp dir with agent .md files for all agents.
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	agentsDir := dir + "/opencode/agents"
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	agents := review.EnhancedAgents()
+	for _, ag := range agents {
+		if err := os.WriteFile(agentsDir+"/"+ag.Name+".md", []byte("# "+ag.Name), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	if err := review.CheckAgentAvailability(agents); err != nil {
+		t.Errorf("CheckAgentAvailability: unexpected error: %v", err)
+	}
+}
+
+func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
+	// Create a temp dir with only some agents present.
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	agentsDir := dir + "/opencode/agents"
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Only create review-goal.md; the other 4 are missing.
+	if err := os.WriteFile(agentsDir+"/review-goal.md", []byte("# review-goal"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	agents := review.EnhancedAgents()
+	err := review.CheckAgentAvailability(agents)
+	if err == nil {
+		t.Fatal("CheckAgentAvailability: expected error for missing agents, got nil")
+	}
+	// Error should mention the missing agents.
+	for _, ag := range agents[1:] {
+		if !findSubstring(err.Error(), ag.Name) {
+			t.Errorf("CheckAgentAvailability error does not mention missing agent %q: %v", ag.Name, err)
+		}
+	}
+	// Error should NOT mention review-goal (it is present).
+	if findSubstring(err.Error(), "review-goal") {
+		t.Errorf("CheckAgentAvailability error unexpectedly mentions present agent review-goal: %v", err)
+	}
+}
+
+func TestCheckAgentAvailability_AllMissing(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	// Don't create the agents directory at all.
+
+	agents := review.EnhancedAgents()
+	err := review.CheckAgentAvailability(agents)
+	if err == nil {
+		t.Fatal("CheckAgentAvailability: expected error for all missing agents, got nil")
+	}
+}
+
+func TestCheckAgentAvailability_EmptyAgentList(t *testing.T) {
+	// An empty agent list should always pass.
+	if err := review.CheckAgentAvailability(nil); err != nil {
+		t.Errorf("CheckAgentAvailability(nil): unexpected error: %v", err)
+	}
+	if err := review.CheckAgentAvailability([]review.Agent{}); err != nil {
+		t.Errorf("CheckAgentAvailability([]): unexpected error: %v", err)
 	}
 }
 

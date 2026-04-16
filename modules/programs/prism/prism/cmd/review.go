@@ -113,6 +113,14 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: no agents to run")
 	}
 
+	// Pre-flight: verify that the required opencode agent definitions exist.
+	// Skip in container mode — the check cannot inspect the container filesystem.
+	if !cfg.ContainerMode {
+		if err := review.CheckAgentAvailability(agents); err != nil {
+			return fmt.Errorf("prism review: %w", err)
+		}
+	}
+
 	// Build run options.
 	opts := review.Opts{
 		PRNumber:       prNumber,
