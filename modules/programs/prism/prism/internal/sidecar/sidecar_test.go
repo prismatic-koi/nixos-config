@@ -5934,6 +5934,7 @@ exit 0
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -5992,6 +5993,7 @@ echo "session \"${last}@harness-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -6037,6 +6039,7 @@ echo "session \"${last}@no-harness-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
