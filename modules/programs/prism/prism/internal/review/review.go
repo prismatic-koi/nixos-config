@@ -364,7 +364,10 @@ func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, c
 	if containerMode {
 		// Use podman attach to bridge the tmux pane to the container's PTY.
 		// The container runs opencode in combined TUI + HTTP mode (RFC #691, Phase 1a).
-		return fmt.Sprintf("podman attach %s", container.NameForSession(agentSession))
+		// The container name is shell-quoted so that any unexpected characters in
+		// the session name cannot be interpreted as shell metacharacters when
+		// buildReadinessWaitCmd embeds this string in the readiness shell script.
+		return "podman attach " + shellQuote(container.NameForSession(agentSession))
 	}
 	escapedPrompt := shellQuote(prompt)
 	return fmt.Sprintf("PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",

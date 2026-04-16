@@ -537,12 +537,13 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The agent pane start command must contain "podman attach prism-myrepo-container-restore",
+	// The agent pane start command must contain "podman attach 'prism-myrepo-container-restore'",
 	// not "opencode --agent". The container name is derived from the session name via
 	// container.NameForSession("myrepo@container-restore") = "prism-myrepo-container-restore".
+	// The name is single-quoted for shell safety in the readiness wait script.
 	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "podman attach prism-myrepo-container-restore") {
-		t.Errorf("agent pane missing 'podman attach prism-myrepo-container-restore' — captured:\n%s", pane)
+	if !strings.Contains(pane, "podman attach 'prism-myrepo-container-restore'") {
+		t.Errorf("agent pane missing 'podman attach 'prism-myrepo-container-restore'' — captured:\n%s", pane)
 	}
 	if strings.Contains(pane, "opencode --agent") {
 		t.Errorf("agent pane contains 'opencode --agent' but should be in container mode — captured:\n%s", pane)
