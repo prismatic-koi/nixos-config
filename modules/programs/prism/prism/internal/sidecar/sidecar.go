@@ -2335,7 +2335,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
-		args = append(args, ownRepo)
+		args = append(args, "--repo", ownRepo)
 
 		// Log without the prompt value — it may contain sensitive context.
 		logArgs := []string{"spawn", "--branch", req.Branch}
@@ -2357,7 +2357,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
 		}
-		logArgs = append(logArgs, ownRepo)
+		logArgs = append(logArgs, "--repo", ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.CombinedOutput()

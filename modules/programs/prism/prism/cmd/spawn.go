@@ -76,6 +76,7 @@ var spawnCmd = &cobra.Command{
 func init() {
 	spawnCmd.Flags().String("branch", "", "Branch name (default: timestamped)")
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
+	spawnCmd.Flags().String("repo", "", "Repo shorthand name or absolute path (default: inferred from current pane)")
 	addPromptFlags(spawnCmd)
 	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
@@ -93,6 +94,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
+	repoFlag, _ := cmd.Flags().GetString("repo")
 	agentFlag, _ := cmd.Flags().GetString("agent")
 	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
@@ -148,8 +150,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Resolve the bare repo root from the current pane path.
-	bareRoot, err := resolveBareRoot("")
+	// Resolve the bare repo root from the current pane path (or --repo flag).
+	bareRoot, err := resolveBareRoot(repoFlag)
 	if err != nil {
 		return err
 	}
@@ -229,7 +231,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
 // full path. If not set, the current pane path is used (existing behaviour).
-// repoFlag is currently only used by prism pr.
 func resolveBareRoot(repoFlag string) (string, error) {
 	if repoFlag != "" {
 		return resolveRepo(repoFlag)
