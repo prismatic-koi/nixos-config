@@ -7,6 +7,7 @@ package cmd
 //
 //	--branch <name>       use a specific branch name instead of a timestamp
 //	--pr <number>         check out the branch for a given PR number
+//	--repo <name>         repo shorthand name or absolute path (default: inferred from current pane)
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
 //	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)

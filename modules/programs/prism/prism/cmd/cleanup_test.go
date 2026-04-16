@@ -91,6 +91,7 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 //
 // Runs without tmux, so it exercises only the DB-update path.
 func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	// Seed a temp DB.
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
@@ -136,6 +137,7 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 // when the worktree path exists on disk but is not a registered git worktree,
 // headlessCleanup warns and continues rather than returning an error.
 func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
@@ -480,6 +482,7 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 //
 // Runs without tmux, so it exercises only the DB-update path.
 func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {
@@ -518,6 +521,7 @@ func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
 // TestHeadlessCloseSession_NonWorktree_NoDB verifies that headlessCloseSession
 // exits 0 even when no DB row exists for the session (never recorded).
 func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	// Point openDB at an empty temp DB (no row for the session).
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
@@ -630,6 +634,7 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 // no longer exists (already killed or never started). This calls
 // headlessCloseSession directly — it does not exercise cleanupCmd routing.
 func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {
