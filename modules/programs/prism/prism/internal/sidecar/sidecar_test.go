@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -5855,7 +5856,7 @@ func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
 	}
 }
 
-// TestValidateOrRefreshCoordinatorSID_EmptyList returns an error.
+// TestValidateOrRefreshCoordinatorSID_EmptyList returns errEmptySessionList.
 func TestValidateOrRefreshCoordinatorSID_EmptyList(t *testing.T) {
 	d := openTestDB(t)
 
@@ -5866,6 +5867,9 @@ func TestValidateOrRefreshCoordinatorSID_EmptyList(t *testing.T) {
 	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client())
 	if err == nil {
 		t.Error("expected error for empty session list, got nil")
+	}
+	if !errors.Is(err, errEmptySessionList) {
+		t.Errorf("expected errEmptySessionList, got: %v", err)
 	}
 }
 

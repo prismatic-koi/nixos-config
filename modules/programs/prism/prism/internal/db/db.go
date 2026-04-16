@@ -1029,11 +1029,13 @@ func (d *DB) ClearInstanceID(sessionName string) error {
 	return nil
 }
 
-// PurgeStaleInstanceMessages deletes all undelivered bus_messages addressed to
-// toSession whose to_instance_id does not match currentInstanceID. This purges
-// messages written to a previous incarnation of the session that never got
-// delivered. Messages with to_instance_id IS NULL (legacy / no instance
-// tagging) are left intact.
+// PurgeStaleInstanceMessages deletes undelivered and unfailed bus_messages
+// addressed to toSession whose to_instance_id does not match
+// currentInstanceID. This purges messages written to a previous incarnation
+// of the session that never got delivered. Messages with to_instance_id IS
+// NULL (legacy / no instance tagging), delivered messages
+// (delivered_at IS NOT NULL), and failed-delivery audit records
+// (failed_at IS NOT NULL) are all left intact.
 //
 // It is safe to call when no matching rows exist — the operation is a no-op
 // and returns nil.
@@ -1042,6 +1044,7 @@ func (d *DB) PurgeStaleInstanceMessages(toSession, currentInstanceID string) err
 DELETE FROM bus_messages
 WHERE to_session = ?
   AND delivered_at IS NULL
+  AND failed_at IS NULL
   AND to_instance_id IS NOT NULL
   AND to_instance_id != ?`
 	if _, err := d.conn.Exec(q, toSession, currentInstanceID); err != nil {
@@ -1050,14 +1053,17 @@ WHERE to_session = ?
 	return nil
 }
 
-// PurgeBusMessages deletes all undelivered bus_messages rows where
+// PurgeBusMessages deletes undelivered and unfailed bus_messages rows where
 // from_session or to_session matches sessionName. Delivered messages
-// (delivered_at IS NOT NULL) are left untouched. It is safe to call when no
-// matching rows exist — the operation is a no-op and returns nil.
+// (delivered_at IS NOT NULL) and failed messages (failed_at IS NOT NULL) are
+// left untouched so that delivery audit records survive session cleanup. It is
+// safe to call when no matching rows exist — the operation is a no-op and
+// returns nil.
 func (d *DB) PurgeBusMessages(sessionName string) error {
 	const q = `
 DELETE FROM bus_messages
 WHERE delivered_at IS NULL
+  AND failed_at IS NULL
   AND (from_session = ? OR to_session = ?)`
 	if _, err := d.conn.Exec(q, sessionName, sessionName); err != nil {
 		return fmt.Errorf("db: purge bus messages: %w", err)

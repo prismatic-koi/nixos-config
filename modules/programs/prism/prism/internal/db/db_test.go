@@ -696,6 +696,40 @@ func TestPurgeBusMessages_PreservesDelivered(t *testing.T) {
 	}
 }
 
+// TestPurgeBusMessages_PreservesFailed verifies that messages with failed_at
+// set are not removed by PurgeBusMessages (failed-delivery audit records must
+// survive session cleanup, just like delivered messages).
+func TestPurgeBusMessages_PreservesFailed(t *testing.T) {
+	d := openTestDB(t)
+
+	msgID := uuid.New().String()
+	msg := db.BusMessage{
+		ID:          msgID,
+		FromSession: "repo@other",
+		ToSession:   "repo@target",
+		Repo:        "repo",
+		Text:        "failed delivery audit",
+		Urgency:     "normal",
+		SentAt:      time.Now(),
+	}
+	if err := d.WriteBusMessageFailed(msg); err != nil {
+		t.Fatalf("WriteBusMessageFailed: %v", err)
+	}
+
+	if err := d.PurgeBusMessages("repo@target"); err != nil {
+		t.Fatalf("PurgeBusMessages: %v", err)
+	}
+
+	// The failed row must still be present.
+	var count int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE id = ?", msgID).Scan(&count); err != nil {
+		t.Fatalf("count failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("failed row count after purge: got %d, want 1 (failed rows should survive purge)", count)
+	}
+}
+
 // TestMigration_V1ToV2 verifies that Open applies the v1→v2 migration to an
 // existing DB that was created at schema_version=1 (no agent_name/model_id).
 func TestMigration_V1ToV2(t *testing.T) {

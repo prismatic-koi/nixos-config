@@ -1432,9 +1432,10 @@ func touchDashboardSentinel() {
 // If no coordinator exists, it has ended, or this session IS the coordinator,
 // the call is a silent no-op.
 //
-// Retry policy: up to 3 POST attempts with exponential backoff (500ms, 1s, 2s).
+// Retry policy: up to 3 POST attempts with exponential backoff (500ms, 1s).
 // SID validation (GET /session) is performed before each attempt. If GET /session
-// fails or returns an empty list, delivery is treated as failed immediately.
+// returns an empty list, delivery fails immediately (no retry). If GET /session
+// fails with a network or non-200 error, the retry policy applies.
 func (s *Sidecar) notifyCoordinator() {
 	// Self-notification guard: if this session is the coordinator, skip.
 	coordinatorName := s.cfg.Repo + "@main"
@@ -1494,7 +1495,9 @@ func (s *Sidecar) notifyCoordinator() {
 	}
 
 	const maxAttempts = 3
-	backoff := []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+	// backoff[i] is the sleep duration before attempt i+2 (i.e. before the
+	// 2nd and 3rd attempts). With 3 attempts, only 2 sleeps are needed.
+	backoff := []time.Duration{500 * time.Millisecond, 1 * time.Second}
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -1512,6 +1515,11 @@ func (s *Sidecar) notifyCoordinator() {
 		if validationErr != nil {
 			lastErr = fmt.Errorf("attempt %d: SID validation failed: %w", attempt, validationErr)
 			log.Printf("sidecar: notifyCoordinator: %v (coordinator=%s)", lastErr, coordinatorName)
+			// An empty session list is not a transient condition — retrying
+			// will not help. Break immediately to avoid unnecessary backoff.
+			if errors.Is(validationErr, errEmptySessionList) {
+				break
+			}
 			continue
 		}
 		// Keep storedSID current for next iteration if it was refreshed.
@@ -1543,6 +1551,11 @@ func (s *Sidecar) notifyCoordinator() {
 		maxAttempts, coordinatorName, storedSID, lastErr)
 }
 
+// errEmptySessionList is a sentinel error returned by validateOrRefreshCoordinatorSID
+// when GET /session returns an empty array. The caller treats this as a
+// non-retriable condition and breaks out of the retry loop immediately.
+var errEmptySessionList = errors.New("GET /session: empty session list — coordinator has no active opencode sessions")
+
 // opencodeSessionEntry is a single entry from the opencode GET /session response.
 type opencodeSessionEntry struct {
 	ID   string `json:"id"`
@@ -1558,7 +1571,9 @@ type opencodeSessionEntry struct {
 //   - If storedSID is present in the list, it is returned as-is.
 //   - If storedSID is absent, the most recently updated session ID is returned
 //     and agent_status is updated with the fresh SID.
-//   - If GET /session fails or returns an empty list, an error is returned.
+//   - If GET /session fails, an error is returned.
+//   - If GET /session returns an empty list, errEmptySessionList is returned
+//     (sentinel — caller should not retry).
 func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName string, database *db.DB, httpClient *http.Client) (string, error) {
 	url := fmt.Sprintf("http://localhost:%d/session", port)
 	req, err := http.NewRequest("GET", url, nil)
@@ -1582,7 +1597,9 @@ func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName
 	}
 
 	if len(sessions) == 0 {
-		return "", fmt.Errorf("GET /session: empty session list — coordinator has no active opencode sessions")
+		// Non-retriable: an empty session list is a definitive condition, not a
+		// transient failure. The caller will break immediately on this error.
+		return "", errEmptySessionList
 	}
 
 	// Check if stored SID is present.
