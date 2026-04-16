@@ -179,6 +179,19 @@ func GitStatTick() tea.Cmd {
 	})
 }
 
+// SessionSyncTick returns a tea.Cmd that fires a SessionSyncTickMsg after 10
+// seconds. The persistent dashboard uses this to periodically re-fetch the full
+// session list from the DB, ensuring that sessions spawned or cleaned up since
+// the last full refresh become visible (or disappear) within one tick interval.
+// The interval is intentionally coarser than GitStatTick (10s vs 5s) to avoid
+// unnecessary DB load; push events remain the primary mechanism for sub-second
+// state-change updates.
+func SessionSyncTick() tea.Cmd {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+		return SessionSyncTickMsg(t)
+	})
+}
+
 // DashSentinelPath returns the path to the dashboard sentinel file.
 func DashSentinelPath() string {
 	stateHome := os.Getenv("XDG_STATE_HOME")
