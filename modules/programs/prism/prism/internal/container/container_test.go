@@ -2501,7 +2501,7 @@ func TestBuildRunArgs_KubeNotMountedWhenAbsent(t *testing.T) {
 	}
 }
 
-// ── MCP auth mount tests ─────────────────────────────────────────────────────
+// ── Terminal environment tests ───────────────────────────────────────────────
 
 // TestBuildRunArgs_TermEnvSet verifies that TERM=xterm-256color is passed as
 // an --env flag in the podman run arguments. Without this, podman defaults to
@@ -2522,6 +2522,8 @@ func TestBuildRunArgs_TermEnvSet(t *testing.T) {
 		t.Errorf("TERM=xterm-256color not found in buildRunArgs output; args: %v", args)
 	}
 }
+
+// ── MCP auth mount tests ─────────────────────────────────────────────────────
 
 // TestBuildRunArgs_McpAuthMountedWhenPresent verifies that when ~/.mcp-auth
 // exists on the host, it is bind-mounted read-write at /root/.mcp-auth inside
