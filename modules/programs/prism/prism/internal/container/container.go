@@ -875,6 +875,7 @@ func (m *Manager) buildRunArgs() []string {
 		// of /workspace).
 		"--env", "PRISM_SPAWN_PATH=/workspace",
 		"--env", "PRISM_BARE_ROOT=/prism-git",
+		"--env", "PRISM_SESSION_NAME="+cfg.SessionName,
 
 		// Work inside the worktree by default.
 		"--workdir", "/workspace",
