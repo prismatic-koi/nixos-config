@@ -7,8 +7,8 @@
 //
 // This package contains only the interface definition and its supporting types.
 // Concrete implementations live in sub-packages (e.g. internal/harness/opencode/).
-// No other package in the prism binary imports this package yet — it is pure
-// scaffolding for Phase 0a of the multi-harness migration (RFC #691).
+// The sidecar receives a Harness at construction time (via sidecar.Config.Harness)
+// and delegates all runtime-specific behaviour through it (Phase 0a, RFC #691).
 package harness
 
 import (
@@ -56,6 +56,26 @@ type Harness interface {
 	// ExtractMessage extracts a Message from a HarnessEvent. The second
 	// return value is false if the event does not carry a message.
 	ExtractMessage(evt HarnessEvent) (Message, bool)
+
+	// CreateSession creates a new session on the agent runtime and returns its
+	// ID. The session ID is also stored internally so that DeliverInitialPrompt
+	// can use it without the caller having to pass it back. This ordering
+	// matters for the opencode attach TUI flow: the sidecar writes the .sid
+	// file between CreateSession and DeliverInitialPrompt so that the TUI can
+	// attach to the correct session before the prompt is delivered.
+	CreateSession(ctx context.Context) (string, error)
+
+	// SessionID returns the most recently created session ID (set by
+	// CreateSession). Returns an empty string if CreateSession has not been
+	// called or failed.
+	SessionID() string
+
+	// ExtractEventType returns the canonical event type string for the given
+	// HarnessEvent. Harnesses that embed the event type inside the payload
+	// (e.g. opencode, which uses the JSON "type" field rather than the SSE
+	// "event:" header) must implement this to decode it. Harnesses that use the
+	// SSE "event:" field directly may return evt.Type unchanged.
+	ExtractEventType(evt HarnessEvent) string
 }
 
 // HarnessEvent is a raw event received from the agent runtime's event stream.

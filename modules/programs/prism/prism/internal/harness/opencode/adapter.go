@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
@@ -74,6 +75,14 @@ func (a *Adapter) ContainerCommand() string {
 	return fmt.Sprintf("opencode serve --port %d --hostname 0.0.0.0", containerPort)
 }
 
+// healthProbeClient is a short-timeout HTTP client used exclusively for
+// individual health-check probe attempts. Its timeout governs a single HTTP
+// round-trip, not the overall health-check deadline (which is controlled by
+// defaultHealthCheckTimeout and enforced in the HealthCheck loop). Using a
+// separate client avoids reusing the general-purpose 10 s API client for probe
+// attempts that must complete within one healthCheckInterval window.
+var healthProbeClient = &http.Client{Timeout: defaultHealthCheckTimeout}
+
 // HealthCheck probes GET /global/health on the given port until it responds
 // with 2xx or ctx is cancelled. Returns nil when healthy.
 //
@@ -84,7 +93,6 @@ func (a *Adapter) ContainerCommand() string {
 // immediately with no external I/O.
 func (a *Adapter) HealthCheck(ctx context.Context, port int) error {
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/global/health", port)
-	client := a.httpClient
 
 	deadline := time.Now().Add(defaultHealthCheckTimeout)
 	for {
@@ -99,7 +107,7 @@ func (a *Adapter) HealthCheck(ctx context.Context, port int) error {
 		if err != nil {
 			return err
 		}
-		resp, err := client.Do(req)
+		resp, err := healthProbeClient.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -323,15 +331,15 @@ func (a *Adapter) MapEvent(evt harness.HarnessEvent) (harness.StateTransition, b
 
 	switch eventType {
 	case "session.created", "session.updated":
-		return harness.StateTransition{State: "active"}, true
+		return harness.StateTransition{State: agent.StateActive}, true
 	case "session.deleted":
-		return harness.StateTransition{State: "deleted"}, true
+		return harness.StateTransition{State: agent.StateDeleted}, true
 	case "session.error":
-		return harness.StateTransition{State: "error"}, true
+		return harness.StateTransition{State: agent.StateError}, true
 	case "permission.asked", "question.asked":
-		return harness.StateTransition{State: "waiting"}, true
+		return harness.StateTransition{State: agent.StateWaiting}, true
 	case "permission.replied", "question.replied", "question.rejected":
-		return harness.StateTransition{State: "active"}, true
+		return harness.StateTransition{State: agent.StateActive}, true
 	}
 	return harness.StateTransition{}, false
 }
