@@ -512,46 +512,57 @@
         default_agent = "worker";
         enabled_providers = containerEnabledProviders;
         model = models.secondary;
-        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider (
-          {
-            worker = {
-              description = "Default worker agent with full tool access";
-              mode = "primary";
-              color = config.theme.red;
-              permission = {
-                bash = containerWorkerBashCommands;
-              };
-            };
-            ac = { };
-            explore = { };
-            title = { };
-            summary = { };
-            compaction = { };
-            coordinator = {
-              disable = true;
-            };
-            build = {
-              disable = true;
-            };
-            plan = {
-              disable = true;
-            };
-          }
-          // (
-            if config.nx.programs.prism.opencode.enhancedReview then
-              {
-                review-goal = { };
-                review-code = { };
-                review-security = { };
-                review-qa = { };
-                review-context = { };
-              }
-            else
-              {
-                review = { };
-              }
-          )
-        );
+        agent =
+          let
+            profiledAgents =
+              config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider
+                (
+                  {
+                    worker = {
+                      description = "Default worker agent with full tool access";
+                      mode = "primary";
+                      color = config.theme.red;
+                      permission = {
+                        bash = containerWorkerBashCommands;
+                      };
+                    };
+                    ac = { };
+                    explore = { };
+                    title = { };
+                    summary = { };
+                    compaction = { };
+                    coordinator = {
+                      disable = true;
+                    };
+                    build = {
+                      disable = true;
+                    };
+                    plan = {
+                      disable = true;
+                    };
+                  }
+                  // (
+                    if config.nx.programs.prism.opencode.enhancedReview then
+                      {
+                        review-goal = { };
+                        review-code = { };
+                        review-security = { };
+                        review-qa = { };
+                        review-context = { };
+                      }
+                    else
+                      {
+                        review = { };
+                      }
+                  )
+                );
+            # Strip variant from disabled agents so their primary-role "medium"
+            # doesn't poison the model's thinking level for the worker.
+            sanitisedAgents = lib.mapAttrs (
+              _name: cfg: if cfg ? disable && cfg.disable then builtins.removeAttrs cfg [ "variant" ] else cfg
+            ) profiledAgents;
+          in
+          sanitisedAgents;
         # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
         # not processed by the module system. Use optionalAttrs so the key is
         # absent entirely on Linux rather than emitting a malformed _type object.
