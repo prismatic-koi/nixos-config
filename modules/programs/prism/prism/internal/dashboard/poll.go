@@ -95,22 +95,20 @@ func FetchGitStatsOnly() tea.Msg {
 		return GitStatsOnlyMsg{}
 	}
 
-	// Convert to AgentSession so we can reuse FilterAgentSessions, then
-	// collect unique worktree paths (AgentPath field).
-	clientCounts := TmuxClientCounts()
-	sessions := make([]AgentSession, 0, len(statuses))
-	for _, s := range statuses {
-		sessions = append(sessions, StatusToAgentSession(s, clientCounts))
-	}
-	sessions = FilterAgentSessions(sessions)
-
-	// Collect unique AgentPath values (= worktree paths).
+	// Collect unique worktree paths, skipping internal sessions
+	// (scratchpad, prism-dashboard) by name — the same filter applied by
+	// FilterAgentSessions. We operate directly on db.Status here to avoid
+	// the TmuxClientCounts() subprocess call that StatusToAgentSession
+	// requires but FetchGitStatsOnly does not use.
 	seen := map[string]bool{}
 	var paths []string
-	for _, s := range sessions {
-		if s.AgentPath != "" && !seen[s.AgentPath] {
-			seen[s.AgentPath] = true
-			paths = append(paths, s.AgentPath)
+	for _, s := range statuses {
+		if s.SessionName == "scratchpad" || s.SessionName == "prism-dashboard" {
+			continue
+		}
+		if s.Worktree != "" && !seen[s.Worktree] {
+			seen[s.Worktree] = true
+			paths = append(paths, s.Worktree)
 		}
 	}
 
@@ -247,8 +245,9 @@ type pushEvent struct {
 // stopped and the socket removed when ctx is cancelled.
 //
 // Returns the net.Listener (for explicit teardown by the caller) and any error
-// from socket creation. On error the caller should fall back to
-// WatchDashboardSentinel.
+// from socket creation. On error the caller should log and continue without
+// push events — the dashboard still renders correctly via the periodic git stat
+// ticker and on-demand DB refreshes; it just won't receive instant state updates.
 func StartSocketListener(ctx context.Context, p *tea.Program) (net.Listener, error) {
 	sockPath := DashSocketPath()
 	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
