@@ -38,6 +38,11 @@
       internal = true;
       description = "Serialised opencode.json blob for coordinator containers (mounted as config file).";
     };
+    nx.programs.prism.opencode.enhancedReview = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Enable 5-agent parallel review system instead of single @review.";
+    };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
@@ -303,10 +308,21 @@
 
         ## Pull Request Reviews
 
-        After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
-        The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
-        If it identifies issues, fix them and then invoke `@review` again with the same PR number.
-        Repeat this cycle until the review passes with no issues before considering the work complete.
+        ${
+          if config.nx.programs.prism.opencode.enhancedReview then
+            ''
+              After opening a pull request, invoke ALL 5 review agents **in parallel** before announcing completion:
+              `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context`.
+              Pass the PR number to each. All 5 must return `<verdict>PASS</verdict>` for the review to pass.
+              If ANY agent returns FAIL, fix all blocking issues, push, and re-run all 5 agents.
+              After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.''
+          else
+            ''
+              After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
+              The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
+              If it identifies issues, fix them and then invoke `@review` again with the same PR number.
+              Repeat this cycle until the review passes with no issues before considering the work complete.''
+        }
 
         ## Search Scope
 
@@ -496,31 +512,46 @@
         default_agent = "worker";
         enabled_providers = containerEnabledProviders;
         model = models.secondary;
-        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
-          worker = {
-            description = "Default worker agent with full tool access";
-            mode = "primary";
-            color = config.theme.red;
-            permission = {
-              bash = containerWorkerBashCommands;
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider (
+          {
+            worker = {
+              description = "Default worker agent with full tool access";
+              mode = "primary";
+              color = config.theme.red;
+              permission = {
+                bash = containerWorkerBashCommands;
+              };
             };
-          };
-          review = { };
-          ac = { };
-          explore = { };
-          title = { };
-          summary = { };
-          compaction = { };
-          coordinator = {
-            disable = true;
-          };
-          build = {
-            disable = true;
-          };
-          plan = {
-            disable = true;
-          };
-        };
+            ac = { };
+            explore = { };
+            title = { };
+            summary = { };
+            compaction = { };
+            coordinator = {
+              disable = true;
+            };
+            build = {
+              disable = true;
+            };
+            plan = {
+              disable = true;
+            };
+          }
+          // (
+            if config.nx.programs.prism.opencode.enhancedReview then
+              {
+                review-goal = { };
+                review-code = { };
+                review-security = { };
+                review-qa = { };
+                review-context = { };
+              }
+            else
+              {
+                review = { };
+              }
+          )
+        );
         # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
         # not processed by the module system. Use optionalAttrs so the key is
         # absent entirely on Linux rather than emitting a malformed _type object.
@@ -562,99 +593,114 @@
         default_agent = "coordinator";
         enabled_providers = containerEnabledProviders;
         model = models.primary;
-        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
-          coordinator = {
-            description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
-            mode = "primary";
-            color = config.theme.purple;
-            tools = {
-              read = true;
-              grep = true;
-              glob = true;
-              list = true;
-              webfetch = true;
-              bash = true;
-              write = false;
-              edit = false;
-              patch = false;
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider (
+          {
+            coordinator = {
+              description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
+              mode = "primary";
+              color = config.theme.purple;
+              tools = {
+                read = true;
+                grep = true;
+                glob = true;
+                list = true;
+                webfetch = true;
+                bash = true;
+                write = false;
+                edit = false;
+                patch = false;
+              };
+              permission = {
+                bash = containerCoordinatorBashCommands;
+              };
             };
-            permission = {
-              bash = containerCoordinatorBashCommands;
+            plan = {
+              description = "Planning and analysis agent with read-only access";
+              mode = "primary";
+              color = config.theme.blue;
+              tools = {
+                read = true;
+                grep = true;
+                glob = true;
+                list = true;
+                webfetch = true;
+                bash = true;
+                write = false;
+                edit = false;
+                patch = false;
+              };
+              permission = {
+                bash = {
+                  # Default deny everything else for plan agent (MUST be first - last match wins)
+                  "*" = "deny";
+                }
+                // readOnlyBashCommands
+                // tmuxDenyCommands;
+              };
             };
-          };
-          plan = {
-            description = "Planning and analysis agent with read-only access";
-            mode = "primary";
-            color = config.theme.blue;
-            tools = {
-              read = true;
-              grep = true;
-              glob = true;
-              list = true;
-              webfetch = true;
-              bash = true;
-              write = false;
-              edit = false;
-              patch = false;
+            build = {
+              description = "Implementation agent with full write access";
+              mode = "primary";
+              color = config.theme.red;
+              # No tools block: all tools enabled by default (unlike coordinator/plan
+              # which explicitly disable write/edit). Full access is intentional here.
+              permission = {
+                edit = "allow";
+                webfetch = "allow";
+                # Atlassian MCP permissions — same ask set as host coordinator
+                "atlasian_*" = "ask";
+                "atlasian_atlassianUserInfo" = "allow";
+                "atlasian_get*" = "allow";
+                "atlasian_lookup*" = "allow";
+                "atlasian_search*" = "allow";
+                "atlasian_fetch" = "allow";
+                "atlasian_fetchAtlassian" = "allow";
+                "atlasian_create*" = "ask";
+                "atlasian_edit*" = "ask";
+                "atlasian_update*" = "ask";
+                "atlasian_add*" = "ask";
+                "atlasian_transition*" = "ask";
+                bash = {
+                  # default for any command not listed is ask (MUST be first - last match wins)
+                  "*" = "ask";
+                }
+                // readOnlyBashCommands
+                // writeBashCommands
+                // {
+                  # Belt-and-suspenders: explicitly deny PR merge even though writeBashCommands
+                  # already includes these denies — merging is a coordinator responsibility.
+                  "gh pr merge" = "deny";
+                  "gh pr merge *" = "deny";
+                  # Spawning agents is a coordinator responsibility, never a worker's (#557).
+                  "prism spawn" = "deny";
+                  "prism spawn *" = "deny";
+                  "prism pr" = "deny";
+                  "prism pr *" = "deny";
+                }
+                // tmuxDenyCommands;
+              };
             };
-            permission = {
-              bash = {
-                # Default deny everything else for plan agent (MUST be first - last match wins)
-                "*" = "deny";
+            explore = { };
+            ac = { };
+            title = { };
+            summary = { };
+            compaction = { };
+          }
+          // (
+            if config.nx.programs.prism.opencode.enhancedReview then
+              {
+                review-goal = { };
+                review-code = { };
+                review-security = { };
+                review-qa = { };
+                review-context = { };
               }
-              // readOnlyBashCommands
-              // tmuxDenyCommands;
-            };
-          };
-          build = {
-            description = "Implementation agent with full write access";
-            mode = "primary";
-            color = config.theme.red;
-            # No tools block: all tools enabled by default (unlike coordinator/plan
-            # which explicitly disable write/edit). Full access is intentional here.
-            permission = {
-              edit = "allow";
-              webfetch = "allow";
-              # Atlassian MCP permissions — same ask set as host coordinator
-              "atlasian_*" = "ask";
-              "atlasian_atlassianUserInfo" = "allow";
-              "atlasian_get*" = "allow";
-              "atlasian_lookup*" = "allow";
-              "atlasian_search*" = "allow";
-              "atlasian_fetch" = "allow";
-              "atlasian_fetchAtlassian" = "allow";
-              "atlasian_create*" = "ask";
-              "atlasian_edit*" = "ask";
-              "atlasian_update*" = "ask";
-              "atlasian_add*" = "ask";
-              "atlasian_transition*" = "ask";
-              bash = {
-                # default for any command not listed is ask (MUST be first - last match wins)
-                "*" = "ask";
+            else
+              {
+                review = { };
               }
-              // readOnlyBashCommands
-              // writeBashCommands
-              // {
-                # Belt-and-suspenders: explicitly deny PR merge even though writeBashCommands
-                # already includes these denies — merging is a coordinator responsibility.
-                "gh pr merge" = "deny";
-                "gh pr merge *" = "deny";
-                # Spawning agents is a coordinator responsibility, never a worker's (#557).
-                "prism spawn" = "deny";
-                "prism spawn *" = "deny";
-                "prism pr" = "deny";
-                "prism pr *" = "deny";
-              }
-              // tmuxDenyCommands;
-            };
-          };
-          explore = { };
-          review = { };
-          ac = { };
-          title = { };
-          summary = { };
-          compaction = { };
-        };
+          )
+        );
         # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
         # not processed by the module system. Use optionalAttrs so the key is
         # absent entirely on Linux rather than emitting a malformed _type object.
@@ -701,6 +747,14 @@
           builtins.toJSON coordinatorContainerOpencodeJson;
       }
 
+      # When enhanced review is on, inject ENHANCED_REVIEW=true into the agent
+      # env prefix so the prism-hooks plugin can read it at runtime.
+      (lib.mkIf config.nx.programs.prism.opencode.enhancedReview {
+        nx.programs.prism.agent.envVars = {
+          ENHANCED_REVIEW = "true";
+        };
+      })
+
       # Common configuration for both platforms
       {
         home-manager.users.${config.nx.username} = {
@@ -730,129 +784,149 @@
             settings = {
               autoupdate = false;
               model = models.primary;
-              agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider {
-                worker = {
-                  description = "Default worker agent with full tool access";
-                  mode = "primary";
-                  color = config.theme.red;
-                  permission = {
-                    bash = {
-                      # default for any command not listed is ask (MUST be first - last match wins)
-                      "*" = "ask";
+              agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider (
+                {
+                  worker = {
+                    description = "Default worker agent with full tool access";
+                    mode = "primary";
+                    color = config.theme.red;
+                    permission = {
+                      bash = {
+                        # default for any command not listed is ask (MUST be first - last match wins)
+                        "*" = "ask";
+                      }
+                      // readOnlyBashCommands
+                      // writeBashCommands
+                      // tmuxDenyCommands;
+                    };
+                  };
+                  plan = {
+                    description = "Planning and analysis agent with read-only access";
+                    mode = "primary";
+                    color = config.theme.blue;
+                    tools = {
+                      read = true;
+                      grep = true;
+                      glob = true;
+                      list = true;
+                      webfetch = true;
+                      bash = true;
+                      # Disable write operations
+                      write = false;
+                      edit = false;
+                    };
+                    permission = {
+                      bash = {
+                        # Default deny everything else for plan agent (MUST be first - last match wins)
+                        "*" = "deny";
+                      }
+                      // readOnlyBashCommands
+                      // tmuxDenyCommands;
+                    };
+                  };
+                  coordinator = {
+                    description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
+                    mode = "primary";
+                    color = config.theme.purple;
+                    tools = {
+                      read = true;
+                      grep = true;
+                      glob = true;
+                      list = true;
+                      webfetch = true;
+                      bash = true;
+                      write = false;
+                      edit = false;
+                    };
+                    permission = {
+                      bash = {
+                        # inverted model: everything not explicitly listed → ask
+                        "*" = "ask";
+                      }
+                      // readOnlyBashCommands
+                      // {
+                        # override the broad "git *" = "allow" from readOnlyBashCommands —
+                        # coordinator only gets specific git read ops, not the full suite
+                        "git *" = "ask";
+                        # override aws/playwright from readOnlyBashCommands — coordinator
+                        # is orchestration-only, these are not in its remit
+                        "aws *" = "ask";
+                        "playwright-cli *" = "ask";
+                      }
+                      // coordinatorBashCommands
+                      // tmuxDenyCommands;
+                    };
+                  };
+                  ac = {
+                  };
+                  # Lightweight built-in subagents — use a cheaper/faster model since these
+                  # do simple, mechanical tasks that don't require deep reasoning.
+                  explore = {
+                  };
+                  title = {
+                  };
+                  summary = {
+                  };
+                  compaction = {
+                  };
+                  retro = {
+                    description = "Analyses agent sessions for quality patterns and improvement opportunities";
+                    mode = "subagent";
+                    tools = {
+                      read = true;
+                      grep = true;
+                      glob = true;
+                      list = true;
+                      bash = true;
+                      # No write/edit tools — retro is read-only
+                      write = false;
+                      edit = false;
+                      patch = false;
+                      webfetch = false;
+                    };
+                    permission = {
+                      bash = {
+                        # Default deny (MUST be first - last match wins)
+                        "*" = "deny";
+                      }
+                      // readOnlyBashCommands
+                      // {
+                        # Prism read-only commands
+                        "prism stats" = "allow";
+                        "prism stats *" = "allow";
+                        "prism checkin" = "allow";
+                        "prism checkin *" = "allow";
+                        "prism list-sessions" = "allow";
+                        # SQLite read-only access to prism DB — the ?mode=ro flag enforces
+                        # read-only at the SQLite engine level, rejecting all write operations.
+                        # The path is baked in at Nix eval time via hmUser.xdg.stateHome.
+                        "sqlite3 file:${hmUser.xdg.stateHome}/prism/prism.db?mode=ro *" = "allow";
+                      }
+                      // tmuxDenyCommands;
+                    };
+                  };
+                }
+                // (
+                  if config.nx.programs.prism.opencode.enhancedReview then
+                    {
+                      review-goal = {
+                      };
+                      review-code = {
+                      };
+                      review-security = {
+                      };
+                      review-qa = {
+                      };
+                      review-context = {
+                      };
                     }
-                    // readOnlyBashCommands
-                    // writeBashCommands
-                    // tmuxDenyCommands;
-                  };
-                };
-                plan = {
-                  description = "Planning and analysis agent with read-only access";
-                  mode = "primary";
-                  color = config.theme.blue;
-                  tools = {
-                    read = true;
-                    grep = true;
-                    glob = true;
-                    list = true;
-                    webfetch = true;
-                    bash = true;
-                    # Disable write operations
-                    write = false;
-                    edit = false;
-                  };
-                  permission = {
-                    bash = {
-                      # Default deny everything else for plan agent (MUST be first - last match wins)
-                      "*" = "deny";
+                  else
+                    {
+                      review = {
+                      };
                     }
-                    // readOnlyBashCommands
-                    // tmuxDenyCommands;
-                  };
-                };
-                coordinator = {
-                  description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
-                  mode = "primary";
-                  color = config.theme.purple;
-                  tools = {
-                    read = true;
-                    grep = true;
-                    glob = true;
-                    list = true;
-                    webfetch = true;
-                    bash = true;
-                    write = false;
-                    edit = false;
-                  };
-                  permission = {
-                    bash = {
-                      # inverted model: everything not explicitly listed → ask
-                      "*" = "ask";
-                    }
-                    // readOnlyBashCommands
-                    // {
-                      # override the broad "git *" = "allow" from readOnlyBashCommands —
-                      # coordinator only gets specific git read ops, not the full suite
-                      "git *" = "ask";
-                      # override aws/playwright from readOnlyBashCommands — coordinator
-                      # is orchestration-only, these are not in its remit
-                      "aws *" = "ask";
-                      "playwright-cli *" = "ask";
-                    }
-                    // coordinatorBashCommands
-                    // tmuxDenyCommands;
-                  };
-                };
-                review = {
-                };
-                ac = {
-                };
-                # Lightweight built-in subagents — use a cheaper/faster model since these
-                # do simple, mechanical tasks that don't require deep reasoning.
-                explore = {
-                };
-                title = {
-                };
-                summary = {
-                };
-                compaction = {
-                };
-                retro = {
-                  description = "Analyses agent sessions for quality patterns and improvement opportunities";
-                  mode = "subagent";
-                  tools = {
-                    read = true;
-                    grep = true;
-                    glob = true;
-                    list = true;
-                    bash = true;
-                    # No write/edit tools — retro is read-only
-                    write = false;
-                    edit = false;
-                    patch = false;
-                    webfetch = false;
-                  };
-                  permission = {
-                    bash = {
-                      # Default deny (MUST be first - last match wins)
-                      "*" = "deny";
-                    }
-                    // readOnlyBashCommands
-                    // {
-                      # Prism read-only commands
-                      "prism stats" = "allow";
-                      "prism stats *" = "allow";
-                      "prism checkin" = "allow";
-                      "prism checkin *" = "allow";
-                      "prism list-sessions" = "allow";
-                      # SQLite read-only access to prism DB — the ?mode=ro flag enforces
-                      # read-only at the SQLite engine level, rejecting all write operations.
-                      # The path is baked in at Nix eval time via hmUser.xdg.stateHome.
-                      "sqlite3 file:${hmUser.xdg.stateHome}/prism/prism.db?mode=ro *" = "allow";
-                    }
-                    // tmuxDenyCommands;
-                  };
-                };
-              };
+                )
+              );
               mcp = {
                 atlasian = lib.mkIf pkgs.stdenv.isDarwin {
                   type = "local";
@@ -917,8 +991,12 @@
           };
           # Copy command workflow guides
           xdg.configFile."opencode/command".source = ./opencode/command;
-          # Custom agents
-          xdg.configFile."opencode/agents".source = ./opencode/agents;
+          # Custom agents — switch directory based on enhanced review flag
+          xdg.configFile."opencode/agents".source =
+            if config.nx.programs.prism.opencode.enhancedReview then
+              ./opencode/agents-enhanced
+            else
+              ./opencode/agents;
           # tmux status plugin
           xdg.configFile."opencode/plugins/prism-hooks.ts" = {
             source = ./opencode/plugins/prism-hooks.ts;
