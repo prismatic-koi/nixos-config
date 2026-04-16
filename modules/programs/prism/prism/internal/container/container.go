@@ -729,6 +729,11 @@ func (m *Manager) buildRunArgs() []string {
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
 	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
+	// MCP auth — OAuth tokens written by mcp-remote (used by the Atlassian MCP
+	// shim and other MCP servers that use OAuth). Mounted read-write so that
+	// token refresh inside the container persists back to the host directory.
+	// Source path: ${home}/.mcp-auth — only mounted when it exists on the host.
+	mcpAuthDir := filepath.Join(home, ".mcp-auth")
 	// Nix eval cache — pre-populated git cache from the host so flake input
 	// tarballs (nixpkgs, home-manager, etc.) don't need to be re-fetched and
 	// unpacked on every container start. Read-write because nix writes to
@@ -809,6 +814,15 @@ func (m *Manager) buildRunArgs() []string {
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 	)
+
+	// MCP auth: bind-mount ~/.mcp-auth into the container at /root/.mcp-auth
+	// so mcp-remote OAuth tokens obtained on the host are available inside the
+	// container. Mounted read-write so token refresh inside the container
+	// persists back to the host. Only mounted when the directory exists — hosts
+	// without Atlassian MCP configured are unaffected.
+	if _, err := os.Stat(mcpAuthDir); err == nil {
+		args = append(args, "--volume", mcpAuthDir+":/root/.mcp-auth")
+	}
 
 	// AWS: mount individual files/dirs into /root/.aws so the AWS CLI works at
 	// its default paths with no env var configuration. Each mount is conditional

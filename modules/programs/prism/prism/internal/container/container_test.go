@@ -2386,3 +2386,62 @@ func TestBuildRunArgs_KubeNotMountedWhenAbsent(t *testing.T) {
 		}
 	}
 }
+
+// ── MCP auth mount tests ─────────────────────────────────────────────────────
+
+// TestBuildRunArgs_McpAuthMountedWhenPresent verifies that when ~/.mcp-auth
+// exists on the host, it is bind-mounted read-write at /root/.mcp-auth inside
+// the container so OAuth tokens written by mcp-remote persist back to the host.
+func TestBuildRunArgs_McpAuthMountedWhenPresent(t *testing.T) {
+	fakeHome := t.TempDir()
+	mcpAuthDir := filepath.Join(fakeHome, ".mcp-auth")
+	if err := os.MkdirAll(mcpAuthDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .mcp-auth: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasSuffix(v, ":/root/.mcp-auth") {
+				found = true
+				// Must be read-write (no :ro suffix).
+				if strings.Contains(v, ":ro") {
+					t.Errorf("mcp-auth mount %q must be read-write (no :ro)", v)
+				}
+				// Source must be the actual mcpAuthDir path.
+				if !strings.HasPrefix(v, mcpAuthDir+":") {
+					t.Errorf("mcp-auth mount source %q should be %q", v, mcpAuthDir)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("mcp-auth volume mount at /root/.mcp-auth not found in args: %v", args)
+	}
+}
+
+// TestBuildRunArgs_McpAuthNotMountedWhenAbsent verifies that when ~/.mcp-auth
+// does not exist on the host, no mcp-auth mount is added and podman run
+// succeeds without error (skipped entirely).
+func TestBuildRunArgs_McpAuthNotMountedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Intentionally do NOT create ~/.mcp-auth.
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "/root/.mcp-auth") {
+				t.Errorf("mcp-auth mount must not be present when ~/.mcp-auth is absent; found %q", args[i+1])
+			}
+		}
+	}
+}
