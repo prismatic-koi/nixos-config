@@ -2117,3 +2117,272 @@ func TestBuildRunArgs_ClaudeCredentialsNotMountedWhenNotReady(t *testing.T) {
 		}
 	}
 }
+
+// ── AWS config mount tests ───────────────────────────────────────────────────
+
+// TestBuildRunArgs_AWSReadonlyConfigMounted verifies that
+// ~/.config/aws/readonly-config is mounted at /root/.aws/config:ro when present.
+func TestBuildRunArgs_AWSReadonlyConfigMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	awsDir := filepath.Join(fakeHome, ".config", "aws")
+	if err := os.MkdirAll(awsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll aws dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(awsDir, "readonly-config"), []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile readonly-config: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.aws/config:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			found = true
+			if !strings.Contains(args[i+1], "readonly-config") {
+				t.Errorf("AWS config mount source should be readonly-config, got: %q", args[i+1])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("AWS readonly-config mount at /root/.aws/config:ro not found in args: %v", args)
+	}
+}
+
+// TestBuildRunArgs_AWSCredentialsMounted verifies that
+// ~/.config/aws/credentials is mounted at /root/.aws/credentials:ro when present.
+func TestBuildRunArgs_AWSCredentialsMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	awsDir := filepath.Join(fakeHome, ".config", "aws")
+	if err := os.MkdirAll(awsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll aws dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(awsDir, "credentials"), []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile credentials: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.aws/credentials:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("AWS credentials mount at /root/.aws/credentials:ro not found in args: %v", args)
+	}
+}
+
+// TestBuildRunArgs_AWSSSOCacheMounted verifies that ~/.aws/sso is mounted at
+// /root/.aws/sso:ro when present, so SSO tokens from `aws sso login` are
+// available inside the container.
+func TestBuildRunArgs_AWSSSOCacheMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	ssoDir := filepath.Join(fakeHome, ".aws", "sso")
+	if err := os.MkdirAll(ssoDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll sso dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantMount := ssoDir + ":/root/.aws/sso:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && args[i+1] == wantMount {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("AWS SSO cache mount %q not found in args: %v", wantMount, args)
+	}
+}
+
+// TestBuildRunArgs_AWSCLICacheMounted verifies that ~/.aws/cli is mounted at
+// /root/.aws/cli:ro when present.
+func TestBuildRunArgs_AWSCLICacheMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	cliDir := filepath.Join(fakeHome, ".aws", "cli")
+	if err := os.MkdirAll(cliDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll cli dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantMount := cliDir + ":/root/.aws/cli:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && args[i+1] == wantMount {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("AWS CLI cache mount %q not found in args: %v", wantMount, args)
+	}
+}
+
+// TestBuildRunArgs_AWSAdminConfigNotMounted verifies that the admin AWS config
+// (config, not readonly-config) is never mounted — only readonly-config is used.
+func TestBuildRunArgs_AWSAdminConfigNotMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	awsDir := filepath.Join(fakeHome, ".config", "aws")
+	if err := os.MkdirAll(awsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll aws dir: %v", err)
+	}
+	// Create both the admin config and the readonly config.
+	for _, name := range []string{"config", "readonly-config"} {
+		if err := os.WriteFile(filepath.Join(awsDir, name), []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	// The whole aws dir must not be mounted.
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			// Whole-dir mount would look like .../aws:/root/.aws or .../aws:/root/.aws:ro
+			if strings.Contains(v, "/.config/aws:/root/.aws") {
+				t.Errorf("whole AWS config dir must not be mounted; found %q", v)
+			}
+			// Admin config must not be mounted at any container path.
+			if strings.HasSuffix(v, ":/root/.aws/config:ro") && strings.Contains(v, "/config:") {
+				// Allow readonly-config → /root/.aws/config:ro, but not config → /root/.aws/config:ro.
+				// Split on ":" to get the source path.
+				parts := strings.SplitN(v, ":", 2)
+				if !strings.HasSuffix(parts[0], "readonly-config") {
+					t.Errorf("admin AWS config must not be mounted at /root/.aws/config; found %q", v)
+				}
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_AWSNotMountedWhenAbsent verifies that when neither
+// ~/.config/aws nor ~/.aws exist, no AWS mounts are added.
+func TestBuildRunArgs_AWSNotMountedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "/root/.aws") {
+				t.Errorf("AWS mount must not be present when no AWS files exist; found %q", args[i+1])
+			}
+		}
+	}
+}
+
+// ── Kube config mount tests ──────────────────────────────────────────────────
+
+// TestBuildRunArgs_KubeAgentsConfigMounted verifies that
+// ~/.config/kube/agents-config is mounted at /root/.kube/config:ro when present.
+func TestBuildRunArgs_KubeAgentsConfigMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	kubeDir := filepath.Join(fakeHome, ".config", "kube")
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll kube dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(kubeDir, "agents-config"), []byte("stub"), 0o600); err != nil {
+		t.Fatalf("WriteFile agents-config: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.kube/config:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			found = true
+			if !strings.Contains(args[i+1], "agents-config") {
+				t.Errorf("kube mount source should be agents-config, got: %q", args[i+1])
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("kube agents-config mount at /root/.kube/config:ro not found in args: %v", args)
+	}
+
+	// No KUBECONFIG env var should be injected — the default path suffices.
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && strings.HasPrefix(args[i+1], "KUBECONFIG=") {
+			t.Errorf("KUBECONFIG must not be injected when mounting at default path; got %q", args[i+1])
+		}
+	}
+}
+
+// TestBuildRunArgs_KubeAdminConfigNotMounted verifies that admin kubeconfig
+// files (config, config-home) are never mounted — only agents-config is exposed.
+func TestBuildRunArgs_KubeAdminConfigNotMounted(t *testing.T) {
+	fakeHome := t.TempDir()
+	kubeDir := filepath.Join(fakeHome, ".config", "kube")
+	if err := os.MkdirAll(kubeDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll kube dir: %v", err)
+	}
+	for _, name := range []string{"config", "config-home", "agents-config"} {
+		if err := os.WriteFile(filepath.Join(kubeDir, name), []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			// Whole-dir mount must not be present.
+			if strings.Contains(v, "/.config/kube:/root/.kube") {
+				t.Errorf("whole kube config dir must not be mounted; found %q", v)
+			}
+			// Admin config files must not be the source of any /root/.kube mount.
+			if strings.HasSuffix(v, ":/root/.kube/config:ro") {
+				parts := strings.SplitN(v, ":", 2)
+				if !strings.HasSuffix(parts[0], "agents-config") {
+					t.Errorf("admin kube config must not be mounted at /root/.kube/config; found %q", v)
+				}
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_KubeNotMountedWhenAbsent verifies that when
+// ~/.config/kube/agents-config does not exist, no kube mounts are added.
+func TestBuildRunArgs_KubeNotMountedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "/root/.kube") {
+				t.Errorf("kube mount must not be present when agents-config is absent; found %q", args[i+1])
+			}
+		}
+	}
+}
