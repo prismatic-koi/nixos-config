@@ -31,6 +31,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -198,6 +199,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				_ = branchErr
 			}
 		}
+
+		// Kill any review sessions spawned by this parent session.
+		review.KillReviewSessionsForParent(m.session)
 
 		// Ensure scratchpad exists.
 		if !tmux.HasSession("scratchpad") {
@@ -464,6 +468,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		}
 	}
 
+	// Kill any review sessions spawned by this parent session.
+	review.KillReviewSessionsForParent(session)
+
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
@@ -539,6 +546,9 @@ func headlessCloseSession(session string) error {
 	}
 
 	fmt.Printf("closing session %s...\n", session)
+
+	// Kill any review sessions spawned by this parent session.
+	review.KillReviewSessionsForParent(session)
 
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {

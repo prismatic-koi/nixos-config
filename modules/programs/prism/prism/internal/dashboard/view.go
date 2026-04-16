@@ -177,6 +177,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 			branch := SessionBranch(name)
 			return branch == name || branch == "@main"
 		}
+		isDepth1Child := func(name string) bool {
+			return !isTopLevel(name) && !IsDepth2Session(name)
+		}
 		// groupHasTopLevel returns true if the contiguous run of same-repo
 		// sessions that includes sessions[i] contains at least one top-level row.
 		groupHasTopLevel := func(i int) bool {
@@ -194,17 +197,42 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 			return false
 		}
 		for i, s := range sessions {
-			isChild := !isTopLevel(s.Name) && groupHasTopLevel(i)
+			isD1Child := isDepth1Child(s.Name) && groupHasTopLevel(i)
+			isD2Child := IsDepth2Session(s.Name)
 			var treePrefix string
-			if isChild {
-				// Look ahead to determine if this is the last child in the group.
+			if isD2Child {
+				// Depth-2 review session: "  │   ├── " or "  │   └── "
+				// Look ahead within the same parent branch to determine if last sibling.
+				parentBranch := Depth2ParentBranch(s.Name)
+				isLastD2 := true
+				for j := i + 1; j < len(sessions); j++ {
+					next := sessions[j]
+					if SessionRepo(next.Name) != SessionRepo(s.Name) {
+						break
+					}
+					if IsDepth2Session(next.Name) && Depth2ParentBranch(next.Name) == parentBranch {
+						isLastD2 = false
+						break
+					}
+					// If we hit a non-depth-2 session in the same repo, stop.
+					if !IsDepth2Session(next.Name) {
+						break
+					}
+				}
+				if isLastD2 {
+					treePrefix = "  │   └── "
+				} else {
+					treePrefix = "  │   ├── "
+				}
+			} else if isD1Child {
+				// Look ahead to determine if this is the last depth-1 child in the group.
 				isLastChild := true
 				thisRepo := SessionRepo(s.Name)
 				for j := i + 1; j < len(sessions); j++ {
 					if SessionRepo(sessions[j].Name) != thisRepo {
 						break
 					}
-					if !isTopLevel(sessions[j].Name) {
+					if isDepth1Child(sessions[j].Name) || IsDepth2Session(sessions[j].Name) {
 						isLastChild = false
 						break
 					}

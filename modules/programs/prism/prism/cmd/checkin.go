@@ -87,7 +87,16 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	return runCheckinSession(args[0], last, beforePtr, afterPtr, types, verbose)
+	sessionArg := args[0]
+
+	// Special case: if the session argument ends with "~review" (no round number),
+	// prefix-match all ~review-* rounds for the parent session and display a
+	// summary of each round.
+	if strings.HasSuffix(sessionArg, "~review") {
+		return runCheckinReviewRounds(sessionArg, verbose)
+	}
+
+	return runCheckinSession(sessionArg, last, beforePtr, afterPtr, types, verbose)
 }
 
 // runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
@@ -1397,6 +1406,89 @@ func printSessionTable(ss []db.Status) error {
 	fmt.Println()
 	hint := "run `prism checkin <session>` to inspect a session"
 	fmt.Println(lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary)).Render(hint))
+
+	return nil
+}
+
+// runCheckinReviewRounds handles `prism checkin <parent>~review` — a prefix
+// match that lists all ~review-N rounds for the parent session.
+//
+// Default mode: one summary entry per round (the final aggregated output from
+// the last msg_assistant event per round session).
+// Verbose mode (--verbose): shows the full per-agent conversation for each round.
+func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
+	// reviewPrefix is e.g. "nixos-config@feature~review" — the actual round
+	// sessions are "nixos-config@feature~review-1", "~review-2", etc.
+	roundPrefix := reviewPrefix + "-"
+
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("checkin review: open db: %w", err)
+	}
+	defer d.Close()
+
+	// Find all sessions (active and ended) whose name starts with roundPrefix.
+	rounds, err := d.AllStatusesWithPrefix(roundPrefix)
+	if err != nil {
+		return fmt.Errorf("checkin review: query db: %w", err)
+	}
+
+	if len(rounds) == 0 {
+		fmt.Printf("no review rounds found matching %q\n", reviewPrefix)
+		return nil
+	}
+
+	// Sort rounds by session name (lexicographic order works since round
+	// numbers are 1-indexed integers and the prefix is the same length).
+	for i := 1; i < len(rounds); i++ {
+		key := rounds[i]
+		j := i - 1
+		for j >= 0 && rounds[j].SessionName > key.SessionName {
+			rounds[j+1] = rounds[j]
+			j--
+		}
+		rounds[j+1] = key
+	}
+
+	styleBold := lipgloss.NewStyle().Bold(true)
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	for _, round := range rounds {
+		roundName := round.SessionName
+		// Extract round label: everything after the last "~".
+		label := roundName
+		if idx := strings.LastIndex(roundName, "~"); idx >= 0 {
+			label = roundName[idx:] // e.g. "~review-1"
+		}
+
+		fmt.Printf("%s\n\n", styleBold.Render(label+" ("+roundName+")"))
+
+		if verbose {
+			// Show full conversation for this round.
+			if err := runCheckinSession(roundName, 20, nil, nil, nil, true); err != nil {
+				fmt.Fprintf(os.Stderr, "  [error reading round %s: %v]\n", label, err)
+			}
+		} else {
+			// Show summary: last msg_assistant event per round.
+			events, qerr := d.QueryEvents(roundName, 1, nil, nil, []string{"msg_assistant"})
+			if qerr != nil || len(events) == 0 {
+				fmt.Println(styleDim.Render("  (no output)"))
+			} else {
+				e := events[len(events)-1]
+				ts := e.CreatedAt.Local().Format("15:04:05")
+				var ap struct {
+					Text string `json:"text"`
+				}
+				text := e.Payload
+				if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr == nil && ap.Text != "" {
+					text = ap.Text
+				}
+				fmt.Printf("  [%s]\n  %s\n", ts, strings.ReplaceAll(text, "\n", "\n  "))
+			}
+		}
+		fmt.Println(styleDim.Render("── end of round ──"))
+		fmt.Println()
+	}
 
 	return nil
 }

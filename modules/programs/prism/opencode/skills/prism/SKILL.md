@@ -144,7 +144,72 @@ prism spawn \
   --prompt "find the plex container image in this repo and update it to the latest tag from dockerhub, then open a PR"
 ```
 
-## Example: reviewing a PR
+## Running code review with prism review
+
+`prism review <pr-number>` is the preferred way to run code review from a worker session. It spawns review agents in a dedicated, observable tmux session (`<parent>~review-N`) and returns findings to stdout when all agents complete.
+
+```bash
+# Run review — blocks until all agents finish, returns findings to stdout
+result=$(prism review 268)
+echo "$result"
+
+# Re-run only failed agents
+prism review 268 --only review
+
+# Keep the review session open for debugging (default: session is killed on exit)
+prism review 268 --keep
+
+# Custom timeout (default: 10m)
+prism review 268 --timeout 5m
+```
+
+**Output format:**
+```
+✓ review              passed
+✗ review              [findings...]
+
+1 agent(s) failed. Retry: prism review 268 --only review
+```
+
+Exit code 0 = all passed, non-zero = failures.
+
+**Review sessions appear in the dashboard** at depth 2, indented under their parent branch:
+```
+nixos-config@main                   coordinator
+  ├── @feature-branch               worker
+  │   ├── ~review-1                 round 1 (finished)
+  │   └── ~review-2                 round 2 (active)
+```
+
+**Checking in on review progress:**
+```bash
+# From the coordinator session, inspect all review rounds for a worker
+prism checkin nixos-config@feature-branch~review
+
+# Show full per-agent conversation
+prism checkin nixos-config@feature-branch~review --verbose
+```
+
+**Flags:**
+
+| Flag | Description |
+|---|---|
+| `--harness <name>` | Runtime harness (default: `opencode`) |
+| `--keep` | Keep the review session open after completion |
+| `--timeout <dur>` | Per-agent timeout (default: `10m`) |
+| `--only <csv>` | Run only named agents (e.g. `--only review`) |
+
+### When to use prism review vs @review
+
+| Situation | Use |
+|---|---|
+| Worker running in a tmux session (normal case) | `prism review` |
+| Want review visible in the dashboard | `prism review` |
+| Running in a context without tmux | `@review` subagent |
+
+Both paths coexist — use whichever is appropriate.
+
+## Example: reviewing a PR (manual spawn)
 
 ```bash
 # PR in the current repo
