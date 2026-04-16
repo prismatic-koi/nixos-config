@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -356,12 +357,17 @@ func buildReviewPrompt(prNumber string) string {
 	return fmt.Sprintf("Review PR #%s. Run `gh pr view %s` and `gh pr diff %s` to get the full diff. Check the linked issue for acceptance criteria and validate each one. Report your findings clearly.", prNumber, prNumber, prNumber)
 }
 
-// buildAgentCommand returns the opencode command string for a review agent window.
+// buildAgentCommand returns the command string for a review agent window.
 // agentSession is the full session name (e.g. "nixos-config@feature~review-1~review"),
 // used as PRISM_SESSION_NAME so the plugin correctly identifies the DB row.
 func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, containerMode bool) string {
 	if containerMode {
-		return fmt.Sprintf("opencode attach http://localhost:%d", port)
+		// Use podman attach to bridge the tmux pane to the container's PTY.
+		// The container runs opencode in combined TUI + HTTP mode (RFC #691, Phase 1a).
+		// The container name is shell-quoted so that any unexpected characters in
+		// the session name cannot be interpreted as shell metacharacters when
+		// buildReadinessWaitCmd embeds this string in the readiness shell script.
+		return "podman attach " + shellQuote(container.NameForSession(agentSession))
 	}
 	escapedPrompt := shellQuote(prompt)
 	return fmt.Sprintf("PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",
@@ -374,15 +380,12 @@ func createAgentWindow(reviewSession string, idx int, windowName, worktree, agen
 	cmd := agentCmd
 	if containerMode && port != 0 {
 		readyPath, pathErr := session.SidecarReadyPath(agentSession)
-		sidPath, sidErr := session.SidecarSessionPath(agentSession)
 		if pathErr == nil {
+			// Remove any stale ready file from a previous lifecycle.
+			// The .sid file is left alone — writing it is handled by the sidecar
+			// (cleanup deferred to #716); podman attach does not need it.
 			_ = os.Remove(readyPath)
-			if sidErr != nil {
-				sidPath = ""
-			} else {
-				_ = os.Remove(sidPath)
-			}
-			cmd = buildReadinessWaitCmd(readyPath, sidPath, agentCmd)
+			cmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
 	}
 	// Windows are 1-indexed: window 0 is the initial blank shell.
@@ -390,15 +393,17 @@ func createAgentWindow(reviewSession string, idx int, windowName, worktree, agen
 }
 
 // buildReadinessWaitCmd mirrors session.buildReadinessWaitCmd (unexported).
-func buildReadinessWaitCmd(readyPath, sidPath, attachCmd string) string {
+// Polls for the readiness file and runs the attach command directly once ready.
+// The .sid handoff is omitted — "podman attach" connects to the container's PTY
+// directly and does not need an opencode session ID (RFC #691, Phase 1a).
+func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 	return fmt.Sprintf(
 		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+
 			`if [ ! -f %s ]; then `+
 			`echo "prism: container did not become ready within 120s" >&2; exit 1; `+
 			`fi; `+
-			`if [ -f %s ]; then _sid=$(cat %s); %s -s "$_sid"; else %s; fi`,
-		shellQuote(readyPath), shellQuote(readyPath),
-		shellQuote(sidPath), shellQuote(sidPath), attachCmd, attachCmd,
+			`%s`,
+		shellQuote(readyPath), shellQuote(readyPath), attachCmd,
 	)
 }
 

@@ -117,8 +117,8 @@ type Config struct {
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
 	// Container, when non-nil, enables container mode: the sidecar creates and
-	// manages a podman container running opencode serve instead of relying on a
-	// directly-launched opencode process.
+	// manages a podman container running opencode in combined TUI + HTTP mode
+	// instead of relying on a directly-launched opencode process.
 	Container *container.Config
 	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
 	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
@@ -130,13 +130,15 @@ type Config struct {
 	HostAPITCPPort int
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
-	// readiness signal file that unblocks the tmux pane running "opencode attach".
+	// readiness signal file that unblocks the tmux pane running "podman attach".
 	// No-op when nil.
 	OnReady func()
-	// InitialPrompt, when non-empty, is delivered to the opencode server via
-	// prompt_async after the first session.created event is received following
-	// container readiness. This is the mechanism for prompt delivery in container
-	// mode, where the TUI runs "opencode attach" and cannot accept --prompt (#487).
+	// InitialPrompt, when non-empty, is passed to the container via
+	// opencode --prompt <text> at startup. The opencode process creates its
+	// session with the prompt already in flight so the conversation is visible
+	// in the TUI from the start. The sidecar then calls CreateSession (GET
+	// /session) to discover the session ID for subsequent prism prompt delivery.
+	// DeliverInitialPrompt is a no-op in container mode (RFC #691, Phase 1a).
 	InitialPrompt string
 	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,
@@ -359,13 +361,22 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		// Deliver the initial prompt (#487) before calling OnReady, so the
-		// .sid file is on disk before the TUI readiness-wait script unblocks.
-		// 1. POST /session  — create the session, capture its ID.
-		// 2. Write the sid file so opencode attach -s <sid> opens the right session.
-		// 3. Call OnReady  — unblocks the TUI pane, which runs opencode attach -s <sid>.
-		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
-		//    now attaching/subscribed so execution begins immediately.
+		// Discover the session ID and deliver the initial prompt (#487).
+		// In container mode (opencode --prompt "text"), the prompt was already
+		// delivered via the CLI flag — opencode starts the session and begins
+		// processing immediately. The sidecar still needs the session ID for
+		// subsequent prism prompt follow-up delivery.
+		//
+		// 1. GET /session  — retrieve the session opencode already created
+		//    (via --prompt on CLI). In non-container mode, POST /session creates
+		//    a new session. The harness adapter handles both cases.
+		// 2. Write the .sid file (for forensics/diagnostics; no longer consumed by
+		//    the agent window — "podman attach" connects to the PTY directly).
+		//    Cleanup of the .sid write path is deferred to #716.
+		// 3. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
+		// 4. DeliverInitialPrompt — no-op in container mode (prompt already sent
+		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
+		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
 			sid, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {

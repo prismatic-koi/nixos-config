@@ -74,12 +74,23 @@ func TestNameForSession_ReplacesDot(t *testing.T) {
 	}
 }
 
+func TestNameForSession_ReplacesTilde(t *testing.T) {
+	// Review agent session names contain "~" (e.g. "nixos-config@feature~review-1~review-code").
+	// Podman rejects "~" in container names (allowed: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
+	name := NameForSession("nixos-config@feature~review-1~review-code")
+	want := "prism-nixos-config-feature-review-1-review-code"
+	if name != want {
+		t.Errorf("NameForSession(%q) = %q, want %q", "nixos-config@feature~review-1~review-code", name, want)
+	}
+}
+
 func TestNameForSession_MatchesContainerName(t *testing.T) {
 	sessions := []string{
 		"nixos-config@main",
 		"repo@feat/sub",
 		"repo.git@main",
 		"a@b/c.d",
+		"nixos-config@feature~review-1~review-code",
 	}
 	for _, s := range sessions {
 		exported := NameForSession(s)
@@ -248,28 +259,131 @@ func TestBuildRunArgs_WorkdirIsWorkspace(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_OpencodeServeCommand(t *testing.T) {
+func TestBuildRunArgs_OpencodeCommand(t *testing.T) {
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 
 	// The last elements should be:
-	// <image> opencode serve --port 4096 --hostname 0.0.0.0
-	// That is 7 elements from the end.
+	// <image> opencode --port 4096 --hostname 0.0.0.0
+	// That is 6 elements from the end (no "serve" subcommand any more).
 	n := len(args)
-	if n < 7 {
+	if n < 6 {
 		t.Fatalf("too few args (%d): %v", n, args)
 	}
-	if args[n-7] != Image {
-		t.Errorf("expected image %q at args[n-7], got %q (all args: %v)", Image, args[n-7], args)
+	if args[n-6] != Image {
+		t.Errorf("expected image %q at args[n-6], got %q (all args: %v)", Image, args[n-6], args)
 	}
-	if args[n-6] != "opencode" || args[n-5] != "serve" {
-		t.Errorf("expected 'opencode serve', got %q %q", args[n-6], args[n-5])
+	if args[n-5] != "opencode" {
+		t.Errorf("expected 'opencode', got %q", args[n-5])
+	}
+	// Verify there is no "serve" subcommand — opencode runs in combined TUI + HTTP mode.
+	if args[n-5] == "opencode" && len(args) > n-4 && args[n-4] == "serve" {
+		t.Errorf("unexpected 'serve' subcommand: opencode should run in combined TUI + HTTP mode (RFC #691)")
 	}
 	if args[n-4] != "--port" || args[n-3] != "4096" {
 		t.Errorf("expected '--port 4096', got %q %q", args[n-4], args[n-3])
 	}
 	if args[n-2] != "--hostname" || args[n-1] != "0.0.0.0" {
 		t.Errorf("expected '--hostname 0.0.0.0', got %q %q", args[n-2], args[n-1])
+	}
+}
+
+func TestBuildRunArgs_AgentRoleAndPromptAppended(t *testing.T) {
+	// When both AgentRole and InitialPrompt are set, --agent and --prompt
+	// should both appear at the end of the args.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+		InitialPrompt: "fix the login bug",
+	})
+	args := m.buildRunArgs()
+
+	n := len(args)
+	// Last four args should be: --agent worker --prompt "fix the login bug"
+	if n < 4 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-4] != "--agent" || args[n-3] != "worker" {
+		t.Errorf("expected '--agent worker', got %q %q", args[n-4], args[n-3])
+	}
+	if args[n-2] != "--prompt" || args[n-1] != "fix the login bug" {
+		t.Errorf("expected '--prompt fix the login bug', got %q %q", args[n-2], args[n-1])
+	}
+}
+
+func TestBuildRunArgs_AgentRoleWithoutPrompt(t *testing.T) {
+	// When AgentRole is set but InitialPrompt is empty, --agent should still
+	// be appended so opencode does not default to the wrong agent type.
+	// This is the review-agent case: role is set (e.g. "review-code") but
+	// there is no prompt at container launch time.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "review-code",
+		InitialPrompt: "",
+	})
+	args := m.buildRunArgs()
+
+	n := len(args)
+	// Last two args should be: --agent review-code
+	if n < 2 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-2] != "--agent" || args[n-1] != "review-code" {
+		t.Errorf("expected '--agent review-code', got %q %q", args[n-2], args[n-1])
+	}
+	// --prompt must NOT be present.
+	for _, arg := range args {
+		if arg == "--prompt" {
+			t.Errorf("unexpected --prompt in args when InitialPrompt is empty: %v", args)
+		}
+	}
+}
+
+func TestBuildRunArgs_NoAgentRoleNoPromptNoExtraArgs(t *testing.T) {
+	// When neither AgentRole nor InitialPrompt are set, no extra args.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "",
+		InitialPrompt: "",
+	})
+	args := m.buildRunArgs()
+
+	for _, arg := range args {
+		if arg == "--agent" {
+			t.Errorf("unexpected --agent in args when AgentRole is empty: %v", args)
+		}
+		if arg == "--prompt" {
+			t.Errorf("unexpected --prompt in args when InitialPrompt is empty: %v", args)
+		}
+	}
+}
+
+func TestBuildRunArgs_PromptWithoutAgentRole(t *testing.T) {
+	// When InitialPrompt is set but AgentRole is empty, --prompt is appended
+	// without --agent (opencode will use its own default agent).
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "",
+		InitialPrompt: "do the thing",
+	})
+	args := m.buildRunArgs()
+
+	n := len(args)
+	if n < 2 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-2] != "--prompt" || args[n-1] != "do the thing" {
+		t.Errorf("expected '--prompt do the thing', got %q %q", args[n-2], args[n-1])
+	}
+	// --agent must NOT be present when AgentRole is empty.
+	for i, arg := range args {
+		if arg == "--agent" {
+			t.Errorf("unexpected --agent at index %d when AgentRole is empty: %v", i, args)
+		}
 	}
 }
 

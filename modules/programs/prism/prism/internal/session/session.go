@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -42,7 +43,7 @@ type Opts struct {
 	// host port to bind.
 	Port int
 	// ContainerMode, when true, switches the agent window command from
-	// "opencode --agent <name> --port <n>" to "opencode attach http://localhost:<n>".
+	// "opencode --agent <name> --port <n>" to "podman attach <container-name>".
 	// The sidecar is responsible for starting the container and signalling readiness
 	// before the attach command is sent to the tmux pane.
 	ContainerMode bool
@@ -124,22 +125,28 @@ func DefaultAgent(directory, explicit string) string {
 
 // BuildOpencodeCmd returns the opencode launch command string for the given opts.
 //
-// When opts.ContainerMode is true, the command is "opencode attach http://localhost:<port>"
-// — a lightweight TUI client that connects to the containerised opencode serve
-// instance (AC-17, AC-22). The port in the URL is opts.Port (never hardcoded).
+// When opts.ContainerMode is true, the command is "podman attach <container-name>"
+// — a transparent PTY bridge that connects the tmux pane to the opencode TUI
+// running inside the container (RFC #691, Phase 1a / Issue #715). The container
+// name is derived from opts.SessionName via container.NameForSession.
 //
 // When opts.ContainerMode is false (default), the command launches opencode
 // directly as before. PRISM_SESSION_NAME is prepended when opts.SessionName is
 // set, and --port / --hostname are appended when opts.Port is non-zero.
 func BuildOpencodeCmd(opts Opts) string {
 	if opts.ContainerMode {
-		if opts.Port == 0 {
-			// Shouldn't happen — callers must allocate a port before enabling
+		if opts.SessionName == "" {
+			// Shouldn't happen — callers must set SessionName before enabling
 			// container mode. Fall back to the non-container command.
 			return buildDirectOpencodeCmd(opts)
 		}
-		// AC-17: opencode attach with the allocated port (not 4096).
-		return fmt.Sprintf("opencode attach http://localhost:%d", opts.Port)
+		// Use podman attach to bridge the tmux pane to the container's PTY.
+		// The container runs opencode in combined TUI + HTTP mode; "podman attach"
+		// connects stdin/stdout to the container PTY so the TUI is fully interactive.
+		// The container name is shell-quoted so that any unexpected characters in
+		// the session name cannot be interpreted as shell metacharacters when
+		// buildReadinessWaitCmd embeds this string in the readiness shell script.
+		return "podman attach " + shellQuote(container.NameForSession(opts.SessionName))
 	}
 	return buildDirectOpencodeCmd(opts)
 }
@@ -275,8 +282,8 @@ func Create(name, directory string, opts Opts) error {
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
 //
 // In container mode (opts.ContainerMode), the sidecar is started first and the
-// agent window runs a readiness-wait loop before running "opencode attach".
-// This ensures the container is healthy before the TUI client tries to connect.
+// agent window runs a readiness-wait loop before running "podman attach".
+// This ensures the container is healthy before the PTY bridge tries to connect.
 func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.RenameWindow(name+":0", "edit")
 
@@ -314,19 +321,14 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	agentCmd := BuildOpencodeCmd(opts)
 	if opts.ContainerMode && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
-		sidPath, sidErr := SidecarSessionPath(name)
 		if pathErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)
 		} else {
-			// Remove any stale ready and session ID files from a previous
-			// session lifecycle before the pane script starts polling.
+			// Remove any stale ready file from a previous session lifecycle
+			// before the pane script starts polling. The .sid file is left
+			// alone — writing it is handled by the sidecar (cleanup is #716).
 			_ = os.Remove(readyPath)
-			if sidErr == nil {
-				_ = os.Remove(sidPath)
-			} else {
-				sidPath = ""
-			}
-			agentCmd = buildReadinessWaitCmd(readyPath, sidPath, agentCmd)
+			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
 	}
 
@@ -363,20 +365,20 @@ func setupFullLayout(name, directory string, opts Opts) error {
 // readiness file and, once found, runs the given attach command.
 // If the wait times out (120s), it prints an error and exits (AC-20).
 //
-// sidPath is the optional path to the sidecar session ID file written by
-// deliverInitialPrompt. When present, its contents are appended as -s <sid>
-// to the attach command so opencode opens directly into the agent's session.
-func buildReadinessWaitCmd(readyPath, sidPath, attachCmd string) string {
+// The .sid file handoff is intentionally omitted here: "podman attach" connects
+// to the container's PTY directly — no opencode session ID is needed. The sidecar
+// still writes the .sid file (cleanup deferred to #716); this function simply
+// does not read it.
+func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 	// Poll every 0.5s for up to 120s (240 iterations).
-	// On success, read the session ID (if any) and exec the attach command.
+	// On success, exec the attach command directly.
 	return fmt.Sprintf(
 		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+
 			`if [ ! -f %s ]; then `+
 			`echo "prism: container did not become ready within 120s" >&2; exit 1; `+
 			`fi; `+
-			`if [ -f %s ]; then _sid=$(cat %s); %s -s "$_sid"; else %s; fi`,
-		shellQuote(readyPath), shellQuote(readyPath),
-		shellQuote(sidPath), shellQuote(sidPath), attachCmd, attachCmd,
+			`%s`,
+		shellQuote(readyPath), shellQuote(readyPath), attachCmd,
 	)
 }
 
