@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -2038,6 +2039,81 @@ func TestBuildRunArgs_AllowedSignersNotMountedWhenSigningUnavailable(t *testing.
 			if strings.HasSuffix(args[i+1], ":/root/.ssh/allowed_signers:ro") {
 				t.Errorf("allowed_signers mount must not be present when signing keys are unavailable; found %q", args[i+1])
 			}
+		}
+	}
+}
+
+// ── writeClaudeCredentials / Darwin Keychain tests ───────────────────────────
+
+// TestWriteClaudeCredentials_NoopOnLinux verifies that writeClaudeCredentials
+// is a no-op on non-Darwin platforms: claudeCredentialsReady stays false and
+// no temp file is written. On Darwin this test still passes because it only
+// asserts the invariant that claudeCredentialsReady accurately tracks whether
+// the file was written — the Keychain call may succeed or fail, but the
+// ready flag must match.
+func TestWriteClaudeCredentials_NoopOnLinux(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("skipping Linux-specific no-op check on Darwin")
+	}
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 9999})
+	m.writeClaudeCredentials()
+	if m.claudeCredentialsReady {
+		t.Error("claudeCredentialsReady should be false on non-Darwin")
+	}
+	if _, err := os.Stat(m.claudeCredentialsFilePath()); !os.IsNotExist(err) {
+		t.Errorf("credentials temp file should not exist on non-Darwin, got: %v", err)
+	}
+}
+
+// TestBuildRunArgs_ClaudeCredentialsMountedWhenReady verifies that when
+// claudeCredentialsReady is true (simulating a successful Keychain extraction),
+// buildRunArgs includes the bind-mount at /root/.claude/.credentials.json.
+func TestBuildRunArgs_ClaudeCredentialsMountedWhenReady(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14001})
+
+	// Simulate a successful writeClaudeCredentials by writing a fake file and
+	// setting the flag directly (avoids requiring actual Keychain access in CI).
+	fakeCredsContent := `{"claudeAiOauth":{"accessToken":"sk-ant-oat01-test"}}`
+	if err := os.WriteFile(m.claudeCredentialsFilePath(), []byte(fakeCredsContent), 0o600); err != nil {
+		t.Fatalf("write fake creds: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.claudeCredentialsFilePath()) })
+	m.claudeCredentialsReady = true
+
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.claude/.credentials.json:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("buildRunArgs missing Claude credentials mount ending in %q", wantDst)
+	}
+}
+
+// TestBuildRunArgs_ClaudeCredentialsNotMountedWhenNotReady verifies that when
+// claudeCredentialsReady is false (e.g. not logged in, or Linux), buildRunArgs
+// does NOT include the /root/.claude/.credentials.json bind-mount.
+func TestBuildRunArgs_ClaudeCredentialsNotMountedWhenNotReady(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14002})
+	// claudeCredentialsReady defaults to false — do not set it.
+
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.claude/.credentials.json:ro"
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			t.Errorf("Claude credentials mount must not be present when claudeCredentialsReady=false; found %q", args[i+1])
 		}
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -177,6 +178,12 @@ type Manager struct {
 	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
 	// so that podman is never given a source path that doesn't exist on disk.
 	allowedSignersReady bool
+	// claudeCredentialsReady is true when writeClaudeCredentials successfully
+	// extracted Claude credentials from the macOS Keychain and wrote them to
+	// a temp file. buildRunArgs uses this to gate the bind-mount so that
+	// podman is never given a source path that doesn't exist on disk.
+	// This field is only ever true on Darwin.
+	claudeCredentialsReady bool
 }
 
 // New creates a Manager for the given config. It does not start the container.
@@ -218,6 +225,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
+	_ = os.Remove(m.claudeCredentialsFilePath())
 
 	// Check the container's instance label when we have our own InstanceID.
 	// This detects ownership mismatches where a container from a previous
@@ -294,6 +302,53 @@ func (m *Manager) allowedSignersFilePath() string {
 // file location.
 func (m *Manager) opencodeConfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-opencode-config-"+m.name)
+}
+
+// claudeCredentialsFilePath returns the host path for the temporary Claude
+// credentials file written before container start (Darwin only). On Darwin,
+// Claude Code stores OAuth credentials in the macOS Keychain rather than
+// ~/.claude/.credentials.json. We extract the token and write it to a temp
+// file so it can be bind-mounted at /root/.claude/.credentials.json inside
+// the container where opencode-claude-auth can read it.
+func (m *Manager) claudeCredentialsFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-claude-creds-"+m.name)
+}
+
+// writeClaudeCredentials extracts Claude Code credentials from the macOS
+// Keychain and writes them to a temp file. On Linux, Claude Code stores
+// credentials in ~/.claude/.credentials.json which is already inside the
+// claudeMount bind-mounted directory and requires no special handling. On
+// Darwin, credentials are stored in the Keychain under the service name
+// "Claude Code-credentials" and never reach disk, so the container never
+// sees them via the directory mount alone.
+//
+// Sets m.claudeCredentialsReady to true on success so that buildRunArgs can
+// add the bind-mount. Logs and returns without error on failure — a missing
+// Keychain entry (e.g. not logged in) should surface as an auth error from
+// opencode rather than a hard container launch failure.
+func (m *Manager) writeClaudeCredentials() {
+	m.claudeCredentialsReady = false
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+		"-l", "Claude Code-credentials", "-w").Output()
+	if err != nil {
+		log.Printf("container: could not extract Claude credentials from macOS Keychain: %v — opencode-claude-auth may fail to authenticate", err)
+		return
+	}
+	creds := strings.TrimSpace(string(out))
+	if creds == "" {
+		log.Printf("container: macOS Keychain returned empty Claude credentials — run `claude login` to authenticate")
+		return
+	}
+	if err := os.WriteFile(m.claudeCredentialsFilePath(), []byte(creds), 0o600); err != nil {
+		log.Printf("container: failed to write Claude credentials temp file: %v", err)
+		return
+	}
+	m.claudeCredentialsReady = true
 }
 
 // writeGitconfig generates a minimal .gitconfig for the container and writes
@@ -475,6 +530,11 @@ func (m *Manager) Create(ctx context.Context) error {
 		}
 	}
 
+	// On Darwin, extract Claude Code credentials from the macOS Keychain and
+	// write them to a temp file so the container can find them. On Linux,
+	// ~/.claude/.credentials.json is already inside the claudeMount directory.
+	m.writeClaudeCredentials()
+
 	// Build the podman run arguments.
 	t0 = time.Now()
 	args := m.buildRunArgs()
@@ -617,6 +677,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
+	_ = os.Remove(m.claudeCredentialsFilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -695,11 +756,26 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", opencodeCacheMount,
 		// bun transpiler cache — pre-compiled plugin modules from host.
 		"--volume", bunCacheMount,
-		// Claude credentials — read-write for auth plugin token refresh.
+		// Claude credentials directory — read-write for auth plugin token refresh.
+		// On Linux, ~/.claude/.credentials.json lives here.
+		// On Darwin, .credentials.json is absent (credentials are in the macOS
+		// Keychain); writeClaudeCredentials() extracts and writes it to a temp
+		// file that is bind-mounted below at /root/.claude/.credentials.json.
 		"--volume", claudeMount,
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
+	)
 
+	// Darwin: bind-mount the extracted Keychain credentials over
+	// /root/.claude/.credentials.json so opencode-claude-auth can find them.
+	// On Linux this file already exists inside the claudeMount directory.
+	if m.claudeCredentialsReady {
+		args = append(args,
+			"--volume", m.claudeCredentialsFilePath()+":/root/.claude/.credentials.json:ro",
+		)
+	}
+
+	args = append(args,
 		// Nix daemon socket — lets the container's nix CLI delegate store
 		// operations to the host's nix-daemon, reusing the host's /nix/store
 		// cache and persisting new build outputs for reuse across container
