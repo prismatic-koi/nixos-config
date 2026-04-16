@@ -219,12 +219,23 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 
 		// Seed agent_status for the agent session.
 		if err := d.UpsertStatus(agentSession, repo, worktree, "idle", nil, nil); err != nil {
+			// Clean up already-started agents before returning.
+			for j := 0; j < i; j++ {
+				session.KillSidecar(agentSessions[j])
+				cleanupAgentSession(d, agentSessions[j])
+			}
+			_ = tmux.KillSession(reviewSession)
 			return nil, fmt.Errorf("seed status for %s: %w", ag.Name, err)
 		}
 
 		// Allocate a port for this agent session.
 		port, portErr := d.AllocatePort(agentSession)
 		if portErr != nil {
+			for j := 0; j < i; j++ {
+				session.KillSidecar(agentSessions[j])
+				cleanupAgentSession(d, agentSessions[j])
+			}
+			_ = tmux.KillSession(reviewSession)
 			return nil, fmt.Errorf("allocate port for %s: %w", ag.Name, portErr)
 		}
 
@@ -232,14 +243,17 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 		prompt := buildReviewPrompt(opts.PRNumber)
 
 		// Start the sidecar for this agent.
+		// WorktreeReadOnly=true ensures review containers cannot modify the
+		// branch under review (satisfies the [security] acceptance criterion).
 		sidecarOpts := session.StartSidecarOpts{
-			Port:           port,
-			ContainerMode:  opts.ContainerMode,
-			AgentRole:      ag.Name,
-			Worktree:       worktree,
-			PluginHostPath: opts.PluginHostPath,
-			InitialPrompt:  prompt,
-			ConfigContent:  opts.ConfigContent,
+			Port:             port,
+			ContainerMode:    opts.ContainerMode,
+			AgentRole:        ag.Name,
+			Worktree:         worktree,
+			PluginHostPath:   opts.PluginHostPath,
+			InitialPrompt:    prompt,
+			ConfigContent:    opts.ConfigContent,
+			WorktreeReadOnly: true,
 		}
 		if sidecarErr := session.StartSidecarWithOpts(agentSession, sidecarOpts); sidecarErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism review] warning: could not start sidecar for %s: %v\n", ag.Name, sidecarErr)
@@ -248,6 +262,12 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 		// Create the agent window within the review session.
 		agentCmd := buildAgentCommand(ag, agentSession, port, prompt, opts.ContainerMode)
 		if err := createAgentWindow(reviewSession, i, ag.Name, worktree, agentCmd, port, agentSession, opts.ContainerMode); err != nil {
+			// Clean up agents 0..i (including the current one whose window failed).
+			for j := 0; j <= i; j++ {
+				session.KillSidecar(agentSessions[j])
+				cleanupAgentSession(d, agentSessions[j])
+			}
+			_ = tmux.KillSession(reviewSession)
 			return nil, fmt.Errorf("create window for %s: %w", ag.Name, err)
 		}
 	}
@@ -369,7 +389,7 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 		select {
 		case <-ctx.Done():
 			// Build partial results with all non-finished agents as timed out.
-			return buildResults(agents, agentSessions, d, timedOut, timeout, true), ctx.Err()
+			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true), ctx.Err()
 		default:
 		}
 
@@ -390,7 +410,7 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 		time.Sleep(pollInterval)
 	}
 
-	return buildResults(agents, agentSessions, d, timedOut, timeout, false), nil
+	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, false), nil
 }
 
 // isTerminalState returns true if the state is considered terminal (finished or error).
@@ -403,11 +423,18 @@ func isTerminalState(state string) bool {
 }
 
 // buildResults constructs AgentResult entries from polling outcomes.
-func buildResults(agents []Agent, agentSessions []string, d *db.DB, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
+// finished[i] is true when agent i reached a terminal DB state; timedOut[i] is
+// true when it did not finish before the deadline; cancelled is true on context
+// cancellation (e.g. SIGINT). Agents in finished[i]=true always show their
+// actual output, even when the process is being cancelled.
+func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	for i, ag := range agents {
 		agentSession := agentSessions[i]
-		if timedOut[i] || cancelled {
+		// Only report as timed-out / cancelled when the agent genuinely did not
+		// finish. An agent that completed before a signal arrived should still
+		// show its actual output.
+		if (timedOut[i] || cancelled) && !finished[i] {
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,

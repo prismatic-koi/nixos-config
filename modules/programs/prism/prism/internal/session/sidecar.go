@@ -182,6 +182,10 @@ type StartSidecarOpts struct {
 	// without needing to read it back from the DB (which would race with the
 	// tmux-session-start event that writes instance_id to agent_status).
 	InstanceID string
+	// WorktreeReadOnly, when true, mounts the worktree read-only inside the
+	// container. Set for review agent containers so they cannot modify the
+	// branch under review. Passed via --worktree-readonly to the sidecar.
+	WorktreeReadOnly bool
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -255,6 +259,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	}
 	if opts.InstanceID != "" {
 		cmdArgs = append(cmdArgs, "--instance-id", opts.InstanceID)
+	}
+	if opts.WorktreeReadOnly {
+		cmdArgs = append(cmdArgs, "--worktree-readonly")
 	}
 
 	cmd := exec.Command(self, cmdArgs...)

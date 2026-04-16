@@ -59,8 +59,14 @@ type Config struct {
 	SessionName string
 
 	// Worktree is the absolute path to the git worktree on the host.
-	// Mounted read-write at /workspace inside the container.
+	// Mounted at /workspace inside the container. When WorktreeReadOnly is
+	// true, the mount is read-only; otherwise it is read-write.
 	Worktree string
+
+	// WorktreeReadOnly, when true, mounts the worktree read-only inside
+	// the container. Used by review agent containers so agents cannot
+	// modify the branch under review.
+	WorktreeReadOnly bool
 
 	// AllocatedPort is the host port to bind to ContainerPort inside the container.
 	AllocatedPort int
@@ -695,7 +701,14 @@ func (m *Manager) buildRunArgs() []string {
 	portBinding := fmt.Sprintf("127.0.0.1:%d:%d", cfg.AllocatedPort, ContainerPort)
 
 	// Volume mounts (AC-2, AC-3, AC-4, AC-5).
-	worktreeMount := cfg.Worktree + ":/workspace:Z"
+	// Worktree is mounted read-only for review agents (WorktreeReadOnly=true)
+	// and read-write for worker/coordinator agents.
+	var worktreeMount string
+	if cfg.WorktreeReadOnly {
+		worktreeMount = cfg.Worktree + ":/workspace:ro,Z"
+	} else {
+		worktreeMount = cfg.Worktree + ":/workspace:Z"
+	}
 	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
 		":/root/.local/share/opencode:Z"
 	// opencodeConfigDir is the host's opencode config directory, mounted

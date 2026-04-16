@@ -1967,3 +1967,83 @@ func TestQueryAuditEvents_OrderedDescending(t *testing.T) {
 		t.Errorf("events not in DESC order: [0]=%v [1]=%v", events[0].CreatedAt, events[1].CreatedAt)
 	}
 }
+
+// ── AllStatusesWithPrefix ──────────────────────────────────────────────────────
+
+func TestAllStatusesWithPrefix_ReturnsMatchingRows(t *testing.T) {
+	d := openTestDB(t)
+
+	// Insert rows with and without the target prefix.
+	parent := "nixos-config@feature"
+	if err := d.UpsertStatus(parent+"~review-1", "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.UpsertStatus(parent+"~review-2", "nixos-config", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	// Agent sub-session: also starts with the prefix.
+	if err := d.UpsertStatus(parent+"~review-1~review", "nixos-config", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	// Unrelated row.
+	if err := d.UpsertStatus("nixos-config@other~review-1", "nixos-config", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	rows, err := d.AllStatusesWithPrefix(parent + "~review-")
+	if err != nil {
+		t.Fatalf("AllStatusesWithPrefix: %v", err)
+	}
+
+	// Should return 3 rows (2 rounds + 1 sub-session), not the unrelated row.
+	if len(rows) != 3 {
+		t.Errorf("got %d rows, want 3; rows: %v", len(rows), sessionNames(rows))
+	}
+	for _, r := range rows {
+		if r.SessionName == "nixos-config@other~review-1" {
+			t.Errorf("unexpected row %q returned", r.SessionName)
+		}
+	}
+}
+
+func TestAllStatusesWithPrefix_UnderscoreInPrefix_ExactMatch(t *testing.T) {
+	d := openTestDB(t)
+
+	// Session name with underscore — the prefix should match exactly (not use _ as wildcard).
+	_ = d.UpsertStatus("repo@feat_ure~review-1", "repo", "/wt", "idle", nil, nil)
+	_ = d.UpsertStatus("repo@featXure~review-1", "repo", "/wt", "idle", nil, nil) // should NOT match
+
+	rows, err := d.AllStatusesWithPrefix("repo@feat_ure~review-")
+	if err != nil {
+		t.Fatalf("AllStatusesWithPrefix: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("got %d rows, want 1 (exact underscore match); names: %v", len(rows), sessionNames(rows))
+	}
+	if len(rows) > 0 && rows[0].SessionName != "repo@feat_ure~review-1" {
+		t.Errorf("got %q, want %q", rows[0].SessionName, "repo@feat_ure~review-1")
+	}
+}
+
+func TestAllStatusesWithPrefix_IncludesEndedRows(t *testing.T) {
+	d := openTestDB(t)
+
+	_ = d.UpsertStatus("nixos@feat~review-1", "nixos", "/wt", "finished", nil, nil)
+	_ = d.SetEnded("nixos@feat~review-1")
+
+	rows, err := d.AllStatusesWithPrefix("nixos@feat~review-")
+	if err != nil {
+		t.Fatalf("AllStatusesWithPrefix: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("got %d rows, want 1 (ended row should be included)", len(rows))
+	}
+}
+
+func sessionNames(rows []db.Status) []string {
+	names := make([]string, len(rows))
+	for i, r := range rows {
+		names[i] = r.SessionName
+	}
+	return names
+}

@@ -27,7 +27,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/review"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 var reviewCmd = &cobra.Command{
@@ -135,25 +134,20 @@ func runReview(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Track the review session name for cleanup on signal.
-	var reviewSessionName string
-
-	// Install SIGTERM/SIGINT handler.
+	// Install SIGTERM/SIGINT handler. Kill all ~review-* sessions for the parent
+	// and cancel the context. KillReviewSessionsForParent is idempotent and
+	// covers all rounds without needing the specific session name, avoiding
+	// any data race on a shared variable.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigCh
-		// Kill all review sessions for this parent.
-		if reviewSessionName != "" {
-			_ = tmux.KillSession(reviewSessionName)
-		}
 		review.KillReviewSessionsForParent(parentSession)
 		cancel()
 	}()
 
 	// Run the review.
 	results, runErr := review.Run(ctx, opts, func(sessionName string) {
-		reviewSessionName = sessionName
 		fmt.Fprintf(os.Stderr, "[prism review] review session: %s\n", sessionName)
 	})
 
