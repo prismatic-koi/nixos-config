@@ -288,9 +288,9 @@ func TestBuildRunArgs_OpencodeCommand(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_InitialPromptAppended(t *testing.T) {
-	// When InitialPrompt is set, --agent and --prompt should appear at the end
-	// of the args after the image and base opencode flags.
+func TestBuildRunArgs_AgentRoleAndPromptAppended(t *testing.T) {
+	// When both AgentRole and InitialPrompt are set, --agent and --prompt
+	// should both appear at the end of the args.
 	m := New(Config{
 		SessionName:   "repo@main",
 		AllocatedPort: 14000,
@@ -312,16 +312,28 @@ func TestBuildRunArgs_InitialPromptAppended(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_NoInitialPromptNoExtraArgs(t *testing.T) {
-	// When InitialPrompt is empty, no --agent or --prompt args should be appended.
+func TestBuildRunArgs_AgentRoleWithoutPrompt(t *testing.T) {
+	// When AgentRole is set but InitialPrompt is empty, --agent should still
+	// be appended so opencode does not default to the wrong agent type.
+	// This is the review-agent case: role is set (e.g. "review-code") but
+	// there is no prompt at container launch time.
 	m := New(Config{
 		SessionName:   "repo@main",
 		AllocatedPort: 14000,
-		AgentRole:     "worker",
+		AgentRole:     "review-code",
 		InitialPrompt: "",
 	})
 	args := m.buildRunArgs()
 
+	n := len(args)
+	// Last two args should be: --agent review-code
+	if n < 2 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-2] != "--agent" || args[n-1] != "review-code" {
+		t.Errorf("expected '--agent review-code', got %q %q", args[n-2], args[n-1])
+	}
+	// --prompt must NOT be present.
 	for _, arg := range args {
 		if arg == "--prompt" {
 			t.Errorf("unexpected --prompt in args when InitialPrompt is empty: %v", args)
@@ -329,8 +341,29 @@ func TestBuildRunArgs_NoInitialPromptNoExtraArgs(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_InitialPromptDefaultsAgentToWorker(t *testing.T) {
-	// When AgentRole is empty but InitialPrompt is set, --agent should default to "worker".
+func TestBuildRunArgs_NoAgentRoleNoPromptNoExtraArgs(t *testing.T) {
+	// When neither AgentRole nor InitialPrompt are set, no extra args.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "",
+		InitialPrompt: "",
+	})
+	args := m.buildRunArgs()
+
+	for _, arg := range args {
+		if arg == "--agent" {
+			t.Errorf("unexpected --agent in args when AgentRole is empty: %v", args)
+		}
+		if arg == "--prompt" {
+			t.Errorf("unexpected --prompt in args when InitialPrompt is empty: %v", args)
+		}
+	}
+}
+
+func TestBuildRunArgs_PromptWithoutAgentRole(t *testing.T) {
+	// When InitialPrompt is set but AgentRole is empty, --prompt is appended
+	// without --agent (opencode will use its own default agent).
 	m := New(Config{
 		SessionName:   "repo@main",
 		AllocatedPort: 14000,
@@ -340,11 +373,17 @@ func TestBuildRunArgs_InitialPromptDefaultsAgentToWorker(t *testing.T) {
 	args := m.buildRunArgs()
 
 	n := len(args)
-	if n < 4 {
+	if n < 2 {
 		t.Fatalf("too few args: %v", args)
 	}
-	if args[n-4] != "--agent" || args[n-3] != "worker" {
-		t.Errorf("expected '--agent worker' default, got %q %q", args[n-4], args[n-3])
+	if args[n-2] != "--prompt" || args[n-1] != "do the thing" {
+		t.Errorf("expected '--prompt do the thing', got %q %q", args[n-2], args[n-1])
+	}
+	// --agent must NOT be present when AgentRole is empty.
+	for i, arg := range args {
+		if arg == "--agent" {
+			t.Errorf("unexpected --agent at index %d when AgentRole is empty: %v", i, args)
+		}
 	}
 }
 

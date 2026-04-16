@@ -1105,18 +1105,17 @@ func (m *Manager) buildRunArgs() []string {
 		"--hostname", "0.0.0.0",
 	)
 
-	// When an initial prompt is provided, pass it (and the agent role) directly
-	// on the opencode command line. This ensures opencode creates its session
-	// with the prompt in flight and the conversation is visible in the TUI from
-	// the start — the sidecar's POST /session + prompt_async path would create
-	// a second session invisible to the TUI (RFC #691 Phase 1a).
-	// These are passed as separate args (no shell involved) so no quoting needed.
+	// Pass --agent and --prompt as separate opencode flags when set.
+	// These are always separate: --agent controls the system-prompt/role even
+	// when there is no initial prompt (e.g. review agents need their role set
+	// so opencode does not default to the "build" agent).
+	// These are passed as individual args slice elements (no shell involved)
+	// so no quoting is needed.
+	if cfg.AgentRole != "" {
+		args = append(args, "--agent", cfg.AgentRole)
+	}
 	if cfg.InitialPrompt != "" {
-		agentRole := cfg.AgentRole
-		if agentRole == "" {
-			agentRole = "worker"
-		}
-		args = append(args, "--agent", agentRole, "--prompt", cfg.InitialPrompt)
+		args = append(args, "--prompt", cfg.InitialPrompt)
 	}
 
 	return args

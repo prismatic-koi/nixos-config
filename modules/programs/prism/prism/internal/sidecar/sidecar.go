@@ -117,8 +117,8 @@ type Config struct {
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
 	// Container, when non-nil, enables container mode: the sidecar creates and
-	// manages a podman container running opencode serve instead of relying on a
-	// directly-launched opencode process.
+	// manages a podman container running opencode in combined TUI + HTTP mode
+	// instead of relying on a directly-launched opencode process.
 	Container *container.Config
 	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
 	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
@@ -133,10 +133,12 @@ type Config struct {
 	// readiness signal file that unblocks the tmux pane running "podman attach".
 	// No-op when nil.
 	OnReady func()
-	// InitialPrompt, when non-empty, is delivered to the opencode server via
-	// prompt_async after the first session.created event is received following
-	// container readiness. This is the mechanism for prompt delivery in container
-	// mode, where the TUI runs "opencode attach" and cannot accept --prompt (#487).
+	// InitialPrompt, when non-empty, is passed to the container via
+	// opencode --prompt <text> at startup. The opencode process creates its
+	// session with the prompt already in flight so the conversation is visible
+	// in the TUI from the start. The sidecar then calls CreateSession (GET
+	// /session) to discover the session ID for subsequent prism prompt delivery.
+	// DeliverInitialPrompt is a no-op in container mode (RFC #691, Phase 1a).
 	InitialPrompt string
 	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,

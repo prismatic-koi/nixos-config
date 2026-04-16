@@ -24,7 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/sse"
 )
 
-// containerPort is the port opencode serve listens on inside the container.
+// containerPort is the port opencode listens on inside the container.
 // Mirrors container.ContainerPort but avoids an import cycle.
 const containerPort = 4096
 

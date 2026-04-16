@@ -25,8 +25,9 @@ package cmd
 // logic in opencode/plugins/prism-hooks.ts.
 //
 // In container mode, the sidecar creates a podman container running
-// "opencode serve --port 4096", waits until the HTTP endpoint is healthy, then
-// writes a ready signal so that the tmux pane can run "opencode attach".
+// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode), waits
+// until the HTTP endpoint is healthy, then writes a ready signal so that the
+// tmux pane can run "podman attach" to bridge the PTY (RFC #691, Phase 1a).
 //
 // Clean shutdown: SIGINT and SIGTERM write "interrupted" state and (in container
 // mode) stop/remove the container before exiting.
@@ -62,8 +63,9 @@ The sidecar handles: state machine transitions, idle debounce (2s),
 permission tracking, event logging, and dashboard sentinel updates.
 
 In container mode (--container), the sidecar also creates and manages the
-podman container running opencode serve, health-checks it until ready, then
-writes a readiness signal so the tmux pane can run opencode attach.`,
+podman container running opencode in combined TUI + HTTP mode, health-checks
+it until ready, then writes a readiness signal so the tmux pane can run
+podman attach to bridge the container PTY (RFC #691, Phase 1a).`,
 	RunE: runSidecar,
 }
 
