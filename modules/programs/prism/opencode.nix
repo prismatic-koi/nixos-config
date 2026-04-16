@@ -457,6 +457,9 @@
         "find *" = "allow";
         "jq *" = "allow";
         "yq *" = "allow";
+        # Cloud/cluster inspection — config is the safety net (readonly mounts)
+        "aws *" = "allow";
+        "kubectl *" = "allow";
         "date *" = "allow";
         "date" = "allow";
         "echo *" = "allow";
