@@ -83,6 +83,7 @@ type BusMessage struct {
 	Urgency      string
 	SentAt       time.Time
 	DeliveredAt  *time.Time
+	FailedAt     *time.Time
 }
 
 const schema = `
@@ -126,7 +127,8 @@ CREATE TABLE IF NOT EXISTS bus_messages (
   text             TEXT NOT NULL,
   urgency          TEXT NOT NULL DEFAULT 'normal',
   sent_at          INTEGER NOT NULL,
-  delivered_at     INTEGER
+  delivered_at     INTEGER,
+  failed_at        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_bus_pending ON bus_messages(to_session, delivered_at)
   WHERE delivered_at IS NULL;
@@ -138,11 +140,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=6 if the table is empty. Pending migrations
+// schema, and sets schema_version=7 if the table is empty. Pending migrations
 // are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
 // root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status;
 // v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id to
-// agent_status and to_instance_id to bus_messages.
+// agent_status and to_instance_id to bus_messages; v6→v7 adds failed_at to
+// bus_messages.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -172,15 +175,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=6 if the table is empty (fresh database already has
-	// all columns including the v2, v3, v4, v5, and v6 additions, so no migration is needed).
+	// Set schema_version=7 if the table is empty (fresh database already has
+	// all columns including the v2, v3, v4, v5, v6, and v7 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (6)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (7)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -266,6 +269,23 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 6
+	}
+	if version == 6 {
+		// Migration v6 → v7: add failed_at to bus_messages for honest delivery
+		// tracking. NULL means not yet attempted or delivered; a non-NULL value
+		// records the ms timestamp when delivery exhausted all retries.
+		// Additive — existing rows are unaffected.
+		migrations := []string{
+			"ALTER TABLE bus_messages ADD COLUMN failed_at INTEGER",
+			"UPDATE schema_version SET version = 7",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v6→v7: %w", err)
+			}
+		}
+		version = 7
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1009,11 +1029,13 @@ func (d *DB) ClearInstanceID(sessionName string) error {
 	return nil
 }
 
-// PurgeStaleInstanceMessages deletes all undelivered bus_messages addressed to
-// toSession whose to_instance_id does not match currentInstanceID. This purges
-// messages written to a previous incarnation of the session that never got
-// delivered. Messages with to_instance_id IS NULL (legacy / no instance
-// tagging) are left intact.
+// PurgeStaleInstanceMessages deletes undelivered and unfailed bus_messages
+// addressed to toSession whose to_instance_id does not match
+// currentInstanceID. This purges messages written to a previous incarnation
+// of the session that never got delivered. Messages with to_instance_id IS
+// NULL (legacy / no instance tagging), delivered messages
+// (delivered_at IS NOT NULL), and failed-delivery audit records
+// (failed_at IS NOT NULL) are all left intact.
 //
 // It is safe to call when no matching rows exist — the operation is a no-op
 // and returns nil.
@@ -1022,6 +1044,7 @@ func (d *DB) PurgeStaleInstanceMessages(toSession, currentInstanceID string) err
 DELETE FROM bus_messages
 WHERE to_session = ?
   AND delivered_at IS NULL
+  AND failed_at IS NULL
   AND to_instance_id IS NOT NULL
   AND to_instance_id != ?`
 	if _, err := d.conn.Exec(q, toSession, currentInstanceID); err != nil {
@@ -1030,14 +1053,17 @@ WHERE to_session = ?
 	return nil
 }
 
-// PurgeBusMessages deletes all undelivered bus_messages rows where
+// PurgeBusMessages deletes undelivered and unfailed bus_messages rows where
 // from_session or to_session matches sessionName. Delivered messages
-// (delivered_at IS NOT NULL) are left untouched. It is safe to call when no
-// matching rows exist — the operation is a no-op and returns nil.
+// (delivered_at IS NOT NULL) and failed messages (failed_at IS NOT NULL) are
+// left untouched so that delivery audit records survive session cleanup. It is
+// safe to call when no matching rows exist — the operation is a no-op and
+// returns nil.
 func (d *DB) PurgeBusMessages(sessionName string) error {
 	const q = `
 DELETE FROM bus_messages
 WHERE delivered_at IS NULL
+  AND failed_at IS NULL
   AND (from_session = ? OR to_session = ?)`
 	if _, err := d.conn.Exec(q, sessionName, sessionName); err != nil {
 		return fmt.Errorf("db: purge bus messages: %w", err)
@@ -1077,11 +1103,51 @@ func (d *DB) WriteBusMessageDelivered(msg BusMessage) error {
 		sentAt = msg.SentAt.UnixMilli()
 	}
 	const q = `
-INSERT INTO bus_messages (id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+INSERT INTO bus_messages (id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at, failed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
 	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.ToInstanceID, msg.Repo, msg.Text, msg.Urgency, sentAt, now)
 	if err != nil {
 		return fmt.Errorf("db: write bus message delivered: %w", err)
+	}
+	return nil
+}
+
+// WriteBusMessageFailed inserts a new row into bus_messages with failed_at set
+// to now and delivered_at=NULL. This records a notification that was attempted
+// but could not be delivered after all retries were exhausted. It is the
+// authoritative signal that a notification was silently lost.
+func (d *DB) WriteBusMessageFailed(msg BusMessage) error {
+	now := time.Now().UnixMilli()
+	var sentAt int64
+	if msg.SentAt.IsZero() {
+		sentAt = now
+	} else {
+		sentAt = msg.SentAt.UnixMilli()
+	}
+	const q = `
+INSERT INTO bus_messages (id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at, failed_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
+	_, err := d.conn.Exec(q, msg.ID, msg.FromSession, msg.ToSession, msg.ToInstanceID, msg.Repo, msg.Text, msg.Urgency, sentAt, now)
+	if err != nil {
+		return fmt.Errorf("db: write bus message failed: %w", err)
+	}
+	return nil
+}
+
+// UpdateOpencodeSID unconditionally sets opencode_sid for sessionName to the
+// given sid value. Unlike UpsertStatus (which only updates opencode_sid via
+// COALESCE when non-nil), this always overwrites — allowing the sidecar to
+// keep the stored SID current when the user creates a new opencode session
+// mid-conversation (e.g. via /continue or TUI restart).
+//
+// It is a no-op when no row exists for sessionName (returns nil).
+func (d *DB) UpdateOpencodeSID(sessionName, sid string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET opencode_sid = ? WHERE session_name = ?",
+		sid, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update opencode_sid: %w", err)
 	}
 	return nil
 }
@@ -1151,9 +1217,9 @@ func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string,
 	return events, nil
 }
 
-// Prune deletes agent_events older than olderThan, and delivered bus_messages
-// older than olderThan. It does NOT delete agent_status rows or undelivered
-// bus_messages.
+// Prune deletes agent_events older than olderThan, and delivered or failed
+// bus_messages older than olderThan. It does NOT delete agent_status rows or
+// undelivered/unfailed bus_messages.
 func (d *DB) Prune(olderThan time.Duration) error {
 	threshold := time.Now().Add(-olderThan).UnixMilli()
 
@@ -1166,7 +1232,13 @@ func (d *DB) Prune(olderThan time.Duration) error {
 	if _, err := d.conn.Exec(
 		"DELETE FROM bus_messages WHERE delivered_at IS NOT NULL AND delivered_at < ?", threshold,
 	); err != nil {
-		return fmt.Errorf("db: prune bus_messages: %w", err)
+		return fmt.Errorf("db: prune bus_messages (delivered): %w", err)
+	}
+
+	if _, err := d.conn.Exec(
+		"DELETE FROM bus_messages WHERE failed_at IS NOT NULL AND failed_at < ?", threshold,
+	); err != nil {
+		return fmt.Errorf("db: prune bus_messages (failed): %w", err)
 	}
 
 	return nil
@@ -1238,10 +1310,11 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 	var m BusMessage
 	var sentAt int64
 	var deliveredAt sql.NullInt64
+	var failedAt sql.NullInt64
 	var toInstanceID sql.NullString
 	err := s.Scan(
 		&m.ID, &m.FromSession, &m.ToSession, &toInstanceID, &m.Repo, &m.Text, &m.Urgency,
-		&sentAt, &deliveredAt,
+		&sentAt, &deliveredAt, &failedAt,
 	)
 	if err != nil {
 		return BusMessage{}, err
@@ -1250,6 +1323,10 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 	if deliveredAt.Valid {
 		t := time.UnixMilli(deliveredAt.Int64)
 		m.DeliveredAt = &t
+	}
+	if failedAt.Valid {
+		t := time.UnixMilli(failedAt.Int64)
+		m.FailedAt = &t
 	}
 	if toInstanceID.Valid {
 		id := toInstanceID.String

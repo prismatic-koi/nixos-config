@@ -700,11 +700,23 @@ func (s *Sidecar) handleSessionCreated(evt sse.Event) {
 
 	info := payload.Properties.Info
 	s.opencodeSID = info.ID
+
+	// Always persist the new opencode_sid unconditionally so that if the user
+	// creates a new opencode session mid-conversation (e.g. via /continue or
+	// TUI restart), the DB stays current. upsertState uses COALESCE for
+	// opencode_sid (only overwriting when the incoming value is non-nil), which
+	// is insufficient here — we need an unconditional update so that a fresh
+	// session ID always replaces a stale one. (#694)
+	if info.ID != "" {
+		if err := s.cfg.DB.UpdateOpencodeSID(s.cfg.SessionName, info.ID); err != nil {
+			log.Printf("sidecar: handleSessionCreated: UpdateOpencodeSID failed: %v", err)
+		}
+	}
+
 	title := strPtr(info.Title)
 	sid := strPtr(info.ID)
 	s.upsertState(agent.StateActive, title, sid)
 	s.writeStateChange(agent.StateActive)
-
 }
 
 func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
@@ -1411,13 +1423,19 @@ func touchDashboardSentinel() {
 // StateFinished, so s.mu must NOT be held when this method runs.
 //
 // The coordinator is discovered by looking up "<repo>@main" in the DB. If the
-// coordinator has an opencode_port and opencode_sid, the notification is
-// delivered via HTTP POST to /session/<sid>/prompt_async. On success, an audit
-// row is written via WriteBusMessageDelivered. If the coordinator has no port
-// or the HTTP call fails, the error is logged.
+// coordinator has an opencode_port, the notification is delivered via HTTP POST
+// to /session/<sid>/prompt_async after pre-validating that the stored SID is
+// present in the live session list. On confirmed delivery, an audit row is
+// written via WriteBusMessageDelivered. On exhausted retries, a row is written
+// via WriteBusMessageFailed and a structured error is logged.
 //
 // If no coordinator exists, it has ended, or this session IS the coordinator,
 // the call is a silent no-op.
+//
+// Retry policy: up to 3 POST attempts with exponential backoff (500ms, 1s).
+// SID validation (GET /session) is performed before each attempt. If GET /session
+// returns an empty list, delivery fails immediately (no retry). If GET /session
+// fails with a network or non-200 error, the retry policy applies.
 func (s *Sidecar) notifyCoordinator() {
 	// Self-notification guard: if this session is the coordinator, skip.
 	coordinatorName := s.cfg.Repo + "@main"
@@ -1462,22 +1480,154 @@ func (s *Sidecar) notifyCoordinator() {
 		SentAt:       time.Now(),
 	}
 
-	// Require port and session ID for HTTP delivery.
-	if coordStatus.OpencodePort == nil || coordStatus.OpencodeSID == nil {
-		log.Printf("sidecar: notifyCoordinator: coordinator has no opencode port or session ID — cannot deliver notification")
+	// Require port for HTTP delivery.
+	if coordStatus.OpencodePort == nil {
+		log.Printf("sidecar: notifyCoordinator: coordinator has no opencode port — cannot deliver notification")
+		return
+	}
+	port := *coordStatus.OpencodePort
+
+	// storedSID is the SID currently recorded in the DB. May be stale if the
+	// coordinator created a new opencode session after the last DB write.
+	storedSID := ""
+	if coordStatus.OpencodeSID != nil {
+		storedSID = *coordStatus.OpencodeSID
+	}
+
+	const maxAttempts = 3
+	// backoff[i] is the sleep duration before attempt i+2 (i.e. before the
+	// 2nd and 3rd attempts). With 3 attempts, only 2 sleeps are needed.
+	backoff := []time.Duration{500 * time.Millisecond, 1 * time.Second}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(backoff[attempt-2])
+		}
+
+		// Pre-delivery SID validation: call GET /session to confirm the stored
+		// SID is present in the coordinator's live session list. If not, pick
+		// the most recently active session and update the DB so future
+		// deliveries use the fresh SID.
+		targetSID, validationErr := validateOrRefreshCoordinatorSID(
+			port, storedSID, coordinatorName, s.cfg.DB, s.cfg.HTTPClient,
+		)
+		if validationErr != nil {
+			lastErr = fmt.Errorf("attempt %d: SID validation failed: %w", attempt, validationErr)
+			log.Printf("sidecar: notifyCoordinator: %v (coordinator=%s)", lastErr, coordinatorName)
+			// An empty session list is not a transient condition — retrying
+			// will not help. Break immediately to avoid unnecessary backoff.
+			if errors.Is(validationErr, errEmptySessionList) {
+				break
+			}
+			continue
+		}
+		// Keep storedSID current for next iteration if it was refreshed.
+		storedSID = targetSID
+
+		log.Printf("sidecar: notifyCoordinator: attempt %d/%d POST to coordinator=%s sid=%s",
+			attempt, maxAttempts, coordinatorName, targetSID)
+
+		httpErr := deliverNotificationViaHTTP(port, targetSID, notifyText, coordStatus, s.cfg.HTTPClient)
+		if httpErr != nil {
+			lastErr = fmt.Errorf("attempt %d: HTTP delivery failed: %w", attempt, httpErr)
+			log.Printf("sidecar: notifyCoordinator: %v (coordinator=%s sid=%s)", lastErr, coordinatorName, targetSID)
+			continue
+		}
+
+		// Confirmed delivery: SID validated + POST returned 200.
+		if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
+			log.Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
+		}
+		log.Printf("sidecar: notifyCoordinator: delivered to coordinator=%s sid=%s", coordinatorName, targetSID)
 		return
 	}
 
-	httpErr := deliverNotificationViaHTTP(*coordStatus.OpencodePort, *coordStatus.OpencodeSID, notifyText, coordStatus, s.cfg.HTTPClient)
-	if httpErr != nil {
-		log.Printf("sidecar: notifyCoordinator: HTTP delivery failed: %v", httpErr)
-		return
+	// All retries exhausted — write failed_at and log structured error.
+	if err := s.cfg.DB.WriteBusMessageFailed(msg); err != nil {
+		log.Printf("sidecar: notifyCoordinator: write failed audit: %v", err)
+	}
+	log.Printf("sidecar: notifyCoordinator: FAILED after %d attempts — coordinator=%s sid=%s reason=%v",
+		maxAttempts, coordinatorName, storedSID, lastErr)
+}
+
+// errEmptySessionList is a sentinel error returned by validateOrRefreshCoordinatorSID
+// when GET /session returns an empty array. The caller treats this as a
+// non-retriable condition and breaks out of the retry loop immediately.
+var errEmptySessionList = errors.New("GET /session: empty session list — coordinator has no active opencode sessions")
+
+// opencodeSessionEntry is a single entry from the opencode GET /session response.
+type opencodeSessionEntry struct {
+	ID   string `json:"id"`
+	Time *struct {
+		Updated *float64 `json:"updated"`
+	} `json:"time"`
+}
+
+// validateOrRefreshCoordinatorSID calls GET /session on the coordinator's
+// opencode port to retrieve the live session list, checks whether storedSID is
+// present, and returns the SID to use for delivery.
+//
+//   - If storedSID is present in the list, it is returned as-is.
+//   - If storedSID is absent, the most recently updated session ID is returned
+//     and agent_status is updated with the fresh SID.
+//   - If GET /session fails, an error is returned.
+//   - If GET /session returns an empty list, errEmptySessionList is returned
+//     (sentinel — caller should not retry).
+func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName string, database *db.DB, httpClient *http.Client) (string, error) {
+	url := fmt.Sprintf("http://localhost:%d/session", port)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("create GET /session request: %w", err)
 	}
 
-	// HTTP succeeded — write audit trail with delivered_at set.
-	if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
-		log.Printf("sidecar: notifyCoordinator: write audit bus message: %v", err)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("GET /session: %w", err)
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("GET /session: http status %d", resp.StatusCode)
+	}
+
+	var sessions []opencodeSessionEntry
+	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
+		return "", fmt.Errorf("decode GET /session response: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		// Non-retriable: an empty session list is a definitive condition, not a
+		// transient failure. The caller will break immediately on this error.
+		return "", errEmptySessionList
+	}
+
+	// Check if stored SID is present.
+	for _, s := range sessions {
+		if s.ID == storedSID {
+			// Stored SID confirmed present — use it.
+			return storedSID, nil
+		}
+	}
+
+	// Stored SID is absent (stale). Pick the most recently updated session.
+	bestSID := sessions[0].ID
+	var bestUpdated float64
+	for _, s := range sessions {
+		if s.Time != nil && s.Time.Updated != nil && *s.Time.Updated > bestUpdated {
+			bestUpdated = *s.Time.Updated
+			bestSID = s.ID
+		}
+	}
+
+	log.Printf("sidecar: notifyCoordinator: stored SID %q not found in coordinator session list — using most recent SID %q", storedSID, bestSID)
+
+	// Persist the refreshed SID so future deliveries use it.
+	if err := database.UpdateOpencodeSID(coordinatorName, bestSID); err != nil {
+		log.Printf("sidecar: notifyCoordinator: UpdateOpencodeSID failed: %v", err)
+	}
+
+	return bestSID, nil
 }
 
 // createOpencodeSession creates a new session on the opencode server via
