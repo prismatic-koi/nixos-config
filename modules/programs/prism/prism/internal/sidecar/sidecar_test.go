@@ -16,7 +16,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/sse"
+	"github.com/prismatic-koi/prism/internal/harness"
 )
 
 // ── test clock ──────────────────────────────────────────────────────────────
@@ -121,22 +121,23 @@ func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 	return New(cfg), clk
 }
 
-// makeSSE creates an sse.Event using the real wire format that opencode emits.
-// opencode does NOT use the SSE `event:` field — it sends all events as plain
-// `data:` lines. The SSE client therefore sets Type to "message" (the SSE
-// spec default). The real event type and properties are embedded inside the
-// JSON data payload, mirroring what opencode actually sends:
+// makeSSE creates a harness.HarnessEvent using the real wire format that
+// opencode emits. opencode does NOT use the SSE `event:` field — it sends all
+// events as plain `data:` lines. The SSE client therefore sets Type to
+// "message" (the SSE spec default). The real event type and properties are
+// embedded inside the JSON data payload, mirroring what opencode actually
+// sends:
 //
 //	data: {"type":"session.status","properties":{...}}
 //
 // Using this wire format ensures the tests exercise the same code path as
 // production (type extraction from JSON data), not a shortcut that bypasses it.
-func makeSSE(eventType string, properties any) sse.Event {
+func makeSSE(eventType string, properties any) harness.HarnessEvent {
 	data, _ := json.Marshal(map[string]any{
 		"type":       eventType,
 		"properties": properties,
 	})
-	return sse.Event{Type: "message", Data: string(data)}
+	return harness.HarnessEvent{Type: "message", Data: data}
 }
 
 // getState reads the current agent state from the DB.
@@ -1527,9 +1528,9 @@ func TestServerConnected_SilentlyIgnored(t *testing.T) {
 	// server.connected arrives via the real wire format (Type: "message", type
 	// embedded in the JSON data). It should be silently ignored — no state
 	// change, no error, no state_change event written.
-	sc.HandleEvent(sse.Event{
+	sc.HandleEvent(harness.HarnessEvent{
 		Type: "message",
-		Data: `{"type":"server.connected"}`,
+		Data: []byte(`{"type":"server.connected"}`),
 	})
 
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
@@ -2134,10 +2135,10 @@ func TestNotifyCoordinator_PortSetButNoSID_TriesAndFails(t *testing.T) {
 
 // makeAssistantMessage creates a message.part.updated + message.updated pair
 // that simulates an assistant message completing, as opencode sends them.
-func makeAssistantMessage(messageID, agentName, text string) []sse.Event {
+func makeAssistantMessage(messageID, agentName, text string) []harness.HarnessEvent {
 	created := 1000.0
 	completed := 2000.0
-	return []sse.Event{
+	return []harness.HarnessEvent{
 		makeSSE("message.part.updated", map[string]any{
 			"part": map[string]any{
 				"type":      "text",
@@ -2163,8 +2164,8 @@ func makeAssistantMessage(messageID, agentName, text string) []sse.Event {
 
 // makeUserMessage creates a message.part.updated + message.updated pair that
 // simulates a user message, as opencode sends them.
-func makeUserMessage(messageID, agentName, text string) []sse.Event {
-	return []sse.Event{
+func makeUserMessage(messageID, agentName, text string) []harness.HarnessEvent {
+	return []harness.HarnessEvent{
 		makeSSE("message.part.updated", map[string]any{
 			"part": map[string]any{
 				"type":      "text",
@@ -2182,7 +2183,7 @@ func makeUserMessage(messageID, agentName, text string) []sse.Event {
 	}
 }
 
-func sendEvents(sc *Sidecar, evts []sse.Event) {
+func sendEvents(sc *Sidecar, evts []harness.HarnessEvent) {
 	for _, e := range evts {
 		sc.HandleEvent(e)
 	}

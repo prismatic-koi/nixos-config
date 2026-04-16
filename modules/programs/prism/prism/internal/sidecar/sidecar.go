@@ -1,8 +1,14 @@
 // Package sidecar implements the core logic for the prism sidecar process.
 //
-// The sidecar connects to the opencode SSE event stream and translates events
-// into agent state transitions, DB writes, and dashboard sentinel touches —
-// replicating the logic in opencode/plugins/prism-hooks.ts.
+// The sidecar subscribes to the agent runtime's event stream (via the opencode
+// harness adapter) and translates events into agent state transitions, DB
+// writes, and dashboard sentinel touches — replicating the logic in
+// opencode/plugins/prism-hooks.ts.
+//
+// Opencode-specific logic (session creation, prompt delivery, SSE
+// subscription, event type mapping, message extraction, container command,
+// health check, config mount path) lives in internal/harness/opencode/. The
+// sidecar imports and uses that adapter directly.
 //
 // In container mode (Config.Container != nil), the sidecar also manages the
 // podman container lifecycle: create, health-check, stop, remove.
@@ -35,8 +41,9 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	session "github.com/prismatic-koi/prism/internal/session"
-	"github.com/prismatic-koi/prism/internal/sse"
 )
 
 // defaultNotifyHTTPClient is the HTTP client used for coordinator notification
@@ -134,7 +141,8 @@ type Config struct {
 // Sidecar is the core event processor. It consumes SSE events from the
 // opencode stream and drives state transitions in the prism DB.
 type Sidecar struct {
-	cfg Config
+	cfg     Config
+	harness *opencode.Adapter // opencode harness adapter; created in New()
 
 	mu              sync.Mutex
 	lastState       agent.AgentState
@@ -213,8 +221,14 @@ func New(cfg Config) *Sidecar {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
+	// Derive agentModel for the adapter from Container.AgentModel when available.
+	agentModel := ""
+	if cfg.Container != nil {
+		agentModel = cfg.Container.AgentModel
+	}
 	s := &Sidecar{
 		cfg:             cfg,
+		harness:         opencode.New(cfg.OpencodeURL, cfg.HTTPClient, cfg.AgentRole, agentModel),
 		writtenMessages: make(map[string]bool),
 		textByMessage:   make(map[string]string),
 		msgCreatedAtMs:  make(map[string]float64),
@@ -347,7 +361,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
 		//    now attaching/subscribed so execution begins immediately.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
-			sid, createErr := s.createOpencodeSession(s.cfg.OpencodeURL, s.cfg.HTTPClient)
+			sid, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
 			} else {
@@ -360,8 +374,11 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				s.cfg.OnReady()
 			}
 			if createErr == nil {
+				initialPrompt := s.cfg.InitialPrompt
 				go func() {
-					s.deliverInitialPrompt(s.cfg.OpencodeURL, sid, s.cfg.InitialPrompt, s.cfg.HTTPClient)
+					if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
+						log.Printf("sidecar: deliverInitialPrompt: %v", err)
+					}
 					log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 				}()
 			}
@@ -425,13 +442,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
-	url := s.cfg.OpencodeURL + "/event"
-	client := &sse.Client{
-		InitialRetryDelay: 1 * time.Second,
-		MaxRetryDelay:     30 * time.Second,
-	}
-
-	ch, err := client.Connect(ctx, url)
+	ch, err := s.harness.Subscribe(ctx)
 	if err != nil {
 		return fmt.Errorf("sidecar: connect to SSE stream: %w", err)
 	}
@@ -460,25 +471,16 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// HandleEvent processes a single SSE event. It is safe for concurrent use
+// HandleEvent processes a single harness event. It is safe for concurrent use
 // (protected by s.mu). Exported for testing.
-func (s *Sidecar) HandleEvent(evt sse.Event) {
+func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// opencode sends all events as plain `data:` lines with no `event:` field.
-	// The SSE spec defaults the event type to "message" when no `event:` line
-	// is present. Extract the real event type from the JSON `type` field in the
-	// data payload when the SSE-level type is "message" or empty.
-	eventType := evt.Type
-	if eventType == "" || eventType == "message" {
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal([]byte(evt.Data), &envelope); err == nil && envelope.Type != "" {
-			eventType = envelope.Type
-		}
-	}
+	// Delegate opencode-specific event type extraction to the harness adapter.
+	// opencode sends all events as plain `data:` lines with no `event:` field;
+	// the real event type is embedded in the JSON `type` field of the payload.
+	eventType := s.harness.ExtractEventType(evt)
 
 	log.Printf("sidecar: event: %s", eventType)
 
@@ -612,7 +614,7 @@ func (s *Sidecar) handleServerConnected() {
 	})
 }
 
-func (s *Sidecar) handleSessionStatus(evt sse.Event) {
+func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Status struct {
@@ -620,7 +622,7 @@ func (s *Sidecar) handleSessionStatus(evt sse.Event) {
 			} `json:"status"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: session.status parse error: %v", err)
 		return
 	}
@@ -684,7 +686,7 @@ func (s *Sidecar) handleSessionIdle() {
 	})
 }
 
-func (s *Sidecar) handleSessionCreated(evt sse.Event) {
+func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Info struct {
@@ -693,7 +695,7 @@ func (s *Sidecar) handleSessionCreated(evt sse.Event) {
 			} `json:"info"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: session.created parse error: %v", err)
 		return
 	}
@@ -719,7 +721,7 @@ func (s *Sidecar) handleSessionCreated(evt sse.Event) {
 	s.writeStateChange(agent.StateActive)
 }
 
-func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
+func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Info struct {
@@ -731,7 +733,7 @@ func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
 			} `json:"info"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: session.updated parse error: %v", err)
 		return
 	}
@@ -781,7 +783,7 @@ func (s *Sidecar) handleSessionUpdated(evt sse.Event) {
 	}
 }
 
-func (s *Sidecar) handleSessionError(evt sse.Event) {
+func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Error *struct {
@@ -789,7 +791,7 @@ func (s *Sidecar) handleSessionError(evt sse.Event) {
 			} `json:"error"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: session.error parse error: %v", err)
 		return
 	}
@@ -831,7 +833,7 @@ func (s *Sidecar) handleSessionCompacted() {
 	s.writeEvent("compaction", map[string]string{"note": "compaction complete"}, nil)
 }
 
-func (s *Sidecar) handleSessionDeleted(evt sse.Event) {
+func (s *Sidecar) handleSessionDeleted(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Info struct {
@@ -839,7 +841,7 @@ func (s *Sidecar) handleSessionDeleted(evt sse.Event) {
 			} `json:"info"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: session.deleted parse error: %v", err)
 		return
 	}
@@ -853,7 +855,7 @@ func (s *Sidecar) handleSessionDeleted(evt sse.Event) {
 	s.writeStateChangeWithSID(agent.StateDeleted, sid)
 }
 
-func (s *Sidecar) handlePermissionAsked(evt sse.Event) {
+func (s *Sidecar) handlePermissionAsked(evt harness.HarnessEvent) {
 	s.upsertState(agent.StateWaiting, nil, nil)
 	s.writeStateChange(agent.StateWaiting)
 
@@ -867,7 +869,7 @@ func (s *Sidecar) handlePermissionAsked(evt sse.Event) {
 			} `json:"tool"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err == nil {
+	if err := json.Unmarshal(evt.Data, &payload); err == nil {
 		tool := payload.Properties.Permission
 		if tool == "" {
 			tool = "unknown"
@@ -884,13 +886,13 @@ func (s *Sidecar) handlePermissionAsked(evt sse.Event) {
 	}
 }
 
-func (s *Sidecar) handlePermissionReplied(evt sse.Event) {
+func (s *Sidecar) handlePermissionReplied(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Reply string `json:"reply"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: permission.replied parse error: %v", err)
 		return
 	}
@@ -906,7 +908,7 @@ func (s *Sidecar) handlePermissionReplied(evt sse.Event) {
 	s.writeStateChange(agent.StateActive)
 }
 
-func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
+func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Info struct {
@@ -934,7 +936,7 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 			} `json:"info"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: message.updated parse error: %v", err)
 		return
 	}
@@ -1143,7 +1145,7 @@ func (s *Sidecar) handleMessageUpdated(evt sse.Event) {
 	}
 }
 
-func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
+func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Part struct {
@@ -1167,7 +1169,7 @@ func (s *Sidecar) handleMessagePartUpdated(evt sse.Event) {
 			} `json:"part"`
 		} `json:"properties"`
 	}
-	if err := json.Unmarshal([]byte(evt.Data), &payload); err != nil {
+	if err := json.Unmarshal(evt.Data, &payload); err != nil {
 		log.Printf("sidecar: message.part.updated parse error: %v", err)
 		return
 	}
@@ -1628,102 +1630,6 @@ func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName
 	}
 
 	return bestSID, nil
-}
-
-// createOpencodeSession creates a new session on the opencode server via
-// POST /session and returns its ID. The directory defaults to /workspace
-// (the container's working directory).
-func (s *Sidecar) createOpencodeSession(opencodeURL string, httpClient *http.Client) (string, error) {
-	body := map[string]string{"directory": "/workspace"}
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("marshal session body: %w", err)
-	}
-
-	req, err := http.NewRequest("POST", opencodeURL+"/session", bytes.NewReader(jsonBytes))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("http status %d", resp.StatusCode)
-	}
-
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	if result.ID == "" {
-		return "", fmt.Errorf("empty session ID in response")
-	}
-	return result.ID, nil
-}
-
-// deliverInitialPrompt sends the initial spawn prompt to an existing opencode
-// session via POST /session/<sid>/prompt_async (#487).
-//
-// The session must already exist (created by createOpencodeSession). The TUI
-// will have received the sid and opened that session via opencode attach -s
-// before this is called, so prompt_async fires into a subscribed session.
-func (s *Sidecar) deliverInitialPrompt(opencodeURL, sid, prompt string, httpClient *http.Client) {
-	agentRole := s.cfg.AgentRole
-	if agentRole == "" {
-		agentRole = "worker"
-	}
-
-	body := map[string]any{
-		"parts": []map[string]string{
-			{"type": "text", "text": prompt},
-		},
-		"agent": agentRole,
-	}
-	if s.cfg.Container != nil && s.cfg.Container.AgentModel != "" {
-		slashIdx := strings.Index(s.cfg.Container.AgentModel, "/")
-		if slashIdx >= 0 {
-			body["model"] = map[string]string{
-				"providerID": s.cfg.Container.AgentModel[:slashIdx],
-				"modelID":    s.cfg.Container.AgentModel[slashIdx+1:],
-			}
-		}
-	}
-
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		log.Printf("sidecar: deliverInitialPrompt: marshal body: %v", err)
-		return
-	}
-
-	url := fmt.Sprintf("%s/session/%s/prompt_async", opencodeURL, sid)
-	log.Printf("sidecar: deliverInitialPrompt: POST %s (agent=%s)", url, agentRole)
-
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
-	if err != nil {
-		log.Printf("sidecar: deliverInitialPrompt: create request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Printf("sidecar: deliverInitialPrompt: http request: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		log.Printf("sidecar: deliverInitialPrompt: http status %d", resp.StatusCode)
-		return
-	}
-	log.Printf("sidecar: deliverInitialPrompt: completed for session %s", sid)
 }
 
 // deliverNotificationViaHTTP sends a notification prompt to the opencode HTTP API.
