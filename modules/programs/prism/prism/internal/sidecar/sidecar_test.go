@@ -6260,13 +6260,15 @@ exit 1
 }
 
 // TestHostAPI_Review_InfraFailureReturns500 verifies that when `prism review`
-// exits non-zero with no output, the response is HTTP 500 (infra failure).
+// exits non-zero with no output, the response is HTTP 500 (infra failure) with
+// a generic error message (stderr is not exposed to the caller).
 func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
 	d := openTestDB(t)
 
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	// Exit non-zero with no stdout output: infra failure.
-	stubScript := "#!/bin/sh\nexit 2\n"
+	// Exit non-zero with no stdout; emit sensitive text on stderr to verify
+	// it is NOT reflected in the HTTP response.
+	stubScript := "#!/bin/sh\necho 'sensitive: /internal/path/secret' >&2\nexit 2\n"
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
@@ -6292,6 +6294,98 @@ func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
 	decodeJSONBody(t, rr, &errResp)
 	if errResp["error"] == "" {
 		t.Error("expected error field in 500 response")
+	}
+	// Stderr must not be reflected in the HTTP response (security: avoid leaking
+	// internal paths or credentials to container callers).
+	if strings.Contains(errResp["error"], "sensitive") || strings.Contains(errResp["error"], "secret") {
+		t.Errorf("HTTP 500 response should not include subprocess stderr; got %q", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_NonNumericPRNumberReturns400 verifies that a pr_number
+// containing non-numeric characters is rejected with 400 (flag-injection guard).
+func TestHostAPI_Review_NonNumericPRNumberReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	for _, prNumber := range []string{"--keep", "12a", "1;2", "abc", "-1"} {
+		t.Run(prNumber, func(t *testing.T) {
+			body := fmt.Sprintf(`{"pr_number":%q}`, prNumber)
+			rr := doHostAPI(t, sc, http.MethodPost, "/review", body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("pr_number=%q: status = %d, want 400", prNumber, rr.Code)
+			}
+			var errResp map[string]string
+			decodeJSONBody(t, rr, &errResp)
+			if !strings.Contains(errResp["error"], "pr_number must be a numeric string") {
+				t.Errorf("pr_number=%q: error %q should mention 'numeric'", prNumber, errResp["error"])
+			}
+		})
+	}
+}
+
+// TestHostAPI_Review_UnknownAgentNameReturns400 verifies that an unrecognised
+// agent name in the agents list is rejected with 400 (flag-injection guard).
+func TestHostAPI_Review_UnknownAgentNameReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","agents":["--keep","review-code"]}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown agent name; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "unknown agent name") {
+		t.Errorf("error %q should mention 'unknown agent name'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_EnhancedReviewEnvInjected verifies that ENHANCED_REVIEW=true
+// is injected into the subprocess environment when enhanced agent names are
+// requested, so the host's agentsForHarness() returns the correct pool.
+func TestHostAPI_Review_EnhancedReviewEnvInjected(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes ENHANCED_REVIEW value to envFile.
+	stubScript := `#!/bin/sh
+echo "$ENHANCED_REVIEW" > ` + envFile + `
+echo "✓ review-code          passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","agents":["review-code","review-goal"]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	if got != "true" {
+		t.Errorf("ENHANCED_REVIEW = %q, want %q (must be injected when enhanced agents requested)", got, "true")
 	}
 }
 
