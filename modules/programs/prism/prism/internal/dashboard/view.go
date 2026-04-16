@@ -24,7 +24,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// fixedCore (defined below) is the irreducible column overhead. At widths
 	// below fixedCore+1, the session header word "session" (7 chars) overflows
 	// its 6-char slot when sessionW=0, so render a skeleton instead.
-	const minUsableWidth = 22 // fixedCore+1
+	const minUsableWidth = 26 // fixedCore+1
 	if d.Width < minUsableWidth {
 		return SkeletonView(d.Width)
 	}
@@ -38,9 +38,12 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	styleAgentType := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
 	// ── column widths ────────────────────────────────────────────────────────
-	// Tree prefix for worktree child rows: "  ├── " or "  └── " (6 chars).
-	// Top-level rows use no prefix; their name is padded to treePrefixW+sessionW.
-	const treePrefixW = 6
+	// Tree prefix slot for child rows.
+	//   Depth-1 prefixes: "  ├──     " or "  └──     " (padded to treePrefixW)
+	//   Depth-2 prefixes: "  │   ├── " or "  │   └── " (exactly treePrefixW)
+	// treePrefixW=10 accommodates the widest depth-2 connector without overflow.
+	// Depth-1 connectors are 6 chars and are right-padded with spaces to 10.
+	const treePrefixW = 10
 	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
 	const dotW = 2

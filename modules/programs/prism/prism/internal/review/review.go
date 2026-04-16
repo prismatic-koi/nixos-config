@@ -46,22 +46,23 @@ func KillSessionPrefix(prefix string) {
 }
 
 // NextRoundNumber returns the next round number for the given parent session.
-// It scans existing tmux sessions for ~review-N patterns and returns max(N)+1.
+// It queries the DB for all round sessions (not live tmux sessions) so that
+// the count is accurate even after previous rounds have been cleaned up.
 // Returns 1 when no prior rounds exist.
-func NextRoundNumber(parentSession string) int {
+func NextRoundNumber(d *db.DB, parentSession string) int {
 	prefix := parentSession + "~review-"
-	out, err := tmux.Run("list-sessions", "-F", "#{session_name}")
+	rows, err := d.AllStatusesWithPrefix(prefix)
 	if err != nil {
 		return 1
 	}
 	max := 0
-	for _, name := range strings.Split(out, "\n") {
-		name = strings.TrimSpace(name)
-		if strings.HasPrefix(name, prefix) {
-			suffix := strings.TrimPrefix(name, prefix)
-			if n, err := strconv.Atoi(suffix); err == nil && n > max {
-				max = n
-			}
+	for _, row := range rows {
+		// Only count round-level sessions (no further ~ after the round number).
+		suffix := strings.TrimPrefix(row.SessionName, prefix)
+		// suffix should be a pure integer (e.g. "1", "2") for round sessions.
+		// Agent sub-sessions have a suffix like "1~review", which won't parse.
+		if n, err := strconv.Atoi(suffix); err == nil && n > max {
+			max = n
 		}
 	}
 	return max + 1
@@ -142,8 +143,6 @@ type Opts struct {
 	Keep bool
 	// DBPath is the path to the prism database. If empty, the default is used.
 	DBPath string
-	// PrismBin is the path to the prism binary. Derived from os.Executable if empty.
-	PrismBin string
 	// PluginHostPath is the path to the opencode plugin file.
 	PluginHostPath string
 	// ConfigContent is the JSON blob for the container's opencode.json config.
@@ -158,26 +157,9 @@ type Opts struct {
 // On signal (SIGTERM/SIGINT), the caller is expected to kill the review session
 // using the session name returned via the onSessionCreated callback.
 func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName string)) ([]AgentResult, error) {
-	prismBin := opts.PrismBin
-	if prismBin == "" {
-		var err error
-		prismBin, err = os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("resolve prism binary: %w", err)
-		}
-	}
-
 	if opts.ParentSession == "" {
 		return nil, fmt.Errorf("parent session name is required")
 	}
-
-	// Kill any previous review sessions for this parent.
-	reviewPrefix := opts.ParentSession + "~review-"
-	KillSessionPrefix(reviewPrefix)
-
-	// Determine round number.
-	round := NextRoundNumber(opts.ParentSession)
-	reviewSession := fmt.Sprintf("%s~review-%d", opts.ParentSession, round)
 
 	// Resolve worktree path.
 	worktree := opts.Worktree
@@ -196,6 +178,16 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 	}
 	defer d.Close()
 
+	// Determine round number from DB BEFORE killing previous sessions.
+	// Using DB-based counting ensures correctness even after prior sessions
+	// are killed (tmux sessions disappear, but DB rows persist).
+	round := NextRoundNumber(d, opts.ParentSession)
+	reviewSession := fmt.Sprintf("%s~review-%d", opts.ParentSession, round)
+
+	// Kill any previous review sessions for this parent.
+	reviewPrefix := opts.ParentSession + "~review-"
+	KillSessionPrefix(reviewPrefix)
+
 	// Create the review tmux session.
 	if err := tmux.NewSessionDetached(reviewSession, worktree); err != nil {
 		return nil, fmt.Errorf("create review session %q: %w", reviewSession, err)
@@ -203,6 +195,13 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 
 	if onSessionCreated != nil {
 		onSessionCreated(reviewSession)
+	}
+
+	// Insert the round session into the DB so it shows up in checkin.
+	// The repo field is derived from the parent session name.
+	repo := deriveRepo(opts.ParentSession)
+	if err := d.UpsertStatus(reviewSession, repo, worktree, "idle", nil, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism review] warning: upsert round session status: %v\n", err)
 	}
 
 	agents := opts.Agents
@@ -213,11 +212,13 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 	// Spawn each agent in its own tmux window within the review session.
 	agentSessions := make([]string, len(agents))
 	for i, ag := range agents {
+		// Agent sub-sessions are named <reviewSession>~<agentName>.
+		// They have a second ~ in the branch component, making them depth-2+.
 		agentSession := fmt.Sprintf("%s~%s", reviewSession, ag.Name)
 		agentSessions[i] = agentSession
 
 		// Seed agent_status for the agent session.
-		if err := seedAgentStatus(d, agentSession, opts.ParentSession, worktree); err != nil {
+		if err := d.UpsertStatus(agentSession, repo, worktree, "idle", nil, nil); err != nil {
 			return nil, fmt.Errorf("seed status for %s: %w", ag.Name, err)
 		}
 
@@ -245,14 +246,9 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 		}
 
 		// Create the agent window within the review session.
-		agentCmd := buildAgentCommand(ag, port, prompt, opts.ContainerMode)
+		agentCmd := buildAgentCommand(ag, agentSession, port, prompt, opts.ContainerMode)
 		if err := createAgentWindow(reviewSession, i, ag.Name, worktree, agentCmd, port, agentSession, opts.ContainerMode); err != nil {
 			return nil, fmt.Errorf("create window for %s: %w", ag.Name, err)
-		}
-
-		// Seed agent_status with the port so it shows up in list-sessions.
-		if updateErr := d.UpsertStatus(agentSession, opts.ParentSession, worktree, "idle", nil, nil); updateErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism review] warning: upsert status for %s: %v\n", ag.Name, updateErr)
 		}
 	}
 
@@ -262,6 +258,9 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 
 	// Poll DB until all agents finish or timeout.
 	results, pollErr := pollAgents(ctx, d, agents, agentSessions, opts.Timeout)
+
+	// Mark round session as finished in the DB.
+	_ = d.UpsertStatus(reviewSession, repo, worktree, "finished", nil, nil)
 
 	// Clean up sidecar processes.
 	for _, agentSession := range agentSessions {
@@ -275,14 +274,11 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 		for _, agentSession := range agentSessions {
 			cleanupAgentSession(d, agentSession)
 		}
+		// Mark the round session as ended.
+		_ = d.SetEnded(reviewSession)
 	}
 
 	return results, pollErr
-}
-
-// seedAgentStatus inserts an initial agent_status row for the review agent session.
-func seedAgentStatus(d *db.DB, agentSession, repo, worktree string) error {
-	return d.UpsertStatus(agentSession, repo, worktree, "idle", nil, nil)
 }
 
 // buildReviewPrompt returns the initial prompt string for a review agent.
@@ -291,13 +287,15 @@ func buildReviewPrompt(prNumber string) string {
 }
 
 // buildAgentCommand returns the opencode command string for a review agent window.
-func buildAgentCommand(ag Agent, port int, prompt string, containerMode bool) string {
+// agentSession is the full session name (e.g. "nixos-config@feature~review-1~review"),
+// used as PRISM_SESSION_NAME so the plugin correctly identifies the DB row.
+func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, containerMode bool) string {
 	if containerMode {
 		return fmt.Sprintf("opencode attach http://localhost:%d", port)
 	}
 	escapedPrompt := shellQuote(prompt)
 	return fmt.Sprintf("PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",
-		shellQuote(ag.Name), ag.OpencodeName, port, escapedPrompt)
+		shellQuote(agentSession), ag.OpencodeName, port, escapedPrompt)
 }
 
 // createAgentWindow creates a tmux window for a review agent.
@@ -496,10 +494,7 @@ func assessPassed(text string) bool {
 
 // cleanupAgentSession cleans up the DB state for a completed agent sub-session.
 func cleanupAgentSession(d *db.DB, agentSession string) {
-	if releaseErr := d.ReleasePort(agentSession); releaseErr != nil {
-		// Port may not have been allocated — ignore.
-		_ = releaseErr
-	}
+	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)
 }
@@ -540,8 +535,7 @@ func FormatResults(results []AgentResult, prNumber string) (string, bool) {
 
 // LookupParentSession looks up the parent session from the environment or DB.
 // When called from inside a container, PRISM_SESSION_NAME is set to the
-// agent's session name. We then derive the parent by stripping the ~review-N
-// suffix if present, or using the session directly.
+// agent's session name. We use that directly (the worker's session name).
 func LookupParentSession() string {
 	// Try PRISM_SESSION_NAME first (set when running inside a container/agent).
 	if s := os.Getenv("PRISM_SESSION_NAME"); s != "" {
@@ -555,21 +549,18 @@ func LookupParentSession() string {
 	return sess
 }
 
-// LookupWorktreePath returns the worktree path for the given session from the DB.
-func LookupWorktreePath(dbPath, sessionName string) string {
-	if dbPath == "" {
-		dbPath = defaultDBPath()
+// IsRoundSession returns true if the given session name is a review round
+// session (not an agent sub-session). Round sessions have exactly one ~ in
+// the branch component and the suffix after ~review- is a pure integer.
+// Agent sub-sessions have a second ~ (e.g. "~review-1~review").
+func IsRoundSession(sessionName, parentSession string) bool {
+	prefix := parentSession + "~review-"
+	if !strings.HasPrefix(sessionName, prefix) {
+		return false
 	}
-	d, err := db.Open(dbPath)
-	if err != nil {
-		return ""
-	}
-	defer d.Close()
-	status, err := d.CurrentStatus(sessionName)
-	if err != nil || status == nil {
-		return ""
-	}
-	return status.Worktree
+	suffix := strings.TrimPrefix(sessionName, prefix)
+	_, err := strconv.Atoi(suffix)
+	return err == nil
 }
 
 // defaultDBPath returns the default prism DB path.
@@ -580,6 +571,14 @@ func defaultDBPath() string {
 		stateHome = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(stateHome, "prism", "prism.db")
+}
+
+// deriveRepo returns the repo portion of a session name (before "@").
+func deriveRepo(sessionName string) string {
+	if idx := strings.Index(sessionName, "@"); idx >= 0 {
+		return sessionName[:idx]
+	}
+	return sessionName
 }
 
 // shellQuote wraps s in single quotes, escaping any single quotes within.

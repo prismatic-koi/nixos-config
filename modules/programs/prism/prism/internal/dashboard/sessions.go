@@ -226,9 +226,11 @@ func RenderSessionRow(
 		dot = "  "
 	}
 
-	// treePrefixW is always 6 runes; pad treePrefix to that width using rune
-	// count (not byte count) since tree connector chars are multi-byte in UTF-8.
-	const treePrefixW = 6
+	// treePrefixW is 10 runes (matches view.go constant); pad treePrefix to that
+	// width using rune count (not byte count) since tree connector chars are
+	// multi-byte in UTF-8. Depth-1 prefixes (6 chars) are padded to 10;
+	// depth-2 prefixes (10 chars) fit exactly.
+	const treePrefixW = 10
 
 	// Build the session display area (treePrefixW+sessionW total width):
 	// - Top-level (treePrefix=""): full session name padded to treePrefixW+sessionW.

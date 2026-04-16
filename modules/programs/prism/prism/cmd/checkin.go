@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1428,9 +1429,22 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 	defer d.Close()
 
 	// Find all sessions (active and ended) whose name starts with roundPrefix.
-	rounds, err := d.AllStatusesWithPrefix(roundPrefix)
+	// This includes both round sessions and agent sub-sessions; we filter below.
+	all, err := d.AllStatusesWithPrefix(roundPrefix)
 	if err != nil {
 		return fmt.Errorf("checkin review: query db: %w", err)
+	}
+
+	// Filter to only round-level sessions. A round session has a suffix that is
+	// a pure integer (e.g. "nixos-config@feature~review-1"). Agent sub-sessions
+	// have an additional ~ separator (e.g. "nixos-config@feature~review-1~review").
+	var rounds []db.Status
+	for _, s := range all {
+		suffix := strings.TrimPrefix(s.SessionName, roundPrefix)
+		// Only include if suffix is a pure integer (no further separators).
+		if _, convErr := strconv.Atoi(suffix); convErr == nil {
+			rounds = append(rounds, s)
+		}
 	}
 
 	if len(rounds) == 0 {
@@ -1438,12 +1452,20 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 		return nil
 	}
 
-	// Sort rounds by session name (lexicographic order works since round
-	// numbers are 1-indexed integers and the prefix is the same length).
+	// Sort rounds numerically by round number.
+	// Since the session names share the same prefix, lexicographic sorting is
+	// correct for single-digit rounds; for safety we sort by the numeric suffix.
 	for i := 1; i < len(rounds); i++ {
 		key := rounds[i]
+		keySuffix := strings.TrimPrefix(key.SessionName, roundPrefix)
+		keyN, _ := strconv.Atoi(keySuffix)
 		j := i - 1
-		for j >= 0 && rounds[j].SessionName > key.SessionName {
+		for j >= 0 {
+			jSuffix := strings.TrimPrefix(rounds[j].SessionName, roundPrefix)
+			jN, _ := strconv.Atoi(jSuffix)
+			if jN <= keyN {
+				break
+			}
 			rounds[j+1] = rounds[j]
 			j--
 		}
@@ -1469,10 +1491,14 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 				fmt.Fprintf(os.Stderr, "  [error reading round %s: %v]\n", label, err)
 			}
 		} else {
-			// Show summary: last msg_assistant event per round.
+			// Show summary: last msg_assistant event per round session.
+			// The round session itself receives the aggregated output from the
+			// review agents (via the prism review CLI output). If no msg_assistant
+			// events exist for the round session, fall back to showing the agent
+			// sub-session output.
 			events, qerr := d.QueryEvents(roundName, 1, nil, nil, []string{"msg_assistant"})
 			if qerr != nil || len(events) == 0 {
-				fmt.Println(styleDim.Render("  (no output)"))
+				fmt.Println(styleDim.Render("  (no output recorded for this round)"))
 			} else {
 				e := events[len(events)-1]
 				ts := e.CreatedAt.Local().Format("15:04:05")
