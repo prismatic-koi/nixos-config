@@ -19,14 +19,17 @@ Use these commands to gather context — never modify the working tree:
 gh pr view <number>              # PR title, description, branch name
 gh pr diff <number>              # the diff
 git show origin/<branch>:<path>  # read full files from the PR branch
+git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Important**: You are running on the branch that invoked you, not the PR branch. Use `git stash` is NOT appropriate — instead, check out the PR branch if validation requires it, or use `git show` to inspect files.
+**Working-tree safety — CRITICAL:** Never modify the working tree or index.
 
-If you need to run the code on the PR branch:
-1. `git fetch origin` to fetch the branch
-2. Validate using files from `git show origin/<branch>:<path>` where possible
-3. If you must check out the branch to run tests: note this explicitly and ensure you return to the original branch afterward
+- **Never** use `git checkout <branch> -- <path>` — this stages files into the working tree
+- **Never** use `git stash`, `git apply`, `git merge`, or any command that modifies files or the index
+- **Always** use `git show origin/<branch>:<path>` to read full file contents from the PR branch
+- **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
+
+For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch.
 
 ---
 

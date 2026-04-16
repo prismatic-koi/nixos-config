@@ -9,18 +9,28 @@ export const PrismHooks: Plugin = async () => {
   const enhancedReview = process.env.ENHANCED_REVIEW === "true";
 
   // Track review cycles per PR for escalation enforcement.
-  // Each git push on an open PR counts as one review cycle.
-  // Key: PR number string (or "unknown"), Value: number of cycles counted.
+  // A cycle is counted each time the worker invokes a review agent Task —
+  // not on each git push, which would misfire for pre-review amendment pushes.
+  // Since all 5 agents are invoked in parallel (same LLM response), the first
+  // detected invocation per PR per cycle increments the counter; subsequent
+  // parallel invocations in the same batch are deduplicated by the
+  // pendingCycleCount flag below.
+  // Key: PR number string (or "unknown"), Value: number of review cycles.
   const reviewCycles = new Map<string, number>();
 
-  // The PR number most recently detected from a Task tool invocation
-  // of a review agent. Used to scope cycle counts to the correct PR.
+  // The PR number most recently detected from a Task tool invocation of a
+  // review agent. Used to scope cycle counts to the correct PR.
   let detectedPrNumber: string | null = null;
+
+  // Prevents counting 5 parallel review-agent invocations as 5 cycles.
+  // Set to true when the first review agent Task fires; cleared on the next
+  // LLM turn (system.transform), so each full round of parallel invocations
+  // counts as exactly one cycle.
+  let pendingCycleCount = false;
 
   return {
     // After a bash tool executes a git push, set a flag so the next LLM turn
     // gets a review reminder injected into the system prompt.
-    // In enhanced review mode, also count each push as one review cycle.
     "tool.execute.after": async (input) => {
       if (input.tool === "bash") {
         const command: string = (input.args as any)?.command ?? "";
@@ -31,17 +41,12 @@ export const PrismHooks: Plugin = async () => {
         );
         if (isPush) {
           pendingReviewReminder = true;
-          // Count each push as a review cycle for the current PR.
-          if (enhancedReview) {
-            const prKey = detectedPrNumber ?? "unknown";
-            reviewCycles.set(prKey, (reviewCycles.get(prKey) ?? 0) + 1);
-          }
         }
       }
 
-      // Detect review agent Task invocations to extract the PR number.
-      // This allows the cycle counter to be scoped per PR rather than
-      // globally, and resets the counter when the PR number changes.
+      // Detect review agent Task invocations.
+      // Each invocation (or parallel batch of invocations) for a given PR
+      // counts as one review cycle.
       if (input.tool === "task" && enhancedReview) {
         const prompt: string = (input.args as any)?.prompt ?? "";
         const subagentType: string = (input.args as any)?.subagent_type ?? "";
@@ -64,6 +69,15 @@ export const PrismHooks: Plugin = async () => {
               reviewCycles.clear();
             }
           }
+
+          // Count this as a review cycle — but only once per batch of parallel
+          // invocations. pendingCycleCount is set here and cleared on the next
+          // system.transform, so 5 parallel Task calls count as exactly 1 cycle.
+          if (!pendingCycleCount) {
+            pendingCycleCount = true;
+            const prKey = detectedPrNumber ?? "unknown";
+            reviewCycles.set(prKey, (reviewCycles.get(prKey) ?? 0) + 1);
+          }
         }
       }
     },
@@ -72,13 +86,19 @@ export const PrismHooks: Plugin = async () => {
     // 1. Escalation warning if the review cycle limit has been reached.
     // 2. Review reminder after a git push (one-shot, cleared after injection).
     "experimental.chat.system.transform": async (_input, output) => {
+      // Clear the per-turn cycle deduplication flag so the next batch of
+      // review agent invocations counts as a fresh cycle.
+      pendingCycleCount = false;
+
       // Inject escalation reminder if 3 or more review cycles have elapsed
       // for the current PR without all agents passing.
       if (enhancedReview) {
         const prKey = detectedPrNumber ?? "unknown";
         const cycles = reviewCycles.get(prKey) ?? 0;
         if (cycles >= 3) {
-          const prLabel = detectedPrNumber ? `PR #${detectedPrNumber}` : "this PR";
+          const prLabel = detectedPrNumber
+            ? `PR #${detectedPrNumber}`
+            : "this PR";
           output.system.push(
             `⚠️ REVIEW LOOP LIMIT: You have run ${cycles} review cycles for ${prLabel} without all agents passing. You MUST stop and escalate to the user now. Do NOT run another review cycle. Instead, summarise: (1) what was originally requested, (2) what each review cycle found, and (3) why the fixes are not converging. Hand off to the coordinator.`,
           );
