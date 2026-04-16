@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=7 (migrations are applied on Open).
+	// Verify schema_version=8 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version: got %d, want 8", version)
 	}
 
 	// Verify WAL mode.
@@ -766,20 +766,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, v4→v5, and v5→v6 migrations.
+	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, and v7→v8 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=7.
+	// Verify schema_version=8.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -853,8 +853,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1354,8 +1354,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1420,8 +1420,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1490,8 +1490,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1585,8 +1585,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 7 {
-		t.Errorf("schema_version after migration: got %d, want 7", version)
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1620,6 +1620,161 @@ func TestMigration_V6ToV7(t *testing.T) {
 	}
 	if failedAt2 == nil {
 		t.Error("failed_at: got nil, want non-nil timestamp after WriteBusMessageFailed")
+	}
+}
+
+// TestMigration_V7ToV8 verifies that Open applies the v7→v8 migration to an
+// existing DB at schema_version=7 (no harness/harness_session_id/harness_port columns).
+// The migration is additive: all existing rows must be preserved unmodified, and the
+// new harness column must default to 'opencode' for pre-existing rows (AC-13 from #691).
+func TestMigration_V7ToV8(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v7.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	const sid = "old-session-id"
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (7);
+		INSERT INTO agent_status (session_name, repo, worktree, state, opencode_sid, opencode_port, host_mode, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', '` + sid + `', 14000, 0, 0);
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, last_seen)
+		  VALUES ('repo@feat', 'repo', '/code/repo/feat', 'finished', 0, 1000);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v7 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v7 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must be 8 after migration.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 8 {
+		t.Errorf("schema_version after migration: got %d, want 8", version)
+	}
+
+	// All existing rows must be preserved unmodified (additive migration guarantee).
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus repo@main: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus repo@main: got nil, want existing row")
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+	if s.OpencodeSID == nil || *s.OpencodeSID != sid {
+		t.Errorf("OpencodeSID preserved: got %v, want %q", s.OpencodeSID, sid)
+	}
+	if s.OpencodePort == nil || *s.OpencodePort != 14000 {
+		t.Errorf("OpencodePort preserved: got %v, want 14000", s.OpencodePort)
+	}
+
+	// harness column must default to 'opencode' for rows written before migration.
+	if s.Harness == nil || *s.Harness != "opencode" {
+		t.Errorf("Harness: got %v, want \"opencode\" (default for pre-migration rows)", s.Harness)
+	}
+	// harness_session_id and harness_port must be NULL for pre-migration rows.
+	if s.HarnessSessionID != nil {
+		t.Errorf("HarnessSessionID: got %v, want nil (not back-filled by migration)", s.HarnessSessionID)
+	}
+	if s.HarnessPort != nil {
+		t.Errorf("HarnessPort: got %v, want nil (not back-filled by migration)", s.HarnessPort)
+	}
+
+	// Second row (repo@feat) must also be preserved.
+	sf, err := d.CurrentStatus("repo@feat")
+	if err != nil {
+		t.Fatalf("CurrentStatus repo@feat: %v", err)
+	}
+	if sf == nil {
+		t.Fatal("CurrentStatus repo@feat: got nil, want existing row")
+	}
+	if sf.State != "finished" {
+		t.Errorf("State preserved for repo@feat: got %q, want \"finished\"", sf.State)
+	}
+	if sf.Harness == nil || *sf.Harness != "opencode" {
+		t.Errorf("Harness for repo@feat: got %v, want \"opencode\"", sf.Harness)
+	}
+
+	// Dual-write: UpdateOpencodeSID must now also write harness_session_id.
+	newSID := "new-session-id"
+	if err := d.UpdateOpencodeSID("repo@main", newSID); err != nil {
+		t.Fatalf("UpdateOpencodeSID after migration: %v", err)
+	}
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after UpdateOpencodeSID: %v", err)
+	}
+	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
+		t.Errorf("OpencodeSID after UpdateOpencodeSID: got %v, want %q", s2.OpencodeSID, newSID)
+	}
+	if s2.HarnessSessionID == nil || *s2.HarnessSessionID != newSID {
+		t.Errorf("HarnessSessionID after UpdateOpencodeSID: got %v, want %q (dual-write)", s2.HarnessSessionID, newSID)
+	}
+
+	// Dual-write: AllocatePort must now also write harness_port.
+	// First release the existing port so it's back in the pool, then re-allocate.
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort before re-allocate: %v", err)
+	}
+	port, err := d.AllocatePort("repo@main")
+	if err != nil {
+		t.Fatalf("AllocatePort after migration: %v", err)
+	}
+	s3, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after AllocatePort: %v", err)
+	}
+	if s3.OpencodePort == nil || *s3.OpencodePort != port {
+		t.Errorf("OpencodePort after AllocatePort: got %v, want %d", s3.OpencodePort, port)
+	}
+	if s3.HarnessPort == nil || *s3.HarnessPort != port {
+		t.Errorf("HarnessPort after AllocatePort: got %v, want %d (dual-write)", s3.HarnessPort, port)
+	}
+
+	// ReleasePort must clear both columns.
+	if err := d.ReleasePort("repo@main"); err != nil {
+		t.Fatalf("ReleasePort: %v", err)
+	}
+	s4, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after ReleasePort: %v", err)
+	}
+	if s4.OpencodePort != nil {
+		t.Errorf("OpencodePort after ReleasePort: got %v, want nil", s4.OpencodePort)
+	}
+	if s4.HarnessPort != nil {
+		t.Errorf("HarnessPort after ReleasePort: got %v, want nil (dual-write)", s4.HarnessPort)
 	}
 }
 
