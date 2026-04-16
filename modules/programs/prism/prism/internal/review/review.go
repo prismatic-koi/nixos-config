@@ -382,8 +382,6 @@ func createAgentWindow(reviewSession string, idx int, windowName, worktree, agen
 		readyPath, pathErr := session.SidecarReadyPath(agentSession)
 		if pathErr == nil {
 			// Remove any stale ready file from a previous lifecycle.
-			// The .sid file is left alone — writing it is handled by the sidecar
-			// (cleanup deferred to #716); podman attach does not need it.
 			_ = os.Remove(readyPath)
 			cmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
@@ -394,8 +392,6 @@ func createAgentWindow(reviewSession string, idx int, windowName, worktree, agen
 
 // buildReadinessWaitCmd mirrors session.buildReadinessWaitCmd (unexported).
 // Polls for the readiness file and runs the attach command directly once ready.
-// The .sid handoff is omitted — "podman attach" connects to the container's PTY
-// directly and does not need an opencode session ID (RFC #691, Phase 1a).
 func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 	return fmt.Sprintf(
 		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+

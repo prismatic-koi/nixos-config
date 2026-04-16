@@ -325,8 +325,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)
 		} else {
 			// Remove any stale ready file from a previous session lifecycle
-			// before the pane script starts polling. The .sid file is left
-			// alone — writing it is handled by the sidecar (cleanup is #716).
+			// before the pane script starts polling.
 			_ = os.Remove(readyPath)
 			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
@@ -364,11 +363,6 @@ func setupFullLayout(name, directory string, opts Opts) error {
 // buildReadinessWaitCmd builds a shell command that polls for the sidecar
 // readiness file and, once found, runs the given attach command.
 // If the wait times out (120s), it prints an error and exits (AC-20).
-//
-// The .sid file handoff is intentionally omitted here: "podman attach" connects
-// to the container's PTY directly — no opencode session ID is needed. The sidecar
-// still writes the .sid file (cleanup deferred to #716); this function simply
-// does not read it.
 func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 	// Poll every 0.5s for up to 120s (240 iterations).
 	// On success, exec the attach command directly.

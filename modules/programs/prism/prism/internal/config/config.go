@@ -32,7 +32,7 @@ type Config struct {
 
 	// Sidecar container settings.
 	// ContainerMode, when true, causes spawn and switch to run opencode inside
-	// a podman container managed by the sidecar, using "opencode attach" in the
+	// a podman container managed by the sidecar, using "podman attach" in the
 	// agent window rather than launching opencode directly.
 	ContainerMode bool `json:"container_mode"`
 	// SidecarPluginPath is the host-side path to the opencode plugin file that
