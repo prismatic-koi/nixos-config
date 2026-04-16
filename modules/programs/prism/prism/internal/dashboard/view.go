@@ -52,6 +52,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const statWFull = 22     // "2 files +122 -14"
 	const statWCompact = 10  // "+122 -14"
 	const modelWFull = 22    // e.g. "claude-sonnet-4-6    "
+	const harnessW = 10      // "opencode  " or future harness names
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
@@ -59,6 +60,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 
 	showType := true
 	showModel := true
+	showHarness := true
 	showStat := true
 	statW := statWFull
 	sessionW := sessionWStart
@@ -68,6 +70,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 		w := fixedCore + sessionW
 		if showType {
 			w += agentTypeW + 2
+		}
+		if showHarness {
+			w += harnessW + 2
 		}
 		if showModel {
 			w += modelWFull + 2
@@ -106,6 +111,11 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	if titleW < 0 {
 		// Drop model.
 		showModel = false
+		titleW = growSession(calcTitleW())
+	}
+	if titleW < 0 {
+		// Drop harness.
+		showHarness = false
 		titleW = growSession(calcTitleW())
 	}
 	if titleW < 0 {
@@ -148,6 +158,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	if showType {
 		header += fmt.Sprintf("  %-*s", agentTypeW, "type")
 	}
+	if showHarness {
+		header += fmt.Sprintf("  %-*s", harnessW, "harness")
+	}
 	if showModel {
 		header += fmt.Sprintf("  %-*s", modelWFull, "model")
 	}
@@ -172,7 +185,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	} else if d.FilterActive {
 		// Flat list while filter is active (no grouping — easier to scan).
 		for i, s := range sessions {
-			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
+			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
@@ -246,7 +259,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 					treePrefix = "  ├── "
 				}
 			}
-			sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
+			sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
 		}
 	}
 

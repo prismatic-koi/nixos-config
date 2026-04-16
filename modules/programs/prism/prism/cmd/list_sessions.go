@@ -74,15 +74,25 @@ func init() {
 	rootCmd.AddCommand(listSessionsCmd)
 }
 
-// renderSessionTable renders a []db.Status as a sorted SESSION/STATE/PORT/TITLE
+// displayHarness returns the harness display string for a session, falling
+// back to "opencode" when the field is nil or empty (pre-migration rows).
+func displayHarness(h *string) string {
+	if h == nil || *h == "" {
+		return "opencode"
+	}
+	return *h
+}
+
+// renderSessionTable renders a []db.Status as a sorted SESSION/STATE/PORT/HARNESS/TITLE
 // table to stdout. Both the direct DB path and the host-API proxy path use
 // this shared renderer.
 func renderSessionTable(ss []db.Status) error {
 	type row struct {
-		name  string
-		state string
-		port  string
-		title string
+		name    string
+		state   string
+		port    string
+		harness string
+		title   string
 	}
 
 	var rows []row
@@ -95,7 +105,7 @@ func renderSessionTable(ss []db.Status) error {
 		if s.OpencodePort != nil {
 			port = fmt.Sprintf("%d", *s.OpencodePort)
 		}
-		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, title: title})
+		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title})
 	}
 
 	// Sort rows alphabetically by session name for stable, predictable output.
@@ -118,7 +128,7 @@ func renderSessionTable(ss []db.Status) error {
 	styleName := lipgloss.NewStyle().Bold(true)
 	styleTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %-6s  %s", "SESSION", "STATE", "PORT", "TITLE")))
+	fmt.Println(styleHeader.Render(fmt.Sprintf("%-40s  %-8s  %-6s  %-10s  %s", "SESSION", "STATE", "PORT", "HARNESS", "TITLE")))
 	for _, r := range rows {
 		state := r.state
 		if state == "" {
@@ -137,10 +147,11 @@ func renderSessionTable(ss []db.Status) error {
 			nameStyle = styleName
 		}
 
-		fmt.Printf("%s  %s  %s  %s\n",
+		fmt.Printf("%s  %s  %s  %s  %s\n",
 			nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
 			stateStyled,
 			styleTitle.Render(fmt.Sprintf("%-6s", r.port)),
+			styleTitle.Render(fmt.Sprintf("%-10s", r.harness)),
 			styleTitle.Render(title),
 		)
 	}

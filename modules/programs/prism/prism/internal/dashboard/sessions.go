@@ -21,6 +21,7 @@ type AgentSession struct {
 	AgentTitle   string // current session title from agent_status.title
 	AgentName    string // coordinator | worker | "" — from agent_status.agent_name
 	ModelID      string // model identifier from agent_status.model_id
+	Harness      string // harness name from agent_status.harness, defaults to "opencode"
 	OpencodePort *int   // allocated port from agent_status.opencode_port, nil when unset
 	ClientCount  int    // tmux clients currently attached (best-effort, 0 on error)
 }
@@ -40,6 +41,10 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 	if s.ModelID != nil {
 		modelID = *s.ModelID
 	}
+	harness := "opencode"
+	if s.Harness != nil && *s.Harness != "" {
+		harness = *s.Harness
+	}
 	return AgentSession{
 		Name:         s.SessionName,
 		AgentState:   s.State,
@@ -47,6 +52,7 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 		AgentTitle:   title,
 		AgentName:    agentName,
 		ModelID:      modelID,
+		Harness:      harness,
 		OpencodePort: s.OpencodePort,
 		ClientCount:  clientCounts[s.SessionName],
 	}
@@ -209,8 +215,8 @@ func RenderSessionRow(
 	currentSession string,
 	cursorActive bool,
 	styleDim, styleIns, styleDel, styleFg, styleAgentType lipgloss.Style,
-	sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelW int,
-	showType, showModel, showStat bool,
+	sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelW, harnessW int,
+	showType, showHarness, showModel, showStat bool,
 ) string {
 	isHere := s.Name == currentSession
 	isSelected := cursorIdx == d.Cursor
@@ -267,6 +273,9 @@ func RenderSessionRow(
 
 	agentLabel := agentTypeLabel(s.AgentName)
 	paddedAgentLabel := fmt.Sprintf("%-*s", agentTypeW, agentLabel)
+
+	harnessLabel := s.Harness
+	paddedHarnessLabel := fmt.Sprintf("%-*s", harnessW, harnessLabel)
 
 	modelLabel := s.ModelID
 	if utf8.RuneCountInString(modelLabel) > modelW {
@@ -331,6 +340,9 @@ func RenderSessionRow(
 		if showType {
 			plain += fmt.Sprintf("  %-*s", agentTypeW, agentLabel)
 		}
+		if showHarness {
+			plain += fmt.Sprintf("  %-*s", harnessW, harnessLabel)
+		}
 		if showModel {
 			plain += fmt.Sprintf("  %-*s", modelW, modelLabel)
 		}
@@ -364,6 +376,7 @@ func RenderSessionRow(
 		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
 
 	agentTypeStr := styleAgentType.Render(paddedAgentLabel)
+	harnessStr := styleDim.Render(paddedHarnessLabel)
 	modelStr := styleDim.Render(paddedModelLabel)
 
 	var statStr string
@@ -402,6 +415,9 @@ func RenderSessionRow(
 	row := prefix
 	if showType {
 		row += styleFg.Render("  ") + agentTypeStr
+	}
+	if showHarness {
+		row += styleFg.Render("  ") + harnessStr
 	}
 	if showModel {
 		row += styleFg.Render("  ") + modelStr
