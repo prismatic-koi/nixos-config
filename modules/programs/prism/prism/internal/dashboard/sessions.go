@@ -226,15 +226,15 @@ func RenderSessionRow(
 		dot = "  "
 	}
 
-	// treePrefixW is 10 runes (matches view.go constant); pad treePrefix to that
-	// width using rune count (not byte count) since tree connector chars are
-	// multi-byte in UTF-8. All prefix strings (depth-1 and depth-2) are exactly
-	// 10 runes, so this padding path is a no-op in practice.
+	// treePrefixW is 10 runes (matches view.go constant). The total session
+	// display area is always treePrefixW+sessionW runes wide to keep columns
+	// aligned across all row depths.
 	const treePrefixW = 10
 
 	// Build the session display area (treePrefixW+sessionW total width):
 	// - Top-level (treePrefix=""): full session name padded to treePrefixW+sessionW.
-	// - Child (treePrefix non-empty): tree prefix (10 runes) + branch name padded to sessionW.
+	// - Child (treePrefix non-empty): prefix used tight (as-is), branch field
+	//   absorbs the spare width so the total remains treePrefixW+sessionW.
 	var sessionArea string
 	totalSessionW := treePrefixW + sessionW
 	if treePrefix == "" {
@@ -245,12 +245,9 @@ func RenderSessionRow(
 		}
 		sessionArea = fmt.Sprintf("%-*s", totalSessionW, name)
 	} else {
-		// Child row: pad treePrefix to treePrefixW then branch name padded to sessionW.
-		paddedPrefix := treePrefix
-		runeCount := utf8.RuneCountInString(paddedPrefix)
-		if runeCount < treePrefixW {
-			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
-		}
+		// Child row: use prefix as-is; give spare width to the branch field so
+		// the total (runeCount + branch field) equals totalSessionW.
+		runeCount := utf8.RuneCountInString(treePrefix)
 		// For depth-2 sessions, display only the ~review-N label rather than
 		// the full @feature~review-N branch string.
 		var branch string
@@ -259,12 +256,13 @@ func RenderSessionRow(
 		} else {
 			branch = SessionBranch(s.Name)
 		}
-		if sessionW == 0 {
+		branchW := totalSessionW - runeCount
+		if branchW <= 0 {
 			branch = ""
-		} else if utf8.RuneCountInString(branch) > sessionW {
-			branch = string([]rune(branch)[:sessionW-1]) + "…"
+		} else if utf8.RuneCountInString(branch) > branchW {
+			branch = string([]rune(branch)[:branchW-1]) + "…"
 		}
-		sessionArea = paddedPrefix + fmt.Sprintf("%-*s", sessionW, branch)
+		sessionArea = treePrefix + fmt.Sprintf("%-*s", totalSessionW-runeCount, branch)
 	}
 
 	agentLabel := agentTypeLabel(s.AgentName)

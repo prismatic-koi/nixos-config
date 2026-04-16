@@ -39,10 +39,10 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 
 	// ── column widths ────────────────────────────────────────────────────────
 	// Tree prefix slot for child rows.
-	//   Depth-1 prefixes: "  ├────── " or "  └────── " (exactly treePrefixW)
-	//   Depth-2 prefixes: "  │   ├── " or "  │   └── " (exactly treePrefixW)
-	// treePrefixW=10 accommodates the widest depth-2 connector without overflow.
-	// Both depth-1 and depth-2 prefixes are exactly 10 runes; no padding is added.
+	//   Depth-1 prefixes: "  ├── " or "  └── " (6 runes; branch field absorbs spare 4)
+	//   Depth-2 prefixes: "  │   ├── " or "  │   └── " (exactly treePrefixW=10 runes)
+	// treePrefixW=10 sets the total reserved width (prefix + branch) so column
+	// alignment is preserved across all depths.
 	const treePrefixW = 10
 	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
@@ -241,9 +241,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 					}
 				}
 				if isLastChild {
-					treePrefix = "  └────── "
+					treePrefix = "  └── "
 				} else {
-					treePrefix = "  ├────── "
+					treePrefix = "  ├── "
 				}
 			}
 			sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, showType, showModel, showStat))
