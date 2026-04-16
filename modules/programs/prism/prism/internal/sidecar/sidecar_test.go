@@ -6062,19 +6062,34 @@ echo "session \"${last}@no-harness-branch\" created"
 
 // ── /review endpoint ──────────────────────────────────────────────────────────
 
-// TestHostAPI_Review_WorkerForbidden verifies that a worker-role sidecar
-// cannot call /review (coordinators only).
-func TestHostAPI_Review_WorkerForbidden(t *testing.T) {
+// TestHostAPI_Review_WorkerAllowed verifies that a worker-role sidecar can
+// call /review. Workers run `prism review` as part of their own PR workflow,
+// so the /review endpoint must not require coordinator role.
+func TestHostAPI_Review_WorkerAllowed(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
-	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"123"}`)
-	if rr.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", rr.Code)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\necho '✓ review               passed'\nexit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
 	}
-	var errResp map[string]string
-	decodeJSONBody(t, rr, &errResp)
-	if errResp["error"] == "" {
-		t.Error("expected error field in 403 response")
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "myrepo@feature",
+		Repo:            "myrepo",
+		Worktree:        "/tmp/myrepo@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"123"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (workers must be allowed to call /review); body = %s",
+			rr.Code, rr.Body.String())
 	}
 }
 
@@ -6277,5 +6292,52 @@ func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
 	decodeJSONBody(t, rr, &errResp)
 	if errResp["error"] == "" {
 		t.Error("expected error field in 500 response")
+	}
+}
+
+// TestHostAPI_Review_SessionNameInjected verifies that the sidecar injects
+// PRISM_SESSION_NAME into the subprocess environment so that
+// review.LookupParentSession() resolves the session name correctly without
+// needing a live tmux session.
+func TestHostAPI_Review_SessionNameInjected(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes PRISM_SESSION_NAME to envFile so the test can inspect it.
+	stubScript := `#!/bin/sh
+echo "$PRISM_SESSION_NAME" > ` + envFile + `
+echo "✓ review               passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@741-fix",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@741-fix",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"741"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	if got != "nixos-config@741-fix" {
+		t.Errorf("PRISM_SESSION_NAME = %q, want %q (must be injected by sidecar)", got, "nixos-config@741-fix")
 	}
 }

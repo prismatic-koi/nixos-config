@@ -2514,20 +2514,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// POST /review
 	// Request:  {"pr_number":"123","agents":["review-code","review-goal"],"timeout":"10m"}
-	// agents is optional (all enhanced agents run by default).
+	// agents is optional (empty = default set resolved by prism review on host).
 	// timeout is optional (default: 10m).
 	// Response: {"output":"...","passed":true} | {"error":"..."}
 	//
-	// This endpoint is called by workers running inside containers that cannot
-	// reach tmux directly. The sidecar runs on the host where tmux is
-	// available, so it delegates to `prism review` on the host side.
-	// Workers require coordinator role because review sessions are spawned
-	// under the coordinator's session namespace — same restriction as /spawn.
+	// This endpoint is called by workers and coordinators running inside
+	// containers that cannot reach tmux directly. The sidecar runs on the host
+	// where tmux is available, so it delegates to `prism review` on the host.
+	// Both worker and coordinator role sidecars are permitted: workers call
+	// `prism review` as part of their own PR workflow; the restriction to
+	// coordinator-only (like /spawn) does not apply here.
+	//
+	// PRISM_SESSION_NAME is injected into the subprocess environment so that
+	// `review.LookupParentSession()` can determine the parent session name
+	// (the sidecar daemon process does not run inside tmux, so the fallback
+	// tmux.CurrentSession() call would fail).
 	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
-			return
-		}
-		if !requireCoordinator(w, "review") {
 			return
 		}
 		var req struct {
@@ -2565,11 +2568,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
-		cmd := exec.Command(prismBinary(), args...)
 		// Use a context with deadline so hung review processes don't block forever.
 		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
 		defer cancel()
-		cmd = exec.CommandContext(ctx, prismBinary(), args...)
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+
+		// Inject PRISM_SESSION_NAME so review.LookupParentSession() resolves the
+		// parent session correctly. Without this, the subprocess would try to query
+		// the tmux current session (which fails since the sidecar is not inside tmux).
+		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+s.cfg.SessionName)
 
 		// Capture both stdout (formatted results) and stderr (progress messages).
 		out, err := cmd.Output()
