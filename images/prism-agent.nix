@@ -225,6 +225,14 @@ pkgs.dockerTools.buildLayeredImage {
     exec /bin/.nix-real "$@"
     WRAPPER
     chmod +x bin/nix
+
+    # Expose Nix-provided Node.js at the standard Ubuntu paths so scripts with
+    # `#!/usr/bin/env node` shebangs resolve regardless of whether PATH is
+    # preserved when the script is spawned (e.g. opencode's MCP `environment:`
+    # dict does not propagate PATH to child processes).
+    mkdir -p usr/bin
+    ln -s /bin/node usr/bin/node
+    ln -s /bin/npx  usr/bin/npx
   '';
 
   config = {
