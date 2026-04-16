@@ -53,54 +53,67 @@
             };
             secondary = {
               model = "anthropic/claude-sonnet-4-6";
+              variant = "none";
             };
             lightweight = {
               model = "anthropic/claude-haiku-4-5";
+              variant = "none";
             };
           };
           anthropic-opus = {
             primary = {
               model = "anthropic/claude-opus-4-6";
+              variant = "none";
             };
             secondary = {
               model = "anthropic/claude-opus-4-6";
+              variant = "none";
             };
             lightweight = {
               model = "anthropic/claude-haiku-4-5";
+              variant = "none";
             };
           };
           gemini-hybrid = {
             primary = {
               model = "anthropic/claude-sonnet-4-6";
+              variant = "none";
             };
             secondary = {
               model = "google/gemini-3.1-pro-preview-customtools";
-              variant = "medium";
+              variant = "none";
             };
             lightweight = {
               model = "anthropic/claude-haiku-4-5";
+              variant = "none";
             };
           };
           github-copilot = {
             primary = {
               model = "github-copilot/claude-sonnet-4.6";
+              variant = "none";
             };
             secondary = {
               model = "github-copilot/claude-sonnet-4.6";
+              variant = "none";
             };
             lightweight = {
               model = "github-copilot/claude-haiku-4.5";
+              variant = "none";
             };
           };
           google = {
             primary = {
               model = "google/gemini-3-flash-preview";
+              variant = "none";
             };
             secondary = {
               model = "google/gemini-3.1-flash-lite-preview";
+              variant = "none";
             };
             lightweight = {
               model = "google/gemini-3.1-flash-lite-preview";
+              variant = "none";
             };
           };
         };
