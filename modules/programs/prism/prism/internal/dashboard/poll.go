@@ -75,11 +75,14 @@ func FetchSessionsFromDB() tea.Msg {
 }
 
 // FetchGitStatsOnly queries the current set of active sessions from the DB
-// solely to discover their AgentPath values, then runs git.Stat on each unique
+// solely to discover their worktree paths, then runs git.Stat on each unique
 // path concurrently and returns a GitStatsOnlyMsg. It does NOT update the
 // session list or agent states — those are managed by FetchSessionsFromDB and
 // push events. This is what the persistent dashboard's 5-second git stat ticker
 // calls so that diff-counter updates never overwrite push-event state changes.
+//
+// Internal sessions (scratchpad, prism-dashboard) are filtered out before
+// collecting paths, consistent with FetchSessionsFromDB.
 func FetchGitStatsOnly() tea.Msg {
 	d, err := openDB()
 	if err != nil {
@@ -92,13 +95,22 @@ func FetchGitStatsOnly() tea.Msg {
 		return GitStatsOnlyMsg{}
 	}
 
-	// Collect unique agent paths.
+	// Convert to AgentSession so we can reuse FilterAgentSessions, then
+	// collect unique worktree paths (AgentPath field).
+	clientCounts := TmuxClientCounts()
+	sessions := make([]AgentSession, 0, len(statuses))
+	for _, s := range statuses {
+		sessions = append(sessions, StatusToAgentSession(s, clientCounts))
+	}
+	sessions = FilterAgentSessions(sessions)
+
+	// Collect unique AgentPath values (= worktree paths).
 	seen := map[string]bool{}
 	var paths []string
-	for _, s := range statuses {
-		if s.Worktree != "" && !seen[s.Worktree] {
-			seen[s.Worktree] = true
-			paths = append(paths, s.Worktree)
+	for _, s := range sessions {
+		if s.AgentPath != "" && !seen[s.AgentPath] {
+			seen[s.AgentPath] = true
+			paths = append(paths, s.AgentPath)
 		}
 	}
 
