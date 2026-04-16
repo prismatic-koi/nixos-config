@@ -5889,3 +5889,153 @@ func TestValidateOrRefreshCoordinatorSID_GetFails(t *testing.T) {
 		t.Error("expected error when GET /session returns 500, got nil")
 	}
 }
+
+// ── /spawn harness validation ─────────────────────────────────────────────────
+
+// TestHostAPI_Spawn_UnknownHarnessReturns400 verifies that an unknown harness
+// value in a /spawn request is rejected with 400 and a clear error message,
+// without attempting to run the prism binary or create any session state.
+func TestHostAPI_Spawn_UnknownHarnessReturns400(t *testing.T) {
+	d := openTestDB(t)
+	// Use a stub that would record a call if invoked — we assert it is NOT called.
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"feature","harness":"pi"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown harness; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], `unknown harness "pi"`) {
+		t.Errorf("error %q should mention 'unknown harness \"pi\"'", errResp["error"])
+	}
+	if !strings.Contains(errResp["error"], "only 'opencode' is supported") {
+		t.Errorf("error %q should mention 'only 'opencode' is supported'", errResp["error"])
+	}
+	// The stub must NOT have been called (no state was created).
+	if _, err := os.Stat(argsFile); err == nil {
+		captured, _ := os.ReadFile(argsFile)
+		t.Errorf("prism binary was invoked with unknown harness — args file exists: %s", string(captured))
+	}
+
+	// Verify no agent_status row was created for the rejected branch.
+	st, dbErr := d.CurrentStatus("nixos-config@feature")
+	if dbErr != nil && !strings.Contains(dbErr.Error(), "not found") {
+		t.Errorf("unexpected DB error: %v", dbErr)
+	}
+	if st != nil {
+		t.Errorf("agent_status row was created for rejected session — state = %q", st.State)
+	}
+}
+
+// TestHostAPI_Spawn_KnownHarnessForwarded verifies that when harness="opencode"
+// is sent, it is passed as --harness opencode to the spawned prism binary.
+func TestHostAPI_Spawn_KnownHarnessForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@harness-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"harness-branch","harness":"opencode"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--harness opencode") {
+		t.Errorf("captured args %q do not contain '--harness opencode'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Spawn_MissingHarnessDefaultsToOpencode verifies that when the
+// harness field is absent from the request, the server defaults to "opencode"
+// and the spawn proceeds without error.
+func TestHostAPI_Spawn_MissingHarnessDefaultsToOpencode(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@no-harness-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+	}
+	sc := New(cfg)
+
+	// No "harness" field in request body — must default to "opencode".
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"no-harness-branch"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for missing harness (default opencode); body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	// The spawned prism binary must have received --harness opencode.
+	if !strings.Contains(string(capturedArgs), "--harness opencode") {
+		t.Errorf("captured args %q do not contain '--harness opencode' (harness was not defaulted or forwarded)", string(capturedArgs))
+	}
+}
