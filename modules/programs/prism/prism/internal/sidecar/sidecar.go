@@ -375,7 +375,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		//    Cleanup of the .sid write path is deferred to #716.
 		// 3. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
 		// 4. DeliverInitialPrompt — no-op in container mode (prompt already sent
-		//    via CLI); delivers via POST /session/<sid>/prompt_async in host mode.
+		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
+		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
 			sid, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
