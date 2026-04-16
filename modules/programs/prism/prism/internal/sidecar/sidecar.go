@@ -2479,7 +2479,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /spawn
-	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","host_mode":false}
+	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","host_mode":false,"harness":"opencode"}
 	// The "repo" field is accepted but ignored — the sidecar always substitutes
 	// its own repo (derived from its session name) so that a client sending a
 	// mount-path name (e.g. "prism-git") still spawns into the correct repo
@@ -2501,6 +2501,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Model    string `json:"model"`
 			Variant  string `json:"variant"`
 			HostMode bool   `json:"host_mode"`
+			Harness  string `json:"harness"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -2508,6 +2509,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Branch == "" {
 			writeError(w, http.StatusBadRequest, "branch is required")
+			return
+		}
+		// Validate harness before spawning. Default empty string to "opencode"
+		// for backwards compatibility with clients that don't send the field.
+		if req.Harness == "" {
+			req.Harness = "opencode"
+		}
+		if req.Harness != "opencode" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown harness %q: only 'opencode' is supported in this version of prism", req.Harness))
 			return
 		}
 
@@ -2541,6 +2551,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
+		args = append(args, "--harness", req.Harness)
 		args = append(args, "--repo", ownRepo)
 
 		// Log without the prompt value — it may contain sensitive context.
@@ -2563,6 +2574,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
 		}
+		logArgs = append(logArgs, "--harness", req.Harness)
 		logArgs = append(logArgs, "--repo", ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)

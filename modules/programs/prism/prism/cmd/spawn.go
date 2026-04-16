@@ -15,6 +15,7 @@ package cmd
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
 //	--host-mode           bypass container mode and run opencode directly in the tmux pane
+//	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
 	"fmt"
@@ -46,6 +47,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
+	harnessFlag, _ := cmd.Flags().GetString("harness")
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
@@ -61,6 +63,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"model":     modelFlag,
 		"variant":   variantFlag,
 		"host_mode": hostModeFlag,
+		"harness":   harnessFlag,
 	}, &resp); err != nil {
 		return err
 	}
@@ -85,6 +88,7 @@ func init() {
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().Bool("host-mode", false, "Bypass container mode and run opencode directly in the tmux pane")
+	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use (currently only 'opencode' is supported)")
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -101,6 +105,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
+	harnessFlag, _ := cmd.Flags().GetString("harness")
+
+	// Validate harness BEFORE any session state is created (no worktree, no
+	// tmux session, no DB row). Only "opencode" is supported in this version.
+	if harnessFlag != "opencode" {
+		return fmt.Errorf("unknown harness %q: only 'opencode' is supported in this version of prism", harnessFlag)
+	}
 
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
