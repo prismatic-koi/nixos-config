@@ -2261,10 +2261,10 @@ func TestBuildRunArgs_AWSAdminConfigNotMounted(t *testing.T) {
 			if strings.Contains(v, "/.config/aws:/root/.aws") {
 				t.Errorf("whole AWS config dir must not be mounted; found %q", v)
 			}
-			// Admin config must not be mounted at any container path.
-			if strings.HasSuffix(v, ":/root/.aws/config:ro") && strings.Contains(v, "/config:") {
-				// Allow readonly-config → /root/.aws/config:ro, but not config → /root/.aws/config:ro.
-				// Split on ":" to get the source path.
+			// Allow readonly-config → /root/.aws/config:ro, but not the admin
+			// config → /root/.aws/config:ro. Check the source (before the first
+			// colon) to distinguish them.
+			if strings.HasSuffix(v, ":/root/.aws/config:ro") {
 				parts := strings.SplitN(v, ":", 2)
 				if !strings.HasSuffix(parts[0], "readonly-config") {
 					t.Errorf("admin AWS config must not be mounted at /root/.aws/config; found %q", v)
