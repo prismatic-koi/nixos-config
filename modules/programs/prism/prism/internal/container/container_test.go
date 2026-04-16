@@ -593,9 +593,9 @@ func TestBuildRunArgs_NoHostAPISockWhenEmpty(t *testing.T) {
 // ── HostAPITCPPort / Darwin TCP path tests ───────────────────────────────────
 
 // TestBuildRunArgs_HostAPITCPPortPublishAndEnv asserts that when HostAPITCPPort
-// is non-zero, buildRunArgs emits --publish 127.0.0.1:<port>:4097 and
-// PRISM_HOST_API=http://127.0.0.1:4097, and that NO unix:// env var or
-// socket-directory volume is present.
+// is non-zero, buildRunArgs sets PRISM_HOST_API=http://host.containers.internal:<port>
+// and does NOT emit a --publish flag for the host-API port or a unix:// env var
+// or socket-directory volume mount.
 func TestBuildRunArgs_HostAPITCPPortPublishAndEnv(t *testing.T) {
 	const hostPort = 51234
 	m := New(Config{
@@ -606,21 +606,21 @@ func TestBuildRunArgs_HostAPITCPPortPublishAndEnv(t *testing.T) {
 	})
 	args := m.buildRunArgs()
 
-	// Must have --publish 127.0.0.1:51234:4097.
-	wantPublish := fmt.Sprintf("127.0.0.1:%d:%d", hostPort, HostAPIContainerPort)
-	foundPublish := false
+	// Must NOT have --publish referencing the host-API port (no port forwarding
+	// needed; the container reaches the sidecar via host.containers.internal).
+	// AllocatedPort (14000) != hostPort (51234), so the opencode --publish is
+	// unambiguously distinct and needs no special carve-out.
 	for i, arg := range args {
-		if arg == "--publish" && i+1 < len(args) && args[i+1] == wantPublish {
-			foundPublish = true
-			break
+		if arg == "--publish" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, fmt.Sprintf(":%d", hostPort)) || strings.Contains(v, fmt.Sprintf("%d:", hostPort)) {
+				t.Errorf("unexpected --publish referencing host-API TCP port %d: %q", hostPort, v)
+			}
 		}
 	}
-	if !foundPublish {
-		t.Errorf("expected --publish %s in args, not found: %v", wantPublish, args)
-	}
 
-	// Must have PRISM_HOST_API=http://127.0.0.1:4097.
-	wantEnv := fmt.Sprintf("PRISM_HOST_API=http://127.0.0.1:%d", HostAPIContainerPort)
+	// Must have PRISM_HOST_API=http://host.containers.internal:<hostPort>.
+	wantEnv := fmt.Sprintf("PRISM_HOST_API=http://host.containers.internal:%d", hostPort)
 	foundEnv := false
 	for i, arg := range args {
 		if arg == "--env" && i+1 < len(args) && args[i+1] == wantEnv {
@@ -691,12 +691,14 @@ func TestBuildRunArgs_HostAPISockUnixPathLinux(t *testing.T) {
 		t.Errorf("expected --volume %s in args, not found: %v", wantMount, args)
 	}
 
-	// Must NOT have --publish for port 4097.
-	wantNoPublish := fmt.Sprintf(":%d", HostAPIContainerPort)
+	// Must NOT have --publish for a host-API port (the former HostAPIContainerPort
+	// 4097 is now gone; the Linux path never emits --publish for host-API).
 	for i, arg := range args {
 		if arg == "--publish" && i+1 < len(args) {
-			if strings.Contains(args[i+1], wantNoPublish) {
-				t.Errorf("unexpected --publish for port %d when HostAPITCPPort is zero: %q", HostAPIContainerPort, args[i+1])
+			v := args[i+1]
+			// The only --publish allowed is the opencode container port (4096).
+			if !strings.HasSuffix(v, ":4096") {
+				t.Errorf("unexpected --publish when HostAPITCPPort is zero: %q", v)
 			}
 		}
 	}
@@ -711,23 +713,25 @@ func TestBuildRunArgs_HostAPISockUnixPathLinux(t *testing.T) {
 	}
 }
 
-// TestBuildRunArgs_HostAPITCPPort_LoopbackOnly asserts that the --publish flag
-// for the host-API TCP port is constrained to 127.0.0.1 (never 0.0.0.0).
+// TestBuildRunArgs_HostAPITCPPort_LoopbackOnly asserts that when HostAPITCPPort
+// is set, no --publish flag is emitted for the host-API port (the container
+// reaches the sidecar via host.containers.internal, not port forwarding).
 func TestBuildRunArgs_HostAPITCPPort_LoopbackOnly(t *testing.T) {
+	const hostPort = 51234
 	m := New(Config{
 		SessionName:    "repo@feat",
 		AllocatedPort:  14000,
-		HostAPITCPPort: 51234,
+		HostAPITCPPort: hostPort,
 	})
 	args := m.buildRunArgs()
 
+	// No --publish should reference the host-API TCP port.
 	for i, arg := range args {
 		if arg == "--publish" && i+1 < len(args) {
 			v := args[i+1]
-			if strings.Contains(v, fmt.Sprintf(":%d", HostAPIContainerPort)) {
-				if !strings.HasPrefix(v, "127.0.0.1:") {
-					t.Errorf("host-API --publish is not loopback-only: %q", v)
-				}
+			// The only allowed --publish is the opencode container port (AllocatedPort:4096).
+			if strings.Contains(v, fmt.Sprintf("%d:", hostPort)) || strings.HasSuffix(v, fmt.Sprintf(":%d", hostPort)) {
+				t.Errorf("unexpected --publish referencing host-API TCP port %d: %q", hostPort, v)
 			}
 		}
 	}

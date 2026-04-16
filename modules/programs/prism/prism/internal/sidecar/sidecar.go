@@ -244,22 +244,27 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	if s.cfg.Container != nil {
 		sessionStart := time.Now()
 
-		// On Darwin, start a TCP listener on 127.0.0.1:0 BEFORE container creation
-		// so the OS-allocated port is known when buildRunArgs() emits --publish.
+		// On Darwin, start a TCP listener on 0.0.0.0:0 BEFORE container creation
+		// so the OS-allocated port is known when the container env is configured.
 		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
-		// container VM, so TCP port forwarding is used instead (#661).
+		// container VM, so TCP is used instead (#661). The listener must bind on
+		// 0.0.0.0 (not 127.0.0.1) so that gvproxy's bridge interface
+		// (192.168.127.254) can reach it from inside the container VM — loopback
+		// is not reachable from the VM network. No --publish flag is needed:
+		// the container reaches the sidecar via host.containers.internal:<port>,
+		// which routes through the gvproxy bridge directly to this listener.
 		//
 		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode would
 		// reproduce the ENOTSUP bug (#661) — the container would start without a
 		// working host-API channel. Returning an error here aborts container startup
 		// with a clear message rather than creating a silently broken session.
 		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
-			tcpLn, tcpErr := net.Listen("tcp", "127.0.0.1:0")
+			tcpLn, tcpErr := net.Listen("tcp", "0.0.0.0:0")
 			if tcpErr != nil {
 				return fmt.Errorf("sidecar: host-API TCP listener: %w", tcpErr)
 			}
 			port := tcpLn.Addr().(*net.TCPAddr).Port
-			log.Printf("sidecar: host-API TCP listener bound on 127.0.0.1:%d", port)
+			log.Printf("sidecar: host-API TCP listener bound on 0.0.0.0:%d", port)
 			s.cfg.HostAPITCPPort = port
 			s.cfg.Container.HostAPITCPPort = port
 			s.mu.Lock()
@@ -408,7 +413,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 						log.Printf("sidecar: host-API server (tcp): %v", err)
 					}
 				}()
-				log.Printf("sidecar: host-API TCP server serving on 127.0.0.1:%d", s.cfg.HostAPITCPPort)
+				log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
 			}
 		} else if s.cfg.HostAPISockPath == "" {
 			log.Printf("sidecar: host-API server: HostAPISockPath is empty — skipping (container mode active but no socket path configured)")
