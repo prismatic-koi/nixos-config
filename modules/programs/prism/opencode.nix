@@ -308,21 +308,23 @@
 
         ## Pull Request Reviews
 
-        ${
-          if config.nx.programs.prism.opencode.enhancedReview then
-            ''
-              After opening a pull request, invoke ALL 5 review agents **in parallel** before announcing completion:
-              `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context`.
-              Pass the PR number to each. All 5 must return `<verdict>PASS</verdict>` for the review to pass.
-              If ANY agent returns FAIL, fix all blocking issues, push, and re-run all 5 agents.
-              After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.''
-          else
-            ''
-              After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
-              The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
-              If it identifies issues, fix them and then invoke `@review` again with the same PR number.
-              Repeat this cycle until the review passes with no issues before considering the work complete.''
-        }
+          ${
+            if config.nx.programs.prism.opencode.enhancedReview then
+              ''
+                After opening a pull request, invoke ALL 5 review agents **in parallel** before announcing completion:
+                `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context`.
+                Pass the PR number to each. All 5 must return `<verdict>PASS</verdict>` for the review to pass.
+                If ANY agent returns FAIL, fix all blocking issues, push, and re-run all 5 agents.
+                After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
+                Preferred invocation: `prism review <pr-number>` (spawns all 5 agents automatically, provides dashboard observability).
+                Fallback: invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` directly as parallel Task calls.''
+            else
+              ''
+                After opening a pull request, always invoke the `@review` subagent, passing it the PR number.
+                The review agent will check the PR for bugs, structural issues, and requirement gaps and report back.
+                If it identifies issues, fix them and then invoke `@review` again with the same PR number.
+                Repeat this cycle until the review passes with no issues before considering the work complete.''
+          }
 
         ## Search Scope
 

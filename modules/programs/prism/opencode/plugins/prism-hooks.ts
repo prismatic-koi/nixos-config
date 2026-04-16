@@ -42,9 +42,29 @@ export const PrismHooks: Plugin = async () => {
         if (isPush) {
           pendingReviewReminder = true;
         }
+
+        // Detect `prism review <pr-number>` Bash invocations in enhanced mode.
+        // This counts as one review cycle (same as a parallel batch of Task calls).
+        if (enhancedReview) {
+          const prismReviewMatch = command.match(
+            /\bprism\s+review\s+(\d+)\b/,
+          );
+          if (prismReviewMatch) {
+            const newPr = prismReviewMatch[1];
+            if (newPr !== detectedPrNumber) {
+              detectedPrNumber = newPr;
+              reviewCycles.clear();
+            }
+            if (!pendingCycleCount) {
+              pendingCycleCount = true;
+              const prKey = detectedPrNumber ?? "unknown";
+              reviewCycles.set(prKey, (reviewCycles.get(prKey) ?? 0) + 1);
+            }
+          }
+        }
       }
 
-      // Detect review agent Task invocations.
+      // Detect review agent Task invocations (fallback path — direct @review-* calls).
       // Each invocation (or parallel batch of invocations) for a given PR
       // counts as one review cycle.
       if (input.tool === "task" && enhancedReview) {
@@ -110,7 +130,7 @@ export const PrismHooks: Plugin = async () => {
 
       if (enhancedReview) {
         output.system.push(
-          "You just ran git push. If this was in the context of an open PR, invoke @review-goal, @review-code, @review-security, @review-qa, and @review-context now (in parallel) so the updated changes are reviewed before the PR is merged. ALL 5 must return PASS before the PR can be merged.",
+          "You just ran git push. If this was in the context of an open PR, run `prism review <pr-number>` to review the updated changes before the PR is merged (preferred). Alternatively, invoke @review-goal, @review-code, @review-security, @review-qa, and @review-context in parallel as a fallback. ALL 5 agents must pass before the PR can be merged.",
         );
       } else {
         output.system.push(

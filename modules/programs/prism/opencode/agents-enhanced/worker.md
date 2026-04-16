@@ -55,8 +55,32 @@ When your work is complete and quality gates pass:
 
 ## Parallel review (enhanced mode)
 
-Before announcing your PR as complete, and after each push to an open PR, invoke
-ALL 5 review agents **in parallel** (in a single response with 5 Task tool calls):
+Before announcing your PR as complete, and after each push to an open PR, run
+code review using `prism review <pr-number>` (preferred) or direct `@review-*`
+Task calls (fallback). `prism review` spawns all five specialised review agents
+automatically in enhanced mode and provides dashboard observability and retry
+support. Fix any issues and re-run review until it passes.
+
+### Running code review with prism review
+
+```bash
+# Run review against your PR (blocks until all 5 agents complete, returns findings to stdout)
+result=$(prism review <pr-number>)
+echo "$result"
+
+# If some agents fail, re-run only the failed ones
+prism review <pr-number> --only review-code,review-security
+
+# Check in on review progress from the coordinator session
+prism checkin $(tmux display-message -p '#{session_name}')~review
+```
+
+`prism review` exit code 0 = all agents passed; non-zero = failures.
+
+### Fallback: direct Task calls
+
+If `prism review` is unavailable or fails to start, invoke the five agents
+**in parallel** (in a single response with 5 Task tool calls):
 
 1. `@review-goal` — pass the original issue/ACs and the PR number
 2. `@review-code` — pass the PR number
@@ -72,8 +96,9 @@ If ANY agent returns `<verdict>FAIL</verdict>`:
 1. Read each agent's `<blocking_issues>` carefully
 2. Fix every blocking issue identified
 3. Commit and push your fixes
-4. Re-invoke **all 5 agents** — not just the ones that failed. A fix in one area
-   can create issues in another, so the full set must re-run every cycle.
+4. Re-run review (via `prism review` or direct Task calls) against all 5 agents
+   — not just the ones that failed. A fix in one area can create issues in
+   another, so the full set must re-run every cycle.
 
 ### Escalation
 

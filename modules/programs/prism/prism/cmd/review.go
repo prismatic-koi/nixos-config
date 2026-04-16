@@ -113,6 +113,14 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: no agents to run")
 	}
 
+	// Pre-flight: verify that the required opencode agent definitions exist.
+	// Skip in container mode — the check cannot inspect the container filesystem.
+	if !cfg.ContainerMode {
+		if err := review.CheckAgentAvailability(agents); err != nil {
+			return fmt.Errorf("prism review: %w", err)
+		}
+	}
+
 	// Build run options.
 	opts := review.Opts{
 		PRNumber:       prNumber,
@@ -174,15 +182,23 @@ func runReview(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// agentsForHarness returns the default agent list for the given harness.
-// Currently only "opencode" is supported.
+// agentsForHarness returns the agent list for the given harness.
+// When ENHANCED_REVIEW=true is set in the environment, the five-agent enhanced
+// set is returned. Otherwise the single default agent is used (back-compat).
+// Currently only "opencode" is supported as a harness.
 func agentsForHarness(harness string) []review.Agent {
 	switch harness {
 	case "opencode", "":
+		if os.Getenv("ENHANCED_REVIEW") == "true" {
+			return review.EnhancedAgents()
+		}
 		return review.DefaultAgents()
 	default:
 		// Unknown harness — return opencode agents as fallback.
 		fmt.Fprintf(os.Stderr, "[prism review] warning: unknown harness %q, using opencode\n", harness)
+		if os.Getenv("ENHANCED_REVIEW") == "true" {
+			return review.EnhancedAgents()
+		}
 		return review.DefaultAgents()
 	}
 }
