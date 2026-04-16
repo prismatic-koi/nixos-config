@@ -40,7 +40,11 @@ func NewPersistentModel(client, callerSession string) PersistentModel {
 }
 
 func (m PersistentModel) Init() tea.Cmd {
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick())
+	// FetchSessionsFromDB populates the initial session list with git diff stats.
+	// GitStatTick schedules a 5-second periodic refresh to keep stats up to date
+	// independently of state-transition rendering (push events update only
+	// session state, not git stats).
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick(), GitStatTick())
 }
 
 func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -52,6 +56,30 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case RefreshMsg:
 		return m, FetchSessionsFromDB
+
+	case GitStatTickMsg:
+		// 5-second git stat refresh: fetch only git stats (not session states),
+		// then schedule the next tick. Using FetchGitStatsOnly ensures that
+		// push-event state updates are never overwritten by the ticker.
+		return m, tea.Batch(FetchGitStatsOnly, GitStatTick())
+
+	case GitStatsOnlyMsg:
+		// Apply updated git diff stats without touching session states.
+		if msg.GitStats != nil {
+			if m.GitStats == nil {
+				m.GitStats = make(map[string]GitStatResult)
+			}
+			for k, v := range msg.GitStats {
+				m.GitStats[k] = v
+			}
+		}
+
+	case PushEventMsg:
+		// A sidecar pushed a state-change event directly to the dashboard socket.
+		// Update the named session in-memory and re-render immediately — no DB
+		// round-trip, no git stat wait.
+		m.Shared = applyPushEvent(m.Shared, msg)
+		return m, nil
 
 	case DashStatusMsg:
 		m.StatusMsg = string(msg)
