@@ -247,8 +247,8 @@ func resetKillSidecars() error {
 		// Send SIGTERM and remove the PID file.
 		prismSession.KillSidecar(sessionName)
 
-		// Remove stale readiness and session-ID files so a re-launched session
-		// for the same name starts fresh rather than picking up stale state.
+		// Remove stale readiness file so a re-launched session for the same
+		// name starts fresh rather than picking up stale state.
 		readyPath, _ := prismSession.SidecarReadyPath(sessionName)
 		if readyPath != "" {
 			_ = os.Remove(readyPath)
