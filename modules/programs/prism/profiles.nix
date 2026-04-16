@@ -35,6 +35,11 @@
           secondary = [
             "worker"
             "review"
+            "review-goal"
+            "review-code"
+            "review-security"
+            "review-qa"
+            "review-context"
             "ac"
             "retro"
           ];
