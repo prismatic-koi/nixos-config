@@ -1175,13 +1175,16 @@ func formatAgentSummary(agentCounts map[string]int) string {
 }
 
 // formatLatency formats a duration given in milliseconds as "X.Xs" or "Xm Ys".
+// Values that would round up to "60.0s" (i.e. ≥ 59,950 ms) are shown in the
+// minute format instead.
 func formatLatency(ms float64) string {
-	if ms < 60_000 {
+	if ms < 59_950 {
 		return fmt.Sprintf("%.1fs", ms/1000)
 	}
-	mins := int(ms / 60_000)
-	s := math.Mod(ms, 60_000) / 1000
-	return fmt.Sprintf("%dm %.0fs", mins, s)
+	totalSecs := int(math.Round(ms / 1000))
+	mins := totalSecs / 60
+	secs := totalSecs % 60
+	return fmt.Sprintf("%dm %ds", mins, secs)
 }
 
 var modelCmd = &cobra.Command{
