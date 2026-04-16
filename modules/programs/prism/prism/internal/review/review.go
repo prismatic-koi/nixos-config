@@ -83,6 +83,19 @@ func DefaultAgents() []Agent {
 	}
 }
 
+// EnhancedAgents returns the five-agent set used in enhanced review mode.
+// Each agent corresponds to a specialised opencode agent definition under
+// modules/programs/prism/opencode/agents-enhanced/.
+func EnhancedAgents() []Agent {
+	return []Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-security", OpencodeName: "review-security"},
+		{Name: "review-qa", OpencodeName: "review-qa"},
+		{Name: "review-context", OpencodeName: "review-context"},
+	}
+}
+
 // AgentsByName filters the agents slice to only those whose Name is in the
 // allowedNames set. Returns an error if any name in allowedNames does not exist
 // in agents.
