@@ -764,6 +764,12 @@ func (m *Manager) buildRunArgs() []string {
 	args := []string{
 		"run",
 		"--detach",
+		// --tty allocates a PTY on the container. The container currently runs
+		// "opencode serve" which does not use the PTY, but RFC #691 migrates to
+		// "opencode" (monolithic TUI mode) where podman attach bridges the PTY to
+		// the tmux pane. The flag must be set before that migration lands (see
+		// RFC #691, Phase 1a / Issue G).
+		"--tty",
 		"--name", m.name,
 	}
 
