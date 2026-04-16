@@ -1613,24 +1613,14 @@ ORDER BY sent_at DESC LIMIT 1`, toSession)
 func TestNotifyCoordinator_IdleDebouncePath(t *testing.T) {
 	d := openTestDB(t)
 
-	// Seed the coordinator with a known port and sid via a test HTTP server.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	coordSID := "coord-sid-123"
+	// Seed the coordinator with a known port and sid via a test HTTP server
+	// that properly serves GET /session (SID validation) and POST prompt_async.
+	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
 	defer srv.Close()
 
-	// Extract the port from the test server URL.
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		// Try localhost form.
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port from %q: %v", srv.URL, err)
-	}
+	srvPort := parseSrvPort(t, srv.URL)
 
-	coordSID := "coord-sid-123"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with the test server's HTTP client.
@@ -1806,12 +1796,24 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	d := openTestDB(t)
 
-	// Record HTTP requests to verify the body.
+	coordSID := "coord-sid-audit"
+
+	// Record the POST body; also serve GET /session for SID validation.
 	var (
 		bodyMu       sync.Mutex
 		receivedBody []byte
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			// Return the coordinator's SID in the session list.
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST /session/<sid>/prompt_async — capture body and respond 200.
 		body, _ := io.ReadAll(r.Body)
 		bodyMu.Lock()
 		receivedBody = body
@@ -1820,16 +1822,8 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
+	srvPort := parseSrvPort(t, srv.URL)
 
-	coordSID := "coord-sid-audit"
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with the test server's HTTP client.
@@ -1885,35 +1879,33 @@ func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
 	}
 }
 
-// TestNotifyCoordinator_HTTPFailure_NoFallback verifies that when HTTP delivery
-// fails, no bus message is written (no fallback — error is logged).
-func TestNotifyCoordinator_HTTPFailure_NoFallback(t *testing.T) {
+// TestNotifyCoordinator_HTTPFailure_WritesFailed verifies that when HTTP delivery
+// fails after all retries, a bus message with failed_at set (and delivered_at
+// NULL) is written — not silently dropped.
+func TestNotifyCoordinator_HTTPFailure_WritesFailed(t *testing.T) {
 	d := openTestDB(t)
 
-	// requestReceived is closed when the test server receives the HTTP request.
-	// This gives us a reliable synchronisation point: once the server has responded
-	// (with 500), the notifyCoordinator goroutine has finished its work and will
-	// not write anything further.
-	requestReceived := make(chan struct{})
+	coordSID := "coord-sid-http-fail"
+
+	// Server serves GET /session with the SID but always fails POST.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(requestReceived)
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST always fails.
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-
-	coordSID := "coord-sid-http-fail"
+	srvPort := parseSrvPort(t, srv.URL)
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
-	// Create worker sidecar with the test server's HTTP client (returns 500).
+	// Create worker sidecar with the test server's HTTP client (POST returns 500).
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
@@ -1925,21 +1917,18 @@ func TestNotifyCoordinator_HTTPFailure_NoFallback(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Wait for the HTTP request to be received by the test server. Once the
-	// server has replied (with 500), the goroutine has completed its work.
-	select {
-	case <-requestReceived:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for HTTP request to coordinator")
+	// Wait for failed_at to be set (all 3 retries exhausted).
+	if !waitForBusMessageFailed(t, d, "test-repo@main") {
+		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set after HTTP failure")
 	}
 
-	// No bus messages should be written — HTTP failure is logged, not fallen back.
-	var totalMsgs int
-	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
-		t.Fatalf("count bus_messages: %v", err)
+	// delivered_at must NOT be set.
+	var deliveredCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL", "test-repo@main").Scan(&deliveredCount); err != nil {
+		t.Fatalf("count delivered: %v", err)
 	}
-	if totalMsgs != 0 {
-		t.Errorf("expected no bus messages after HTTP failure (no fallback), got %d", totalMsgs)
+	if deliveredCount != 0 {
+		t.Errorf("expected no delivered messages after HTTP failure, got %d", deliveredCount)
 	}
 }
 
@@ -2089,12 +2078,19 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	}
 }
 
-// TestNotifyCoordinator_PortSetButNoSID_NoNotification verifies that when
-// the coordinator has a port but no opencode_sid, no notification is sent
-// and no bus message is written.
-func TestNotifyCoordinator_PortSetButNoSID_NoNotification(t *testing.T) {
+// TestNotifyCoordinator_PortSetButNoSID_TriesAndFails verifies that when
+// the coordinator has a port but no opencode_sid, notifyCoordinator still
+// attempts delivery (trying GET /session to discover the active session),
+// and if the port is unreachable, writes failed_at after retries.
+func TestNotifyCoordinator_PortSetButNoSID_TriesAndFails(t *testing.T) {
 	d := openTestDB(t)
-	worker, clk := newWorkerSidecar(t, d, nil)
+
+	// Use a server to make the port reachable but return an empty session list.
+	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
+	defer srv.Close()
+	srvPort := parseSrvPort(t, srv.URL)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
 	// Seed coordinator with a port but no opencode_sid.
 	coordName := "test-repo@main"
@@ -2102,11 +2098,10 @@ func TestNotifyCoordinator_PortSetButNoSID_NoNotification(t *testing.T) {
 		t.Fatalf("seed coordinator: UpsertStatus: %v", err)
 	}
 	// Set port but leave opencode_sid = NULL.
-	var gotPort int
 	if err := d.QueryRow(
-		"UPDATE agent_status SET opencode_port = 19999 WHERE session_name = ? RETURNING opencode_port",
-		coordName,
-	).Scan(&gotPort); err != nil {
+		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING opencode_port",
+		srvPort, coordName,
+	).Scan(new(int)); err != nil {
 		t.Fatalf("set port: %v", err)
 	}
 
@@ -2119,25 +2114,18 @@ func TestNotifyCoordinator_PortSetButNoSID_NoNotification(t *testing.T) {
 	}
 	timer.Fire()
 
-	// Verify state transitioned to finished — this DB write is synchronous and
-	// happens before go s.notifyCoordinator() is launched, so it serves as a
-	// reliable anchor that the goroutine has been started. The goroutine returns
-	// immediately (early-exit: no opencode_sid), so a brief sleep is sufficient
-	// to let it complete before the absence assertion. This matches the same
-	// pattern used by TestNotifyCoordinator_SilentSkipWhenNoCoordinator and
-	// other no-notification tests in this file.
 	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
 		t.Errorf("worker state = %q, want finished", state)
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	// No bus messages should be written since port+sid combination is incomplete.
-	var totalMsgs int
-	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", coordName).Scan(&totalMsgs); err != nil {
-		t.Fatalf("count bus_messages: %v", err)
+	// Empty session list → failed_at is set, no delivered_at.
+	if !waitForBusMessageFailed(t, d, coordName) {
+		t.Fatal("timed out waiting for failed bus message — expected failed_at when empty session list")
 	}
-	if totalMsgs != 0 {
-		t.Errorf("expected no bus messages when coordinator has port but no sid, got %d", totalMsgs)
+	var deliveredCount int
+	_ = d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL", coordName).Scan(&deliveredCount)
+	if deliveredCount != 0 {
+		t.Errorf("delivered_at rows = %d, want 0 (empty session list)", deliveredCount)
 	}
 }
 
@@ -3317,26 +3305,29 @@ func TestSubagentFinish_NoSecondIdle_TransitionsToFinished(t *testing.T) {
 func TestSubagentFinish_IdleAlsoArrivesAfterRootMessage(t *testing.T) {
 	d := openTestDB(t)
 
+	coordSID := "coord-sid-race"
+
 	// Seed a real coordinator with a test HTTP server so we can count
 	// delivered notifications and verify exactly-once behaviour.
+	// The server must serve GET /session for SID validation.
 	var notifyCount int
 	var notifyMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
 		notifyMu.Lock()
 		notifyCount++
 		notifyMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-	coordSID := "coord-sid-race"
+	srvPort := parseSrvPort(t, srv.URL)
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
@@ -3921,25 +3912,28 @@ func TestRootAgentPreset_EmptyAgentNameInUserMessage(t *testing.T) {
 func TestRootAgentPreset_NotifyCoordinatorAfterSubagentCycle(t *testing.T) {
 	d := openTestDB(t)
 
+	coordSID := "coord-sid-notify-test"
+
 	// Set up a test HTTP server to capture coordinator notifications.
+	// The server must serve GET /session for SID validation.
 	var notifyCount int
 	var notifyMu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
 		notifyMu.Lock()
 		notifyCount++
 		notifyMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	var srvPort int
-	_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-	if err != nil {
-		_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-	}
-	if err != nil {
-		t.Fatalf("parse test server port: %v", err)
-	}
-	coordSID := "coord-sid-notify-test"
+	srvPort := parseSrvPort(t, srv.URL)
 	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
 
 	// Create worker sidecar with AgentRole="worker" pre-set (the fix).
@@ -5423,4 +5417,470 @@ func writeSidecarLogFile(t *testing.T, sessionName, content string) string {
 	// But callers need stateHome itself for XDG_STATE_HOME.
 	// Return logPath; caller derives stateHome via filepath.Dir x3.
 	return logPath
+}
+
+// ── notifyCoordinator SID validation tests ──────────────────────────────────
+
+// makeSessionListServer creates an httptest.Server that:
+//   - GET /session returns sessionIDs as a JSON array of {id, time: {updated: <ts>}}
+//   - POST /session/<sid>/prompt_async returns promptStatus
+func makeSessionListServer(t *testing.T, sessionIDs []string, promptStatus int) (*httptest.Server, *int) {
+	t.Helper()
+	promptCalls := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := make([]map[string]any, len(sessionIDs))
+			for i, id := range sessionIDs {
+				sessions[i] = map[string]any{
+					"id": id,
+					"time": map[string]any{
+						"updated": float64(1000 + i),
+					},
+				}
+			}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST /session/<sid>/prompt_async
+		if r.Method == http.MethodPost {
+			*promptCalls++
+			w.WriteHeader(promptStatus)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	return srv, promptCalls
+}
+
+// parseSrvPort extracts the port from an httptest.Server URL.
+func parseSrvPort(t *testing.T, srvURL string) int {
+	t.Helper()
+	var port int
+	_, err := fmt.Sscanf(srvURL, "http://127.0.0.1:%d", &port)
+	if err != nil {
+		_, err = fmt.Sscanf(srvURL, "http://localhost:%d", &port)
+	}
+	if err != nil {
+		t.Fatalf("parse test server port from %q: %v", srvURL, err)
+	}
+	return port
+}
+
+// waitForBusMessageFailed polls the DB for a failed bus message (failed_at IS
+// NOT NULL and delivered_at IS NULL) to toSession.
+func waitForBusMessageFailed(t *testing.T, d *db.DB, toSession string) bool {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int
+		if err := d.QueryRow(`
+SELECT COUNT(*) FROM bus_messages
+WHERE to_session = ? AND failed_at IS NOT NULL AND delivered_at IS NULL`,
+			toSession,
+		).Scan(&count); err == nil && count > 0 {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestNotifyCoordinator_SIDConfirmed_DeliveredAtSet verifies that when the
+// stored opencode_sid is present in GET /session, delivered_at is set and
+// failed_at remains NULL.
+func TestNotifyCoordinator_SIDConfirmed_DeliveredAtSet(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-valid"
+	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered bus message — timed out")
+	}
+
+	// Exactly one POST must have been made.
+	if *promptCalls != 1 {
+		t.Errorf("prompt_async calls = %d, want 1", *promptCalls)
+	}
+
+	// Verify delivered_at IS NOT NULL and failed_at IS NULL directly via DB.
+	var deliveredAtRaw *int64
+	var failedAtRaw *int64
+	if err := d.QueryRow(
+		"SELECT delivered_at, failed_at FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
+		"test-repo@main",
+	).Scan(&deliveredAtRaw, &failedAtRaw); err != nil {
+		t.Fatalf("query delivered_at/failed_at: %v", err)
+	}
+	if deliveredAtRaw == nil {
+		t.Error("delivered_at: got nil, want non-nil")
+	}
+	if failedAtRaw != nil {
+		t.Errorf("failed_at: got %v, want nil (delivery succeeded)", failedAtRaw)
+	}
+}
+
+// TestNotifyCoordinator_StaleSID_FallsBackToMostRecent verifies that when the
+// stored opencode_sid is NOT present in GET /session, notifyCoordinator
+// uses the most recently updated session from the list instead.
+func TestNotifyCoordinator_StaleSID_FallsBackToMostRecent(t *testing.T) {
+	d := openTestDB(t)
+
+	staleSID := "stale-sid"
+	freshSID := "fresh-sid" // time.updated=1001 > 1000, so this is "most recent"
+	srv, promptCalls := makeSessionListServer(t, []string{"other-sid", freshSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	// Seed coordinator with the stale SID.
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, staleSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered bus message — timed out")
+	}
+
+	// Exactly one successful POST was made (after SID refresh).
+	if *promptCalls != 1 {
+		t.Errorf("prompt_async calls = %d, want 1", *promptCalls)
+	}
+
+	// The coordinator's stored SID must have been updated to the fresh one.
+	coordStatus, _ := d.CurrentStatus("test-repo@main")
+	if coordStatus.OpencodeSID == nil || *coordStatus.OpencodeSID != freshSID {
+		t.Errorf("opencode_sid after fallback: got %v, want %q", coordStatus.OpencodeSID, freshSID)
+	}
+}
+
+// TestNotifyCoordinator_EmptySessionList_WritesFailed verifies that when
+// GET /session returns an empty list, failed_at is written and delivered_at
+// remains NULL (edge case: no active sessions).
+func TestNotifyCoordinator_EmptySessionList_WritesFailed(t *testing.T) {
+	d := openTestDB(t)
+
+	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, "some-sid")
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if !waitForBusMessageFailed(t, d, "test-repo@main") {
+		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set")
+	}
+
+	// delivered_at must remain NULL.
+	var deliveredCount int
+	_ = d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
+		"test-repo@main",
+	).Scan(&deliveredCount)
+	if deliveredCount != 0 {
+		t.Errorf("delivered_at rows = %d, want 0 (delivery failed — empty session list)", deliveredCount)
+	}
+}
+
+// TestNotifyCoordinator_GetSessionFails_WritesFailed verifies that when
+// GET /session itself fails (non-200), failed_at is written after retries.
+func TestNotifyCoordinator_GetSessionFails_WritesFailed(t *testing.T) {
+	d := openTestDB(t)
+
+	// Server returns 500 for GET /session.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, "some-sid")
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if !waitForBusMessageFailed(t, d, "test-repo@main") {
+		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set")
+	}
+
+	// delivered_at must remain NULL.
+	var deliveredCount int
+	_ = d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
+		"test-repo@main",
+	).Scan(&deliveredCount)
+	if deliveredCount != 0 {
+		t.Errorf("delivered_at rows = %d, want 0 (GET /session failed)", deliveredCount)
+	}
+}
+
+// TestNotifyCoordinator_PostFails_Retries3Times_WritesFailed verifies that
+// when GET /session succeeds (SID confirmed) but the POST always fails, the
+// sidecar retries 3 times and ultimately writes failed_at.
+func TestNotifyCoordinator_PostFails_Retries3Times_WritesFailed(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-retries"
+	promptCalls := new(int)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// Always fail the POST.
+		*promptCalls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if !waitForBusMessageFailed(t, d, "test-repo@main") {
+		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set after retries")
+	}
+
+	// Exactly 3 POST attempts were made.
+	if *promptCalls != 3 {
+		t.Errorf("prompt_async calls = %d, want 3 (max retries)", *promptCalls)
+	}
+
+	// delivered_at must remain NULL.
+	var deliveredCount int
+	_ = d.QueryRow(
+		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
+		"test-repo@main",
+	).Scan(&deliveredCount)
+	if deliveredCount != 0 {
+		t.Errorf("delivered_at rows = %d, want 0 (POST always failed)", deliveredCount)
+	}
+}
+
+// TestNotifyCoordinator_StaleSIDNoDeliveredAt verifies that a stale SID (not
+// in the session list) does NOT result in delivered_at being set (AC: stale SID
+// never produces false-positive delivery).
+func TestNotifyCoordinator_StaleSIDNoDeliveredAt(t *testing.T) {
+	d := openTestDB(t)
+
+	// Server has no sessions containing the stale SID.
+	staleSID := "stale-sid-no-match"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			// Return list that does NOT contain staleSID — only a fresh one.
+			sessions := []map[string]any{{"id": "fresh-sid-abc", "time": map[string]any{"updated": 9999.0}}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST /session/<sid>/prompt_async — succeeds for fresh SID.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, staleSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	// The delivery succeeds via fallback — no failed_at row.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected delivered bus message via SID fallback — timed out")
+	}
+
+	// The coordinator's stored SID must have been refreshed.
+	coordStatus, _ := d.CurrentStatus("test-repo@main")
+	if coordStatus.OpencodeSID == nil || *coordStatus.OpencodeSID != "fresh-sid-abc" {
+		t.Errorf("opencode_sid after stale fallback: got %v, want \"fresh-sid-abc\"", coordStatus.OpencodeSID)
+	}
+}
+
+// TestHandleSessionCreated_AlwaysUpdatesOpencodeSID verifies that handling
+// multiple session.created events always updates the stored opencode_sid to the
+// latest value, keeping the DB current when the user creates a new opencode
+// session mid-conversation.
+func TestHandleSessionCreated_AlwaysUpdatesOpencodeSID(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// Seed an initial row with an old SID.
+	oldSID := "old-session-id"
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, &oldSID)
+
+	// First session.created event with oldSID.
+	sc.HandleEvent(makeSSE("session.created", map[string]any{
+		"info": map[string]string{"id": oldSID, "title": "First"},
+	}))
+
+	s1, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if s1.OpencodeSID == nil || *s1.OpencodeSID != oldSID {
+		t.Errorf("after first session.created: opencode_sid = %v, want %q", s1.OpencodeSID, oldSID)
+	}
+
+	// Second session.created event with a new SID (simulating /continue or TUI restart).
+	newSID := "new-session-id"
+	sc.HandleEvent(makeSSE("session.created", map[string]any{
+		"info": map[string]string{"id": newSID, "title": "Second"},
+	}))
+
+	s2, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
+		t.Errorf("after second session.created: opencode_sid = %v, want %q", s2.OpencodeSID, newSID)
+	}
+}
+
+// TestValidateOrRefreshCoordinatorSID_SIDPresent verifies that
+// validateOrRefreshCoordinatorSID returns the stored SID unchanged when it is
+// present in the session list.
+func TestValidateOrRefreshCoordinatorSID_SIDPresent(t *testing.T) {
+	d := openTestDB(t)
+
+	storedSID := "session-abc"
+	srv, _ := makeSessionListServer(t, []string{"session-xyz", storedSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+
+	got, err := validateOrRefreshCoordinatorSID(srvPort, storedSID, "test-repo@main", d, srv.Client())
+	if err != nil {
+		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
+	}
+	if got != storedSID {
+		t.Errorf("returned SID = %q, want %q", got, storedSID)
+	}
+}
+
+// TestValidateOrRefreshCoordinatorSID_SIDAbsent verifies that when the stored
+// SID is absent, the most recently updated session is selected and the DB is
+// updated.
+func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed coordinator so UpdateOpencodeSID has a row to update.
+	coordName := "test-repo@main"
+	_ = d.UpsertStatus(coordName, "test-repo", "/wt", "active", nil, nil)
+
+	// Session list has two entries; "newer-sid" has higher updated timestamp.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sessions := []map[string]any{
+			{"id": "older-sid", "time": map[string]any{"updated": 100.0}},
+			{"id": "newer-sid", "time": map[string]any{"updated": 200.0}},
+		}
+		data, _ := json.Marshal(sessions)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	}))
+	defer srv.Close()
+	srvPort := parseSrvPort(t, srv.URL)
+
+	staleSID := "stale-sid"
+	got, err := validateOrRefreshCoordinatorSID(srvPort, staleSID, coordName, d, srv.Client())
+	if err != nil {
+		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
+	}
+	if got != "newer-sid" {
+		t.Errorf("returned SID = %q, want %q", got, "newer-sid")
+	}
+
+	// DB must be updated.
+	status, _ := d.CurrentStatus(coordName)
+	if status.OpencodeSID == nil || *status.OpencodeSID != "newer-sid" {
+		t.Errorf("opencode_sid in DB = %v, want \"newer-sid\"", status.OpencodeSID)
+	}
+}
+
+// TestValidateOrRefreshCoordinatorSID_EmptyList returns an error.
+func TestValidateOrRefreshCoordinatorSID_EmptyList(t *testing.T) {
+	d := openTestDB(t)
+
+	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
+	defer srv.Close()
+	srvPort := parseSrvPort(t, srv.URL)
+
+	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client())
+	if err == nil {
+		t.Error("expected error for empty session list, got nil")
+	}
+}
+
+// TestValidateOrRefreshCoordinatorSID_GetFails returns an error.
+func TestValidateOrRefreshCoordinatorSID_GetFails(t *testing.T) {
+	d := openTestDB(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	srvPort := parseSrvPort(t, srv.URL)
+
+	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client())
+	if err == nil {
+		t.Error("expected error when GET /session returns 500, got nil")
+	}
 }

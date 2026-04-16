@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=5 (migrations are applied on Open).
+	// Verify schema_version=7 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version: got %d, want 7", version)
 	}
 
 	// Verify WAL mode.
@@ -739,13 +739,13 @@ func TestMigration_V1ToV2(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Verify schema_version=6.
+	// Verify schema_version=7.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version after migration: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -819,8 +819,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version after migration: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1320,8 +1320,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version after migration: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1386,8 +1386,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version after migration: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1456,8 +1456,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 6 {
-		t.Errorf("schema_version after migration: got %d, want 6", version)
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1498,6 +1498,205 @@ func TestMigration_V5ToV6(t *testing.T) {
 	// to_instance_id should be NULL (not set).
 	if toInstanceID != nil {
 		t.Errorf("ToInstanceID: got %v, want nil", toInstanceID)
+	}
+}
+
+// TestMigration_V6ToV7 verifies that Open applies the v6→v7 migration to an
+// existing DB at schema_version=6 (no failed_at column in bus_messages).
+func TestMigration_V6ToV7(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v6.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (6);
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 0, 0);
+		INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at, delivered_at)
+		  VALUES ('existing-msg', 'repo@feat', 'repo@main', 'repo', 'existing', 'normal', 1000, NULL);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v6 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v6 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 7 {
+		t.Errorf("schema_version after migration: got %d, want 7", version)
+	}
+
+	// Existing row must be preserved with failed_at = NULL.
+	var failedAt *int64
+	if err := d.QueryRow(
+		"SELECT failed_at FROM bus_messages WHERE id = ?", "existing-msg",
+	).Scan(&failedAt); err != nil {
+		t.Fatalf("query failed_at after v6→v7 migration: %v", err)
+	}
+	if failedAt != nil {
+		t.Errorf("failed_at: got %v, want nil (additive migration must not affect existing rows)", failedAt)
+	}
+
+	// WriteBusMessageFailed must work after migration.
+	msg := db.BusMessage{
+		ID:          "failed-after-migration",
+		FromSession: "repo@feat",
+		ToSession:   "repo@main",
+		Repo:        "repo",
+		Text:        "migration test",
+		Urgency:     "normal",
+	}
+	if err := d.WriteBusMessageFailed(msg); err != nil {
+		t.Fatalf("WriteBusMessageFailed after v6→v7 migration: %v", err)
+	}
+	var failedAt2 *int64
+	if err := d.QueryRow(
+		"SELECT failed_at FROM bus_messages WHERE id = ?", "failed-after-migration",
+	).Scan(&failedAt2); err != nil {
+		t.Fatalf("query failed_at after WriteBusMessageFailed: %v", err)
+	}
+	if failedAt2 == nil {
+		t.Error("failed_at: got nil, want non-nil timestamp after WriteBusMessageFailed")
+	}
+}
+
+// TestWriteBusMessageFailed verifies that WriteBusMessageFailed inserts a row
+// with failed_at set and delivered_at NULL.
+func TestWriteBusMessageFailed(t *testing.T) {
+	d := openTestDB(t)
+
+	msgID := "test-failed-" + uuid.New().String()
+	msg := db.BusMessage{
+		ID:          msgID,
+		FromSession: "repo@feature",
+		ToSession:   "repo@main",
+		Repo:        "repo",
+		Text:        "hello coordinator",
+		Urgency:     "normal",
+		SentAt:      time.Now(),
+	}
+
+	if err := d.WriteBusMessageFailed(msg); err != nil {
+		t.Fatalf("WriteBusMessageFailed: %v", err)
+	}
+
+	// Verify delivered_at IS NULL and failed_at IS NOT NULL.
+	var deliveredAt *int64
+	var failedAt *int64
+	if err := d.QueryRow(
+		"SELECT delivered_at, failed_at FROM bus_messages WHERE id = ?", msgID,
+	).Scan(&deliveredAt, &failedAt); err != nil {
+		t.Fatalf("scan bus_message row: %v", err)
+	}
+	if deliveredAt != nil {
+		t.Errorf("delivered_at: got %v, want nil (should not be set on failure)", deliveredAt)
+	}
+	if failedAt == nil {
+		t.Error("failed_at: got nil, want non-nil (should be set on failure)")
+	}
+}
+
+// TestWriteBusMessageDelivered_FailedAtNull verifies that WriteBusMessageDelivered
+// writes delivered_at and leaves failed_at NULL.
+func TestWriteBusMessageDelivered_FailedAtNull(t *testing.T) {
+	d := openTestDB(t)
+
+	msgID := "test-delivered-" + uuid.New().String()
+	msg := db.BusMessage{
+		ID:          msgID,
+		FromSession: "repo@feature",
+		ToSession:   "repo@main",
+		Repo:        "repo",
+		Text:        "hello coordinator",
+		Urgency:     "normal",
+		SentAt:      time.Now(),
+	}
+
+	if err := d.WriteBusMessageDelivered(msg); err != nil {
+		t.Fatalf("WriteBusMessageDelivered: %v", err)
+	}
+
+	var deliveredAt *int64
+	var failedAt *int64
+	if err := d.QueryRow(
+		"SELECT delivered_at, failed_at FROM bus_messages WHERE id = ?", msgID,
+	).Scan(&deliveredAt, &failedAt); err != nil {
+		t.Fatalf("scan bus_message row: %v", err)
+	}
+	if deliveredAt == nil {
+		t.Error("delivered_at: got nil, want non-nil after successful delivery")
+	}
+	if failedAt != nil {
+		t.Errorf("failed_at: got %v, want nil (should not be set on success)", failedAt)
+	}
+}
+
+// TestUpdateOpencodeSID verifies that UpdateOpencodeSID unconditionally
+// overwrites the stored opencode_sid (unlike COALESCE-based upserts).
+func TestUpdateOpencodeSID(t *testing.T) {
+	d := openTestDB(t)
+
+	oldSID := "old-session-id"
+	newSID := "new-session-id"
+
+	// Create a row with an initial SID.
+	if err := d.UpsertStatus("repo@main", "repo", "/wt", "active", nil, &oldSID); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	s, _ := d.CurrentStatus("repo@main")
+	if s.OpencodeSID == nil || *s.OpencodeSID != oldSID {
+		t.Fatalf("pre-condition: opencode_sid = %v, want %q", s.OpencodeSID, oldSID)
+	}
+
+	// UpdateOpencodeSID must overwrite unconditionally.
+	if err := d.UpdateOpencodeSID("repo@main", newSID); err != nil {
+		t.Fatalf("UpdateOpencodeSID: %v", err)
+	}
+
+	s2, _ := d.CurrentStatus("repo@main")
+	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
+		t.Errorf("opencode_sid after UpdateOpencodeSID: got %v, want %q", s2.OpencodeSID, newSID)
+	}
+}
+
+// TestUpdateOpencodeSID_NoopWhenNoRow verifies that UpdateOpencodeSID is a
+// no-op when the session does not exist in agent_status.
+func TestUpdateOpencodeSID_NoopWhenNoRow(t *testing.T) {
+	d := openTestDB(t)
+
+	// Must not error when no row exists.
+	if err := d.UpdateOpencodeSID("nonexistent@branch", "some-sid"); err != nil {
+		t.Errorf("UpdateOpencodeSID on non-existent session: %v (want nil)", err)
 	}
 }
 
