@@ -15,33 +15,41 @@ in
   };
   config = lib.mkIf (config.nx.system.impermanence.enable && pkgs.stdenv.isLinux) {
     # Wipe the disk on each boot
-    boot.initrd.postDeviceCommands =
-      lib.mkAfter
-        # bash
-        ''
-          mkdir /btrfs_tmp
-          mount /dev/root_vg/root /btrfs_tmp
-          if [[ -e /btrfs_tmp/root ]]; then
-              mkdir -p /btrfs_tmp/old_roots
-              timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/root)" "+%Y-%m-%-d_%H:%M:%S")
-              mv /btrfs_tmp/root "/btrfs_tmp/old_roots/$timestamp"
-          fi
+    boot.initrd.systemd.services.wipe-root = {
+      description = "Wipe root btrfs subvolume and rotate snapshots";
+      wantedBy = [ "initrd.target" ];
+      after = [ "dev-root_vg-root.device" ];
+      before = [ "sysroot.mount" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig.Type = "oneshot";
+      script = ''
+        set -euo pipefail
 
-          delete_subvolume_recursively() {
-              IFS=$'\n'
-              for i in $(btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
-                  delete_subvolume_recursively "/btrfs_tmp/$i"
-              done
-              btrfs subvolume delete "$1"
-          }
+        mkdir -p /btrfs_tmp
+        mount /dev/root_vg/root /btrfs_tmp
 
-          for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +14); do
-              delete_subvolume_recursively "$i"
-          done
+        if [[ -e /btrfs_tmp/root ]]; then
+            mkdir -p /btrfs_tmp/old_roots
+            timestamp=$(date --date="@$(stat -c %Y /btrfs_tmp/root)" "+%Y-%m-%-d_%H:%M:%S")
+            mv /btrfs_tmp/root "/btrfs_tmp/old_roots/$timestamp"
+        fi
 
-          btrfs subvolume create /btrfs_tmp/root
-          umount /btrfs_tmp
-        '';
+        delete_subvolume_recursively() {
+            IFS=$'\n'
+            for i in $(${pkgs.btrfs-progs}/bin/btrfs subvolume list -o "$1" | cut -f 9- -d ' '); do
+                delete_subvolume_recursively "/btrfs_tmp/$i"
+            done
+            ${pkgs.btrfs-progs}/bin/btrfs subvolume delete "$1"
+        }
+
+        for i in $(find /btrfs_tmp/old_roots/ -maxdepth 1 -mtime +14 2>/dev/null || true); do
+            delete_subvolume_recursively "$i"
+        done
+
+        ${pkgs.btrfs-progs}/bin/btrfs subvolume create /btrfs_tmp/root
+        umount /btrfs_tmp
+      '';
+    };
 
     # system things to persist
     fileSystems."/persist".neededForBoot = true;
