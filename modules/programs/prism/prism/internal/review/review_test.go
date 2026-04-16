@@ -142,6 +142,55 @@ func TestFormatResults_PassFailPhrases(t *testing.T) {
 	}
 }
 
+// ── AssessPassed ──────────────────────────────────────────────────────────────
+
+func TestAssessPassed_FailingPhrases(t *testing.T) {
+	failingTexts := []struct {
+		text   string
+		phrase string
+	}{
+		{"Please fix the above before this PR is merged.", "please fix"},
+		{"This needs to be fixed before merging.", "needs to be fixed"},
+		{"The function must be fixed to handle nil inputs.", "must be fixed"},
+		{"There is a blocking issue in the auth flow.", "blocking issue"},
+		{"This is a bug in the state machine.", "this is a bug"},
+		{"Error found in the input validation.", "error found"},
+		{"There is a security issue with the token handling.", "security issue"},
+		{"A vulnerability was found in the deserialization path.", "vulnerability"},
+		{"Output contains ✗ indicating failure.", "✗"},
+	}
+	for _, tt := range failingTexts {
+		if review.AssessPassed(tt.text) {
+			t.Errorf("AssessPassed(%q) = true, want false (phrase %q should trigger fail)", tt.text, tt.phrase)
+		}
+	}
+}
+
+func TestAssessPassed_PassingTexts(t *testing.T) {
+	passingTexts := []string{
+		"The implementation looks correct. All acceptance criteria are met.",
+		"LGTM. No issues found. The code follows existing conventions.",
+		"Reviewed thoroughly. The PR is ready to merge.",
+		"All acceptance criteria pass. The error handling is correct.",
+		"The PR looks good. I checked the diff and the linked issue's ACs.",
+	}
+	for _, text := range passingTexts {
+		if !review.AssessPassed(text) {
+			t.Errorf("AssessPassed(%q) = false, want true", text)
+		}
+	}
+}
+
+func TestAssessPassed_CaseInsensitive(t *testing.T) {
+	// Failure phrases should be detected regardless of case.
+	if review.AssessPassed("PLEASE FIX THE ABOVE BEFORE THIS PR IS MERGED.") {
+		t.Error("AssessPassed should detect 'PLEASE FIX' case-insensitively")
+	}
+	if review.AssessPassed("Please Fix the above.") {
+		t.Error("AssessPassed should detect 'Please Fix' case-insensitively")
+	}
+}
+
 // ── AgentsByName ──────────────────────────────────────────────────────────────
 
 func TestAgentsByName_ValidNames(t *testing.T) {

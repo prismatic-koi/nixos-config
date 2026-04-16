@@ -407,7 +407,17 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 			break
 		}
 
-		time.Sleep(pollInterval)
+		// Sleep while remaining responsive to context cancellation.
+		select {
+		case <-ctx.Done():
+			for i := range agents {
+				if !finished[i] {
+					timedOut[i] = true
+				}
+			}
+			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true), ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 
 	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, false), nil
@@ -469,7 +479,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 
 		// Extract text from the last msg_assistant event.
 		text := extractAssistantText(events[len(events)-1].Payload)
-		passed := assessPassed(text)
+		passed := AssessPassed(text)
 
 		results[i] = AgentResult{
 			Agent:  ag,
@@ -491,10 +501,12 @@ func extractAssistantText(payload string) string {
 	return payload
 }
 
-// assessPassed heuristically determines whether a review agent passed.
+// AssessPassed heuristically determines whether a review agent passed.
 // A review "passes" when the agent found no blocking issues. We look for
 // common patterns that indicate a clean review.
-func assessPassed(text string) bool {
+//
+// Exported so it can be tested directly without needing a live DB.
+func AssessPassed(text string) bool {
 	lower := strings.ToLower(text)
 	// Explicit failure indicators.
 	failPhrases := []string{
