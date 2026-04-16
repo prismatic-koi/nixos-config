@@ -1,14 +1,16 @@
 // Package sidecar implements the core logic for the prism sidecar process.
 //
-// The sidecar subscribes to the agent runtime's event stream (via the opencode
-// harness adapter) and translates events into agent state transitions, DB
-// writes, and dashboard sentinel touches — replicating the logic in
+// The sidecar subscribes to the agent runtime's event stream (via a
+// harness.Harness adapter) and translates events into agent state transitions,
+// DB writes, and dashboard sentinel touches — replicating the logic in
 // opencode/plugins/prism-hooks.ts.
 //
-// Opencode-specific logic (session creation, prompt delivery, SSE
+// All runtime-specific logic (session creation, prompt delivery, SSE
 // subscription, event type mapping, message extraction, container command,
-// health check, config mount path) lives in internal/harness/opencode/. The
-// sidecar imports and uses that adapter directly.
+// health check, config mount path) is delegated to the Harness interface.
+// The concrete implementation used in production is internal/harness/opencode.
+// The Harness value is injected at construction time via Config.Harness
+// (Phase 0a of the multi-harness migration, RFC #691).
 //
 // In container mode (Config.Container != nil), the sidecar also manages the
 // podman container lifecycle: create, health-check, stop, remove.
@@ -42,7 +44,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	session "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -89,6 +90,11 @@ type Config struct {
 	OpencodeURL string
 	DB          *db.DB
 	Clock       Clock
+	// Harness is the agent runtime adapter used for all runtime-specific
+	// operations: SSE subscription, session creation, prompt delivery, event
+	// type extraction, and event mapping. When non-nil it is used directly;
+	// when nil, New() panics — callers must always provide a Harness.
+	Harness harness.Harness
 	// AgentRole is the top-level agent role for this session (e.g. "worker" or
 	// "coordinator"), derived from the --agent-role CLI flag. When non-empty, it
 	// is used to pre-set rootAgent at initialisation time so that subagent user
@@ -138,11 +144,12 @@ type Config struct {
 	PrismBinaryPath string
 }
 
-// Sidecar is the core event processor. It consumes SSE events from the
-// opencode stream and drives state transitions in the prism DB.
+// Sidecar is the core event processor. It consumes events from the agent
+// runtime's event stream (via the Harness interface) and drives state
+// transitions in the prism DB.
 type Sidecar struct {
 	cfg     Config
-	harness *opencode.Adapter // opencode harness adapter; created in New()
+	harness harness.Harness // agent runtime adapter; injected via Config.Harness
 
 	mu              sync.Mutex
 	lastState       agent.AgentState
@@ -214,21 +221,20 @@ type Sidecar struct {
 }
 
 // New creates a Sidecar with the given configuration.
+// cfg.Harness must be non-nil; New panics if it is nil.
 func New(cfg Config) *Sidecar {
+	if cfg.Harness == nil {
+		panic("sidecar.New: cfg.Harness must not be nil")
+	}
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock()
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
-	// Derive agentModel for the adapter from Container.AgentModel when available.
-	agentModel := ""
-	if cfg.Container != nil {
-		agentModel = cfg.Container.AgentModel
-	}
 	s := &Sidecar{
 		cfg:             cfg,
-		harness:         opencode.New(cfg.OpencodeURL, cfg.HTTPClient, cfg.AgentRole, agentModel),
+		harness:         cfg.Harness,
 		writtenMessages: make(map[string]bool),
 		textByMessage:   make(map[string]string),
 		msgCreatedAtMs:  make(map[string]float64),

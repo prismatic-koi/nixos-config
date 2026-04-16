@@ -17,6 +17,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 )
 
 // ── test clock ──────────────────────────────────────────────────────────────
@@ -117,6 +118,7 @@ func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 		OpencodeURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
+		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
 	}
 	return New(cfg), clk
 }
@@ -1564,6 +1566,7 @@ func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  httpClient,
+		Harness:     opencode.New("http://localhost:14001", httpClient, "", ""),
 	}
 	return New(cfg), clk
 }
@@ -1764,6 +1767,7 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 		OpencodeURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
+		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
 	}
 	coordinator := New(cfg)
 
@@ -2462,6 +2466,7 @@ func TestOnReady_NotCalledAfterShutdown(t *testing.T) {
 		OpencodeURL: "http://localhost:14000",
 		DB:          openTestDB(t),
 		Clock:       newTestClock(),
+		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
 		OnReady: func() {
 			called = true
 		},
@@ -2499,6 +2504,7 @@ func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
 		OpencodeURL: "http://localhost:14000",
 		DB:          openTestDB(t),
 		Clock:       newTestClock(),
+		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
 		OnReady: func() {
 			called = true
 		},
@@ -3617,6 +3623,7 @@ func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, r
 		Clock:       clk,
 		AgentRole:   role,
 		HTTPClient:  httpClient,
+		Harness:     opencode.New("http://localhost:14001", httpClient, role, ""),
 	}
 	return New(cfg), clk
 }
@@ -3802,6 +3809,7 @@ func TestRootAgentPreset_CoordinatorSession(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
+		Harness:     opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -4047,6 +4055,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			Clock:       clk,
 			AgentRole:   "worker",
 			AgentModel:  "anthropic/claude-sonnet-4-6",
+			Harness:     opencode.New("http://localhost:14000", nil, "worker", "anthropic/claude-sonnet-4-6"),
 		}
 		sc := New(cfg)
 
@@ -4091,6 +4100,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			Clock:       clk,
 			AgentRole:   "worker",
 			AgentModel:  "anthropic/claude-sonnet-4-6",
+			Harness:     opencode.New("http://localhost:14000", nil, "worker", "anthropic/claude-sonnet-4-6"),
 		}
 		sc := New(cfg)
 
@@ -4142,6 +4152,7 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			DB:          d,
 			Clock:       clk,
 			// AgentRole and AgentModel intentionally left empty (legacy session).
+			Harness: opencode.New("http://localhost:14000", nil, "", ""),
 		}
 		sc := New(cfg)
 
@@ -4399,6 +4410,7 @@ func newSidecarWithRole(t *testing.T, sessionName, repo, role string, d *db.DB) 
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   role,
+		Harness:     opencode.New("http://localhost:14000", nil, role, ""),
 	}
 	return New(cfg)
 }
@@ -4426,6 +4438,7 @@ func newSidecarWithRoleAndBinary(t *testing.T, sessionName, repo, role string, d
 		Clock:           clk,
 		AgentRole:       role,
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, role, ""),
 	}
 	return New(cfg)
 }
@@ -4941,6 +4954,7 @@ echo "session \"${last}@test-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -4986,6 +5000,7 @@ echo "session \"${last}@new-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -5063,6 +5078,7 @@ echo "session \"${last}@cross-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
@@ -5116,6 +5132,7 @@ echo "session \"${last}@host-mode-branch\" created"
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 

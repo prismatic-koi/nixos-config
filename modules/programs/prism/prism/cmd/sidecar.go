@@ -46,6 +46,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
@@ -129,6 +130,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Load prism runtime config — needed for git identity and SSH key names.
 	prismCfg := config.Load()
 
+	// Resolve the agent model once; used in both the container config and the
+	// harness adapter construction below.
+	agentModel := opencodeAgentModel(agentRole)
+
 	// Build container config if container mode is enabled.
 	var ctrCfg *container.Config
 	if containerMode {
@@ -151,7 +156,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			WorktreeGitDir:    worktreeGitDir,
 			AllocatedPort:     port,
 			AgentRole:         agentRole,
-			AgentModel:        opencodeAgentModel(agentRole),
+			AgentModel:        agentModel,
 			InstanceID:        instanceID,
 			PluginHostPath:    pluginPath,
 			ConfigContent:     configContent,
@@ -199,6 +204,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Construct the opencode harness adapter and inject it via Config.Harness.
+	// The adapter encapsulates all opencode-specific behaviour: session
+	// creation, prompt delivery, SSE subscription, event type extraction, and
+	// event mapping. The sidecar calls through the harness.Harness interface
+	// and has no direct dependency on the opencode package (#710).
+	h := opencode.New(opencodeURL, nil, agentRole, agentModel)
+
 	cfg := sidecar.Config{
 		SessionName:     sessionName,
 		Repo:            repo,
@@ -207,12 +219,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		DB:              d,
 		Clock:           sidecar.RealClock(),
 		AgentRole:       agentRole,
-		AgentModel:      opencodeAgentModel(agentRole),
+		AgentModel:      agentModel,
 		InstanceID:      instanceID,
 		Container:       ctrCfg,
 		HostAPISockPath: hostAPISockPath,
 		OnReady:         onReady,
 		InitialPrompt:   initialPrompt,
+		Harness:         h,
 	}
 	sc := sidecar.New(cfg)
 

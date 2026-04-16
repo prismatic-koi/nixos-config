@@ -3,9 +3,9 @@
 // health-check, config mount path, session creation, prompt delivery, SSE
 // subscription, event type mapping, and message extraction.
 //
-// The sidecar imports this package directly and uses it via the concrete
-// *Adapter type. Injection of the harness.Harness interface into the sidecar
-// constructor is a separate issue (#710).
+// This is the reference implementation of harness.Harness. The sidecar
+// receives an *Adapter (as a harness.Harness interface value) at construction
+// time via sidecar.Config.Harness — injected by cmd/sidecar.go (#710).
 package opencode
 
 import (
@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
@@ -74,6 +75,14 @@ func (a *Adapter) ContainerCommand() string {
 	return fmt.Sprintf("opencode serve --port %d --hostname 0.0.0.0", containerPort)
 }
 
+// healthProbeClient is a short-timeout HTTP client used exclusively for
+// individual health-check probe attempts. Its timeout governs a single HTTP
+// round-trip, not the overall health-check deadline (which is controlled by
+// defaultHealthCheckTimeout and enforced in the HealthCheck loop). Using a
+// separate client avoids reusing the general-purpose 10 s API client for probe
+// attempts that must complete within one healthCheckInterval window.
+var healthProbeClient = &http.Client{Timeout: defaultHealthCheckTimeout}
+
 // HealthCheck probes GET /global/health on the given port until it responds
 // with 2xx or ctx is cancelled. Returns nil when healthy.
 //
@@ -84,7 +93,6 @@ func (a *Adapter) ContainerCommand() string {
 // immediately with no external I/O.
 func (a *Adapter) HealthCheck(ctx context.Context, port int) error {
 	healthURL := fmt.Sprintf("http://127.0.0.1:%d/global/health", port)
-	client := a.httpClient
 
 	deadline := time.Now().Add(defaultHealthCheckTimeout)
 	for {
@@ -99,7 +107,7 @@ func (a *Adapter) HealthCheck(ctx context.Context, port int) error {
 		if err != nil {
 			return err
 		}
-		resp, err := client.Do(req)
+		resp, err := healthProbeClient.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -125,10 +133,9 @@ func (a *Adapter) ConfigMountPath() string {
 // and returns its ID. The session ID is also stored in the adapter so that
 // DeliverInitialPrompt can use it without the caller having to pass it back.
 //
-// This method is not part of the harness.Harness interface. It is called by
-// the sidecar directly (before the interface-injection migration in #710) so
-// that the sidecar can write the session ID file between creation and prompt
-// delivery — the ordering matters for the opencode attach TUI flow.
+// It satisfies the harness.Harness interface. The sidecar calls this via the
+// interface so that it can write the .sid session-ID file between creation and
+// prompt delivery — the ordering matters for the opencode attach TUI flow.
 func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 	body := map[string]string{"directory": "/workspace"}
 	jsonBytes, err := json.Marshal(body)
@@ -295,8 +302,9 @@ func (a *Adapter) Subscribe(ctx context.Context) (<-chan harness.HarnessEvent, e
 // present. The real event type is embedded in the JSON `type` field of the
 // data payload.
 //
-// This method is not on the harness.Harness interface; it is called directly
-// by the sidecar's HandleEvent to resolve the opencode-specific event type.
+// It satisfies the harness.Harness interface. The sidecar calls this via the
+// interface in HandleEvent to resolve the opencode-specific event type before
+// dispatching to the appropriate event handler.
 func (a *Adapter) ExtractEventType(evt harness.HarnessEvent) string {
 	eventType := evt.Type
 	if eventType == "" || eventType == "message" {
@@ -323,15 +331,15 @@ func (a *Adapter) MapEvent(evt harness.HarnessEvent) (harness.StateTransition, b
 
 	switch eventType {
 	case "session.created", "session.updated":
-		return harness.StateTransition{State: "active"}, true
+		return harness.StateTransition{State: agent.StateActive}, true
 	case "session.deleted":
-		return harness.StateTransition{State: "deleted"}, true
+		return harness.StateTransition{State: agent.StateDeleted}, true
 	case "session.error":
-		return harness.StateTransition{State: "error"}, true
+		return harness.StateTransition{State: agent.StateError}, true
 	case "permission.asked", "question.asked":
-		return harness.StateTransition{State: "waiting"}, true
+		return harness.StateTransition{State: agent.StateWaiting}, true
 	case "permission.replied", "question.replied", "question.rejected":
-		return harness.StateTransition{State: "active"}, true
+		return harness.StateTransition{State: agent.StateActive}, true
 	}
 	return harness.StateTransition{}, false
 }
