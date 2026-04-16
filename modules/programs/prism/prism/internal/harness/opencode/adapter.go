@@ -3,9 +3,9 @@
 // health-check, config mount path, session creation, prompt delivery, SSE
 // subscription, event type mapping, and message extraction.
 //
-// The sidecar imports this package directly and uses it via the concrete
-// *Adapter type. Injection of the harness.Harness interface into the sidecar
-// constructor is a separate issue (#710).
+// This is the reference implementation of harness.Harness. The sidecar
+// receives an *Adapter (as a harness.Harness interface value) at construction
+// time via sidecar.Config.Harness — injected by cmd/sidecar.go (#710).
 package opencode
 
 import (
@@ -133,10 +133,9 @@ func (a *Adapter) ConfigMountPath() string {
 // and returns its ID. The session ID is also stored in the adapter so that
 // DeliverInitialPrompt can use it without the caller having to pass it back.
 //
-// This method is not part of the harness.Harness interface. It is called by
-// the sidecar directly (before the interface-injection migration in #710) so
-// that the sidecar can write the session ID file between creation and prompt
-// delivery — the ordering matters for the opencode attach TUI flow.
+// It satisfies the harness.Harness interface. The sidecar calls this via the
+// interface so that it can write the .sid session-ID file between creation and
+// prompt delivery — the ordering matters for the opencode attach TUI flow.
 func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 	body := map[string]string{"directory": "/workspace"}
 	jsonBytes, err := json.Marshal(body)
@@ -303,8 +302,9 @@ func (a *Adapter) Subscribe(ctx context.Context) (<-chan harness.HarnessEvent, e
 // present. The real event type is embedded in the JSON `type` field of the
 // data payload.
 //
-// This method is not on the harness.Harness interface; it is called directly
-// by the sidecar's HandleEvent to resolve the opencode-specific event type.
+// It satisfies the harness.Harness interface. The sidecar calls this via the
+// interface in HandleEvent to resolve the opencode-specific event type before
+// dispatching to the appropriate event handler.
 func (a *Adapter) ExtractEventType(evt harness.HarnessEvent) string {
 	eventType := evt.Type
 	if eventType == "" || eventType == "message" {
