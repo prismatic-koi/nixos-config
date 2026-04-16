@@ -4,6 +4,12 @@
 // "opencode serve --port 4096", health-checks it until the HTTP endpoint
 // responds, and stops/removes the container on shutdown.
 //
+// Health check: we probe GET /global/health (not GET /) because the root URL
+// falls through to opencode's UIRoutes catch-all, which proxies to
+// https://app.opencode.ai/ when there is no embedded web UI — adding a 3–4 s
+// network round-trip on every container startup. /global/health is in
+// ControlPlaneRoutes and returns immediately with no external I/O.
+//
 // Design notes:
 //   - All podman operations use exec.Command("podman", ...) — no daemon or
 //     socket is required from Go's perspective, just a podman binary on PATH.
@@ -183,9 +189,14 @@ func New(cfg Config) *Manager {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
 	return &Manager{
-		cfg:            cfg,
-		name:           containerName(cfg.SessionName),
-		healthCheckURL: fmt.Sprintf("http://127.0.0.1:%d/", cfg.AllocatedPort),
+		cfg:  cfg,
+		name: containerName(cfg.SessionName),
+		// Use /global/health rather than / — the root URL falls through to
+		// UIRoutes which proxies to https://app.opencode.ai/ when there is no
+		// embedded web UI, adding a 3–4 s network round-trip to every startup.
+		// /global/health is in ControlPlaneRoutes and returns immediately with
+		// no MCP initialisation, plugin loading, or external network calls.
+		healthCheckURL: fmt.Sprintf("http://127.0.0.1:%d/global/health", cfg.AllocatedPort),
 		httpClient:     httpClient,
 	}
 }
