@@ -1,7 +1,11 @@
 package dashboard
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +18,8 @@ import (
 )
 
 // FetchSessionsFromDB queries agent_status for all active sessions and
-// enriches them with git diff stats.
+// enriches them with git diff stats. Used by the popup dashboard (which fetches
+// fresh data on every open) and by the persistent dashboard's RefreshMsg path.
 func FetchSessionsFromDB() tea.Msg {
 	d, err := openDB()
 	if err != nil {
@@ -69,6 +74,17 @@ func FetchSessionsFromDB() tea.Msg {
 	return SessionsMsg{Sessions: sessions, GitStats: stats}
 }
 
+// FetchSessionsWithGitStats queries agent_status for all active sessions and
+// enriches them with git diff stats. Used by the persistent dashboard's 5s
+// git stat ticker to keep diff counts up to date independently of state
+// transition rendering.
+func FetchSessionsWithGitStats() tea.Msg {
+	// Delegates to FetchSessionsFromDB which includes git stats.
+	// Having a separate function pointer allows tests to stub just the ticker
+	// path without affecting the on-demand refresh path.
+	return FetchSessionsFromDB()
+}
+
 // FetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
 // Runs as a tea.Cmd so it never blocks the render loop.
 func FetchGitHubStats() tea.Msg {
@@ -109,6 +125,13 @@ func GhTick() tea.Cmd {
 	})
 }
 
+// GitStatTick returns a tea.Cmd that fires a GitStatTickMsg after 5 seconds.
+func GitStatTick() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return GitStatTickMsg(t)
+	})
+}
+
 // DashSentinelPath returns the path to the dashboard sentinel file.
 func DashSentinelPath() string {
 	stateHome := os.Getenv("XDG_STATE_HOME")
@@ -119,6 +142,16 @@ func DashSentinelPath() string {
 	return filepath.Join(stateHome, "prism", "bus", ".dashboard.signal")
 }
 
+// DashSocketPath returns the path to the persistent dashboard Unix socket.
+func DashSocketPath() string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, _ := os.UserHomeDir()
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "prism", "bus", "dashboard.sock")
+}
+
 // WatchDashboardSentinel starts a goroutine that polls the dashboard sentinel
 // file for changes and sends a RefreshMsg to the Bubble Tea program when a
 // change is detected. The goroutine exits when ctx is cancelled (call the
@@ -126,6 +159,9 @@ func DashSentinelPath() string {
 //
 // Uses a stat-poll rather than inotify/fsnotify to avoid adding a dependency.
 // The poll interval is 200ms — well under the 1-second target from the spec.
+//
+// This function is used by the popup dashboard only. The persistent dashboard
+// uses StartSocketListener instead.
 func WatchDashboardSentinel(ctx context.Context, p *tea.Program) {
 	sentinelPath := DashSentinelPath()
 	var lastMod time.Time
@@ -147,4 +183,100 @@ func WatchDashboardSentinel(ctx context.Context, p *tea.Program) {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}()
+}
+
+// pushEvent is the JSON payload sent by the sidecar to the dashboard socket.
+type pushEvent struct {
+	Session string `json:"session"`
+	State   string `json:"state"`
+	Title   string `json:"title"`
+}
+
+// StartSocketListener creates the dashboard Unix socket, listens for push events
+// from sidecars, and sends PushEventMsg to the Bubble Tea program on each event.
+// The socket is created at DashSocketPath() with mode 0600. The goroutine is
+// stopped and the socket removed when ctx is cancelled.
+//
+// Returns the net.Listener (for explicit teardown by the caller) and any error
+// from socket creation. On error the caller should fall back to
+// WatchDashboardSentinel.
+func StartSocketListener(ctx context.Context, p *tea.Program) (net.Listener, error) {
+	sockPath := DashSocketPath()
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
+		return nil, err
+	}
+	// Remove any stale socket from a previous run.
+	_ = os.Remove(sockPath)
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, err
+	}
+	// Restrict to owner only.
+	if err := os.Chmod(sockPath, 0o600); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				// Accept fails when the listener is closed (clean shutdown).
+				return
+			}
+			go handlePushConn(conn, p)
+		}
+	}()
+
+	// Close the listener and remove the socket when ctx is cancelled.
+	go func() {
+		<-ctx.Done()
+		_ = ln.Close()
+		_ = os.Remove(sockPath)
+	}()
+
+	return ln, nil
+}
+
+// handlePushConn reads a single push event from conn and sends a PushEventMsg
+// to p. Fire-and-forget: errors are silently discarded.
+func handlePushConn(conn net.Conn, p *tea.Program) {
+	defer conn.Close()
+	// Set a short read deadline so a stuck or misbehaving sidecar cannot
+	// block an Accept slot indefinitely.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	// Read one line (the JSON event).
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return
+	}
+	line := scanner.Bytes()
+	var evt pushEvent
+	if err := json.Unmarshal(line, &evt); err != nil {
+		log.Printf("dashboard: socket: invalid push event: %v", err)
+		return
+	}
+	if evt.Session == "" || evt.State == "" {
+		return
+	}
+	p.Send(PushEventMsg{Session: evt.Session, State: evt.State, Title: evt.Title})
+}
+
+// RemoveStaleSocket removes the dashboard socket at DashSocketPath() if it
+// exists but has no listening process. Used by prism restore to clean up
+// sockets left behind by a crashed dashboard.
+func RemoveStaleSocket() {
+	sockPath := DashSocketPath()
+	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
+		return
+	}
+	// Attempt a dial; if connection is refused (or any error), remove the socket.
+	conn, err := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
+	if err != nil {
+		_ = os.Remove(sockPath)
+		return
+	}
+	// Socket is live — leave it alone.
+	_ = conn.Close()
 }

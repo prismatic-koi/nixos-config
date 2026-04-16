@@ -57,8 +57,20 @@ type SessionsMsg struct {
 // GhTickMsg is sent on the 60-second GitHub stats refresh timer.
 type GhTickMsg time.Time
 
+// GitStatTickMsg is sent on the 5-second git stat refresh timer.
+type GitStatTickMsg time.Time
+
 // CursorTimeoutMsg is sent when the cursor auto-hide timeout fires.
 type CursorTimeoutMsg struct{}
+
+// PushEventMsg is sent by the socket listener goroutine when a sidecar pushes
+// a state-change event to the dashboard socket. It carries only the session
+// name, new state, and (optionally) title — no DB round-trip required.
+type PushEventMsg struct {
+	Session string
+	State   string
+	Title   string
+}
 
 // GithubStatsMsg carries the result of a GitHub PR fetch.
 type GithubStatsMsg struct {
@@ -226,6 +238,30 @@ func fuzzyMatch(s, pattern string) bool {
 		}
 	}
 	return true
+}
+
+// applyPushEvent updates d in response to a PushEventMsg: it finds the session
+// named msg.Session in d.Sessions and updates its AgentState (and AgentTitle if
+// non-empty) in-place. If the session is not found, d is returned unchanged
+// (no crash). After updating, RefilterShared is called to propagate the change
+// to Displayed.
+func applyPushEvent(d Shared, msg PushEventMsg) Shared {
+	found := false
+	for i, s := range d.Sessions {
+		if s.Name == msg.Session {
+			d.Sessions[i].AgentState = msg.State
+			if msg.Title != "" {
+				d.Sessions[i].AgentTitle = msg.Title
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Unknown session — ignore gracefully.
+		return d
+	}
+	return RefilterShared(d)
 }
 
 // ── db helper ─────────────────────────────────────────────────────────────────

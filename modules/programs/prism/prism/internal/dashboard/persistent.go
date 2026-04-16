@@ -40,7 +40,11 @@ func NewPersistentModel(client, callerSession string) PersistentModel {
 }
 
 func (m PersistentModel) Init() tea.Cmd {
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick())
+	// FetchSessionsFromDB populates the initial session list with git diff stats.
+	// GitStatTick schedules a 5-second periodic refresh to keep stats up to date
+	// independently of state-transition rendering (push events update only
+	// session state, not git stats).
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick(), GitStatTick())
 }
 
 func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -52,6 +56,18 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case RefreshMsg:
 		return m, FetchSessionsFromDB
+
+	case GitStatTickMsg:
+		// 5-second git stat refresh: fetch sessions with git diff stats, then
+		// schedule the next tick.
+		return m, tea.Batch(FetchSessionsWithGitStats, GitStatTick())
+
+	case PushEventMsg:
+		// A sidecar pushed a state-change event directly to the dashboard socket.
+		// Update the named session in-memory and re-render immediately — no DB
+		// round-trip, no git stat wait.
+		m.Shared = applyPushEvent(m.Shared, msg)
+		return m, nil
 
 	case DashStatusMsg:
 		m.StatusMsg = string(msg)

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -51,7 +52,11 @@ var dashboardCmd = &cobra.Command{
 				m := dashboard.NewPersistentModel(client, callerSession)
 				p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithReportFocus())
 				ctx, cancel := context.WithCancel(context.Background())
-				dashboard.WatchDashboardSentinel(ctx, p)
+				// Use socket listener for real-time push events (persistent dashboard only).
+				if _, err := dashboard.StartSocketListener(ctx, p); err != nil {
+					log.Printf("dashboard: socket listener: %v (falling back to sentinel polling)", err)
+					dashboard.WatchDashboardSentinel(ctx, p)
+				}
 				_, err := p.Run()
 				cancel()
 				return err

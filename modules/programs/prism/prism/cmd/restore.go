@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -65,6 +66,10 @@ func Restore(dryRun bool) error {
 		fmt.Fprintf(os.Stderr, "prism restore: prune: %v\n", err)
 		// Non-fatal — continue with restore.
 	}
+
+	// Remove any stale dashboard socket left behind by a crashed dashboard.
+	// Non-fatal: a stale socket only affects real-time push delivery.
+	dashboard.RemoveStaleSocket()
 
 	statuses, err := d.AllActiveStatus()
 	if err != nil {
