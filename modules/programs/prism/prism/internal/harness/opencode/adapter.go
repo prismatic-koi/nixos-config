@@ -70,9 +70,12 @@ func New(opencodeURL string, httpClient *http.Client, agentRole, agentModel stri
 }
 
 // ContainerCommand returns the command string used to launch opencode as the
-// main process inside its container.
+// main process inside its container. "opencode --port N --hostname 0.0.0.0"
+// launches opencode in combined TUI + HTTP mode: the TUI renders on the
+// container's PTY (bridged to the tmux pane via "podman attach") while the
+// HTTP/SSE API is served on containerPort for the sidecar (RFC #691, Phase 1a).
 func (a *Adapter) ContainerCommand() string {
-	return fmt.Sprintf("opencode serve --port %d --hostname 0.0.0.0", containerPort)
+	return fmt.Sprintf("opencode --port %d --hostname 0.0.0.0", containerPort)
 }
 
 // healthProbeClient is a short-timeout HTTP client used exclusively for

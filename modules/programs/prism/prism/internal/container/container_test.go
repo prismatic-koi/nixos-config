@@ -248,22 +248,26 @@ func TestBuildRunArgs_WorkdirIsWorkspace(t *testing.T) {
 	}
 }
 
-func TestBuildRunArgs_OpencodeServeCommand(t *testing.T) {
+func TestBuildRunArgs_OpencodeCommand(t *testing.T) {
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 
 	// The last elements should be:
-	// <image> opencode serve --port 4096 --hostname 0.0.0.0
-	// That is 7 elements from the end.
+	// <image> opencode --port 4096 --hostname 0.0.0.0
+	// That is 6 elements from the end (no "serve" subcommand any more).
 	n := len(args)
-	if n < 7 {
+	if n < 6 {
 		t.Fatalf("too few args (%d): %v", n, args)
 	}
-	if args[n-7] != Image {
-		t.Errorf("expected image %q at args[n-7], got %q (all args: %v)", Image, args[n-7], args)
+	if args[n-6] != Image {
+		t.Errorf("expected image %q at args[n-6], got %q (all args: %v)", Image, args[n-6], args)
 	}
-	if args[n-6] != "opencode" || args[n-5] != "serve" {
-		t.Errorf("expected 'opencode serve', got %q %q", args[n-6], args[n-5])
+	if args[n-5] != "opencode" {
+		t.Errorf("expected 'opencode', got %q", args[n-5])
+	}
+	// Verify there is no "serve" subcommand — opencode runs in combined TUI + HTTP mode.
+	if args[n-5] == "opencode" && len(args) > n-4 && args[n-4] == "serve" {
+		t.Errorf("unexpected 'serve' subcommand: opencode should run in combined TUI + HTTP mode (RFC #691)")
 	}
 	if args[n-4] != "--port" || args[n-3] != "4096" {
 		t.Errorf("expected '--port 4096', got %q %q", args[n-4], args[n-3])

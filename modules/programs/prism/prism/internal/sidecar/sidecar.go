@@ -130,7 +130,7 @@ type Config struct {
 	HostAPITCPPort int
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
-	// readiness signal file that unblocks the tmux pane running "opencode attach".
+	// readiness signal file that unblocks the tmux pane running "podman attach".
 	// No-op when nil.
 	OnReady func()
 	// InitialPrompt, when non-empty, is delivered to the opencode server via
@@ -359,13 +359,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		// Deliver the initial prompt (#487) before calling OnReady, so the
-		// .sid file is on disk before the TUI readiness-wait script unblocks.
+		// Deliver the initial prompt (#487) before calling OnReady.
 		// 1. POST /session  — create the session, capture its ID.
-		// 2. Write the sid file so opencode attach -s <sid> opens the right session.
-		// 3. Call OnReady  — unblocks the TUI pane, which runs opencode attach -s <sid>.
+		// 2. Write the .sid file (for forensics/diagnostics; no longer consumed by
+		//    the agent window — "podman attach" connects to the PTY directly).
+		//    Cleanup of the .sid write path is deferred to #716.
+		// 3. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
 		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
-		//    now attaching/subscribed so execution begins immediately.
+		//    now attached so execution begins immediately.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
 			sid, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {

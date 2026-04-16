@@ -101,20 +101,21 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 }
 
 // TestBuildOpencodeCmd_ContainerMode verifies that container mode produces the
-// correct "opencode attach http://localhost:<port>" command (AC-17, AC-22).
+// correct "podman attach <container-name>" command (RFC #691, Phase 1a / Issue #715).
 func TestBuildOpencodeCmd_ContainerMode(t *testing.T) {
 	cases := []struct {
 		opts session.Opts
 		want string
 	}{
-		// Container mode with allocated port — should use opencode attach.
-		{session.Opts{ContainerMode: true, Port: 14000}, "opencode attach http://localhost:14000"},
-		// Different port (AC-22: port in URL is the allocated port, not 4096).
-		{session.Opts{ContainerMode: true, Port: 14042}, "opencode attach http://localhost:14042"},
-		// Agent role is irrelevant in container mode (attach doesn't take --agent).
-		{session.Opts{ContainerMode: true, Port: 14001, Agent: "coordinator"}, "opencode attach http://localhost:14001"},
-		// Container mode with no port falls back to direct launch.
-		{session.Opts{ContainerMode: true, Port: 0, Agent: "worker"}, "opencode --agent worker"},
+		// Container mode with SessionName — should use podman attach with the
+		// stable container name derived from the session name.
+		{session.Opts{ContainerMode: true, SessionName: "repo@main", Port: 14000}, "podman attach prism-repo-main"},
+		// Different session name — container name is derived correctly.
+		{session.Opts{ContainerMode: true, SessionName: "nixos-config@feature", Port: 14042}, "podman attach prism-nixos-config-feature"},
+		// Agent role is irrelevant in container mode (podman attach is role-agnostic).
+		{session.Opts{ContainerMode: true, SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach prism-repo-branch"},
+		// Container mode with no SessionName falls back to direct launch (safety net).
+		{session.Opts{ContainerMode: true, SessionName: "", Port: 0, Agent: "worker"}, "opencode --agent worker"},
 		// Non-container mode is unaffected.
 		{session.Opts{ContainerMode: false, Port: 14000, Agent: "worker"}, "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
 	}

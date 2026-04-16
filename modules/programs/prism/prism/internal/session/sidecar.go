@@ -46,7 +46,7 @@ func SidecarLogPath(sessionName string) (string, error) {
 
 // SidecarReadyPath returns the readiness signal file path for the named session.
 // The sidecar creates this file after the container is healthy. The tmux pane
-// startup script polls for its existence before running "opencode attach".
+// startup script polls for its existence before running "podman attach".
 //
 // Ready file: $XDG_STATE_HOME/prism/run/<session>-sidecar.ready
 func SidecarReadyPath(sessionName string) (string, error) {
@@ -58,9 +58,10 @@ func SidecarReadyPath(sessionName string) (string, error) {
 }
 
 // SidecarSessionPath returns the path to the file where the sidecar writes the
-// opencode session ID after creating it via prompt delivery (#487). The tmux
-// pane startup script reads this file (if present) and passes -s <sid> to
-// "opencode attach" so it opens directly into the agent's session.
+// opencode session ID after creating it via prompt delivery (#487). This file
+// is written by the sidecar for diagnostics and forensics; the tmux pane no
+// longer reads it — "podman attach" connects to the container PTY directly
+// (RFC #691, Phase 1a). The write path and this helper are cleaned up in #716.
 //
 // Session file: $XDG_STATE_HOME/prism/run/<session>-sidecar.sid
 func SidecarSessionPath(sessionName string) (string, error) {

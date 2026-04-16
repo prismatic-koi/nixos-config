@@ -1,8 +1,10 @@
 // Package container manages the podman container lifecycle for prism sidecar.
 //
 // The sidecar (running on the host) creates a podman container running
-// "opencode serve --port 4096", health-checks it until the HTTP endpoint
-// responds, and stops/removes the container on shutdown.
+// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode),
+// health-checks it until the HTTP endpoint responds, and stops/removes the
+// container on shutdown. The tmux agent window attaches to the container's
+// PTY via "podman attach" so the opencode TUI is visible to the user.
 //
 // Health check: we probe GET /global/health (not GET /) because the root URL
 // falls through to opencode's UIRoutes catch-all, which proxies to
@@ -769,11 +771,9 @@ func (m *Manager) buildRunArgs() []string {
 	args := []string{
 		"run",
 		"--detach",
-		// --tty allocates a PTY on the container. The container currently runs
-		// "opencode serve" which does not use the PTY, but RFC #691 migrates to
-		// "opencode" (monolithic TUI mode) where podman attach bridges the PTY to
-		// the tmux pane. The flag must be set before that migration lands (see
-		// RFC #691, Phase 1a / Issue G).
+		// --tty allocates a PTY on the container. The container runs "opencode"
+		// in combined TUI + HTTP mode; the tmux agent window uses "podman attach"
+		// to bridge this PTY to the user's pane (RFC #691, Phase 1a / Issue #715).
 		"--tty",
 		"--name", m.name,
 	}
@@ -1079,9 +1079,15 @@ func (m *Manager) buildRunArgs() []string {
 		args = append(args, "--volume", m.opencodeConfigFilePath()+":/root/.config/opencode/opencode.json:ro")
 	}
 
-	// Image and command: opencode serve on the container port.
+	// Image and command: opencode in combined TUI + HTTP mode.
+	// "opencode --port N --hostname 0.0.0.0" launches the monolithic TUI on
+	// the container's PTY (allocated via --tty) while simultaneously serving
+	// the HTTP/SSE API on ContainerPort for the sidecar. The sidecar still
+	// connects to the SSE endpoint on the mapped host port exactly as before.
+	// The tmux agent window uses "podman attach" to bridge the PTY (RFC #691,
+	// Phase 1a / Issue #715).
 	args = append(args, Image,
-		"opencode", "serve",
+		"opencode",
 		"--port", fmt.Sprintf("%d", ContainerPort),
 		"--hostname", "0.0.0.0",
 	)

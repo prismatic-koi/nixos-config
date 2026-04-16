@@ -195,23 +195,22 @@ func TestStartSidecar_CreatesDirectories(t *testing.T) {
 func TestBuildReadinessWaitCmd_ContainsReadyPath(t *testing.T) {
 	cmd := buildReadinessWaitCmd(
 		"/home/user/.local/state/prism/run/my-session-sidecar.ready",
-		"/home/user/.local/state/prism/run/my-session-sidecar.sid",
-		"opencode attach http://localhost:14000")
+		"podman attach prism-repo-main")
 	if !strings.Contains(cmd, "/home/user/.local/state/prism/run/my-session-sidecar.ready") {
 		t.Errorf("readiness command does not reference ready path: %q", cmd)
 	}
 }
 
 func TestBuildReadinessWaitCmd_ContainsAttachCmd(t *testing.T) {
-	attach := "opencode attach http://localhost:14042"
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", attach)
+	attach := "podman attach prism-nixos-config-feature"
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", attach)
 	if !strings.Contains(cmd, attach) {
 		t.Errorf("readiness command does not contain attach command %q: %q", attach, cmd)
 	}
 }
 
 func TestBuildReadinessWaitCmd_TimeoutMessage(t *testing.T) {
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "podman attach prism-repo-main")
 	// Verify the timeout message matches 120s (240 iterations × 0.5s).
 	if !strings.Contains(cmd, "120s") {
 		t.Errorf("readiness command should mention 120s timeout: %q", cmd)
@@ -225,7 +224,7 @@ func TestBuildReadinessWaitCmd_TimeoutMessage(t *testing.T) {
 func TestBuildReadinessWaitCmd_PathWithSpaces(t *testing.T) {
 	// Path with spaces must be properly quoted.
 	path := "/home/user name/.local/state/prism/run/my session-sidecar.ready"
-	cmd := buildReadinessWaitCmd(path, "/tmp/test.sid", "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd(path, "podman attach prism-repo-main")
 	// The path should be single-quoted.
 	if !strings.Contains(cmd, "'"+path+"'") {
 		t.Errorf("path with spaces not properly quoted in command: %q", cmd)
@@ -233,9 +232,23 @@ func TestBuildReadinessWaitCmd_PathWithSpaces(t *testing.T) {
 }
 
 func TestBuildReadinessWaitCmd_ExitsOneOnTimeout(t *testing.T) {
-	cmd := buildReadinessWaitCmd("/tmp/test.ready", "/tmp/test.sid", "opencode attach http://localhost:14000")
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "podman attach prism-repo-main")
 	if !strings.Contains(cmd, "exit 1") {
 		t.Errorf("readiness command should exit 1 on timeout: %q", cmd)
+	}
+}
+
+// TestBuildReadinessWaitCmd_NoSidHandoff verifies that the readiness wait
+// script does not contain any .sid file read or -s flag injection.
+// The .sid file is written by the sidecar but is no longer consumed here —
+// "podman attach" connects to the container PTY directly (RFC #691, Phase 1a).
+func TestBuildReadinessWaitCmd_NoSidHandoff(t *testing.T) {
+	cmd := buildReadinessWaitCmd("/tmp/test.ready", "podman attach prism-repo-main")
+	if strings.Contains(cmd, ".sid") {
+		t.Errorf("readiness command should not reference .sid file: %q", cmd)
+	}
+	if strings.Contains(cmd, " -s ") {
+		t.Errorf("readiness command should not inject -s flag: %q", cmd)
 	}
 }
 
