@@ -160,6 +160,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			InstanceID:        instanceID,
 			PluginHostPath:    pluginPath,
 			ConfigContent:     configContent,
+			InitialPrompt:     initialPrompt,
 			GitUserName:       prismCfg.GitUserName,
 			GitUserEmail:      prismCfg.GitUserEmail,
 			SshAccessKeyName:  prismCfg.SshAccessKeyName,
@@ -209,7 +210,17 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// creation, prompt delivery, SSE subscription, event type extraction, and
 	// event mapping. The sidecar calls through the harness.Harness interface
 	// and has no direct dependency on the opencode package (#710).
-	h := opencode.New(opencodeURL, nil, agentRole, agentModel)
+	//
+	// In container mode, use NewContainerMode so that:
+	//   - CreateSession uses GET /session to retrieve the existing session ID
+	//     (opencode already created a session when the TUI started)
+	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
+	var h *opencode.Adapter
+	if containerMode {
+		h = opencode.NewContainerMode(opencodeURL, nil, agentRole, agentModel)
+	} else {
+		h = opencode.New(opencodeURL, nil, agentRole, agentModel)
+	}
 
 	cfg := sidecar.Config{
 		SessionName:     sessionName,

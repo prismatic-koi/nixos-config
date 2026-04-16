@@ -57,12 +57,12 @@ type Harness interface {
 	// return value is false if the event does not carry a message.
 	ExtractMessage(evt HarnessEvent) (Message, bool)
 
-	// CreateSession creates a new session on the agent runtime and returns its
-	// ID. The session ID is also stored internally so that DeliverInitialPrompt
-	// can use it without the caller having to pass it back. This ordering
-	// matters for the opencode attach TUI flow: the sidecar writes the .sid
-	// file between CreateSession and DeliverInitialPrompt so that the TUI can
-	// attach to the correct session before the prompt is delivered.
+	// CreateSession retrieves (or creates) a session on the agent runtime and
+	// returns its ID. The session ID is also stored internally so that
+	// DeliverInitialPrompt can use it without the caller having to pass it back.
+	// For the opencode harness in combined TUI + HTTP mode, this retrieves the
+	// existing session opencode auto-created at startup (via GET /session) so
+	// the prompt is delivered to the session already visible in the TUI.
 	CreateSession(ctx context.Context) (string, error)
 
 	// SessionID returns the most recently created session ID (set by

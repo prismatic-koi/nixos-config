@@ -288,6 +288,66 @@ func TestBuildRunArgs_OpencodeCommand(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgs_InitialPromptAppended(t *testing.T) {
+	// When InitialPrompt is set, --agent and --prompt should appear at the end
+	// of the args after the image and base opencode flags.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+		InitialPrompt: "fix the login bug",
+	})
+	args := m.buildRunArgs()
+
+	n := len(args)
+	// Last four args should be: --agent worker --prompt "fix the login bug"
+	if n < 4 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-4] != "--agent" || args[n-3] != "worker" {
+		t.Errorf("expected '--agent worker', got %q %q", args[n-4], args[n-3])
+	}
+	if args[n-2] != "--prompt" || args[n-1] != "fix the login bug" {
+		t.Errorf("expected '--prompt fix the login bug', got %q %q", args[n-2], args[n-1])
+	}
+}
+
+func TestBuildRunArgs_NoInitialPromptNoExtraArgs(t *testing.T) {
+	// When InitialPrompt is empty, no --agent or --prompt args should be appended.
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+		InitialPrompt: "",
+	})
+	args := m.buildRunArgs()
+
+	for _, arg := range args {
+		if arg == "--prompt" {
+			t.Errorf("unexpected --prompt in args when InitialPrompt is empty: %v", args)
+		}
+	}
+}
+
+func TestBuildRunArgs_InitialPromptDefaultsAgentToWorker(t *testing.T) {
+	// When AgentRole is empty but InitialPrompt is set, --agent should default to "worker".
+	m := New(Config{
+		SessionName:   "repo@main",
+		AllocatedPort: 14000,
+		AgentRole:     "",
+		InitialPrompt: "do the thing",
+	})
+	args := m.buildRunArgs()
+
+	n := len(args)
+	if n < 4 {
+		t.Fatalf("too few args: %v", args)
+	}
+	if args[n-4] != "--agent" || args[n-3] != "worker" {
+		t.Errorf("expected '--agent worker' default, got %q %q", args[n-4], args[n-3])
+	}
+}
+
 func TestBuildRunArgs_ContainerNameSet(t *testing.T) {
 	m := New(Config{SessionName: "my-repo@feat", AllocatedPort: 14000})
 	args := m.buildRunArgs()

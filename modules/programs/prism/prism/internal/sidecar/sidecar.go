@@ -359,14 +359,21 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		// Deliver the initial prompt (#487) before calling OnReady.
-		// 1. POST /session  — create the session, capture its ID.
+		// Discover the session ID and deliver the initial prompt (#487).
+		// In container mode (opencode --prompt "text"), the prompt was already
+		// delivered via the CLI flag — opencode starts the session and begins
+		// processing immediately. The sidecar still needs the session ID for
+		// subsequent prism prompt follow-up delivery.
+		//
+		// 1. GET /session  — retrieve the session opencode already created
+		//    (via --prompt on CLI). In non-container mode, POST /session creates
+		//    a new session. The harness adapter handles both cases.
 		// 2. Write the .sid file (for forensics/diagnostics; no longer consumed by
 		//    the agent window — "podman attach" connects to the PTY directly).
 		//    Cleanup of the .sid write path is deferred to #716.
 		// 3. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
-		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
-		//    now attached so execution begins immediately.
+		// 4. DeliverInitialPrompt — no-op in container mode (prompt already sent
+		//    via CLI); delivers via POST /session/<sid>/prompt_async in host mode.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
 			sid, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {

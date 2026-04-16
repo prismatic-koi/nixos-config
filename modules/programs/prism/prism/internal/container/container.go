@@ -159,6 +159,14 @@ type Config struct {
 	// key in ~/.ssh/. The public key is derived by appending ".pub". When empty,
 	// defaults to "prismatic-koi-ed25519-signingkey".
 	SshSigningKeyName string
+
+	// InitialPrompt is the initial prompt to deliver to the agent at startup.
+	// When non-empty, it is appended to the opencode command as
+	// --agent <AgentRole> --prompt <text> so that opencode starts the session
+	// with the prompt already in flight, visible in the TUI from the start.
+	// This replaces the previous POST /session + prompt_async HTTP delivery
+	// which created a second session invisible to the TUI (RFC #691 Phase 1a).
+	InitialPrompt string
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -1096,6 +1104,20 @@ func (m *Manager) buildRunArgs() []string {
 		"--port", fmt.Sprintf("%d", ContainerPort),
 		"--hostname", "0.0.0.0",
 	)
+
+	// When an initial prompt is provided, pass it (and the agent role) directly
+	// on the opencode command line. This ensures opencode creates its session
+	// with the prompt in flight and the conversation is visible in the TUI from
+	// the start — the sidecar's POST /session + prompt_async path would create
+	// a second session invisible to the TUI (RFC #691 Phase 1a).
+	// These are passed as separate args (no shell involved) so no quoting needed.
+	if cfg.InitialPrompt != "" {
+		agentRole := cfg.AgentRole
+		if agentRole == "" {
+			agentRole = "worker"
+		}
+		args = append(args, "--agent", agentRole, "--prompt", cfg.InitialPrompt)
+	}
 
 	return args
 }
