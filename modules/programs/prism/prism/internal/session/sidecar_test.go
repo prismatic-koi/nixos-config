@@ -240,7 +240,6 @@ func TestBuildReadinessWaitCmd_ExitsOneOnTimeout(t *testing.T) {
 
 // TestBuildReadinessWaitCmd_NoSidHandoff verifies that the readiness wait
 // script does not contain any .sid file read or -s flag injection.
-// The .sid file is written by the sidecar but is no longer consumed here —
 // "podman attach" connects to the container PTY directly (RFC #691, Phase 1a).
 func TestBuildReadinessWaitCmd_NoSidHandoff(t *testing.T) {
 	cmd := buildReadinessWaitCmd("/tmp/test.ready", "podman attach prism-repo-main")

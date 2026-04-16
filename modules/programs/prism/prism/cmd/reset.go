@@ -9,7 +9,7 @@ package cmd
 //  3. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
 //     state is intentionally left at its last known value — ended_at IS NULL
 //     is the canonical "active session" filter throughout the codebase).
-//  4. Kill all sidecar processes and remove stale run files (PID, ready, SID)
+//  4. Kill all sidecar processes and remove stale run files (PID, ready)
 //     from ~/.local/state/prism/run/.
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
@@ -208,11 +208,10 @@ func resetMarkDBEnded() error {
 
 // resetKillSidecars scans ~/.local/state/prism/run/ for *-sidecar.pid files,
 // sends SIGTERM to each recorded process via session.KillSidecar, and then
-// removes stale *-sidecar.ready and *-sidecar.sid files for the same sessions.
+// removes stale *-sidecar.ready files for the same sessions.
 //
-// Removing the .ready and .sid files prevents a re-launched session from
-// finding stale readiness state or a deleted opencode session ID from a prior
-// run and misbehaving on startup.
+// Removing the .ready files prevents a re-launched session from finding stale
+// readiness state from a prior run and misbehaving on startup.
 //
 // The directory may be absent (fresh install or already cleaned up) — that
 // is treated as a no-op, not an error.
@@ -253,10 +252,6 @@ func resetKillSidecars() error {
 		readyPath, _ := prismSession.SidecarReadyPath(sessionName)
 		if readyPath != "" {
 			_ = os.Remove(readyPath)
-		}
-		sidPath, _ := prismSession.SidecarSessionPath(sessionName)
-		if sidPath != "" {
-			_ = os.Remove(sidPath)
 		}
 
 		killed++

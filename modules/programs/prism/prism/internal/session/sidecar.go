@@ -57,21 +57,6 @@ func SidecarReadyPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", sessionName+"-sidecar.ready"), nil
 }
 
-// SidecarSessionPath returns the path to the file where the sidecar writes the
-// opencode session ID after creating it via prompt delivery (#487). This file
-// is written by the sidecar for diagnostics and forensics; the tmux pane no
-// longer reads it — "podman attach" connects to the container PTY directly
-// (RFC #691, Phase 1a). The write path and this helper are cleaned up in #716.
-//
-// Session file: $XDG_STATE_HOME/prism/run/<session>-sidecar.sid
-func SidecarSessionPath(sessionName string) (string, error) {
-	base, err := sidecarStateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "run", sessionName+"-sidecar.sid"), nil
-}
-
 // SidecarPIDPath returns the PID file path for the named session's sidecar.
 func SidecarPIDPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()

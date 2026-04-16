@@ -370,21 +370,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// 1. GET /session  — retrieve the session opencode already created
 		//    (via --prompt on CLI). In non-container mode, POST /session creates
 		//    a new session. The harness adapter handles both cases.
-		// 2. Write the .sid file (for forensics/diagnostics; no longer consumed by
-		//    the agent window — "podman attach" connects to the PTY directly).
-		//    Cleanup of the .sid write path is deferred to #716.
-		// 3. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
-		// 4. DeliverInitialPrompt — no-op in container mode (prompt already sent
+		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
+		// 3. DeliverInitialPrompt — no-op in container mode (prompt already sent
 		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
 		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
-			sid, createErr := s.harness.CreateSession(ctx)
+			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
-			} else {
-				if sidPath, err := session.SidecarSessionPath(s.cfg.SessionName); err == nil {
-					_ = os.WriteFile(sidPath, []byte(sid), 0o644)
-				}
 			}
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
