@@ -233,6 +233,11 @@ pkgs.dockerTools.buildLayeredImage {
     mkdir -p usr/bin
     ln -s /bin/node usr/bin/node
     ln -s /bin/npx  usr/bin/npx
+    # Replace the Ubuntu base layer's x86_64 /usr/bin/env binary with the
+    # Nix-provided aarch64 one. The Ubuntu binary cannot execute on aarch64
+    # hosts, causing posix_spawn ENOENT when the kernel tries to run shebang
+    # scripts with `#!/usr/bin/env`. Use -f to force-replace the existing file.
+    ln -sf /bin/env usr/bin/env
   '';
 
   config = {
