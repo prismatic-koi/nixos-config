@@ -2501,6 +2501,28 @@ func TestBuildRunArgs_KubeNotMountedWhenAbsent(t *testing.T) {
 	}
 }
 
+// ── Terminal environment tests ───────────────────────────────────────────────
+
+// TestBuildRunArgs_TermEnvSet verifies that TERM=xterm-256color is passed as
+// an --env flag in the podman run arguments. Without this, podman defaults to
+// TERM=xterm (plain) when --tty is used, which breaks mouse events and SGR
+// mouse protocol selection inside the opencode TUI (issue #737).
+func TestBuildRunArgs_TermEnvSet(t *testing.T) {
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	found := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == "TERM=xterm-256color" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("TERM=xterm-256color not found in buildRunArgs output; args: %v", args)
+	}
+}
+
 // ── MCP auth mount tests ─────────────────────────────────────────────────────
 
 // TestBuildRunArgs_McpAuthMountedWhenPresent verifies that when ~/.mcp-auth

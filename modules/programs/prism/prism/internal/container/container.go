@@ -898,6 +898,19 @@ func (m *Manager) buildRunArgs() []string {
 		"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
 		"--env", "NIX_CONFIG=store = daemon",
 
+		// Terminal type — set to xterm-256color so the opencode TUI inside the
+		// container has accurate terminal capability information. podman sets
+		// TERM=xterm (plain) by default when --tty is used without an explicit
+		// --env TERM=..., which breaks mouse events and SGR mouse protocol
+		// selection (issue #737). xterm-256color is correct because:
+		//   - Available in every Linux container (part of ncurses-base)
+		//   - Full SGR mouse support (1006 protocol), matching what tmux expects
+		//   - 256-colour support, matching the host terminal
+		// Do NOT pass through the host's $TERM (e.g. tmux-256color or
+		// screen-256color) — those terminfo entries may not exist in the
+		// container and would cause opencode to fall back to a minimal profile.
+		"--env", "TERM=xterm-256color",
+
 		// Prism context — tells prism CLI commands running inside the container
 		// where the worktree and bare repo are mounted. PRISM_SPAWN_PATH is the
 		// existing escape hatch used by prism spawn / list-sessions to infer the
