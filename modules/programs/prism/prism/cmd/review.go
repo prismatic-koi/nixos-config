@@ -65,24 +65,34 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: could not determine parent session name\nhint: run from inside a tmux session or set PRISM_SESSION_NAME")
 	}
 
-	// Validate parent session exists in DB.
-	d, dbErr := openDB()
-	if dbErr != nil {
-		return fmt.Errorf("prism review: open db: %w", dbErr)
-	}
-	status, stErr := d.CurrentStatus(parentSession)
-	d.Close()
-	if stErr != nil {
-		return fmt.Errorf("prism review: lookup session %q: %w", parentSession, stErr)
-	}
-	if status == nil {
-		return fmt.Errorf("prism review: parent session %q not found in DB\nhint: the session must be registered in the prism DB", parentSession)
-	}
+	// Load config for container mode (must be before DB block to gate it).
+	cfg := config.Load()
 
 	// Resolve worktree path.
-	worktree := status.Worktree
-	if worktree == "" {
-		return fmt.Errorf("prism review: no worktree path for session %q", parentSession)
+	var worktree string
+	if cfg.ContainerMode {
+		worktree = os.Getenv("PRISM_SPAWN_PATH")
+		if worktree == "" {
+			worktree = "/workspace"
+		}
+	} else {
+		// Validate parent session exists in DB.
+		d, dbErr := openDB()
+		if dbErr != nil {
+			return fmt.Errorf("prism review: open db: %w", dbErr)
+		}
+		status, stErr := d.CurrentStatus(parentSession)
+		d.Close()
+		if stErr != nil {
+			return fmt.Errorf("prism review: lookup session %q: %w", parentSession, stErr)
+		}
+		if status == nil {
+			return fmt.Errorf("prism review: parent session %q not found in DB\nhint: the session must be registered in the prism DB", parentSession)
+		}
+		worktree = status.Worktree
+		if worktree == "" {
+			return fmt.Errorf("prism review: no worktree path for session %q", parentSession)
+		}
 	}
 
 	// Determine agents list.
@@ -102,9 +112,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 	if len(agents) == 0 {
 		return fmt.Errorf("prism review: no agents to run")
 	}
-
-	// Load config for container mode.
-	cfg := config.Load()
 
 	// Build run options.
 	opts := review.Opts{
