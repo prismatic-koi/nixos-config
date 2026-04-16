@@ -49,6 +49,24 @@ When your work is complete and quality gates pass:
 2. Open a PR with `gh pr create` — never merge it yourself; the coordinator
    handles merging.
 3. Never push to `main` — direct push is blocked by repository rules.
-4. Invoke the `@review` subagent with your PR number. Fix any issues it raises
-   and re-invoke `@review` until the review passes.
+4. Run code review using `prism review <pr-number>` (preferred) or the
+   `@review` subagent. Both are valid; `prism review` provides better
+   observability (visible in the dashboard) and isolation. Fix any issues and
+   re-run review until it passes.
 5. Provide a clear handoff summary so the coordinator has full context.
+
+### Running code review with prism review
+
+```bash
+# Run review against your PR (blocks until complete, returns findings to stdout)
+result=$(prism review <pr-number>)
+echo "$result"
+
+# If some agents fail, re-run only the failed ones
+prism review <pr-number> --only review
+
+# Check in on review progress from the coordinator session
+prism checkin $(tmux display-message -p '#{session_name}')~review
+```
+
+`prism review` exit code 0 = all agents passed; non-zero = failures.

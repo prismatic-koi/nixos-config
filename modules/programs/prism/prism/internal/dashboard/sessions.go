@@ -71,14 +71,61 @@ func SessionBranch(name string) string {
 	return name
 }
 
+// IsDepth2Session returns true when the session name contains a "~" in the
+// branch component (after "@"), indicating it is a depth-2 review child.
+// Example: "nixos-config@feature~review-1" → true.
+func IsDepth2Session(name string) bool {
+	branch := SessionBranch(name)
+	// branch is "@feature~review-1" or the full name when no "@".
+	// Strip the leading "@" for the tilde check.
+	if len(branch) > 0 && branch[0] == '@' {
+		branch = branch[1:]
+	}
+	return strings.Contains(branch, "~")
+}
+
+// Depth2ParentBranch returns the branch component of the parent session for a
+// depth-2 review session. Given "nixos-config@feature~review-1" it returns
+// "@feature". Returns "" when the session is not a depth-2 session.
+func Depth2ParentBranch(name string) string {
+	branch := SessionBranch(name)
+	if len(branch) == 0 || branch[0] != '@' {
+		return ""
+	}
+	inner := branch[1:] // strip leading "@"
+	if idx := strings.Index(inner, "~"); idx >= 0 {
+		return "@" + inner[:idx]
+	}
+	return ""
+}
+
+// Depth2Label returns the display label for a depth-2 review session.
+// Given "nixos-config@feature~review-1" it returns "~review-1".
+// Returns "" when not a depth-2 session.
+func Depth2Label(name string) string {
+	branch := SessionBranch(name)
+	if len(branch) == 0 || branch[0] != '@' {
+		return ""
+	}
+	inner := branch[1:] // strip leading "@"
+	if idx := strings.Index(inner, "~"); idx >= 0 {
+		return inner[idx:] // e.g. "~review-1"
+	}
+	return ""
+}
+
 // SortDisplayed sorts a session slice in-place to match the flat visual render
 // order: alphabetical by repo name, @main first within each repo, then other
-// branches alphabetically. Uses insertion sort (no stdlib import needed for
-// small N).
+// branches alphabetically, with depth-2 review sessions (containing ~)
+// sorted immediately after their parent branch. Uses insertion sort
+// (no stdlib import needed for small N).
 func SortDisplayed(ss []AgentSession) {
-	// sessionKey returns a sort key for a session: "repo\x00" for @main and
-	// sessions without @, so they sort before any branch, or "repo\x01branch"
-	// for other worktree branches.
+	// sessionKey returns a sort key for a session:
+	//   - Plain sessions (no @): "repo\x00<name>"  — sorts first within repo
+	//   - @main sessions:        "repo\x00<name>"  — sorts first within repo
+	//   - Branch sessions:       "repo\x01<branch>\x00"  — sorts after @main
+	//   - Depth-2 review:        "repo\x01<parent-branch>\x00~<label>"
+	//     — sorts immediately after the parent branch
 	sessionKey := func(s AgentSession) string {
 		repo := SessionRepo(s.Name)
 		branch := SessionBranch(s.Name)
@@ -86,7 +133,14 @@ func SortDisplayed(ss []AgentSession) {
 			// No "@" (plain session) or @main — sorts first within repo.
 			return repo + "\x00" + s.Name
 		}
-		return repo + "\x01" + branch
+		// Depth-2 session: sort directly after its parent branch.
+		if IsDepth2Session(s.Name) {
+			parentBranch := Depth2ParentBranch(s.Name)
+			label := Depth2Label(s.Name)
+			return repo + "\x01" + parentBranch + "\x00" + label
+		}
+		// Regular branch session.
+		return repo + "\x01" + branch + "\x00"
 	}
 	for i := 1; i < len(ss); i++ {
 		key := ss[i]
@@ -172,9 +226,11 @@ func RenderSessionRow(
 		dot = "  "
 	}
 
-	// treePrefixW is always 6 runes; pad treePrefix to that width using rune
-	// count (not byte count) since tree connector chars are multi-byte in UTF-8.
-	const treePrefixW = 6
+	// treePrefixW is 10 runes (matches view.go constant); pad treePrefix to that
+	// width using rune count (not byte count) since tree connector chars are
+	// multi-byte in UTF-8. Depth-1 prefixes (6 chars) are padded to 10;
+	// depth-2 prefixes (10 chars) fit exactly.
+	const treePrefixW = 10
 
 	// Build the session display area (treePrefixW+sessionW total width):
 	// - Top-level (treePrefix=""): full session name padded to treePrefixW+sessionW.
@@ -195,7 +251,14 @@ func RenderSessionRow(
 		if runeCount < treePrefixW {
 			paddedPrefix += strings.Repeat(" ", treePrefixW-runeCount)
 		}
-		branch := SessionBranch(s.Name)
+		// For depth-2 sessions, display only the ~review-N label rather than
+		// the full @feature~review-N branch string.
+		var branch string
+		if label := Depth2Label(s.Name); label != "" {
+			branch = label
+		} else {
+			branch = SessionBranch(s.Name)
+		}
 		if sessionW == 0 {
 			branch = ""
 		} else if utf8.RuneCountInString(branch) > sessionW {

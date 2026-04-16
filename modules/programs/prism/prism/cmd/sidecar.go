@@ -76,6 +76,7 @@ func init() {
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
 	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
+	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -91,6 +92,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 	configContent, _ := cmd.Flags().GetString("config-content")
 	instanceID, _ := cmd.Flags().GetString("instance-id")
+	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -144,6 +146,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		ctrCfg = &container.Config{
 			SessionName:       sessionName,
 			Worktree:          worktree,
+			WorktreeReadOnly:  worktreeReadOnly,
 			BareRoot:          bareRoot,
 			WorktreeGitDir:    worktreeGitDir,
 			AllocatedPort:     port,

@@ -916,6 +916,24 @@ WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
 }
 
+// AllStatusesWithPrefix returns all agent_status rows (active and ended)
+// whose session_name starts with the given prefix. Used by `prism checkin
+// <parent>~review` to enumerate all review rounds including completed ones.
+//
+// The prefix is matched using LIKE with proper escaping of SQL LIKE wildcard
+// characters (`%`, `_`, `\`) so that session names containing these characters
+// are handled correctly.
+func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
+	// Escape LIKE special characters in the prefix so literal underscores and
+	// percent signs in session names are matched exactly, not as wildcards.
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	const q = `
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at
+FROM agent_status
+WHERE session_name LIKE ? ESCAPE '\'`
+	return d.queryStatuses(q, escaped+"%")
+}
+
 // AllSessionEvents returns all events for a session, ordered by created_at ASC.
 // Unlike QueryEvents, this has no limit — it returns the full event history.
 func (d *DB) AllSessionEvents(sessionName string) ([]Event, error) {
