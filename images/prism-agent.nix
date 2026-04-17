@@ -203,25 +203,24 @@ pkgs.dockerTools.buildLayeredImage {
     cp ${nixosRebuildGuard} bin/nixos-rebuild
     chmod +x bin/nixos-rebuild
 
-    # Nix wrapper: when the host's nix daemon socket is mounted (by
-    # container.go), transparently inject --eval-store auto so that
+    # Nix wrapper: transparently inject --eval-store auto so that
     # "nix build", "nix flake check", etc. evaluate locally (can see
-    # /workspace) but delegate store operations to the host daemon
-    # (reusing cached derivations). Without the socket the wrapper is
-    # a no-op passthrough to the real nix binary.
+    # /workspace) but delegate store operations to the remote store.
+    # On Linux, NIX_CONFIG=store=daemon routes to the host daemon socket.
+    # On Darwin, NIX_REMOTE=ssh-ng://user@host.containers.internal routes
+    # to the host daemon over SSH (virtiofs cannot service connect() on
+    # Unix sockets). In both cases --eval-store auto ensures local evaluation
+    # while builds and fetches go to the remote store.
     real_nix=$(readlink -f bin/nix)
     mv bin/nix bin/.nix-real
     cat > bin/nix << 'WRAPPER'
     #!/bin/bash
-    SOCKET=/nix/var/nix/daemon-socket/socket
-    if [ -S "$SOCKET" ]; then
-      # Subcommands that accept --eval-store
-      case "''${1:-}" in
-        build|eval|flake|develop|path-info|print-dev-env|log|derivation)
-          exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
-          ;;
-      esac
-    fi
+    # Subcommands that accept --eval-store: evaluate locally, build remotely.
+    case "''${1:-}" in
+      build|eval|flake|develop|path-info|print-dev-env|log|derivation)
+        exec /bin/.nix-real "$1" --eval-store auto "''${@:2}"
+        ;;
+    esac
     exec /bin/.nix-real "$@"
     WRAPPER
     chmod +x bin/nix

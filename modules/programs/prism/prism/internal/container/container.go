@@ -205,6 +205,12 @@ type Manager struct {
 	// podman is never given a source path that doesn't exist on disk.
 	// This field is only ever true on Darwin.
 	claudeCredentialsReady bool
+	// nixKnownHostsReady is true when writeNixKnownHosts successfully read the
+	// macOS SSH host key from /etc/ssh/ssh_host_*_key.pub and wrote a
+	// known_hosts file for host.containers.internal. buildRunArgs uses this to
+	// gate the bind-mount and to set StrictHostKeyChecking=yes in the SSH
+	// config for host.containers.internal. Only ever true on Darwin.
+	nixKnownHostsReady bool
 }
 
 // New creates a Manager for the given config. It does not start the container.
@@ -247,6 +253,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
+	_ = os.Remove(m.nixKnownHostsFilePath())
 
 	// Check the container's instance label when we have our own InstanceID.
 	// This detects ownership mismatches where a container from a previous
@@ -335,6 +342,15 @@ func (m *Manager) claudeCredentialsFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-claude-creds-"+m.name)
 }
 
+// nixKnownHostsFilePath returns the host path for the temporary known_hosts
+// file written before container start (Darwin only). The file contains the
+// macOS SSH host key listed under host.containers.internal so that the SSH
+// client inside the container can verify the host with StrictHostKeyChecking=yes
+// when nix uses ssh-ng://user@host.containers.internal as its remote store.
+func (m *Manager) nixKnownHostsFilePath() string {
+	return filepath.Join(os.TempDir(), "prism-nix-known-hosts-"+m.name)
+}
+
 // writeClaudeCredentials extracts Claude Code credentials from the macOS
 // Keychain and writes them to a temp file. On Linux, Claude Code stores
 // credentials in ~/.claude/.credentials.json which is already inside the
@@ -370,6 +386,55 @@ func (m *Manager) writeClaudeCredentials() {
 		return
 	}
 	m.claudeCredentialsReady = true
+}
+
+// writeNixKnownHosts generates a known_hosts file containing the macOS SSH
+// host key listed under host.containers.internal. The file is later mounted
+// at /root/.ssh/nix-known-hosts:ro inside the container so that the SSH client
+// used by nix's ssh-ng:// store can verify the host key with
+// StrictHostKeyChecking=yes.
+//
+// The key material is read from /etc/ssh/ssh_host_*_key.pub — the macOS sshd
+// host public keys. No network call is made: reading the local key file is
+// sufficient because the container connects to the same macOS host that
+// generated these keys.
+//
+// On non-Darwin platforms this is a no-op. Sets nixKnownHostsReady on success.
+func (m *Manager) writeNixKnownHosts() {
+	m.nixKnownHostsReady = false
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	// Prefer ed25519; fall back to ecdsa and rsa in case only those exist.
+	candidates := []string{
+		"/etc/ssh/ssh_host_ed25519_key.pub",
+		"/etc/ssh/ssh_host_ecdsa_key.pub",
+		"/etc/ssh/ssh_host_rsa_key.pub",
+	}
+	var entries strings.Builder
+	for _, pubKeyPath := range candidates {
+		data, err := os.ReadFile(pubKeyPath)
+		if err != nil {
+			continue
+		}
+		// The pub key file format is "<keytype> <base64> [comment]".
+		// The known_hosts format is "<hostname> <keytype> <base64> [comment]".
+		// Prepend the hostname to form a valid known_hosts entry.
+		line := strings.TrimSpace(string(data))
+		if line == "" {
+			continue
+		}
+		entries.WriteString("host.containers.internal " + line + "\n")
+	}
+	if entries.Len() == 0 {
+		log.Printf("container: no SSH host public keys found in /etc/ssh — nix ssh-ng host key verification will fail; check that macOS sshd host keys exist")
+		return
+	}
+	if err := os.WriteFile(m.nixKnownHostsFilePath(), []byte(entries.String()), 0o600); err != nil {
+		log.Printf("container: write nix known_hosts: %v", err)
+		return
+	}
+	m.nixKnownHostsReady = true
 }
 
 // writeGitconfig generates a minimal .gitconfig for the container and writes
@@ -522,12 +587,52 @@ func (m *Manager) Create(ctx context.Context) error {
 		}
 	}
 
+	// On Darwin, generate a known_hosts file for host.containers.internal from
+	// the macOS SSH host keys (/etc/ssh/ssh_host_*_key.pub). nixKnownHostsReady
+	// must be set BEFORE the SSH config is written below — it controls whether
+	// StrictHostKeyChecking=yes or accept-new is used for the nix ssh-ng host.
+	m.writeNixKnownHosts()
+
 	// Write a minimal SSH config for the container. The host's ~/.ssh/config
 	// is a nix store symlink with wrong ownership that SSH rejects. This
-	// config only needs to handle GitHub; other SSH hosts are not expected
-	// inside agent containers.
-	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile /root/.ssh/access-key\n  IdentitiesOnly yes\n"
-	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
+	// config handles GitHub for git push/fetch and, on Darwin, also configures
+	// host.containers.internal for nix ssh-ng:// store access.
+	var sshConfigSB strings.Builder
+	sshConfigSB.WriteString("Host github.com\n")
+	sshConfigSB.WriteString("  StrictHostKeyChecking accept-new\n")
+	sshConfigSB.WriteString("  IdentityFile /root/.ssh/access-key\n")
+	sshConfigSB.WriteString("  IdentitiesOnly yes\n")
+
+	if runtime.GOOS == "darwin" {
+		// host.containers.internal is the gvproxy bridge hostname that resolves
+		// to the macOS host from inside the container VM. Nix uses this as the
+		// remote store endpoint (ssh-ng://user@host.containers.internal).
+		//
+		// StrictHostKeyChecking=yes: reject unknown host keys — the known_hosts
+		// file is generated by writeNixKnownHosts() from /etc/ssh/ssh_host_*_key.pub.
+		// ForwardAgent no: do not forward the SSH agent into the build host.
+		// ControlMaster/ControlPersist: multiplex SSH connections so repeated nix
+		// invocations within a session reuse the same SSH connection instead of
+		// performing a full handshake on each nix build or store operation.
+		hostKeyCheck := "accept-new"
+		if m.nixKnownHostsReady {
+			hostKeyCheck = "yes"
+		}
+		sshConfigSB.WriteString("\nHost host.containers.internal\n")
+		sshConfigSB.WriteString("  IdentityFile /root/.ssh/access-key\n")
+		sshConfigSB.WriteString("  IdentitiesOnly yes\n")
+		sshConfigSB.WriteString("  StrictHostKeyChecking " + hostKeyCheck + "\n")
+		if m.nixKnownHostsReady {
+			sshConfigSB.WriteString("  UserKnownHostsFile /root/.ssh/nix-known-hosts\n")
+		}
+		sshConfigSB.WriteString("  ControlMaster auto\n")
+		sshConfigSB.WriteString("  ControlPath /tmp/ssh_mux_%h_%p_%r\n")
+		sshConfigSB.WriteString("  ControlPersist 5m\n")
+		sshConfigSB.WriteString("  ForwardAgent no\n")
+		sshConfigSB.WriteString("  Port 22\n")
+	}
+
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfigSB.String()), 0o600); err != nil {
 		return fmt.Errorf("container: write ssh config: %w", err)
 	}
 
@@ -710,6 +815,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
+	_ = os.Remove(m.nixKnownHostsFilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -964,30 +1070,39 @@ func (m *Manager) buildRunArgs() []string {
 		)
 	}
 
-	args = append(args,
-		// Nix daemon socket — lets the container's nix CLI delegate store
-		// operations to the host's nix-daemon, reusing the host's /nix/store
-		// cache and persisting new build outputs for reuse across container
-		// restarts. The host's nix-daemon trusts @wheel users (nix-options.nix);
-		// in rootless podman, container root maps to the host user who is in
-		// the wheel group, so the daemon accepts the connection.
-		//
-		// NIX_CONFIG sets store=daemon so nix uses the host daemon for all
-		// store operations. The container image includes a nix wrapper script
-		// that automatically injects --eval-store auto when the socket is
-		// present, so evaluation happens locally (can see /workspace) while
-		// builds/fetches go through the daemon.
-		//
-		// Mount the parent directory rather than the socket file itself.
-		// On Darwin, podman runs inside a VM with virtiofs host shares;
-		// statfs on a Unix socket through virtiofs returns ENOTSUP, causing
-		// podman to reject the mount. Mounting the directory avoids the
-		// socket-level statfs and lets the container reach the socket via
-		// the live directory mount — the same pattern used for the host-API
-		// socket (see #611 / #612).
-		"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
-		"--env", "NIX_CONFIG=store = daemon",
+	// Nix daemon access — platform-specific.
+	//
+	// On Darwin: virtiofs returns ENOTSUP on connect() for Unix sockets
+	// mounted into the container VM, so the daemon socket mount is omitted.
+	// Instead, NIX_REMOTE points to the host's nix-daemon via ssh-ng://.
+	// The SSH connection uses the access key already mounted at
+	// /root/.ssh/access-key. The host user is in @wheel (nix-options.nix),
+	// so the daemon accepts builds from that user.
+	//
+	// On Linux: the container can connect to the daemon socket directly.
+	// The parent directory is mounted (not the socket file itself) to avoid
+	// a statfs-on-socket issue in podman. NIX_CONFIG sets store=daemon.
+	if runtime.GOOS == "darwin" {
+		user := os.Getenv("USER")
+		if user == "" {
+			user = "root" // should not happen on macOS; sshd will reject root anyway
+		}
+		args = append(args, "--env", "NIX_REMOTE=ssh-ng://"+user+"@host.containers.internal")
+	} else {
+		args = append(args,
+			"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
+			"--env", "NIX_CONFIG=store = daemon",
+		)
+	}
 
+	// Darwin: mount the generated known_hosts for host.containers.internal
+	// so the SSH client inside the container can verify the host key with
+	// StrictHostKeyChecking=yes when nix uses ssh-ng:// as its remote store.
+	if m.nixKnownHostsReady {
+		args = append(args, "--volume", m.nixKnownHostsFilePath()+":/root/.ssh/nix-known-hosts:ro")
+	}
+
+	args = append(args,
 		// Terminal type — set to xterm-256color so the opencode TUI inside the
 		// container has accurate terminal capability information. podman sets
 		// TERM=xterm (plain) by default when --tty is used without an explicit

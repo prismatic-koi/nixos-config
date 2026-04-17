@@ -2681,3 +2681,181 @@ func TestBuildRunArgs_AuthJsonOverlaySkippedWhenMissing(t *testing.T) {
 		}
 	}
 }
+
+// ── Nix daemon access (Darwin ssh-ng vs Linux socket) ────────────────────────
+
+// TestBuildRunArgs_NixDaemon_Darwin verifies that on Darwin:
+//   - NIX_REMOTE is set to ssh-ng://user@host.containers.internal
+//   - The daemon socket volume (/nix/var/nix/daemon-socket) is absent
+//   - NIX_CONFIG is not set
+func TestBuildRunArgs_NixDaemon_Darwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin-specific nix daemon test; skipping on non-Darwin")
+	}
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	user := os.Getenv("USER")
+	if user == "" {
+		t.Skip("USER env var not set; cannot determine expected ssh-ng URL")
+	}
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantEnv := "NIX_REMOTE=ssh-ng://" + user + "@host.containers.internal"
+	foundNIXRemote := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			if args[i+1] == wantEnv {
+				foundNIXRemote = true
+			}
+			// NIX_CONFIG must NOT be set on Darwin (uses ssh-ng instead)
+			if strings.HasPrefix(args[i+1], "NIX_CONFIG=") {
+				t.Errorf("NIX_CONFIG must not be set on Darwin (use NIX_REMOTE instead); got %q", args[i+1])
+			}
+		}
+		// Daemon socket must NOT be mounted on Darwin (virtiofs ENOTSUP)
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "/nix/var/nix/daemon-socket") {
+				t.Errorf("daemon socket volume must not be mounted on Darwin; got %q", args[i+1])
+			}
+		}
+	}
+	if !foundNIXRemote {
+		t.Errorf("expected --env %s in args, not found; args: %v", wantEnv, args)
+	}
+}
+
+// TestBuildRunArgs_NixDaemon_Linux verifies that on Linux:
+//   - The daemon socket volume (/nix/var/nix/daemon-socket) is present
+//   - NIX_CONFIG=store = daemon is set
+//   - NIX_REMOTE is not set
+func TestBuildRunArgs_NixDaemon_Linux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-specific nix daemon test; skipping on non-Linux")
+	}
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	foundSocketMount := false
+	foundNIXConfig := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.Contains(args[i+1], "/nix/var/nix/daemon-socket") {
+				foundSocketMount = true
+			}
+		}
+		if arg == "--env" && i+1 < len(args) {
+			if args[i+1] == "NIX_CONFIG=store = daemon" {
+				foundNIXConfig = true
+			}
+			// NIX_REMOTE must NOT be set on Linux
+			if strings.HasPrefix(args[i+1], "NIX_REMOTE=") {
+				t.Errorf("NIX_REMOTE must not be set on Linux (use socket instead); got %q", args[i+1])
+			}
+		}
+	}
+	if !foundSocketMount {
+		t.Errorf("daemon socket volume /nix/var/nix/daemon-socket must be present on Linux; args: %v", args)
+	}
+	if !foundNIXConfig {
+		t.Errorf("NIX_CONFIG=store = daemon must be set on Linux; args: %v", args)
+	}
+}
+
+// TestWriteNixKnownHosts_NoopOnLinux verifies that writeNixKnownHosts is a
+// no-op on non-Darwin platforms: nixKnownHostsReady stays false and no temp
+// file is written. On Darwin this test still passes because it only asserts
+// the invariant that nixKnownHostsReady accurately tracks whether the file
+// was written.
+func TestWriteNixKnownHosts_NoopOnLinux(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("skipping Linux-specific no-op check on Darwin")
+	}
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 9999})
+	m.writeNixKnownHosts()
+	if m.nixKnownHostsReady {
+		t.Error("nixKnownHostsReady should be false on non-Darwin")
+	}
+	if _, err := os.Stat(m.nixKnownHostsFilePath()); !os.IsNotExist(err) {
+		t.Errorf("nix known_hosts temp file should not exist on non-Darwin, got: %v", err)
+	}
+}
+
+// TestWriteNixKnownHosts_Darwin verifies that on Darwin writeNixKnownHosts
+// reads the macOS SSH host key from /etc/ssh and writes a known_hosts file
+// with an entry for host.containers.internal.
+func TestWriteNixKnownHosts_Darwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Darwin-specific known_hosts test; skipping on non-Darwin")
+	}
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 9999})
+	t.Cleanup(func() { _ = os.Remove(m.nixKnownHostsFilePath()) })
+	m.writeNixKnownHosts()
+	if !m.nixKnownHostsReady {
+		t.Fatal("nixKnownHostsReady should be true on Darwin when /etc/ssh host keys exist")
+	}
+	data, err := os.ReadFile(m.nixKnownHostsFilePath())
+	if err != nil {
+		t.Fatalf("failed to read nix known_hosts: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "host.containers.internal") {
+		t.Errorf("known_hosts should contain host.containers.internal; got:\n%s", content)
+	}
+}
+
+// TestBuildRunArgs_NixKnownHostsMountedWhenReady verifies that when
+// nixKnownHostsReady is true, buildRunArgs includes the nix-known-hosts bind-mount.
+func TestBuildRunArgs_NixKnownHostsMountedWhenReady(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14001})
+
+	// Simulate a successful writeNixKnownHosts by writing a fake file and
+	// setting the flag directly (avoids requiring actual Darwin/Keychain in CI).
+	fakeKnownHosts := "host.containers.internal ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA"
+	if err := os.WriteFile(m.nixKnownHostsFilePath(), []byte(fakeKnownHosts), 0o600); err != nil {
+		t.Fatalf("write fake known_hosts: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.nixKnownHostsFilePath()) })
+	m.nixKnownHostsReady = true
+
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.ssh/nix-known-hosts:ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("buildRunArgs missing nix-known-hosts mount ending in %q; args: %v", wantDst, args)
+	}
+}
+
+// TestBuildRunArgs_NixKnownHostsNotMountedWhenNotReady verifies that when
+// nixKnownHostsReady is false, buildRunArgs does NOT include the nix-known-hosts bind-mount.
+func TestBuildRunArgs_NixKnownHostsNotMountedWhenNotReady(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14002})
+	// nixKnownHostsReady defaults to false — do not set it.
+
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.ssh/nix-known-hosts:ro"
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) && strings.HasSuffix(args[i+1], wantDst) {
+			t.Errorf("nix-known-hosts mount must not be present when nixKnownHostsReady=false; found %q", args[i+1])
+		}
+	}
+}
