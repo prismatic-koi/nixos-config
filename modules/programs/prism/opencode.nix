@@ -317,12 +317,13 @@
       # symlinks dangle after nix-collect-garbage removes the store paths
       # they pointed to.
       skillsDir = pkgs.runCommand "opencode-skills" { } ''
-        mkdir -p $out/prism $out/aws
+        mkdir -p $out/prism $out/aws $out/acceptance-criteria
         cp -r ${./opencode/skills/prism}/* $out/prism/
         ${lib.optionalString pkgs.stdenv.isLinux ''
           cp -r ${./opencode/skills/playwright-cli} $out/playwright-cli
         ''}
         cp ${awsSkillFile} $out/aws/SKILL.md
+        cp -r ${./opencode/skills/acceptance-criteria}/* $out/acceptance-criteria/
       '';
 
       agentInstructions = /* markdown */ ''
