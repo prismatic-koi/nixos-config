@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -236,81 +237,357 @@ func TestFormatResults_InfraError(t *testing.T) {
 	}
 }
 
-func TestFormatResults_PassFailPhrases(t *testing.T) {
-	// Test that failure-indicating phrases cause the agent to be marked failed.
-	failingOutputs := []string{
-		"Please fix the above before this PR is merged.",
-		"This is a bug that needs to be fixed.",
-		"There is a security issue in the code.",
-		"Found a vulnerability in authentication.",
-	}
-	for _, text := range failingOutputs {
-		results := []review.AgentResult{
-			{Agent: review.Agent{Name: "review"}, Passed: false, Output: text},
-		}
-		_, allPassed := review.FormatResults(results, "1")
-		if allPassed {
-			t.Errorf("FormatResults with output %q: allPassed=true, want false", text)
-		}
-	}
-
-	// A clean review should pass.
-	cleanOutput := "The implementation looks correct. All acceptance criteria verified. No issues found."
+func TestFormatResults_PassFailResults(t *testing.T) {
+	// FormatResults uses the Passed field on AgentResult directly.
+	// A result marked Passed=false is a failure.
 	results := []review.AgentResult{
-		{Agent: review.Agent{Name: "review"}, Passed: true, Output: cleanOutput},
+		{Agent: review.Agent{Name: "review"}, Passed: false, Output: "Please fix the above before this PR is merged."},
 	}
 	_, allPassed := review.FormatResults(results, "1")
+	if allPassed {
+		t.Errorf("FormatResults with Passed=false: allPassed=true, want false")
+	}
+
+	// A result marked Passed=true is a pass.
+	results = []review.AgentResult{
+		{Agent: review.Agent{Name: "review"}, Passed: true, Output: "<verdict>PASS</verdict>"},
+	}
+	_, allPassed = review.FormatResults(results, "1")
 	if !allPassed {
-		t.Errorf("FormatResults with clean output: allPassed=false, want true")
+		t.Errorf("FormatResults with Passed=true: allPassed=false, want true")
 	}
 }
 
 // ── AssessPassed ──────────────────────────────────────────────────────────────
+// AssessPassed now requires an explicit <verdict>PASS</verdict> marker.
+// All tests below validate the new positive-evidence requirement (Layer 1).
 
-func TestAssessPassed_FailingPhrases(t *testing.T) {
-	failingTexts := []struct {
-		text   string
-		phrase string
-	}{
-		{"Please fix the above before this PR is merged.", "please fix"},
-		{"This needs to be fixed before merging.", "needs to be fixed"},
-		{"The function must be fixed to handle nil inputs.", "must be fixed"},
-		{"There is a blocking issue in the auth flow.", "blocking issue"},
-		{"This is a bug in the state machine.", "this is a bug"},
-		{"Error found in the input validation.", "error found"},
-		{"There is a security issue with the token handling.", "security issue"},
-		{"A vulnerability was found in the deserialization path.", "vulnerability"},
-		{"Output contains ✗ indicating failure.", "✗"},
-	}
-	for _, tt := range failingTexts {
-		if review.AssessPassed(tt.text) {
-			t.Errorf("AssessPassed(%q) = true, want false (phrase %q should trigger fail)", tt.text, tt.phrase)
-		}
-	}
-}
-
-func TestAssessPassed_PassingTexts(t *testing.T) {
-	passingTexts := []string{
+// TestAssessPassed_BenignTextIsFalse verifies the core fix for #785:
+// benign partial output with no verdict marker must return false, not true.
+// Before the fix, AssessPassed returned true for any text without failure
+// phrases — this would silently classify interrupted agents as "passed".
+func TestAssessPassed_BenignTextIsFalse(t *testing.T) {
+	benignTexts := []string{
+		"I'll start by reading the PR...",
+		"Let me examine the diff and linked issue.",
 		"The implementation looks correct. All acceptance criteria are met.",
 		"LGTM. No issues found. The code follows existing conventions.",
 		"Reviewed thoroughly. The PR is ready to merge.",
 		"All acceptance criteria pass. The error handling is correct.",
 		"The PR looks good. I checked the diff and the linked issue's ACs.",
+		"",
+		"Starting review...",
 	}
-	for _, text := range passingTexts {
-		if !review.AssessPassed(text) {
-			t.Errorf("AssessPassed(%q) = false, want true", text)
+	for _, text := range benignTexts {
+		passed, kind := review.AssessPassed(text)
+		if passed {
+			t.Errorf("AssessPassed(%q) = true, want false (no verdict marker present)", text)
+		}
+		if kind != review.VerdictNone {
+			t.Errorf("AssessPassed(%q) kind = %v, want VerdictNone", text, kind)
 		}
 	}
 }
 
-func TestAssessPassed_CaseInsensitive(t *testing.T) {
-	// Failure phrases should be detected regardless of case.
-	if review.AssessPassed("PLEASE FIX THE ABOVE BEFORE THIS PR IS MERGED.") {
-		t.Error("AssessPassed should detect 'PLEASE FIX' case-insensitively")
+// TestAssessPassed_ExplicitPassVerdict verifies that <verdict>PASS</verdict>
+// (the documented positive marker) returns true.
+func TestAssessPassed_ExplicitPassVerdict(t *testing.T) {
+	passTexts := []string{
+		"<verdict>PASS</verdict>",
+		"<VERDICT>PASS</VERDICT>",
+		"The PR looks good.\n\n<verdict>PASS</verdict>",
+		"All ACs verified.\n<verdict>PASS</verdict>\n",
 	}
-	if review.AssessPassed("Please Fix the above.") {
-		t.Error("AssessPassed should detect 'Please Fix' case-insensitively")
+	for _, text := range passTexts {
+		passed, kind := review.AssessPassed(text)
+		if !passed {
+			t.Errorf("AssessPassed(%q) = false, want true (explicit PASS marker present)", text)
+		}
+		if kind != review.VerdictPass {
+			t.Errorf("AssessPassed(%q) kind = %v, want VerdictPass", text, kind)
+		}
+	}
+}
+
+// TestAssessPassed_ExplicitFailVerdict verifies that <verdict>FAIL</verdict>
+// returns false with VerdictFail, regardless of other content.
+func TestAssessPassed_ExplicitFailVerdict(t *testing.T) {
+	failTexts := []string{
+		"<verdict>FAIL</verdict>",
+		"<VERDICT>FAIL</VERDICT>",
+		"Blocking issue found. Please fix.\n<verdict>FAIL</verdict>",
+		"<verdict>FAIL</verdict>\nSee blocking issues above.",
+	}
+	for _, text := range failTexts {
+		passed, kind := review.AssessPassed(text)
+		if passed {
+			t.Errorf("AssessPassed(%q) = true, want false (explicit FAIL marker present)", text)
+		}
+		if kind != review.VerdictFail {
+			t.Errorf("AssessPassed(%q) kind = %v, want VerdictFail", text, kind)
+		}
+	}
+}
+
+// TestAssessPassed_VerdictOnlyNoProse verifies an edge case: an agent that
+// emits only the verdict marker with no commentary is still classified correctly.
+func TestAssessPassed_VerdictOnlyNoProse(t *testing.T) {
+	passed, kind := review.AssessPassed("<verdict>PASS</verdict>")
+	if !passed {
+		t.Error("AssessPassed('<verdict>PASS</verdict>') = false, want true")
+	}
+	if kind != review.VerdictPass {
+		t.Errorf("AssessPassed kind = %v, want VerdictPass", kind)
+	}
+}
+
+// TestAssessPassed_CaseInsensitive verifies that verdict matching is
+// case-insensitive (agents may emit PASS/pass/Pass).
+func TestAssessPassed_CaseInsensitive(t *testing.T) {
+	variants := []string{
+		"<verdict>PASS</verdict>",
+		"<verdict>pass</verdict>",
+		"<verdict>Pass</verdict>",
+		"<VERDICT>PASS</VERDICT>",
+		"<Verdict>Pass</Verdict>",
+	}
+	for _, text := range variants {
+		passed, _ := review.AssessPassed(text)
+		if !passed {
+			t.Errorf("AssessPassed(%q) = false, want true (case-insensitive PASS)", text)
+		}
+	}
+	failVariants := []string{
+		"<verdict>FAIL</verdict>",
+		"<verdict>fail</verdict>",
+		"<VERDICT>FAIL</VERDICT>",
+	}
+	for _, text := range failVariants {
+		passed, kind := review.AssessPassed(text)
+		if passed {
+			t.Errorf("AssessPassed(%q) = true, want false (case-insensitive FAIL)", text)
+		}
+		if kind != review.VerdictFail {
+			t.Errorf("AssessPassed(%q) kind = %v, want VerdictFail", text, kind)
+		}
+	}
+}
+
+// ── BuildResults (Layer 2 & 3) ────────────────────────────────────────────────
+// These tests exercise the exported BuildResults wrapper to validate the
+// multi-layered defence against false PASSes.
+
+// seedAssistantEvent writes a msg_assistant event with the given text payload
+// for the named session. Used to simulate what a real agent would emit.
+func seedAssistantEvent(t *testing.T, d *db.DB, sessionName, text string) {
+	t.Helper()
+	payload := `{"text":` + `"` + strings.ReplaceAll(text, `"`, `\"`) + `"}`
+	err := d.WriteEvent(db.Event{
+		ID:          sessionName + "-evt-1",
+		SessionName: sessionName,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "msg_assistant",
+		Payload:     payload,
+	})
+	if err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+}
+
+// TestBuildResults_InterruptedState verifies Layer 2: an agent whose DB state
+// is "interrupted" produces an error result regardless of msg_assistant events.
+func TestBuildResults_InterruptedState(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-goal"}
+	sess := "test@parent~review-1-review-goal"
+
+	// Seed the agent as interrupted with benign assistant output.
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "interrupted", nil, nil)
+	// Even with a benign (no-verdict) assistant message, the result must be error.
+	seedAssistantEvent(t, d, sess, "I'll start by reading the PR...")
+
+	finished := []bool{true} // "interrupted" was a terminal state → finished=true
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+
+	if len(results) != 1 {
+		t.Fatalf("BuildResults returned %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Passed {
+		t.Errorf("BuildResults with interrupted state: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("BuildResults with interrupted state: IsError=false, want true")
+	}
+	if !findSubstring(r.Output, "interrupted") {
+		t.Errorf("BuildResults with interrupted state: output does not mention 'interrupted': %q", r.Output)
+	}
+}
+
+// TestBuildResults_ErrorState verifies Layer 2: an agent whose DB state is
+// "error" produces an error result regardless of msg_assistant events.
+func TestBuildResults_ErrorState(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-code"}
+	sess := "test@parent~review-1-review-code"
+
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "error", nil, nil)
+	seedAssistantEvent(t, d, sess, "Some partial output before crash.")
+
+	finished := []bool{true}
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+
+	r := results[0]
+	if r.Passed {
+		t.Errorf("BuildResults with error state: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("BuildResults with error state: IsError=false, want true")
+	}
+	if !findSubstring(r.Output, "error") {
+		t.Errorf("BuildResults with error state: output does not mention 'error': %q", r.Output)
+	}
+}
+
+// TestBuildResults_CancelledAllFinished verifies Layer 3: when cancelled=true,
+// no result has Passed=true, even if all agents had reached a "finished" state
+// before the cancellation signal arrived.
+func TestBuildResults_CancelledAllFinished(t *testing.T) {
+	d := openTestDB(t)
+	agents := []review.Agent{
+		{Name: "review-goal"},
+		{Name: "review-code"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-goal",
+		"test@parent~review-1-review-code",
+	}
+	for i, sess := range sessions {
+		_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+		// Give each agent a passing verdict — should still be overridden by cancelled.
+		seedAssistantEvent(t, d, sess, "<verdict>PASS</verdict> All good.")
+		_ = agents[i] // suppress lint
+	}
+
+	finished := []bool{true, true}
+	timedOut := []bool{false, false}
+	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true)
+
+	for _, r := range results {
+		if r.Passed {
+			t.Errorf("BuildResults cancelled=true, agent %q: Passed=true, want false", r.Agent.Name)
+		}
+		if !r.IsError {
+			t.Errorf("BuildResults cancelled=true, agent %q: IsError=false, want true", r.Agent.Name)
+		}
+	}
+}
+
+// TestBuildResults_CancelledMixed verifies Layer 3: when cancelled=true with a
+// mix of finished and not-yet-finished agents, no result has Passed=true.
+func TestBuildResults_CancelledMixed(t *testing.T) {
+	d := openTestDB(t)
+	agents := []review.Agent{
+		{Name: "review-goal"}, // finished before cancel
+		{Name: "review-code"}, // did not finish
+	}
+	sessions := []string{
+		"test@parent~review-2-review-goal",
+		"test@parent~review-2-review-code",
+	}
+	_ = d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil)
+	seedAssistantEvent(t, d, sessions[0], "<verdict>PASS</verdict>")
+	_ = d.UpsertStatus(sessions[1], "nixos-config", "/wt", "running", nil, nil)
+
+	finished := []bool{true, false}
+	timedOut := []bool{false, false}
+	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true)
+
+	for _, r := range results {
+		if r.Passed {
+			t.Errorf("BuildResults cancelled=true mixed, agent %q: Passed=true, want false", r.Agent.Name)
+		}
+		if !r.IsError {
+			t.Errorf("BuildResults cancelled=true mixed, agent %q: IsError=false, want true", r.Agent.Name)
+		}
+	}
+}
+
+// TestBuildResults_HappyPathPass verifies that a cleanly finished agent with a
+// <verdict>PASS</verdict> marker produces Passed=true and IsError=false.
+func TestBuildResults_HappyPathPass(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-security"}
+	sess := "test@parent~review-1-review-security"
+
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+	seedAssistantEvent(t, d, sess, "All security checks passed.\n<verdict>PASS</verdict>")
+
+	finished := []bool{true}
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+
+	r := results[0]
+	if !r.Passed {
+		t.Errorf("BuildResults happy-path pass: Passed=false, want true")
+	}
+	if r.IsError {
+		t.Errorf("BuildResults happy-path pass: IsError=true, want false")
+	}
+}
+
+// TestBuildResults_HappyPathFail verifies that a cleanly finished agent with a
+// <verdict>FAIL</verdict> marker produces Passed=false and IsError=false.
+func TestBuildResults_HappyPathFail(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-qa"}
+	sess := "test@parent~review-1-review-qa"
+
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+	seedAssistantEvent(t, d, sess, "There is a blocking issue in the test coverage.\n<verdict>FAIL</verdict>")
+
+	finished := []bool{true}
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+
+	r := results[0]
+	if r.Passed {
+		t.Errorf("BuildResults happy-path fail: Passed=true, want false")
+	}
+	if r.IsError {
+		t.Errorf("BuildResults happy-path fail: IsError=true, want false (content failure, not infra)")
+	}
+}
+
+// TestBuildResults_NoVerdictIsError verifies that a cleanly finished agent
+// whose output contains no verdict marker is classified as IsError=true (not
+// passed). The output must be surfaced so a human can inspect it.
+func TestBuildResults_NoVerdictIsError(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-context"}
+	sess := "test@parent~review-1-review-context"
+
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+	benignText := "I'll start by reading the PR and checking the linked issue."
+	seedAssistantEvent(t, d, sess, benignText)
+
+	finished := []bool{true}
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+
+	r := results[0]
+	if r.Passed {
+		t.Errorf("BuildResults no-verdict: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("BuildResults no-verdict: IsError=false, want true")
+	}
+	// The agent's actual output must be surfaced in the error message.
+	if !findSubstring(r.Output, benignText) {
+		t.Errorf("BuildResults no-verdict: agent output not surfaced in error: %q", r.Output)
 	}
 }
 

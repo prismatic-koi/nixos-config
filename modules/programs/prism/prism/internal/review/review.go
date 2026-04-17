@@ -522,19 +522,54 @@ func isTerminalState(state string) bool {
 	return false
 }
 
+// BuildResults is the exported entry point for tests. See buildResults.
+// Production code calls buildResults directly (via pollAgents).
+func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
+	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, cancelled)
+}
+
 // buildResults constructs AgentResult entries from polling outcomes.
 // finished[i] is true when agent i reached a terminal DB state; timedOut[i] is
 // true when it did not finish before the deadline; cancelled is true on context
-// cancellation (e.g. SIGINT). Agents in finished[i]=true always show their
-// actual output, even when the process is being cancelled.
+// cancellation (e.g. SIGINT).
+//
+// Layer 3 (fail-safe): when cancelled is true, no result may have Passed=true.
+// Every result is either IsError=true or annotated as incomplete. This prevents
+// a false PASS even if layers 1 or 2 develop regressions later.
+//
+// Layer 2: agents whose DB terminal state is "interrupted" or "error" always
+// produce an error result, regardless of any msg_assistant events they may have.
+// Only agents that reached the "finished" state cleanly proceed to AssessPassed.
 func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	for i, ag := range agents {
 		agentSession := agentSessions[i]
-		// Only report as timed-out / cancelled when the agent genuinely did not
-		// finish. An agent that completed before a signal arrived should still
-		// show its actual output.
-		if (timedOut[i] || cancelled) && !finished[i] {
+
+		// Layer 3 fail-safe: when the whole review was cancelled (SIGINT),
+		// never produce a Passed=true result for any agent. Agents that did not
+		// finish are timed-out/cancelled; agents that did "finish" before the
+		// signal arrived are annotated as incomplete rather than trusted.
+		if cancelled {
+			if !finished[i] {
+				results[i] = AgentResult{
+					Agent:   ag,
+					Passed:  false,
+					Output:  fmt.Sprintf("ERROR: review cancelled before agent completed (waited %s)", formatDuration(timeout)),
+					IsError: true,
+				}
+			} else {
+				results[i] = AgentResult{
+					Agent:   ag,
+					Passed:  false,
+					Output:  "ERROR: review cancelled mid-run — result may be incomplete",
+					IsError: true,
+				}
+			}
+			continue
+		}
+
+		// Agent did not finish before the timeout deadline.
+		if timedOut[i] {
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
@@ -544,32 +579,48 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 			continue
 		}
 
+		// Layer 2: check the agent's actual DB terminal state. Only "finished"
+		// is considered a clean completion; "interrupted" and "error" are errors
+		// regardless of what msg_assistant events may exist.
+		status, stErr := d.CurrentStatus(agentSession)
+		if stErr == nil && status != nil && (status.State == "interrupted" || status.State == "error") {
+			results[i] = AgentResult{
+				Agent:   ag,
+				Passed:  false,
+				Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s)", status.State),
+				IsError: true,
+			}
+			continue
+		}
+
 		// Read last msg_assistant event.
 		events, err := d.QueryEvents(agentSession, 1, nil, nil, []string{"msg_assistant"})
 		if err != nil || len(events) == 0 {
-			// Check if there was a crash (state is interrupted/error without output).
-			status, _ := d.CurrentStatus(agentSession)
-			if status != nil && (status.State == "interrupted" || status.State == "error") {
-				results[i] = AgentResult{
-					Agent:   ag,
-					Passed:  false,
-					Output:  fmt.Sprintf("ERROR: agent crashed (state: %s)", status.State),
-					IsError: true,
-				}
-			} else {
-				results[i] = AgentResult{
-					Agent:   ag,
-					Passed:  false,
-					Output:  "ERROR: no output produced",
-					IsError: true,
-				}
+			results[i] = AgentResult{
+				Agent:   ag,
+				Passed:  false,
+				Output:  "ERROR: no output produced",
+				IsError: true,
 			}
 			continue
 		}
 
 		// Extract text from the last msg_assistant event.
+		// Layer 1 applies here: AssessPassed requires an explicit positive marker.
 		text := extractAssistantText(events[len(events)-1].Payload)
-		passed := AssessPassed(text)
+		passed, kind := AssessPassed(text)
+
+		if !passed && kind == VerdictNone {
+			// Agent finished cleanly but emitted no recognisable verdict.
+			// Surface the output as an error so a human can judge.
+			results[i] = AgentResult{
+				Agent:   ag,
+				Passed:  false,
+				Output:  "ERROR: no verdict found in agent output — review output:\n" + text,
+				IsError: true,
+			}
+			continue
+		}
 
 		results[i] = AgentResult{
 			Agent:  ag,
@@ -579,6 +630,15 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 	}
 	return results
 }
+
+// VerdictKind describes what kind of verdict marker was found by AssessPassed.
+type VerdictKind int
+
+const (
+	VerdictNone VerdictKind = iota // no recognised verdict marker
+	VerdictPass                    // explicit PASS marker
+	VerdictFail                    // explicit FAIL marker
+)
 
 // extractAssistantText parses the text field from a msg_assistant payload.
 func extractAssistantText(payload string) string {
@@ -591,34 +651,29 @@ func extractAssistantText(payload string) string {
 	return payload
 }
 
-// AssessPassed heuristically determines whether a review agent passed.
-// A review "passes" when the agent found no blocking issues. We look for
-// common patterns that indicate a clean review.
+// AssessPassed determines whether a review agent passed by requiring an
+// explicit positive verdict marker. It returns (passed bool, kind VerdictKind).
+//
+// Layer 1 defence: default to fail, not pass. An agent's output must contain
+// an explicit <verdict>PASS</verdict> marker to be classified as passed. Any
+// other text — benign partial output, startup messages, empty strings — returns
+// (false, VerdictNone) so the caller can surface it for human inspection.
+//
+// Recognised markers (case-insensitive):
+//   - <verdict>PASS</verdict>  → (true,  VerdictPass)
+//   - <verdict>FAIL</verdict>  → (false, VerdictFail)
+//   - anything else            → (false, VerdictNone)
 //
 // Exported so it can be tested directly without needing a live DB.
-func AssessPassed(text string) bool {
+func AssessPassed(text string) (bool, VerdictKind) {
 	lower := strings.ToLower(text)
-	// Explicit failure indicators.
-	failPhrases := []string{
-		"please fix",
-		"needs to be fixed",
-		"must be fixed",
-		"blocking issue",
-		"this is a bug",
-		"error found",
-		"security issue",
-		"vulnerability",
+	if strings.Contains(lower, "<verdict>pass</verdict>") {
+		return true, VerdictPass
 	}
-	for _, phrase := range failPhrases {
-		if strings.Contains(lower, phrase) {
-			return false
-		}
+	if strings.Contains(lower, "<verdict>fail</verdict>") {
+		return false, VerdictFail
 	}
-	// If the text contains ✗ it likely has failures.
-	if strings.Contains(text, "✗") {
-		return false
-	}
-	return true
+	return false, VerdictNone
 }
 
 // cleanupAgentSession cleans up the DB state for a completed agent session.
