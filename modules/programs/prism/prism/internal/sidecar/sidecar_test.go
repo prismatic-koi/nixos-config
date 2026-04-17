@@ -4180,6 +4180,87 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 	})
 }
 
+// TestRootAgentName_SelfCorrectedFromSSEInference verifies the edge-case AC from
+// issue #776: a host-mode session that was created before the fix (with
+// root_agent_name = "worker" already in the DB) self-corrects on the next
+// upsertState call after SSE inference sets s.rootAgent.
+//
+// Before the fix the --agent-role default was "worker", so every host-mode
+// sidecar pre-set rootAgent="worker" and every upsertState call called
+// UpsertStatusWithRootAgent(..., "worker", ...). After the fix, AgentRole is
+// "" for host-mode sessions — upsertState uses UpsertStatus (leaves
+// root_agent_name untouched) until SSE inference fires and sets s.rootAgent.
+// Once s.rootAgent is set (e.g. "assistant"), the next upsertState call uses
+// UpsertStatusWithRootAgent(..., "assistant", ...) which overwrites the stale
+// "worker" value because UpsertStatusWithRootAgent uses
+// COALESCE(excluded.root_agent_name, root_agent_name) with the sidecar value
+// taking precedence.
+func TestRootAgentName_SelfCorrectedFromSSEInference(t *testing.T) {
+	clk := newTestClock()
+	d := openTestDB(t)
+	cfg := Config{
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-worktree",
+		OpencodeURL: "http://localhost:14000",
+		DB:          d,
+		Clock:       clk,
+		// AgentRole intentionally empty — simulates a host-mode session
+		// started after the fix (no --agent-role passed).
+		Harness: opencode.New("http://localhost:14000", nil, "", ""),
+	}
+	sc := New(cfg)
+
+	// Seed a pre-existing row with root_agent_name = "worker" — simulating
+	// a session that was written by the old (buggy) default.
+	workerName := "worker"
+	if err := d.UpsertStatusWithRootAgent(
+		cfg.SessionName, cfg.Repo, cfg.Worktree, "active", nil, nil,
+		&workerName, nil,
+	); err != nil {
+		t.Fatalf("seed stale row: %v", err)
+	}
+
+	// Confirm the stale value is in the DB.
+	stBefore, err := d.CurrentStatus(cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus (before): %v", err)
+	}
+	if stBefore == nil || stBefore.RootAgentName == nil || *stBefore.RootAgentName != "worker" {
+		t.Fatalf("precondition: root_agent_name = %v, want \"worker\"", stBefore.RootAgentName)
+	}
+
+	// SSE inference: user message with agent="assistant" sets s.rootAgent.
+	sendEvents(sc, makeUserMessage("msg-user-1", "assistant", "Do some work"))
+
+	sc.mu.Lock()
+	inMemoryRootAgent := sc.rootAgent
+	sc.mu.Unlock()
+	if inMemoryRootAgent != "assistant" {
+		t.Fatalf("rootAgent in memory = %q after user message, want \"assistant\"", inMemoryRootAgent)
+	}
+
+	// Trigger a state transition. upsertState should now call
+	// UpsertStatusWithRootAgent with "assistant", overwriting the stale "worker".
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	stAfter, err := d.CurrentStatus(cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus (after): %v", err)
+	}
+	if stAfter == nil {
+		t.Fatal("expected status row to exist after state transition")
+	}
+	if stAfter.RootAgentName == nil {
+		t.Fatal("root_agent_name is nil after self-correction, want \"assistant\"")
+	}
+	if *stAfter.RootAgentName != "assistant" {
+		t.Errorf("root_agent_name = %q after self-correction, want \"assistant\" (stale \"worker\" should be overwritten)", *stAfter.RootAgentName)
+	}
+}
+
 // ── TTFT computation tests ───────────────────────────────────────────────────
 
 // TestTtft_HappyPath verifies that a complete assistant turn with a text part

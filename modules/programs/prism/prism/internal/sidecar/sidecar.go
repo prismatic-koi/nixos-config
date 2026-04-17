@@ -1282,15 +1282,21 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 	if title != nil && *title != "" {
 		s.lastTitle = *title
 	}
-	// When AgentRole is set, use UpsertStatusWithRootAgent so that
-	// root_agent_name is seeded from the configured role on the initial INSERT
-	// and preserved via COALESCE on subsequent UPDATEs. AgentModel is also
-	// seeded into root_model_id when available, so that buildPromptBody can
-	// include the model in the prompt_async body (#557).
-	// When AgentRole is empty (legacy sessions), fall back to UpsertStatus so
-	// that root_agent_name is left NULL rather than set to an empty string.
-	if s.cfg.AgentRole != "" {
-		agentRole := s.cfg.AgentRole
+	// Determine the effective agent role to write to root_agent_name:
+	//   1. cfg.AgentRole non-empty (container mode): use it directly — the role
+	//      is known at startup and authoritative (#555, #557).
+	//   2. cfg.AgentRole empty AND s.rootAgent non-empty (host-mode sessions
+	//      after SSE inference): use s.rootAgent so that root_agent_name is
+	//      written (or self-corrected from a stale "worker" value) on every
+	//      state transition after the first user message is seen (#776).
+	//   3. cfg.AgentRole empty AND s.rootAgent empty (host-mode session before
+	//      any SSE inference, or legacy session): fall back to UpsertStatus so
+	//      that root_agent_name is left NULL rather than set to an empty string.
+	effectiveRole := s.cfg.AgentRole
+	if effectiveRole == "" {
+		effectiveRole = s.rootAgent
+	}
+	if effectiveRole != "" {
 		var agentModel *string
 		if s.cfg.AgentModel != "" {
 			m := s.cfg.AgentModel
@@ -1303,7 +1309,7 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 			string(state),
 			title,
 			opencodeSID,
-			&agentRole,
+			&effectiveRole,
 			agentModel,
 		); err != nil {
 			log.Printf("sidecar: UpsertStatusWithRootAgent failed: %v", err)
