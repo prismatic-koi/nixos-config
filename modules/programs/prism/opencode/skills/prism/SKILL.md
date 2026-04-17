@@ -220,9 +220,19 @@ prism checkin nixos-config@feature-branch~review --verbose
 |---|---|
 | `--harness <name>` | Runtime harness (default: `opencode`) |
 | `--timeout <dur>` | Per-agent timeout (default: `10m`) |
-| `--only <csv>` | Run only named agents (e.g. `--only review-code,review-security`) |
+| `--only <csv>` | Run only named agents (e.g. `--only review-code,review-security`). See retry semantics below. |
 
 Note: `--keep` has been retired. Sessions now persist by default until `prism cleanup` on the parent.
+
+**`--only` retry semantics:**
+
+Each `prism review` invocation — including those using `--only` — increments the round counter `N`. Only the named agents are spawned in that round; sessions from previous rounds are left untouched. This means:
+
+- Full round: spawns 5 sessions as `~review-1-review-*`
+- `prism review 268 --only review-code,review-security`: spawns 2 sessions as `~review-2-review-code` and `~review-2-review-security`. The 5 round-1 sessions remain.
+- A subsequent full round: spawns 5 sessions as `~review-3-review-*`.
+
+The output with `--only` contains exactly one line per requested agent — not five lines with three marked "skipped".
 
 ### When to use prism review vs @review
 
@@ -333,18 +343,7 @@ Tests pass. Committing and pushing.
 
 With no argument, `prism checkin` lists available sessions and exits with a hint.
 
-### `prism checkin` flags
-
-| Flag | Description |
-|---|---|
-| `--last <N>` | Number of message turns to show (default 10) |
-| `--from <id>` | Show N events forward from this event ID |
-| `--before <id>` | Show N events backward from this event ID |
-| `--verbose` / `-v` | Full forensic output: full tool args and full results with no truncation |
-| `--types <list>` | Orthogonal event-type filter — routes to the raw-event path (e.g. `--types audit`, `--types state_change`). Not needed for the narrative view; tool calls are included by default. |
-| `--all` | (no-arg mode only) List all sessions across all repos |
-
-These commands are useful when you need to know where a spawned agent is at without switching to its session.
+See [Debugging a running or stuck session](#debugging-a-running-or-stuck-session) for `prism checkin` flag reference and a full decision tree for diagnosing issues.
 
 ## Sending a follow-up prompt to a running session
 
@@ -392,3 +391,79 @@ so they can address it directly.
   prism checkin nixos-config@update-plex   — inspect the current state
   (C-f or C-w)                             — switch to the session in tmux
 ```
+
+## Debugging a running or stuck session
+
+Use this decision tree when a session appears stuck, produces no output, or fails unexpectedly.
+
+**Step 1 — Session state check:**
+
+```bash
+prism list-sessions
+```
+
+Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), the port, and the `last_seen` timestamp. If a session has a DB row but no live tmux session, it may be a zombie (DB row without a live process). Proceed to step 2.
+
+**Step 2 — Recent activity:**
+
+```bash
+prism checkin <session>
+```
+
+Reads the last 10 turns from the prism DB as a rich narrative view. Use `--verbose` for full tool args/results when something looks off. See [`prism checkin` flags](#prism-checkin-flags) below for all options.
+
+**Step 3 — Sidecar logs:**
+
+```bash
+prism logs <session>
+```
+
+The raw sidecar log is where container startup errors, timing traces, and stderr from failed `podman run` commands land. This is the most informative diagnostic for infrastructure failures. See [`prism logs`](#prism-logs) below for full flag documentation.
+
+**Step 4 — Source cross-reference:**
+
+When a log or event message includes a `file:line` reference, read that location directly in the Go source under `modules/programs/prism/prism/` to understand the exact code path.
+
+### `prism checkin` flags
+
+| Flag | Description |
+|---|---|
+| `--last <N>` | Number of message turns to show (default 10) |
+| `--from <id>` | Show N events forward from this event ID |
+| `--before <id>` | Show N events backward from this event ID |
+| `--verbose` / `-v` | Full forensic output: full tool args and full results with no truncation |
+| `--types <list>` | Orthogonal event-type filter — routes to the raw-event path (e.g. `--types audit`, `--types state_change`). Not needed for the narrative view; tool calls are included by default. |
+| `--all` | (no-arg mode only) List all sessions across all repos |
+
+### `prism logs`
+
+The `prism logs` command streams the raw sidecar log for a session to stdout.
+
+```bash
+prism logs <session>              # full sidecar log to stdout
+prism logs <session> --tail N     # last N lines only
+prism logs <session> --follow     # stream new lines as they arrive (ends ~5s after terminal state)
+prism logs <session> -f           # alias for --follow
+```
+
+Works identically from a host shell and from inside a coordinator container. When `PRISM_HOST_API` is set (container mode), `prism logs` proxies through the host-API Unix socket — no special handling required. The output is the raw log and can be piped to `grep` / `rg`.
+
+### Common failure signatures
+
+A lookup table of log patterns, their causes, and remediation hints:
+
+- **`statfs <path>: no such file or directory`** — podman was told to bind-mount a path that does not exist on the host. Common cause: a container-internal path (e.g. `/workspace`) leaked into a host-side `podman run` invocation. Check the preceding log line for the full `podman run` command. See incident #751 for a historical example.
+
+- **`exit status 125`** — the `podman container create` (or `podman run`) command failed at the OS level. The actual cause is on the preceding line(s) in the log — read upward from this line to find it.
+
+- **`container did not become ready within 120s`** — the container started but the sidecar never reached the ready state. Usual causes: a misconfigured `opencode.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the `podman run` command line and any JSON parse errors.
+
+- **Session rows present in `prism list-sessions` but no events in `prism checkin`** — the container either never started or died immediately after creation. Run `prism logs <session>` to see the full podman command line and its stderr output.
+
+- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value passed to opencode is incorrect. Check the container's `opencode.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
+
+- **Zombie DB rows (session in `prism list-sessions` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to remove the stale row and any dangling port allocation.
+
+### Escalation
+
+If two diagnostic cycles (`prism checkin` + `prism logs`) do not clarify the issue, **escalate to the user** rather than continuing to probe in circles. Document what you observed in each cycle and what remains unclear. Do not run a third diagnostic cycle on your own.
