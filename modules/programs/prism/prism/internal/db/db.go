@@ -1191,6 +1191,51 @@ func (d *DB) UpdateOpencodeSID(sessionName, sid string) error {
 	return nil
 }
 
+// QueryDoomLoopEvents returns doom_loop_detected events from agent_events,
+// ordered by created_at DESC. Optional filters:
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, error) {
+	args := []any{}
+	conditions := []string{"type = 'doom_loop_detected'"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+		where + " ORDER BY created_at DESC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query doom loop events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("db: scan doom loop event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate doom loop events: %w", err)
+	}
+	return events, nil
+}
+
 // QueryAuditEvents returns audit events from agent_events, ordered by
 // created_at DESC. Optional filters:
 //   - sessionName: when non-empty, restrict to this session only
