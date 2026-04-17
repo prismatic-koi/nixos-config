@@ -262,6 +262,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		cancel()
 	}()
 
+	// Run clipboard staging dir cleanup in the background at sidecar startup.
+	// This implements the TTL sweep that prevents ~/.cache/prism/clipboard/ from
+	// growing unboundedly across multiple paste operations. The sweep is
+	// fire-and-forget; errors are non-fatal (logged by runClipboardClean itself).
+	if containerMode {
+		go func() {
+			_ = runClipboardClean(nil, nil)
+		}()
+	}
+
 	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s container=%v\n",
 		sessionName, opencodeURL, containerMode)
 

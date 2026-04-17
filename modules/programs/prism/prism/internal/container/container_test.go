@@ -2591,8 +2591,9 @@ func TestBuildRunArgs_McpAuthNotMountedWhenAbsent(t *testing.T) {
 // ── prepareVolumeDirs tests (AC-1, AC-4) ─────────────────────────────────────
 
 // TestPrepareVolumeDirs_CreatesSessionDir verifies that prepareVolumeDirs creates
-// the per-session opencode state directory and the two cache directories under
-// the given HOME, so that buildRunArgs() remains a pure argument builder.
+// the per-session opencode state directory, cache directories, and the clipboard
+// staging directory under the given HOME, so that buildRunArgs() remains a pure
+// argument builder.
 func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -2605,8 +2606,11 @@ func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	wantSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
 	wantOpencode := filepath.Join(fakeHome, ".cache", "opencode")
 	wantBun := filepath.Join(fakeHome, ".cache", "bun")
+	// Clipboard staging dir is pre-created so that the bind-mount in buildRunArgs()
+	// is always active, even on the first ever paste operation.
+	wantClipboard := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
 
-	for _, dir := range []string{wantSession, wantOpencode, wantBun} {
+	for _, dir := range []string{wantSession, wantOpencode, wantBun, wantClipboard} {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			t.Errorf("expected directory to exist: %s (err: %v)", dir, err)
 		}
@@ -2677,6 +2681,171 @@ func TestBuildRunArgs_AuthJsonOverlaySkippedWhenMissing(t *testing.T) {
 		if arg == "--volume" && i+1 < len(args) {
 			if strings.Contains(args[i+1], wantDstSubstr) {
 				t.Errorf("auth.json overlay must not be present when auth.json is absent; found %q", args[i+1])
+			}
+		}
+	}
+}
+
+// ── Clipboard staging directory mount tests ──────────────────────────────────
+
+// TestBuildRunArgs_ClipboardStagingDirMountedWhenPresent verifies that when
+// ~/.cache/prism/clipboard/ exists on the host, buildRunArgs adds a read-only
+// bind-mount at the identical absolute path inside the container.
+// This allows opencode's drag-drop handler to stat() the path verbatim and
+// read the staged image bytes without any path translation.
+func TestBuildRunArgs_ClipboardStagingDirMountedWhenPresent(t *testing.T) {
+	fakeHome := t.TempDir()
+	clipboardDir := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll clipboard dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	// The mount must be: <clipboardDir>:<clipboardDir>:ro
+	// (identical host and container path, read-only).
+	wantMount := clipboardDir + ":" + clipboardDir + ":ro"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if args[i+1] == wantMount {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("clipboard staging dir mount %q not found in args: %v", wantMount, args)
+	}
+}
+
+// TestBuildRunArgs_ClipboardStagingDirNotMountedWhenAbsent verifies that when
+// ~/.cache/prism/clipboard/ does not exist at container spawn time, buildRunArgs
+// skips the bind-mount (consistent with the conditional-mount pattern used for
+// AWS/MCP-auth/kube config). The container starts normally without error.
+func TestBuildRunArgs_ClipboardStagingDirNotMountedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Intentionally do NOT create ~/.cache/prism/clipboard/.
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	// No mount should reference the clipboard staging directory.
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, filepath.Join("prism", "clipboard")) {
+				t.Errorf("clipboard staging dir must not be mounted when absent; found %q", v)
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_ClipboardMountIsReadOnly verifies that the clipboard staging
+// directory bind-mount uses read-only access (:ro) from the container's
+// perspective. The container reads staged image files but must not write to the
+// host's staging directory.
+func TestBuildRunArgs_ClipboardMountIsReadOnly(t *testing.T) {
+	fakeHome := t.TempDir()
+	clipboardDir := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll clipboard dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, filepath.Join("prism", "clipboard")) {
+				if !strings.HasSuffix(v, ":ro") {
+					t.Errorf("clipboard staging dir mount must be read-only, got: %q", v)
+				}
+				break
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_ClipboardMountSamePathBothSides verifies that the clipboard
+// staging directory is bind-mounted at the identical absolute path on both the
+// host side and the container side. opencode's stat() call uses the host path
+// (printed by `prism clipboard paste-image`) without any translation.
+func TestBuildRunArgs_ClipboardMountSamePathBothSides(t *testing.T) {
+	fakeHome := t.TempDir()
+	clipboardDir := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll clipboard dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.Contains(v, filepath.Join("prism", "clipboard")) {
+				// Volume spec: host-path:container-path[:opts]
+				// Both sides must be the same absolute path.
+				parts := strings.SplitN(v, ":", 3)
+				if len(parts) < 2 {
+					t.Errorf("malformed volume spec: %q", v)
+					break
+				}
+				hostPath := parts[0]
+				containerPath := parts[1]
+				if hostPath != containerPath {
+					t.Errorf("clipboard mount host path %q != container path %q (must be identical)", hostPath, containerPath)
+				}
+				break
+			}
+		}
+	}
+}
+
+// TestBuildRunArgs_ClipboardMountNoWaylandOrX11Sockets verifies that no
+// Wayland socket, X11 socket, dbus socket, pipewire, or pulseaudio socket is
+// added alongside the clipboard staging directory mount. Clipboard read occurs
+// entirely host-side; no clipboard access mechanism is exposed inside the container.
+func TestBuildRunArgs_ClipboardMountNoWaylandOrX11Sockets(t *testing.T) {
+	fakeHome := t.TempDir()
+	clipboardDir := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll clipboard dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	// Specific paths that must NOT appear in volume mounts or env vars.
+	// These are security-sensitive clipboard access mechanisms that must remain
+	// entirely host-side. We check specific known paths/patterns rather than
+	// substring matching to avoid false positives from temp dir names.
+	forbiddenContainerPaths := []string{
+		"/run/user",        // XDG_RUNTIME_DIR (contains Wayland sockets)
+		".X11-unix",        // X11 socket directory
+		"wayland-",         // Wayland socket files (wayland-0, wayland-1, etc.)
+		"/run/dbus",        // dbus socket
+		"/run/pipewire",    // pipewire socket
+		"/run/pulseaudio",  // pulseaudio socket
+		"xdg_runtime_dir",  // env var exposing the runtime dir
+		"wayland_display=", // env var exposing Wayland socket name
+		"display=:",        // env var exposing X11 display
+	}
+	for i, arg := range args {
+		if (arg == "--volume" || arg == "--mount" || arg == "--env") && i+1 < len(args) {
+			v := strings.ToLower(args[i+1])
+			for _, f := range forbiddenContainerPaths {
+				if strings.Contains(v, strings.ToLower(f)) {
+					t.Errorf("forbidden mount/env pattern %q found in args (security: clipboard must be read host-side only): %q", f, args[i+1])
+				}
 			}
 		}
 	}

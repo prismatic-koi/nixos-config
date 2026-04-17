@@ -10,6 +10,46 @@ let
   isDarwin = pkgs.stdenv.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
+
+  # Host-side clipboard paste bridge script for container-mode opencode panes.
+  # Invoked by the tmux Ctrl-V keybind when pane_current_command is "podman".
+  # Argument $1 is the tmux pane ID (e.g. "%3") to inject the paste into.
+  #
+  # Two cases:
+  #   1. Clipboard has a PNG: stage it and inject the path as bracketed-paste.
+  #   2. Clipboard has text (or paste-image fails): read text from clipboard
+  #      and inject it as bracketed-paste (preserving pre-PR text-paste behaviour).
+  #
+  # Using writeShellScript avoids complex quoting in the tmux bind-key string.
+  # ESC bytes are written as literal escape chars inside the Nix string with $'\033'.
+  clipboardPasteScript = pkgs.writeShellScript "prism-clipboard-paste" ''
+    pane_id="$1"
+    tmux="${pkgs.tmux}/bin/tmux"
+
+    # Try image paste first.
+    img="$(${prism} clipboard paste-image 2>/dev/null)"
+    if [ -n "$img" ]; then
+      # Image in clipboard: inject file path as bracketed-paste.
+      # opencode's drag-drop handler will stat() the path and attach the image.
+      seq="$(printf '\033[200~%s\033[201~' "$img")"
+      "$tmux" send-keys -t "$pane_id" -l -- "$seq"
+      exit 0
+    fi
+
+    # No image: fall back to text clipboard paste.
+    # This preserves pre-PR behaviour: before this keybind existed, the terminal
+    # emulator's own bracketed-paste handled text Ctrl-V transparently through
+    # the podman attach PTY. Since we now intercept C-v we must replicate this.
+    if [ -n "$WAYLAND_DISPLAY" ]; then
+      txt="$(wl-paste --no-newline 2>/dev/null)"
+    elif [ -n "$DISPLAY" ]; then
+      txt="$(xclip -selection clipboard -o 2>/dev/null)"
+    fi
+    if [ -n "$txt" ]; then
+      seq="$(printf '\033[200~%s\033[201~' "$txt")"
+      "$tmux" send-keys -t "$pane_id" -l -- "$seq"
+    fi
+  '';
 in
 {
   options = {
@@ -155,6 +195,36 @@ in
               bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
               bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
               bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
+
+              # Clipboard paste bridge for container-mode opencode panes (issue #752).
+              #
+              # When Ctrl-V is pressed in a pane whose current command is "podman"
+              # (i.e. `podman attach` is running the container's opencode TUI):
+              #
+              #   Image path: `prism clipboard paste-image` reads the host clipboard,
+              #   stages the PNG to ~/.cache/prism/clipboard/<uuid>.png, and prints
+              #   the path. The path is injected into the pane as a bracketed-paste
+              #   sequence so opencode's existing drag-drop handler attaches it.
+              #
+              #   Text fallback path: if paste-image exits non-zero (no image in
+              #   clipboard), read text from the host clipboard and inject it as a
+              #   bracketed-paste sequence. This ensures text Ctrl-V continues to
+              #   work in container panes even though tmux has intercepted C-v.
+              #   Without this fallback, text paste would be silently dropped.
+              #
+              # Guard: if-shell checks pane_current_command and only intercepts when
+              # it equals "podman". All other panes (plain shell, editor, non-container
+              # windows) are unaffected — Ctrl-V reaches them via the else branch
+              # which sends a literal Ctrl-V (standard bracketed-paste passthrough).
+              #
+              # The script is written to the Nix store via writeShellScript to avoid
+              # complex quoting of ESC bytes and printf format strings inside the
+              # tmux bind-key string. #{pane_id} is expanded by tmux before the
+              # shell receives it as $1.
+              bind -n C-v \
+                if-shell '[ "#{pane_current_command}" = "podman" ]' \
+                  'run-shell "${clipboardPasteScript} #{pane_id}"' \
+                  'send-keys C-v'
 
               # toggle a split pane with edit and agent
               bind-key Space if-shell "[ $(tmux display-message -t 'edit' -p '#{window_panes}') -gt 1 ]" \
