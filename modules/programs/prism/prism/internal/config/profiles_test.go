@@ -259,17 +259,20 @@ func TestBuildConfigContent_UnknownProfile(t *testing.T) {
 }
 
 // sampleProfilesFileWithReview returns a ProfilesFile that also has a review
-// config blob, for testing ContainerConfigForRole.
+// config blob, for testing ContainerConfigForRole. The fixture blobs use the
+// correct opencode.ai schema key "agent" (singular), matching what real
+// Nix-generated blobs produce.
 func sampleProfilesFileWithReview() *config.ProfilesFile {
 	pf := sampleProfilesFile()
-	pf.ContainerWorkerConfig = `{"agents":{"worker":{}}}`
-	pf.ContainerCoordinatorConfig = `{"agents":{"coordinator":{}}}`
-	pf.ContainerReviewConfig = `{"agents":{"review":{}}}`
+	pf.ContainerWorkerConfig = `{"agent":{"worker":{}}}`
+	pf.ContainerCoordinatorConfig = `{"agent":{"coordinator":{}}}`
+	pf.ContainerReviewConfig = `{"agent":{"review":{}}}`
 	return pf
 }
 
 // TestContainerConfigForRole_Review verifies that passing role "review" returns
-// the ContainerReviewConfig blob (non-empty, valid JSON, has "agents" key).
+// the ContainerReviewConfig blob (non-empty, valid JSON, has "agent" key —
+// the correct opencode.ai schema key used in all container config blobs).
 func TestContainerConfigForRole_Review(t *testing.T) {
 	pf := sampleProfilesFileWithReview()
 	result, err := config.ContainerConfigForRole(pf, "review")
@@ -283,8 +286,8 @@ func TestContainerConfigForRole_Review(t *testing.T) {
 	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	if _, ok := cfg["agents"]; !ok {
-		t.Error("expected top-level 'agents' key in review config blob")
+	if _, ok := cfg["agent"]; !ok {
+		t.Error("expected top-level 'agent' key in review config blob")
 	}
 }
 
