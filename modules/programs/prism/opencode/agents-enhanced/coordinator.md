@@ -40,9 +40,12 @@ Before spawning alongside an in-flight PR, check the file footprint — overlapp
 
 ## Acceptance criteria
 
-Before spawning a worker agent, invoke `@ac` with the ticket, issue, or prompt to produce a tagged AC checklist. Paste the `@ac` output inline in the spawn prompt under an `Acceptance Criteria` heading. Workers should see the exact checklist text, not a reference to it.
+Before spawning a worker agent, load the `acceptance-criteria` skill and apply it inline to produce a tagged AC checklist for the issue or ticket. Do not invoke `@ac` as a subagent — generate or critique the ACs yourself using the rubric from the skill.
 
-If ACs already exist on the ticket or issue, pass them to `@ac` prefaced with "Review these ACs:" so it enters critique mode and improves them before proceeding.
+- **Writing mode** — no ACs exist yet: follow the skill's Writing mode workflow to draft them from the issue or ticket.
+- **Reviewing mode** — ACs already exist on the issue or ticket: follow the skill's Reviewing mode workflow to critique and improve them before proceeding.
+
+Paste the resulting checklist inline in the spawn prompt under an `Acceptance Criteria` heading. Workers should see the exact checklist text, not a reference to it.
 
 Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where formal ACs would be overhead.
 
