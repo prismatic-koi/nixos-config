@@ -143,6 +143,7 @@
           # opencode.jsonc can override agent identity or permissions.
           container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
           container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
+          container_review_config = config.nx.programs.prism.opencode.containerReviewConfigJson;
           # Agent environment variables to inject into host-mode opencode processes.
           # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
           # always contains absolute paths regardless of which form is used.

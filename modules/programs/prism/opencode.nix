@@ -38,6 +38,12 @@
       internal = true;
       description = "Serialised opencode.json blob for coordinator containers (mounted as config file).";
     };
+    nx.programs.prism.opencode.containerReviewConfigJson = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      internal = true;
+      description = "Serialised opencode.json blob for review containers (mounted as config file). Hardened: only review agent(s) declared, write/edit/patch denied, task tool disabled, prism review bash commands denied.";
+    };
     nx.programs.prism.opencode.enhancedReview = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -752,15 +758,169 @@
         plugin = containerPlugins;
         provider = providerSettings;
       };
+
+      # Review container bash commands — deny-by-default with read-only allowlist.
+      # Critically: "prism review" and "prism review *" are denied to prevent
+      # review agents from recursively invoking prism review.
+      containerReviewBashCommands = {
+        # Default: deny everything not explicitly allowed
+        "*" = "deny";
+        # prism review recursion prevention (belt-and-suspenders over deny-all)
+        "prism review" = "deny";
+        "prism review *" = "deny";
+      }
+      // readOnlyBashCommands
+      // {
+        # GitHub CLI read operations (review-context needs gh)
+        "gh issue view *" = "allow";
+        "gh issue list *" = "allow";
+        "gh pr view *" = "allow";
+        "gh pr list *" = "allow";
+        "gh pr diff *" = "allow";
+        "gh pr checks *" = "allow";
+        "gh repo view *" = "allow";
+        "gh run view *" = "allow";
+        "gh run list *" = "allow";
+        # prism read-only introspection
+        "prism checkin" = "allow";
+        "prism checkin *" = "allow";
+        "prism list-sessions" = "allow";
+      };
+
+      # Review container opencode.json blob.
+      # Hardened config: only review agent(s) declared; no worker, coordinator,
+      # build, or plan. write/edit/patch denied. task tool disabled to prevent
+      # review agents delegating to peer @review-* agents. prism review bash
+      # commands denied to prevent recursion.
+      reviewContainerOpencodeJson = {
+        "$schema" = "https://opencode.ai/opencode.json";
+        autoupdate = false;
+        default_agent =
+          if config.nx.programs.prism.opencode.enhancedReview then "review-goal" else "review";
+        enabled_providers = containerEnabledProviders;
+        model = models.secondary;
+        agent =
+          let
+            profiledAgents =
+              config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider
+                (
+                  {
+                    # Explicitly disable non-review agents
+                    worker = {
+                      disable = true;
+                    };
+                    coordinator = {
+                      disable = true;
+                    };
+                    build = {
+                      disable = true;
+                    };
+                    plan = {
+                      disable = true;
+                    };
+                    ac = {
+                      disable = true;
+                    };
+                    explore = {
+                      disable = true;
+                    };
+                    title = {
+                      disable = true;
+                    };
+                    summary = {
+                      disable = true;
+                    };
+                    compaction = {
+                      disable = true;
+                    };
+                  }
+                  // (
+                    if config.nx.programs.prism.opencode.enhancedReview then
+                      {
+                        review-goal = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                        review-code = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                        review-security = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                        review-qa = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                        review-context = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                      }
+                    else
+                      {
+                        review = {
+                          tools = {
+                            task = false;
+                          };
+                        };
+                      }
+                  )
+                );
+            # Strip variant from disabled agents
+            sanitisedAgents = lib.mapAttrs (
+              _name: cfg: if cfg ? disable && cfg.disable then builtins.removeAttrs cfg [ "variant" ] else cfg
+            ) profiledAgents;
+          in
+          sanitisedAgents;
+        # Atlassian MCP may be present (read-only, for context lookup).
+        # lib.mkIf cannot be used here — serialised with builtins.toJSON.
+        mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
+          atlasian = {
+            type = "local";
+            enabled = true;
+            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            environment = {
+              ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+            };
+          };
+        };
+        permission = {
+          # Belt-and-suspenders: deny write operations (worktree is mounted read-only anyway)
+          edit = "deny";
+          patch = "deny";
+          write = "deny";
+          webfetch = "allow";
+          # Atlassian MCP permissions — review agents read only, no writes
+          "atlasian_*" = "deny";
+          "atlasian_atlassianUserInfo" = "allow";
+          "atlasian_get*" = "allow";
+          "atlasian_lookup*" = "allow";
+          "atlasian_search*" = "allow";
+          "atlasian_fetch" = "allow";
+          "atlasian_fetchAtlassian" = "allow";
+          bash = containerReviewBashCommands;
+          external_directory = "allow"; # safe because inside container
+        };
+        plugin = containerPlugins;
+        provider = providerSettings;
+      };
     in
     lib.mkMerge [
       # Set container config JSON blobs as options so profiles.nix can embed
       # them into profiles.json under container_worker_config /
-      # container_coordinator_config.
+      # container_coordinator_config / container_review_config.
       {
         nx.programs.prism.opencode.containerWorkerConfigJson = builtins.toJSON workerContainerOpencodeJson;
         nx.programs.prism.opencode.containerCoordinatorConfigJson =
           builtins.toJSON coordinatorContainerOpencodeJson;
+        nx.programs.prism.opencode.containerReviewConfigJson = builtins.toJSON reviewContainerOpencodeJson;
       }
 
       # When enhanced review is on, inject ENHANCED_REVIEW=true into the agent
