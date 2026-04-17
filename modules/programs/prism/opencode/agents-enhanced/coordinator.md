@@ -134,8 +134,8 @@ When a spawned agent opens a PR:
 
 Once the sense-check passes, merge the PR and sync main before cleaning up:
 
-1. `gh pr merge <number> --squash` — if it fails because the branch is behind main, run `gh pr update-branch <number>` and retry. If that still doesn't resolve it, use `prism prompt <session>` to ask the worker to rebase and push.
-2. Wait for CI checks to finish before merging. An `IN_PROGRESS` status means come back later when the finish notification arrives — do not retry in a loop.
+1. Wait for CI checks to finish before merging. An `IN_PROGRESS` status means come back later when the finish notification arrives — do not retry in a loop.
+2. `gh pr merge <number> --squash` — if it fails because the branch is behind main, run `gh pr update-branch <number>` and retry. If that still doesn't resolve it, use `prism prompt <session>` to ask the worker to rebase and push.
 3. `git pull` to sync with the merged result.
 4. `prism cleanup --yes --session <name>` to remove the worktree, branch, and tmux session.
 
