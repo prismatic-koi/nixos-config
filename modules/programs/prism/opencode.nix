@@ -878,45 +878,22 @@
 
       # Helper to build a per-agent review opencode.json blob.
       # agentName: the single review agent to declare (e.g. "review-goal").
-      # otherAgents: the other 4 review agents to disable.
       # bashCmds: the bash permission map to use.
       makeReviewAgentBlob =
-        agentName: otherAgents: bashCmds:
+        agentName: bashCmds:
         let
-          # Build the agent map: agentName gets task=false; all others are disabled.
+          # Build the agent map: only the target agent plus the two builtin agents
+          # we want disabled (plan, build). Custom agents (worker, coordinator, ac,
+          # explore, title, summary, compaction, sibling review-*) are not declared
+          # at all — they only exist because we declare them, so omitting them is
+          # the correct way to exclude them from this container's world.
           baseAgentMap = {
-            worker = {
-              disable = true;
-            };
-            coordinator = {
+            plan = {
               disable = true;
             };
             build = {
               disable = true;
             };
-            plan = {
-              disable = true;
-            };
-            ac = {
-              disable = true;
-            };
-            explore = {
-              disable = true;
-            };
-            title = {
-              disable = true;
-            };
-            summary = {
-              disable = true;
-            };
-            compaction = {
-              disable = true;
-            };
-          }
-          // lib.genAttrs otherAgents (_: {
-            disable = true;
-          })
-          // {
             ${agentName} = {
               mode = "primary";
               tools = {
@@ -955,43 +932,17 @@
         };
 
       # Five per-agent review container opencode.json blobs.
-      # Each declares ONLY its own agent; all others (including the other 4
-      # review agents and worker/coordinator/build/plan/ac/explore/title/
-      # summary/compaction) are explicitly disabled.
-      reviewGoalContainerOpencodeJson = makeReviewAgentBlob "review-goal" [
-        "review-code"
-        "review-security"
-        "review-qa"
-        "review-context"
-      ] containerReviewReadOnlyBashCommands;
+      # Each declares ONLY its own agent plus the two builtin agents we want
+      # disabled (plan, build). Custom agents are simply not declared.
+      reviewGoalContainerOpencodeJson = makeReviewAgentBlob "review-goal" containerReviewReadOnlyBashCommands;
 
-      reviewCodeContainerOpencodeJson = makeReviewAgentBlob "review-code" [
-        "review-goal"
-        "review-security"
-        "review-qa"
-        "review-context"
-      ] containerReviewReadOnlyBashCommands;
+      reviewCodeContainerOpencodeJson = makeReviewAgentBlob "review-code" containerReviewReadOnlyBashCommands;
 
-      reviewSecurityContainerOpencodeJson = makeReviewAgentBlob "review-security" [
-        "review-goal"
-        "review-code"
-        "review-qa"
-        "review-context"
-      ] containerReviewReadOnlyBashCommands;
+      reviewSecurityContainerOpencodeJson = makeReviewAgentBlob "review-security" containerReviewReadOnlyBashCommands;
 
-      reviewQaContainerOpencodeJson = makeReviewAgentBlob "review-qa" [
-        "review-goal"
-        "review-code"
-        "review-security"
-        "review-context"
-      ] containerReviewQaBashCommands;
+      reviewQaContainerOpencodeJson = makeReviewAgentBlob "review-qa" containerReviewQaBashCommands;
 
-      reviewContextContainerOpencodeJson = makeReviewAgentBlob "review-context" [
-        "review-goal"
-        "review-code"
-        "review-security"
-        "review-qa"
-      ] containerReviewContextBashCommands;
+      reviewContextContainerOpencodeJson = makeReviewAgentBlob "review-context" containerReviewContextBashCommands;
     in
     lib.mkMerge [
       # Set container config JSON blobs as options so profiles.nix can embed
