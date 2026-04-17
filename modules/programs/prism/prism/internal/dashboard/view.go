@@ -47,12 +47,11 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
 	const stateW = 10
 	const dotW = 2
-	const sessionWStart = 20 // starting width; grows as columns are dropped
-	const sessionWCap = 40   // maximum session width before the rest goes to title
-	const statWFull = 22     // "2 files +122 -14"
-	const statWCompact = 10  // "+122 -14"
-	const modelWFull = 22    // e.g. "claude-sonnet-4-6    "
-	const harnessW = 10      // "opencode  " or future harness names
+	const sessionWCap = 40  // maximum session width before the rest goes to title
+	const statWFull = 22    // "2 files +122 -14"
+	const statWCompact = 10 // "+122 -14"
+	const modelWFull = 22   // e.g. "claude-sonnet-4-6    "
+	const harnessW = 10     // "opencode  " or future harness names
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
@@ -63,7 +62,12 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	showHarness := true
 	showStat := true
 	statW := statWFull
-	sessionW := sessionWStart
+	// Derive session column width from the longest rendered session name
+	// across all displayed entries, clamped to [7, 40]. This allows the
+	// column to be narrower than the old hardcoded 20-char floor when all
+	// session names are short, while still never truncating the "session"
+	// header word and respecting the existing cap.
+	sessionW := SessionColumnWidth(d.Displayed)
 
 	// usedWidth returns the width of all non-title columns at their current settings.
 	usedWidth := func() int {
