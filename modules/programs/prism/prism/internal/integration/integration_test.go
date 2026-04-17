@@ -833,7 +833,10 @@ func TestSessionCreate_ForceFresh_False_StaleSession(t *testing.T) {
 	if err := d.UpsertStatus(sessionName, "repo", dir, "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	staleTime := time.Now().Add(-2 * time.Minute).Unix()
+	// last_seen is stored and read as Unix milliseconds throughout the codebase
+	// (see UpsertStatusWithAgent, scanStatus). Use UnixMilli() here so the value
+	// is correctly interpreted as "2 minutes ago" rather than January 1970.
+	staleTime := time.Now().Add(-2 * time.Minute).UnixMilli()
 	if err := d.QueryRow(
 		"UPDATE agent_status SET last_seen = ? WHERE session_name = ? RETURNING 1",
 		staleTime, sessionName,
