@@ -228,6 +228,34 @@ type Opts struct {
 	ProfilesFile *config.ProfilesFile
 	// ContainerMode: when true, each agent runs in its own container.
 	ContainerMode bool
+	// OnProgress is an optional callback invoked for each progress event:
+	// spawn, finish, timeout, and spawn failure. It receives a formatted
+	// progress line (without trailing newline). The caller is responsible for
+	// writing and flushing the line. When nil, no progress output is emitted.
+	OnProgress func(line string)
+}
+
+// FormatAgentDisplayName converts an agent name like "review-goal" to a
+// display name like "Review-Goal" for progress output lines.
+func FormatAgentDisplayName(name string) string {
+	parts := strings.Split(name, "-")
+	for i, p := range parts {
+		if len(p) > 0 {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, "-")
+}
+
+// FormatProgressDuration formats a duration for progress output lines.
+// Below 60s: "28.4s". At or above 60s: "1m12s".
+func FormatProgressDuration(d time.Duration) string {
+	if d < 60*time.Second {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) - m*60
+	return fmt.Sprintf("%dm%ds", m, s)
 }
 
 // Run executes the review. It returns the aggregated results and an error.
@@ -275,7 +303,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	}
 
 	// Spawn each agent as its own independent top-level tmux session.
+	// spawnErr[i] is non-nil if agent i failed to spawn. Agents that fail to
+	// spawn are excluded from polling; they receive an error AgentResult.
 	agentSessions := make([]string, len(agents))
+	spawnErr := make([]error, len(agents))
+	spawnTimes := make([]time.Time, len(agents))
+
 	for i, ag := range agents {
 		// Per-agent session: <parent>~review-<N>-<agent.Name>
 		agentSession := roundPrefix + ag.Name
@@ -283,26 +316,22 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 
 		// Seed agent_status for the agent session.
 		if err := d.UpsertStatus(agentSession, repo, worktree, "idle", nil, nil); err != nil {
-			// Clean up already-started agents before returning.
-			for j := 0; j < i; j++ {
-				session.KillSidecar(agentSessions[j])
-				cleanupAgentSession(d, agentSessions[j])
-				_ = tmux.KillSession(agentSessions[j])
+			spawnErr[i] = fmt.Errorf("seed status for %s: %w", ag.Name, err)
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), err))
 			}
-			return nil, fmt.Errorf("seed status for %s: %w", ag.Name, err)
+			continue
 		}
 
 		// Allocate a port for this agent session.
 		port, portErr := d.AllocatePort(agentSession)
 		if portErr != nil {
-			for j := 0; j < i; j++ {
-				session.KillSidecar(agentSessions[j])
-				cleanupAgentSession(d, agentSessions[j])
-				_ = tmux.KillSession(agentSessions[j])
-			}
-			// Also clean up the DB row we just seeded for i.
 			_ = d.SetEnded(agentSession)
-			return nil, fmt.Errorf("allocate port for %s: %w", ag.Name, portErr)
+			spawnErr[i] = fmt.Errorf("allocate port for %s: %w", ag.Name, portErr)
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), portErr))
+			}
+			continue
 		}
 
 		// Build the prompt for the review agent.
@@ -316,14 +345,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// surfaces this as an explicit error to prevent silent build-agent spawns.
 		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
 		if configErr != nil {
-			// Clean up any already-started agents before returning.
-			for j := 0; j < i; j++ {
-				session.KillSidecar(agentSessions[j])
-				cleanupAgentSession(d, agentSessions[j])
-				_ = tmux.KillSession(agentSessions[j])
-			}
 			_ = d.SetEnded(agentSession)
-			return nil, configErr
+			spawnErr[i] = configErr
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
+			}
+			continue
 		}
 
 		// Start the sidecar for this agent.
@@ -346,35 +373,79 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// Create the independent top-level tmux session for this agent.
 		agentCmd := buildAgentCommand(ag, agentSession, port, prompt, opts.ContainerMode)
 		if err := createAgentSession(agentSession, worktree, agentCmd, port, opts.ContainerMode); err != nil {
-			// Clean up agents 0..i (including the current one whose session failed).
-			// Kill the sidecar for agent i (already started above).
+			// Emit spawn-failure progress line immediately.
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), err))
+			}
+			// Clean up this agent's resources (sidecar, DB row, tmux session).
 			session.KillSidecar(agentSession)
 			cleanupAgentSession(d, agentSession)
-			// Kill tmux session for agent i if it was created (best effort).
 			_ = tmux.KillSession(agentSession)
+			spawnErr[i] = fmt.Errorf("create session for %s: %w", ag.Name, err)
+			continue
+		}
 
-			// Clean up agents 0..i-1 that fully started.
-			for j := 0; j < i; j++ {
-				session.KillSidecar(agentSessions[j])
-				cleanupAgentSession(d, agentSessions[j])
-				_ = tmux.KillSession(agentSessions[j])
-			}
-			return nil, fmt.Errorf("create session for %s: %w", ag.Name, err)
+		// Emit "started" progress line immediately after successful spawn.
+		if opts.OnProgress != nil {
+			opts.OnProgress(fmt.Sprintf("%s started", FormatAgentDisplayName(ag.Name)))
+		}
+		spawnTimes[i] = time.Now()
+	}
+
+	// Check if all agents failed to spawn — surface a combined error.
+	allFailed := true
+	for _, se := range spawnErr {
+		if se == nil {
+			allFailed = false
+			break
+		}
+	}
+	if allFailed {
+		return nil, fmt.Errorf("all review agents failed to spawn")
+	}
+
+	// Build the subset of agents that successfully spawned for polling and
+	// SIGINT notification.
+	var liveAgents []Agent
+	var liveSessions []string
+	var liveSpawnTimes []time.Time
+	for i, se := range spawnErr {
+		if se == nil {
+			liveAgents = append(liveAgents, agents[i])
+			liveSessions = append(liveSessions, agentSessions[i])
+			liveSpawnTimes = append(liveSpawnTimes, spawnTimes[i])
 		}
 	}
 
-	// Notify the caller with all session names for SIGINT handling.
+	// Notify the caller with all successfully-spawned session names for SIGINT handling.
 	if onSessionsCreated != nil {
-		onSessionsCreated(agentSessions)
+		onSessionsCreated(liveSessions)
 	}
 
-	// Poll DB until all agents finish or timeout.
-	results, pollErr := pollAgents(ctx, d, agents, agentSessions, opts.Timeout)
+	// Poll DB until all live agents finish or timeout.
+	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress)
 
 	// Sessions persist — do NOT kill them here. The user can re-read them later.
-	// Sidecar processes are cleaned up since the agent has finished.
-	for _, agentSession := range agentSessions {
+	// Sidecar processes are cleaned up since the agents have finished.
+	for _, agentSession := range liveSessions {
 		session.KillSidecar(agentSession)
+	}
+
+	// Merge live results with spawn-failure results, preserving original agent order.
+	results := make([]AgentResult, len(agents))
+	liveIdx := 0
+	for i, ag := range agents {
+		if spawnErr[i] != nil {
+			results[i] = AgentResult{
+				Agent:   ag,
+				Passed:  false,
+				Output:  fmt.Sprintf("ERROR: failed to spawn agent: %v", spawnErr[i]),
+				IsError: true,
+			}
+		} else {
+			results[i] = liveResults[liveIdx]
+			liveIdx++
+		}
 	}
 
 	return results, pollErr
@@ -477,7 +548,10 @@ func buildReadinessWaitCmd(readyPath, attachCmd string) string {
 }
 
 // pollAgents polls the DB until all agents reach "finished" or the timeout expires.
-func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration) ([]AgentResult, error) {
+// spawnTimes[i] is the time agent i was spawned; used to compute durations for
+// progress output. onProgress is called for each "finished" or "timed out" event;
+// it may be nil.
+func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string)) ([]AgentResult, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
@@ -502,8 +576,18 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 			}
 			if status != nil && isTerminalState(status.State) {
 				finished[i] = true
+				// Emit "finished" progress line.
+				if onProgress != nil {
+					elapsed := time.Since(spawnTimes[i])
+					onProgress(fmt.Sprintf("%s finished in %s", FormatAgentDisplayName(agents[i].Name), FormatProgressDuration(elapsed)))
+				}
 			} else if time.Now().After(deadline) {
 				timedOut[i] = true
+				// Emit "timed out" progress line.
+				if onProgress != nil {
+					elapsed := time.Since(spawnTimes[i])
+					onProgress(fmt.Sprintf("%s timed out after %s", FormatAgentDisplayName(agents[i].Name), FormatProgressDuration(elapsed)))
+				}
 			} else {
 				allDone = false
 			}
@@ -522,10 +606,14 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 		}
 
 		if time.Now().After(deadline) {
-			// Mark all remaining as timed out.
+			// Mark all remaining as timed out and emit progress lines.
 			for i := range agents {
-				if !finished[i] {
+				if !finished[i] && !timedOut[i] {
 					timedOut[i] = true
+					if onProgress != nil {
+						elapsed := time.Since(spawnTimes[i])
+						onProgress(fmt.Sprintf("%s timed out after %s", FormatAgentDisplayName(agents[i].Name), FormatProgressDuration(elapsed)))
+					}
 				}
 			}
 			break
@@ -560,6 +648,13 @@ func isTerminalState(state string) bool {
 // Production code calls buildResults directly (via pollAgents).
 func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
 	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, cancelled)
+}
+
+// PollAgentsForTest is an exported wrapper around pollAgents for use in tests.
+// It accepts pre-seeded DB rows and returns both results and the progress lines
+// emitted via onProgress.
+func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string)) ([]AgentResult, error) {
+	return pollAgents(ctx, d, agents, agentSessions, timeout, spawnTimes, onProgress)
 }
 
 // buildResults constructs AgentResult entries from polling outcomes.

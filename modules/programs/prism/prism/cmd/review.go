@@ -152,6 +152,15 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: %w", err)
 	}
 
+	// progressLine writes and flushes a single progress line to stdout.
+	// Flushing after each write is critical: the enclosing bash tool invocation
+	// makes stdout a pipe (not a TTY), so Go's default buffering would hold
+	// lines until the buffer fills. os.Stdout.Sync() forces an immediate flush.
+	progressLine := func(line string) {
+		fmt.Fprintln(os.Stdout, line)
+		_ = os.Stdout.Sync()
+	}
+
 	// Build run options.
 	opts := review.Opts{
 		PRNumber:       prNumber,
@@ -162,6 +171,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
 		ContainerMode:  cfg.ContainerMode,
+		OnProgress:     progressLine,
 	}
 
 	// Load profiles for container mode — passed through to review.Run so
@@ -212,6 +222,10 @@ func runReview(cmd *cobra.Command, args []string) error {
 	if runErr != nil && runErr != context.Canceled {
 		return fmt.Errorf("prism review: %w", runErr)
 	}
+
+	// Print a blank line to separate progress output from the aggregated summary.
+	fmt.Fprintln(os.Stdout)
+	_ = os.Stdout.Sync()
 
 	// Format and print results.
 	output, allPassed := review.FormatResults(results, prNumber)

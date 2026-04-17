@@ -1,6 +1,7 @@
 package review_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1054,7 +1055,243 @@ func TestResolveAgentConfigContent_ContainerMode_WorkerRole(t *testing.T) {
 	}
 }
 
+// ── FormatAgentDisplayName ────────────────────────────────────────────────────
+
+// TestFormatAgentDisplayName_AllAgents verifies that the five review agent
+// names produce the expected title-cased display names for progress output.
+func TestFormatAgentDisplayName_AllAgents(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"review-goal", "Review-Goal"},
+		{"review-code", "Review-Code"},
+		{"review-security", "Review-Security"},
+		{"review-qa", "Review-Qa"},
+		{"review-context", "Review-Context"},
+	}
+	for _, tc := range cases {
+		got := review.FormatAgentDisplayName(tc.input)
+		if got != tc.want {
+			t.Errorf("FormatAgentDisplayName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+// TestFormatAgentDisplayName_SingleWord verifies that a single-word name is
+// capitalised correctly.
+func TestFormatAgentDisplayName_SingleWord(t *testing.T) {
+	got := review.FormatAgentDisplayName("worker")
+	if got != "Worker" {
+		t.Errorf("FormatAgentDisplayName(%q) = %q, want %q", "worker", got, "Worker")
+	}
+}
+
+// ── FormatProgressDuration ────────────────────────────────────────────────────
+
+// TestFormatProgressDuration_BelowMinute verifies the "Xs.Xf" format for
+// durations below 60 seconds.
+func TestFormatProgressDuration_BelowMinute(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{28*time.Second + 400*time.Millisecond, "28.4s"},
+		{0, "0.0s"},
+		{1*time.Second + 100*time.Millisecond, "1.1s"},
+		{59*time.Second + 900*time.Millisecond, "59.9s"},
+	}
+	for _, tc := range cases {
+		got := review.FormatProgressDuration(tc.d)
+		if got != tc.want {
+			t.Errorf("FormatProgressDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// TestFormatProgressDuration_AtOrAboveMinute verifies the "Xm Ys" format for
+// durations at or above 60 seconds.
+func TestFormatProgressDuration_AtOrAboveMinute(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{60 * time.Second, "1m0s"},
+		{72 * time.Second, "1m12s"},
+		{90 * time.Second, "1m30s"},
+		{125 * time.Second, "2m5s"},
+	}
+	for _, tc := range cases {
+		got := review.FormatProgressDuration(tc.d)
+		if got != tc.want {
+			t.Errorf("FormatProgressDuration(%v) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+// ── Progress callback (OnProgress) ───────────────────────────────────────────
+
+// TestPollAgents_ProgressCallback_HappyPath verifies that PollAgentsForTest
+// emits one "finished" progress line per agent when all agents complete
+// successfully. This covers the happy-path AC: progress lines are emitted in
+// completion order, not start order.
+func TestPollAgents_ProgressCallback_HappyPath(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-code", OpencodeName: "review-code"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-goal",
+		"test@parent~review-1-review-code",
+	}
+
+	// Pre-seed both agents as finished.
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+	}
+
+	var lines []string
+	spawnTimes := []time.Time{time.Now(), time.Now()}
+
+	results, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatalf("PollAgentsForTest: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("PollAgentsForTest: got %d results, want 2", len(results))
+	}
+
+	// Exactly 2 "finished" progress lines must have been emitted.
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 progress lines, got %d: %v", len(lines), lines)
+	}
+	// Each line must match the "Review-X finished in Ys.Yf" pattern.
+	for _, line := range lines {
+		if !findSubstring(line, "finished in") {
+			t.Errorf("progress line %q does not contain 'finished in'", line)
+		}
+	}
+	// review-goal must appear in one of the lines.
+	if !linesContain(lines, "Review-Goal finished") {
+		t.Errorf("expected a 'Review-Goal finished' line, got: %v", lines)
+	}
+	// review-code must appear in one of the lines.
+	if !linesContain(lines, "Review-Code finished") {
+		t.Errorf("expected a 'Review-Code finished' line, got: %v", lines)
+	}
+}
+
+// TestPollAgents_ProgressCallback_OnlySubset verifies that when a subset of
+// agents is requested (simulating --only), progress lines are emitted only for
+// the requested agents — not for the full 5-agent set.
+func TestPollAgents_ProgressCallback_OnlySubset(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	// Only 2 agents (simulating --only review-code,review-qa).
+	agents := []review.Agent{
+		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-qa", OpencodeName: "review-qa"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-code",
+		"test@parent~review-1-review-qa",
+	}
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+	}
+
+	var lines []string
+	spawnTimes := []time.Time{time.Now(), time.Now()}
+
+	_, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatalf("PollAgentsForTest: %v", err)
+	}
+
+	// Exactly 2 finished lines — not 5 (no stray lines for the other agents).
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 progress lines for --only subset, got %d: %v", len(lines), lines)
+	}
+	if !linesContain(lines, "Review-Code finished") {
+		t.Errorf("expected 'Review-Code finished' line, got: %v", lines)
+	}
+	if !linesContain(lines, "Review-Qa finished") {
+		t.Errorf("expected 'Review-Qa finished' line, got: %v", lines)
+	}
+	// Must not contain lines for agents outside the subset.
+	for _, line := range lines {
+		for _, unexpected := range []string{"Review-Goal", "Review-Security", "Review-Context"} {
+			if findSubstring(line, unexpected) {
+				t.Errorf("unexpected progress line for out-of-subset agent: %q", line)
+			}
+		}
+	}
+}
+
+// TestPollAgents_ProgressCallback_Timeout verifies that when an agent times
+// out, a "timed out after <duration>" progress line is emitted and the
+// remaining agents continue.
+func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-code", OpencodeName: "review-code"},
+	}
+	sessions := []string{
+		"test@parent~review-5-review-goal",
+		"test@parent~review-5-review-code",
+	}
+
+	// review-goal is finished; review-code stays idle (will time out).
+	if err := d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.UpsertStatus(sessions[1], "nixos-config", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	var lines []string
+	spawnTimes := []time.Time{time.Now(), time.Now()}
+
+	// Very short timeout so review-code times out quickly.
+	_, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Millisecond, spawnTimes, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatalf("PollAgentsForTest: %v", err)
+	}
+
+	// Must have at least one "timed out after" line for review-code.
+	if !linesContain(lines, "Review-Code timed out after") {
+		t.Errorf("expected 'Review-Code timed out after' line, got: %v", lines)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// linesContain returns true if any of the given lines contains sub.
+func linesContain(lines []string, sub string) bool {
+	for _, line := range lines {
+		if findSubstring(line, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 // countResultLines counts lines in output that start with ✓ or ✗ (result lines).
 func countResultLines(output string) int {
