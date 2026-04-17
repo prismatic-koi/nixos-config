@@ -109,34 +109,20 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: could not determine parent session name\nhint: run from inside a tmux session or set PRISM_SESSION_NAME")
 	}
 
-	// Load config for container mode (must be before DB block to gate it).
+	// Load config (used below for container mode flags).
 	cfg := config.Load()
 
-	// Resolve worktree path.
-	var worktree string
-	if cfg.ContainerMode {
-		worktree = os.Getenv("PRISM_SPAWN_PATH")
-		if worktree == "" {
-			worktree = "/workspace"
-		}
-	} else {
-		// Validate parent session exists in DB.
-		d, dbErr := openDB()
-		if dbErr != nil {
-			return fmt.Errorf("prism review: open db: %w", dbErr)
-		}
-		status, stErr := d.CurrentStatus(parentSession)
-		d.Close()
-		if stErr != nil {
-			return fmt.Errorf("prism review: lookup session %q: %w", parentSession, stErr)
-		}
-		if status == nil {
-			return fmt.Errorf("prism review: parent session %q not found in DB\nhint: the session must be registered in the prism DB", parentSession)
-		}
-		worktree = status.Worktree
-		if worktree == "" {
-			return fmt.Errorf("prism review: no worktree path for session %q", parentSession)
-		}
+	// Resolve worktree path from the DB. By the time control reaches here we
+	// know PRISM_HOST_API is unset (the proxy-out branch above did not fire),
+	// so this process is running on the host regardless of cfg.ContainerMode.
+	// cfg.ContainerMode is a Nix-time flag meaning "this host spawns workers
+	// inside containers"; it does NOT mean "this process is running inside a
+	// container". Reading PRISM_SPAWN_PATH or falling back to /workspace here
+	// would use the container-internal path, which does not exist on the host
+	// and causes `statfs /workspace: no such file or directory` in podman.
+	worktree, wtErr := resolveReviewWorktree(parentSession)
+	if wtErr != nil {
+		return wtErr
 	}
 
 	// Determine agents list.
@@ -245,6 +231,31 @@ func agentsForHarness(harness string) []review.Agent {
 		}
 		return review.DefaultAgents()
 	}
+}
+
+// resolveReviewWorktree returns the host-side worktree path for parentSession
+// by looking it up in the prism DB. It is called from runReview after the
+// PRISM_HOST_API proxy-out branch, so we are always on the host regardless of
+// cfg.ContainerMode. Using PRISM_SPAWN_PATH or a /workspace fallback here
+// would pass the container-internal mount path to podman, causing a
+// "statfs /workspace: no such file or directory" error on the host.
+func resolveReviewWorktree(parentSession string) (string, error) {
+	d, dbErr := openDB()
+	if dbErr != nil {
+		return "", fmt.Errorf("prism review: open db: %w", dbErr)
+	}
+	status, stErr := d.CurrentStatus(parentSession)
+	d.Close()
+	if stErr != nil {
+		return "", fmt.Errorf("prism review: lookup session %q: %w", parentSession, stErr)
+	}
+	if status == nil {
+		return "", fmt.Errorf("prism review: parent session %q not found in DB\nhint: the session must be registered in the prism DB", parentSession)
+	}
+	if status.Worktree == "" {
+		return "", fmt.Errorf("prism review: no worktree path for session %q", parentSession)
+	}
+	return status.Worktree, nil
 }
 
 // splitCSV splits a comma-separated string and trims whitespace.
