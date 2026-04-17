@@ -905,12 +905,16 @@ func (m *Manager) buildRunArgs() []string {
 	// the SQLite DB. Only mounted when the file exists — skipped silently when
 	// absent (e.g. after the parent dir was deleted for DB recovery). Uses the
 	// same bind-mount-inside-mounted-dir pattern as the gitdir overlay.
-	// Mounted read-only: opencode reads auth.json for OAuth tokens but token
-	// refresh writes go to the per-session state directory, not back to this
-	// file. :Z applies the SELinux label so podman can bind-mount it on
+	// Mounted read-write (:Z, not :ro,Z): the opencode-claude-auth plugin calls
+	// writeFileSync on auth.json on every load to sync the active OAuth
+	// credentials. A read-only mount causes EROFS and breaks Anthropic auth
+	// inside the container. Keeping it writable also means token refreshes
+	// written inside one session propagate back to the shared host file and are
+	// visible to subsequent sessions — the intended shared-credentials behaviour.
+	// :Z applies the SELinux label so podman can bind-mount it on
 	// SELinux-enforcing hosts (Fedora/RHEL).
 	if _, err := os.Stat(opencodeAuthJSON); err == nil {
-		args = append(args, "--volume", opencodeAuthJSON+":/root/.local/share/opencode/auth.json:ro,Z")
+		args = append(args, "--volume", opencodeAuthJSON+":/root/.local/share/opencode/auth.json:Z")
 	}
 
 	// MCP auth: bind-mount ~/.mcp-auth into the container at /root/.mcp-auth
