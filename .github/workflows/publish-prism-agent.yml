@@ -17,10 +17,6 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          swap-storage: false
-          tool-cache: true
       - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
         with:
@@ -35,6 +31,8 @@ jobs:
           name: lucidph3nx-nixos-config
       - name: Build prism-agent image (amd64)
         run: nix build --print-build-logs '.#packages.x86_64-linux.prismAgentImage'
+      - name: Install skopeo
+        run: sudo apt-get install -y skopeo
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -44,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           archive=$(readlink result)
-          nix run nixpkgs#skopeo -- copy \
+          skopeo copy \
             --insecure-policy \
             "docker-archive:${archive}" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-amd64
@@ -55,10 +53,6 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          swap-storage: false
-          tool-cache: true
       - uses: actions/checkout@v6
       - uses: cachix/install-nix-action@v31
         with:
@@ -73,6 +67,8 @@ jobs:
           name: lucidph3nx-nixos-config
       - name: Build prism-agent image (arm64)
         run: nix build --print-build-logs '.#packages.aarch64-linux.prismAgentImage'
+      - name: Install skopeo
+        run: sudo apt-get install -y skopeo
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -82,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           archive=$(readlink result)
-          nix run nixpkgs#skopeo -- copy \
+          skopeo copy \
             --insecure-policy \
             "docker-archive:${archive}" \
             docker://ghcr.io/prismatic-koi/prism-agent:latest-arm64

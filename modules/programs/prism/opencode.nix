@@ -918,6 +918,7 @@
           })
           // {
             ${agentName} = {
+              mode = "primary";
               tools = {
                 task = false;
               };
