@@ -101,7 +101,7 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 }
 
 // TestBuildOpencodeCmd_ContainerMode verifies that container mode produces the
-// correct "podman attach <container-name>" command (RFC #691, Phase 1a / Issue #715).
+// correct "podman attach --sig-proxy=false <container-name>" command (RFC #691, Phase 1a / Issue #715).
 func TestBuildOpencodeCmd_ContainerMode(t *testing.T) {
 	cases := []struct {
 		opts session.Opts
@@ -110,11 +110,11 @@ func TestBuildOpencodeCmd_ContainerMode(t *testing.T) {
 		// Container mode with SessionName — should use podman attach with the
 		// stable container name derived from the session name (single-quoted for
 		// shell safety when embedded in the readiness wait script).
-		{session.Opts{ContainerMode: true, SessionName: "repo@main", Port: 14000}, "podman attach 'prism-repo-main'"},
+		{session.Opts{ContainerMode: true, SessionName: "repo@main", Port: 14000}, "podman attach --sig-proxy=false 'prism-repo-main'"},
 		// Different session name — container name is derived correctly.
-		{session.Opts{ContainerMode: true, SessionName: "nixos-config@feature", Port: 14042}, "podman attach 'prism-nixos-config-feature'"},
+		{session.Opts{ContainerMode: true, SessionName: "nixos-config@feature", Port: 14042}, "podman attach --sig-proxy=false 'prism-nixos-config-feature'"},
 		// Agent role is irrelevant in container mode (podman attach is role-agnostic).
-		{session.Opts{ContainerMode: true, SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach 'prism-repo-branch'"},
+		{session.Opts{ContainerMode: true, SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach --sig-proxy=false 'prism-repo-branch'"},
 		// Container mode with no SessionName falls back to direct launch (safety net).
 		{session.Opts{ContainerMode: true, SessionName: "", Port: 0, Agent: "worker"}, "opencode --agent worker"},
 		// Non-container mode is unaffected.
