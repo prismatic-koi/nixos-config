@@ -838,8 +838,9 @@ func TestSessionCreate_ForceFresh_False_StaleSession(t *testing.T) {
 		"UPDATE agent_status SET last_seen = ? WHERE session_name = ? RETURNING 1",
 		staleTime, sessionName,
 	).Scan(new(int)); err != nil && err.Error() != "sql: no rows in result set" {
-		// UPDATE ... RETURNING: "no rows in result set" from Scan is unexpected
-		// if the row was not found.
+		// "no rows in result set" shouldn't happen here since UpsertStatus just
+		// above guarantees the row exists, but treat it as non-fatal rather than
+		// aborting test setup. Any other error is a genuine failure.
 		t.Fatalf("set stale last_seen: %v", err)
 	}
 
@@ -922,7 +923,7 @@ func TestSessionCreate_ForceFresh_False_NoDBRow(t *testing.T) {
 
 	d := openTestDB(t)
 	dir := t.TempDir()
-	const sessionName = "integ-forcefresh-nodrow"
+	const sessionName = "integ-forcefresh-nodbrow"
 
 	// Create the session without any DB row (simulates post-prism-reset state).
 	if err := session.Create(sessionName, dir, session.Opts{Layout: session.LayoutBare}); err != nil {

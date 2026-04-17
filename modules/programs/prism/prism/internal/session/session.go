@@ -240,10 +240,14 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 	}
 
 	// Session exists in tmux. Determine liveness via DB when available.
+	// Hoist st to function scope so it can be reused in the ForceFresh=true
+	// warning path without a second round-trip to the DB.
+	var st *db.Status
 	isLive := false
 	if d != nil {
-		st, err := d.CurrentStatus(name)
-		if err == nil && st != nil {
+		var stErr error
+		st, stErr = d.CurrentStatus(name)
+		if stErr == nil && st != nil {
 			isLive = time.Since(st.LastSeen) < 60*time.Second
 		}
 		// No DB row → treat as stale zombie (isLive stays false).
@@ -269,14 +273,12 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 	}
 
 	// ForceFresh=true (spawn path): kill existing session regardless of liveness.
-	if isLive && d != nil {
-		st, stErr := d.CurrentStatus(name)
-		if stErr == nil && st != nil {
-			age := time.Since(st.LastSeen)
-			fmt.Fprintf(os.Stderr,
-				"[prism] warning: killing live session %q (last_seen %v ago) to start new instance\n",
-				name, age.Round(time.Second))
-		}
+	// Reuse st from the query above (no second round-trip).
+	if isLive && st != nil {
+		age := time.Since(st.LastSeen)
+		fmt.Fprintf(os.Stderr,
+			"[prism] warning: killing live session %q (last_seen %v ago) to start new instance\n",
+			name, age.Round(time.Second))
 	}
 	if killErr := tmux.KillSession(name); killErr != nil {
 		fmt.Fprintf(os.Stderr,

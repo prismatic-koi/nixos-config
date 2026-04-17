@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -469,7 +470,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	// Open the DB for the startup guard, instance ID generation, and port
 	// allocation. The DB handle is passed into opts.DB so that session.Create
 	// can check whether an existing tmux session with the same name is a live
-	// instance that needs to be force-killed before a new one is created.
+	// instance (last_seen within 60s).
 	d, dbErr := openDB()
 	if dbErr != nil {
 		// Non-fatal: log and continue without a DB. The startup guard will fall
@@ -480,12 +481,43 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		opts.DB = d
 	}
 
+	// Early-exit for the attach-to-live case on the switch/launch path
+	// (ForceFresh=false). If the session already exists in tmux and its DB
+	// row shows it is live (last_seen within 60s), skip all session-setup
+	// side-effects (UpsertStatus, SetInstanceID, port allocation) and go
+	// straight to Attach so the DB row is left intact.
+	//
+	// This check must mirror the liveness logic in session.startupGuardKillOld
+	// so that ensureAndSwitch and session.Create agree on whether a session
+	// is live — keeping them in sync prevents a TOCTOU race where
+	// ensureAndSwitch pre-generates state for a session that Create then
+	// decides not to kill.
+	if !opts.ForceFresh && tmux.HasSession(sessionName) {
+		isLive := false
+		if d != nil {
+			if st, stErr := d.CurrentStatus(sessionName); stErr == nil && st != nil {
+				isLive = time.Since(st.LastSeen) < 60*time.Second
+			}
+		}
+		if isLive || d == nil {
+			// Live session (or no DB to check) — attach without touching DB state.
+			if opts.Headless {
+				return nil
+			}
+			return session.Attach(sessionName)
+		}
+		// Stale or zombie session — fall through to kill+recreate below.
+	}
+
 	// Pre-generate a UUID instance_id and write it to agent_status before
 	// starting the sidecar. The sidecar is launched inside session.Create
 	// (before tmux-session-start fires), so the instance_id must be in the DB
 	// before the sidecar reads it. We also pass it via opts.InstanceID so
 	// StartSidecarWithOpts can forward it as --instance-id to the sidecar
 	// process without needing a DB read.
+	//
+	// This block is reached only for new sessions or stale zombies (the live
+	// early-exit above handles the attach-to-live case).
 	if d != nil && opts.Layout == session.LayoutFull {
 		instanceID := uuid.New().String()
 		// Ensure the agent_status row exists before writing instance_id.
