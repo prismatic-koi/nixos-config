@@ -1412,14 +1412,22 @@ func printSessionTable(ss []db.Status) error {
 }
 
 // runCheckinReviewRounds handles `prism checkin <parent>~review` — a prefix
-// match that lists all ~review-N rounds for the parent session.
+// match that lists all review agent sessions for the parent, grouped by round.
 //
-// Default mode: one summary entry per round (the final aggregated output from
-// the last msg_assistant event per round session).
-// Verbose mode (--verbose): shows the full per-agent conversation for each round.
+// Supports both the new per-agent session shape (PR-C):
+//
+//	<parent>~review-<N>-<agent>
+//
+// and old-shape round sessions (pre-PR-C):
+//
+//	<parent>~review-<N>          (pure integer suffix — old round session)
+//	<parent>~review-<N>~<agent>  (old agent sub-session)
+//
+// Default mode: one summary entry per agent session (last msg_assistant output).
+// Verbose mode (--verbose): shows the full per-agent conversation.
 func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
-	// reviewPrefix is e.g. "nixos-config@feature~review" — the actual round
-	// sessions are "nixos-config@feature~review-1", "~review-2", etc.
+	// reviewPrefix is e.g. "nixos-config@feature~review" — agent sessions
+	// are "nixos-config@feature~review-1-review-goal", etc.
 	roundPrefix := reviewPrefix + "-"
 
 	d, err := openDB()
@@ -1429,89 +1437,145 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 	defer d.Close()
 
 	// Find all sessions (active and ended) whose name starts with roundPrefix.
-	// This includes both round sessions and agent sub-sessions; we filter below.
 	all, err := d.AllStatusesWithPrefix(roundPrefix)
 	if err != nil {
 		return fmt.Errorf("checkin review: query db: %w", err)
 	}
 
-	// Filter to only round-level sessions. A round session has a suffix that is
-	// a pure integer (e.g. "nixos-config@feature~review-1"). Agent sub-sessions
-	// have an additional ~ separator (e.g. "nixos-config@feature~review-1~review").
-	var rounds []db.Status
-	for _, s := range all {
-		suffix := strings.TrimPrefix(s.SessionName, roundPrefix)
-		// Only include if suffix is a pure integer (no further separators).
-		if _, convErr := strconv.Atoi(suffix); convErr == nil {
-			rounds = append(rounds, s)
-		}
-	}
-
-	if len(rounds) == 0 {
-		fmt.Printf("no review rounds found matching %q\n", reviewPrefix)
+	if len(all) == 0 {
+		fmt.Printf("no review sessions found matching %q\n", reviewPrefix)
 		return nil
 	}
 
-	// Sort rounds numerically by round number.
-	// Since the session names share the same prefix, lexicographic sorting is
-	// correct for single-digit rounds; for safety we sort by the numeric suffix.
-	for i := 1; i < len(rounds); i++ {
-		key := rounds[i]
-		keySuffix := strings.TrimPrefix(key.SessionName, roundPrefix)
-		keyN, _ := strconv.Atoi(keySuffix)
-		j := i - 1
-		for j >= 0 {
-			jSuffix := strings.TrimPrefix(rounds[j].SessionName, roundPrefix)
-			jN, _ := strconv.Atoi(jSuffix)
-			if jN <= keyN {
-				break
+	// Classify sessions and group by round number.
+	// New shape: <prefix>N-<agent>  → roundN = N, label = ~review-N-<agent>
+	// Old round: <prefix>N          → roundN = N, label = ~review-N
+	// Old agent: <prefix>N~<agent>  → roundN = N, label = ~review-N~<agent>
+	type agentEntry struct {
+		sessionName string
+		label       string
+		state       string
+	}
+	roundAgents := make(map[int][]agentEntry) // round number → agent sessions
+	var roundNums []int
+	seenRounds := make(map[int]bool)
+
+	for _, s := range all {
+		suffix := strings.TrimPrefix(s.SessionName, roundPrefix)
+		// suffix examples:
+		//   new shape:  "1-review-goal"
+		//   old round:  "1"
+		//   old agent:  "1~review-goal"
+
+		var roundN int
+		var agentLabel string
+
+		if dashIdx := strings.Index(suffix, "-"); dashIdx > 0 {
+			// New shape: N-<agent-name> (no ~ in agent part).
+			nStr := suffix[:dashIdx]
+			n, convErr := strconv.Atoi(nStr)
+			if convErr != nil {
+				continue // not a recognised shape
 			}
-			rounds[j+1] = rounds[j]
+			agentPart := suffix[dashIdx+1:]
+			if strings.Contains(agentPart, "~") {
+				continue // old agent sub-session (N-something with ~)
+			}
+			roundN = n
+			agentLabel = "~review-" + suffix // e.g. ~review-1-review-goal
+		} else if tildeIdx := strings.Index(suffix, "~"); tildeIdx > 0 {
+			// Old agent sub-session shape: N~<agent>.
+			nStr := suffix[:tildeIdx]
+			n, convErr := strconv.Atoi(nStr)
+			if convErr != nil {
+				continue
+			}
+			roundN = n
+			agentLabel = "~review-" + suffix // e.g. ~review-1~review-goal
+		} else {
+			// Old round session shape: pure integer N.
+			n, convErr := strconv.Atoi(suffix)
+			if convErr != nil {
+				continue
+			}
+			roundN = n
+			agentLabel = "~review-" + suffix // e.g. ~review-1
+		}
+
+		if !seenRounds[roundN] {
+			seenRounds[roundN] = true
+			roundNums = append(roundNums, roundN)
+		}
+		roundAgents[roundN] = append(roundAgents[roundN], agentEntry{
+			sessionName: s.SessionName,
+			label:       agentLabel,
+			state:       s.State,
+		})
+	}
+
+	// Sort round numbers ascending.
+	for i := 1; i < len(roundNums); i++ {
+		key := roundNums[i]
+		j := i - 1
+		for j >= 0 && roundNums[j] > key {
+			roundNums[j+1] = roundNums[j]
 			j--
 		}
-		rounds[j+1] = key
+		roundNums[j+1] = key
 	}
 
 	styleBold := lipgloss.NewStyle().Bold(true)
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	for _, round := range rounds {
-		roundName := round.SessionName
-		// Extract round label: everything after the last "~".
-		label := roundName
-		if idx := strings.LastIndex(roundName, "~"); idx >= 0 {
-			label = roundName[idx:] // e.g. "~review-1"
+	for _, roundN := range roundNums {
+		agents := roundAgents[roundN]
+
+		// Sort agents within the round alphabetically by label.
+		for i := 1; i < len(agents); i++ {
+			key := agents[i]
+			j := i - 1
+			for j >= 0 && agents[j].label > key.label {
+				agents[j+1] = agents[j]
+				j--
+			}
+			agents[j+1] = key
 		}
 
-		fmt.Printf("%s\n\n", styleBold.Render(label+" ("+roundName+")"))
+		fmt.Printf("%s\n\n", styleBold.Render(fmt.Sprintf("round %d (%d session(s))", roundN, len(agents))))
 
-		if verbose {
-			// Show full conversation for this round.
-			if err := runCheckinSession(roundName, 20, nil, nil, nil, true); err != nil {
-				fmt.Fprintf(os.Stderr, "  [error reading round %s: %v]\n", label, err)
+		for _, ag := range agents {
+			fmt.Printf("  %s\n", styleBold.Render(ag.label))
+			if ag.state != "" {
+				stateStyled := stateStyle(ag.state).Render(ag.state)
+				fmt.Printf("  state: %s\n", stateStyled)
 			}
-		} else {
-			// Show summary: last msg_assistant event per round session.
-			// The round session itself receives the aggregated output from the
-			// review agents (via the prism review CLI output). If no msg_assistant
-			// events exist for the round session, fall back to showing the agent
-			// sub-session output.
-			events, qerr := d.QueryEvents(roundName, 1, nil, nil, []string{"msg_assistant"})
-			if qerr != nil || len(events) == 0 {
-				fmt.Println(styleDim.Render("  (no output recorded for this round)"))
+
+			if verbose {
+				// Show full conversation for this agent session.
+				if err := runCheckinSession(ag.sessionName, 20, nil, nil, nil, true); err != nil {
+					fmt.Fprintf(os.Stderr, "  [error reading session %s: %v]\n", ag.label, err)
+				}
 			} else {
-				e := events[len(events)-1]
-				ts := e.CreatedAt.Local().Format("15:04:05")
-				var ap struct {
-					Text string `json:"text"`
+				// Show summary: last msg_assistant event.
+				events, qerr := d.QueryEvents(ag.sessionName, 1, nil, nil, []string{"msg_assistant"})
+				if qerr != nil || len(events) == 0 {
+					fmt.Println(styleDim.Render("  (no output recorded)"))
+				} else {
+					e := events[len(events)-1]
+					ts := e.CreatedAt.Local().Format("15:04:05")
+					var ap struct {
+						Text string `json:"text"`
+					}
+					text := e.Payload
+					if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr == nil && ap.Text != "" {
+						text = ap.Text
+					}
+					fmt.Printf("  [%s]\n  %s\n", ts, strings.ReplaceAll(text, "\n", "\n  "))
 				}
-				text := e.Payload
-				if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr == nil && ap.Text != "" {
-					text = ap.Text
-				}
-				fmt.Printf("  [%s]\n  %s\n", ts, strings.ReplaceAll(text, "\n", "\n  "))
 			}
+			fmt.Println()
 		}
+
 		fmt.Println(styleDim.Render("── end of round ──"))
 		fmt.Println()
 	}
