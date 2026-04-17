@@ -4,18 +4,13 @@
 //
 // # Structure
 //
-// Tests are split into three groups:
+// Tests are split into two groups:
 //
 //  1. DB-only tests (no tmux required): use t.TempDir() for isolated DBs and
 //     call DB methods / cobra subcommand RunE functions directly.
 //
 //  2. tmux+DB tests: use a headless test server (isolated socket, no tmux.conf)
 //     and are skipped automatically when tmux is not available.
-//
-//  3. Container+SQLite tests (container_sqlite_test.go): validate that concurrent
-//     container sessions sharing the same opencode state directory do not produce
-//     SQLite lock errors. Skipped when podman is not available or the
-//     prism-agent image is not present locally.
 //
 // # Parallelism
 //

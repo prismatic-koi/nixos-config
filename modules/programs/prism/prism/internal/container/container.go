@@ -556,6 +556,17 @@ func (m *Manager) Create(ctx context.Context) error {
 	// ~/.claude/.credentials.json is already inside the claudeMount directory.
 	m.writeClaudeCredentials()
 
+	// Pre-create directories that buildRunArgs() will reference as volume mount
+	// sources. podman validates all bind-mount source paths before starting the
+	// container and exits 125 if any are absent, so we create them eagerly here.
+	// Failures are logged and non-fatal — podman will surface the real error if
+	// the directory is still absent after this attempt.
+	if err := m.prepareVolumeDirs(); err != nil {
+		// prepareVolumeDirs logs individual failures; a non-nil error means
+		// multiple dirs failed and is logged here for observability only.
+		log.Printf("container: prepareVolumeDirs partial failure: %v", err)
+	}
+
 	// Build the podman run arguments.
 	t0 = time.Now()
 	args := m.buildRunArgs()
@@ -703,6 +714,50 @@ func (m *Manager) Shutdown() {
 	log.Printf("container: %q removed", m.name)
 }
 
+// prepareVolumeDirs eagerly creates host directories that buildRunArgs() will
+// reference as bind-mount sources. podman exits 125 ("statfs: no such file or
+// directory") if any bind-mount source is absent, so we create them here —
+// before buildRunArgs() is called — so that buildRunArgs() itself remains a
+// pure argument builder with no filesystem side-effects.
+//
+// Individual MkdirAll failures are logged and treated as non-fatal: if the
+// directory is still absent when podman runs, podman will produce the real
+// error. Returns a non-nil error only when multiple dirs fail.
+func (m *Manager) prepareVolumeDirs() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+
+	var errs []string
+
+	// Per-session opencode state directory.
+	opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
+	if err := os.MkdirAll(opencodeSessionDir, 0o755); err != nil {
+		log.Printf("container: failed to create per-session opencode state dir %q: %v", opencodeSessionDir, err)
+		errs = append(errs, err.Error())
+	}
+
+	// opencode plugin/model cache.
+	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
+	if err := os.MkdirAll(opencodeCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create opencode cache dir %q: %v", opencodeCacheDir, err)
+		errs = append(errs, err.Error())
+	}
+
+	// bun transpiler cache.
+	bunCacheDir := filepath.Join(home, ".cache", "bun")
+	if err := os.MkdirAll(bunCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create bun cache dir %q: %v", bunCacheDir, err)
+		errs = append(errs, err.Error())
+	}
+
+	if len(errs) > 1 {
+		return fmt.Errorf("%d directories could not be created", len(errs))
+	}
+	return nil
+}
+
 // buildRunArgs constructs the podman run argument list. Exported for testing.
 func (m *Manager) buildRunArgs() []string {
 	cfg := m.cfg
@@ -724,8 +779,24 @@ func (m *Manager) buildRunArgs() []string {
 	} else {
 		worktreeMount = cfg.Worktree + ":/workspace:Z"
 	}
-	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
-		":/root/.local/share/opencode:Z"
+	// Per-session opencode state directory: isolates each container's SQLite DB,
+	// logs, snapshots, and storage so concurrent sessions cannot corrupt each
+	// other's state (fixes the virtiofs WAL-mode locking issue on Darwin).
+	// The container name is stable and already used for temp file naming, so it
+	// gives us a unique, predictable key for the directory.
+	// The directory is pre-created by prepareVolumeDirs() (called from Create()
+	// before buildRunArgs()) so this is a pure path construction with no I/O.
+	opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
+	opencodeStateMount := opencodeSessionDir + ":/root/.local/share/opencode:Z"
+
+	// auth.json overlay: share the host's OAuth token file across all sessions
+	// by bind-mounting it over the per-session dir's auth.json. Only added when
+	// the file exists on the host — skipped silently when absent (e.g. after the
+	// parent dir was deleted for DB recovery).
+	// Mounted read-only: opencode reads auth.json for OAuth tokens but does not
+	// write back to it — token refresh writes go to the per-session state dir.
+	opencodeAuthJSON := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+
 	// opencodeConfigDir is the host's opencode config directory, mounted
 	// item-by-item so that agents/ files, skills/, etc. are available inside
 	// the container. opencode.json is NOT mounted from the host — the container
@@ -734,12 +805,13 @@ func (m *Manager) buildRunArgs() []string {
 
 	// opencode cache — mount the whole directory so plugins, models.json,
 	// package.json, and bun.lock are all available without network access.
-	opencodeCacheMount := filepath.Join(home, ".cache", "opencode") +
-		":/root/.cache/opencode:ro"
+	// Pre-created by prepareVolumeDirs().
+	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
+	opencodeCacheMount := opencodeCacheDir + ":/root/.cache/opencode:ro"
 	// bun transpiler cache — required for bun to load plugins without
-	// re-transpiling on every container start.
-	bunCacheMount := filepath.Join(home, ".cache", "bun") +
-		":/root/.cache/bun:ro"
+	// re-transpiling on every container start. Pre-created by prepareVolumeDirs().
+	bunCacheDir := filepath.Join(home, ".cache", "bun")
+	bunCacheMount := bunCacheDir + ":/root/.cache/bun:ro"
 	// Claude credentials — required for Anthropic provider auth. Mounted
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
@@ -812,7 +884,7 @@ func (m *Manager) buildRunArgs() []string {
 
 		// Worktree read-write.
 		"--volume", worktreeMount,
-		// opencode state — shared with host, read-write.
+		// opencode state — per-session isolated dir, read-write.
 		"--volume", opencodeStateMount,
 		// opencode cache — plugins, models, bun.lock from host, read-only.
 		"--volume", opencodeCacheMount,
@@ -827,6 +899,19 @@ func (m *Manager) buildRunArgs() []string {
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 	)
+
+	// auth.json overlay: bind-mount the host's opencode auth.json over the
+	// per-session dir so OAuth tokens are shared across sessions without sharing
+	// the SQLite DB. Only mounted when the file exists — skipped silently when
+	// absent (e.g. after the parent dir was deleted for DB recovery). Uses the
+	// same bind-mount-inside-mounted-dir pattern as the gitdir overlay.
+	// Mounted read-only: opencode reads auth.json for OAuth tokens but token
+	// refresh writes go to the per-session state directory, not back to this
+	// file. :Z applies the SELinux label so podman can bind-mount it on
+	// SELinux-enforcing hosts (Fedora/RHEL).
+	if _, err := os.Stat(opencodeAuthJSON); err == nil {
+		args = append(args, "--volume", opencodeAuthJSON+":/root/.local/share/opencode/auth.json:ro,Z")
+	}
 
 	// MCP auth: bind-mount ~/.mcp-auth into the container at /root/.mcp-auth
 	// so mcp-remote OAuth tokens obtained on the host are available inside the
