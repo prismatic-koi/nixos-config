@@ -1,8 +1,10 @@
 // Package container manages the podman container lifecycle for prism sidecar.
 //
 // The sidecar (running on the host) creates a podman container running
-// "opencode serve --port 4096", health-checks it until the HTTP endpoint
-// responds, and stops/removes the container on shutdown.
+// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode),
+// health-checks it until the HTTP endpoint responds, and stops/removes the
+// container on shutdown. The tmux agent window attaches to the container's
+// PTY via "podman attach" so the opencode TUI is visible to the user.
 //
 // Health check: we probe GET /global/health (not GET /) because the root URL
 // falls through to opencode's UIRoutes catch-all, which proxies to
@@ -157,15 +159,28 @@ type Config struct {
 	// key in ~/.ssh/. The public key is derived by appending ".pub". When empty,
 	// defaults to "prismatic-koi-ed25519-signingkey".
 	SshSigningKeyName string
+
+	// InitialPrompt is the initial prompt to deliver to the agent at startup.
+	// When non-empty, it is appended to the opencode command as
+	// --agent <AgentRole> --prompt <text> so that opencode starts the session
+	// with the prompt already in flight, visible in the TUI from the start.
+	// This replaces the previous POST /session + prompt_async HTTP delivery
+	// which created a second session invisible to the TUI (RFC #691 Phase 1a).
+	InitialPrompt string
 }
 
 // NameForSession returns the stable podman container name for a session.
-// The name is derived from the session name with "@", "/", and "." replaced
-// by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
+// The name is derived from the session name with "@", "/", ".", and "~"
+// replaced by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
+//
+// The "~" replacement is needed for review agent session names which are
+// structured as "<parent>~review-<N>~<agentName>" — without it, podman would
+// reject the container name (allowed charset: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
 func NameForSession(sessionName string) string {
 	safe := strings.ReplaceAll(sessionName, "@", "-")
 	safe = strings.ReplaceAll(safe, "/", "-")
 	safe = strings.ReplaceAll(safe, ".", "-")
+	safe = strings.ReplaceAll(safe, "~", "-")
 	return "prism-" + safe
 }
 
@@ -790,11 +805,9 @@ func (m *Manager) buildRunArgs() []string {
 	args := []string{
 		"run",
 		"--detach",
-		// --tty allocates a PTY on the container. The container currently runs
-		// "opencode serve" which does not use the PTY, but RFC #691 migrates to
-		// "opencode" (monolithic TUI mode) where podman attach bridges the PTY to
-		// the tmux pane. The flag must be set before that migration lands (see
-		// RFC #691, Phase 1a / Issue G).
+		// --tty allocates a PTY on the container. The container runs "opencode"
+		// in combined TUI + HTTP mode; the tmux agent window uses "podman attach"
+		// to bridge this PTY to the user's pane (RFC #691, Phase 1a / Issue #715).
 		"--tty",
 		"--name", m.name,
 	}
@@ -914,6 +927,19 @@ func (m *Manager) buildRunArgs() []string {
 		// socket (see #611 / #612).
 		"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
 		"--env", "NIX_CONFIG=store = daemon",
+
+		// Terminal type — set to xterm-256color so the opencode TUI inside the
+		// container has accurate terminal capability information. podman sets
+		// TERM=xterm (plain) by default when --tty is used without an explicit
+		// --env TERM=..., which breaks mouse events and SGR mouse protocol
+		// selection (issue #737). xterm-256color is correct because:
+		//   - Available in every Linux container (part of ncurses-base)
+		//   - Full SGR mouse support (1006 protocol), matching what tmux expects
+		//   - 256-colour support, matching the host terminal
+		// Do NOT pass through the host's $TERM (e.g. tmux-256color or
+		// screen-256color) — those terminfo entries may not exist in the
+		// container and would cause opencode to fall back to a minimal profile.
+		"--env", "TERM=xterm-256color",
 
 		// Prism context — tells prism CLI commands running inside the container
 		// where the worktree and bare repo are mounted. PRISM_SPAWN_PATH is the
@@ -1109,12 +1135,31 @@ func (m *Manager) buildRunArgs() []string {
 		args = append(args, "--volume", m.opencodeConfigFilePath()+":/root/.config/opencode/opencode.json:ro")
 	}
 
-	// Image and command: opencode serve on the container port.
+	// Image and command: opencode in combined TUI + HTTP mode.
+	// "opencode --port N --hostname 0.0.0.0" launches the monolithic TUI on
+	// the container's PTY (allocated via --tty) while simultaneously serving
+	// the HTTP/SSE API on ContainerPort for the sidecar. The sidecar still
+	// connects to the SSE endpoint on the mapped host port exactly as before.
+	// The tmux agent window uses "podman attach" to bridge the PTY (RFC #691,
+	// Phase 1a / Issue #715).
 	args = append(args, Image,
-		"opencode", "serve",
+		"opencode",
 		"--port", fmt.Sprintf("%d", ContainerPort),
 		"--hostname", "0.0.0.0",
 	)
+
+	// Pass --agent and --prompt as separate opencode flags when set.
+	// These are always separate: --agent controls the system-prompt/role even
+	// when there is no initial prompt (e.g. review agents need their role set
+	// so opencode does not default to the "build" agent).
+	// These are passed as individual args slice elements (no shell involved)
+	// so no quoting is needed.
+	if cfg.AgentRole != "" {
+		args = append(args, "--agent", cfg.AgentRole)
+	}
+	if cfg.InitialPrompt != "" {
+		args = append(args, "--prompt", cfg.InitialPrompt)
+	}
 
 	return args
 }

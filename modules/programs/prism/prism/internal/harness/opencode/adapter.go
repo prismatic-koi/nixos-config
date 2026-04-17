@@ -24,7 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/sse"
 )
 
-// containerPort is the port opencode serve listens on inside the container.
+// containerPort is the port opencode listens on inside the container.
 // Mirrors container.ContainerPort but avoids an import cycle.
 const containerPort = 4096
 
@@ -45,6 +45,11 @@ type Adapter struct {
 	httpClient  *http.Client
 	agentRole   string
 	agentModel  string
+	// containerMode, when true, causes DeliverInitialPrompt to be a no-op.
+	// In container mode the initial prompt is delivered via --prompt on the
+	// opencode command line (RFC #691 Phase 1a), so HTTP delivery would be
+	// redundant and would target the wrong session.
+	containerMode bool
 
 	mu        sync.Mutex
 	sessionID string // set by CreateSession; used by DeliverInitialPrompt
@@ -69,10 +74,29 @@ func New(opencodeURL string, httpClient *http.Client, agentRole, agentModel stri
 	}
 }
 
-// ContainerCommand returns the command string used to launch opencode as the
-// main process inside its container.
+// NewContainerMode creates a new Adapter configured for container mode.
+// In this mode, DeliverInitialPrompt is a no-op because the prompt is
+// delivered via --prompt on the opencode CLI at container startup.
+// CreateSession uses GET /session to retrieve the existing session ID
+// rather than POST /session which would create a second session.
+func NewContainerMode(opencodeURL string, httpClient *http.Client, agentRole, agentModel string) *Adapter {
+	a := New(opencodeURL, httpClient, agentRole, agentModel)
+	a.containerMode = true
+	return a
+}
+
+// ContainerCommand returns the base command string used to launch opencode as
+// the main process inside its container. "opencode --port N --hostname 0.0.0.0"
+// launches opencode in combined TUI + HTTP mode: the TUI renders on the
+// container's PTY (bridged to the tmux pane via "podman attach") while the
+// HTTP/SSE API is served on containerPort for the sidecar (RFC #691, Phase 1a).
+//
+// Note: the actual container launch in buildRunArgs() appends --agent and
+// --prompt directly when InitialPrompt is set — the CLI flag approach ensures
+// the conversation is visible in the TUI from the start (rather than being
+// sent to a second session created by POST /session).
 func (a *Adapter) ContainerCommand() string {
-	return fmt.Sprintf("opencode serve --port %d --hostname 0.0.0.0", containerPort)
+	return fmt.Sprintf("opencode --port %d --hostname 0.0.0.0", containerPort)
 }
 
 // healthProbeClient is a short-timeout HTTP client used exclusively for
@@ -129,51 +153,94 @@ func (a *Adapter) ConfigMountPath() string {
 	return "/root/.config/opencode"
 }
 
-// CreateSession creates a new session on the opencode server via POST /session
-// and returns its ID. The session ID is also stored in the adapter so that
-// DeliverInitialPrompt can use it without the caller having to pass it back.
+// sessionEntry is a single entry from the opencode GET /session response.
+type sessionEntry struct {
+	ID   string `json:"id"`
+	Time *struct {
+		Updated *float64 `json:"updated"`
+	} `json:"time"`
+}
+
+// CreateSession retrieves the existing opencode session via GET /session and
+// returns its ID. The session ID is also stored in the adapter so that
+// subsequent prism prompt delivery (via DeliverPrompt / the host-API relay)
+// can target the correct session.
 //
-// It satisfies the harness.Harness interface. The sidecar calls this via the
-// interface so that it can write the .sid session-ID file between creation and
-// prompt delivery — the ordering matters for the opencode attach TUI flow.
+// In combined TUI + HTTP mode with --prompt, opencode creates a session and
+// starts processing the prompt immediately. The sidecar calls CreateSession
+// after the health check to discover that session ID — the ID is needed for
+// subsequent prism prompt follow-up delivery even though the initial prompt
+// was already sent via CLI. We use GET /session rather than POST /session
+// because POST would create a redundant second session.
+//
+// If GET /session returns an empty list (opencode hasn't finished initialising
+// yet at the health-check boundary), this method retries for up to 5s.
+//
+// It satisfies the harness.Harness interface.
 func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
-	body := map[string]string{"directory": "/workspace"}
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		return "", fmt.Errorf("opencode: marshal session body: %w", err)
-	}
+	url := a.opencodeURL + "/session"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.opencodeURL+"/session", bytes.NewReader(jsonBytes))
-	if err != nil {
-		return "", fmt.Errorf("opencode: create session request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	// Retry for up to 5 seconds in case opencode hasn't created its initial
+	// session yet right at the health-check boundary.
+	const maxWait = 5 * time.Second
+	const retryInterval = 200 * time.Millisecond
+	deadline := time.Now().Add(maxWait)
 
-	resp, err := a.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("opencode: create session http: %w", err)
-	}
-	defer resp.Body.Close()
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return "", fmt.Errorf("opencode: GET /session request: %w", err)
+		}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("opencode: create session: http status %d", resp.StatusCode)
-	}
+		resp, err := a.httpClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("opencode: GET /session: %w", err)
+		}
 
-	var result struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("opencode: decode session response: %w", err)
-	}
-	if result.ID == "" {
-		return "", fmt.Errorf("opencode: empty session ID in response")
-	}
+		var sessions []sessionEntry
+		decodeErr := json.NewDecoder(resp.Body).Decode(&sessions)
+		_ = resp.Body.Close()
 
-	a.mu.Lock()
-	a.sessionID = result.ID
-	a.mu.Unlock()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", fmt.Errorf("opencode: GET /session: http status %d", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return "", fmt.Errorf("opencode: decode GET /session response: %w", decodeErr)
+		}
 
-	return result.ID, nil
+		if len(sessions) > 0 {
+			// Pick the most recently updated session (opencode may surface
+			// multiple sessions if the user was previously active in this
+			// workspace; we want the one that just started).
+			best := sessions[0]
+			for _, s := range sessions[1:] {
+				if s.Time != nil && s.Time.Updated != nil {
+					if best.Time == nil || best.Time.Updated == nil || *s.Time.Updated > *best.Time.Updated {
+						best = s
+					}
+				}
+			}
+			log.Printf("opencode: CreateSession: retrieved existing session %q from GET /session (%d session(s))", best.ID, len(sessions))
+
+			a.mu.Lock()
+			a.sessionID = best.ID
+			a.mu.Unlock()
+
+			return best.ID, nil
+		}
+
+		// Empty list — opencode may not have created its initial session yet.
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("opencode: GET /session: no sessions available after %s", maxWait)
+		}
+		log.Printf("opencode: CreateSession: GET /session returned empty list — retrying in %s", retryInterval)
+
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(retryInterval):
+		}
+	}
 }
 
 // SessionID returns the most recently created session ID (set by CreateSession).
@@ -188,11 +255,17 @@ func (a *Adapter) SessionID() string {
 // created by CreateSession. The role parameter overrides the adapter's
 // configured agentRole when non-empty.
 //
-// It satisfies the harness.Harness interface. When called via the interface
-// (post-#710), the adapter will need to have already had CreateSession called
-// (or will create a session internally). For the current direct-call path,
-// CreateSession is always called first by the sidecar.
+// In container mode (containerMode=true), this is a no-op: the prompt was
+// already delivered via --prompt on the opencode CLI at container startup
+// (RFC #691 Phase 1a). HTTP delivery here would send to the wrong session.
+//
+// It satisfies the harness.Harness interface.
 func (a *Adapter) DeliverInitialPrompt(ctx context.Context, prompt, role string) error {
+	if a.containerMode {
+		log.Printf("opencode: DeliverInitialPrompt: container mode — prompt already delivered via CLI, skipping HTTP delivery")
+		return nil
+	}
+
 	a.mu.Lock()
 	sid := a.sessionID
 	a.mu.Unlock()

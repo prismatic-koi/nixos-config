@@ -25,8 +25,9 @@ package cmd
 // logic in opencode/plugins/prism-hooks.ts.
 //
 // In container mode, the sidecar creates a podman container running
-// "opencode serve --port 4096", waits until the HTTP endpoint is healthy, then
-// writes a ready signal so that the tmux pane can run "opencode attach".
+// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode), waits
+// until the HTTP endpoint is healthy, then writes a ready signal so that the
+// tmux pane can run "podman attach" to bridge the PTY (RFC #691, Phase 1a).
 //
 // Clean shutdown: SIGINT and SIGTERM write "interrupted" state and (in container
 // mode) stop/remove the container before exiting.
@@ -62,8 +63,9 @@ The sidecar handles: state machine transitions, idle debounce (2s),
 permission tracking, event logging, and dashboard sentinel updates.
 
 In container mode (--container), the sidecar also creates and manages the
-podman container running opencode serve, health-checks it until ready, then
-writes a readiness signal so the tmux pane can run opencode attach.`,
+podman container running opencode in combined TUI + HTTP mode, health-checks
+it until ready, then writes a readiness signal so the tmux pane can run
+podman attach to bridge the container PTY (RFC #691, Phase 1a).`,
 	RunE: runSidecar,
 }
 
@@ -160,6 +162,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			InstanceID:        instanceID,
 			PluginHostPath:    pluginPath,
 			ConfigContent:     configContent,
+			InitialPrompt:     initialPrompt,
 			GitUserName:       prismCfg.GitUserName,
 			GitUserEmail:      prismCfg.GitUserEmail,
 			SshAccessKeyName:  prismCfg.SshAccessKeyName,
@@ -209,7 +212,17 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// creation, prompt delivery, SSE subscription, event type extraction, and
 	// event mapping. The sidecar calls through the harness.Harness interface
 	// and has no direct dependency on the opencode package (#710).
-	h := opencode.New(opencodeURL, nil, agentRole, agentModel)
+	//
+	// In container mode, use NewContainerMode so that:
+	//   - CreateSession uses GET /session to retrieve the existing session ID
+	//     (opencode already created a session when the TUI started)
+	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
+	var h *opencode.Adapter
+	if containerMode {
+		h = opencode.NewContainerMode(opencodeURL, nil, agentRole, agentModel)
+	} else {
+		h = opencode.New(opencodeURL, nil, agentRole, agentModel)
+	}
 
 	cfg := sidecar.Config{
 		SessionName:     sessionName,

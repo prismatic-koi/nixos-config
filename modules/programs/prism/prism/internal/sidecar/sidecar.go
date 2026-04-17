@@ -117,8 +117,8 @@ type Config struct {
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
 	// Container, when non-nil, enables container mode: the sidecar creates and
-	// manages a podman container running opencode serve instead of relying on a
-	// directly-launched opencode process.
+	// manages a podman container running opencode in combined TUI + HTTP mode
+	// instead of relying on a directly-launched opencode process.
 	Container *container.Config
 	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
 	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
@@ -130,13 +130,15 @@ type Config struct {
 	HostAPITCPPort int
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
-	// readiness signal file that unblocks the tmux pane running "opencode attach".
+	// readiness signal file that unblocks the tmux pane running "podman attach".
 	// No-op when nil.
 	OnReady func()
-	// InitialPrompt, when non-empty, is delivered to the opencode server via
-	// prompt_async after the first session.created event is received following
-	// container readiness. This is the mechanism for prompt delivery in container
-	// mode, where the TUI runs "opencode attach" and cannot accept --prompt (#487).
+	// InitialPrompt, when non-empty, is passed to the container via
+	// opencode --prompt <text> at startup. The opencode process creates its
+	// session with the prompt already in flight so the conversation is visible
+	// in the TUI from the start. The sidecar then calls CreateSession (GET
+	// /session) to discover the session ID for subsequent prism prompt delivery.
+	// DeliverInitialPrompt is a no-op in container mode (RFC #691, Phase 1a).
 	InitialPrompt string
 	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,
@@ -359,21 +361,23 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
-		// Deliver the initial prompt (#487) before calling OnReady, so the
-		// .sid file is on disk before the TUI readiness-wait script unblocks.
-		// 1. POST /session  — create the session, capture its ID.
-		// 2. Write the sid file so opencode attach -s <sid> opens the right session.
-		// 3. Call OnReady  — unblocks the TUI pane, which runs opencode attach -s <sid>.
-		// 4. POST /session/<sid>/prompt_async — deliver the prompt. The TUI is
-		//    now attaching/subscribed so execution begins immediately.
+		// Discover the session ID and deliver the initial prompt (#487).
+		// In container mode (opencode --prompt "text"), the prompt was already
+		// delivered via the CLI flag — opencode starts the session and begins
+		// processing immediately. The sidecar still needs the session ID for
+		// subsequent prism prompt follow-up delivery.
+		//
+		// 1. GET /session  — retrieve the session opencode already created
+		//    (via --prompt on CLI). In non-container mode, POST /session creates
+		//    a new session. The harness adapter handles both cases.
+		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
+		// 3. DeliverInitialPrompt — no-op in container mode (prompt already sent
+		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
+		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
-			sid, createErr := s.harness.CreateSession(ctx)
+			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
-			} else {
-				if sidPath, err := session.SidecarSessionPath(s.cfg.SessionName); err == nil {
-					_ = os.WriteFile(sidPath, []byte(sid), 0o644)
-				}
 			}
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
@@ -1951,8 +1955,9 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // hostAPIHandler returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
-//	POST /spawn        — spawn a new worktree session
-//	POST /cleanup      — clean up an existing session
+//	POST /spawn        — spawn a new worktree session (coordinator only)
+//	POST /review       — run review agents against a PR (workers and coordinators)
+//	POST /cleanup      — clean up an existing session (coordinator only)
 //	POST /switch       — switch the tmux client to a session
 //	GET  /list-sessions — list active sessions (role-scoped)
 //	GET  /checkin      — return conversation history for a session (coordinator only)
@@ -2507,6 +2512,135 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
 	})
 
+	// POST /review
+	// Request:  {"pr_number":"123","agents":["review-code","review-goal"],"timeout":"10m"}
+	// pr_number must be a numeric string (e.g. "123"). Non-numeric values are rejected.
+	// agents is optional (empty = default set resolved by prism review on host).
+	//   When agents contains enhanced-review names (review-goal, review-code, etc.),
+	//   ENHANCED_REVIEW=true is injected into the subprocess env automatically.
+	// timeout is optional (default: 10m).
+	// Response: {"output":"...","passed":true} | {"error":"..."}
+	//
+	// This endpoint is called by workers and coordinators running inside
+	// containers that cannot reach tmux directly. The sidecar runs on the host
+	// where tmux is available, so it delegates to `prism review` on the host.
+	// Both worker and coordinator role sidecars are permitted: workers call
+	// `prism review` as part of their own PR workflow.
+	//
+	// PRISM_SESSION_NAME is injected into the subprocess environment so that
+	// `review.LookupParentSession()` can determine the parent session name
+	// (the sidecar daemon process does not run inside tmux, so the fallback
+	// tmux.CurrentSession() call would fail).
+	mux.HandleFunc("/review", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			PRNumber string   `json:"pr_number"`
+			Agents   []string `json:"agents"`
+			Timeout  string   `json:"timeout"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.PRNumber == "" {
+			writeError(w, http.StatusBadRequest, "pr_number is required")
+			return
+		}
+		// Validate pr_number is numeric to prevent flag injection into the
+		// subprocess (e.g. "--keep" being interpreted as a cobra flag).
+		for _, c := range req.PRNumber {
+			if c < '0' || c > '9' {
+				writeError(w, http.StatusBadRequest, "pr_number must be a numeric string (e.g. \"123\")")
+				return
+			}
+		}
+
+		// Validate each agent name against the known set to prevent flag
+		// injection via the --only argument.
+		for _, name := range req.Agents {
+			if !isKnownReviewAgent(name) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown agent name %q — must be one of: %s",
+					name, strings.Join(knownReviewAgentNames(), ", ")))
+				return
+			}
+		}
+
+		args := []string{"review", req.PRNumber}
+		if len(req.Agents) > 0 {
+			args = append(args, "--only", strings.Join(req.Agents, ","))
+		}
+		if req.Timeout != "" {
+			args = append(args, "--timeout", req.Timeout)
+		}
+
+		log.Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
+
+		// Parse the timeout to determine an appropriate exec deadline.
+		// Default to 10 minutes per agent; add 2 minutes of overhead.
+		// We must not cut off the prism review process before its own timeout fires.
+		execTimeout := 12 * time.Minute
+		if req.Timeout != "" {
+			if d, parseErr := time.ParseDuration(req.Timeout); parseErr == nil {
+				// Add 2 minutes overhead so the HTTP request outlives the review timeout.
+				execTimeout = d + 2*time.Minute
+			}
+		}
+
+		// Use a context with deadline so hung review processes don't block forever.
+		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+
+		// Build the subprocess environment with two injections:
+		// 1. PRISM_SESSION_NAME: so review.LookupParentSession() resolves the
+		//    parent session correctly. The sidecar daemon is not inside tmux,
+		//    so the fallback tmux.CurrentSession() would fail without this.
+		// 2. ENHANCED_REVIEW=true: when any enhanced agent names are requested,
+		//    propagate this flag so agentsForHarness() on the host recognises
+		//    them in the agent pool. The sidecar's own os.Environ() does not
+		//    carry ENHANCED_REVIEW (it's only set inside containers), so we
+		//    inject it when needed based on the agent names in the request.
+		env := append(os.Environ(), "PRISM_SESSION_NAME="+s.cfg.SessionName)
+		if containsEnhancedAgent(req.Agents) {
+			env = append(env, "ENHANCED_REVIEW=true")
+		}
+		cmd.Env = env
+
+		// Capture stdout (formatted results); stderr is logged server-side only.
+		out, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				// Log stderr for diagnostics but do not include it in the HTTP
+				// response to avoid leaking internal paths or credentials to
+				// the container caller.
+				if len(exitErr.Stderr) > 0 {
+					log.Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(string(exitErr.Stderr)))
+				}
+			}
+		}
+
+		// prism review exits non-zero when one or more agents fail (exit 1).
+		// This is expected and not an infrastructure error — return the output
+		// with passed=false. Only treat it as a hard error if there is no output.
+		passed := err == nil
+		output := strings.TrimRight(string(out), "\n")
+
+		if output == "" && err != nil {
+			// No output produced — infrastructure failure. Log error server-side
+			// and return a generic message to avoid leaking details to the caller.
+			log.Printf("sidecar: host-API /review: review process failed: %v", err)
+			writeError(w, http.StatusInternalServerError, "review process failed — check host logs for details")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"output": output,
+			"passed": passed,
+		})
+	})
+
 	// POST /cleanup
 	// Request:  {"session":"nixos-config@my-feature","yes":true}
 	// Response: {} | {"error":"..."}
@@ -2621,6 +2755,65 @@ func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
 		return "", fmt.Errorf("session %q has no worktree path in DB", sessionName)
 	}
 	return status.Worktree, nil
+}
+
+// reviewAgentAllowlist is the set of valid review agent names accepted by the
+// /review host-API endpoint. These match the names in review.DefaultAgents()
+// and review.EnhancedAgents(). New agents must be added here when introduced.
+// Keeping this inline avoids importing the review package from the sidecar.
+var reviewAgentAllowlist = map[string]bool{
+	// Default agent.
+	"review": true,
+	// Enhanced-mode agents (ENHANCED_REVIEW=true).
+	"review-goal":     true,
+	"review-code":     true,
+	"review-security": true,
+	"review-qa":       true,
+	"review-context":  true,
+}
+
+// enhancedReviewAgents is the set of enhanced agent names that require
+// ENHANCED_REVIEW=true in the subprocess environment.
+var enhancedReviewAgents = map[string]bool{
+	"review-goal":     true,
+	"review-code":     true,
+	"review-security": true,
+	"review-qa":       true,
+	"review-context":  true,
+}
+
+// isKnownReviewAgent returns true if name is a recognised review agent.
+func isKnownReviewAgent(name string) bool {
+	return reviewAgentAllowlist[name]
+}
+
+// knownReviewAgentNames returns the sorted list of known review agent names
+// for use in error messages.
+func knownReviewAgentNames() []string {
+	names := make([]string, 0, len(reviewAgentAllowlist))
+	for name := range reviewAgentAllowlist {
+		names = append(names, name)
+	}
+	// Sort for stable error messages.
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	return names
+}
+
+// containsEnhancedAgent returns true if any of the given agent names is an
+// enhanced-review agent (requires ENHANCED_REVIEW=true on the host side).
+func containsEnhancedAgent(agents []string) bool {
+	for _, a := range agents {
+		if enhancedReviewAgents[a] {
+			return true
+		}
+	}
+	return false
 }
 
 // parseSpawnSessionName parses the session name from the output of `prism spawn`

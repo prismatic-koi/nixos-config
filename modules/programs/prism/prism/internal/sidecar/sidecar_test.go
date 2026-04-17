@@ -6059,3 +6059,379 @@ echo "session \"${last}@no-harness-branch\" created"
 		t.Errorf("captured args %q do not contain '--harness opencode' (harness was not defaulted or forwarded)", string(capturedArgs))
 	}
 }
+
+// ── /review endpoint ──────────────────────────────────────────────────────────
+
+// TestHostAPI_Review_WorkerAllowed verifies that a worker-role sidecar can
+// call /review. Workers run `prism review` as part of their own PR workflow,
+// so the /review endpoint must not require coordinator role.
+func TestHostAPI_Review_WorkerAllowed(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\necho '✓ review               passed'\nexit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "myrepo@feature",
+		Repo:            "myrepo",
+		Worktree:        "/tmp/myrepo@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"123"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (workers must be allowed to call /review); body = %s",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// TestHostAPI_Review_WrongMethod verifies that GET /review returns 405.
+func TestHostAPI_Review_WrongMethod(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/review", "")
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+// TestHostAPI_Review_MissingPRNumber verifies that a request without pr_number
+// returns 400.
+func TestHostAPI_Review_MissingPRNumber(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for missing pr_number", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "pr_number is required") {
+		t.Errorf("error %q should mention 'pr_number is required'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_PassesArgsToReview verifies that /review delegates to
+// `prism review` with the correct arguments and returns the output.
+func TestHostAPI_Review_PassesArgsToReview(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub echoes args to argsFile and prints review-like output to stdout.
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+echo "✓ review               passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"456"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]any
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["passed"] != true {
+		t.Errorf("passed = %v, want true", respBody["passed"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "passed") {
+		t.Errorf("output %q should contain 'passed'", respBody["output"])
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "review 456") {
+		t.Errorf("captured args %q do not contain 'review 456'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Review_OnlyFlagForwarded verifies that when agents are specified
+// in the request, --only is passed to `prism review`.
+func TestHostAPI_Review_OnlyFlagForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+echo "✓ review-code          passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"789","agents":["review-code","review-goal"]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--only review-code,review-goal") {
+		t.Errorf("captured args %q do not contain '--only review-code,review-goal'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse verifies that
+// when `prism review` exits non-zero with output, the response has passed=false
+// and the output is included (this is the normal "agents found issues" case).
+func TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Exit 1 with output: indicates agents found issues (not an infra failure).
+	stubScript := `#!/bin/sh
+echo "✗ review-code"
+echo "  blocking issue found"
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"100"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for agent failure (not infra failure); body = %s", rr.Code, rr.Body.String())
+	}
+	var respBody map[string]any
+	decodeJSONBody(t, rr, &respBody)
+	if respBody["passed"] != false {
+		t.Errorf("passed = %v, want false", respBody["passed"])
+	}
+	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "blocking issue found") {
+		t.Errorf("output %q should contain 'blocking issue found'", respBody["output"])
+	}
+}
+
+// TestHostAPI_Review_InfraFailureReturns500 verifies that when `prism review`
+// exits non-zero with no output, the response is HTTP 500 (infra failure) with
+// a generic error message (stderr is not exposed to the caller).
+func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Exit non-zero with no stdout; emit sensitive text on stderr to verify
+	// it is NOT reflected in the HTTP response.
+	stubScript := "#!/bin/sh\necho 'sensitive: /internal/path/secret' >&2\nexit 2\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"999"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 for infra failure (no output); body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 500 response")
+	}
+	// Stderr must not be reflected in the HTTP response (security: avoid leaking
+	// internal paths or credentials to container callers).
+	if strings.Contains(errResp["error"], "sensitive") || strings.Contains(errResp["error"], "secret") {
+		t.Errorf("HTTP 500 response should not include subprocess stderr; got %q", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_NonNumericPRNumberReturns400 verifies that a pr_number
+// containing non-numeric characters is rejected with 400 (flag-injection guard).
+func TestHostAPI_Review_NonNumericPRNumberReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	for _, prNumber := range []string{"--keep", "12a", "1;2", "abc", "-1"} {
+		t.Run(prNumber, func(t *testing.T) {
+			body := fmt.Sprintf(`{"pr_number":%q}`, prNumber)
+			rr := doHostAPI(t, sc, http.MethodPost, "/review", body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("pr_number=%q: status = %d, want 400", prNumber, rr.Code)
+			}
+			var errResp map[string]string
+			decodeJSONBody(t, rr, &errResp)
+			if !strings.Contains(errResp["error"], "pr_number must be a numeric string") {
+				t.Errorf("pr_number=%q: error %q should mention 'numeric'", prNumber, errResp["error"])
+			}
+		})
+	}
+}
+
+// TestHostAPI_Review_UnknownAgentNameReturns400 verifies that an unrecognised
+// agent name in the agents list is rejected with 400 (flag-injection guard).
+func TestHostAPI_Review_UnknownAgentNameReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","agents":["--keep","review-code"]}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for unknown agent name; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "unknown agent name") {
+		t.Errorf("error %q should mention 'unknown agent name'", errResp["error"])
+	}
+}
+
+// TestHostAPI_Review_EnhancedReviewEnvInjected verifies that ENHANCED_REVIEW=true
+// is injected into the subprocess environment when enhanced agent names are
+// requested, so the host's agentsForHarness() returns the correct pool.
+func TestHostAPI_Review_EnhancedReviewEnvInjected(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes ENHANCED_REVIEW value to envFile.
+	stubScript := `#!/bin/sh
+echo "$ENHANCED_REVIEW" > ` + envFile + `
+echo "✓ review-code          passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","agents":["review-code","review-goal"]}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	if got != "true" {
+		t.Errorf("ENHANCED_REVIEW = %q, want %q (must be injected when enhanced agents requested)", got, "true")
+	}
+}
+
+// TestHostAPI_Review_SessionNameInjected verifies that the sidecar injects
+// PRISM_SESSION_NAME into the subprocess environment so that
+// review.LookupParentSession() resolves the session name correctly without
+// needing a live tmux session.
+func TestHostAPI_Review_SessionNameInjected(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes PRISM_SESSION_NAME to envFile so the test can inspect it.
+	stubScript := `#!/bin/sh
+echo "$PRISM_SESSION_NAME" > ` + envFile + `
+echo "✓ review               passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@741-fix",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@741-fix",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"741"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	if got != "nixos-config@741-fix" {
+		t.Errorf("PRISM_SESSION_NAME = %q, want %q (must be injected by sidecar)", got, "nixos-config@741-fix")
+	}
+}

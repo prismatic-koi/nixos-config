@@ -46,7 +46,7 @@ func SidecarLogPath(sessionName string) (string, error) {
 
 // SidecarReadyPath returns the readiness signal file path for the named session.
 // The sidecar creates this file after the container is healthy. The tmux pane
-// startup script polls for its existence before running "opencode attach".
+// startup script polls for its existence before running "podman attach".
 //
 // Ready file: $XDG_STATE_HOME/prism/run/<session>-sidecar.ready
 func SidecarReadyPath(sessionName string) (string, error) {
@@ -55,20 +55,6 @@ func SidecarReadyPath(sessionName string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(base, "run", sessionName+"-sidecar.ready"), nil
-}
-
-// SidecarSessionPath returns the path to the file where the sidecar writes the
-// opencode session ID after creating it via prompt delivery (#487). The tmux
-// pane startup script reads this file (if present) and passes -s <sid> to
-// "opencode attach" so it opens directly into the agent's session.
-//
-// Session file: $XDG_STATE_HOME/prism/run/<session>-sidecar.sid
-func SidecarSessionPath(sessionName string) (string, error) {
-	base, err := sidecarStateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, "run", sessionName+"-sidecar.sid"), nil
 }
 
 // SidecarPIDPath returns the PID file path for the named session's sidecar.
