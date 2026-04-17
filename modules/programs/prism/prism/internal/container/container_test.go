@@ -2634,7 +2634,10 @@ func TestBuildRunArgs_AuthJsonOverlayMountedWhenExists(t *testing.T) {
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 
-	wantDst := ":/root/.local/share/opencode/auth.json:ro,Z"
+	// The mount must be read-write (:Z, not :ro,Z): the opencode-claude-auth
+	// plugin calls writeFileSync on auth.json on every load, so a :ro mount
+	// causes EROFS and breaks Anthropic auth inside the container.
+	wantDst := ":/root/.local/share/opencode/auth.json:Z"
 	found := false
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
@@ -2644,6 +2647,10 @@ func TestBuildRunArgs_AuthJsonOverlayMountedWhenExists(t *testing.T) {
 				// Source must be the host auth.json path.
 				if !strings.HasPrefix(v, authJSON+":") {
 					t.Errorf("auth.json overlay source %q should be %q", v, authJSON)
+				}
+				// Must NOT contain :ro — the plugin writes to this file.
+				if strings.Contains(v, ":ro") {
+					t.Errorf("auth.json overlay mount %q must not be read-only (:ro causes EROFS)", v)
 				}
 				break
 			}
