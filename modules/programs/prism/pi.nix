@@ -60,7 +60,7 @@
         # into the nix store), and update this packages entry. The three most
         # likely break sites are CLIENT_ID, TOKEN_URL, and AUTHORIZE_URL in
         # the extension's src/auth.ts.
-        packages = [ "npm:pi-anthropic-oauth@latest" ];
+        packages = [ "npm:pi-anthropic-oauth@0.1.9" ];
       };
 
       piTheme =
