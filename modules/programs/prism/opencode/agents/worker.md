@@ -53,13 +53,13 @@ When your work is complete and quality gates pass:
    all 5 agents pass.
 5. Provide a clear handoff summary so the coordinator has full context.
 
-## Parallel review (enhanced mode)
+## Parallel review
 
 Before announcing your PR as complete, and after each push to an open PR, run
 code review using `prism review <pr-number>` (preferred) or direct `@review-*`
 Task calls (fallback). `prism review` spawns all five specialised review agents
-automatically in enhanced mode and provides dashboard observability and retry
-support. Fix any issues and re-run review until it passes.
+automatically and provides dashboard observability and retry support. Fix any
+issues and re-run review until it passes.
 
 ### Running code review with prism review
 

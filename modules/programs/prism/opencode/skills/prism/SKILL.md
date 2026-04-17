@@ -234,15 +234,15 @@ Each `prism review` invocation — including those using `--only` — increments
 
 The output with `--only` contains exactly one line per requested agent — not five lines with three marked "skipped".
 
-### When to use prism review vs @review
+### When to use prism review vs direct Task calls
 
 | Situation | Use |
 |---|---|
 | Worker running in a tmux session (normal case) | `prism review` |
 | Want review visible in the dashboard | `prism review` |
-| Running in a context without tmux | `@review` subagent |
+| Running in a context without tmux | Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, `@review-context` as parallel Task calls |
 
-Both paths coexist — use whichever is appropriate.
+Both invocation styles run the same 5 agents — use whichever fits the context.
 
 ## Example: reviewing a PR (manual spawn)
 
