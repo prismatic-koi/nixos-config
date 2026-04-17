@@ -1,4 +1,5 @@
 {
+  # publish-prism-agent: skopeo now installed via apt, free-disk-space removed (~3 min faster)
   description = "Nixos config flake";
 
   nixConfig = {
