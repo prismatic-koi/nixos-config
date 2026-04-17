@@ -10,35 +10,16 @@ import (
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
-// TestAgentsForHarness_EnvUnset verifies that when ENHANCED_REVIEW is not set,
-// agentsForHarness returns the single default agent set.
-func TestAgentsForHarness_EnvUnset(t *testing.T) {
-	os.Unsetenv("ENHANCED_REVIEW")
-
+// TestAgentsForHarness_ReturnsAllFive verifies that agentsForHarness always
+// returns the five-agent review set unconditionally.
+func TestAgentsForHarness_ReturnsAllFive(t *testing.T) {
 	agents := agentsForHarness("opencode")
-	want := review.DefaultAgents()
-	if len(agents) != len(want) {
-		t.Fatalf("agentsForHarness(opencode) with ENHANCED_REVIEW unset: got %d agents, want %d", len(agents), len(want))
-	}
-	for i, a := range agents {
-		if a.Name != want[i].Name || a.OpencodeName != want[i].OpencodeName {
-			t.Errorf("agent[%d]: got {%q, %q}, want {%q, %q}", i, a.Name, a.OpencodeName, want[i].Name, want[i].OpencodeName)
-		}
-	}
-}
-
-// TestAgentsForHarness_EnvTrue verifies that when ENHANCED_REVIEW=true,
-// agentsForHarness returns the five-agent enhanced set.
-func TestAgentsForHarness_EnvTrue(t *testing.T) {
-	t.Setenv("ENHANCED_REVIEW", "true")
-
-	agents := agentsForHarness("opencode")
-	want := review.EnhancedAgents()
+	want := review.Agents()
 	if len(agents) != 5 {
-		t.Fatalf("agentsForHarness(opencode) with ENHANCED_REVIEW=true: got %d agents, want 5", len(agents))
+		t.Fatalf("agentsForHarness(opencode): got %d agents, want 5", len(agents))
 	}
 	if len(agents) != len(want) {
-		t.Fatalf("agentsForHarness(opencode) with ENHANCED_REVIEW=true: got %d agents, want %d", len(agents), len(want))
+		t.Fatalf("agentsForHarness(opencode): got %d agents, want %d", len(agents), len(want))
 	}
 	for i, a := range agents {
 		if a.Name != want[i].Name || a.OpencodeName != want[i].OpencodeName {
@@ -47,30 +28,9 @@ func TestAgentsForHarness_EnvTrue(t *testing.T) {
 	}
 }
 
-// TestAgentsForHarness_EnvFalse verifies that ENHANCED_REVIEW=false (or any
-// non-"true" value) returns the default single-agent set.
-func TestAgentsForHarness_EnvFalse(t *testing.T) {
-	for _, val := range []string{"false", "0", "yes", "TRUE", "1"} {
-		t.Run(val, func(t *testing.T) {
-			t.Setenv("ENHANCED_REVIEW", val)
-
-			agents := agentsForHarness("opencode")
-			want := review.DefaultAgents()
-			if len(agents) != len(want) {
-				t.Fatalf("agentsForHarness(opencode) with ENHANCED_REVIEW=%q: got %d agents, want %d", val, len(agents), len(want))
-			}
-			if agents[0].Name != "review" {
-				t.Errorf("agentsForHarness(opencode) with ENHANCED_REVIEW=%q: got agent name %q, want %q", val, agents[0].Name, "review")
-			}
-		})
-	}
-}
-
-// TestAgentsForHarness_EnhancedAgentNames verifies that the enhanced agent names
-// match the expected opencode agent identifiers.
-func TestAgentsForHarness_EnhancedAgentNames(t *testing.T) {
-	t.Setenv("ENHANCED_REVIEW", "true")
-
+// TestAgentsForHarness_AgentNames verifies that agentsForHarness returns the
+// correct five agent names.
+func TestAgentsForHarness_AgentNames(t *testing.T) {
 	agents := agentsForHarness("opencode")
 	expectedNames := []string{
 		"review-goal",
@@ -269,7 +229,6 @@ func TestSplitCSV_TrimsWhitespace(t *testing.T) {
 //
 // AC: "--only with an unknown name surfaces an error before any session is spawned"
 func TestOnlyFlag_UnknownAgentNameReturnsError(t *testing.T) {
-	t.Setenv("ENHANCED_REVIEW", "true")
 	allAgents := agentsForHarness("opencode")
 
 	// A completely unknown name.
@@ -291,7 +250,6 @@ func TestOnlyFlag_UnknownAgentNameReturnsError(t *testing.T) {
 // TestOnlyFlag_UnknownNameMixed verifies that a mix of known and unknown names
 // also returns an error naming the unrecognised agent.
 func TestOnlyFlag_UnknownNameMixed(t *testing.T) {
-	t.Setenv("ENHANCED_REVIEW", "true")
 	allAgents := agentsForHarness("opencode")
 
 	_, err := review.AgentsByName(allAgents, []string{"review-code", "review-typo"})
@@ -354,7 +312,7 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	// Deliberately do NOT create any agent files.
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 
 	// Regardless of what cfg.ContainerMode would be (true or false), the check
 	// must be performed. We verify this by calling CheckAgentAvailability
@@ -368,8 +326,7 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents when PRISM_HOST_API is unset, got nil — the pre-flight check must not be skipped")
 	}
-	// Error must name at least one missing agent (matches the existing format:
-	// "enhanced review requires opencode agent definitions that are not present in <dir>: <names>").
+	// Error must name at least one missing agent.
 	for _, ag := range agents {
 		if !strings.Contains(err.Error(), ag.Name) {
 			t.Errorf("CheckAgentAvailability error does not mention missing agent %q: %v", ag.Name, err)
@@ -396,7 +353,7 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent_ContainerModeIrrelevan
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	for _, ag := range agents {
 		path := agentsDir + "/" + ag.Name + ".md"
 		if err := os.WriteFile(path, []byte("# "+ag.Name), 0o644); err != nil {

@@ -6423,53 +6423,6 @@ func TestHostAPI_Review_UnknownAgentNameReturns400(t *testing.T) {
 	}
 }
 
-// TestHostAPI_Review_EnhancedReviewEnvInjected verifies that ENHANCED_REVIEW=true
-// is injected into the subprocess environment when enhanced agent names are
-// requested, so the host's agentsForHarness() returns the correct pool.
-func TestHostAPI_Review_EnhancedReviewEnvInjected(t *testing.T) {
-	d := openTestDB(t)
-
-	envFile := filepath.Join(t.TempDir(), "captured-env")
-	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	// Stub writes ENHANCED_REVIEW value to envFile.
-	stubScript := `#!/bin/sh
-echo "$ENHANCED_REVIEW" > ` + envFile + `
-echo "✓ review-code          passed"
-exit 0
-`
-	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	clk := newTestClock()
-	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
-		DB:              d,
-		Clock:           clk,
-		AgentRole:       "coordinator",
-		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
-	}
-	sc := New(cfg)
-
-	rr := doHostAPI(t, sc, http.MethodPost, "/review",
-		`{"pr_number":"123","agents":["review-code","review-goal"]}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
-	}
-
-	capturedEnv, err := os.ReadFile(envFile)
-	if err != nil {
-		t.Fatalf("read captured env: %v", err)
-	}
-	got := strings.TrimSpace(string(capturedEnv))
-	if got != "true" {
-		t.Errorf("ENHANCED_REVIEW = %q, want %q (must be injected when enhanced agents requested)", got, "true")
-	}
-}
-
 // TestHostAPI_Review_SessionNameInjected verifies that the sidecar injects
 // PRISM_SESSION_NAME into the subprocess environment so that
 // review.LookupParentSession() resolves the session name correctly without

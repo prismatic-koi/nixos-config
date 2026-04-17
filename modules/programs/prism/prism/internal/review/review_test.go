@@ -595,18 +595,18 @@ func TestBuildResults_NoVerdictIsError(t *testing.T) {
 // ── AgentsByName ──────────────────────────────────────────────────────────────
 
 func TestAgentsByName_ValidNames(t *testing.T) {
-	agents := review.DefaultAgents()
-	result, err := review.AgentsByName(agents, []string{"review"})
+	agents := review.Agents()
+	result, err := review.AgentsByName(agents, []string{"review-goal"})
 	if err != nil {
 		t.Fatalf("AgentsByName: %v", err)
 	}
-	if len(result) != 1 || result[0].Name != "review" {
-		t.Errorf("AgentsByName = %v, want [{review}]", result)
+	if len(result) != 1 || result[0].Name != "review-goal" {
+		t.Errorf("AgentsByName = %v, want [{review-goal}]", result)
 	}
 }
 
 func TestAgentsByName_UnknownName(t *testing.T) {
-	agents := review.DefaultAgents()
+	agents := review.Agents()
 	_, err := review.AgentsByName(agents, []string{"nonexistent"})
 	if err == nil {
 		t.Error("AgentsByName should return error for unknown agent name")
@@ -614,24 +614,24 @@ func TestAgentsByName_UnknownName(t *testing.T) {
 }
 
 func TestAgentsByName_MixedNames(t *testing.T) {
-	agents := review.DefaultAgents()
-	_, err := review.AgentsByName(agents, []string{"review", "nonexistent"})
+	agents := review.Agents()
+	_, err := review.AgentsByName(agents, []string{"review-goal", "nonexistent"})
 	if err == nil {
 		t.Error("AgentsByName should return error when any name is unknown")
 	}
 }
 
-// ── EnhancedAgents ────────────────────────────────────────────────────────────
+// ── Agents ────────────────────────────────────────────────────────────────────
 
-func TestEnhancedAgents_ReturnsFiveAgents(t *testing.T) {
-	agents := review.EnhancedAgents()
+func TestAgents_ReturnsFiveAgents(t *testing.T) {
+	agents := review.Agents()
 	if len(agents) != 5 {
-		t.Fatalf("EnhancedAgents() returned %d agents, want 5", len(agents))
+		t.Fatalf("Agents() returned %d agents, want 5", len(agents))
 	}
 }
 
-func TestEnhancedAgents_AgentNames(t *testing.T) {
-	agents := review.EnhancedAgents()
+func TestAgents_AgentNames(t *testing.T) {
+	agents := review.Agents()
 	want := []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"}
 	for i, name := range want {
 		if agents[i].Name != name {
@@ -640,16 +640,6 @@ func TestEnhancedAgents_AgentNames(t *testing.T) {
 		if agents[i].OpencodeName != name {
 			t.Errorf("agents[%d].OpencodeName = %q, want %q", i, agents[i].OpencodeName, name)
 		}
-	}
-}
-
-func TestDefaultAgents_StillReturnsSingleAgent(t *testing.T) {
-	agents := review.DefaultAgents()
-	if len(agents) != 1 {
-		t.Fatalf("DefaultAgents() returned %d agents, want 1", len(agents))
-	}
-	if agents[0].Name != "review" {
-		t.Errorf("DefaultAgents()[0].Name = %q, want %q", agents[0].Name, "review")
 	}
 }
 
@@ -665,7 +655,7 @@ func TestCheckAgentAvailability_AllPresent(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	for _, ag := range agents {
 		if err := os.WriteFile(agentsDir+"/"+ag.Name+".md", []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -692,7 +682,7 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	err := review.CheckAgentAvailability(agents)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents, got nil")
@@ -714,7 +704,7 @@ func TestCheckAgentAvailability_AllMissing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	// Don't create the agents directory at all.
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	err := review.CheckAgentAvailability(agents)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for all missing agents, got nil")
@@ -739,7 +729,7 @@ func TestPerAgentSessionNaming(t *testing.T) {
 	parent := "nixos-config@feature"
 	roundN := 1
 
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	roundPrefix := parent + "~review-1-"
 
 	expectedSessions := []string{
@@ -764,7 +754,7 @@ func TestPerAgentSessionNaming(t *testing.T) {
 // TestAgentsByName_AllFiveEnhancedNames verifies that passing all 5 enhanced
 // agent names to AgentsByName returns all 5 agents in input order.
 func TestAgentsByName_AllFiveEnhancedNames(t *testing.T) {
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	names := []string{
 		"review-goal",
 		"review-code",
@@ -790,7 +780,7 @@ func TestAgentsByName_AllFiveEnhancedNames(t *testing.T) {
 // the order the names were requested, not the order they appear in the source
 // slice. This is the AC: output lines appear in --only input order.
 func TestAgentsByName_PreservesOrder(t *testing.T) {
-	agents := review.EnhancedAgents()
+	agents := review.Agents()
 	// Request in reverse order.
 	names := []string{"review-context", "review-qa", "review-code"}
 	result, err := review.AgentsByName(agents, names)

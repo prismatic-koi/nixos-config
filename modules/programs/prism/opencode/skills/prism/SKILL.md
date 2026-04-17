@@ -146,7 +146,7 @@ prism spawn \
 
 ## Running code review with prism review
 
-`prism review <pr-number>` is the preferred way to run code review from a worker session. In enhanced mode it spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
+`prism review <pr-number>` is the preferred way to run code review from a worker session. It spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
 
 ```bash
 # Run review — blocks until all agents finish, returns findings to stdout
@@ -160,7 +160,7 @@ prism review 268 --only review-code,review-security
 prism review 268 --timeout 5m
 ```
 
-**Output format (enhanced mode with ENHANCED_REVIEW=true):**
+**Output format:**
 ```
 ✓ review-goal         passed
 ✓ review-code         passed
@@ -173,7 +173,7 @@ prism review 268 --timeout 5m
 
 Exit code 0 = all passed, non-zero = failures.
 
-**Session shape (PR-C, enhanced mode):**
+**Session shape:**
 
 Each review agent runs as its own independent top-level tmux session:
 ```
