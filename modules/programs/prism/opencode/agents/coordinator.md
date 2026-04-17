@@ -116,10 +116,20 @@ one represents a PR that may be blocking the next piece of work.
 
 When a spawned agent opens a PR:
 
-1. Invoke `@review <pr-number>`. Include the full original issue/ticket context in your invocation so the review agent has it.
-2. Perform your own sense-check independently: read `gh pr diff <number>` and compare against the original request. Does the implementation actually satisfy what was asked? Are there missing cases, wrong assumptions, or scope creep? To read full files from the worker's branch, use native git commands — `git fetch && git show origin/<branch>:<path>`, `git diff <branch1>..<branch2>` — rather than direct filesystem reads across worktrees.
-3. If either review identifies issues: `prism prompt <session>` with specific, actionable fix instructions.
-4. Repeat until both reviews pass. If the cycle exceeds three iterations without convergence, escalate to the user.
+1. **Trust the worker review.** The worker has already run all 5 review agents
+   (`@review-goal`, `@review-code`, `@review-security`, `@review-qa`,
+   `@review-context`) and fixed all blocking issues before announcing completion.
+   Do not re-review the code yourself — that is the worker's job.
+2. **Do a lightweight sense-check.** Run `gh pr view <number>` and verify:
+   - PR title and description are clear and accurate
+   - `Closes #N` is present and references the correct issue
+   - The branch targets `main` (not another feature branch)
+   - The description is not empty or placeholder text
+3. **If the PR looks good:** merge it.
+4. **If something is obviously wrong** (wrong branch, missing issue link, empty
+   description, PR references the wrong issue): send the worker a targeted fix
+   instruction via `prism prompt`. Do not re-open the full review cycle — fix
+   only the metadata issue.
 
 ---
 

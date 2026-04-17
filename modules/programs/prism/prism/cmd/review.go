@@ -88,10 +88,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// through the host sidecar instead of calling review.Run() directly.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		// Agent list was already resolved and validated above (client-side,
-		// inside the container). This ensures that env-var-driven agent
-		// selection (e.g. ENHANCED_REVIEW=true) uses the container's
-		// environment, not the host sidecar's environment, and that the
-		// --only flag is applied correctly before forwarding.
+		// inside the container). This ensures that the --only flag is applied
+		// correctly before forwarding.
 		agentNames := make([]string, len(agents))
 		for i, ag := range agents {
 			agentNames[i] = ag.Name
@@ -226,23 +224,15 @@ func runReview(cmd *cobra.Command, args []string) error {
 }
 
 // agentsForHarness returns the agent list for the given harness.
-// When ENHANCED_REVIEW=true is set in the environment, the five-agent enhanced
-// set is returned. Otherwise the single default agent is used (back-compat).
 // Currently only "opencode" is supported as a harness.
 func agentsForHarness(harness string) []review.Agent {
 	switch harness {
 	case "opencode", "":
-		if os.Getenv("ENHANCED_REVIEW") == "true" {
-			return review.EnhancedAgents()
-		}
-		return review.DefaultAgents()
+		return review.Agents()
 	default:
 		// Unknown harness — return opencode agents as fallback.
 		fmt.Fprintf(os.Stderr, "[prism review] warning: unknown harness %q, using opencode\n", harness)
-		if os.Getenv("ENHANCED_REVIEW") == "true" {
-			return review.EnhancedAgents()
-		}
-		return review.DefaultAgents()
+		return review.Agents()
 	}
 }
 

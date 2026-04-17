@@ -146,7 +146,7 @@ prism spawn \
 
 ## Running code review with prism review
 
-`prism review <pr-number>` is the preferred way to run code review from a worker session. In enhanced mode it spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
+`prism review <pr-number>` is the preferred way to run code review from a worker session. It spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
 
 ```bash
 # Run review — blocks until all agents finish, returns findings to stdout
@@ -160,7 +160,7 @@ prism review 268 --only review-code,review-security
 prism review 268 --timeout 5m
 ```
 
-**Output format (enhanced mode with ENHANCED_REVIEW=true):**
+**Output format:**
 ```
 ✓ review-goal         passed
 ✓ review-code         passed
@@ -173,7 +173,7 @@ prism review 268 --timeout 5m
 
 Exit code 0 = all passed, non-zero = failures.
 
-**Session shape (PR-C, enhanced mode):**
+**Session shape:**
 
 Each review agent runs as its own independent top-level tmux session:
 ```
@@ -234,15 +234,15 @@ Each `prism review` invocation — including those using `--only` — increments
 
 The output with `--only` contains exactly one line per requested agent — not five lines with three marked "skipped".
 
-### When to use prism review vs @review
+### When to use prism review vs direct Task calls
 
 | Situation | Use |
 |---|---|
 | Worker running in a tmux session (normal case) | `prism review` |
 | Want review visible in the dashboard | `prism review` |
-| Running in a context without tmux | `@review` subagent |
+| Running in a context without tmux | Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, `@review-context` as parallel Task calls |
 
-Both paths coexist — use whichever is appropriate.
+Both invocation styles run the same 5 agents — use whichever fits the context.
 
 ## Example: reviewing a PR (manual spawn)
 
