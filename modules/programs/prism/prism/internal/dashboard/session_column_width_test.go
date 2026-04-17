@@ -151,40 +151,41 @@ func TestSessionColumnWidth(t *testing.T) {
 			},
 			want: 40,
 		},
-		// [functional] Multiple sessions — width driven by longest top-level name.
-		// "nixos-config@main" (17) → needed = 7. "nixos-config@fix-1" is depth-1
-		// child (branch "@fix-1" = 6 chars) → needed = 6+6-10 = 2. Max = 7.
+		// [functional] Multiple sessions — depth-1 child with full-name formula.
+		// "nixos-config@fix-1" is a depth-1 child. The function uses the full
+		// name length as a floor (needed = 18-10=8) to handle filter-mode and
+		// orphaned-branch cases where the full name renders without a prefix.
+		// "nixos-config@main" → needed = 7. Max = 8.
 		{
-			name: "multiple sessions — top-level drives width",
+			name: "multiple sessions — depth-1 child full-name drives width",
 			sessions: []dashboard.AgentSession{
-				{Name: "a@main"},             // top-level, needed = 6-10 = -4 → 0
-				{Name: "nixos-config@main"},  // top-level, needed = 17-10 = 7
-				{Name: "nixos-config@fix-1"}, // depth-1 child, needed = 6+6-10 = 2
-			},
-			want: 7,
-		},
-		// [functional] Multiple sessions — deeper branch name drives width.
-		// "nixos-config@feature-123": branch = "@feature-123" = 12 chars;
-		// depth-1 child: needed = 6+12-10 = 8.
-		{
-			name: "multiple sessions — depth-1 child drives width",
-			sessions: []dashboard.AgentSession{
-				{Name: "nixos-config@main"},        // top-level, needed = 7
-				{Name: "nixos-config@feature-123"}, // depth-1, needed = 6+12-10 = 8
+				{Name: "a@main"},             // top-level, fullName = 6-10 = -4 → 0
+				{Name: "nixos-config@main"},  // top-level, fullName = 17-10 = 7
+				{Name: "nixos-config@fix-1"}, // depth-1, fullName = 18-10 = 8 (dominates)
 			},
 			want: 8,
 		},
+		// [functional] Multiple sessions — longer depth-1 child full name drives width.
+		// "nixos-config@feature-123" (24 chars): fullName = 24-10=14; treeModeChild = 6+12-10=8.
+		// Full-name formula (14) dominates over tree-mode formula (8).
+		{
+			name: "multiple sessions — depth-1 child full name drives width",
+			sessions: []dashboard.AgentSession{
+				{Name: "nixos-config@main"},        // top-level, fullName = 7
+				{Name: "nixos-config@feature-123"}, // depth-1, fullName = 14 (dominates)
+			},
+			want: 14,
+		},
 		// [functional] Session list changes: new longer session added → recalculates.
-		// This is tested by calling SessionColumnWidth with the new set.
-		// "nixos-config@a-much-longer-branch-x": depth-1 child,
-		//   branch = "@a-much-longer-branch-x" = 23 chars; needed = 6 + 23 - 10 = 19.
+		// "nixos-config@a-much-longer-branch-x" (35 chars): fullName = 35-10=25.
+		// treeModeChild = 6+23-10=19. fullName dominates → needed = 25.
 		{
 			name: "after adding longer session, width reflects new longest",
 			sessions: []dashboard.AgentSession{
-				{Name: "nixos-config@main"},                   // top-level, needed = 7
-				{Name: "nixos-config@a-much-longer-branch-x"}, // depth-1, needed = 19
+				{Name: "nixos-config@main"},                   // top-level, fullName = 7
+				{Name: "nixos-config@a-much-longer-branch-x"}, // depth-1, fullName = 25
 			},
-			want: 19,
+			want: 25,
 		},
 		// [functional] @main session — treated as top-level (branch == "@main").
 		// "@main" condition makes it top-level for any repo.
@@ -248,15 +249,16 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 		{Name: "my-very-long-repo-name@main", AgentState: "active"},
 		{Name: "my-very-long-repo-name@feature-x", AgentState: "waiting"},
 	}
-	// "my-very-long-repo-name@main": top-level, needed = 27 - 10 = 17.
-	// "my-very-long-repo-name@feature-x": depth-1, branch = "@feature-x" = 10 chars,
-	//   needed = 6 + 10 - 10 = 6 → 6 < 17, so max stays 17.
+	// "my-very-long-repo-name@main": top-level (@main), needed = 27 - 10 = 17.
+	// "my-very-long-repo-name@feature-x": depth-1 child (non-@main branch),
+	//   fullName = 32-10 = 22, treeModeChild = 6+10-10 = 6 → needed = max(22,6) = 22.
+	// Final: max(17, 22) = 22.
 	gotLongW := dashboard.SessionColumnWidth(longSessions)
-	if gotLongW != 17 {
-		t.Errorf("long sessions: SessionColumnWidth = %d, want 17", gotLongW)
+	if gotLongW != 22 {
+		t.Errorf("long sessions: SessionColumnWidth = %d, want 22", gotLongW)
 	}
 
-	// Verify DashView starts from sessionW=17 (not the old floor of 20).
+	// Verify DashView starts from sessionW=22 (not the old floor of 20).
 	// We check that SessionColumnWidth is what DashView would use.
 	// The new code does: sessionW := SessionColumnWidth(d.Displayed)
 	// so SessionColumnWidth(longSessions) IS the starting sessionW.
@@ -283,10 +285,10 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 		t.Fatal("could not find header line in DashView output for long sessions")
 	}
 	// The session column spans treePrefixW(10) + sessionW(after growSession).
-	// What matters: DashView started from 17, not 20, so the total session area
-	// fits the actual content. We can't easily check exact final width (growSession
-	// may add more), but we can verify the header renders without panic and
-	// contains expected column labels.
+	// What matters: DashView started from 22, not the old hardcoded 20-char floor,
+	// so the total session area fits the actual content without using the old floor.
+	// We can't easily check the exact final width (growSession may add more),
+	// but we verify the header renders without panic and contains expected labels.
 	for _, label := range []string{"session", "state", "type"} {
 		if !strings.Contains(headerLine, label) {
 			t.Errorf("header line missing %q: %q", label, headerLine)
