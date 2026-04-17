@@ -9,6 +9,9 @@ package cmd
 //	prism stats --days N          historical aggregate over the last N days
 //	prism stats model             per-model performance breakdown over last 7 days
 //	prism stats model --days N    per-model performance breakdown over last N days
+//	prism stats --doomloops       doom_loop_detected events from the last 7 days
+//	prism stats --doomloops --days N  doom loop events over the last N days
+//	prism stats <session> --doomloops filter doom loop events to a specific session
 
 import (
 	"encoding/json"
@@ -68,6 +71,10 @@ Use --detail to force the detailed block format even for multi-session tmux sess
 
 Use --days N to show aggregate statistics over the last N days.
 
+Use --doomloops to show doom_loop_detected events. Defaults to the last 7 days
+cross-session; combine with --days N to change the window; combine with a
+session name argument to filter to a specific session.
+
 Use the 'model' subcommand for a per-provider/model performance breakdown.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStats,
@@ -76,12 +83,27 @@ Use the 'model' subcommand for a per-provider/model performance breakdown.`,
 func init() {
 	statsCmd.Flags().Int("days", 0, "Show aggregate statistics over the last N days")
 	statsCmd.Flags().Bool("detail", false, "Force detailed block format even for multi-session tmux sessions")
+	statsCmd.Flags().Bool("doomloops", false, "Show doom_loop_detected events (last 7 days by default)")
 	rootCmd.AddCommand(statsCmd)
 }
 
 func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	detail, _ := cmd.Flags().GetBool("detail")
+	doomloops, _ := cmd.Flags().GetBool("doomloops")
+
+	if doomloops {
+		// --doomloops: default window is 7 days; --days N overrides it.
+		window := 7
+		if days > 0 {
+			window = days
+		}
+		sessionFilter := ""
+		if len(args) == 1 {
+			sessionFilter = args[0]
+		}
+		return runStatsDoomLoops(sessionFilter, window)
+	}
 
 	if days > 0 && len(args) > 0 {
 		return fmt.Errorf("--days is mutually exclusive with a session name")
@@ -951,6 +973,105 @@ func runStatsHistorical(days int) error {
 		}
 	}
 
+	return nil
+}
+
+// ---------- doom-loop events ----------
+
+// runStatsDoomLoops queries doom_loop_detected events and renders them as a
+// table sorted by timestamp descending. sessionFilter narrows to a specific
+// session when non-empty. days is the look-back window (must be > 0).
+func runStatsDoomLoops(sessionFilter string, days int) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("stats --doomloops: %w", err)
+	}
+	defer d.Close()
+
+	sinceMs := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+
+	events, err := d.QueryDoomLoopEvents(sessionFilter, sinceMs)
+	if err != nil {
+		return fmt.Errorf("stats --doomloops: %w", err)
+	}
+
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleHeaderDim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	title := fmt.Sprintf("Doom Loop Events — last %d days", days)
+	if sessionFilter != "" {
+		title = fmt.Sprintf("Doom Loop Events — session %s, last %d days", sessionFilter, days)
+	}
+	fmt.Println(styleHeader.Render(title))
+	fmt.Println()
+
+	if len(events) == 0 {
+		fmt.Println(styleDim.Render("  no doom_loop_detected events in the specified window"))
+		return nil
+	}
+
+	const (
+		wSession   = 32
+		wTool      = 12
+		wPattern   = 40
+		wCount     = 5
+		wTimestamp = 19
+	)
+
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %*s  %-*s",
+		wSession, "SESSION",
+		wTool, "TOOL",
+		wPattern, "ARG PATTERN",
+		wCount, "COUNT",
+		wTimestamp, "TIMESTAMP",
+	)
+	fmt.Println(styleHeaderDim.Render(header))
+	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
+
+	for _, e := range events {
+		var p struct {
+			Tool    string `json:"tool"`
+			Pattern string `json:"pattern"`
+			Count   int    `json:"count"`
+		}
+		_ = json.Unmarshal([]byte(e.Payload), &p)
+
+		sessionStr := e.SessionName
+		if len(sessionStr) > wSession {
+			sessionStr = sessionStr[:wSession-3] + "..."
+		}
+
+		toolStr := p.Tool
+		if len(toolStr) > wTool {
+			toolStr = toolStr[:wTool-3] + "..."
+		}
+
+		patternStr := p.Pattern
+		if len(patternStr) > wPattern {
+			patternStr = patternStr[:wPattern-3] + "..."
+		}
+
+		countStr := fmt.Sprintf("%d", p.Count)
+		if p.Count == 0 {
+			countStr = "—"
+		}
+
+		tsStr := e.CreatedAt.Format("2006-01-02 15:04:05")
+
+		fmt.Printf("%-*s  %-*s  %-*s  %*s  %-*s\n",
+			wSession, sessionStr,
+			wTool, toolStr,
+			wPattern, patternStr,
+			wCount, countStr,
+			wTimestamp, tsStr,
+		)
+	}
+
+	fmt.Println()
+	if sessionFilter == "" {
+		fmt.Println(styleDim.Render("use `prism stats <session> --doomloops` to filter to a specific session"))
+	}
 	return nil
 }
 

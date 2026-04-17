@@ -159,6 +159,19 @@ type SubagentEnd struct {
 	MessageID  string `json:"messageId"`
 }
 
+// DoomLoopDetected is the payload for doom_loop_detected events, written by
+// the prism-hooks plugin when it detects an agent repeating the same tool call
+// with near-identical arguments N consecutive times in the same session.
+//
+// Tool is the tool name that triggered detection (e.g. "bash").
+// Pattern is the normalised argument pattern that matched (e.g. "go test ./...").
+// Count is the number of consecutive matching calls when detection fired (always 5).
+type DoomLoopDetected struct {
+	Tool    string `json:"tool"`
+	Pattern string `json:"pattern"`
+	Count   int    `json:"count"`
+}
+
 // Audit is the payload for audit events, written when a high-impact bash
 // command is executed (e.g. gh pr merge, git push, prism spawn). These events
 // are promoted from the ephemeral opencode DB to the persistent prism DB so
