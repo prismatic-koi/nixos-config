@@ -200,3 +200,135 @@ func TestResolveReviewWorktree_EmptyWorktree(t *testing.T) {
 		t.Errorf("error %q does not contain session name %q", err.Error(), session)
 	}
 }
+
+// ── splitCSV tests ────────────────────────────────────────────────────────────
+
+// TestSplitCSV_TrailingComma verifies that a trailing comma produces no empty
+// tokens. The AC requires: "splitCSV with a trailing comma produces no empty tokens".
+func TestSplitCSV_TrailingComma(t *testing.T) {
+	result := splitCSV("review-code,review-qa,")
+	if len(result) != 2 {
+		t.Fatalf("splitCSV with trailing comma: got %d tokens, want 2: %v", len(result), result)
+	}
+	if result[0] != "review-code" {
+		t.Errorf("result[0] = %q, want %q", result[0], "review-code")
+	}
+	if result[1] != "review-qa" {
+		t.Errorf("result[1] = %q, want %q", result[1], "review-qa")
+	}
+}
+
+// TestSplitCSV_LeadingComma verifies that a leading comma produces no empty tokens.
+func TestSplitCSV_LeadingComma(t *testing.T) {
+	result := splitCSV(",review-code,review-qa")
+	if len(result) != 2 {
+		t.Fatalf("splitCSV with leading comma: got %d tokens, want 2: %v", len(result), result)
+	}
+}
+
+// TestSplitCSV_EmptyString verifies that an empty string returns no tokens.
+func TestSplitCSV_EmptyString(t *testing.T) {
+	result := splitCSV("")
+	if len(result) != 0 {
+		t.Fatalf("splitCSV with empty string: got %d tokens, want 0: %v", len(result), result)
+	}
+}
+
+// TestSplitCSV_WhitespaceOnly verifies that a whitespace-only string (or
+// comma-separated whitespace) returns no tokens.
+func TestSplitCSV_WhitespaceOnly(t *testing.T) {
+	for _, s := range []string{" ", "  ,  ", "  ,  ,  "} {
+		result := splitCSV(s)
+		if len(result) != 0 {
+			t.Errorf("splitCSV(%q): got %d tokens, want 0: %v", s, len(result), result)
+		}
+	}
+}
+
+// TestSplitCSV_TrimsWhitespace verifies that leading/trailing whitespace around
+// each token is trimmed.
+func TestSplitCSV_TrimsWhitespace(t *testing.T) {
+	result := splitCSV("  review-code , review-qa  ")
+	if len(result) != 2 {
+		t.Fatalf("splitCSV with whitespace: got %d tokens, want 2: %v", len(result), result)
+	}
+	if result[0] != "review-code" {
+		t.Errorf("result[0] = %q, want %q", result[0], "review-code")
+	}
+	if result[1] != "review-qa" {
+		t.Errorf("result[1] = %q, want %q", result[1], "review-qa")
+	}
+}
+
+// ── --only flag validation tests ──────────────────────────────────────────────
+
+// TestOnlyFlag_UnknownAgentNameReturnsError verifies that --only with an
+// unknown agent name surfaces an error (via AgentsByName) before any session
+// is spawned. We test this by calling review.AgentsByName directly, which is
+// the same function used by runReview.
+//
+// AC: "--only with an unknown name surfaces an error before any session is spawned"
+func TestOnlyFlag_UnknownAgentNameReturnsError(t *testing.T) {
+	t.Setenv("ENHANCED_REVIEW", "true")
+	allAgents := agentsForHarness("opencode")
+
+	// A completely unknown name.
+	_, err := review.AgentsByName(allAgents, []string{"review-typo"})
+	if err == nil {
+		t.Fatal("AgentsByName: expected error for unknown agent name, got nil")
+	}
+	// Error must contain the unknown name.
+	if !strings.Contains(err.Error(), "review-typo") {
+		t.Errorf("AgentsByName error %q does not contain unknown agent name %q", err.Error(), "review-typo")
+	}
+	// Error must contain at least one available agent name (the list of
+	// available agents should be listed).
+	if !strings.Contains(err.Error(), "review-goal") {
+		t.Errorf("AgentsByName error %q does not mention available agents", err.Error())
+	}
+}
+
+// TestOnlyFlag_UnknownNameMixed verifies that a mix of known and unknown names
+// also returns an error naming the unrecognised agent.
+func TestOnlyFlag_UnknownNameMixed(t *testing.T) {
+	t.Setenv("ENHANCED_REVIEW", "true")
+	allAgents := agentsForHarness("opencode")
+
+	_, err := review.AgentsByName(allAgents, []string{"review-code", "review-typo"})
+	if err == nil {
+		t.Fatal("AgentsByName: expected error for mixed known/unknown names, got nil")
+	}
+	if !strings.Contains(err.Error(), "review-typo") {
+		t.Errorf("error %q does not contain the unknown agent name", err.Error())
+	}
+}
+
+// TestOnlyFlag_EmptyCSVReturnsNoTokens verifies that splitCSV("") → 0 tokens,
+// which is the precondition for the empty-CSV error path in runReview.
+// The runReview function checks len(names)==0 after splitCSV and returns an error.
+func TestOnlyFlag_EmptyCSVReturnsNoTokens(t *testing.T) {
+	tokens := splitCSV("")
+	if len(tokens) != 0 {
+		t.Errorf("splitCSV(%q): got %d tokens, want 0", "", len(tokens))
+	}
+
+	// A value that reduces to zero tokens after trimming.
+	tokens = splitCSV("  ,  ")
+	if len(tokens) != 0 {
+		t.Errorf("splitCSV(%q): got %d tokens, want 0", "  ,  ", len(tokens))
+	}
+}
+
+// TestAgentNameStrings verifies the agentNameStrings helper extracts names correctly.
+func TestAgentNameStrings(t *testing.T) {
+	agents := agentsForHarness("opencode")
+	names := agentNameStrings(agents)
+	if len(names) != len(agents) {
+		t.Fatalf("agentNameStrings: got %d names, want %d", len(names), len(agents))
+	}
+	for i, a := range agents {
+		if names[i] != a.Name {
+			t.Errorf("names[%d] = %q, want %q", i, names[i], a.Name)
+		}
+	}
+}

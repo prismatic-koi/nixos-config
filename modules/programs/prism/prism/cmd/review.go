@@ -59,30 +59,41 @@ func runReview(cmd *cobra.Command, args []string) error {
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 	onlyFlag, _ := cmd.Flags().GetString("only")
+	onlyChanged := cmd.Flags().Changed("only")
+
+	// Resolve the full agent list and apply --only filtering up-front.
+	// This is done before the container-mode branch so that validation
+	// (empty CSV, unknown names) is consistent across both paths and no
+	// sessions are spawned before we know the agent list is valid.
+	allAgents := agentsForHarness(harnessFlag)
+	var agents []review.Agent
+	if onlyChanged {
+		// --only was explicitly set. Validate it produces at least one token.
+		names := splitCSV(onlyFlag)
+		if len(names) == 0 {
+			return fmt.Errorf("prism review: --only flag requires at least one agent name (got empty value %q)\navailable: %s",
+				onlyFlag, strings.Join(agentNameStrings(allAgents), ", "))
+		}
+		var err error
+		agents, err = review.AgentsByName(allAgents, names)
+		if err != nil {
+			return fmt.Errorf("prism review: %w", err)
+		}
+	} else {
+		agents = allAgents
+	}
 
 	// Container-mode detection: when PRISM_HOST_API is set the process is
 	// running inside a container where tmux is not available. Route the review
 	// through the host sidecar instead of calling review.Run() directly.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		// Resolve the agent list client-side (inside the container), where
-		// ENHANCED_REVIEW and PRISM_HOST_API are set. This ensures that
-		// env-var-driven agent selection (e.g. ENHANCED_REVIEW=true) uses the
-		// container's environment, not the host sidecar's environment, and
-		// that the --only flag is applied correctly before forwarding.
-		allAgents := agentsForHarness(harnessFlag)
-		var selectedAgents []review.Agent
-		if onlyFlag != "" {
-			var err error
-			names := splitCSV(onlyFlag)
-			selectedAgents, err = review.AgentsByName(allAgents, names)
-			if err != nil {
-				return fmt.Errorf("prism review: %w", err)
-			}
-		} else {
-			selectedAgents = allAgents
-		}
-		agentNames := make([]string, len(selectedAgents))
-		for i, ag := range selectedAgents {
+		// Agent list was already resolved and validated above (client-side,
+		// inside the container). This ensures that env-var-driven agent
+		// selection (e.g. ENHANCED_REVIEW=true) uses the container's
+		// environment, not the host sidecar's environment, and that the
+		// --only flag is applied correctly before forwarding.
+		agentNames := make([]string, len(agents))
+		for i, ag := range agents {
 			agentNames[i] = ag.Name
 		}
 
@@ -124,20 +135,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 	worktree, wtErr := resolveReviewWorktree(parentSession)
 	if wtErr != nil {
 		return wtErr
-	}
-
-	// Determine agents list.
-	allAgents := agentsForHarness(harnessFlag)
-	var agents []review.Agent
-	if onlyFlag != "" {
-		var err error
-		names := splitCSV(onlyFlag)
-		agents, err = review.AgentsByName(allAgents, names)
-		if err != nil {
-			return fmt.Errorf("prism review: %w", err)
-		}
-	} else {
-		agents = allAgents
 	}
 
 	if len(agents) == 0 {
@@ -265,6 +262,7 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 }
 
 // splitCSV splits a comma-separated string and trims whitespace.
+// Trailing commas, leading commas, and empty tokens after trimming are ignored.
 func splitCSV(s string) []string {
 	var parts []string
 	for _, p := range strings.Split(s, ",") {
@@ -274,4 +272,13 @@ func splitCSV(s string) []string {
 		}
 	}
 	return parts
+}
+
+// agentNameStrings returns a slice of agent names from an Agent slice.
+func agentNameStrings(agents []review.Agent) []string {
+	names := make([]string, len(agents))
+	for i, a := range agents {
+		names[i] = a.Name
+	}
+	return names
 }
