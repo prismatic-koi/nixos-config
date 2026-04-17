@@ -7,7 +7,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 // session start). It fires when all 5 are the same tool with "similar" arguments
 // (see similarityKey below), emits a doom_loop_detected event to the prism DB
 // via `prism event doom-loop-detected`, and injects a one-shot steering prompt
-// into the next LLM turn via experimental.chat.system.transform.
+// into the next LLM turn via experimental.chat.messages.transform.
 //
 // Similarity rules (per tool):
 //   bash      — compare command + first positional argument only (strips flags).
@@ -162,8 +162,7 @@ export const PrismHooks: Plugin = async (pluginInput) => {
         const text = pendingSteeringPrompt;
         pendingSteeringPrompt = null;
         // Inject a synthetic user-role message at the end of the history.
-        // The message ID is generated deterministically from the tool name to
-        // ensure uniqueness without a crypto dependency.
+        // The message ID is timestamp-based to ensure uniqueness.
         const syntheticMsg: any = {
           info: {
             id: `doom-loop-${Date.now()}`,
@@ -311,7 +310,8 @@ export const PrismHooks: Plugin = async (pluginInput) => {
     // Inject messages into the system prompt on the next LLM turn:
     // 1. Escalation warning if the review cycle limit has been reached.
     // 2. Review reminder after a git push (one-shot, cleared after injection).
-    // 3. Doom-loop steering prompt (one-shot, cleared after injection).
+    // Note: doom-loop steering is handled by experimental.chat.messages.transform,
+    // not here. This hook only manages the review-related system prompt injections.
     "experimental.chat.system.transform": async (_input, output) => {
       // Clear the per-turn cycle deduplication flag so the next batch of
       // review agent invocations counts as a fresh cycle.
