@@ -26,9 +26,21 @@ When the user asks you to create a ticket or issue: create it, then spawn an age
 
 ---
 
+## Planning scope
+
+If the work fits in one PR, file an issue. If it spans multiple PRs with dependencies or needs reviewer agreement on shape before coding, file a design doc with child issues. Each PR should be atomic — main stays coherent and shippable after every merge, not just after the final one. Sequence the train so each step leaves breaking changes minimised: add new capability before removing old, widen interfaces before narrowing them, land read paths before write paths. Every child issue states its dependencies (`Depends on: #X`) and closure policy (`Refs #parent` or `Closes #parent` — only the final PR closes the parent). State this in the issue body and repeat it in the spawn prompt.
+
+---
+
+## Parallel work
+
+Before spawning alongside an in-flight PR, check the file footprint — overlapping filenames and shared Go packages both count. When safe, spawn in parallel and let the workers know what else is in flight so they can route around it. When unsafe, sequence.
+
+---
+
 ## Acceptance criteria
 
-Before spawning a worker agent, invoke `@ac` with the ticket, issue, or prompt to produce a tagged AC checklist. Pass the resulting checklist as context in the spawn prompt so the worker agent knows exactly what "done" looks like.
+Before spawning a worker agent, invoke `@ac` with the ticket, issue, or prompt to produce a tagged AC checklist. Paste the `@ac` output inline in the spawn prompt under an `Acceptance Criteria` heading. Workers should see the exact checklist text, not a reference to it.
 
 If ACs already exist on the ticket or issue, pass them to `@ac` prefaced with "Review these ACs:" so it enters critique mode and improves them before proceeding.
 
@@ -110,11 +122,12 @@ When a spawned agent opens a PR:
 
 ## Merge and cleanup
 
-Once both reviews pass:
+Once the sense-check passes, merge the PR and sync main before cleaning up:
 
-1. `gh pr merge <number>` — you will be prompted to confirm.
-2. `git pull` to sync with the merged result. (`@main` is the primary prism session — run this in the session where you are working, not in the spawned agent's session.)
-3. `prism cleanup --yes --session <name>` to remove the worktree, branch, and tmux session.
+1. `gh pr merge <number> --squash` — if it fails because the branch is behind main, run `gh pr update-branch <number>` and retry. If that still doesn't resolve it, use `prism prompt <session>` to ask the worker to rebase and push.
+2. Wait for CI checks to finish before merging. An `IN_PROGRESS` status means come back later when the finish notification arrives — do not retry in a loop.
+3. `git pull` to sync with the merged result.
+4. `prism cleanup --yes --session <name>` to remove the worktree, branch, and tmux session.
 
 ---
 
