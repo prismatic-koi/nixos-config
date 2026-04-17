@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -196,8 +197,10 @@ type Opts struct {
 	DBPath string
 	// PluginHostPath is the path to the opencode plugin file.
 	PluginHostPath string
-	// ConfigContent is the JSON blob for the container's opencode.json config.
-	ConfigContent string
+	// ProfilesFile is the loaded profiles.json, used to resolve per-agent
+	// container config blobs via ContainerConfigForRole. When nil, no config
+	// injection is performed (equivalent to pre-PR-B behaviour).
+	ProfilesFile *config.ProfilesFile
 	// ContainerMode: when true, each agent runs in its own container.
 	ContainerMode bool
 }
@@ -293,6 +296,15 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 		// Build the prompt for the review agent.
 		prompt := buildReviewPrompt(opts.PRNumber)
 
+		// Resolve the per-agent config blob. Each agent gets its own hardened
+		// opencode.json that declares only that one review agent.
+		agentConfigContent := ""
+		if opts.ContainerMode && opts.ProfilesFile != nil {
+			if blob, cfgErr := config.ContainerConfigForRole(opts.ProfilesFile, ag.Name); cfgErr == nil {
+				agentConfigContent = blob
+			}
+		}
+
 		// Start the sidecar for this agent.
 		// WorktreeReadOnly=true ensures review containers cannot modify the
 		// branch under review (satisfies the [security] acceptance criterion).
@@ -303,7 +315,7 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 			Worktree:         worktree,
 			PluginHostPath:   opts.PluginHostPath,
 			InitialPrompt:    prompt,
-			ConfigContent:    opts.ConfigContent,
+			ConfigContent:    agentConfigContent,
 			WorktreeReadOnly: true,
 		}
 		if sidecarErr := session.StartSidecarWithOpts(agentSession, sidecarOpts); sidecarErr != nil {

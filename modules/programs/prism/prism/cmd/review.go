@@ -164,14 +164,12 @@ func runReview(cmd *cobra.Command, args []string) error {
 		ContainerMode:  cfg.ContainerMode,
 	}
 
-	// Load config content for container mode.
+	// Load profiles for container mode — passed through to review.Run so
+	// each agent's sidecar receives its own per-agent hardened config blob.
 	if cfg.ContainerMode {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr == nil {
-			roleConfig, roleErr := config.ContainerConfigForRole(pf, "review")
-			if roleErr == nil && roleConfig != "" {
-				opts.ConfigContent = roleConfig
-			}
+			opts.ProfilesFile = pf
 		}
 	}
 

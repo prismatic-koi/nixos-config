@@ -258,36 +258,165 @@ func TestBuildConfigContent_UnknownProfile(t *testing.T) {
 	}
 }
 
-// sampleProfilesFileWithReview returns a ProfilesFile that also has a review
-// config blob, for testing ContainerConfigForRole. The fixture blobs use the
-// correct opencode.ai schema key "agent" (singular), matching what real
-// Nix-generated blobs produce.
+// sampleProfilesFileWithReview returns a ProfilesFile with per-agent review
+// config blobs set, for testing ContainerConfigForRole. The fixture blobs use
+// the correct opencode.ai schema key "agent" (singular), matching what real
+// Nix-generated blobs produce. Each blob declares only its own agent.
 func sampleProfilesFileWithReview() *config.ProfilesFile {
 	pf := sampleProfilesFile()
 	pf.ContainerWorkerConfig = `{"agent":{"worker":{}}}`
 	pf.ContainerCoordinatorConfig = `{"agent":{"coordinator":{}}}`
-	pf.ContainerReviewConfig = `{"agent":{"review":{}}}`
+	pf.ContainerReviewGoalConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-goal":{}}}`
+	pf.ContainerReviewCodeConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-code":{}}}`
+	pf.ContainerReviewSecurityConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-security":{}}}`
+	pf.ContainerReviewQaConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-qa":{}}}`
+	pf.ContainerReviewContextConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-context":{}}}`
 	return pf
 }
 
-// TestContainerConfigForRole_Review verifies that passing role "review" returns
-// the ContainerReviewConfig blob (non-empty, valid JSON, has "agent" key —
-// the correct opencode.ai schema key used in all container config blobs).
-func TestContainerConfigForRole_Review(t *testing.T) {
+// TestContainerConfigForRole_ReviewGoal verifies that passing role "review-goal"
+// returns the ContainerReviewGoalConfig blob (non-empty, valid JSON, has
+// "$schema" and "agent" keys).
+func TestContainerConfigForRole_ReviewGoal(t *testing.T) {
 	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review")
+	result, err := config.ContainerConfigForRole(pf, "review-goal")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result == "" {
-		t.Fatal("expected non-empty result for role=review")
+		t.Fatal("expected non-empty result for role=review-goal")
 	}
 	var cfg map[string]any
 	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
-	if _, ok := cfg["agent"]; !ok {
-		t.Error("expected top-level 'agent' key in review config blob")
+	if _, ok := cfg["$schema"]; !ok {
+		t.Error("expected top-level '$schema' key in review-goal config blob")
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected top-level 'agent' key in review-goal config blob")
+	}
+	if _, ok := agents["review-goal"]; !ok {
+		t.Error("expected 'review-goal' agent in review-goal config blob")
+	}
+	// Must NOT declare other review agents.
+	for _, other := range []string{"review-code", "review-security", "review-qa", "review-context"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("review-goal blob must not declare agent %q", other)
+		}
+	}
+}
+
+// TestContainerConfigForRole_ReviewCode verifies the review-code per-agent blob.
+func TestContainerConfigForRole_ReviewCode(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "review-code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=review-code")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'agent' key in review-code config blob")
+	}
+	if _, ok := agents["review-code"]; !ok {
+		t.Error("expected 'review-code' agent in review-code config blob")
+	}
+	for _, other := range []string{"review-goal", "review-security", "review-qa", "review-context"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("review-code blob must not declare agent %q", other)
+		}
+	}
+}
+
+// TestContainerConfigForRole_ReviewSecurity verifies the review-security per-agent blob.
+func TestContainerConfigForRole_ReviewSecurity(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "review-security")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=review-security")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'agent' key in review-security config blob")
+	}
+	if _, ok := agents["review-security"]; !ok {
+		t.Error("expected 'review-security' agent in review-security config blob")
+	}
+	for _, other := range []string{"review-goal", "review-code", "review-qa", "review-context"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("review-security blob must not declare agent %q", other)
+		}
+	}
+}
+
+// TestContainerConfigForRole_ReviewQa verifies the review-qa per-agent blob.
+func TestContainerConfigForRole_ReviewQa(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "review-qa")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=review-qa")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'agent' key in review-qa config blob")
+	}
+	if _, ok := agents["review-qa"]; !ok {
+		t.Error("expected 'review-qa' agent in review-qa config blob")
+	}
+	for _, other := range []string{"review-goal", "review-code", "review-security", "review-context"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("review-qa blob must not declare agent %q", other)
+		}
+	}
+}
+
+// TestContainerConfigForRole_ReviewContext verifies the review-context per-agent blob.
+func TestContainerConfigForRole_ReviewContext(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "review-context")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=review-context")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'agent' key in review-context config blob")
+	}
+	if _, ok := agents["review-context"]; !ok {
+		t.Error("expected 'review-context' agent in review-context config blob")
+	}
+	for _, other := range []string{"review-goal", "review-code", "review-security", "review-qa"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("review-context blob must not declare agent %q", other)
+		}
 	}
 }
 
@@ -318,10 +447,11 @@ func TestContainerConfigForRole_Coordinator(t *testing.T) {
 }
 
 // TestContainerConfigForRole_UnknownRole verifies that an unrecognised role
-// (e.g. "plan") returns ("", nil) without error.
+// (e.g. "plan") returns ("", nil) without error. The retired "review" role
+// (from PR-A) also returns ("", nil) after PR-B retires it.
 func TestContainerConfigForRole_UnknownRole(t *testing.T) {
 	pf := sampleProfilesFileWithReview()
-	for _, role := range []string{"plan", "explore", "ac", "unknown"} {
+	for _, role := range []string{"plan", "explore", "ac", "unknown", "review"} {
 		result, err := config.ContainerConfigForRole(pf, role)
 		if err != nil {
 			t.Errorf("role %q: unexpected error: %v", role, err)
@@ -335,7 +465,12 @@ func TestContainerConfigForRole_UnknownRole(t *testing.T) {
 // TestContainerConfigForRole_NilProfilesFile verifies that a nil *ProfilesFile
 // returns ("", nil) for all roles — no panic.
 func TestContainerConfigForRole_NilProfilesFile(t *testing.T) {
-	for _, role := range []string{"worker", "coordinator", "review", "plan", "unknown"} {
+	roles := []string{
+		"worker", "coordinator",
+		"review-goal", "review-code", "review-security", "review-qa", "review-context",
+		"review", "plan", "unknown",
+	}
+	for _, role := range roles {
 		result, err := config.ContainerConfigForRole(nil, role)
 		if err != nil {
 			t.Errorf("nil pf, role %q: unexpected error: %v", role, err)
