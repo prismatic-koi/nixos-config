@@ -68,13 +68,16 @@ type ProfilesFile struct {
 	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for coordinator
 	// containers. Written by Nix under container_coordinator_config.
 	ContainerCoordinatorConfig string `json:"container_coordinator_config"`
-	// ContainerReviewConfig is the full opencode.json blob (serialised JSON
-	// string) to inject as OPENCODE_CONFIG_CONTENT for review containers.
-	// Written by Nix under container_review_config. The blob is hardened:
-	// only review agent(s) are declared; write/edit/patch are denied; the
-	// task tool is disabled to prevent review agents delegating to peers;
-	// and "prism review" bash commands are denied to prevent recursion.
-	ContainerReviewConfig string `json:"container_review_config"`
+	// Per-agent review container configs — each blob declares only its own
+	// review agent and no others. Written by Nix under
+	// container_review_{goal,code,security,qa,context}_config.
+	// Each blob is hardened: write/edit/patch denied; task tool disabled;
+	// "prism review" bash commands denied to prevent recursion.
+	ContainerReviewGoalConfig     string `json:"container_review_goal_config"`
+	ContainerReviewCodeConfig     string `json:"container_review_code_config"`
+	ContainerReviewSecurityConfig string `json:"container_review_security_config"`
+	ContainerReviewQaConfig       string `json:"container_review_qa_config"`
+	ContainerReviewContextConfig  string `json:"container_review_context_config"`
 	// AgentEnvVars holds environment variables to inject into host-mode
 	// opencode processes. Values are fully expanded absolute paths (no $HOME).
 	// Written by Nix under agent_env_vars. These are prepended to the
@@ -84,12 +87,21 @@ type ProfilesFile struct {
 }
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
-// given agent role ("worker", "coordinator", or "review"). Returns ("", nil)
-// when pf is nil (no profiles file loaded) or when the role is not a
-// recognised container role (only "worker", "coordinator", and "review" have
-// dedicated container configs; subagent names like "plan", "explore", etc. are
-// valid opencode agents but do not have their own container configs — they
-// inherit from the session default).
+// given agent role. Returns ("", nil) when pf is nil (no profiles file loaded)
+// or when the role is not a recognised container role.
+//
+// Recognised roles:
+//   - "worker"           → ContainerWorkerConfig
+//   - "coordinator"      → ContainerCoordinatorConfig
+//   - "review-goal"      → ContainerReviewGoalConfig
+//   - "review-code"      → ContainerReviewCodeConfig
+//   - "review-security"  → ContainerReviewSecurityConfig
+//   - "review-qa"        → ContainerReviewQaConfig
+//   - "review-context"   → ContainerReviewContextConfig
+//
+// The old "review" role (from PR-A) is retired. Calling it returns ("", nil).
+// Subagent names like "plan", "explore", etc. also return ("", nil) — they
+// inherit from the session default.
 func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 	if pf == nil {
 		return "", nil
@@ -99,10 +111,18 @@ func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 		return pf.ContainerWorkerConfig, nil
 	case "coordinator":
 		return pf.ContainerCoordinatorConfig, nil
-	case "review":
-		return pf.ContainerReviewConfig, nil
+	case "review-goal":
+		return pf.ContainerReviewGoalConfig, nil
+	case "review-code":
+		return pf.ContainerReviewCodeConfig, nil
+	case "review-security":
+		return pf.ContainerReviewSecurityConfig, nil
+	case "review-qa":
+		return pf.ContainerReviewQaConfig, nil
+	case "review-context":
+		return pf.ContainerReviewContextConfig, nil
 	default:
-		// Not a container-level role (e.g. "plan", "explore").
+		// Not a container-level role (e.g. "plan", "explore", or the retired "review").
 		// Return empty string — no config injection — without error.
 		return "", nil
 	}
