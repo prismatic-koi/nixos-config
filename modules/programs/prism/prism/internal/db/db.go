@@ -1236,6 +1236,52 @@ func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, er
 	return events, nil
 }
 
+// QueryPermissionEvents returns permission_denied or permission_ask events from
+// agent_events, ordered by created_at ASC. Optional filters:
+//   - eventType: must be "permission_denied" or "permission_ask"
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64) ([]Event, error) {
+	args := []any{eventType}
+	conditions := []string{"type = ?"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+		where + " ORDER BY created_at ASC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query permission events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+			return nil, fmt.Errorf("db: scan permission event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate permission events: %w", err)
+	}
+	return events, nil
+}
+
 // QueryAuditEvents returns audit events from agent_events, ordered by
 // created_at DESC. Optional filters:
 //   - sessionName: when non-empty, restrict to this session only
