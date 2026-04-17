@@ -2521,9 +2521,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// POST /review
 	// Request:  {"pr_number":"123","agents":["review-code","review-goal"],"timeout":"10m"}
 	// pr_number must be a numeric string (e.g. "123"). Non-numeric values are rejected.
-	// agents is optional (empty = default set resolved by prism review on host).
-	//   When agents contains enhanced-review names (review-goal, review-code, etc.),
-	//   ENHANCED_REVIEW=true is injected into the subprocess env automatically.
+	// agents is optional (empty = full set resolved by prism review on host).
 	// timeout is optional (default: 10m).
 	// Response: {"output":"...","passed":true} | {"error":"..."}
 	//
@@ -2599,19 +2597,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 
-		// Build the subprocess environment with two injections:
-		// 1. PRISM_SESSION_NAME: so review.LookupParentSession() resolves the
-		//    parent session correctly. The sidecar daemon is not inside tmux,
-		//    so the fallback tmux.CurrentSession() would fail without this.
-		// 2. ENHANCED_REVIEW=true: when any enhanced agent names are requested,
-		//    propagate this flag so agentsForHarness() on the host recognises
-		//    them in the agent pool. The sidecar's own os.Environ() does not
-		//    carry ENHANCED_REVIEW (it's only set inside containers), so we
-		//    inject it when needed based on the agent names in the request.
+		// Build the subprocess environment:
+		// PRISM_SESSION_NAME: so review.LookupParentSession() resolves the
+		// parent session correctly. The sidecar daemon is not inside tmux,
+		// so the fallback tmux.CurrentSession() would fail without this.
 		env := append(os.Environ(), "PRISM_SESSION_NAME="+s.cfg.SessionName)
-		if containsEnhancedAgent(req.Agents) {
-			env = append(env, "ENHANCED_REVIEW=true")
-		}
 		cmd.Env = env
 
 		// Capture stdout (formatted results); stderr is logged server-side only.
@@ -2764,23 +2754,10 @@ func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
 }
 
 // reviewAgentAllowlist is the set of valid review agent names accepted by the
-// /review host-API endpoint. These match the names in review.DefaultAgents()
-// and review.EnhancedAgents(). New agents must be added here when introduced.
+// /review host-API endpoint. These match the names in review.Agents().
+// New agents must be added here when introduced.
 // Keeping this inline avoids importing the review package from the sidecar.
 var reviewAgentAllowlist = map[string]bool{
-	// Default agent.
-	"review": true,
-	// Enhanced-mode agents (ENHANCED_REVIEW=true).
-	"review-goal":     true,
-	"review-code":     true,
-	"review-security": true,
-	"review-qa":       true,
-	"review-context":  true,
-}
-
-// enhancedReviewAgents is the set of enhanced agent names that require
-// ENHANCED_REVIEW=true in the subprocess environment.
-var enhancedReviewAgents = map[string]bool{
 	"review-goal":     true,
 	"review-code":     true,
 	"review-security": true,
@@ -2809,17 +2786,6 @@ func knownReviewAgentNames() []string {
 		}
 	}
 	return names
-}
-
-// containsEnhancedAgent returns true if any of the given agent names is an
-// enhanced-review agent (requires ENHANCED_REVIEW=true on the host side).
-func containsEnhancedAgent(agents []string) bool {
-	for _, a := range agents {
-		if enhancedReviewAgents[a] {
-			return true
-		}
-	}
-	return false
 }
 
 // parseSpawnSessionName parses the session name from the output of `prism spawn`

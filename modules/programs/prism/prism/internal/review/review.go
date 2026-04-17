@@ -112,17 +112,10 @@ type Agent struct {
 	OpencodeName string
 }
 
-// DefaultAgents returns the default set of review agents for the opencode harness.
-func DefaultAgents() []Agent {
-	return []Agent{
-		{Name: "review", OpencodeName: "review"},
-	}
-}
-
-// EnhancedAgents returns the five-agent set used in enhanced review mode.
+// Agents returns the five-agent review set.
 // Each agent corresponds to a specialised opencode agent definition under
-// modules/programs/prism/opencode/agents-enhanced/.
-func EnhancedAgents() []Agent {
+// modules/programs/prism/opencode/agents/.
+func Agents() []Agent {
 	return []Agent{
 		{Name: "review-goal", OpencodeName: "review-goal"},
 		{Name: "review-code", OpencodeName: "review-code"},
@@ -151,8 +144,8 @@ func CheckAgentAvailability(agents []Agent) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
-			"enhanced review requires opencode agent definitions that are not present in %s: %s\n"+
-				"hint: ensure the enhancedReview Nix option is enabled and the system has been rebuilt",
+			"review requires opencode agent definitions that are not present in %s: %s\n"+
+				"hint: ensure the system has been rebuilt with the prism NixOS module",
 			dir, strings.Join(missing, ", "),
 		)
 	}
@@ -278,7 +271,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 
 	agents := opts.Agents
 	if len(agents) == 0 {
-		agents = DefaultAgents()
+		agents = Agents()
 	}
 
 	// Spawn each agent as its own independent top-level tmux session.
