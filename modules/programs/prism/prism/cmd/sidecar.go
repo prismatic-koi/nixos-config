@@ -11,7 +11,8 @@ package cmd
 //	--container               enable container mode: create and manage a podman
 //	                          container running opencode serve before connecting
 //	--agent-role <role>       "worker" or "coordinator" (used in container mode
-//	                          to select the correct GitHub token)
+//	                          to select the correct GitHub token; when empty,
+//	                          the role is inferred from SSE events at runtime)
 //	--port <n>                allocated host port (required in container mode)
 //	--plugin-path <path>      host path to the prism-hooks.ts plugin; mounted
 //	                          read-only into the container (container mode only)
@@ -73,7 +74,7 @@ func init() {
 	sidecarCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	sidecarCmd.Flags().String("opencode-url", "", "Base URL of the opencode HTTP server")
 	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container)")
-	sidecarCmd.Flags().String("agent-role", "worker", "Agent role: worker or coordinator (used in container mode)")
+	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (used in container mode; inferred from SSE events when empty)")
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
