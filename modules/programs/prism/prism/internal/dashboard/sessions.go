@@ -172,6 +172,66 @@ func agentTypeLabel(agentName string) string {
 	}
 }
 
+// SessionColumnWidth computes the session column width (sessionW) from the
+// actual rendered widths of all displayed sessions. It scans the session names
+// and their tree prefixes to find the minimum sessionW that accommodates every
+// row without truncation, then clamps the result to [sessionWMin, sessionWCap].
+//
+// Width accounting (treePrefixW = 10 is the fixed prefix slot in the view):
+//
+//	totalSessionW = treePrefixW + sessionW
+//
+// Each row type contributes to sessionW as follows:
+//   - Top-level rows:     sessionW ≥ len(name) − treePrefixW
+//   - Depth-1 child rows: sessionW ≥ d1PrefixLen + len(branch) − treePrefixW
+//     (d1PrefixLen = 6: "  ├── " or "  └── ")
+//   - Depth-2 child rows: sessionW ≥ d2PrefixLen + len(label) − treePrefixW
+//     (d2PrefixLen = 10: "  │   ├── " or "  │   └── ", so the offset is 0)
+//
+// Constants are defined here as unexported values to avoid import cycles;
+// the view's own sessionWCap constant must stay in sync.
+func SessionColumnWidth(sessions []AgentSession) int {
+	const sessionWMin = 7  // len("session") — never truncate the column header
+	const sessionWCap = 40 // must match sessionWCap in view.go
+	const treePrefixW = 10 // must match treePrefixW in view.go
+	const d1PrefixLen = 6  // "  ├── " or "  └── "
+	const d2PrefixLen = 10 // "  │   ├── " or "  │   └── "
+
+	// isTopLevel mirrors view.go's inline isTopLevel closure.
+	isTopLevelSession := func(name string) bool {
+		branch := SessionBranch(name)
+		return branch == name || branch == "@main"
+	}
+
+	maxW := 0
+	for _, s := range sessions {
+		var needed int
+		if IsDepth2Session(s.Name) {
+			// Depth-2: d2PrefixLen + len(label) - treePrefixW = len(label)
+			label := Depth2Label(s.Name)
+			needed = d2PrefixLen + utf8.RuneCountInString(label) - treePrefixW
+		} else if isTopLevelSession(s.Name) {
+			// Top-level: len(name) - treePrefixW
+			needed = utf8.RuneCountInString(s.Name) - treePrefixW
+		} else {
+			// Depth-1 child: d1PrefixLen + len(branch) - treePrefixW
+			branch := SessionBranch(s.Name)
+			needed = d1PrefixLen + utf8.RuneCountInString(branch) - treePrefixW
+		}
+		if needed > maxW {
+			maxW = needed
+		}
+	}
+
+	if maxW < sessionWMin {
+		return sessionWMin
+	}
+	if maxW > sessionWCap {
+		return sessionWCap
+	}
+	return maxW
+}
+
 // FilterAgentSessions removes internal sessions (scratchpad, prism-dashboard)
 // from the slice.
 func FilterAgentSessions(all []AgentSession) []AgentSession {
