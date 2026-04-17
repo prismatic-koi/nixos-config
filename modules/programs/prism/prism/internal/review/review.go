@@ -317,11 +317,20 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
-		agentConfigContent := ""
-		if opts.ContainerMode && opts.ProfilesFile != nil {
-			if blob, cfgErr := config.ContainerConfigForRole(opts.ProfilesFile, ag.Name); cfgErr == nil {
-				agentConfigContent = blob
+		//
+		// In container mode a missing or empty blob means the container falls
+		// back to the image default (build agent). ResolveAgentConfigContent
+		// surfaces this as an explicit error to prevent silent build-agent spawns.
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
+		if configErr != nil {
+			// Clean up any already-started agents before returning.
+			for j := 0; j < i; j++ {
+				session.KillSidecar(agentSessions[j])
+				cleanupAgentSession(d, agentSessions[j])
+				_ = tmux.KillSession(agentSessions[j])
 			}
+			_ = d.SetEnded(agentSession)
+			return nil, configErr
 		}
 
 		// Start the sidecar for this agent.
@@ -376,6 +385,38 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	}
 
 	return results, pollErr
+}
+
+// ResolveAgentConfigContent resolves the per-agent opencode.json config blob
+// for a single agent in container mode. It is factored out of Run so that it
+// can be unit-tested independently of the tmux/DB machinery.
+//
+// Returns ("", nil) in host mode (containerMode=false), because no config
+// injection is needed — opencode is launched directly on the host.
+//
+// In container mode (containerMode=true):
+//   - Returns an error if pf is nil (missing profiles file).
+//   - Returns an error if ContainerConfigForRole returns an error.
+//   - Returns an error if the resolved blob is empty (stale profiles.json).
+//   - Returns the non-empty blob when resolution succeeds.
+//
+// Exported so that cmd/review_test.go (and integration tests) can exercise the
+// config-resolution path without needing a live DB or tmux session.
+func ResolveAgentConfigContent(containerMode bool, pf *config.ProfilesFile, agentName string) (string, error) {
+	if !containerMode {
+		return "", nil
+	}
+	if pf == nil {
+		return "", fmt.Errorf("review: container mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", agentName)
+	}
+	blob, cfgErr := config.ContainerConfigForRole(pf, agentName)
+	if cfgErr != nil {
+		return "", fmt.Errorf("review: ContainerConfigForRole(%q): %w", agentName, cfgErr)
+	}
+	if blob == "" {
+		return "", fmt.Errorf("review: no container config blob for agent %q — profiles.json appears to be stale (missing container_review_*_config fields)\nhint: rebuild the system with the prism NixOS module to regenerate profiles.json", agentName)
+	}
+	return blob, nil
 }
 
 // buildReviewPrompt returns the initial prompt string for a review agent.
