@@ -752,6 +752,18 @@ func (m *Manager) prepareVolumeDirs() error {
 		errs = append(errs, err.Error())
 	}
 
+	// Clipboard staging directory: pre-create so that the bind-mount in
+	// buildRunArgs() is always active, even on the first paste. Without this,
+	// a first-ever paste on a fresh system would write the file host-side but
+	// the container would not see it (the bind-mount only fires when the dir
+	// exists at container spawn time). Creating it eagerly here ensures the
+	// directory always exists before buildRunArgs() runs its os.Stat check.
+	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create clipboard staging dir %q: %v", clipboardCacheDir, err)
+		errs = append(errs, err.Error())
+	}
+
 	if len(errs) > 1 {
 		return fmt.Errorf("%d directories could not be created", len(errs))
 	}
@@ -853,6 +865,12 @@ func (m *Manager) buildRunArgs() []string {
 	// any env var configuration. Only the agents/readonly kubeconfig is mounted —
 	// the admin kubeconfig is never exposed to agents.
 	kubeAgentsConfig := filepath.Join(home, ".config", "kube", "agents-config")
+	// Clipboard staging directory — images staged by `prism clipboard paste-image`
+	// on the host are placed here and bind-mounted read-only into the container at
+	// the identical absolute path so that opencode's stat() call resolves without
+	// modification. No clipboard tool, socket, or env var is exposed inside the
+	// container — clipboard read occurs entirely host-side.
+	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
 
 	args := []string{
 		"run",
@@ -953,6 +971,18 @@ func (m *Manager) buildRunArgs() []string {
 	// kubeconfig is never mounted into agent containers.
 	if resolved, err := filepath.EvalSymlinks(kubeAgentsConfig); err == nil {
 		args = append(args, "--volume", resolved+":/root/.kube/config:ro")
+	}
+
+	// Clipboard staging directory: bind-mount ~/.cache/prism/clipboard/ at
+	// the identical host path inside the container, read-only. Images staged
+	// by `prism clipboard paste-image` (running host-side via the tmux keybind)
+	// are written here; opencode's drag-drop handler stat()s the path and reads
+	// the bytes. The read-only mount ensures the container cannot write to the
+	// host's staging directory. Only mounted when the directory exists — skipped
+	// silently at container spawn time when no paste has occurred yet (consistent
+	// with the conditional-mount pattern used for AWS/MCP-auth/kube config).
+	if _, err := os.Stat(clipboardCacheDir); err == nil {
+		args = append(args, "--volume", clipboardCacheDir+":"+clipboardCacheDir+":ro")
 	}
 
 	// Darwin: bind-mount the extracted Keychain credentials over
