@@ -2588,6 +2588,31 @@ func TestBuildRunArgs_McpAuthNotMountedWhenAbsent(t *testing.T) {
 	}
 }
 
+// ── prepareVolumeDirs tests (AC-1, AC-4) ─────────────────────────────────────
+
+// TestPrepareVolumeDirs_CreatesSessionDir verifies that prepareVolumeDirs creates
+// the per-session opencode state directory and the two cache directories under
+// the given HOME, so that buildRunArgs() remains a pure argument builder.
+func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "my-repo@feat", AllocatedPort: 14000})
+	if err := m.prepareVolumeDirs(); err != nil {
+		t.Fatalf("prepareVolumeDirs: %v", err)
+	}
+
+	wantSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
+	wantOpencode := filepath.Join(fakeHome, ".cache", "opencode")
+	wantBun := filepath.Join(fakeHome, ".cache", "bun")
+
+	for _, dir := range []string{wantSession, wantOpencode, wantBun} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Errorf("expected directory to exist: %s (err: %v)", dir, err)
+		}
+	}
+}
+
 // ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
 
 // TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
@@ -2609,7 +2634,7 @@ func TestBuildRunArgs_AuthJsonOverlayMountedWhenExists(t *testing.T) {
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 
-	wantDst := ":/root/.local/share/opencode/auth.json"
+	wantDst := ":/root/.local/share/opencode/auth.json:ro,Z"
 	found := false
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
@@ -2640,10 +2665,10 @@ func TestBuildRunArgs_AuthJsonOverlaySkippedWhenMissing(t *testing.T) {
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
 	args := m.buildRunArgs()
 
-	wantDst := ":/root/.local/share/opencode/auth.json"
+	wantDstSubstr := ":/root/.local/share/opencode/auth.json"
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
-			if strings.HasSuffix(args[i+1], wantDst) {
+			if strings.Contains(args[i+1], wantDstSubstr) {
 				t.Errorf("auth.json overlay must not be present when auth.json is absent; found %q", args[i+1])
 			}
 		}
