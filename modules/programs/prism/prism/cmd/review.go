@@ -142,11 +142,16 @@ func runReview(cmd *cobra.Command, args []string) error {
 	}
 
 	// Pre-flight: verify that the required opencode agent definitions exist.
-	// Skip in container mode — the check cannot inspect the container filesystem.
-	if !cfg.ContainerMode {
-		if err := review.CheckAgentAvailability(agents); err != nil {
-			return fmt.Errorf("prism review: %w", err)
-		}
+	// By the time we reach here, PRISM_HOST_API is guaranteed to be unset (the
+	// proxy-out branch above returned early if it was set), so this process is
+	// always running on the host regardless of cfg.ContainerMode. The agent
+	// definition files are on the host filesystem and CheckAgentAvailability
+	// can inspect them correctly. cfg.ContainerMode is a Nix-time flag meaning
+	// "this host spawns workers in containers"; it is NOT a runtime signal
+	// meaning "this process is running inside a container" — using it as such
+	// would incorrectly skip this check on Darwin hosts with container_mode=true.
+	if err := review.CheckAgentAvailability(agents); err != nil {
+		return fmt.Errorf("prism review: %w", err)
 	}
 
 	// Build run options.
