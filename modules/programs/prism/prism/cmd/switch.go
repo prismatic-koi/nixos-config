@@ -481,32 +481,44 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		opts.DB = d
 	}
 
-	// Early-exit for the attach-to-live case on the switch/launch path
-	// (ForceFresh=false). If the session already exists in tmux and its DB
-	// row shows it is live (last_seen within 60s), skip all session-setup
-	// side-effects (UpsertStatus, SetInstanceID, port allocation) and go
-	// straight to Attach so the DB row is left intact.
+	// Liveness pre-check for the switch/launch path (ForceFresh=false).
 	//
-	// This check must mirror the liveness logic in session.startupGuardKillOld
-	// so that ensureAndSwitch and session.Create agree on whether a session
-	// is live — keeping them in sync prevents a TOCTOU race where
-	// ensureAndSwitch pre-generates state for a session that Create then
-	// decides not to kill.
+	// When a session already exists in tmux, we check its DB liveness here —
+	// before any DB writes — so we can take the right action without risking
+	// TOCTOU contamination from the UpsertStatus/SetInstanceID writes below
+	// (which reset last_seen to NOW and would make a stale zombie appear live
+	// to startupGuardKillOld inside session.Create).
+	//
+	// Three outcomes:
+	//  1. Session is live (last_seen < 60s) → attach immediately, skip all
+	//     DB mutations so the DB row is left intact. Returns here.
+	//  2. Session is stale/zombie (last_seen ≥ 60s, or no DB row, with DB
+	//     available) → set ForceFresh=true so session.Create kills it
+	//     unconditionally without re-querying the DB. Falls through.
+	//  3. Session does not exist, or no DB available → no change to ForceFresh.
+	//     Falls through to normal create path (or legacy no-op if d==nil).
 	if !opts.ForceFresh && tmux.HasSession(sessionName) {
-		isLive := false
-		if d != nil {
-			if st, stErr := d.CurrentStatus(sessionName); stErr == nil && st != nil {
-				isLive = time.Since(st.LastSeen) < 60*time.Second
-			}
-		}
-		if isLive || d == nil {
-			// Live session (or no DB to check) — attach without touching DB state.
+		if d == nil {
+			// No DB — can't determine liveness. Treat as live (legacy no-op):
+			// attach without touching anything.
 			if opts.Headless {
 				return nil
 			}
 			return session.Attach(sessionName)
 		}
-		// Stale or zombie session — fall through to kill+recreate below.
+		st, _ := d.CurrentStatus(sessionName)
+		isLive := st != nil && time.Since(st.LastSeen) < 60*time.Second
+		if isLive {
+			// Live session — attach without touching DB state.
+			if opts.Headless {
+				return nil
+			}
+			return session.Attach(sessionName)
+		}
+		// Stale or zombie (no DB row, or last_seen ≥ 60s). Upgrade to
+		// ForceFresh=true so session.Create kills unconditionally without a
+		// second DB query that would see the freshly-written UpsertStatus row.
+		opts.ForceFresh = true
 	}
 
 	// Pre-generate a UUID instance_id and write it to agent_status before
