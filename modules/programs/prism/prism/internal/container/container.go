@@ -752,6 +752,18 @@ func (m *Manager) prepareVolumeDirs() error {
 		errs = append(errs, err.Error())
 	}
 
+	// Clipboard staging directory: pre-create so that the bind-mount in
+	// buildRunArgs() is always active, even on the first paste. Without this,
+	// a first-ever paste on a fresh system would write the file host-side but
+	// the container would not see it (the bind-mount only fires when the dir
+	// exists at container spawn time). Creating it eagerly here ensures the
+	// directory always exists before buildRunArgs() runs its os.Stat check.
+	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create clipboard staging dir %q: %v", clipboardCacheDir, err)
+		errs = append(errs, err.Error())
+	}
+
 	if len(errs) > 1 {
 		return fmt.Errorf("%d directories could not be created", len(errs))
 	}

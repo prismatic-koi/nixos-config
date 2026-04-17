@@ -2591,8 +2591,9 @@ func TestBuildRunArgs_McpAuthNotMountedWhenAbsent(t *testing.T) {
 // ── prepareVolumeDirs tests (AC-1, AC-4) ─────────────────────────────────────
 
 // TestPrepareVolumeDirs_CreatesSessionDir verifies that prepareVolumeDirs creates
-// the per-session opencode state directory and the two cache directories under
-// the given HOME, so that buildRunArgs() remains a pure argument builder.
+// the per-session opencode state directory, cache directories, and the clipboard
+// staging directory under the given HOME, so that buildRunArgs() remains a pure
+// argument builder.
 func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -2605,8 +2606,11 @@ func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	wantSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
 	wantOpencode := filepath.Join(fakeHome, ".cache", "opencode")
 	wantBun := filepath.Join(fakeHome, ".cache", "bun")
+	// Clipboard staging dir is pre-created so that the bind-mount in buildRunArgs()
+	// is always active, even on the first ever paste operation.
+	wantClipboard := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
 
-	for _, dir := range []string{wantSession, wantOpencode, wantBun} {
+	for _, dir := range []string{wantSession, wantOpencode, wantBun, wantClipboard} {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			t.Errorf("expected directory to exist: %s (err: %v)", dir, err)
 		}
