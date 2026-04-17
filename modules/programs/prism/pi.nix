@@ -118,9 +118,17 @@
         ];
 
         programs.zsh.shellAliases = {
-          pi = "${envPrefix} pi";
+          pi = "PI_OFFLINE=1 ${envPrefix} pi";
         };
 
+        home.file.".pi/agent/settings.json".text = builtins.toJSON {
+          steeringMode = "one-at-a-time";
+          transport = "sse";
+          theme = "dark";
+          treeFilterMode = "default";
+          quietStartup = true;
+          enableInstallTelemetry = false;
+        };
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
         home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
         # Custom theme derived from config.theme, deployed so pi picks it up
