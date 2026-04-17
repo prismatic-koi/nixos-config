@@ -1030,11 +1030,7 @@ func runStatsDoomLoops(sessionFilter string, days int) error {
 	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
 
 	for _, e := range events {
-		var p struct {
-			Tool    string `json:"tool"`
-			Pattern string `json:"pattern"`
-			Count   int    `json:"count"`
-		}
+		var p payload.DoomLoopDetected
 		_ = json.Unmarshal([]byte(e.Payload), &p)
 
 		sessionStr := e.SessionName

@@ -527,7 +527,8 @@ the plugin; this command only writes the event.`,
 			worktree = s.Worktree
 		}
 
-		payload := fmt.Sprintf(`{"tool":%q,"pattern":%q,"count":%d}`, tool, pattern, count)
+		now := time.Now()
+		payload := fmt.Sprintf(`{"tool":%q,"pattern":%q,"count":%d,"timestampMs":%d}`, tool, pattern, count, now.UnixMilli())
 		e := db.Event{
 			ID:          uuid.New().String(),
 			SessionName: session,
@@ -535,11 +536,12 @@ the plugin; this command only writes the event.`,
 			Worktree:    worktree,
 			Type:        "doom_loop_detected",
 			Payload:     payload,
-			CreatedAt:   time.Now(),
+			CreatedAt:   now,
 		}
 		if err := d.WriteEvent(e); err != nil {
 			return fmt.Errorf("event doom-loop-detected: write event: %w", err)
 		}
+		touchDashboardSentinel()
 		return nil
 	},
 }

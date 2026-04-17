@@ -29,13 +29,16 @@ import type { Plugin } from "@opencode-ai/plugin";
 const DOOM_LOOP_THRESHOLD = 5;
 
 // excludedTools are never subject to doom-loop detection.
-const EXCLUDED_TOOLS = new Set(["read", "grep", "glob"]);
+// read/grep/glob: legitimate exploration revisits the same paths often.
+// todowrite: task-list management is a housekeeping pattern, not a loop.
+const EXCLUDED_TOOLS = new Set(["read", "grep", "glob", "todowrite"]);
 
 /**
  * Compute a normalised similarity key for a tool call.
  * Returns null for excluded tools (no detection).
+ * Exported for unit testing.
  */
-function similarityKey(tool: string, args: any): string | null {
+export function similarityKey(tool: string, args: any): string | null {
   if (EXCLUDED_TOOLS.has(tool)) {
     return null;
   }

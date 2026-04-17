@@ -218,7 +218,7 @@ func TestEventDoomLoopDetected_PayloadContainsFields(t *testing.T) {
 	}
 
 	raw := events[0].Payload
-	for _, field := range []string{`"tool"`, `"pattern"`, `"count"`} {
+	for _, field := range []string{`"tool"`, `"pattern"`, `"count"`, `"timestampMs"`} {
 		if !strings.Contains(raw, field) {
 			t.Errorf("payload missing field %s\ngot: %s", field, raw)
 		}

@@ -15,7 +15,7 @@ import (
 // writeDoomLoopEvent writes a doom_loop_detected event to the given DB.
 func writeDoomLoopEvent(t *testing.T, d *db.DB, session, tool, pattern string, count int, ts time.Time) {
 	t.Helper()
-	payload := fmt.Sprintf(`{"tool":%q,"pattern":%q,"count":%d}`, tool, pattern, count)
+	payload := fmt.Sprintf(`{"tool":%q,"pattern":%q,"count":%d,"timestampMs":%d}`, tool, pattern, count, ts.UnixMilli())
 	e := db.Event{
 		ID:          uuid.New().String(),
 		SessionName: session,

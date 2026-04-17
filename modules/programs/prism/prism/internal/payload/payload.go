@@ -165,11 +165,14 @@ type SubagentEnd struct {
 //
 // Tool is the tool name that triggered detection (e.g. "bash").
 // Pattern is the normalised argument pattern that matched (e.g. "go test ./...").
-// Count is the number of consecutive matching calls when detection fired (always 5).
+// Count is the number of consecutive matching calls when detection fired (threshold is 5).
+// TimestampMs is the Unix millisecond timestamp when detection fired, included
+// in the payload for consumers that need it without a DB join.
 type DoomLoopDetected struct {
-	Tool    string `json:"tool"`
-	Pattern string `json:"pattern"`
-	Count   int    `json:"count"`
+	Tool        string `json:"tool"`
+	Pattern     string `json:"pattern"`
+	Count       int    `json:"count"`
+	TimestampMs int64  `json:"timestampMs"`
 }
 
 // Audit is the payload for audit events, written when a high-impact bash
