@@ -3,6 +3,7 @@ package review_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -480,7 +481,212 @@ func TestPerAgentSessionNaming(t *testing.T) {
 	}
 }
 
+// ── AgentsByName (enhanced) ───────────────────────────────────────────────────
+
+// TestAgentsByName_AllFiveEnhancedNames verifies that passing all 5 enhanced
+// agent names to AgentsByName returns all 5 agents in input order.
+func TestAgentsByName_AllFiveEnhancedNames(t *testing.T) {
+	agents := review.EnhancedAgents()
+	names := []string{
+		"review-goal",
+		"review-code",
+		"review-security",
+		"review-qa",
+		"review-context",
+	}
+	result, err := review.AgentsByName(agents, names)
+	if err != nil {
+		t.Fatalf("AgentsByName with all 5 enhanced names: unexpected error: %v", err)
+	}
+	if len(result) != 5 {
+		t.Fatalf("AgentsByName with all 5 enhanced names: got %d agents, want 5", len(result))
+	}
+	for i, name := range names {
+		if result[i].Name != name {
+			t.Errorf("result[%d].Name = %q, want %q", i, result[i].Name, name)
+		}
+	}
+}
+
+// TestAgentsByName_PreservesOrder verifies that AgentsByName returns agents in
+// the order the names were requested, not the order they appear in the source
+// slice. This is the AC: output lines appear in --only input order.
+func TestAgentsByName_PreservesOrder(t *testing.T) {
+	agents := review.EnhancedAgents()
+	// Request in reverse order.
+	names := []string{"review-context", "review-qa", "review-code"}
+	result, err := review.AgentsByName(agents, names)
+	if err != nil {
+		t.Fatalf("AgentsByName: unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("AgentsByName: got %d agents, want 3", len(result))
+	}
+	if result[0].Name != "review-context" {
+		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "review-context")
+	}
+	if result[1].Name != "review-qa" {
+		t.Errorf("result[1].Name = %q, want %q", result[1].Name, "review-qa")
+	}
+	if result[2].Name != "review-code" {
+		t.Errorf("result[2].Name = %q, want %q", result[2].Name, "review-code")
+	}
+}
+
+// ── FormatResults (multi-agent) ───────────────────────────────────────────────
+
+// TestFormatResults_TwoAgentSubset verifies that FormatResults with a 2-agent
+// result set produces exactly 2 output lines — one per agent, in order.
+// No skipped markers, no lines for agents that were not requested.
+func TestFormatResults_TwoAgentSubset(t *testing.T) {
+	results := []review.AgentResult{
+		{Agent: review.Agent{Name: "review-code"}, Passed: true, Output: "LGTM"},
+		{Agent: review.Agent{Name: "review-qa"}, Passed: true, Output: "All tests pass"},
+	}
+	output, allPassed := review.FormatResults(results, "42")
+	if !allPassed {
+		t.Errorf("allPassed = false, want true")
+	}
+	// Count lines that are non-empty result lines (start with ✓ or ✗).
+	resultLines := countResultLines(output)
+	if resultLines != 2 {
+		t.Errorf("FormatResults with 2-agent result: got %d result lines, want 2\noutput:\n%s", resultLines, output)
+	}
+	// review-code line must precede review-qa line.
+	codeIdx := findLineIndex(output, "review-code")
+	qaIdx := findLineIndex(output, "review-qa")
+	if codeIdx < 0 {
+		t.Errorf("output does not contain 'review-code': %q", output)
+	}
+	if qaIdx < 0 {
+		t.Errorf("output does not contain 'review-qa': %q", output)
+	}
+	if codeIdx >= 0 && qaIdx >= 0 && codeIdx >= qaIdx {
+		t.Errorf("review-code line (index %d) should precede review-qa line (index %d)", codeIdx, qaIdx)
+	}
+	// Must not contain 'skipped'.
+	if findSubstring(output, "skipped") {
+		t.Errorf("output contains 'skipped', but no agents should be skipped: %q", output)
+	}
+}
+
+// TestFormatResults_RetryHintNamesOnlyFailedAgents verifies that when some
+// agents pass and some fail, the retry hint in FormatResults output names only
+// the agents that failed — not the ones that passed.
+//
+// AC: "the retry hint in FormatResults output names only the failed agents"
+// Example: if review-qa fails and review-code passes, hint = "prism review <pr> --only review-qa"
+func TestFormatResults_RetryHintNamesOnlyFailedAgents(t *testing.T) {
+	results := []review.AgentResult{
+		{Agent: review.Agent{Name: "review-code"}, Passed: true, Output: "LGTM"},
+		{Agent: review.Agent{Name: "review-qa"}, Passed: false, Output: "Please fix the test coverage.", IsError: false},
+	}
+	output, allPassed := review.FormatResults(results, "99")
+	if allPassed {
+		t.Errorf("allPassed = true, want false")
+	}
+	// Retry hint must name only review-qa (the failing agent).
+	if !findSubstring(output, "--only review-qa") {
+		t.Errorf("retry hint should contain '--only review-qa', got: %q", output)
+	}
+	// Retry hint must NOT name review-code (which passed).
+	if findSubstring(output, "review-code") && findSubstring(output, "--only") {
+		// Check more specifically that review-code appears in the --only part.
+		// Look for the retry line itself.
+		for _, line := range strings.Split(output, "\n") {
+			if findSubstring(line, "--only") && findSubstring(line, "review-code") {
+				t.Errorf("retry hint should not include review-code (it passed), got: %q", line)
+			}
+		}
+	}
+}
+
+// TestFormatResults_RetryHintMultipleFailed verifies that when multiple agents
+// fail, the retry hint names all of them (comma-separated).
+func TestFormatResults_RetryHintMultipleFailed(t *testing.T) {
+	results := []review.AgentResult{
+		{Agent: review.Agent{Name: "review-goal"}, Passed: false, Output: "Please fix goal issues.", IsError: false},
+		{Agent: review.Agent{Name: "review-code"}, Passed: true, Output: "LGTM"},
+		{Agent: review.Agent{Name: "review-security"}, Passed: false, Output: "vulnerability found", IsError: false},
+		{Agent: review.Agent{Name: "review-qa"}, Passed: true, Output: "All tests pass"},
+		{Agent: review.Agent{Name: "review-context"}, Passed: true, Output: "Context OK"},
+	}
+	output, allPassed := review.FormatResults(results, "55")
+	if allPassed {
+		t.Errorf("allPassed = true, want false")
+	}
+	// Both failing agents must appear in the retry hint.
+	if !findSubstring(output, "review-goal") || !findSubstring(output, "review-security") {
+		t.Errorf("retry hint should name both failing agents, got: %q", output)
+	}
+	// Passing agents must not appear in the --only part of the retry hint.
+	for _, line := range strings.Split(output, "\n") {
+		if findSubstring(line, "--only") {
+			if findSubstring(line, "review-code") || findSubstring(line, "review-qa") || findSubstring(line, "review-context") {
+				t.Errorf("retry hint should not include passing agents, got: %q", line)
+			}
+		}
+	}
+}
+
+// TestFormatResults_ExactlyNResultLines verifies that FormatResults produces
+// exactly N result lines for an N-agent result set (no extras, no blanks in
+// the result area that could be mistaken for agent lines).
+func TestFormatResults_ExactlyNResultLines(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		n      int
+		agents []string
+	}{
+		{"1-agent", 1, []string{"review-code"}},
+		{"2-agent", 2, []string{"review-code", "review-qa"}},
+		{"5-agent", 5, []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var results []review.AgentResult
+			for _, name := range tc.agents {
+				results = append(results, review.AgentResult{
+					Agent:  review.Agent{Name: name},
+					Passed: true,
+					Output: "LGTM",
+				})
+			}
+			output, allPassed := review.FormatResults(results, "1")
+			if !allPassed {
+				t.Errorf("allPassed = false, want true")
+			}
+			got := countResultLines(output)
+			if got != tc.n {
+				t.Errorf("FormatResults with %d agents: got %d result lines, want %d\noutput:\n%s",
+					tc.n, got, tc.n, output)
+			}
+		})
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// countResultLines counts lines in output that start with ✓ or ✗ (result lines).
+func countResultLines(output string) int {
+	count := 0
+	for _, line := range strings.Split(output, "\n") {
+		if len(line) > 0 && ([]rune(line)[0] == '✓' || []rune(line)[0] == '✗') {
+			count++
+		}
+	}
+	return count
+}
+
+// findLineIndex returns the index (in lines) of the first line containing sub,
+// or -1 if not found.
+func findLineIndex(output, sub string) int {
+	for i, line := range strings.Split(output, "\n") {
+		if findSubstring(line, sub) {
+			return i
+		}
+	}
+	return -1
+}
 
 func containsAny(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && findSubstring(s, substr))
