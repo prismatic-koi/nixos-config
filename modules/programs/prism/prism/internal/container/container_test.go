@@ -198,8 +198,9 @@ func TestBuildRunArgs_WorktreeMountedAtWorkspace(t *testing.T) {
 }
 
 func TestBuildRunArgs_OpencodeStateMountedAtContainerPath(t *testing.T) {
-	// AC-3: opencode state mounted read-write into /root/.local/share/opencode
-	// with :Z SELinux label.
+	// AC-2: opencode state is per-session, mounted read-write into
+	// /root/.local/share/opencode with :Z SELinux label.
+	// AC-7: source path must contain prism-sessions/<container-name>/.
 	m := New(Config{
 		SessionName:   "my-repo@feat",
 		AllocatedPort: 14000,
@@ -210,14 +211,19 @@ func TestBuildRunArgs_OpencodeStateMountedAtContainerPath(t *testing.T) {
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
 			v := args[i+1]
-			if strings.Contains(v, ":/root/.local/share/opencode") {
+			if strings.Contains(v, ":/root/.local/share/opencode:") {
 				found = true
 				if !strings.HasSuffix(v, ":Z") {
-					t.Errorf("opencode state mount %q should have :Z SELinux label (AC-3)", v)
+					t.Errorf("opencode state mount %q should have :Z SELinux label (AC-2)", v)
 				}
 				// Must be read-write (no :ro).
 				if strings.Contains(v, ":ro") {
-					t.Errorf("opencode state mount %q should be read-write, not :ro (AC-3)", v)
+					t.Errorf("opencode state mount %q should be read-write, not :ro (AC-2)", v)
+				}
+				// Source path must contain prism-sessions/<container-name> (AC-7).
+				wantSubpath := "prism-sessions/" + m.Name()
+				if !strings.Contains(v, wantSubpath) {
+					t.Errorf("opencode state mount source %q should contain %q (AC-7)", v, wantSubpath)
 				}
 				break
 			}
@@ -2441,6 +2447,68 @@ func TestBuildRunArgs_McpAuthNotMountedWhenAbsent(t *testing.T) {
 		if arg == "--volume" && i+1 < len(args) {
 			if strings.Contains(args[i+1], "/root/.mcp-auth") {
 				t.Errorf("mcp-auth mount must not be present when ~/.mcp-auth is absent; found %q", args[i+1])
+			}
+		}
+	}
+}
+
+// ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
+
+// TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
+// ~/.local/share/opencode/auth.json exists on the host, a --volume arg is
+// added overlaying it at /root/.local/share/opencode/auth.json inside the
+// container so OAuth tokens are shared across per-session state directories.
+func TestBuildRunArgs_AuthJsonOverlayMountedWhenExists(t *testing.T) {
+	fakeHome := t.TempDir()
+	opencodeDir := filepath.Join(fakeHome, ".local", "share", "opencode")
+	if err := os.MkdirAll(opencodeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll opencode dir: %v", err)
+	}
+	authJSON := filepath.Join(opencodeDir, "auth.json")
+	if err := os.WriteFile(authJSON, []byte(`{"token":"stub"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile auth.json: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.local/share/opencode/auth.json"
+	found := false
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasSuffix(v, wantDst) {
+				found = true
+				// Source must be the host auth.json path.
+				if !strings.HasPrefix(v, authJSON+":") {
+					t.Errorf("auth.json overlay source %q should be %q", v, authJSON)
+				}
+				break
+			}
+		}
+	}
+	if !found {
+		t.Errorf("auth.json overlay --volume not found in args; args: %v", args)
+	}
+}
+
+// TestBuildRunArgs_AuthJsonOverlaySkippedWhenMissing verifies that when
+// ~/.local/share/opencode/auth.json does not exist on the host, no auth.json
+// overlay --volume arg is added and the container starts successfully without it.
+func TestBuildRunArgs_AuthJsonOverlaySkippedWhenMissing(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Intentionally do NOT create auth.json — not even the parent directory.
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000})
+	args := m.buildRunArgs()
+
+	wantDst := ":/root/.local/share/opencode/auth.json"
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			if strings.HasSuffix(args[i+1], wantDst) {
+				t.Errorf("auth.json overlay must not be present when auth.json is absent; found %q", args[i+1])
 			}
 		}
 	}

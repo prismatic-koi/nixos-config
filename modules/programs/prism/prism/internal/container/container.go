@@ -709,8 +709,23 @@ func (m *Manager) buildRunArgs() []string {
 	} else {
 		worktreeMount = cfg.Worktree + ":/workspace:Z"
 	}
-	opencodeStateMount := filepath.Join(home, ".local", "share", "opencode") +
-		":/root/.local/share/opencode:Z"
+	// Per-session opencode state directory: isolates each container's SQLite DB,
+	// logs, snapshots, and storage so concurrent sessions cannot corrupt each
+	// other's state (fixes the virtiofs WAL-mode locking issue on Darwin).
+	// The container name is stable and already used for temp file naming, so it
+	// gives us a unique, predictable key for the directory.
+	opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
+	if err := os.MkdirAll(opencodeSessionDir, 0o755); err != nil {
+		log.Printf("container: failed to create per-session opencode state dir %q: %v — podman will surface the error if the dir is still absent", opencodeSessionDir, err)
+	}
+	opencodeStateMount := opencodeSessionDir + ":/root/.local/share/opencode:Z"
+
+	// auth.json overlay: share the host's OAuth token file across all sessions
+	// by bind-mounting it over the per-session dir's auth.json. Only added when
+	// the file exists on the host — skipped silently when absent (e.g. after the
+	// parent dir was deleted for DB recovery).
+	opencodeAuthJSON := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+
 	// opencodeConfigDir is the host's opencode config directory, mounted
 	// item-by-item so that agents/ files, skills/, etc. are available inside
 	// the container. opencode.json is NOT mounted from the host — the container
@@ -719,12 +734,18 @@ func (m *Manager) buildRunArgs() []string {
 
 	// opencode cache — mount the whole directory so plugins, models.json,
 	// package.json, and bun.lock are all available without network access.
-	opencodeCacheMount := filepath.Join(home, ".cache", "opencode") +
-		":/root/.cache/opencode:ro"
+	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
+	if err := os.MkdirAll(opencodeCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create opencode cache dir %q: %v — podman will surface the error if the dir is still absent", opencodeCacheDir, err)
+	}
+	opencodeCacheMount := opencodeCacheDir + ":/root/.cache/opencode:ro"
 	// bun transpiler cache — required for bun to load plugins without
 	// re-transpiling on every container start.
-	bunCacheMount := filepath.Join(home, ".cache", "bun") +
-		":/root/.cache/bun:ro"
+	bunCacheDir := filepath.Join(home, ".cache", "bun")
+	if err := os.MkdirAll(bunCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create bun cache dir %q: %v — podman will surface the error if the dir is still absent", bunCacheDir, err)
+	}
+	bunCacheMount := bunCacheDir + ":/root/.cache/bun:ro"
 	// Claude credentials — required for Anthropic provider auth. Mounted
 	// read-write so the opencode-claude-auth plugin can write back refreshed
 	// OAuth tokens to .credentials.json inside the container.
@@ -799,7 +820,7 @@ func (m *Manager) buildRunArgs() []string {
 
 		// Worktree read-write.
 		"--volume", worktreeMount,
-		// opencode state — shared with host, read-write.
+		// opencode state — per-session isolated dir, read-write.
 		"--volume", opencodeStateMount,
 		// opencode cache — plugins, models, bun.lock from host, read-only.
 		"--volume", opencodeCacheMount,
@@ -814,6 +835,15 @@ func (m *Manager) buildRunArgs() []string {
 		// Nix eval cache — flake input tarballs pre-unpacked from the host.
 		"--volume", nixCacheMount,
 	)
+
+	// auth.json overlay: bind-mount the host's opencode auth.json over the
+	// per-session dir so OAuth tokens are shared across sessions without sharing
+	// the SQLite DB. Only mounted when the file exists — skipped silently when
+	// absent (e.g. after the parent dir was deleted for DB recovery). Uses the
+	// same bind-mount-inside-mounted-dir pattern as the gitdir overlay.
+	if _, err := os.Stat(opencodeAuthJSON); err == nil {
+		args = append(args, "--volume", opencodeAuthJSON+":/root/.local/share/opencode/auth.json")
+	}
 
 	// MCP auth: bind-mount ~/.mcp-auth into the container at /root/.mcp-auth
 	// so mcp-remote OAuth tokens obtained on the host are available inside the
