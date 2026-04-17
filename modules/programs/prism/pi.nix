@@ -42,6 +42,27 @@
         cp ${awsSkillFile} $out/aws/SKILL.md
         cp -r ${./opencode/skills/acceptance-criteria}/* $out/acceptance-criteria/
       '';
+      # Pi agent settings.json content, defined once here so a future container
+      # role can reference the same value without duplication.
+      # Follow-up container support will add containerWorkerSettingsJson /
+      # containerCoordinatorSettingsJson options (analogous to the opencode.nix
+      # container config blobs at lines 29-73) and reference piSettings there.
+      piSettings = {
+        steeringMode = "one-at-a-time";
+        transport = "sse";
+        theme = "dark";
+        treeFilterMode = "default";
+        quietStartup = true;
+        enableInstallTelemetry = false;
+
+        # Fork fallback: if leohenon/pi-anthropic-oauth becomes unmaintained,
+        # fork to prismatic-koi/pi-anthropic-oauth, publish to npm (or vendor
+        # into the nix store), and update this packages entry. The three most
+        # likely break sites are CLIENT_ID, TOKEN_URL, and AUTHORIZE_URL in
+        # the extension's src/auth.ts.
+        packages = [ "npm:pi-anthropic-oauth@latest" ];
+      };
+
       piTheme =
         with config.theme;
         builtins.toJSON {
@@ -121,14 +142,7 @@
           pi = "PI_OFFLINE=1 ${envPrefix} pi";
         };
 
-        home.file.".pi/agent/settings.json".text = builtins.toJSON {
-          steeringMode = "one-at-a-time";
-          transport = "sse";
-          theme = "dark";
-          treeFilterMode = "default";
-          quietStartup = true;
-          enableInstallTelemetry = false;
-        };
+        home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
         home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
         # Custom theme derived from config.theme, deployed so pi picks it up
