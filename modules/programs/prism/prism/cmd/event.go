@@ -4,12 +4,13 @@ package cmd
 //
 // Sub-subcommands:
 //
-//	state-change       --session <name> --state <state> --worktree <path>
-//	pane-died          --session <name> --window <name>
-//	tmux-session-start --session <name> --worktree <path>
-//	tmux-session-end   --session <name>
-//	compaction         --session <name>
-//	error              --session <name> --message <text>
+//	state-change          --session <name> --state <state> --worktree <path>
+//	pane-died             --session <name> --window <name>
+//	tmux-session-start    --session <name> --worktree <path>
+//	tmux-session-end      --session <name>
+//	compaction            --session <name>
+//	error                 --session <name> --message <text>
+//	doom-loop-detected    --session <name> --tool <tool> --pattern <pattern> --count <n>
 
 import (
 	"fmt"
@@ -491,6 +492,60 @@ var eventErrorCmd = &cobra.Command{
 	},
 }
 
+// --- doom-loop-detected ---
+
+var eventDoomLoopDetectedCmd = &cobra.Command{
+	Use:   "doom-loop-detected",
+	Short: "Write a doom_loop_detected event to prism.db",
+	Long: `Write a doom_loop_detected event to prism.db.
+
+Called by the prism-hooks plugin when it detects an agent repeating the same
+tool call with near-identical arguments N consecutive times in the same session.
+This is a hook-side log command — the detection and suppression logic lives in
+the plugin; this command only writes the event.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		session, _ := cmd.Flags().GetString("session")
+		tool, _ := cmd.Flags().GetString("tool")
+		pattern, _ := cmd.Flags().GetString("pattern")
+		count, _ := cmd.Flags().GetInt("count")
+
+		d, err := openDB()
+		if err != nil {
+			return fmt.Errorf("event doom-loop-detected: %w", err)
+		}
+		defer d.Close()
+
+		s, err := d.CurrentStatus(session)
+		if err != nil {
+			return fmt.Errorf("event doom-loop-detected: current status: %w", err)
+		}
+
+		repo := ""
+		worktree := ""
+		if s != nil {
+			repo = s.Repo
+			worktree = s.Worktree
+		}
+
+		now := time.Now()
+		payload := fmt.Sprintf(`{"tool":%q,"pattern":%q,"count":%d,"timestampMs":%d}`, tool, pattern, count, now.UnixMilli())
+		e := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: session,
+			Repo:        repo,
+			Worktree:    worktree,
+			Type:        "doom_loop_detected",
+			Payload:     payload,
+			CreatedAt:   now,
+		}
+		if err := d.WriteEvent(e); err != nil {
+			return fmt.Errorf("event doom-loop-detected: write event: %w", err)
+		}
+		touchDashboardSentinel()
+		return nil
+	},
+}
+
 func init() {
 	// state-change flags
 	eventStateChangeCmd.Flags().String("session", "", "tmux session name")
@@ -527,12 +582,22 @@ func init() {
 	_ = eventErrorCmd.MarkFlagRequired("session")
 	_ = eventErrorCmd.MarkFlagRequired("message")
 
+	// doom-loop-detected flags
+	eventDoomLoopDetectedCmd.Flags().String("session", "", "tmux session name")
+	eventDoomLoopDetectedCmd.Flags().String("tool", "", "tool name that triggered detection")
+	eventDoomLoopDetectedCmd.Flags().String("pattern", "", "normalised argument pattern that matched")
+	eventDoomLoopDetectedCmd.Flags().Int("count", 5, "number of consecutive matching calls (default 5)")
+	_ = eventDoomLoopDetectedCmd.MarkFlagRequired("session")
+	_ = eventDoomLoopDetectedCmd.MarkFlagRequired("tool")
+	_ = eventDoomLoopDetectedCmd.MarkFlagRequired("pattern")
+
 	eventCmd.AddCommand(eventStateChangeCmd)
 	eventCmd.AddCommand(eventPaneDiedCmd)
 	eventCmd.AddCommand(eventTmuxSessionStartCmd)
 	eventCmd.AddCommand(eventTmuxSessionEndCmd)
 	eventCmd.AddCommand(eventCompactionCmd)
 	eventCmd.AddCommand(eventErrorCmd)
+	eventCmd.AddCommand(eventDoomLoopDetectedCmd)
 
 	rootCmd.AddCommand(eventCmd)
 }

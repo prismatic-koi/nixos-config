@@ -34,9 +34,8 @@
       # the persisted ~/.pi/agent/skills/ directory that would dangle after
       # nix-collect-garbage removes the store paths they pointed to.
       skillsDir = pkgs.runCommand "pi-skills" { } ''
-        mkdir -p $out/prism $out/prism-db $out/aws
+        mkdir -p $out/prism $out/aws
         cp -r ${./opencode/skills/prism}/* $out/prism/
-        cp -r ${./opencode/skills/prism-db}/* $out/prism-db/
         ${lib.optionalString pkgs.stdenv.isLinux ''
           cp -r ${./opencode/skills/playwright-cli} $out/playwright-cli
         ''}
