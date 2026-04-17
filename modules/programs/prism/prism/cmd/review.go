@@ -2,17 +2,19 @@ package cmd
 
 // prism review <pr-number> — platform-native review primitive.
 //
-// Spawns review agent sessions in a dedicated tmux session named
-// <parent-session>~review-N (N = 1-indexed round number), polls the prism DB
-// until all agents reach the "finished" state, reads their last msg_assistant
-// event, and returns aggregated findings to stdout.
+// Spawns review agent sessions as independent top-level tmux sessions named
+// <parent-session>~review-N-<agent> (N = 1-indexed round number), polls the
+// prism DB until all agents reach the "finished" state, reads their last
+// msg_assistant event, and returns aggregated findings to stdout.
+//
+// Sessions persist until prism cleanup is invoked on the parent — this allows
+// re-reading review-security's findings tomorrow without re-running.
 //
 // Flags:
 //
 //	--harness <name>    Runtime harness (default: "opencode")
-//	--keep              Keep the review session open after completion
 //	--timeout <dur>     Per-agent timeout (default: 10m)
-//	--only <csv>        Run only the named agents (e.g. review)
+//	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
 
 import (
 	"context"
@@ -32,11 +34,12 @@ import (
 var reviewCmd = &cobra.Command{
 	Use:   "review <pr-number>",
 	Short: "Run review agents against a PR and return aggregated findings",
-	Long: `Spawn review agent sessions in a dedicated tmux session and poll the
-prism DB until all agents complete. Returns aggregated findings to stdout.
+	Long: `Spawn review agent sessions as independent top-level tmux sessions and poll
+the prism DB until all agents complete. Returns aggregated findings to stdout.
 
-The review session is named <parent-session>~review-N where N is incremented
-on each invocation. Previous ~review-* sessions are killed before starting.
+Each agent gets its own session named <parent-session>~review-N-<agent> where N
+is incremented on each invocation. Previous rounds' sessions persist until
+prism cleanup is invoked on the parent.
 
 Exit code 0 = all agents passed. Non-zero = one or more agents failed or errored.`,
 	Args: cobra.ExactArgs(1),
@@ -45,9 +48,8 @@ Exit code 0 = all agents passed. Non-zero = one or more agents failed or errored
 
 func init() {
 	reviewCmd.Flags().String("harness", "opencode", "Runtime harness to use for review agents")
-	reviewCmd.Flags().Bool("keep", false, "Keep the review session open after completion (for debugging)")
 	reviewCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait per agent")
-	reviewCmd.Flags().String("only", "", "Comma-separated list of agent names to run (e.g. review)")
+	reviewCmd.Flags().String("only", "", "Comma-separated list of agent names to run (e.g. review-goal,review-code)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -55,7 +57,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 	prNumber := args[0]
 
 	harnessFlag, _ := cmd.Flags().GetString("harness")
-	keepFlag, _ := cmd.Flags().GetBool("keep")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 	onlyFlag, _ := cmd.Flags().GetString("only")
 
@@ -159,7 +160,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Agents:         agents,
 		Harness:        harnessFlag,
 		Timeout:        timeoutFlag,
-		Keep:           keepFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
 		ContainerMode:  cfg.ContainerMode,
 	}
@@ -177,21 +177,29 @@ func runReview(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Install SIGTERM/SIGINT handler. Kill all ~review-* sessions for the parent
-	// and cancel the context. KillReviewSessionsForParent is idempotent and
-	// covers all rounds without needing the specific session name, avoiding
-	// any data race on a shared variable.
+	// currentRoundSessions holds the session names spawned in this invocation.
+	// It is written once by Run's onSessionsCreated callback (before polling
+	// begins) and read by the SIGINT handler. Protected by the assumption that
+	// the callback fires before the goroutine needs to read it (the goroutine
+	// only acts on a signal, which arrives after spawning is complete).
+	var currentRoundSessions []string
+
+	// Install SIGTERM/SIGINT handler. On signal, kill only the current round's
+	// in-progress sessions — previous rounds' persisted sessions remain untouched.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-sigCh
-		review.KillReviewSessionsForParent(parentSession)
+		review.KillCurrentRoundSessions(currentRoundSessions)
 		cancel()
 	}()
 
 	// Run the review.
-	results, runErr := review.Run(ctx, opts, func(sessionName string) {
-		fmt.Fprintf(os.Stderr, "[prism review] review session: %s\n", sessionName)
+	results, runErr := review.Run(ctx, opts, func(sessionNames []string) {
+		currentRoundSessions = sessionNames
+		for _, name := range sessionNames {
+			fmt.Fprintf(os.Stderr, "[prism review] agent session: %s\n", name)
+		}
 	})
 
 	signal.Stop(sigCh)

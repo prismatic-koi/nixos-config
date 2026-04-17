@@ -30,21 +30,107 @@ func TestNextRoundNumber_NoExistingRounds_Returns1(t *testing.T) {
 	}
 }
 
-func TestNextRoundNumber_WithExistingRounds(t *testing.T) {
+// TestNextRoundNumber_WithPerAgentSessions verifies that the new per-agent
+// session shape (~review-N-<agent>) is counted correctly.
+func TestNextRoundNumber_WithPerAgentSessions(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@feature"
 
-	_ = d.UpsertStatus(parent+"~review-1", "nixos-config", "/wt", "finished", nil, nil)
-	_ = d.UpsertStatus(parent+"~review-2", "nixos-config", "/wt", "idle", nil, nil)
-	// Agent sub-session — should NOT count as a round.
-	_ = d.UpsertStatus(parent+"~review-1~review", "nixos-config", "/wt", "idle", nil, nil)
+	// Seed round 1 per-agent sessions.
+	_ = d.UpsertStatus(parent+"~review-1-review-goal", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-code", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-security", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-qa", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-context", "nixos-config", "/wt", "finished", nil, nil)
 
 	n := review.NextRoundNumber(d, parent)
-	if n != 3 {
-		t.Errorf("NextRoundNumber = %d, want 3", n)
+	if n != 2 {
+		t.Errorf("NextRoundNumber = %d, want 2 (after one full round)", n)
 	}
 }
 
+// TestNextRoundNumber_TwoRoundsOfPerAgentSessions verifies round counting after
+// two full rounds of per-agent sessions.
+func TestNextRoundNumber_TwoRoundsOfPerAgentSessions(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@feature"
+
+	// Round 1 (5 agents).
+	for _, agent := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
+		_ = d.UpsertStatus(parent+"~review-1-"+agent, "nixos-config", "/wt", "finished", nil, nil)
+	}
+	// Round 2 (5 agents).
+	for _, agent := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
+		_ = d.UpsertStatus(parent+"~review-2-"+agent, "nixos-config", "/wt", "finished", nil, nil)
+	}
+
+	n := review.NextRoundNumber(d, parent)
+	if n != 3 {
+		t.Errorf("NextRoundNumber = %d, want 3 (after two full rounds)", n)
+	}
+}
+
+// TestNextRoundNumber_PartialRound verifies that a partial round (e.g. --only
+// with 2 agents) is still counted as a round (the round number includes
+// whichever N was used, regardless of how many agents were spawned).
+func TestNextRoundNumber_PartialRound(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@feature"
+
+	// Only 2 agents from round 1.
+	_ = d.UpsertStatus(parent+"~review-1-review-code", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-qa", "nixos-config", "/wt", "finished", nil, nil)
+
+	n := review.NextRoundNumber(d, parent)
+	if n != 2 {
+		t.Errorf("NextRoundNumber = %d, want 2 (partial round still counts)", n)
+	}
+}
+
+// TestNextRoundNumber_OldShapeSessionsNotCounted verifies that old-shape round
+// sessions (~review-N pure integer suffix) and old-shape agent sub-sessions
+// (~review-N~agent) do NOT count toward the round number. This ensures
+// migration is safe: zombie old-shape rows don't inflate the counter.
+func TestNextRoundNumber_OldShapeSessionsNotCounted(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@feature"
+
+	// Old-shape round sessions (pre-PR-C): pure integer suffix.
+	_ = d.UpsertStatus(parent+"~review-1", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-2", "nixos-config", "/wt", "finished", nil, nil)
+	// Old-shape agent sub-sessions (pre-PR-C): ~review-N~agent.
+	_ = d.UpsertStatus(parent+"~review-1~review", "nixos-config", "/wt", "idle", nil, nil)
+
+	// Despite those rows, NextRoundNumber should return 1 (no new-shape rounds exist).
+	n := review.NextRoundNumber(d, parent)
+	if n != 1 {
+		t.Errorf("NextRoundNumber = %d, want 1 (old-shape rows should not count)", n)
+	}
+}
+
+// TestNextRoundNumber_MixedOldAndNewShape verifies that when both old-shape
+// zombie rows and new-shape per-agent rows exist, only the new-shape rows
+// determine the round counter.
+func TestNextRoundNumber_MixedOldAndNewShape(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@feature"
+
+	// Old-shape zombies.
+	_ = d.UpsertStatus(parent+"~review-1", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1~review", "nixos-config", "/wt", "finished", nil, nil)
+
+	// New-shape round 1 agents.
+	_ = d.UpsertStatus(parent+"~review-1-review-goal", "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.UpsertStatus(parent+"~review-1-review-code", "nixos-config", "/wt", "finished", nil, nil)
+
+	n := review.NextRoundNumber(d, parent)
+	if n != 2 {
+		t.Errorf("NextRoundNumber = %d, want 2 (only new-shape rows count)", n)
+	}
+}
+
+// TestNextRoundNumber_SkipsNonRoundSessions verifies that sessions with
+// suffixes that are not round-numbered are ignored.
 func TestNextRoundNumber_SkipsNonRoundSessions(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@feature"
@@ -55,6 +141,41 @@ func TestNextRoundNumber_SkipsNonRoundSessions(t *testing.T) {
 	n := review.NextRoundNumber(d, parent)
 	if n != 1 {
 		t.Errorf("NextRoundNumber = %d, want 1 (sub-sessions should not count)", n)
+	}
+}
+
+// ── IsPerAgentSession ─────────────────────────────────────────────────────────
+
+func TestIsPerAgentSession_NewShape(t *testing.T) {
+	parent := "nixos-config@feature"
+	newShapeNames := []string{
+		parent + "~review-1-review-goal",
+		parent + "~review-1-review-code",
+		parent + "~review-1-review-security",
+		parent + "~review-1-review-qa",
+		parent + "~review-1-review-context",
+		parent + "~review-2-review-goal",
+	}
+	for _, name := range newShapeNames {
+		if !review.IsPerAgentSession(name, parent) {
+			t.Errorf("IsPerAgentSession(%q) = false, want true", name)
+		}
+	}
+}
+
+func TestIsPerAgentSession_OldShape(t *testing.T) {
+	parent := "nixos-config@feature"
+	oldShapeNames := []string{
+		parent + "~review-1",           // old round session
+		parent + "~review-1~review",    // old agent sub-session
+		parent + "~review-1~review-qa", // old agent sub-session variant
+		"other-session",                // unrelated
+		parent,                         // parent itself
+	}
+	for _, name := range oldShapeNames {
+		if review.IsPerAgentSession(name, parent) {
+			t.Errorf("IsPerAgentSession(%q) = true, want false (old-shape or unrelated)", name)
+		}
 	}
 }
 
@@ -328,6 +449,34 @@ func TestCheckAgentAvailability_EmptyAgentList(t *testing.T) {
 	}
 	if err := review.CheckAgentAvailability([]review.Agent{}); err != nil {
 		t.Errorf("CheckAgentAvailability([]): unexpected error: %v", err)
+	}
+}
+
+// ── Session name construction ─────────────────────────────────────────────────
+
+// TestPerAgentSessionNaming verifies that the session names produced by the
+// round prefix construction match the expected shape.
+func TestPerAgentSessionNaming(t *testing.T) {
+	parent := "nixos-config@feature"
+	roundN := 1
+
+	agents := review.EnhancedAgents()
+	roundPrefix := parent + "~review-1-"
+
+	expectedSessions := []string{
+		parent + "~review-1-review-goal",
+		parent + "~review-1-review-code",
+		parent + "~review-1-review-security",
+		parent + "~review-1-review-qa",
+		parent + "~review-1-review-context",
+	}
+	_ = roundN // used to construct roundPrefix above
+
+	for i, ag := range agents {
+		got := roundPrefix + ag.Name
+		if got != expectedSessions[i] {
+			t.Errorf("agent session[%d]: got %q, want %q", i, got, expectedSessions[i])
+		}
 	}
 }
 

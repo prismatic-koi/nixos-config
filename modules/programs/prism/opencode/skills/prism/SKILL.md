@@ -146,45 +146,69 @@ prism spawn \
 
 ## Running code review with prism review
 
-`prism review <pr-number>` is the preferred way to run code review from a worker session. It spawns review agents in a dedicated, observable tmux session (`<parent>~review-N`) and returns findings to stdout when all agents complete.
+`prism review <pr-number>` is the preferred way to run code review from a worker session. In enhanced mode it spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
 
 ```bash
 # Run review — blocks until all agents finish, returns findings to stdout
 result=$(prism review 268)
 echo "$result"
 
-# Re-run only failed agents
-prism review 268 --only review
-
-# Keep the review session open for debugging (default: session is killed on exit)
-prism review 268 --keep
+# Re-run only specific agents (useful after a first pass with failures)
+prism review 268 --only review-code,review-security
 
 # Custom timeout (default: 10m)
 prism review 268 --timeout 5m
 ```
 
-**Output format:**
+**Output format (enhanced mode with ENHANCED_REVIEW=true):**
 ```
-✓ review              passed
-✗ review              [findings...]
+✓ review-goal         passed
+✓ review-code         passed
+✗ review-security     [findings...]
+✓ review-qa           passed
+✓ review-context      passed
 
-1 agent(s) failed. Retry: prism review 268 --only review
+1 agent(s) failed. Retry: prism review 268 --only review-security
 ```
 
 Exit code 0 = all passed, non-zero = failures.
+
+**Session shape (PR-C, enhanced mode):**
+
+Each review agent runs as its own independent top-level tmux session:
+```
+<parent>~review-<N>-review-goal
+<parent>~review-<N>-review-code
+<parent>~review-<N>-review-security
+<parent>~review-<N>-review-qa
+<parent>~review-<N>-review-context
+```
+- `N` is the round number, incremented on each `prism review` invocation.
+- Sessions **persist** after `prism review` completes — you can re-read findings later without re-running.
+- Sessions are only cleaned up when `prism cleanup` is invoked on the parent.
 
 **Review sessions appear in the dashboard** at depth 2, indented under their parent branch:
 ```
 nixos-config@main                   coordinator
   ├── @feature-branch               worker
-  │   ├── ~review-1                 round 1 (finished)
-  │   └── ~review-2                 round 2 (active)
+  │   ├── ~review-1-review-goal     finished
+  │   ├── ~review-1-review-code     finished
+  │   ├── ~review-1-review-security finished
+  │   ├── ~review-1-review-qa       finished
+  │   ├── ~review-1-review-context  finished
+  │   ├── ~review-2-review-code     active
+  │   └── ~review-2-review-security active
 ```
+
+Each review agent session is individually selectable in the `C-f` picker — jump directly to any reviewer with one keypress.
 
 **Checking in on review progress:**
 ```bash
-# From the coordinator session, inspect all review rounds for a worker
+# From the coordinator session, inspect all review sessions for a worker (grouped by round)
 prism checkin nixos-config@feature-branch~review
+
+# Inspect a specific agent session
+prism checkin nixos-config@feature-branch~review-1-review-security
 
 # Show full per-agent conversation
 prism checkin nixos-config@feature-branch~review --verbose
@@ -195,9 +219,10 @@ prism checkin nixos-config@feature-branch~review --verbose
 | Flag | Description |
 |---|---|
 | `--harness <name>` | Runtime harness (default: `opencode`) |
-| `--keep` | Keep the review session open after completion |
 | `--timeout <dur>` | Per-agent timeout (default: `10m`) |
-| `--only <csv>` | Run only named agents (e.g. `--only review`) |
+| `--only <csv>` | Run only named agents (e.g. `--only review-code,review-security`) |
+
+Note: `--keep` has been retired. Sessions now persist by default until `prism cleanup` on the parent.
 
 ### When to use prism review vs @review
 

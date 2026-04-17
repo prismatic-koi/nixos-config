@@ -1,15 +1,21 @@
 // Package review implements the prism review execution engine.
 //
-// prism review <pr-number> spawns N review agent sessions in a dedicated tmux
-// session named <parent>~review-N (where N is the 1-indexed round number),
-// polls the prism DB until all agents reach the "finished" state, reads their
-// last msg_assistant event, and returns aggregated findings to stdout.
+// prism review <pr-number> spawns N review agent sessions as independent
+// top-level tmux sessions named <parent>~review-<N>-<agent-name> (where N is
+// the 1-indexed round number), polls the prism DB until all agents reach the
+// "finished" state, reads their last msg_assistant event, and returns
+// aggregated findings to stdout.
 //
-// Session architecture:
-//   - One tmux session per review round: <parent-session>~review-N
-//   - One tmux window per review agent within the session
-//   - Each agent gets its own sidecar + container mounting the parent worktree read-only
-//   - No new worktree is created
+// Session architecture (new per-agent model, PR-C):
+//   - Five independent top-level tmux sessions per review round:
+//     <parent>~review-<N>-review-goal
+//     <parent>~review-<N>-review-code
+//     <parent>~review-<N>-review-security
+//     <parent>~review-<N>-review-qa
+//     <parent>~review-<N>-review-context
+//   - Each session has its own port allocation, sidecar, and container.
+//   - Sessions persist until prism cleanup is invoked on the parent.
+//   - No round-level multi-window session is created.
 //
 // The ~ separator in the session name is used by the dashboard for depth-2
 // child detection (review sessions appear indented under their parent branch).
@@ -47,10 +53,21 @@ func KillSessionPrefix(prefix string) {
 	}
 }
 
+// KillSessionsByNames kills the specified tmux sessions by exact name.
+func KillSessionsByNames(names []string) {
+	for _, name := range names {
+		_ = tmux.KillSession(name)
+	}
+}
+
 // NextRoundNumber returns the next round number for the given parent session.
-// It queries the DB for all round sessions (not live tmux sessions) so that
-// the count is accurate even after previous rounds have been cleaned up.
+// It queries the DB for all per-agent sessions (new shape: ~review-<N>-<agent>)
+// so that the count is accurate even after previous rounds have been cleaned up.
 // Returns 1 when no prior rounds exist.
+//
+// Old-shape round sessions (~review-<N> with pure integer suffix) are NOT
+// counted — they belong to the pre-PR-C model and should not affect the counter.
+// Old-shape agent sub-sessions (~review-<N>~<agent>) are also excluded.
 func NextRoundNumber(d *db.DB, parentSession string) int {
 	prefix := parentSession + "~review-"
 	rows, err := d.AllStatusesWithPrefix(prefix)
@@ -59,11 +76,28 @@ func NextRoundNumber(d *db.DB, parentSession string) int {
 	}
 	max := 0
 	for _, row := range rows {
-		// Only count round-level sessions (no further ~ after the round number).
 		suffix := strings.TrimPrefix(row.SessionName, prefix)
-		// suffix should be a pure integer (e.g. "1", "2") for round sessions.
-		// Agent sub-sessions have a suffix like "1~review", which won't parse.
-		if n, err := strconv.Atoi(suffix); err == nil && n > max {
+		// New shape: "N-<agent-name>" (e.g. "1-review-goal", "2-review-code").
+		// Extract the leading integer before the first '-'.
+		dashIdx := strings.Index(suffix, "-")
+		if dashIdx <= 0 {
+			// Pure integer (old round session, e.g. "1") or no dash at all —
+			// skip; these are old-shape rows that we do not count.
+			continue
+		}
+		nStr := suffix[:dashIdx]
+		// Ensure nStr is a pure integer (not something like "1~review" from
+		// old-shape agent sub-sessions that somehow snuck in).
+		n, err := strconv.Atoi(nStr)
+		if err != nil || n <= 0 {
+			continue
+		}
+		// Validate: the agent portion must not contain '~' (old-shape markers).
+		agentPart := suffix[dashIdx+1:]
+		if strings.Contains(agentPart, "~") {
+			continue
+		}
+		if n > max {
 			max = n
 		}
 	}
@@ -72,9 +106,9 @@ func NextRoundNumber(d *db.DB, parentSession string) int {
 
 // Agent describes a single review agent to run.
 type Agent struct {
-	// Name is the agent identifier, e.g. "review".
+	// Name is the agent identifier, e.g. "review-goal".
 	Name string
-	// OpencodeName is the opencode --agent flag value, e.g. "review".
+	// OpencodeName is the opencode --agent flag value, e.g. "review-goal".
 	OpencodeName string
 }
 
@@ -191,8 +225,6 @@ type Opts struct {
 	Harness string
 	// Timeout is the per-agent maximum wait time.
 	Timeout time.Duration
-	// Keep: if true, the review session is not killed after completion.
-	Keep bool
 	// DBPath is the path to the prism database. If empty, the default is used.
 	DBPath string
 	// PluginHostPath is the path to the opencode plugin file.
@@ -205,12 +237,17 @@ type Opts struct {
 	ContainerMode bool
 }
 
-// Run executes the review. It returns the aggregated results and a boolean
-// indicating whether all agents passed.
+// Run executes the review. It returns the aggregated results and an error.
 //
-// On signal (SIGTERM/SIGINT), the caller is expected to kill the review session
-// using the session name returned via the onSessionCreated callback.
-func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName string)) ([]AgentResult, error) {
+// Each agent is spawned as its own independent top-level tmux session named
+// <parent>~review-<N>-<agent.Name>. Previous rounds' sessions are NOT killed
+// — they persist until prism cleanup is invoked on the parent. This is a
+// deliberate behaviour change from the old multi-window round model.
+//
+// On SIGINT, only the current round's in-progress sessions are killed by the
+// caller via KillSessionsByNames (using the session names from onSessionsCreated).
+// Previous rounds remain untouched.
+func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []string)) ([]AgentResult, error) {
 	if opts.ParentSession == "" {
 		return nil, fmt.Errorf("parent session name is required")
 	}
@@ -232,43 +269,23 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 	}
 	defer d.Close()
 
-	// Determine round number from DB BEFORE killing previous sessions.
-	// Using DB-based counting ensures correctness even after prior sessions
-	// are killed (tmux sessions disappear, but DB rows persist).
+	// Determine round number from DB. We do NOT kill previous review sessions —
+	// they persist until prism cleanup on the parent (deliberate).
 	round := NextRoundNumber(d, opts.ParentSession)
-	reviewSession := fmt.Sprintf("%s~review-%d", opts.ParentSession, round)
+	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
 
-	// Kill any previous review sessions for this parent.
-	reviewPrefix := opts.ParentSession + "~review-"
-	KillSessionPrefix(reviewPrefix)
-
-	// Create the review tmux session.
-	if err := tmux.NewSessionDetached(reviewSession, worktree); err != nil {
-		return nil, fmt.Errorf("create review session %q: %w", reviewSession, err)
-	}
-
-	if onSessionCreated != nil {
-		onSessionCreated(reviewSession)
-	}
-
-	// Insert the round session into the DB so it shows up in checkin.
-	// The repo field is derived from the parent session name.
 	repo := deriveRepo(opts.ParentSession)
-	if err := d.UpsertStatus(reviewSession, repo, worktree, "idle", nil, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism review] warning: upsert round session status: %v\n", err)
-	}
 
 	agents := opts.Agents
 	if len(agents) == 0 {
 		agents = DefaultAgents()
 	}
 
-	// Spawn each agent in its own tmux window within the review session.
+	// Spawn each agent as its own independent top-level tmux session.
 	agentSessions := make([]string, len(agents))
 	for i, ag := range agents {
-		// Agent sub-sessions are named <reviewSession>~<agentName>.
-		// They have a second ~ in the branch component, making them depth-2+.
-		agentSession := fmt.Sprintf("%s~%s", reviewSession, ag.Name)
+		// Per-agent session: <parent>~review-<N>-<agent.Name>
+		agentSession := roundPrefix + ag.Name
 		agentSessions[i] = agentSession
 
 		// Seed agent_status for the agent session.
@@ -277,8 +294,8 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 			for j := 0; j < i; j++ {
 				session.KillSidecar(agentSessions[j])
 				cleanupAgentSession(d, agentSessions[j])
+				_ = tmux.KillSession(agentSessions[j])
 			}
-			_ = tmux.KillSession(reviewSession)
 			return nil, fmt.Errorf("seed status for %s: %w", ag.Name, err)
 		}
 
@@ -288,8 +305,10 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 			for j := 0; j < i; j++ {
 				session.KillSidecar(agentSessions[j])
 				cleanupAgentSession(d, agentSessions[j])
+				_ = tmux.KillSession(agentSessions[j])
 			}
-			_ = tmux.KillSession(reviewSession)
+			// Also clean up the DB row we just seeded for i.
+			_ = d.SetEnded(agentSession)
 			return nil, fmt.Errorf("allocate port for %s: %w", ag.Name, portErr)
 		}
 
@@ -322,43 +341,38 @@ func Run(ctx context.Context, opts Opts, onSessionCreated func(sessionName strin
 			fmt.Fprintf(os.Stderr, "[prism review] warning: could not start sidecar for %s: %v\n", ag.Name, sidecarErr)
 		}
 
-		// Create the agent window within the review session.
+		// Create the independent top-level tmux session for this agent.
 		agentCmd := buildAgentCommand(ag, agentSession, port, prompt, opts.ContainerMode)
-		if err := createAgentWindow(reviewSession, i, ag.Name, worktree, agentCmd, port, agentSession, opts.ContainerMode); err != nil {
-			// Clean up agents 0..i (including the current one whose window failed).
-			for j := 0; j <= i; j++ {
+		if err := createAgentSession(agentSession, worktree, agentCmd, port, opts.ContainerMode); err != nil {
+			// Clean up agents 0..i (including the current one whose session failed).
+			// Kill the sidecar for agent i (already started above).
+			session.KillSidecar(agentSession)
+			cleanupAgentSession(d, agentSession)
+			// Kill tmux session for agent i if it was created (best effort).
+			_ = tmux.KillSession(agentSession)
+
+			// Clean up agents 0..i-1 that fully started.
+			for j := 0; j < i; j++ {
 				session.KillSidecar(agentSessions[j])
 				cleanupAgentSession(d, agentSessions[j])
+				_ = tmux.KillSession(agentSessions[j])
 			}
-			_ = tmux.KillSession(reviewSession)
-			return nil, fmt.Errorf("create window for %s: %w", ag.Name, err)
+			return nil, fmt.Errorf("create session for %s: %w", ag.Name, err)
 		}
 	}
 
-	// Remove the initial blank window (window 0) that was created with the session.
-	// All agents are in windows 1..N.
-	_, _ = tmux.Run("kill-window", "-t", reviewSession+":0")
+	// Notify the caller with all session names for SIGINT handling.
+	if onSessionsCreated != nil {
+		onSessionsCreated(agentSessions)
+	}
 
 	// Poll DB until all agents finish or timeout.
 	results, pollErr := pollAgents(ctx, d, agents, agentSessions, opts.Timeout)
 
-	// Mark round session as finished in the DB.
-	_ = d.UpsertStatus(reviewSession, repo, worktree, "finished", nil, nil)
-
-	// Clean up sidecar processes.
+	// Sessions persist — do NOT kill them here. The user can re-read them later.
+	// Sidecar processes are cleaned up since the agent has finished.
 	for _, agentSession := range agentSessions {
 		session.KillSidecar(agentSession)
-	}
-
-	// Kill the review session unless --keep.
-	if !opts.Keep {
-		_ = tmux.KillSession(reviewSession)
-		// Clean up DB entries for agent sub-sessions.
-		for _, agentSession := range agentSessions {
-			cleanupAgentSession(d, agentSession)
-		}
-		// Mark the round session as ended.
-		_ = d.SetEnded(reviewSession)
 	}
 
 	return results, pollErr
@@ -369,8 +383,8 @@ func buildReviewPrompt(prNumber string) string {
 	return fmt.Sprintf("Review PR #%s. Run `gh pr view %s` and `gh pr diff %s` to get the full diff. Check the linked issue for acceptance criteria and validate each one. Report your findings clearly.", prNumber, prNumber, prNumber)
 }
 
-// buildAgentCommand returns the command string for a review agent window.
-// agentSession is the full session name (e.g. "nixos-config@feature~review-1~review"),
+// buildAgentCommand returns the command string for a review agent session.
+// agentSession is the full session name (e.g. "nixos-config@feature~review-1-review-goal"),
 // used as PRISM_SESSION_NAME so the plugin correctly identifies the DB row.
 func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, containerMode bool) string {
 	if containerMode {
@@ -386,9 +400,11 @@ func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, c
 		shellQuote(agentSession), ag.OpencodeName, port, escapedPrompt)
 }
 
-// createAgentWindow creates a tmux window for a review agent.
-// In container mode it prepends a readiness wait like the standard session setup.
-func createAgentWindow(reviewSession string, idx int, windowName, worktree, agentCmd string, port int, agentSession string, containerMode bool) error {
+// createAgentSession creates a new independent top-level tmux session for a
+// review agent. In container mode it prepends a readiness wait like the
+// standard session setup. The session is created with a single "agent" window
+// that runs the given command.
+func createAgentSession(agentSession, worktree, agentCmd string, port int, containerMode bool) error {
 	cmd := agentCmd
 	if containerMode && port != 0 {
 		readyPath, pathErr := session.SidecarReadyPath(agentSession)
@@ -398,8 +414,19 @@ func createAgentWindow(reviewSession string, idx int, windowName, worktree, agen
 			cmd = buildReadinessWaitCmd(readyPath, agentCmd)
 		}
 	}
-	// Windows are 1-indexed: window 0 is the initial blank shell.
-	return tmux.NewWindow(reviewSession, idx+1, windowName, worktree, cmd)
+	// Create the session (starts with a bare shell in window 0).
+	if err := tmux.NewSessionDetached(agentSession, worktree); err != nil {
+		return fmt.Errorf("new-session %q: %w", agentSession, err)
+	}
+	// Create window 1 with the agent command. Window 0 remains as a shell.
+	// Using NewWindow ensures the command runs via "sh -c" and semicolons in
+	// the readiness wait script are not consumed by tmux's command parser.
+	if err := tmux.NewWindow(agentSession, 1, "agent", worktree, cmd); err != nil {
+		return fmt.Errorf("new-window for %q: %w", agentSession, err)
+	}
+	// Select the agent window (1) as the default.
+	_ = tmux.SelectWindow(agentSession, 1)
+	return nil
 }
 
 // buildReadinessWaitCmd mirrors session.buildReadinessWaitCmd (unexported).
@@ -594,7 +621,7 @@ func AssessPassed(text string) bool {
 	return true
 }
 
-// cleanupAgentSession cleans up the DB state for a completed agent sub-session.
+// cleanupAgentSession cleans up the DB state for a completed agent session.
 func cleanupAgentSession(d *db.DB, agentSession string) {
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
@@ -651,18 +678,62 @@ func LookupParentSession() string {
 	return sess
 }
 
-// IsRoundSession returns true if the given session name is a review round
-// session (not an agent sub-session). Round sessions have exactly one ~ in
-// the branch component and the suffix after ~review- is a pure integer.
-// Agent sub-sessions have a second ~ (e.g. "~review-1~review").
-func IsRoundSession(sessionName, parentSession string) bool {
+// IsPerAgentSession returns true if the given session name matches the new
+// per-agent session shape: <parent>~review-<N>-<agent-name>.
+// This is used to distinguish new-model sessions from old-shape round sessions.
+func IsPerAgentSession(sessionName, parentSession string) bool {
 	prefix := parentSession + "~review-"
 	if !strings.HasPrefix(sessionName, prefix) {
 		return false
 	}
 	suffix := strings.TrimPrefix(sessionName, prefix)
-	_, err := strconv.Atoi(suffix)
-	return err == nil
+	// Must have a dash separating the round number from the agent name.
+	dashIdx := strings.Index(suffix, "-")
+	if dashIdx <= 0 {
+		return false
+	}
+	nStr := suffix[:dashIdx]
+	n, err := strconv.Atoi(nStr)
+	if err != nil || n <= 0 {
+		return false
+	}
+	// Agent portion must not contain '~' (old-shape marker).
+	agentPart := suffix[dashIdx+1:]
+	return agentPart != "" && !strings.Contains(agentPart, "~")
+}
+
+// KillReviewSessionsForParent kills all ~review-* tmux sessions for the given parent.
+// This is the public API used by cleanup.go for cascading parent cleanup.
+// It kills ALL review sessions across all rounds (for prism cleanup --yes --session <parent>).
+func KillReviewSessionsForParent(parentSession string) {
+	prefix := parentSession + "~review-"
+	KillSessionPrefix(prefix)
+}
+
+// CleanupReviewSessionsForParent kills all ~review-* tmux sessions for the
+// given parent AND cleans up their DB rows (port allocations, ended state,
+// bus messages). Called by prism cleanup --yes --session <parent> to cascade
+// the cleanup to all review sessions.
+func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
+	prefix := parentSession + "~review-"
+
+	// Find all review session rows in the DB.
+	rows, err := d.AllStatusesWithPrefix(prefix)
+	if err == nil {
+		for _, row := range rows {
+			cleanupAgentSession(d, row.SessionName)
+		}
+	}
+
+	// Kill the tmux sessions (best effort, idempotent).
+	KillSessionPrefix(prefix)
+}
+
+// KillCurrentRoundSessions kills only the sessions in the given list.
+// Used by SIGINT handlers to kill only the current round's in-progress sessions
+// without touching previous rounds' persisted sessions.
+func KillCurrentRoundSessions(agentSessions []string) {
+	KillSessionsByNames(agentSessions)
 }
 
 // defaultDBPath returns the default prism DB path.
@@ -694,11 +765,4 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%ds", int(d.Seconds()))
-}
-
-// KillReviewSessionsForParent kills all ~review-* sessions for the given parent.
-// This is the public API used by cleanup.go.
-func KillReviewSessionsForParent(parentSession string) {
-	prefix := parentSession + "~review-"
-	KillSessionPrefix(prefix)
 }

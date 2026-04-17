@@ -200,9 +200,6 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 		}
 
-		// Kill any review sessions spawned by this parent session.
-		review.KillReviewSessionsForParent(m.session)
-
 		// Ensure scratchpad exists.
 		if !tmux.HasSession("scratchpad") {
 			home, _ := os.UserHomeDir()
@@ -223,6 +220,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
 		if d, err := openDB(); err == nil {
+			// Kill and clean up all review sessions spawned by this parent session,
+			// including their port allocations and DB rows.
+			review.CleanupReviewSessionsForParent(d, m.session)
 			if !hostModeFromDB(d, m.session) {
 				removeContainerIfExists(m.session)
 			}
@@ -234,6 +234,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			d.Close()
 		} else {
 			// DB unavailable — still attempt container removal conservatively.
+			review.KillReviewSessionsForParent(m.session)
 			removeContainerIfExists(m.session)
 		}
 
@@ -468,13 +469,13 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		}
 	}
 
-	// Kill any review sessions spawned by this parent session.
-	review.KillReviewSessionsForParent(session)
-
 	fmt.Printf("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
+		// Kill and clean up all review sessions spawned by this parent session,
+		// including their port allocations and DB rows.
+		review.CleanupReviewSessionsForParent(d, session)
 		if !hostModeFromDB(d, session) {
 			removeContainerIfExists(session)
 		}
@@ -486,6 +487,8 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		d.Close()
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
+		// Also try to kill review sessions via tmux even without DB cleanup.
+		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
 	fmt.Println("done")
@@ -547,9 +550,6 @@ func headlessCloseSession(session string) error {
 
 	fmt.Printf("closing session %s...\n", session)
 
-	// Kill any review sessions spawned by this parent session.
-	review.KillReviewSessionsForParent(session)
-
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
 		home, _ := os.UserHomeDir()
@@ -570,6 +570,9 @@ func headlessCloseSession(session string) error {
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
+		// Kill and clean up all review sessions spawned by this parent session,
+		// including their port allocations and DB rows.
+		review.CleanupReviewSessionsForParent(d, session)
 		if !hostModeFromDB(d, session) {
 			removeContainerIfExists(session)
 		}
@@ -581,6 +584,8 @@ func headlessCloseSession(session string) error {
 		d.Close()
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
+		// Also try to kill review sessions via tmux even without DB cleanup.
+		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
 	fmt.Println("done")
