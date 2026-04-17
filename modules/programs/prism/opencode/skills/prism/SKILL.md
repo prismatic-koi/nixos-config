@@ -187,20 +187,20 @@ Each review agent runs as its own independent top-level tmux session:
 - Sessions **persist** after `prism review` completes — you can re-read findings later without re-running.
 - Sessions are only cleaned up when `prism cleanup` is invoked on the parent.
 
-**Review sessions appear in the dashboard** at depth 2, indented under their parent branch:
+**Review sessions appear in the dashboard** at depth 2, indented under their parent branch (sorted alphabetically by label):
 ```
 nixos-config@main                   coordinator
   ├── @feature-branch               worker
-  │   ├── ~review-1-review-goal     finished
   │   ├── ~review-1-review-code     finished
-  │   ├── ~review-1-review-security finished
-  │   ├── ~review-1-review-qa       finished
   │   ├── ~review-1-review-context  finished
+  │   ├── ~review-1-review-goal     finished
+  │   ├── ~review-1-review-qa       finished
+  │   ├── ~review-1-review-security finished
   │   ├── ~review-2-review-code     active
   │   └── ~review-2-review-security active
 ```
 
-Each review agent session is individually selectable in the `C-f` picker — jump directly to any reviewer with one keypress.
+Each review agent session is individually selectable in the **`C-f` picker** — after selecting the project repo, review sessions appear as additional entries (e.g. `~review-1-review-security  [finished]`). Jump directly to any reviewer with one keypress.
 
 **Checking in on review progress:**
 ```bash

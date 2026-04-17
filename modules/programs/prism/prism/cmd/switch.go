@@ -44,9 +44,10 @@ func switchProjectSpecific() []string {
 
 // entry is a selectable item in the picker.
 type entry struct {
-	display string // shown in the list
-	path    string // resolved filesystem path (empty for specials)
-	special string // "[dashboard]", "[scratchpad]", "[+ create new worktree]"
+	display    string // shown in the list
+	path       string // resolved filesystem path (empty for specials)
+	special    string // "[dashboard]", "[scratchpad]", "[+ create new worktree]"
+	sessionRef string // when non-empty, selecting this entry attaches to the named tmux session
 }
 
 func expandHome(path string) string {
@@ -578,11 +579,31 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 	for _, w := range worktrees {
 		items = append(items, entry{display: filepath.Base(w), path: w})
 	}
+
+	// Include any active review sessions for worktrees in this bare repo.
+	// These are per-agent top-level sessions named <repo>@<branch>~review-N-<agent>.
+	// They appear as selectable entries in the picker; selecting one attaches
+	// directly to that tmux session without creating a new one.
+	items = append(items, activeReviewSessionEntries(projectPath, worktrees)...)
+
 	items = append(items, createNew)
 
 	chosen := pick("worktree> ", items)
 	if chosen == nil {
 		return nil
+	}
+
+	// Review session entry: attach directly to the named tmux session.
+	if chosen.sessionRef != "" {
+		client, _ := tmux.CurrentClient()
+		if client == "" {
+			client = tmux.CallerClient()
+		}
+		if client != "" {
+			return tmux.SwitchClient(client, chosen.sessionRef)
+		}
+		_, err := tmux.SwitchClientCurrent(chosen.sessionRef)
+		return err
 	}
 
 	if chosen.special == "[+ create new worktree]" {
@@ -612,6 +633,68 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		}
 	}
 	return ensureAndSwitch(chosen.path, projectPath, opts)
+}
+
+// activeReviewSessionEntries returns picker entries for active review agent
+// sessions associated with worktrees in projectPath. Each entry has sessionRef
+// set to the tmux session name; selecting it attaches to that session directly.
+// Returns an empty slice if the DB is unavailable or no review sessions exist.
+func activeReviewSessionEntries(projectPath string, worktrees []string) []entry {
+	// Derive the repo name from the project path (last component).
+	repoName := filepath.Base(projectPath)
+
+	d, err := openDB()
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+
+	// Query all active sessions for this repo.
+	all, err := d.AllActiveStatusForRepo(repoName)
+	if err != nil {
+		return nil
+	}
+
+	var entries []entry
+	for _, s := range all {
+		// Only include review agent sessions: name must contain "~review-"
+		// followed by a round number and agent name.
+		if !strings.Contains(s.SessionName, "~review-") {
+			continue
+		}
+		// Verify it matches the new per-agent shape: <repo>@<branch>~review-N-<agent>
+		// The session must also exist in tmux (not just the DB).
+		if !tmux.HasSession(s.SessionName) {
+			continue
+		}
+		// Extract the label: everything from the first "~review-" onwards.
+		label := s.SessionName
+		if idx := strings.Index(s.SessionName, "~review-"); idx >= 0 {
+			label = s.SessionName[idx:] // e.g. "~review-1-review-goal"
+		}
+		state := s.State
+		if state == "" {
+			state = "idle"
+		}
+		display := fmt.Sprintf("%s  [%s]", label, state)
+		entries = append(entries, entry{
+			display:    display,
+			sessionRef: s.SessionName,
+		})
+	}
+
+	// Sort entries alphabetically by display label for stable output.
+	for i := 1; i < len(entries); i++ {
+		key := entries[i]
+		j := i - 1
+		for j >= 0 && entries[j].display > key.display {
+			entries[j+1] = entries[j]
+			j--
+		}
+		entries[j+1] = key
+	}
+
+	return entries
 }
 
 func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts) error {
