@@ -44,7 +44,7 @@ Use `prism stats <session>` and `prism checkin <session> --verbose` to drill int
 For each anomalous session:
 
 1. Run `prism checkin <session> --last 20` to get conversation flow
-2. Query `tool_call` events for patterns and repetition
+2. Use `prism checkin <session> --verbose` to examine tool call patterns and repetition
 3. Look at how the session ended (last 5–10 events)
 4. Note whether the session achieved its stated goal
 
