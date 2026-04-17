@@ -168,11 +168,16 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Load profiles for container mode — passed through to review.Run so
 	// each agent's sidecar receives its own per-agent hardened config blob.
+	// In container mode a missing or malformed profiles.json means the
+	// per-agent opencode.json cannot be mounted, which causes the container
+	// to fall back to the image default (build agent). Surface this as an
+	// explicit error rather than silently spawning broken review containers.
 	if cfg.ContainerMode {
 		pf, pfErr := config.LoadProfiles()
-		if pfErr == nil {
-			opts.ProfilesFile = pf
+		if pfErr != nil {
+			return fmt.Errorf("prism review: container mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", pfErr)
 		}
+		opts.ProfilesFile = pf
 	}
 
 	// Set up context with signal handling.
