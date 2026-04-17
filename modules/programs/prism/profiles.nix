@@ -53,8 +53,8 @@
         profiles = {
           anthropic = {
             primary = {
-              model = "anthropic/claude-sonnet-4-6";
-              variant = "medium";
+              model = "anthropic/claude-opus-4-7";
+              variant = "none";
             };
             secondary = {
               model = "anthropic/claude-sonnet-4-6";
@@ -67,11 +67,11 @@
           };
           anthropic-opus = {
             primary = {
-              model = "anthropic/claude-opus-4-6";
+              model = "anthropic/claude-opus-4-7";
               variant = "none";
             };
             secondary = {
-              model = "anthropic/claude-opus-4-6";
+              model = "anthropic/claude-opus-4-7";
               variant = "none";
             };
             lightweight = {
