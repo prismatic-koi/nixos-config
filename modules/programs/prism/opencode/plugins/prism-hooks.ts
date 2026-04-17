@@ -256,9 +256,9 @@ export const PrismHooks: Plugin = async (pluginInput) => {
       }
 
       // ── Doom-loop detection ──────────────────────────────────────────────
-      // Excluded tools (read, grep, glob) do not contribute to loop counts but
-      // DO break an active run — a different tool being invoked resets the
-      // state so a subsequent same-tool loop can fire fresh.
+      // Excluded tools (read, grep, glob, todowrite) do not contribute to loop
+      // counts but DO break an active run — a different tool being invoked
+      // resets the state so a subsequent same-tool loop can fire fresh.
       if (EXCLUDED_TOOLS.has(input.tool)) {
         // Break the current run without tracking the excluded call.
         doomLoop.currentKey = null;
