@@ -110,6 +110,10 @@ var prCmd = &cobra.Command{
 			ContainerMode:  cfg.ContainerMode,
 			PluginHostPath: cfg.SidecarPluginPath,
 			ConfigContent:  configContent,
+			// ForceFresh=true: prism pr creates a new worktree; if a session
+			// with the same name exists it is a stale zombie and should be
+			// killed, matching the same semantics as prism spawn.
+			ForceFresh: true,
 		}
 		return ensureAndSwitch(worktreePath, bareRoot, opts)
 	},
