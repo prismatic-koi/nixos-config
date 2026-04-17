@@ -766,3 +766,185 @@ func TestSessionCreate_Cleanup(t *testing.T) {
 		t.Fatal("session not present before cleanup test")
 	}
 }
+
+// ─── ForceFresh / startup guard tests ────────────────────────────────────────
+
+// TestSessionCreate_ForceFresh_False_LiveSession verifies that session.Create
+// with ForceFresh=false is a no-op when the session already exists in tmux and
+// its DB row's last_seen is recent (< 60s). The live session must not be killed.
+//
+// This is the regression test for issue #792: prism switch/launch must not
+// destroy an existing live coordinator session.
+//
+// NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
+func TestSessionCreate_ForceFresh_False_LiveSession(t *testing.T) {
+	srv := newTmuxServer(t)
+	withTmuxServer(t, srv)
+
+	d := openTestDB(t)
+	dir := t.TempDir()
+	const sessionName = "integ-forcefresh-live"
+
+	// Seed a DB row with a recent last_seen (now = live).
+	if err := d.UpsertStatus(sessionName, "repo", dir, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Create the session normally first.
+	if err := session.Create(sessionName, dir, session.Opts{Layout: session.LayoutBare}); err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	if !tmux.HasSession(sessionName) {
+		t.Fatal("session not found after initial Create")
+	}
+
+	// Now call Create again with ForceFresh=false and a live DB row.
+	// Expect a no-op: session must still exist and must NOT have been killed+recreated.
+	err := session.Create(sessionName, dir, session.Opts{
+		Layout:     session.LayoutBare,
+		DB:         d,
+		ForceFresh: false,
+	})
+	if err != nil {
+		t.Fatalf("Create (ForceFresh=false, live session): unexpected error: %v", err)
+	}
+	if !tmux.HasSession(sessionName) {
+		t.Error("Create (ForceFresh=false, live session): session was killed — expected no-op")
+	}
+}
+
+// TestSessionCreate_ForceFresh_False_StaleSession verifies that session.Create
+// with ForceFresh=false kills and recreates a session whose DB row's last_seen
+// is older than 60s (stale zombie). The user should get a working new session
+// rather than attaching to a dead pane.
+//
+// NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
+func TestSessionCreate_ForceFresh_False_StaleSession(t *testing.T) {
+	srv := newTmuxServer(t)
+	withTmuxServer(t, srv)
+
+	d := openTestDB(t)
+	dir := t.TempDir()
+	const sessionName = "integ-forcefresh-stale"
+
+	// Seed a DB row with a stale last_seen (> 60s ago).
+	if err := d.UpsertStatus(sessionName, "repo", dir, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	staleTime := time.Now().Add(-2 * time.Minute).Unix()
+	if err := d.QueryRow(
+		"UPDATE agent_status SET last_seen = ? WHERE session_name = ? RETURNING 1",
+		staleTime, sessionName,
+	).Scan(new(int)); err != nil && err.Error() != "sql: no rows in result set" {
+		// UPDATE ... RETURNING: "no rows in result set" from Scan is unexpected
+		// if the row was not found.
+		t.Fatalf("set stale last_seen: %v", err)
+	}
+
+	// Create the session initially (simulates the stale tmux zombie).
+	if err := session.Create(sessionName, dir, session.Opts{Layout: session.LayoutBare}); err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	if !tmux.HasSession(sessionName) {
+		t.Fatal("session not found after initial Create")
+	}
+
+	// Call Create again with ForceFresh=false and a stale DB row.
+	// Expect the zombie to be killed and a fresh session created.
+	err := session.Create(sessionName, dir, session.Opts{
+		Layout:     session.LayoutBare,
+		DB:         d,
+		ForceFresh: false,
+	})
+	if err != nil {
+		t.Fatalf("Create (ForceFresh=false, stale session): unexpected error: %v", err)
+	}
+	if !tmux.HasSession(sessionName) {
+		t.Error("Create (ForceFresh=false, stale session): new session not created after zombie kill")
+	}
+}
+
+// TestSessionCreate_ForceFresh_True_LiveSession verifies that session.Create
+// with ForceFresh=true kills and recreates even a live session. This is the
+// correct behaviour for prism spawn, where name collisions mean zombie sessions.
+//
+// NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
+func TestSessionCreate_ForceFresh_True_LiveSession(t *testing.T) {
+	srv := newTmuxServer(t)
+	withTmuxServer(t, srv)
+
+	d := openTestDB(t)
+	dir := t.TempDir()
+	const sessionName = "integ-forcefresh-spawn"
+
+	// Seed a DB row with a recent last_seen (now = live).
+	if err := d.UpsertStatus(sessionName, "repo", dir, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Create the session initially.
+	if err := session.Create(sessionName, dir, session.Opts{Layout: session.LayoutBare}); err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	if !tmux.HasSession(sessionName) {
+		t.Fatal("session not found after initial Create")
+	}
+
+	// Call Create again with ForceFresh=true and a live DB row.
+	// Expect the live session to be killed and a fresh one created (spawn semantics).
+	err := session.Create(sessionName, dir, session.Opts{
+		Layout:     session.LayoutBare,
+		DB:         d,
+		ForceFresh: true,
+	})
+	if err != nil {
+		t.Fatalf("Create (ForceFresh=true, live session): unexpected error: %v", err)
+	}
+	if !tmux.HasSession(sessionName) {
+		t.Error("Create (ForceFresh=true, live session): new session not created after kill")
+	}
+}
+
+// TestSessionCreate_ForceFresh_False_NoDBRow verifies that session.Create with
+// ForceFresh=false and no DB row for the existing session treats it as a stale
+// zombie and recreates it (e.g. after prism reset).
+//
+// NOTE: This test uses withTmuxServer() and must NOT call t.Parallel().
+func TestSessionCreate_ForceFresh_False_NoDBRow(t *testing.T) {
+	srv := newTmuxServer(t)
+	withTmuxServer(t, srv)
+
+	d := openTestDB(t)
+	dir := t.TempDir()
+	const sessionName = "integ-forcefresh-nodrow"
+
+	// Create the session without any DB row (simulates post-prism-reset state).
+	if err := session.Create(sessionName, dir, session.Opts{Layout: session.LayoutBare}); err != nil {
+		t.Fatalf("initial Create: %v", err)
+	}
+	t.Cleanup(func() { _ = tmux.KillSession(sessionName) })
+
+	if !tmux.HasSession(sessionName) {
+		t.Fatal("session not found after initial Create")
+	}
+
+	// Call Create with ForceFresh=false and a DB handle but no row for this session.
+	// Expect zombie kill and recreation.
+	err := session.Create(sessionName, dir, session.Opts{
+		Layout:     session.LayoutBare,
+		DB:         d,
+		ForceFresh: false,
+	})
+	if err != nil {
+		t.Fatalf("Create (ForceFresh=false, no DB row): unexpected error: %v", err)
+	}
+	if !tmux.HasSession(sessionName) {
+		t.Error("Create (ForceFresh=false, no DB row): new session not created after zombie kill")
+	}
+}

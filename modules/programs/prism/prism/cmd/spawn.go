@@ -215,6 +215,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Headless:       !fromKeybind && !attachFlag,
 		ContainerMode:  effectiveContainerMode,
 		PluginHostPath: cfg.SidecarPluginPath,
+		// ForceFresh=true: spawn always wants a new instance. If a session with
+		// the same name already exists it is a stale zombie and should be killed.
+		ForceFresh: true,
 	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
 	// receive env vars via podman --env flags in the sidecar.
