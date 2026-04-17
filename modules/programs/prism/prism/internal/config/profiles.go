@@ -68,6 +68,13 @@ type ProfilesFile struct {
 	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for coordinator
 	// containers. Written by Nix under container_coordinator_config.
 	ContainerCoordinatorConfig string `json:"container_coordinator_config"`
+	// ContainerReviewConfig is the full opencode.json blob (serialised JSON
+	// string) to inject as OPENCODE_CONFIG_CONTENT for review containers.
+	// Written by Nix under container_review_config. The blob is hardened:
+	// only review agent(s) are declared; write/edit/patch are denied; the
+	// task tool is disabled to prevent review agents delegating to peers;
+	// and "prism review" bash commands are denied to prevent recursion.
+	ContainerReviewConfig string `json:"container_review_config"`
 	// AgentEnvVars holds environment variables to inject into host-mode
 	// opencode processes. Values are fully expanded absolute paths (no $HOME).
 	// Written by Nix under agent_env_vars. These are prepended to the
@@ -77,11 +84,12 @@ type ProfilesFile struct {
 }
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
-// given agent role ("worker" or "coordinator"). Returns ("", nil) when pf is
-// nil (no profiles file loaded) or when the role is not a recognised container
-// role (only "worker" and "coordinator" have dedicated container configs;
-// subagent names like "plan", "review", etc. are valid opencode agents but do
-// not have their own container configs — they inherit from the session default).
+// given agent role ("worker", "coordinator", or "review"). Returns ("", nil)
+// when pf is nil (no profiles file loaded) or when the role is not a
+// recognised container role (only "worker", "coordinator", and "review" have
+// dedicated container configs; subagent names like "plan", "explore", etc. are
+// valid opencode agents but do not have their own container configs — they
+// inherit from the session default).
 func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 	if pf == nil {
 		return "", nil
@@ -91,8 +99,10 @@ func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 		return pf.ContainerWorkerConfig, nil
 	case "coordinator":
 		return pf.ContainerCoordinatorConfig, nil
+	case "review":
+		return pf.ContainerReviewConfig, nil
 	default:
-		// Not a container-level role (e.g. "plan", "review", "explore").
+		// Not a container-level role (e.g. "plan", "explore").
 		// Return empty string — no config injection — without error.
 		return "", nil
 	}

@@ -258,6 +258,94 @@ func TestBuildConfigContent_UnknownProfile(t *testing.T) {
 	}
 }
 
+// sampleProfilesFileWithReview returns a ProfilesFile that also has a review
+// config blob, for testing ContainerConfigForRole. The fixture blobs use the
+// correct opencode.ai schema key "agent" (singular), matching what real
+// Nix-generated blobs produce.
+func sampleProfilesFileWithReview() *config.ProfilesFile {
+	pf := sampleProfilesFile()
+	pf.ContainerWorkerConfig = `{"agent":{"worker":{}}}`
+	pf.ContainerCoordinatorConfig = `{"agent":{"coordinator":{}}}`
+	pf.ContainerReviewConfig = `{"agent":{"review":{}}}`
+	return pf
+}
+
+// TestContainerConfigForRole_Review verifies that passing role "review" returns
+// the ContainerReviewConfig blob (non-empty, valid JSON, has "agent" key —
+// the correct opencode.ai schema key used in all container config blobs).
+func TestContainerConfigForRole_Review(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "review")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=review")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	if _, ok := cfg["agent"]; !ok {
+		t.Error("expected top-level 'agent' key in review config blob")
+	}
+}
+
+// TestContainerConfigForRole_Worker verifies that "worker" still returns the
+// worker blob (regression guard).
+func TestContainerConfigForRole_Worker(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != pf.ContainerWorkerConfig {
+		t.Errorf("worker blob: got %q, want %q", result, pf.ContainerWorkerConfig)
+	}
+}
+
+// TestContainerConfigForRole_Coordinator verifies that "coordinator" still
+// returns the coordinator blob (regression guard).
+func TestContainerConfigForRole_Coordinator(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "coordinator")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != pf.ContainerCoordinatorConfig {
+		t.Errorf("coordinator blob: got %q, want %q", result, pf.ContainerCoordinatorConfig)
+	}
+}
+
+// TestContainerConfigForRole_UnknownRole verifies that an unrecognised role
+// (e.g. "plan") returns ("", nil) without error.
+func TestContainerConfigForRole_UnknownRole(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	for _, role := range []string{"plan", "explore", "ac", "unknown"} {
+		result, err := config.ContainerConfigForRole(pf, role)
+		if err != nil {
+			t.Errorf("role %q: unexpected error: %v", role, err)
+		}
+		if result != "" {
+			t.Errorf("role %q: expected empty string, got %q", role, result)
+		}
+	}
+}
+
+// TestContainerConfigForRole_NilProfilesFile verifies that a nil *ProfilesFile
+// returns ("", nil) for all roles — no panic.
+func TestContainerConfigForRole_NilProfilesFile(t *testing.T) {
+	for _, role := range []string{"worker", "coordinator", "review", "plan", "unknown"} {
+		result, err := config.ContainerConfigForRole(nil, role)
+		if err != nil {
+			t.Errorf("nil pf, role %q: unexpected error: %v", role, err)
+		}
+		if result != "" {
+			t.Errorf("nil pf, role %q: expected empty string, got %q", role, result)
+		}
+	}
+}
+
 func TestLoadProfiles_MissingFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/nonexistent/path")
 	_, err := config.LoadProfiles()
