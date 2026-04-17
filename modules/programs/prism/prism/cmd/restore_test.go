@@ -502,7 +502,7 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 
 // TestRestoreSession_ContainerMode verifies that when cfg.ContainerMode is
 // enabled and the persisted session is not marked host_mode, restore uses
-// the container-mode agent command ("podman attach <container-name>")
+// the container-mode agent command ("podman attach --sig-proxy=false <container-name>")
 // rather than launching opencode directly. It also asserts that the
 // PluginHostPath is propagated from cfg into opts so the sidecar bind-mounts
 // the plugin file.
@@ -537,13 +537,13 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The agent pane start command must contain "podman attach 'prism-myrepo-container-restore'",
+	// The agent pane start command must contain "podman attach --sig-proxy=false 'prism-myrepo-container-restore'",
 	// not "opencode --agent". The container name is derived from the session name via
 	// container.NameForSession("myrepo@container-restore") = "prism-myrepo-container-restore".
 	// The name is single-quoted for shell safety in the readiness wait script.
 	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "podman attach 'prism-myrepo-container-restore'") {
-		t.Errorf("agent pane missing 'podman attach 'prism-myrepo-container-restore'' — captured:\n%s", pane)
+	if !strings.Contains(pane, "podman attach --sig-proxy=false 'prism-myrepo-container-restore'") {
+		t.Errorf("agent pane missing 'podman attach --sig-proxy=false 'prism-myrepo-container-restore'' — captured:\n%s", pane)
 	}
 	if strings.Contains(pane, "opencode --agent") {
 		t.Errorf("agent pane contains 'opencode --agent' but should be in container mode — captured:\n%s", pane)
