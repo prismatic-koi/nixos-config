@@ -159,10 +159,14 @@ func BuildOpencodeCmd(opts Opts) string {
 		// Use podman attach to bridge the tmux pane to the container's PTY.
 		// The container runs opencode in combined TUI + HTTP mode; "podman attach"
 		// connects stdin/stdout to the container PTY so the TUI is fully interactive.
+		// --sig-proxy=false prevents podman from forwarding signals (e.g. SIGINT from
+		// Ctrl-C) to the container process; instead the ^C byte reaches opencode's TUI
+		// as literal stdin input, which it handles as an interrupt keystroke — matching
+		// host-mode behaviour where Ctrl-C interrupts the current turn, not the process.
 		// The container name is shell-quoted so that any unexpected characters in
 		// the session name cannot be interpreted as shell metacharacters when
 		// buildReadinessWaitCmd embeds this string in the readiness shell script.
-		return "podman attach " + shellQuote(container.NameForSession(opts.SessionName))
+		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(opts.SessionName))
 	}
 	return buildDirectOpencodeCmd(opts)
 }
