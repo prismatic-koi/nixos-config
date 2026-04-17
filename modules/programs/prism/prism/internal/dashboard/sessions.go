@@ -172,6 +172,94 @@ func agentTypeLabel(agentName string) string {
 	}
 }
 
+// SessionColumnWidth computes the session column width (sessionW) from the
+// actual rendered widths of all displayed sessions. It scans the session names
+// and their tree prefixes to find the minimum sessionW that accommodates every
+// row without truncation, then clamps the result to [sessionWMin, sessionWCap].
+//
+// Width accounting (treePrefixW = 10 is the fixed prefix slot in the view):
+//
+//	totalSessionW = treePrefixW + sessionW
+//
+// Each row type contributes to sessionW as follows:
+//
+//   - Depth-2 child rows: the display content is just the Depth2Label
+//     (e.g. "~review-1"), rendered after a 10-rune prefix that exactly fills
+//     treePrefixW, so sessionW ≥ len(label).
+//
+//   - All other rows (top-level and depth-1 children): the maximum of
+//     (a) the full session name length, for cases where the row renders without
+//     a tree prefix — filter-active mode (all rows are flat) and orphaned
+//     branch sessions whose group has no @main companion — and
+//     (b) d1PrefixLen + len(branch), for the normal tree-view rendering where
+//     only the branch suffix is shown after a 6-rune connector prefix.
+//
+//     Using the maximum of both formulas ensures correctness in all modes.
+//
+// Constants are defined here as unexported values to avoid import cycles;
+// the view's own sessionWCap and treePrefixW constants must stay in sync.
+func SessionColumnWidth(sessions []AgentSession) int {
+	const sessionWMin = 7  // len("session") — never truncate the column header
+	const sessionWCap = 40 // must match sessionWCap in view.go
+	const treePrefixW = 10 // must match treePrefixW in view.go
+	const d1PrefixLen = 6  // "  ├── " or "  └── "
+	const d2PrefixLen = 10 // "  │   ├── " or "  │   └── "
+
+	maxW := 0
+	for _, s := range sessions {
+		var needed int
+		if IsDepth2Session(s.Name) {
+			// Depth-2: d2PrefixLen + len(label) - treePrefixW = len(label).
+			// The depth-2 prefix is exactly treePrefixW runes, so the offset
+			// cancels out and only the label length contributes.
+			label := Depth2Label(s.Name)
+			needed = d2PrefixLen + utf8.RuneCountInString(label) - treePrefixW
+		} else {
+			// Top-level and depth-1 children.
+			//
+			// We take the maximum of two formulas:
+			//
+			// (a) Full-name formula: len(name) - treePrefixW
+			//     Covers every case where the row renders WITHOUT a tree prefix:
+			//     top-level rows always, filter-active mode (all rows are flat),
+			//     and orphaned depth-1 branches whose group has no @main companion.
+			//
+			// (b) Tree-mode formula: d1PrefixLen + len(branch) - treePrefixW
+			//     Covers the normal grouped view where a depth-1 child renders as
+			//     "  ├── @branch" — only the branch suffix fills sessionW.
+			//     Only applies when the session CAN be a depth-1 child, i.e.
+			//     it has an "@" in the name and the branch is not "@main".
+			//
+			// Using max(a, b) is safe: for top-level / @main rows, formula (a)
+			// is always ≥ formula (b) since len(repo) ≥ 0 with the repo+@ prefix
+			// larger than d1PrefixLen - treePrefixW = -4.  For depth-1 children
+			// with very short repo names (< 6 chars), (b) > (a), so (b) dominates.
+			nameLen := utf8.RuneCountInString(s.Name)
+			needed = nameLen - treePrefixW // formula (a)
+
+			branch := SessionBranch(s.Name)
+			canBeD1Child := branch != s.Name && branch != "@main"
+			if canBeD1Child {
+				treeModeChild := d1PrefixLen + utf8.RuneCountInString(branch) - treePrefixW
+				if treeModeChild > needed {
+					needed = treeModeChild // formula (b) dominates
+				}
+			}
+		}
+		if needed > maxW {
+			maxW = needed
+		}
+	}
+
+	if maxW < sessionWMin {
+		return sessionWMin
+	}
+	if maxW > sessionWCap {
+		return sessionWCap
+	}
+	return maxW
+}
+
 // FilterAgentSessions removes internal sessions (scratchpad, prism-dashboard)
 // from the slice.
 func FilterAgentSessions(all []AgentSession) []AgentSession {
