@@ -189,12 +189,12 @@ in
               bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single \
                 "${prism} spawn --attach"
 
-              # opencode scrolling keybinds (only active when opencode is running)
-              # Note: on NixOS/Linux, opencode runs directly as "opencode" in pane_current_command
-              bind -n C-u if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-u' 'send-keys C-u'
-              bind -n C-d if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys C-M-d' 'send-keys C-d'
-              bind -n C-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys Home'
-              bind -n C-M-g if-shell '[ "#{pane_current_command}" = "opencode" ]' 'send-keys End'
+              # opencode scrolling keybinds (only active when opencode is running inside podman)
+              # Note: after the podman-attach migration, the agent pane command is "podman"
+              bind -n C-u if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys C-M-u' 'send-keys C-u'
+              bind -n C-d if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys C-M-d' 'send-keys C-d'
+              bind -n C-g if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys Home'
+              bind -n C-M-g if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys End'
 
               # Clipboard paste bridge for container-mode opencode panes (issue #752).
               #
