@@ -89,10 +89,12 @@ List each issue clearly with:
 - The specific file and line if applicable
 - What the fix should be
 
-Then state clearly: **"Please fix the above before this PR is merged."**
+Then end with: `<verdict>FAIL</verdict>`
 
 **If the PR looks good:**
 Say so briefly and specifically — what you checked and why it passes. Do not pad with flattery.
+
+Then end with: `<verdict>PASS</verdict>`
 
 ---
 
