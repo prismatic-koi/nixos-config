@@ -1281,6 +1281,67 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 	}
 }
 
+// TestRun_ProgressCallback_SpawnFailure verifies that when an agent fails to
+// spawn due to a configuration error (container mode with nil ProfilesFile),
+// a "failed to start" progress line is emitted immediately and the overall run
+// returns an error. This covers the spawn-failure path AC from issue #782:
+// "unit tests verify the progress-line output format for spawn-failure path."
+//
+// The ResolveAgentConfigContent failure path fires after successful DB
+// operations (UpsertStatus, AllocatePort) but before any tmux session is
+// created — so no tmux is needed for this test.
+func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+
+	// Single agent to keep the test focused.
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+	}
+
+	// container mode with nil ProfilesFile triggers ResolveAgentConfigContent
+	// to return a "nil ProfilesFile" error before any tmux session is created.
+	opts := review.Opts{
+		PRNumber:      "999",
+		ParentSession: "test@spawn-failure",
+		Worktree:      t.TempDir(),
+		Agents:        agents,
+		Timeout:       30 * time.Second,
+		DBPath:        dbPath,
+		ContainerMode: true,
+		ProfilesFile:  nil,
+	}
+
+	var progressLines []string
+	opts.OnProgress = func(line string) {
+		progressLines = append(progressLines, line)
+	}
+
+	ctx := context.Background()
+	_, err := review.Run(ctx, opts, nil)
+
+	// Run must return an error when all agents fail to spawn.
+	if err == nil {
+		t.Fatal("Run: expected error when all agents fail to spawn, got nil")
+	}
+
+	// At least one progress line must have been emitted.
+	if len(progressLines) == 0 {
+		t.Fatal("Run: expected at least one progress line for spawn failure, got none")
+	}
+
+	// The progress line must contain the display name and "failed to start".
+	if !linesContain(progressLines, "Review-Goal failed to start") {
+		t.Errorf("expected 'Review-Goal failed to start' in progress lines, got: %v", progressLines)
+	}
+
+	// Must NOT emit a "started" line — spawn failed before session creation.
+	for _, line := range progressLines {
+		if len(line) > 0 && findSubstring(line, "Review-Goal started") {
+			t.Errorf("unexpected 'started' line emitted on spawn failure: %q", line)
+		}
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // linesContain returns true if any of the given lines contains sub.
