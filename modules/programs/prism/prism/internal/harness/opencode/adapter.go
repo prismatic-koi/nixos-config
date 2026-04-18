@@ -64,7 +64,7 @@ type Adapter struct {
 // (e.g. "anthropic/claude-sonnet-4-6").
 func New(opencodeURL string, httpClient *http.Client, agentRole, agentModel string) *Adapter {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 10 * time.Second}
+		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
 	return &Adapter{
 		opencodeURL: opencodeURL,
