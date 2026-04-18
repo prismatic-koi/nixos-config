@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 )
 
@@ -629,6 +631,77 @@ func TestDashView_CollapseStateDoesNotPersistAcrossInvocations(t *testing.T) {
 		if !r.IsReviewGroup && dashboard.ReviewRoundKey(r.Name) != "" {
 			t.Errorf("fresh invocation: per-agent child %q should be hidden", r.Name)
 		}
+	}
+}
+
+// ── RenderReviewGroupRow tree-connector styling test ─────────────────────────
+
+// TestRenderReviewGroupRow_TreeConnectorStyleSplit verifies that in the
+// non-selected path the tree connector uses styleFg and the indicator+label
+// uses styleDim. This exercises the fix for issue #837 (the tree connector was
+// previously rendered entirely in styleDim/blue).
+//
+// Strategy: force lipgloss to TrueColor mode so we can observe ANSI escape
+// sequences, then supply distinct placeholder colours for styleFg and styleDim.
+// The test asserts that the raw (pre-strip) row string contains both colour
+// sequences and that the order is: styleFg appears before styleDim, matching
+// the tree-connector-then-indicator layout.
+func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
+	// Force TrueColor so lipgloss emits ANSI escape sequences even without a TTY.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() {
+		// Reset to the default auto-detected profile after the test.
+		lipgloss.SetColorProfile(termenv.Ascii)
+	})
+
+	// Use obviously distinct colours so we can search the raw ANSI output.
+	const fgColor = "#aabbcc"  // styleFg sentinel — tree connector
+	const dimColor = "#112233" // styleDim sentinel — indicator + label
+
+	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(fgColor))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(dimColor))
+	styleAgentType := lipgloss.NewStyle()
+
+	d := dashboard.Shared{
+		Width:  120,
+		Cursor: 99, // cursor far away so isSelected is false
+	}
+	s := dashboard.AgentSession{
+		Name:          "repo@feature~review-1",
+		AgentState:    "finished",
+		IsReviewGroup: true,
+	}
+
+	// Render with collapsed indicator (▶) — non-selected, cursor NOT active.
+	row := dashboard.RenderReviewGroupRow(d, s, 0 /*cursorIdx != Cursor*/, "  ├── ", false /*expanded*/, false /*cursorActive*/, styleDim, styleFg, styleAgentType, 10 /*sessionW*/, 10 /*stateW*/)
+
+	// The raw row must contain ANSI sequences for both colours.
+	// We search for the 24-bit RGB escape that lipgloss produces for each colour.
+	// Hex #aabbcc → R=170 G=187 B=204
+	// Hex #112233 → R=17  G=34  B=51
+	fgSeq := "170;187;204" // part of "\x1b[38;2;170;187;204m"
+	dimSeq := "17;34;51"   // part of "\x1b[38;2;17;34;51m"
+
+	fgIdx := strings.Index(row, fgSeq)
+	dimIdx := strings.Index(row, dimSeq)
+
+	if fgIdx < 0 {
+		t.Errorf("styleFg colour sequence %q not found in row; row=%q", fgSeq, row)
+	}
+	if dimIdx < 0 {
+		t.Errorf("styleDim colour sequence %q not found in row; row=%q", dimSeq, row)
+	}
+	if fgIdx >= 0 && dimIdx >= 0 && fgIdx >= dimIdx {
+		t.Errorf("expected styleFg (tree connector) to appear before styleDim (indicator+label) in row, but fgIdx=%d >= dimIdx=%d; row=%q", fgIdx, dimIdx, row)
+	}
+
+	// Also verify the expanded indicator path (▼) to satisfy the edge-case AC.
+	rowExpanded := dashboard.RenderReviewGroupRow(d, s, 0, "  └── ", true /*expanded*/, false, styleDim, styleFg, styleAgentType, 10, 10)
+	if fgIdx2 := strings.Index(rowExpanded, fgSeq); fgIdx2 < 0 {
+		t.Errorf("expanded: styleFg colour sequence not found; row=%q", rowExpanded)
+	}
+	if dimIdx2 := strings.Index(rowExpanded, dimSeq); dimIdx2 < 0 {
+		t.Errorf("expanded: styleDim colour sequence not found; row=%q", rowExpanded)
 	}
 }
 

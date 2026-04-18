@@ -71,7 +71,11 @@ func RenderReviewGroupRow(
 		Foreground(stateStyle(s.AgentState).GetForeground()).
 		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
 
-	prefix := styleDim.Render(fmt.Sprintf(" %s%s", dot, sessionArea))
+	// Split the styling: tree connector in styleFg (matching leaf rows),
+	// indicator + label in styleDim (blue, so the group row stays visually distinct).
+	treePart := styleFg.Render(fmt.Sprintf(" %s%s", dot, treePrefix))
+	labelPart := styleDim.Render(fmt.Sprintf("%-*s", totalSessionW-runeCount, content))
+	prefix := treePart + labelPart
 	row := prefix + styleFg.Render("  ") + stateStr
 	return row + "\n"
 }
