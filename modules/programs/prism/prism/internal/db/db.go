@@ -1484,7 +1484,7 @@ FROM agent_events
 WHERE session_name = ?
   AND type = 'state_change'
   AND JSON_EXTRACT(payload, '$.state') IN ('finished', 'interrupted', 'error', 'deleted')
-ORDER BY created_at DESC
+ORDER BY created_at DESC, rowid DESC
 LIMIT ?`
 	rows, err := d.conn.Query(q, sessionName, limit)
 	if err != nil {
