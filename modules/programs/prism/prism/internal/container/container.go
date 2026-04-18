@@ -1246,6 +1246,14 @@ func (m *Manager) buildRunArgs() []string {
 	// connects to the SSE endpoint on the mapped host port exactly as before.
 	// The tmux agent window uses "podman attach" to bridge the PTY (RFC #691,
 	// Phase 1a / Issue #715).
+	// Raise the bash-tool default timeout inside the container to 15 min
+	// (same value used for host-mode sessions). Scoped to opencode only —
+	// this env var is not forwarded to any other process in the container.
+	// Precedence: podman --env overrides any same-named ENV instruction baked
+	// into the image, so 900000 is what opencode inside the container sees
+	// regardless of the image's default. Currently no image default is set.
+	args = append(args, "--env", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000")
+
 	args = append(args, Image,
 		"opencode",
 		"--port", fmt.Sprintf("%d", ContainerPort),
