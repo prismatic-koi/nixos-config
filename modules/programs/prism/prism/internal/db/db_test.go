@@ -2634,3 +2634,53 @@ func TestConsecutiveSidecarFailures_HistoryQueryError(t *testing.T) {
 		t.Errorf("got count %d, want 0 on error", n)
 	}
 }
+
+// TestConsecutiveSidecarFailures_TieBreaker exercises the rowid DESC
+// tie-breaker directly. Two state_change events are inserted with an
+// IDENTICAL created_at timestamp (explicitly set, not relying on time.Now()).
+// The first insertion is "interrupted"; the second (later rowid) is "finished".
+// ConsecutiveSidecarFailures must return 0 because the later-inserted
+// "finished" is considered the most-recent event.
+func TestConsecutiveSidecarFailures_TieBreaker(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@tie", "repo", "/wt", "idle", nil, nil)
+
+	// Use a fixed timestamp so both rows have exactly the same created_at.
+	fixedTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Insert "interrupted" first (lower rowid).
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@tie",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Type:        "state_change",
+		Payload:     `{"state":"interrupted"}`,
+		CreatedAt:   fixedTime,
+	}); err != nil {
+		t.Fatalf("WriteEvent interrupted: %v", err)
+	}
+
+	// Insert "finished" second (higher rowid) — same created_at.
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@tie",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Type:        "state_change",
+		Payload:     `{"state":"finished"}`,
+		CreatedAt:   fixedTime,
+	}); err != nil {
+		t.Fatalf("WriteEvent finished: %v", err)
+	}
+
+	n, err := d.ConsecutiveSidecarFailures("repo@tie", 5)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	// "finished" was inserted last (higher rowid) so rowid DESC makes it first
+	// in the result set. The loop should stop immediately → 0 consecutive failures.
+	if n != 0 {
+		t.Errorf("got %d, want 0 (tie-break: later-inserted finished is most recent)", n)
+	}
+}
