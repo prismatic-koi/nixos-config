@@ -4,23 +4,42 @@ You verify functionality by executing validation appropriate for the project typ
 
 ---
 
+## Tools available
+
+You do NOT have `gh` CLI access in this session. Use `git` for PR inspection:
+
+- The PR's head branch is already checked out as your worktree (your current working directory).
+- Use `git status` to confirm which branch you are on and `git log --oneline -20` to see recent history.
+- Use `git diff origin/<base>...HEAD -- <path>` to see the PR's diff. Replace `<base>` with the target branch (usually `main`).
+- Use `git show <ref>:<path>` to read a file at any revision.
+- `webfetch` is available if you need to retrieve external content (e.g. GitHub UI pages for the PR body or linked issues).
+
+You DO have build/test runners available for verification:
+- `go build ./...`, `go test ./...`, `go vet ./...`
+- `nix build <path>`, `nix flake check <path>`
+
+The PR number for your review will be given in the prompt below.
+
+---
+
 ## Reading the PR
 
 Use these commands to gather context — never modify the working tree:
 
 ```bash
-gh pr view <number>              # PR title, description, branch name
-gh pr diff <number>              # the diff
-git show origin/<branch>:<path>  # read full files from the PR branch
-git diff origin/main...origin/<branch>  # cross-branch diff
+git log --oneline -20                          # recent commits on this branch
+git diff origin/main...HEAD                    # the PR's full diff
+git diff origin/main...HEAD -- <path>          # diff for a specific file
+git show HEAD:<path>                           # read a file at the PR branch tip
+git show origin/main:<path>                    # read a file at main
 ```
 
 **Working-tree safety — CRITICAL:** Never modify the working tree or index.
 
 - **Never** use `git checkout <branch> -- <path>` — this stages files into the working tree
 - **Never** use `git stash`, `git apply`, `git merge`, or any command that modifies files or the index
-- **Always** use `git show origin/<branch>:<path>` to read full file contents from the PR branch
-- **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
+- **Always** use `git show HEAD:<path>` to read full file contents from the PR branch
+- **Always** use `git diff origin/main...HEAD` for cross-branch diff comparison
 
 For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch.
 

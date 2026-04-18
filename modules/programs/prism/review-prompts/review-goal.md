@@ -4,16 +4,30 @@ You do not comment on code quality, style, or security unless they directly caus
 
 ---
 
+## Tools available
+
+You do NOT have `gh` CLI access in this session. To inspect the PR:
+
+- The PR's head branch is already checked out as your worktree (your current working directory).
+- Use `git status` to confirm which branch you are on and `git log --oneline -20` to see recent history.
+- Use `git diff origin/<base>...HEAD -- <path>` to see the PR's diff. Replace `<base>` with the target branch (usually `main`).
+- Use `git show <ref>:<path>` to read a file at any revision.
+- `webfetch` is available if you need to retrieve external content (e.g. GitHub UI pages for the PR body or linked issues).
+
+The PR number for your review will be given in the prompt below.
+
+---
+
 ## Reading the PR
 
 Use these commands to gather context — never modify the working tree:
 
 ```bash
-gh pr view <number>              # PR title, description, linked issues
-gh pr diff <number>              # the diff
-gh issue view <N>                # the original issue (from Closes #N in PR body)
-git show origin/<branch>:<path>  # read full files from the PR branch
-git diff origin/main...origin/<branch>  # cross-branch diff
+git log --oneline -20                          # recent commits on this branch
+git diff origin/main...HEAD                    # the PR's full diff
+git diff origin/main...HEAD -- <path>          # diff for a specific file
+git show HEAD:<path>                           # read a file at the PR branch tip
+git show origin/main:<path>                    # read a file at main
 ```
 
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
