@@ -3,9 +3,78 @@ package dashboard
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+// RenderReviewGroupRow renders a virtual review-round group row (collapsed or
+// expanded). treePrefix is the depth-1 connector ("  ├── " or "  └── ").
+// expanded controls whether the ▼ (expanded) or ▶ (collapsed) indicator is shown.
+func RenderReviewGroupRow(
+	d Shared,
+	s AgentSession,
+	cursorIdx int,
+	treePrefix string,
+	expanded bool,
+	cursorActive bool,
+	styleDim, styleFg, styleAgentType lipgloss.Style,
+	sessionW, stateW int,
+) string {
+	isSelected := cursorIdx == d.Cursor
+
+	// Group rows have no "you are here" dot — they are not real sessions.
+	const dot = "  "
+
+	const treePrefixW = 10
+	totalSessionW := treePrefixW + sessionW
+
+	// Indicator: ▼ expanded, ▶ collapsed.
+	indicator := "▶ "
+	if expanded {
+		indicator = "▼ "
+	}
+
+	// Display the group label (e.g. "~review-1") with the indicator prepended.
+	label := Depth2Label(s.Name)
+	if label == "" {
+		label = SessionBranch(s.Name)
+	}
+	content := indicator + label
+
+	// Build session area: treePrefix (6 runes) + content padded to fill remainder.
+	runeCount := utf8.RuneCountInString(treePrefix)
+	branchW := totalSessionW - runeCount
+	if branchW <= 0 {
+		content = ""
+	} else if utf8.RuneCountInString(content) > branchW {
+		content = string([]rune(content)[:branchW-1]) + "…"
+	}
+	sessionArea := treePrefix + fmt.Sprintf("%-*s", totalSessionW-runeCount, content)
+
+	if isSelected && cursorActive {
+		barBg := lipgloss.Color(ColorSecondary)
+		if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
+			barBg = c
+		}
+		plain := fmt.Sprintf(" %s%s  %-*s", dot, sessionArea, stateW, stateLabel(s.AgentState))
+		row := lipgloss.NewStyle().
+			Foreground(lipgloss.Color(ColorBg0)).
+			Background(barBg).
+			Bold(true).
+			Width(d.Width).
+			Render(plain)
+		return row + "\n"
+	}
+
+	stateStr := lipgloss.NewStyle().
+		Foreground(stateStyle(s.AgentState).GetForeground()).
+		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
+
+	prefix := styleDim.Render(fmt.Sprintf(" %s%s", dot, sessionArea))
+	row := prefix + styleFg.Render("  ") + stateStr
+	return row + "\n"
+}
 
 // DashView is the shared rendering function for both popup and persistent modes.
 // currentSession is used to show the "you are here" ◆ indicator.
@@ -193,12 +262,25 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
-		isTopLevel := func(name string) bool {
-			branch := SessionBranch(name)
-			return branch == name || branch == "@main"
+		// The Displayed list (built by BuildDisplayRows) may include:
+		//   - Top-level rows (repo@main or plain session names)
+		//   - Depth-1 child rows (repo@branch, non-review)
+		//   - Virtual review-round group rows (IsReviewGroup=true, displayed as depth-1)
+		//   - Depth-2 per-agent child rows (IsDepth2Session=true, visible only when group is expanded)
+		isTopLevel := func(s AgentSession) bool {
+			if s.IsReviewGroup {
+				return false
+			}
+			branch := SessionBranch(s.Name)
+			return branch == s.Name || branch == "@main"
 		}
-		isDepth1Child := func(name string) bool {
-			return !isTopLevel(name) && !IsDepth2Session(name)
+		isDepth1Child := func(s AgentSession) bool {
+			return !isTopLevel(s) && !IsDepth2Session(s.Name) && !s.IsReviewGroup
+		}
+		// isDepth1Like returns true for rows that render as depth-1: review group
+		// rows and regular depth-1 children.
+		isDepth1Like := func(s AgentSession) bool {
+			return s.IsReviewGroup || isDepth1Child(s)
 		}
 		// groupHasTopLevel returns true if the contiguous run of same-repo
 		// sessions that includes sessions[i] contains at least one top-level row.
@@ -210,32 +292,34 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 				start--
 			}
 			for k := start; k < len(sessions) && SessionRepo(sessions[k].Name) == thisRepo; k++ {
-				if isTopLevel(sessions[k].Name) {
+				if isTopLevel(sessions[k]) {
 					return true
 				}
 			}
 			return false
 		}
 		for i, s := range sessions {
-			isD1Child := isDepth1Child(s.Name) && groupHasTopLevel(i)
-			isD2Child := IsDepth2Session(s.Name)
+			isD2Child := IsDepth2Session(s.Name) && !s.IsReviewGroup
+			isReviewGrp := s.IsReviewGroup
+			isD1Child := isDepth1Child(s) && groupHasTopLevel(i)
 			var treePrefix string
 			if isD2Child {
-				// Depth-2 review session: "  │   ├── " or "  │   └── "
-				// Look ahead within the same parent branch to determine if last sibling.
-				parentBranch := Depth2ParentBranch(s.Name)
+				// Depth-2 per-agent child (expanded group): "  │   ├── " or "  │   └── "
+				// Look ahead within the same group (same ReviewRoundKey) to determine
+				// if this is the last sibling.
+				thisGroupKey := ReviewRoundKey(s.Name)
 				isLastD2 := true
 				for j := i + 1; j < len(sessions); j++ {
 					next := sessions[j]
 					if SessionRepo(next.Name) != SessionRepo(s.Name) {
 						break
 					}
-					if IsDepth2Session(next.Name) && Depth2ParentBranch(next.Name) == parentBranch {
+					if IsDepth2Session(next.Name) && !next.IsReviewGroup && ReviewRoundKey(next.Name) == thisGroupKey {
 						isLastD2 = false
 						break
 					}
-					// If we hit a non-depth-2 session in the same repo, stop.
-					if !IsDepth2Session(next.Name) {
+					// Stop if we hit a non-depth-2 session or a different group.
+					if !IsDepth2Session(next.Name) || next.IsReviewGroup {
 						break
 					}
 				}
@@ -244,15 +328,17 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 				} else {
 					treePrefix = "  │   ├── "
 				}
-			} else if isD1Child {
-				// Look ahead to determine if this is the last depth-1 child in the group.
+			} else if isReviewGrp || isD1Child {
+				// Review group row or regular depth-1 child: "  ├── " or "  └── "
+				// Look ahead to determine if this is the last depth-1-like child in the group.
 				isLastChild := true
 				thisRepo := SessionRepo(s.Name)
 				for j := i + 1; j < len(sessions); j++ {
-					if SessionRepo(sessions[j].Name) != thisRepo {
+					next := sessions[j]
+					if SessionRepo(next.Name) != thisRepo {
 						break
 					}
-					if isDepth1Child(sessions[j].Name) || IsDepth2Session(sessions[j].Name) {
+					if isDepth1Like(next) || IsDepth2Session(next.Name) {
 						isLastChild = false
 						break
 					}
@@ -263,7 +349,13 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 					treePrefix = "  ├── "
 				}
 			}
-			sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
+			// For review group rows, use specialised renderer.
+			if isReviewGrp {
+				expanded := d.CollapsedGroups[s.Name]
+				sb.WriteString(RenderReviewGroupRow(d, s, i, treePrefix, expanded, cursorActive, styleDim, styleFg, styleAgentType, sessionW, stateW))
+			} else {
+				sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
+			}
 		}
 	}
 

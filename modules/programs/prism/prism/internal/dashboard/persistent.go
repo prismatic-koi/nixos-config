@@ -164,6 +164,13 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// session and return to passive watch mode. The process does NOT
 				// quit — the dashboard stays alive for the next visitor.
 				selected := m.Displayed[m.Cursor]
+				// If the cursor is on a review-round group row (e.g. when filter
+				// is empty and the cursor happened to be on one), toggle it
+				// instead of trying to switch to a non-existent session.
+				if selected.IsReviewGroup {
+					m.Shared = ToggleReviewGroup(m.Shared, selected.Name)
+					return m, nil
+				}
 				m.CursorActive = false
 				return m, func() tea.Msg {
 					// Always query the current client at switch time (see
@@ -240,6 +247,12 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.Displayed[m.Cursor]
+			// If the selected row is a review-round group row, toggle it
+			// instead of switching to a session.
+			if selected.IsReviewGroup {
+				m.Shared = ToggleReviewGroup(m.Shared, selected.Name)
+				return m, CursorTimeoutCmd()
+			}
 			m.CursorActive = false
 			return m, func() tea.Msg {
 				// Always query the current client at switch time rather than

@@ -125,9 +125,17 @@ type Shared struct {
 	FilterActive bool
 	FilterText   string
 	// Displayed is the filtered (or full) sessions list used by View/cursor.
+	// It includes virtual review-round group rows (IsReviewGroup=true) and
+	// excludes per-agent children when their group is collapsed.
 	Displayed []AgentSession
 	// StatusMsg is a transient error/info line shown at the bottom of the view.
 	StatusMsg string
+	// CollapsedGroups tracks the expand/collapse state of review-round group rows.
+	// Key: group key (e.g. "nixos-config@feature~review-1").
+	// Value: true = expanded, false/absent = collapsed.
+	// This map is NOT persisted across picker/dashboard invocations; it starts
+	// empty (all groups collapsed) on every open.
+	CollapsedGroups map[string]bool
 }
 
 // ApplySessionsMsg updates shared state when a SessionsMsg arrives.
@@ -208,29 +216,80 @@ func (d Shared) HandleFilterKey(msg tea.KeyMsg) (Shared, bool /* exitFilter */, 
 }
 
 // RefilterShared recomputes d.Displayed from d.Sessions applying the active
-// fuzzy filter (if any). It also clamps the cursor so it never points out of
-// bounds. It returns the updated Shared.
+// fuzzy filter (if any), then builds the display rows (inserting virtual
+// review-round group rows and applying collapse state). It also clamps the
+// cursor so it never points out of bounds. It returns the updated Shared.
 func RefilterShared(d Shared) Shared {
+	// Ensure CollapsedGroups is initialised.
+	if d.CollapsedGroups == nil {
+		d.CollapsedGroups = map[string]bool{}
+	}
+
+	// Step 1: Apply fuzzy filter to real sessions.
+	var filtered []AgentSession
 	if !d.FilterActive || d.FilterText == "" {
-		d.Displayed = make([]AgentSession, len(d.Sessions))
-		copy(d.Displayed, d.Sessions)
+		filtered = make([]AgentSession, len(d.Sessions))
+		copy(filtered, d.Sessions)
 	} else {
-		var out []AgentSession
 		for _, s := range d.Sessions {
+			// In filter mode, match against the full session name.
+			// Per-agent sessions are matched individually; the group row
+			// is synthesised by BuildDisplayRows when needed.
 			if fuzzyMatch(s.Name, d.FilterText) {
-				out = append(out, s)
+				filtered = append(filtered, s)
 			}
 		}
-		d.Displayed = out
 	}
-	// Sort displayed to match visual render order so d.Cursor indexes
-	// correctly: alphabetical by repo, @main first within each repo,
-	// then other branches alphabetically.
-	SortDisplayed(d.Displayed)
+
+	// Step 2: Sort to match visual render order.
+	SortDisplayed(filtered)
+
+	// Step 3: Build display rows.
+	//
+	// In filter mode with text: we display a flat list (no grouping — easier to
+	// scan), but we still run BuildDisplayRows with the filter text so that
+	// auto-expand state is persisted to CollapsedGroups. This ensures that when
+	// the filter is cleared, groups that had matching children stay expanded.
+	//
+	// In non-filter mode (or empty filter): use the full grouped rendering with
+	// virtual review-round group rows and collapse state applied.
+	if d.FilterActive && d.FilterText != "" {
+		// Run BuildDisplayRows to detect and persist auto-expanded groups,
+		// but display the flat filtered list rather than the grouped rows.
+		_, autoExpanded := BuildDisplayRows(d.Sessions, d.CollapsedGroups, d.FilterText)
+		for k := range autoExpanded {
+			d.CollapsedGroups[k] = true
+		}
+		d.Displayed = filtered
+	} else {
+		// Build display rows with collapse logic.
+		filterText := ""
+		if d.FilterActive {
+			filterText = d.FilterText
+		}
+		rows, autoExpanded := BuildDisplayRows(filtered, d.CollapsedGroups, filterText)
+		// Persist any auto-expanded groups so they remain expanded after the
+		// filter text changes within the same session.
+		for k := range autoExpanded {
+			d.CollapsedGroups[k] = true
+		}
+		d.Displayed = rows
+	}
+
 	if d.Cursor >= len(d.Displayed) {
 		d.Cursor = max(0, len(d.Displayed)-1)
 	}
 	return d
+}
+
+// ToggleReviewGroup flips the expand/collapse state for a review-round group
+// row identified by its group key. Returns the updated Shared.
+func ToggleReviewGroup(d Shared, groupKey string) Shared {
+	if d.CollapsedGroups == nil {
+		d.CollapsedGroups = map[string]bool{}
+	}
+	d.CollapsedGroups[groupKey] = !d.CollapsedGroups[groupKey]
+	return RefilterShared(d)
 }
 
 // fuzzyMatch returns true if all runes in pattern appear in s in order.
