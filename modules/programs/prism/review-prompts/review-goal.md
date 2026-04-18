@@ -27,7 +27,7 @@ git log --oneline -20                          # recent commits on this branch
 git diff origin/main...HEAD                    # the PR's full diff
 git diff origin/main...HEAD -- <path>          # diff for a specific file
 git show HEAD:<path>                           # read a file at the PR branch tip
-git show origin/main:<path>                   # read a file at main
+git show origin/main:<path>                    # read a file at main
 ```
 
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.

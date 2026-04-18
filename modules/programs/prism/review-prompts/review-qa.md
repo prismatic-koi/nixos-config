@@ -31,15 +31,15 @@ git log --oneline -20                          # recent commits on this branch
 git diff origin/main...HEAD                    # the PR's full diff
 git diff origin/main...HEAD -- <path>          # diff for a specific file
 git show HEAD:<path>                           # read a file at the PR branch tip
-git show origin/main:<path>                   # read a file at main
+git show origin/main:<path>                    # read a file at main
 ```
 
 **Working-tree safety — CRITICAL:** Never modify the working tree or index.
 
 - **Never** use `git checkout <branch> -- <path>` — this stages files into the working tree
 - **Never** use `git stash`, `git apply`, `git merge`, or any command that modifies files or the index
-- **Always** use `git show origin/<branch>:<path>` to read full file contents from the PR branch
-- **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
+- **Always** use `git show HEAD:<path>` to read full file contents from the PR branch
+- **Always** use `git diff origin/main...HEAD` for cross-branch diff comparison
 
 For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch.
 

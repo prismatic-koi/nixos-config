@@ -27,7 +27,7 @@ git log --oneline -20                          # recent commits on this branch
 git diff origin/main...HEAD                    # the PR's full diff
 git diff origin/main...HEAD -- <path>          # diff for a specific file
 git show HEAD:<path>                           # read a file at the PR branch tip
-git show origin/main:<path>                   # read a file at main
+git show origin/main:<path>                    # read a file at main
 ```
 
 **Always read the full files being modified** — diffs alone are not enough. Code that looks wrong in isolation may be correct given surrounding logic, and vice versa.
