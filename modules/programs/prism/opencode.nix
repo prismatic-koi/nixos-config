@@ -982,7 +982,14 @@
             ];
           programs.zsh.shellAliases = {
             # set environment variables for opencode when run directly (not via prism spawn)
-            opencode = "${envPrefix} opencode";
+            # OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: raise the bash-tool default timeout
+            # from 2 min to 15 min so long-running commands (e.g. prism review) are not killed
+            # mid-flight. Scoped to opencode only — not pi or any other harness.
+            # Note: if the user has already exported a higher value in their shell env, the shell
+            # resolves the inline prefix first and the user's value would be overridden; since this
+            # is a floor setting, users who need a higher value should set it in their shell env
+            # before invoking opencode directly (the prism spawn path hard-codes the value instead).
+            opencode = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000 ${envPrefix} opencode";
           };
           # Theme is configured in tui.json, not opencode.json
           xdg.configFile."opencode/tui.json".text = builtins.toJSON {
