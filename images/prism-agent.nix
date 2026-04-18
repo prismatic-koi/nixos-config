@@ -163,6 +163,13 @@ pkgs.dockerTools.buildLayeredImage {
         gopls
         typescript-language-server
         nil # Nix LSP
+
+        # Init process — sits at PID 1 to reap orphaned zombies and forward
+        # signals.  Without this, opencode runs as PID 1 and accumulates
+        # hundreds of defunct child processes (every git/go invocation that
+        # exits without being wait(2)-ed).  tini is ~24 KB, explicitly
+        # designed for this role, and runtime-agnostic (no --init flag needed).
+        tini
       ];
       pathsToLink = [
         "/bin"
@@ -241,6 +248,15 @@ pkgs.dockerTools.buildLayeredImage {
   '';
 
   config = {
+    # tini is the init process (PID 1).  It reaps orphaned zombie children and
+    # forwards signals to its child process (PID 2).  The "--" separator tells
+    # tini to exec everything that follows as its subprocess, so both the
+    # default Cmd and any runtime-supplied command override become PID 2+
+    # rather than PID 1.
+    Entrypoint = [
+      "/bin/tini"
+      "--"
+    ];
     Cmd = [ "/bin/bash" ];
     Env = [
       # /bin first so Nix-installed tools shadow Ubuntu's equivalents
