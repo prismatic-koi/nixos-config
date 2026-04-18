@@ -161,6 +161,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 		_ = os.Stdout.Sync()
 	}
 
+	// Fetch PR context once before spawning any review-agent sessions.
+	// FetchPRContext handles gh failures gracefully — a failed fetch logs a
+	// warning and returns a PRContext with FetchFailed=true. The review run
+	// continues in either case; agents fall back to git-based discovery when
+	// the context is absent.
+	prCtx := review.FetchPRContext(prNumber, 0, 0)
+
 	// Build run options.
 	opts := review.Opts{
 		PRNumber:       prNumber,
@@ -172,6 +179,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		PluginHostPath: cfg.SidecarPluginPath,
 		ContainerMode:  cfg.ContainerMode,
 		OnProgress:     progressLine,
+		PRCtx:          &prCtx,
 	}
 
 	// Load profiles for container mode — passed through to review.Run so
