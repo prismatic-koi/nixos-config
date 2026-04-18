@@ -177,14 +177,12 @@ func BuildOpencodeCmd(opts Opts) string {
 //
 // Scoped to opencode only — never injected into pi or other harnesses.
 //
-// Precedence note: inline env-var prefixes in shell commands are evaluated left-to-right.
-// This value is a compile-time constant; if the user sets a higher value externally (e.g.
-// via OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS in their shell env before running prism
-// spawn), the shell will see this constant first and the user's env var will take precedence
-// via normal env inheritance within the child process — but only if opencode reads the
-// process environment rather than the shell-expanded prefix. Since the tmux "sh -c" invocation
-// applies the prefix before opencode starts, and opencode reads the Flag var at startup, our
-// value here acts as the effective floor when no other value is already set.
+// Precedence note: this value is prepended as an inline shell env-var prefix (VAR=val cmd).
+// Inline prefixes override any same-named variable already exported in the calling shell —
+// they do NOT inherit the shell's value. That means 900000 is what opencode always sees,
+// regardless of whether the user has exported OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS
+// before running `prism spawn`. Users who need a different value for spawn-based sessions
+// must set it via AgentEnvVars in profiles.json or patch this constant.
 const opencodeExperimentalBashTimeout = "900000"
 
 // buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).

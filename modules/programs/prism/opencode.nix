@@ -985,10 +985,11 @@
             # OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: raise the bash-tool default timeout
             # from 2 min to 15 min so long-running commands (e.g. prism review) are not killed
             # mid-flight. Scoped to opencode only — not pi or any other harness.
-            # Note: if the user has already exported a higher value in their shell env, the shell
-            # resolves the inline prefix first and the user's value would be overridden; since this
-            # is a floor setting, users who need a higher value should set it in their shell env
-            # before invoking opencode directly (the prism spawn path hard-codes the value instead).
+            # Precedence: inline shell env-var prefixes (VAR=val cmd) override any same-named
+            # variable already exported in the shell — they do NOT inherit the exported value.
+            # This means 900000 is what opencode sees regardless of the user's shell env.
+            # Users who need a different value must change this alias or override in their shell
+            # after the alias expands (not before).
             opencode = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000 ${envPrefix} opencode";
           };
           # Theme is configured in tui.json, not opencode.json
