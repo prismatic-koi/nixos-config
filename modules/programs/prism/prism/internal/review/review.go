@@ -505,7 +505,9 @@ func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, c
 		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(agentSession))
 	}
 	escapedPrompt := shellQuote(prompt)
-	return fmt.Sprintf("PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",
+	// Prepend the experimental bash-tool timeout env var so review agents also
+	// get the 15-min default. Scoped to opencode only — not pi or other harnesses.
+	return fmt.Sprintf("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000 PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",
 		shellQuote(agentSession), ag.OpencodeName, port, escapedPrompt)
 }
 

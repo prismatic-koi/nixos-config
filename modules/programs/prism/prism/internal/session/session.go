@@ -171,6 +171,20 @@ func BuildOpencodeCmd(opts Opts) string {
 	return buildDirectOpencodeCmd(opts)
 }
 
+// opencodeExperimentalBashTimeout is the default bash-tool timeout (in ms) injected
+// into all opencode host-mode sessions. This raises the 2-min default to 15 min so
+// that long-running commands (e.g. prism review) are not killed mid-flight.
+//
+// Scoped to opencode only — never injected into pi or other harnesses.
+//
+// Precedence note: this value is prepended as an inline shell env-var prefix (VAR=val cmd).
+// Inline prefixes override any same-named variable already exported in the calling shell —
+// they do NOT inherit the shell's value. That means 900000 is what opencode always sees,
+// regardless of whether the user has exported OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS
+// before running `prism spawn`. Users who need a different value for spawn-based sessions
+// must set it via AgentEnvVars in profiles.json or patch this constant.
+const opencodeExperimentalBashTimeout = "900000"
+
 // buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).
 func buildDirectOpencodeCmd(opts Opts) string {
 	agent := opts.Agent
@@ -213,6 +227,11 @@ func buildDirectOpencodeCmd(opts Opts) string {
 		}
 		cmd = prefix.String() + cmd
 	}
+	// Prepend the experimental bash-tool timeout env var. This is applied
+	// outermost (before AgentEnvVars and PRISM_SESSION_NAME) so it reaches
+	// opencode regardless of profile-level env overrides. Scoped to host-mode
+	// only — container-mode sessions receive it via podman --env in buildRunArgs.
+	cmd = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=" + opencodeExperimentalBashTimeout + " " + cmd
 	return cmd
 }
 
