@@ -1452,6 +1452,64 @@ func scanStatus(s scanner) (*Status, error) {
 	return &st, nil
 }
 
+// ConsecutiveSidecarFailures returns the number of consecutive non-successful
+// sidecar runs for the given session, counting from the most recent terminal
+// state_change event backward. A "successful" run is one whose terminal
+// state_change payload carries "finished"; all other terminal states
+// ("interrupted", "error", "deleted") are counted as failures.
+//
+// The count stops (and the current value is returned) as soon as a "finished"
+// state_change is encountered, or when there are no more state_change events
+// with terminal states to examine.
+//
+// Sessions with no recorded terminal state_change events return (0, nil) —
+// they are treated as having zero consecutive failures so that new or
+// pre-existing sessions are always restored normally.
+//
+// The limit parameter caps how many events to fetch from the DB. A value of
+// 0 (or any non-positive value) uses the default internal cap of 10, which
+// is more than sufficient for any realistic circuit-breaker threshold. Callers
+// should pass a value at least as large as the configured threshold so the
+// query covers the full window; passing 0 is safe and will use the cap.
+//
+// If the DB query itself fails, the error is returned alongside a count of 0
+// so callers can fall back to restoring the session normally (non-fatal path).
+func (d *DB) ConsecutiveSidecarFailures(sessionName string, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 10 // safe upper bound; more than any sane threshold value
+	}
+	const q = `
+SELECT JSON_EXTRACT(payload, '$.state') AS state
+FROM agent_events
+WHERE session_name = ?
+  AND type = 'state_change'
+  AND JSON_EXTRACT(payload, '$.state') IN ('finished', 'interrupted', 'error', 'deleted')
+ORDER BY created_at DESC
+LIMIT ?`
+	rows, err := d.conn.Query(q, sessionName, limit)
+	if err != nil {
+		return 0, fmt.Errorf("db: consecutive sidecar failures: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return 0, fmt.Errorf("db: consecutive sidecar failures: scan: %w", err)
+		}
+		if state == "finished" {
+			// A successful run: stop counting.
+			break
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("db: consecutive sidecar failures: iterate: %w", err)
+	}
+	return count, nil
+}
+
 func scanBusMessage(s scanner) (BusMessage, error) {
 	var m BusMessage
 	var sentAt int64

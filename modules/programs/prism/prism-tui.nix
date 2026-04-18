@@ -51,6 +51,8 @@ let
     git_user_email = gitUserEmail;
     ssh_access_key_name = config.nx.programs.prism.sshAccessKeyName;
     ssh_signing_key_name = config.nx.programs.prism.sshSigningKeyName;
+    restore_stagger_delay_ms = config.nx.programs.prism.restoreStaggerDelayMs;
+    sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
   };
 in
 {
@@ -75,6 +77,28 @@ in
         Base filename (not full path) of the SSH signing key in ~/.ssh/ to
         mount into prism containers. The public key is derived by appending
         ".pub". Defaults to "prismatic-koi-ed25519-signingkey".
+      '';
+    };
+
+    nx.programs.prism.restoreStaggerDelayMs = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      description = ''
+        Delay in milliseconds inserted between successive session creates in
+        `prism restore`, to flatten the podman startup burst on machines with
+        many sessions. 0 means use the compiled-in default (500ms). Set to a
+        negative value to disable the stagger entirely.
+      '';
+    };
+
+    nx.programs.prism.sidecarCircuitBreakerThreshold = lib.mkOption {
+      type = lib.types.int;
+      default = 0;
+      description = ''
+        Number of consecutive non-successful sidecar exits that causes
+        `prism restore` to skip re-spawning a session. 0 means use the
+        compiled-in default (3). Set to a negative value to disable the
+        circuit breaker entirely.
       '';
     };
   };

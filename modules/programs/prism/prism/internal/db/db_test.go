@@ -2435,3 +2435,202 @@ func sessionNames(rows []db.Status) []string {
 	}
 	return names
 }
+
+// ─── ConsecutiveSidecarFailures tests ────────────────────────────────────────
+
+// writeStateChange is a test helper that inserts a state_change event for
+// the given session with the given state value.
+func writeStateChange(t *testing.T, d *db.DB, sessionName, state string) {
+	t.Helper()
+	id := uuid.New().String()
+	if err := d.WriteEvent(db.Event{
+		ID:          id,
+		SessionName: sessionName,
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Type:        "state_change",
+		Payload:     `{"state":"` + state + `"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent state_change(%s): %v", state, err)
+	}
+}
+
+// TestConsecutiveSidecarFailures_NoHistory verifies that a session with no
+// recorded terminal state_change events returns 0 consecutive failures.
+// Brand-new and pre-existing sessions should always be restored normally.
+func TestConsecutiveSidecarFailures_NoHistory(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@main", "repo", "/wt", "idle", nil, nil)
+
+	n, err := d.ConsecutiveSidecarFailures("repo@main", 10)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("got %d, want 0 (no history)", n)
+	}
+}
+
+// TestConsecutiveSidecarFailures_NMinusOneFailures verifies that N-1
+// consecutive non-successful terminal states do NOT reach the threshold — the
+// session should still be restored.
+func TestConsecutiveSidecarFailures_NMinusOneFailures(t *testing.T) {
+	const threshold = 3
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@feat", "repo", "/wt", "idle", nil, nil)
+
+	// Write threshold-1 == 2 interrupted state_change events.
+	for i := 0; i < threshold-1; i++ {
+		writeStateChange(t, d, "repo@feat", "interrupted")
+	}
+
+	n, err := d.ConsecutiveSidecarFailures("repo@feat", threshold)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != threshold-1 {
+		t.Errorf("got %d, want %d (N-1 failures)", n, threshold-1)
+	}
+	if n >= threshold {
+		t.Errorf("N-1 failures should not reach threshold %d", threshold)
+	}
+}
+
+// TestConsecutiveSidecarFailures_ExactlyNFailures verifies that exactly N
+// consecutive non-successful terminal states reaches (and equals) the threshold,
+// causing the circuit breaker to trip.
+func TestConsecutiveSidecarFailures_ExactlyNFailures(t *testing.T) {
+	const threshold = 3
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@broken", "repo", "/wt", "idle", nil, nil)
+
+	for i := 0; i < threshold; i++ {
+		writeStateChange(t, d, "repo@broken", "interrupted")
+	}
+
+	n, err := d.ConsecutiveSidecarFailures("repo@broken", threshold)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != threshold {
+		t.Errorf("got %d, want %d (exactly N failures)", n, threshold)
+	}
+	if n < threshold {
+		t.Errorf("exactly N failures should reach threshold %d", threshold)
+	}
+}
+
+// TestConsecutiveSidecarFailures_NFailuresThenSuccessThenFailure verifies that
+// a single successful run ("finished") resets the consecutive-failure count.
+// Pattern: fail, fail, fail, succeed, fail → count == 1 (not 4).
+func TestConsecutiveSidecarFailures_NFailuresThenSuccessThenFailure(t *testing.T) {
+	const threshold = 3
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@recovered", "repo", "/wt", "idle", nil, nil)
+
+	// Write N failures, then a success, then one more failure (oldest → newest).
+	for i := 0; i < threshold; i++ {
+		writeStateChange(t, d, "repo@recovered", "interrupted")
+	}
+	writeStateChange(t, d, "repo@recovered", "finished")
+	writeStateChange(t, d, "repo@recovered", "interrupted")
+
+	n, err := d.ConsecutiveSidecarFailures("repo@recovered", threshold+1)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	// Most recent is "interrupted" (1 failure). The "finished" before it
+	// resets the count, so we should see exactly 1 consecutive failure.
+	if n != 1 {
+		t.Errorf("got %d, want 1 (success between failures resets count)", n)
+	}
+	if n >= threshold {
+		t.Errorf("count %d should not reach threshold %d after a success", n, threshold)
+	}
+}
+
+// TestConsecutiveSidecarFailures_SuccessOnly verifies that a session whose last
+// terminal state is "finished" returns 0 consecutive failures.
+func TestConsecutiveSidecarFailures_SuccessOnly(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@clean", "repo", "/wt", "idle", nil, nil)
+
+	writeStateChange(t, d, "repo@clean", "interrupted")
+	writeStateChange(t, d, "repo@clean", "interrupted")
+	writeStateChange(t, d, "repo@clean", "finished") // most recent is a success
+
+	n, err := d.ConsecutiveSidecarFailures("repo@clean", 5)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("got %d, want 0 (most recent is finished)", n)
+	}
+}
+
+// TestConsecutiveSidecarFailures_ErrorStateCountsAsFailure verifies that
+// "error" terminal states are counted as failures (not successes).
+func TestConsecutiveSidecarFailures_ErrorStateCountsAsFailure(t *testing.T) {
+	const threshold = 3
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@erroring", "repo", "/wt", "idle", nil, nil)
+
+	writeStateChange(t, d, "repo@erroring", "error")
+	writeStateChange(t, d, "repo@erroring", "interrupted")
+	writeStateChange(t, d, "repo@erroring", "error")
+
+	n, err := d.ConsecutiveSidecarFailures("repo@erroring", threshold)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != threshold {
+		t.Errorf("got %d, want %d (error states count as failures)", n, threshold)
+	}
+}
+
+// TestConsecutiveSidecarFailures_IgnoresNonTerminalStateChanges verifies that
+// state_change events with non-terminal states (idle, active, waiting, etc.)
+// are not included in the failure count. Only terminal states matter.
+func TestConsecutiveSidecarFailures_IgnoresNonTerminalStateChanges(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@active", "repo", "/wt", "idle", nil, nil)
+
+	// A bunch of non-terminal state changes followed by one failure.
+	writeStateChange(t, d, "repo@active", "idle")
+	writeStateChange(t, d, "repo@active", "active")
+	writeStateChange(t, d, "repo@active", "waiting")
+	writeStateChange(t, d, "repo@active", "interrupted") // first terminal state
+
+	n, err := d.ConsecutiveSidecarFailures("repo@active", 5)
+	if err != nil {
+		t.Fatalf("ConsecutiveSidecarFailures: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("got %d, want 1 (only terminal states counted)", n)
+	}
+}
+
+// TestConsecutiveSidecarFailures_HistoryQueryError verifies that a broken DB
+// connection (simulated via a closed DB) returns an error and a count of 0.
+// The restore code must fall back to restoring the session normally in this case.
+func TestConsecutiveSidecarFailures_HistoryQueryError(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repo@main", "repo", "/wt", "idle", nil, nil)
+
+	// Close the DB before the query to force an error.
+	if err := d.Close(); err != nil {
+		t.Fatalf("close DB: %v", err)
+	}
+	// Prevent t.Cleanup from double-closing (openTestDB registers a Cleanup).
+	// The Close() above should succeed; the deferred Close() from openTestDB
+	// will return an error on the closed connection, which is fine.
+
+	n, err := d.ConsecutiveSidecarFailures("repo@main", 5)
+	if err == nil {
+		t.Error("expected error from closed DB, got nil")
+	}
+	if n != 0 {
+		t.Errorf("got count %d, want 0 on error", n)
+	}
+}
