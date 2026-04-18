@@ -130,6 +130,12 @@ func (m PopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			selected := m.Displayed[m.Cursor]
+			// If the selected row is a review-round group row, toggle it
+			// instead of switching to a session.
+			if selected.IsReviewGroup {
+				m.Shared = ToggleReviewGroup(m.Shared, selected.Name)
+				return m, nil
+			}
 			target := m.SwitchTarget()
 			return m, func() tea.Msg {
 				if errMsg := ensureSessionAndSwitch(selected.Name, target); errMsg != "" {

@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -45,10 +46,11 @@ func switchProjectSpecific() []string {
 
 // entry is a selectable item in the picker.
 type entry struct {
-	display    string // shown in the list
-	path       string // resolved filesystem path (empty for specials)
-	special    string // "[dashboard]", "[scratchpad]", "[+ create new worktree]"
-	sessionRef string // when non-empty, selecting this entry attaches to the named tmux session
+	display     string // shown in the list
+	path        string // resolved filesystem path (empty for specials)
+	special     string // "[dashboard]", "[scratchpad]", "[+ create new worktree]"
+	sessionRef  string // when non-empty, selecting this entry attaches to the named tmux session
+	reviewGroup string // when non-empty, selecting this entry opens a sub-picker for the review round group
 }
 
 func expandHome(path string) string {
@@ -637,6 +639,11 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		return nil
 	}
 
+	// Review round group entry: open a sub-picker showing the individual agents.
+	if chosen.reviewGroup != "" {
+		return handleReviewGroupPick(chosen.reviewGroup)
+	}
+
 	// Review session entry: attach directly to the named tmux session.
 	if chosen.sessionRef != "" {
 		client, _ := tmux.CurrentClient()
@@ -680,8 +687,13 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 }
 
 // activeReviewSessionEntries returns picker entries for active review agent
-// sessions associated with worktrees in projectPath. Each entry has sessionRef
-// set to the tmux session name; selecting it attaches to that session directly.
+// sessions associated with worktrees in projectPath.
+//
+// Per-agent review sessions (e.g. <repo>@<branch>~review-N-review-goal) are
+// grouped by round into collapsed group entries. Each group entry has reviewGroup
+// set to the group key (e.g. "<repo>@<branch>~review-1"); selecting it opens a
+// sub-picker with the individual agents for that round.
+//
 // Returns an empty slice if the DB is unavailable or no review sessions exist.
 func activeReviewSessionEntries(projectPath string, worktrees []string) []entry {
 	// Derive the repo name from the project path (last component).
@@ -699,46 +711,151 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 		return nil
 	}
 
-	var entries []entry
+	// Group per-agent sessions by review round key.
+	// groupSessions maps groupKey → []child entries (sessionRef + state).
+	type childInfo struct {
+		sessionName string
+		state       string
+	}
+	groupSessions := map[string][]childInfo{}
+	groupOrder := []string{} // preserve insertion order for sorted output
+
 	for _, s := range all {
-		// Only include review agent sessions: name must contain "~review-"
-		// followed by a round number and agent name.
-		if !strings.Contains(s.SessionName, "~review-") {
+		// Only per-agent review sessions: name must contain "~review-" and
+		// resolve to a non-empty ReviewRoundKey.
+		rk := dashboard.ReviewRoundKey(s.SessionName)
+		if rk == "" {
 			continue
 		}
-		// Verify it matches the new per-agent shape: <repo>@<branch>~review-N-<agent>
-		// The session must also exist in tmux (not just the DB).
+		// The session must also exist in tmux.
 		if !tmux.HasSession(s.SessionName) {
 			continue
 		}
-		// Extract the label: everything from the first "~review-" onwards.
+		if _, exists := groupSessions[rk]; !exists {
+			groupOrder = append(groupOrder, rk)
+		}
+		st := s.State
+		if st == "" {
+			st = "idle"
+		}
+		groupSessions[rk] = append(groupSessions[rk], childInfo{sessionName: s.SessionName, state: st})
+	}
+
+	// Sort group keys for stable output.
+	for i := 1; i < len(groupOrder); i++ {
+		key := groupOrder[i]
+		j := i - 1
+		for j >= 0 && groupOrder[j] > key {
+			groupOrder[j+1] = groupOrder[j]
+			j--
+		}
+		groupOrder[j+1] = key
+	}
+
+	// Build one collapsed entry per group.
+	var entries []entry
+	for _, rk := range groupOrder {
+		children := groupSessions[rk]
+		// Compute escalated state.
+		states := make([]string, len(children))
+		for i, ch := range children {
+			states[i] = ch.state
+		}
+		esc := dashboard.EscalatedState(states)
+		if esc == "" {
+			esc = "idle"
+		}
+		// Display label: extract "~review-N" portion from the group key.
+		label := rk
+		if idx := strings.Index(rk, "~review-"); idx >= 0 {
+			label = rk[idx:] // e.g. "~review-1"
+		}
+		display := fmt.Sprintf("%s  [%s]", label, esc)
+		entries = append(entries, entry{
+			display:     display,
+			reviewGroup: rk,
+		})
+	}
+
+	return entries
+}
+
+// handleReviewGroupPick opens a sub-picker showing the individual agents for a
+// review round group, then attaches to the chosen agent's tmux session.
+// groupKey is the group key (e.g. "nixos-config@feature~review-1").
+func handleReviewGroupPick(groupKey string) error {
+	// Re-query the DB for child sessions under this group key.
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer d.Close()
+
+	// Find the repo prefix of the group key.
+	repoName := groupKey
+	if idx := strings.Index(groupKey, "@"); idx >= 0 {
+		repoName = groupKey[:idx]
+	}
+
+	all, err := d.AllActiveStatusForRepo(repoName)
+	if err != nil {
+		return fmt.Errorf("query sessions: %w", err)
+	}
+
+	var items []entry
+	for _, s := range all {
+		rk := dashboard.ReviewRoundKey(s.SessionName)
+		if rk != groupKey {
+			continue
+		}
+		if !tmux.HasSession(s.SessionName) {
+			continue
+		}
+		// Label: e.g. "~review-1-review-goal"
 		label := s.SessionName
 		if idx := strings.Index(s.SessionName, "~review-"); idx >= 0 {
-			label = s.SessionName[idx:] // e.g. "~review-1-review-goal"
+			label = s.SessionName[idx:]
 		}
-		state := s.State
-		if state == "" {
-			state = "idle"
+		st := s.State
+		if st == "" {
+			st = "idle"
 		}
-		display := fmt.Sprintf("%s  [%s]", label, state)
-		entries = append(entries, entry{
+		display := fmt.Sprintf("%s  [%s]", label, st)
+		items = append(items, entry{
 			display:    display,
 			sessionRef: s.SessionName,
 		})
 	}
 
-	// Sort entries alphabetically by display label for stable output.
-	for i := 1; i < len(entries); i++ {
-		key := entries[i]
+	// Sort alphabetically.
+	for i := 1; i < len(items); i++ {
+		key := items[i]
 		j := i - 1
-		for j >= 0 && entries[j].display > key.display {
-			entries[j+1] = entries[j]
+		for j >= 0 && items[j].display > key.display {
+			items[j+1] = items[j]
 			j--
 		}
-		entries[j+1] = key
+		items[j+1] = key
 	}
 
-	return entries
+	if len(items) == 0 {
+		return nil // No live agents; do nothing.
+	}
+
+	chosen := pick("agent> ", items)
+	if chosen == nil || chosen.sessionRef == "" {
+		return nil
+	}
+
+	client, _ := tmux.CurrentClient()
+	if client == "" {
+		client = tmux.CallerClient()
+	}
+	if client != "" {
+		return tmux.SwitchClient(client, chosen.sessionRef)
+	}
+	_, err = tmux.SwitchClientCurrent(chosen.sessionRef)
+	return err
 }
 
 func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts) error {

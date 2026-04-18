@@ -14,6 +14,12 @@ import (
 // AgentSession is the dashboard's view of a session. It is derived from
 // db.Status (the authoritative source) with client attachment count added from
 // a tmux query.
+//
+// Review-round group rows are virtual: they do not correspond to a real tmux
+// session but act as expand/collapse placeholders for a set of per-agent child
+// sessions. IsReviewGroup is set to true for these rows; Name holds the full
+// virtual session key (e.g. "nixos-config@feature~review-1") and AgentState
+// holds the escalated state across the children.
 type AgentSession struct {
 	Name         string
 	AgentState   string // active | waiting | finished | compacting | error | idle | ""
@@ -24,6 +30,9 @@ type AgentSession struct {
 	Harness      string // harness name from agent_status.harness, defaults to "opencode"
 	OpencodePort *int   // allocated port from agent_status.opencode_port, nil when unset
 	ClientCount  int    // tmux clients currently attached (best-effort, 0 on error)
+	// IsReviewGroup marks a virtual ~review-N group row (not a real session).
+	// Selecting this row in the picker toggles expand/collapse rather than switching.
+	IsReviewGroup bool
 }
 
 // StatusToAgentSession converts a db.Status into an AgentSession.
@@ -120,7 +129,188 @@ func Depth2Label(name string) string {
 	return ""
 }
 
-// SortDisplayed sorts a session slice in-place to match the flat visual render
+// ReviewRoundKey returns the review-round group key for a depth-2 per-agent
+// session, e.g. for "nixos-config@feature~review-1-review-goal" it returns
+// "nixos-config@feature~review-1". Returns "" when the session is not a
+// per-agent review session.
+//
+// A per-agent session has a Depth2Label of the form "~review-N-<agent>" where N
+// is a positive integer and <agent> contains at least one more dash-separated
+// component.
+func ReviewRoundKey(name string) string {
+	label := Depth2Label(name)
+	if label == "" {
+		return ""
+	}
+	// label is e.g. "~review-1-review-goal"
+	// We want to find the part up to and including "~review-N".
+	// Strip leading "~review-"
+	const prefix = "~review-"
+	if !strings.HasPrefix(label, prefix) {
+		return ""
+	}
+	rest := label[len(prefix):] // e.g. "1-review-goal"
+	dashIdx := strings.Index(rest, "-")
+	if dashIdx <= 0 {
+		// No dash found after N: label is "~review-N" (pure round row, not per-agent).
+		return ""
+	}
+	// Ensure the portion before the dash is a positive integer.
+	nStr := rest[:dashIdx]
+	allDigits := true
+	for _, r := range nStr {
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if !allDigits || nStr == "" {
+		return ""
+	}
+	// Construct the group key: repo@branch~review-N
+	// The label "~review-N" is everything up to the first dash in rest, inclusive.
+	roundLabel := prefix + nStr // e.g. "~review-1"
+	// Reconstruct: strip the Depth2Label from the full name and replace with roundLabel.
+	// name = "nixos-config@feature~review-1-review-goal"
+	// Depth2Label = "~review-1-review-goal"
+	// We want: "nixos-config@feature~review-1"
+	branch := SessionBranch(name) // e.g. "@feature~review-1-review-goal"
+	if len(branch) == 0 || branch[0] != '@' {
+		return ""
+	}
+	inner := branch[1:] // e.g. "feature~review-1-review-goal"
+	tildeIdx := strings.Index(inner, "~")
+	if tildeIdx < 0 {
+		return ""
+	}
+	parentBranchInner := inner[:tildeIdx]              // e.g. "feature"
+	repo := SessionRepo(name)                          // e.g. "nixos-config"
+	return repo + "@" + parentBranchInner + roundLabel // e.g. "nixos-config@feature~review-1"
+}
+
+// EscalatedState returns the highest-priority state across a slice of states.
+// Priority order (highest first): waiting > error > active > interrupted >
+// finished > idle/empty.
+func EscalatedState(states []string) string {
+	priority := func(s string) int {
+		switch s {
+		case "waiting":
+			return 6
+		case "error":
+			return 5
+		case "active":
+			return 4
+		case "interrupted":
+			return 3
+		case "finished":
+			return 2
+		default:
+			return 1 // idle or ""
+		}
+	}
+	best := ""
+	bestP := 0
+	for _, s := range states {
+		p := priority(s)
+		if p > bestP {
+			bestP = p
+			best = s
+		}
+	}
+	return best
+}
+
+// BuildDisplayRows transforms a sorted list of AgentSessions into the list of
+// rows to display, inserting virtual review-round group rows and hiding children
+// when groups are collapsed.
+//
+// collapsedGroups maps a group key (e.g. "nixos-config@feature~review-1") to
+// false (collapsed) or true (expanded). Absent keys default to collapsed.
+//
+// When a filter is active (filterText != ""), any collapsed group whose child
+// matches the filter is auto-expanded (but the auto-expand state is not written
+// back to collapsedGroups — callers must update that separately via
+// AutoExpandForFilter).
+//
+// Returns the display row slice, and a map of group keys that were auto-expanded
+// due to filter matching (so the caller can persist the expansion).
+func BuildDisplayRows(sessions []AgentSession, collapsedGroups map[string]bool, filterText string) ([]AgentSession, map[string]bool) {
+	autoExpanded := map[string]bool{}
+
+	// First pass: group per-agent sessions by their ReviewRoundKey, preserving order.
+	// We scan through sessions sequentially (they are pre-sorted by SortDisplayed).
+	// Non-per-agent sessions are emitted as-is.
+	// For per-agent sessions we emit a virtual group row followed by (optionally) the children.
+
+	type groupAccum struct {
+		key      string // e.g. "nixos-config@feature~review-1"
+		children []AgentSession
+		inserted bool // whether the virtual row has been emitted
+	}
+
+	// We process sessions in order and track the current group key.
+	var out []AgentSession
+	var currentGroupKey string
+	var currentChildren []AgentSession
+
+	flush := func() {
+		if currentGroupKey == "" || len(currentChildren) == 0 {
+			return
+		}
+		// Determine expansion state.
+		expanded := collapsedGroups[currentGroupKey] // false or absent = collapsed
+		// If filter is active, auto-expand when any child matches.
+		if filterText != "" && !expanded {
+			for _, ch := range currentChildren {
+				if fuzzyMatch(ch.Name, filterText) {
+					expanded = true
+					autoExpanded[currentGroupKey] = true
+					break
+				}
+			}
+		}
+		// Build escalated state.
+		states := make([]string, len(currentChildren))
+		for i, ch := range currentChildren {
+			states[i] = ch.AgentState
+		}
+		esc := EscalatedState(states)
+		// Emit the virtual group row.
+		// Use the first child's path/harness for context (or empty).
+		groupRow := AgentSession{
+			Name:          currentGroupKey,
+			AgentState:    esc,
+			AgentPath:     currentChildren[0].AgentPath,
+			IsReviewGroup: true,
+		}
+		out = append(out, groupRow)
+		if expanded {
+			out = append(out, currentChildren...)
+		}
+		currentGroupKey = ""
+		currentChildren = nil
+	}
+
+	for _, s := range sessions {
+		rk := ReviewRoundKey(s.Name)
+		if rk == "" {
+			// Not a per-agent review session: flush any pending group, emit directly.
+			flush()
+			out = append(out, s)
+			continue
+		}
+		if rk != currentGroupKey {
+			// New group: flush the old one.
+			flush()
+			currentGroupKey = rk
+		}
+		currentChildren = append(currentChildren, s)
+	}
+	flush()
+
+	return out, autoExpanded
+}
+
 // order: alphabetical by repo name, @main first within each repo, then other
 // branches alphabetically, with depth-2 review sessions (containing ~)
 // sorted immediately after their parent branch. Uses insertion sort
@@ -183,9 +373,14 @@ func agentTypeLabel(agentName string) string {
 //
 // Each row type contributes to sessionW as follows:
 //
+//   - Review-round group rows (IsReviewGroup=true): rendered as depth-1 children
+//     showing "▶ ~review-N" or "▼ ~review-N" after a 6-rune tree prefix.
+//     The label is the Depth2Label of the group key (e.g. "~review-1").
+//     needed = d1PrefixLen + 2 (indicator+space) + len(label) - treePrefixW.
+//
 //   - Depth-2 child rows: the display content is just the Depth2Label
-//     (e.g. "~review-1"), rendered after a 10-rune prefix that exactly fills
-//     treePrefixW, so sessionW ≥ len(label).
+//     (e.g. "~review-1-review-goal"), rendered after a 10-rune prefix that
+//     exactly fills treePrefixW, so sessionW ≥ len(label).
 //
 //   - All other rows (top-level and depth-1 children): the maximum of
 //     (a) the full session name length, for cases where the row renders without
@@ -204,11 +399,25 @@ func SessionColumnWidth(sessions []AgentSession) int {
 	const treePrefixW = 10 // must match treePrefixW in view.go
 	const d1PrefixLen = 6  // "  ├── " or "  └── "
 	const d2PrefixLen = 10 // "  │   ├── " or "  │   └── "
+	const indicatorW = 2   // "▶ " or "▼ " for group rows
 
 	maxW := 0
 	for _, s := range sessions {
 		var needed int
-		if IsDepth2Session(s.Name) {
+		if s.IsReviewGroup {
+			// Virtual review-round group row: rendered as depth-1 child with
+			// an expand/collapse indicator prepended to the label.
+			// Display: "  ├── ▶ ~review-N" (or "▼ ~review-N").
+			// runeCount = d1PrefixLen(6) + indicatorW(2) + len(label).
+			// totalSessionW must be ≥ runeCount, so:
+			// needed = d1PrefixLen + indicatorW + len(label) - treePrefixW
+			label := Depth2Label(s.Name) // e.g. "~review-1"
+			if label == "" {
+				// Fallback: use the part after the last "@".
+				label = SessionBranch(s.Name)
+			}
+			needed = d1PrefixLen + indicatorW + utf8.RuneCountInString(label) - treePrefixW
+		} else if IsDepth2Session(s.Name) {
 			// Depth-2: d2PrefixLen + len(label) - treePrefixW = len(label).
 			// The depth-2 prefix is exactly treePrefixW runes, so the offset
 			// cancels out and only the label length contributes.
