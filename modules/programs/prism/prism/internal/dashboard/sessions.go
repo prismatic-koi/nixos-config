@@ -189,16 +189,23 @@ func ReviewRoundKey(name string) string {
 }
 
 // EscalatedState returns the highest-priority state across a slice of states.
-// Priority order (highest first): waiting > error > active > interrupted >
-// finished > idle/empty.
+// Priority order (highest first): waiting > error > active > compacting >
+// interrupted > finished > idle/empty.
+//
+// compacting is a first-class AgentState (see internal/agent) and ranks
+// alongside active — it means the agent is doing background work and is not
+// idle. It sits just below active so that a round with one active agent and
+// one compacting agent shows "active".
 func EscalatedState(states []string) string {
 	priority := func(s string) int {
 		switch s {
 		case "waiting":
-			return 6
+			return 7
 		case "error":
-			return 5
+			return 6
 		case "active":
+			return 5
+		case "compacting":
 			return 4
 		case "interrupted":
 			return 3
@@ -241,12 +248,6 @@ func BuildDisplayRows(sessions []AgentSession, collapsedGroups map[string]bool, 
 	// We scan through sessions sequentially (they are pre-sorted by SortDisplayed).
 	// Non-per-agent sessions are emitted as-is.
 	// For per-agent sessions we emit a virtual group row followed by (optionally) the children.
-
-	type groupAccum struct {
-		key      string // e.g. "nixos-config@feature~review-1"
-		children []AgentSession
-		inserted bool // whether the virtual row has been emitted
-	}
 
 	// We process sessions in order and track the current group key.
 	var out []AgentSession
