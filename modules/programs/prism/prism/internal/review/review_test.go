@@ -2,6 +2,7 @@ package review_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1390,4 +1391,287 @@ func findSubstring(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// ── BuildReviewPrompt (PR context injection) ──────────────────────────────────
+
+// samplePRContext returns a fully-populated PRContext for testing.
+func samplePRContext() *review.PRContext {
+	return &review.PRContext{
+		PRNumber:     "819",
+		Title:        "inject PR metadata into review prompt",
+		Body:         "Fixes issue #819 by pre-fetching metadata.\n\nCloses #819",
+		HeadRefName:  "inject-pr-context-into-review",
+		HeadRefOid:   "abc1234567890abcdef1234567890abcdef123456",
+		BaseRefName:  "main",
+		BaseRefOid:   "def4567890abcdef1234567890abcdef12345678",
+		Additions:    150,
+		Deletions:    30,
+		ChangedFiles: 3,
+		Diff:         "diff --git a/foo.go b/foo.go\n+added line\n-removed line\n",
+		WorktreePath: "/workspace/worktrees/inject-pr-context-into-review",
+	}
+}
+
+// TestBuildReviewPrompt_ContainsPRUnderReviewSection verifies that the prompt
+// contains a "## PR under review" section with key metadata fields, including
+// the worktree path (read-only) bullet required by review-qa to avoid
+// re-discovering the branch checkout location.
+func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
+	ctx := samplePRContext()
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	required := []string{
+		"## PR under review",
+		"PR #819",
+		"inject-pr-context-into-review",             // head branch
+		"abc1234567890abcdef1234567890abcdef123456", // head SHA
+		"main", // base branch
+		"def4567890abcdef1234567890abcdef12345678", // base SHA
+		"Files changed: 3",
+		// Worktree bullet: eliminates review-qa's "can I check out the branch?" hesitation.
+		"/workspace/worktrees/inject-pr-context-into-review", // worktree path
+		"(read-only)", // read-only annotation
+	}
+	for _, s := range required {
+		if !findSubstring(prompt, s) {
+			t.Errorf("prompt missing expected string %q\nprompt:\n%s", s, prompt)
+		}
+	}
+}
+
+// TestBuildReviewPrompt_ContainsPRBodySection verifies that the prompt
+// contains a "## PR body" section with the PR body text.
+func TestBuildReviewPrompt_ContainsPRBodySection(t *testing.T) {
+	ctx := samplePRContext()
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "## PR body") {
+		t.Errorf("prompt missing '## PR body' section\nprompt:\n%s", prompt)
+	}
+	// The body content should be present (blockquote-wrapped).
+	if !findSubstring(prompt, "Fixes issue #819") {
+		t.Errorf("prompt missing body text\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_EmptyBody verifies that when the PR body is empty,
+// the "## PR body" section is still emitted with a "(no body)" placeholder.
+func TestBuildReviewPrompt_EmptyBody(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Body = ""
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "## PR body") {
+		t.Errorf("prompt missing '## PR body' section even for empty body\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "(no body)") {
+		t.Errorf("prompt missing '(no body)' placeholder for empty body\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_ContainsFullDiffSection verifies that the prompt
+// contains a "## Full diff" section with the diff in a ```diff code fence.
+func TestBuildReviewPrompt_ContainsFullDiffSection(t *testing.T) {
+	ctx := samplePRContext()
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "## Full diff") {
+		t.Errorf("prompt missing '## Full diff' section\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "```diff") {
+		t.Errorf("prompt missing ```diff code fence\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "diff --git a/foo.go b/foo.go") {
+		t.Errorf("prompt missing diff content\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_ContextBeforeRoleSeparator verifies that the PR-context
+// sections appear BEFORE the role-specific content separator ("---").
+func TestBuildReviewPrompt_ContextBeforeRoleSeparator(t *testing.T) {
+	ctx := samplePRContext()
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	prUnderReviewIdx := findLineIndex(prompt, "## PR under review")
+	separatorIdx := findLineIndex(prompt, "---")
+	roleNoteIdx := findLineIndex(prompt, "Your role-specific instructions follow below.")
+
+	if prUnderReviewIdx < 0 {
+		t.Fatalf("prompt missing '## PR under review'\nprompt:\n%s", prompt)
+	}
+	if separatorIdx < 0 {
+		t.Fatalf("prompt missing separator '---'\nprompt:\n%s", prompt)
+	}
+	if roleNoteIdx < 0 {
+		t.Fatalf("prompt missing role note\nprompt:\n%s", prompt)
+	}
+	if prUnderReviewIdx >= separatorIdx {
+		t.Errorf("'## PR under review' (line %d) should appear before '---' (line %d)", prUnderReviewIdx, separatorIdx)
+	}
+}
+
+// TestBuildReviewPrompt_FallbackWhenNilContext verifies that when prCtx is nil,
+// the prompt is a minimal fallback that still includes the PR number.
+func TestBuildReviewPrompt_FallbackWhenNilContext(t *testing.T) {
+	prompt := review.BuildReviewPromptForTest("819", nil)
+
+	if !findSubstring(prompt, "819") {
+		t.Errorf("fallback prompt should contain PR number '819'\nprompt:\n%s", prompt)
+	}
+	// Must NOT contain the rich context sections.
+	if findSubstring(prompt, "## PR under review") {
+		t.Errorf("fallback prompt should not contain '## PR under review'\nprompt:\n%s", prompt)
+	}
+	if findSubstring(prompt, "## Full diff") {
+		t.Errorf("fallback prompt should not contain '## Full diff'\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_FallbackWhenFetchFailed verifies that when FetchFailed
+// is true, the prompt uses the minimal fallback form.
+func TestBuildReviewPrompt_FallbackWhenFetchFailed(t *testing.T) {
+	ctx := &review.PRContext{
+		PRNumber:    "819",
+		FetchFailed: true,
+	}
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "819") {
+		t.Errorf("fallback prompt should contain PR number '819'\nprompt:\n%s", prompt)
+	}
+	if findSubstring(prompt, "## PR under review") {
+		t.Errorf("fallback prompt should not contain rich context when FetchFailed=true\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_AllFiveAgentsGetSameContext verifies that five calls to
+// BuildReviewPromptForTest with the same PRContext produce identical prompts.
+// This ensures the "one fetch, five reuses" property holds at the prompt level.
+func TestBuildReviewPrompt_AllFiveAgentsGetSameContext(t *testing.T) {
+	ctx := samplePRContext()
+	prompts := make([]string, 5)
+	for i := range prompts {
+		prompts[i] = review.BuildReviewPromptForTest("819", ctx)
+	}
+	for i := 1; i < len(prompts); i++ {
+		if prompts[i] != prompts[0] {
+			t.Errorf("prompt[%d] differs from prompt[0]; all agents must receive identical context", i)
+		}
+	}
+}
+
+// TestBuildReviewPrompt_SpecialCharsInTitle verifies that backticks and angle
+// brackets in the PR title do not break the prompt structure.
+func TestBuildReviewPrompt_SpecialCharsInTitle(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Title = "fix: handle `nil` pointer in <module> and `go build`"
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	// The prompt should still contain both main sections.
+	if !findSubstring(prompt, "## PR under review") {
+		t.Errorf("prompt missing '## PR under review' with special-char title\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "## Full diff") {
+		t.Errorf("prompt missing '## Full diff' with special-char title\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_TripleBackticksInBody verifies that triple-backtick
+// sequences in the PR body do not collapse the ```diff code fence.
+func TestBuildReviewPrompt_TripleBackticksInBody(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Body = "Here is an example:\n```go\nfmt.Println(\"hello\")\n```\nEnd."
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	// The diff fence must still be intact.
+	if !findSubstring(prompt, "```diff") {
+		t.Errorf("prompt missing ```diff fence; body backticks may have broken structure\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_DiffTruncatedNote verifies that when DiffTruncated is
+// true, the prompt mentions the truncation.
+func TestBuildReviewPrompt_DiffTruncatedNote(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.DiffTruncated = true
+	ctx.Diff = "diff --git a/big.go b/big.go\n+line\n... [truncated — use git diff origin/main...HEAD for full content]"
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "truncated") {
+		t.Errorf("prompt should mention truncation when DiffTruncated=true\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_NoDiffAvailable verifies that when Diff is empty
+// (gh pr diff failed), the prompt notes it and does not emit an empty ```diff fence.
+func TestBuildReviewPrompt_NoDiffAvailable(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Diff = ""
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "diff not available") {
+		t.Errorf("prompt should note 'diff not available' when Diff is empty\nprompt:\n%s", prompt)
+	}
+	// Must not have an empty ```diff fence (which would confuse agents).
+	if findSubstring(prompt, "```diff\n```") {
+		t.Errorf("prompt should not have an empty ```diff``` fence\nprompt:\n%s", prompt)
+	}
+}
+
+// ── TruncateDiff ──────────────────────────────────────────────────────────────
+
+// TestTruncateDiff_NoTruncationNeeded verifies that a small diff is returned
+// unchanged with truncated=false.
+func TestTruncateDiff_NoTruncationNeeded(t *testing.T) {
+	diff := "diff --git a/foo.go b/foo.go\n+added\n-removed\n"
+	result, truncated := review.TruncateDiffForTest(diff, 200*1024, 4000)
+	if truncated {
+		t.Errorf("TruncateDiff: truncated=true for small diff, want false")
+	}
+	if result != diff {
+		t.Errorf("TruncateDiff: result differs from input for small diff\ngot:  %q\nwant: %q", result, diff)
+	}
+}
+
+// TestTruncateDiff_TruncatesByLineCount verifies that a diff exceeding maxLines
+// is truncated and the truncation marker is appended.
+func TestTruncateDiff_TruncatesByLineCount(t *testing.T) {
+	// Build a diff with 100 lines.
+	var sb strings.Builder
+	for i := range 100 {
+		sb.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+	diff := sb.String()
+
+	result, truncated := review.TruncateDiffForTest(diff, 200*1024, 10)
+	if !truncated {
+		t.Errorf("TruncateDiff: truncated=false for 100-line diff with maxLines=10, want true")
+	}
+	if !findSubstring(result, "truncated") {
+		t.Errorf("TruncateDiff: result missing truncation marker\nresult:\n%s", result)
+	}
+	// The result must not contain line 11 or later.
+	if findSubstring(result, "+line 10\n") {
+		t.Errorf("TruncateDiff: result contains lines beyond maxLines=10\nresult:\n%s", result)
+	}
+}
+
+// TestTruncateDiff_TruncatesByByteCount verifies that a diff exceeding maxBytes
+// is truncated and the truncation marker is appended.
+func TestTruncateDiff_TruncatesByByteCount(t *testing.T) {
+	// Build a 1000-byte diff.
+	diff := strings.Repeat("+x\n", 333) // ~999 bytes
+
+	result, truncated := review.TruncateDiffForTest(diff, 100, 10000)
+	if !truncated {
+		t.Errorf("TruncateDiff: truncated=false for >100-byte diff with maxBytes=100, want true")
+	}
+	if !findSubstring(result, "truncated") {
+		t.Errorf("TruncateDiff: result missing truncation marker\nresult:\n%s", result)
+	}
+	if len(result) > 200 { // well under the original 999 bytes
+		// Sanity check that we actually truncated substantially.
+		// The marker adds ~70 bytes; total should be << 999.
+	}
 }

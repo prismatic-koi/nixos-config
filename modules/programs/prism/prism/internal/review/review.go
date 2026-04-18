@@ -22,10 +22,12 @@
 package review
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -37,6 +39,155 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// DiffMaxBytes is the maximum diff size (in bytes) before truncation.
+// Configurable for testing; production code uses this default.
+const DiffMaxBytes = 200 * 1024 // 200 KB
+
+// DiffMaxLines is the maximum number of diff lines before truncation.
+// Configurable for testing; production code uses this default.
+const DiffMaxLines = 4000
+
+// PRContext holds PR metadata and diff fetched once at spawn time, before any
+// review-agent sessions are created. All five agents receive the same context
+// in their initial prompt — no per-agent duplication.
+type PRContext struct {
+	// PRNumber is the pull request number (string, e.g. "819").
+	PRNumber string
+	// Title is the PR title.
+	Title string
+	// Body is the PR body text (may be empty).
+	Body string
+	// HeadRefName is the head branch name.
+	HeadRefName string
+	// HeadRefOid is the full head commit SHA.
+	HeadRefOid string
+	// BaseRefName is the base branch name.
+	BaseRefName string
+	// BaseRefOid is the full base commit SHA.
+	BaseRefOid string
+	// Additions is the number of lines added.
+	Additions int
+	// Deletions is the number of lines deleted.
+	Deletions int
+	// ChangedFiles is the number of files changed.
+	ChangedFiles int
+	// Diff is the full PR diff (may be truncated).
+	Diff string
+	// DiffTruncated is true when the diff was truncated due to size limits.
+	DiffTruncated bool
+	// FetchFailed is true when gh failed and only minimal info is available.
+	FetchFailed bool
+	// WorktreePath is the absolute path to the worktree being reviewed.
+	// Review agents should treat the worktree as read-only.
+	WorktreePath string
+}
+
+// prViewJSON is the JSON shape returned by `gh pr view --json ...`.
+type prViewJSON struct {
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	Body         string `json:"body"`
+	HeadRefName  string `json:"headRefName"`
+	HeadRefOid   string `json:"headRefOid"`
+	BaseRefName  string `json:"baseRefName"`
+	BaseRefOid   string `json:"baseRefOid"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changedFiles"`
+}
+
+// FetchPRContext fetches PR metadata and diff from the gh CLI.
+// If gh fails or is unavailable, it returns a PRContext with FetchFailed=true
+// and only the PR number populated — the caller must not treat this as an error;
+// the review run continues with a minimal prompt (fallback behaviour).
+// maxBytes and maxLines control truncation of the diff; pass 0 to use the defaults.
+func FetchPRContext(prNumber string, maxBytes, maxLines int) PRContext {
+	if maxBytes <= 0 {
+		maxBytes = DiffMaxBytes
+	}
+	if maxLines <= 0 {
+		maxLines = DiffMaxLines
+	}
+
+	ctx := PRContext{PRNumber: prNumber}
+
+	// Fetch PR metadata.
+	viewOut, err := runGH("pr", "view", prNumber, "--json",
+		"number,title,body,headRefName,headRefOid,baseRefName,baseRefOid,additions,deletions,changedFiles")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR metadata via gh: %v — agents will fall back to git-based discovery\n", err)
+		ctx.FetchFailed = true
+		return ctx
+	}
+
+	var meta prViewJSON
+	if jsonErr := json.Unmarshal([]byte(viewOut), &meta); jsonErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not parse PR metadata JSON: %v — agents will fall back to git-based discovery\n", jsonErr)
+		ctx.FetchFailed = true
+		return ctx
+	}
+
+	ctx.Title = meta.Title
+	ctx.Body = meta.Body
+	ctx.HeadRefName = meta.HeadRefName
+	ctx.HeadRefOid = meta.HeadRefOid
+	ctx.BaseRefName = meta.BaseRefName
+	ctx.BaseRefOid = meta.BaseRefOid
+	ctx.Additions = meta.Additions
+	ctx.Deletions = meta.Deletions
+	ctx.ChangedFiles = meta.ChangedFiles
+
+	// Fetch diff.
+	diffOut, diffErr := runGH("pr", "diff", prNumber)
+	if diffErr != nil {
+		// Diff failure is non-fatal: we have metadata, just no diff content.
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR diff via gh: %v — agents will use git diff instead\n", diffErr)
+		// Leave Diff empty; the prompt will note diff unavailability.
+	} else {
+		ctx.Diff, ctx.DiffTruncated = truncateDiff(diffOut, maxBytes, maxLines)
+	}
+
+	return ctx
+}
+
+// truncateDiff truncates a diff to at most maxBytes bytes and maxLines lines.
+// Returns the (possibly truncated) diff and a bool indicating truncation.
+func truncateDiff(diff string, maxBytes, maxLines int) (string, bool) {
+	// Check byte limit first.
+	if len(diff) > maxBytes {
+		// Truncate to maxBytes, then find the last newline to avoid a mid-line cut.
+		truncated := diff[:maxBytes]
+		if idx := strings.LastIndex(truncated, "\n"); idx > 0 {
+			truncated = truncated[:idx]
+		}
+		return truncated + "\n... [truncated — use git diff origin/<base>...HEAD for full content]", true
+	}
+
+	// Check line limit.
+	lines := strings.Split(diff, "\n")
+	if len(lines) > maxLines {
+		return strings.Join(lines[:maxLines], "\n") + "\n... [truncated — use git diff origin/<base>...HEAD for full content]", true
+	}
+
+	return diff, false
+}
+
+// runGH executes a gh command and returns its stdout as a string.
+// Returns an error if gh is not found or exits with a non-zero status.
+func runGH(args ...string) (string, error) {
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		return "", err
+	}
+	return stdout.String(), nil
+}
 
 // KillSessionPrefix kills all tmux sessions whose names start with the given
 // prefix. Used to clean up all ~review-* sessions for a parent.
@@ -233,6 +384,11 @@ type Opts struct {
 	// progress line (without trailing newline). The caller is responsible for
 	// writing and flushing the line. When nil, no progress output is emitted.
 	OnProgress func(line string)
+	// PRCtx is the pre-fetched PR context (metadata + diff). When populated,
+	// buildReviewPrompt injects it into the initial prompt for every agent so
+	// agents are productive from turn 1. When nil or FetchFailed is true, a
+	// minimal fallback prompt is used instead.
+	PRCtx *PRContext
 }
 
 // FormatAgentDisplayName converts an agent name like "review-goal" to a
@@ -335,7 +491,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		}
 
 		// Build the prompt for the review agent.
-		prompt := buildReviewPrompt(opts.PRNumber)
+		// Inject the worktree path into PRCtx so agents know where the
+		// branch is checked out (and that it is read-only).
+		prCtxWithWorktree := opts.PRCtx
+		if prCtxWithWorktree != nil && !prCtxWithWorktree.FetchFailed {
+			// Shallow-copy so we don't mutate the shared PRCtx.
+			ctxCopy := *prCtxWithWorktree
+			ctxCopy.WorktreePath = worktree
+			prCtxWithWorktree = &ctxCopy
+		}
+		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
 
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
@@ -484,8 +649,79 @@ func ResolveAgentConfigContent(containerMode bool, pf *config.ProfilesFile, agen
 }
 
 // buildReviewPrompt returns the initial prompt string for a review agent.
-func buildReviewPrompt(prNumber string) string {
-	return fmt.Sprintf("Review PR #%s. Run `gh pr view %s` and `gh pr diff %s` to get the full diff. Check the linked issue for acceptance criteria and validate each one. Report your findings clearly.", prNumber, prNumber, prNumber)
+// When prCtx is non-nil and FetchFailed is false, the prompt begins with a
+// PR-context section (metadata + diff) followed by the role-specific content.
+// When prCtx is nil or FetchFailed is true, a minimal fallback prompt is used.
+//
+// The PR-context section always appears BEFORE the role-specific content so
+// that agents read full context first and role directives second.
+func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
+	if prCtx == nil || prCtx.FetchFailed {
+		// Fallback: minimal prompt with only the PR number.
+		return fmt.Sprintf(
+			"Review PR #%s. Use `git diff origin/<base>...HEAD` to see the diff, "+
+				"`git log --oneline -20` for recent commits, and check the linked issue "+
+				"for acceptance criteria. Report your findings clearly.",
+			prNumber,
+		)
+	}
+
+	var sb strings.Builder
+
+	// ── PR under review ───────────────────────────────────────────────────
+	sb.WriteString("## PR under review\n\n")
+	sb.WriteString(fmt.Sprintf("You are reviewing PR #%s.\n\n", prCtx.PRNumber))
+	sb.WriteString(fmt.Sprintf("- Title: %q\n", prCtx.Title))
+	sb.WriteString(fmt.Sprintf("- Head branch: %s\n", prCtx.HeadRefName))
+	sb.WriteString(fmt.Sprintf("- Head commit: %s\n", prCtx.HeadRefOid))
+	sb.WriteString(fmt.Sprintf("- Base branch: %s\n", prCtx.BaseRefName))
+	sb.WriteString(fmt.Sprintf("- Base commit: %s\n", prCtx.BaseRefOid))
+	if prCtx.WorktreePath != "" {
+		sb.WriteString(fmt.Sprintf("- Worktree: %s (read-only)\n", prCtx.WorktreePath))
+	}
+	sb.WriteString(fmt.Sprintf("- Files changed: %d (+%d -%d lines)\n", prCtx.ChangedFiles, prCtx.Additions, prCtx.Deletions))
+	if prCtx.DiffTruncated {
+		sb.WriteString("\nNote: the diff below has been truncated due to size. Use `git diff origin/" +
+			prCtx.BaseRefName + "...HEAD` to fetch any missing hunks.\n")
+	}
+	sb.WriteString("\n")
+
+	// ── PR body ───────────────────────────────────────────────────────────
+	sb.WriteString("## PR body\n\n")
+	body := strings.TrimSpace(prCtx.Body)
+	if body == "" {
+		sb.WriteString("(no body)\n")
+	} else {
+		// Wrap in a blockquote-style indentation to prevent any triple-backtick
+		// sequences in the body from colliding with the diff code fence below.
+		// Each line is prefixed with "> " so fence markers become "> ```" which
+		// markdown renderers treat as quoted text, not a code fence boundary.
+		for _, line := range strings.Split(body, "\n") {
+			sb.WriteString("> ")
+			sb.WriteString(line)
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString("\n")
+
+	// ── Full diff ─────────────────────────────────────────────────────────
+	sb.WriteString("## Full diff\n\n")
+	if prCtx.Diff == "" {
+		sb.WriteString("(diff not available — use `git diff origin/" + prCtx.BaseRefName + "...HEAD` to fetch it)\n")
+	} else {
+		sb.WriteString("```diff\n")
+		sb.WriteString(prCtx.Diff)
+		if !strings.HasSuffix(prCtx.Diff, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("```\n")
+	}
+	sb.WriteString("\n")
+
+	sb.WriteString("Your role-specific instructions follow below.\n\n")
+	sb.WriteString("---\n\n")
+
+	return sb.String()
 }
 
 // buildAgentCommand returns the command string for a review agent session.
@@ -654,6 +890,18 @@ func isTerminalState(state string) bool {
 // Production code calls buildResults directly (via pollAgents).
 func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
 	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, cancelled)
+}
+
+// BuildReviewPromptForTest is an exported wrapper around buildReviewPrompt for
+// use in external test packages. It allows tests to verify prompt content,
+// section ordering, and fallback behaviour without needing a live tmux/DB.
+func BuildReviewPromptForTest(prNumber string, prCtx *PRContext) string {
+	return buildReviewPrompt(prNumber, prCtx)
+}
+
+// TruncateDiffForTest is an exported wrapper around truncateDiff for unit tests.
+func TruncateDiffForTest(diff string, maxBytes, maxLines int) (string, bool) {
+	return truncateDiff(diff, maxBytes, maxLines)
 }
 
 // PollAgentsForTest is an exported wrapper around pollAgents for use in tests.
