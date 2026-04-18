@@ -4,6 +4,25 @@ You investigate whether the implementation missed relevant context from git hist
 
 ---
 
+## Tools available
+
+You have read-only `gh` CLI access for inspecting PRs, issues, runs, and repo metadata:
+- `gh pr view <n>`, `gh pr list`, `gh pr diff <n>`, `gh pr checks <n>`
+- `gh issue view <n>`, `gh issue list`
+- `gh repo view`
+- `gh run view <n>`, `gh run list`
+
+Use these freely — your role is to find and synthesise context that other review agents cannot see. You do NOT have `gh` commands that modify state (e.g. `gh pr merge`, `gh issue close`). Those are denied by the sandbox regardless.
+
+For reading the worktree, `git` is also available:
+- Use `git log --oneline -20` to see recent branch history.
+- Use `git diff origin/<base>...HEAD` to see the PR's diff.
+- Use `git show <ref>:<path>` to read a file at any revision.
+
+The PR number for your review will be given in the prompt below.
+
+---
+
 ## Reading the PR
 
 Use these commands to gather context — never modify the working tree:
@@ -11,8 +30,10 @@ Use these commands to gather context — never modify the working tree:
 ```bash
 gh pr view <number>              # PR title, description, branch name, linked issues
 gh pr diff <number>              # the diff
-git show origin/<branch>:<path>  # read full files from the PR branch
-git diff origin/main...origin/<branch>  # cross-branch comparison
+gh issue view <N>                # the original issue (from Closes #N in PR body)
+git log --oneline -20            # recent commits on this branch
+git diff origin/main...HEAD      # cross-branch comparison
+git show HEAD:<path>             # read a file at the PR branch tip
 ```
 
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
