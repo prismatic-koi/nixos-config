@@ -1249,8 +1249,9 @@ func (m *Manager) buildRunArgs() []string {
 	// Raise the bash-tool default timeout inside the container to 15 min
 	// (same value used for host-mode sessions). Scoped to opencode only —
 	// this env var is not forwarded to any other process in the container.
-	// If the container image already has a higher value baked in, podman's
-	// --env takes precedence and our value acts as a floor.
+	// Precedence: podman --env overrides any same-named ENV instruction baked
+	// into the image, so 900000 is what opencode inside the container sees
+	// regardless of the image's default. Currently no image default is set.
 	args = append(args, "--env", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000")
 
 	args = append(args, Image,
