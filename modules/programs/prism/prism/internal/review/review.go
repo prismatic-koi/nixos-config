@@ -78,6 +78,9 @@ type PRContext struct {
 	DiffTruncated bool
 	// FetchFailed is true when gh failed and only minimal info is available.
 	FetchFailed bool
+	// WorktreePath is the absolute path to the worktree being reviewed.
+	// Review agents should treat the worktree as read-only.
+	WorktreePath string
 }
 
 // prViewJSON is the JSON shape returned by `gh pr view --json ...`.
@@ -488,7 +491,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		}
 
 		// Build the prompt for the review agent.
-		prompt := buildReviewPrompt(opts.PRNumber, opts.PRCtx)
+		// Inject the worktree path into PRCtx so agents know where the
+		// branch is checked out (and that it is read-only).
+		prCtxWithWorktree := opts.PRCtx
+		if prCtxWithWorktree != nil && !prCtxWithWorktree.FetchFailed {
+			// Shallow-copy so we don't mutate the shared PRCtx.
+			ctxCopy := *prCtxWithWorktree
+			ctxCopy.WorktreePath = worktree
+			prCtxWithWorktree = &ctxCopy
+		}
+		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
 
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
@@ -664,6 +676,9 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	sb.WriteString(fmt.Sprintf("- Head commit: %s\n", prCtx.HeadRefOid))
 	sb.WriteString(fmt.Sprintf("- Base branch: %s\n", prCtx.BaseRefName))
 	sb.WriteString(fmt.Sprintf("- Base commit: %s\n", prCtx.BaseRefOid))
+	if prCtx.WorktreePath != "" {
+		sb.WriteString(fmt.Sprintf("- Worktree: %s (read-only)\n", prCtx.WorktreePath))
+	}
 	sb.WriteString(fmt.Sprintf("- Files changed: %d (+%d -%d lines)\n", prCtx.ChangedFiles, prCtx.Additions, prCtx.Deletions))
 	if prCtx.DiffTruncated {
 		sb.WriteString("\nNote: the diff below has been truncated due to size. Use `git diff origin/" +

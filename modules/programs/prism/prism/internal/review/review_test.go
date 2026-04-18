@@ -1409,11 +1409,14 @@ func samplePRContext() *review.PRContext {
 		Deletions:    30,
 		ChangedFiles: 3,
 		Diff:         "diff --git a/foo.go b/foo.go\n+added line\n-removed line\n",
+		WorktreePath: "/workspace/worktrees/inject-pr-context-into-review",
 	}
 }
 
 // TestBuildReviewPrompt_ContainsPRUnderReviewSection verifies that the prompt
-// contains a "## PR under review" section with key metadata fields.
+// contains a "## PR under review" section with key metadata fields, including
+// the worktree path (read-only) bullet required by review-qa to avoid
+// re-discovering the branch checkout location.
 func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx)
@@ -1426,6 +1429,9 @@ func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
 		"main", // base branch
 		"def4567890abcdef1234567890abcdef12345678", // base SHA
 		"Files changed: 3",
+		// Worktree bullet: eliminates review-qa's "can I check out the branch?" hesitation.
+		"/workspace/worktrees/inject-pr-context-into-review", // worktree path
+		"(read-only)", // read-only annotation
 	}
 	for _, s := range required {
 		if !findSubstring(prompt, s) {
