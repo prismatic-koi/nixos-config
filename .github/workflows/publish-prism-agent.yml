@@ -7,7 +7,7 @@ name: publish-prism-agent
       - 'images/prism-agent.nix'
       - 'flake.nix'
       - 'flake.lock'
-      - 'modules/programs/prism/prism/**'
+      - 'modules/programs/prism/**'
   workflow_dispatch:
 
 jobs:
