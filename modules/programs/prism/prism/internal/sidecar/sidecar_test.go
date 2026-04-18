@@ -2449,6 +2449,177 @@ func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 	}
 }
 
+// TestNotifyCoordinator_ReviewAgentSuppressed verifies that a review-agent
+// session (session name containing "~review") does NOT emit a "has finished"
+// notification to the coordinator when it transitions to finished. The parent
+// worker discovers the state change via DB polling (pollAgents); propagating
+// it as a coordinator notification would be noise.
+//
+// This is the primary regression test for issue #817.
+func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-review-suppressed"
+
+	// Seed a live coordinator with an HTTP server so that if a notification
+	// fires, we can detect it via the HTTP server or bus_messages table.
+	var notifyCount int
+	var notifyMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST /session/<sid>/prompt_async — count unexpected delivery attempts.
+		notifyMu.Lock()
+		notifyCount++
+		notifyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create a sidecar with a review-agent session name. The session name
+	// follows the prism review naming convention: <parent>~review-<N>-<role>.
+	clk := newTestClock()
+	reviewAgentSession := "test-repo@feature~review-1-review-goal"
+	cfg := Config{
+		SessionName: reviewAgentSession,
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-worktree-review-goal",
+		OpencodeURL: "http://localhost:14002",
+		DB:          d,
+		Clock:       clk,
+		HTTPClient:  srv.Client(),
+		Harness:     opencode.New("http://localhost:14002", srv.Client(), "", ""),
+	}
+	reviewAgent := New(cfg)
+
+	// Seed review-agent as active.
+	_ = d.UpsertStatus(reviewAgentSession, "test-repo", "/tmp/test-worktree-review-goal", "active", nil, nil)
+
+	// Trigger idle debounce → finished (the same path that would call notifyCoordinator).
+	reviewAgent.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	// DB state must be finished — the state transition itself must still happen.
+	if state := getState(t, d, reviewAgentSession); state != "finished" {
+		t.Errorf("review-agent DB state = %q, want finished (state transition must still occur)", state)
+	}
+
+	// Give a brief window for any async goroutines to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// No bus messages to the coordinator must have been written.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("review-agent session must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
+	}
+
+	// The HTTP notification endpoint must NOT have been called.
+	notifyMu.Lock()
+	count := notifyCount
+	notifyMu.Unlock()
+	if count != 0 {
+		t.Errorf("notifyCoordinator HTTP calls = %d for review-agent session, want 0", count)
+	}
+}
+
+// TestNotifyCoordinator_ReviewAgentSuppressed_AllSessionNameShapes verifies
+// that the "~review" suppression works for all review-agent session name shapes
+// that prism uses in practice:
+//   - <parent>~review-<N>-<role>   (current shape, PR-C onwards)
+//   - <parent>~review-<N>~<role>   (old shape, pre-PR-C)
+//   - <parent>~review-<N>          (round session, used in some contexts)
+func TestIsReviewAgentSession(t *testing.T) {
+	cases := []struct {
+		name        string
+		sessionName string
+		want        bool
+	}{
+		// Current shape (PR-C+): <parent>~review-<N>-<role>
+		{"current shape goal", "nixos-config@feature~review-1-review-goal", true},
+		{"current shape code", "nixos-config@feature~review-2-review-code", true},
+		{"current shape security", "nixos-config@feature~review-1-review-security", true},
+		{"current shape qa", "nixos-config@feature~review-3-review-qa", true},
+		{"current shape context", "nixos-config@feature~review-1-review-context", true},
+		// Old shape (pre-PR-C): <parent>~review-<N>~<role>
+		{"old shape with role", "nixos-config@feature~review-1~review", true},
+		{"old shape with qa variant", "nixos-config@feature~review-1~review-qa", true},
+		// Round session shape: <parent>~review-<N>
+		{"round session shape", "nixos-config@feature~review-1", true},
+		// Normal worker — must NOT be suppressed
+		{"normal worker", "nixos-config@feature", false},
+		{"coordinator", "nixos-config@main", false},
+		// Session with "review" in branch name but no "~review" (edge case)
+		{"branch named review-fixes", "nixos-config@review-fixes", false},
+		{"branch named my-review", "nixos-config@my-review", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isReviewAgentSession(tc.sessionName)
+			if got != tc.want {
+				t.Errorf("isReviewAgentSession(%q) = %v, want %v", tc.sessionName, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNotifyCoordinator_ParentWorkerStillNotifies verifies that the parent
+// worker's own finish event (the session that ran `prism review`) continues to
+// propagate to the coordinator after its review-cycle completes. The parent
+// worker does NOT have "~review" in its session name.
+func TestNotifyCoordinator_ParentWorkerStillNotifies(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-parent-worker"
+
+	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Parent worker: session name WITHOUT "~review" — must still notify.
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
+
+	// Trigger idle debounce → finished.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
+		t.Errorf("worker state = %q, want finished", state)
+	}
+
+	// Wait for the notification — it must still arrive.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected coordinator notification from parent worker, got none — parent worker notification must not be suppressed")
+	}
+	if msg.FromSession != worker.cfg.SessionName {
+		t.Errorf("from_session = %q, want %q", msg.FromSession, worker.cfg.SessionName)
+	}
+}
+
 // TestOnReady_NotCalledAfterShutdown verifies that the shuttingDown guard
 // (AC-16) prevents OnReady from firing when Shutdown() races a successful
 // health probe.

@@ -1436,6 +1436,18 @@ func touchDashboardSentinel() {
 	}
 }
 
+// isReviewAgentSession returns true when the session name belongs to a
+// review-agent spawned by `prism review`. Review-agent sessions are named
+// <parent>~review-<N>-<role> (e.g. "nixos-config@feature~review-2-review-goal")
+// and are identifiable by the presence of "~review" in the session name.
+//
+// These sessions are short-lived internal helpers; their finish events are
+// consumed by the parent worker's pollAgents DB loop and must not propagate
+// further up the chain as coordinator notifications.
+func isReviewAgentSession(sessionName string) bool {
+	return strings.Contains(sessionName, "~review")
+}
+
 // notifyCoordinator sends a "finished" notification to the coordinator session
 // for this repo. It is called asynchronously (via go) after writing
 // StateFinished, so s.mu must NOT be held when this method runs.
@@ -1450,6 +1462,12 @@ func touchDashboardSentinel() {
 // If no coordinator exists, it has ended, or this session IS the coordinator,
 // the call is a silent no-op.
 //
+// Review-agent sessions (session names containing "~review") never notify:
+// their finish events are internal progress signals consumed by the parent
+// worker's pollAgents DB loop. Propagating them to the coordinator would be
+// noise — 5 notifications per review round, none of which the coordinator
+// needs to act on.
+//
 // Retry policy: up to 3 POST attempts with exponential backoff (500ms, 1s).
 // SID validation (GET /session) is performed before each attempt. If GET /session
 // returns an empty list, delivery fails immediately (no retry). If GET /session
@@ -1458,6 +1476,15 @@ func (s *Sidecar) notifyCoordinator() {
 	// Self-notification guard: if this session is the coordinator, skip.
 	coordinatorName := s.cfg.Repo + "@main"
 	if s.cfg.SessionName == coordinatorName {
+		return
+	}
+
+	// Review-agent guard: review-agent sessions are internal to the worker's
+	// prism review invocation. Their finish events are discovered by the
+	// worker's pollAgents DB poll and must not be forwarded to the coordinator
+	// as noise notifications.
+	if isReviewAgentSession(s.cfg.SessionName) {
+		log.Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
 		return
 	}
 
