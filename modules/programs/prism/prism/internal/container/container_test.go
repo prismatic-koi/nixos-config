@@ -2850,3 +2850,100 @@ func TestBuildRunArgs_ClipboardMountNoWaylandOrX11Sockets(t *testing.T) {
 		}
 	}
 }
+
+// ── agents/ mount conditional tests ─────────────────────────────────────────
+
+// hasAgentsDirMount returns true when the args list contains a --mount or
+// --volume argument whose value references /root/.config/opencode/agents as
+// the destination. This is the canonical way to detect whether the agents/
+// bind-mount was added to a container's run args.
+func hasAgentsDirMount(args []string) bool {
+	const dest = "/root/.config/opencode/agents"
+	for i, arg := range args {
+		if i+1 >= len(args) {
+			continue
+		}
+		switch arg {
+		case "--mount":
+			// --mount type=bind,src=...,dst=/root/.config/opencode/agents,...
+			if strings.Contains(args[i+1], "dst="+dest) {
+				return true
+			}
+		case "--volume":
+			// --volume /nix/store/...-agents:/root/.config/opencode/agents:ro
+			// The destination is the second colon-separated field.
+			v := args[i+1]
+			parts := strings.SplitN(v, ":", 3)
+			if len(parts) >= 2 && parts[1] == dest {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestBuildRunArgs_ReviewContainerHasNoAgentsMount asserts that for a
+// review-role container (AgentRole starting with "review-"), no --mount or
+// --volume arg with destination /root/.config/opencode/agents appears in the
+// generated args. Review containers embed the role prompt inline via the
+// opencode.json "prompt" field; mounting the host agents/ directory would
+// cause opencode to read the "mode: subagent" front-matter from the review-*.md
+// files and override the "mode: primary" declaration in opencode.json.
+func TestBuildRunArgs_ReviewContainerHasNoAgentsMount(t *testing.T) {
+	reviewRoles := []string{
+		"review-goal",
+		"review-code",
+		"review-security",
+		"review-qa",
+		"review-context",
+	}
+	for _, role := range reviewRoles {
+		t.Run(role, func(t *testing.T) {
+			fakeHome := t.TempDir()
+			// Create a fake agents/ directory on the host so that if the
+			// mount were (incorrectly) attempted, EvalSymlinks would succeed.
+			agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll agents dir: %v", err)
+			}
+			t.Setenv("HOME", fakeHome)
+
+			m := New(Config{
+				SessionName:   "repo@feat",
+				AllocatedPort: 14000,
+				AgentRole:     role,
+			})
+			args := m.buildRunArgs()
+
+			if hasAgentsDirMount(args) {
+				t.Errorf("review container with AgentRole=%q must not have agents/ mount at /root/.config/opencode/agents, but it does; args: %v", role, args)
+			}
+		})
+	}
+}
+
+// TestBuildRunArgs_WorkerContainerHasAgentsMount asserts that for a worker
+// container, an agents/ bind-mount with destination /root/.config/opencode/agents
+// does appear in the generated args. This ensures no regression on non-review
+// container mounts.
+func TestBuildRunArgs_WorkerContainerHasAgentsMount(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Create a real agents/ directory so EvalSymlinks succeeds and the mount
+	// is actually added (the allowlist skips entries that don't exist).
+	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll agents dir: %v", err)
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentRole:     "worker",
+	})
+	args := m.buildRunArgs()
+
+	if !hasAgentsDirMount(args) {
+		t.Errorf("worker container must have agents/ mount at /root/.config/opencode/agents, but it does not; args: %v", args)
+	}
+}

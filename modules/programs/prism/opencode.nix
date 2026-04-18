@@ -896,6 +896,7 @@
             };
             ${agentName} = {
               mode = "primary";
+              prompt = builtins.readFile ./review-prompts/${agentName}.md;
               tools = {
                 task = false;
               };

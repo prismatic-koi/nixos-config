@@ -1086,19 +1086,33 @@ func (m *Manager) buildRunArgs() []string {
 	//   - package.json, bun.lock, package-lock.json, node_modules/ — bun
 	//                      ecosystem files the container manages itself
 	//
+	// agents/ is excluded for review containers: the host agents/ directory
+	// contains review-*.md files with "mode: subagent" front-matter that
+	// overrides the "mode: primary" declaration in the container's opencode.json,
+	// causing opencode to register coordinator/worker as the only primary agents
+	// and fall back to coordinator. Review containers embed their role prompt
+	// inline via the opencode.json "prompt" field instead, so the agents/
+	// directory is not mounted at all for these containers.
+	//
 	// For each entry that exists on the host:
 	//   - Symlinks → resolve to real Nix store path and mount that
 	//   - Directories → use --mount type=bind (podman creates dest automatically)
 	//   - Regular files → use --volume
+	isReviewContainer := strings.HasPrefix(cfg.AgentRole, "review-")
 	configAllowlist := []string{
 		"AGENTS.md",
-		"agents",
 		"plugins",
 		"skills",
 		"command",
 		"tui.json",
 		".gitignore",
 		"mcp-atlassian-slim-proxy.mjs",
+	}
+	if !isReviewContainer {
+		// agents/ is mounted for worker, coordinator, and all non-review
+		// containers so that host-mode @review-* subagent invocation continues
+		// to work and all other agents are accessible in those containers.
+		configAllowlist = append(configAllowlist, "agents")
 	}
 	for _, name := range configAllowlist {
 		hostPath := filepath.Join(opencodeConfigDir, name)
