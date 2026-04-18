@@ -103,7 +103,7 @@ func (a *Adapter) ContainerCommand() string {
 // individual health-check probe attempts. Its timeout governs a single HTTP
 // round-trip, not the overall health-check deadline (which is controlled by
 // defaultHealthCheckTimeout and enforced in the HealthCheck loop). Using a
-// separate client avoids reusing the general-purpose 10 s API client for probe
+// separate client avoids reusing the general-purpose 20 s API client for probe
 // attempts that must complete within one healthCheckInterval window.
 var healthProbeClient = &http.Client{Timeout: defaultHealthCheckTimeout}
 
