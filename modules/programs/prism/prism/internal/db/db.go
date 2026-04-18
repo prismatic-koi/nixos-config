@@ -1467,10 +1467,10 @@ func scanStatus(s scanner) (*Status, error) {
 // pre-existing sessions are always restored normally.
 //
 // The limit parameter caps how many events to fetch from the DB. A value of
-// 0 uses the default internal limit (the circuit-breaker threshold + 1 is
-// sufficient, but callers may pass a larger value for headroom). Setting a
-// negative limit returns an error. The caller should pass a value at least
-// as large as the configured threshold so the query covers the full window.
+// 0 (or any non-positive value) uses the default internal cap of 10, which
+// is more than sufficient for any realistic circuit-breaker threshold. Callers
+// should pass a value at least as large as the configured threshold so the
+// query covers the full window; passing 0 is safe and will use the cap.
 //
 // If the DB query itself fails, the error is returned alongside a count of 0
 // so callers can fall back to restoring the session normally (non-fatal path).
