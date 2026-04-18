@@ -5,6 +5,21 @@ package cmd
 // Reads agent_status rows where ended_at IS NULL and recreates any sessions
 // that are no longer present in the running tmux server. Sessions that already
 // exist are skipped silently — safe to call more than once.
+//
+// Stagger: a configurable delay (default 500ms) is inserted between successive
+// session creates to flatten the podman startup burst on machines with many
+// sessions. The delay only applies to sessions that are actually being created;
+// it is skipped for already-running sessions and for sessions being marked
+// ended due to missing worktrees. It is also fully skipped in dry-run mode.
+//
+// Circuit breaker: before restoring a session, restore checks its recent
+// sidecar exit history. If the last N sidecar lifecycles all ended
+// non-successfully (state != "finished") with no intervening success, restore
+// skips re-spawning that session and prints a clear message pointing the user
+// at `prism restart` or `prism cleanup`. The session's agent_status row is
+// NOT marked ended — it stays active in the dashboard so the user can
+// intervene. N defaults to 3 and is tunable via
+// cfg.SidecarCircuitBreakerThreshold.
 
 import (
 	"fmt"
@@ -19,6 +34,26 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
+)
+
+// restoreOutcome describes what restoreSession did for a given session.
+type restoreOutcome int
+
+const (
+	// restoreOutcomeSkipped means the session was already running or was
+	// marked ended (missing worktree). No sidecar was started; no stagger
+	// delay should be applied after this call.
+	restoreOutcomeSkipped restoreOutcome = iota
+
+	// restoreOutcomeCreated means the session was successfully created.
+	// A stagger delay should be applied after this call (if enabled).
+	restoreOutcomeCreated
+
+	// restoreOutcomeCircuitOpen means the circuit breaker tripped: the session
+	// has too many consecutive sidecar failures. No session was created and the
+	// agent_status row is left active. A stagger delay is NOT applied (we did
+	// no real work).
+	restoreOutcomeCircuitOpen
 )
 
 // loadRestoreConfig returns the active prism configuration for restore.
@@ -76,13 +111,52 @@ func Restore(dryRun bool) error {
 		return fmt.Errorf("prism restore: query sessions: %w", err)
 	}
 
+	// Load config once to read the stagger delay and circuit-breaker threshold.
+	// loadRestoreConfig is a package-level var so tests can override it.
+	cfg := loadRestoreConfig()
+	staggerDelay := cfg.RestoreStaggerDelay()
+	threshold := cfg.CircuitBreakerThreshold()
+
+	// pendingStagger is set to true after each successful session.Create. It is
+	// consumed (a sleep is applied) immediately before the NEXT actual create,
+	// not before skipped sessions or circuit-breaker-tripped sessions. This
+	// ensures the delay only fires between real podman/sidecar starts.
+	//
+	// Using a pointer so that restoreProjectSession can consume it without an
+	// extra return value: the function sleeps before session.Create if
+	// *pendingStagger is true, then resets it to false.
+	pendingStagger := false
+
 	for _, s := range statuses {
 		if dryRun {
+			// In dry-run mode, show what would happen but never sleep or write.
+			// Check the circuit breaker state so the user sees accurate output.
+			if threshold > 0 {
+				failures, cbErr := d.ConsecutiveSidecarFailures(s.SessionName, threshold)
+				if cbErr != nil {
+					fmt.Fprintf(os.Stderr, "restore dry-run %q: circuit breaker query: %v — treating as 0 failures\n", s.SessionName, cbErr)
+					failures = 0
+				}
+				if failures >= threshold {
+					fmt.Printf("would skip (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` or `prism cleanup` to unblock\n",
+						s.SessionName, failures, s.SessionName)
+					continue
+				}
+			}
 			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)
 			continue
 		}
-		if err := restoreSession(d, s); err != nil {
-			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, err)
+
+		outcome, restErr := restoreSession(d, s, threshold, &pendingStagger, staggerDelay)
+		if restErr != nil {
+			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, restErr)
+		}
+
+		// A created session sets pendingStagger so that the NEXT actual create
+		// is preceded by a sleep. Skipped sessions and circuit-open sessions do
+		// not consume or reset pendingStagger.
+		if outcome == restoreOutcomeCreated {
+			pendingStagger = true
 		}
 	}
 
@@ -103,13 +177,22 @@ func Restore(dryRun bool) error {
 // skipped silently. Sessions with missing/inaccessible worktrees are marked as
 // ended in the DB rather than left as zombies.
 //
+// threshold is the circuit-breaker consecutive-failure threshold. A value of 0
+// disables the circuit breaker for this call (all sessions are restored).
+//
+// pendingStagger points to a bool that is set by the caller after each
+// successful create. If *pendingStagger is true when session.Create is about
+// to be called, restoreProjectSession sleeps for staggerDelay and resets it
+// to false first. This ensures the delay only fires between real creates, not
+// before already-running or worktree-missing sessions.
+//
 // s.SessionName is the authoritative tmux session name — it is never
 // re-derived from the worktree path. This ensures both bare and non-bare
 // sessions (e.g. obsidian) are restored correctly even if the session name
 // would not match what sessionNameFor() would compute from the worktree.
-func restoreSession(d *db.DB, s db.Status) error {
+func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
 	if tmux.HasSession(s.SessionName) {
-		return nil
+		return restoreOutcomeSkipped, nil
 	}
 
 	switch s.SessionName {
@@ -118,17 +201,17 @@ func restoreSession(d *db.DB, s db.Status) error {
 		// explicitly skipped by name in cmd/event.go:tmux-session-start and
 		// will never appear in agent_status under normal operation. This case
 		// is retained as a safety net.
-		return nil
+		return restoreOutcomeSkipped, nil
 
 	case "scratchpad":
 		// Defensive guard — scratchpad is an internal meta-session explicitly
 		// skipped by name in cmd/event.go:tmux-session-start and will never
 		// appear in agent_status under normal operation. This case is retained
 		// as a safety net.
-		return ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
+		return restoreOutcomeCreated, ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
 
 	default:
-		return restoreProjectSession(d, s)
+		return restoreProjectSession(d, s, threshold, pendingStagger, staggerDelay)
 	}
 }
 
@@ -139,23 +222,49 @@ func restoreSession(d *db.DB, s db.Status) error {
 // the filesystem — this ensures non-bare sessions (e.g. obsidian) and sessions
 // whose name diverges from the worktree path are restored correctly.
 //
+// threshold is the circuit-breaker consecutive-failure threshold. A value of 0
+// disables the circuit breaker for this call.
+//
+// pendingStagger and staggerDelay implement the inter-create stagger. If
+// *pendingStagger is true when session.Create is about to be called, this
+// function sleeps for staggerDelay and resets *pendingStagger to false first.
+//
 // agent_status seeding is handled directly via the open DB handle
 // (SkipStatusSeed=true) rather than forking a subprocess, because
 // os.Executable() does not reliably resolve the real prism binary in all
 // contexts (e.g. test binaries).
-func restoreProjectSession(d *db.DB, s db.Status) error {
+func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
 	// If the worktree directory doesn't exist or is inaccessible, mark the
 	// session as ended in the DB so it doesn't appear as a zombie in the
 	// dashboard.
 	directory := s.Worktree
 	if directory == "" {
 		fmt.Fprintf(os.Stderr, "restore %q: no worktree recorded — marking ended\n", s.SessionName)
-		return d.SetEnded(s.SessionName)
+		return restoreOutcomeSkipped, d.SetEnded(s.SessionName)
 	}
 	if _, err := os.Stat(directory); err != nil {
 		fmt.Fprintf(os.Stderr, "restore %q: worktree %q not accessible (%v) — marking ended\n",
 			s.SessionName, directory, err)
-		return d.SetEnded(s.SessionName)
+		return restoreOutcomeSkipped, d.SetEnded(s.SessionName)
+	}
+
+	// Circuit breaker: skip sessions whose sidecar has failed too many times
+	// in a row without a successful run in between. The agent_status row is
+	// intentionally left active (no SetEnded call) so the session remains
+	// visible in `prism list-sessions` and the dashboard, and the user can
+	// intervene via `prism restart` or `prism cleanup`.
+	if threshold > 0 {
+		failures, cbErr := d.ConsecutiveSidecarFailures(s.SessionName, threshold)
+		if cbErr != nil {
+			// Non-fatal: a broken history table must not block recovery.
+			// Log and fall through to attempt the restore normally.
+			fmt.Fprintf(os.Stderr, "restore %q: circuit breaker query failed: %v — proceeding with restore\n",
+				s.SessionName, cbErr)
+		} else if failures >= threshold {
+			fmt.Printf("skipped (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` to try again, or `prism cleanup` to remove it\n",
+				s.SessionName, failures, s.SessionName)
+			return restoreOutcomeCircuitOpen, nil
+		}
 	}
 
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
@@ -213,7 +322,7 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 	// remaining window (between here and tmux new-session inside Create) is
 	// unavoidable and is handled by Create's own inner guard.
 	if tmux.HasSession(s.SessionName) {
-		return nil
+		return restoreOutcomeSkipped, nil
 	}
 
 	// Kill any orphaned sidecar left over from a previous lifecycle (e.g. a
@@ -286,12 +395,24 @@ func restoreProjectSession(d *db.DB, s db.Status) error {
 		onRestoreSessionCreate(opts)
 	}
 
+	// Apply stagger delay: if a previous session was just created, sleep
+	// before starting this one. *pendingStagger is set by the Restore() loop
+	// after each successful create; we consume it here (reset to false) so
+	// that the delay fires exactly once per create pair.
+	// This is the point in the code path where we are committed to calling
+	// session.Create, so all cheap checks (worktree, HasSession, circuit
+	// breaker) have already been handled above without consuming the stagger.
+	if pendingStagger != nil && *pendingStagger && staggerDelay > 0 {
+		time.Sleep(staggerDelay)
+		*pendingStagger = false
+	}
+
 	if err := session.Create(s.SessionName, directory, opts); err != nil {
-		return fmt.Errorf("create session: %w", err)
+		return restoreOutcomeSkipped, fmt.Errorf("create session: %w", err)
 	}
 	// session.Create contains its own inner HasSession guard as a final safety
 	// net for the narrow race window between the check above and new-session.
 
 	fmt.Printf("session %q restored\n", s.SessionName)
-	return nil
+	return restoreOutcomeCreated, nil
 }
