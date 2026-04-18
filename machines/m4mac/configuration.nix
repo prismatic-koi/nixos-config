@@ -61,7 +61,7 @@ in
     [
       arping
       gnutar
-      mysql80
+      mysql84
       podman # darwin doesn't use virtualisation.podman
       postgresql
       rustup
