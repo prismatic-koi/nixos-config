@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -565,9 +566,11 @@ func TestBwrapBuildArgs_TermSetenv(t *testing.T) {
 // not set, the fallback chain is emitted.
 func TestStandardSandboxEnvArgs_PathFallbackWhenUnset(t *testing.T) {
 	t.Setenv("PATH", "")
+	t.Setenv("USER", "")
 	args := standardSandboxEnvArgs()
-	if !hasSetenv(args, "PATH", fallbackPATH) {
-		t.Errorf("expected --setenv PATH %q when PATH is empty, got args: %v", fallbackPATH, args)
+	fp := fallbackPATH()
+	if !hasSetenv(args, "PATH", fp) {
+		t.Errorf("expected --setenv PATH %q when PATH is empty, got args: %v", fp, args)
 	}
 }
 
@@ -627,14 +630,15 @@ func TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset(t *testing.T) {
 	}
 }
 
-// TestStandardSandboxEnvArgs_PathFallbackExact verifies the fallback PATH is
-// exactly the specified string — not reordered or otherwise altered.
-func TestStandardSandboxEnvArgs_PathFallbackExact(t *testing.T) {
+// TestStandardSandboxEnvArgs_PathFallbackExactNoUser verifies the fallback PATH
+// when USER is empty is exactly the base string without a per-user prefix.
+func TestStandardSandboxEnvArgs_PathFallbackExactNoUser(t *testing.T) {
 	t.Setenv("PATH", "")
+	t.Setenv("USER", "")
 	args := standardSandboxEnvArgs()
 	want := "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
 	if !hasSetenv(args, "PATH", want) {
-		t.Errorf("fallback PATH = unexpected value; want exactly %q, got args: %v", want, args)
+		t.Errorf("fallback PATH (no USER) = unexpected value; want exactly %q, got args: %v", want, args)
 	}
 }
 
@@ -676,6 +680,7 @@ func TestBwrapBuildArgs_PathSetenvPresentInBuildArgs(t *testing.T) {
 // on the host, BuildArgs emits the fallback PATH via standardSandboxEnvArgs.
 func TestBwrapBuildArgs_PathFallbackInBuildArgs(t *testing.T) {
 	t.Setenv("PATH", "")
+	t.Setenv("USER", "")
 
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -687,8 +692,9 @@ func TestBwrapBuildArgs_PathFallbackInBuildArgs(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	if !hasSetenv(args, "PATH", fallbackPATH) {
-		t.Errorf("expected fallback --setenv PATH %q when PATH empty, got args: %v", fallbackPATH, args)
+	fp := fallbackPATH()
+	if !hasSetenv(args, "PATH", fp) {
+		t.Errorf("expected fallback --setenv PATH %q when PATH empty, got args: %v", fp, args)
 	}
 }
 
@@ -1146,6 +1152,231 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	}
 	if !hasROBind(args, m.opencodeConfigFilePath()) {
 		t.Errorf("opencode.json --ro-bind missing")
+	}
+}
+
+// ── System binary roots (unconditional --ro-bind entries) ────────────────────
+
+// TestBwrapBuildArgs_SystemRootsPresent verifies that BuildArgs always emits
+// --ro-bind for the five fixed NixOS system binary roots, regardless of
+// Manager configuration.
+func TestBwrapBuildArgs_SystemRootsPresent(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for _, root := range []string{
+		"/nix",
+		"/etc",
+		"/run/current-system",
+		"/bin",
+		"/run/wrappers",
+	} {
+		if !hasROBind(args, root) {
+			t.Errorf("system root %q not found as --ro-bind SRC SRC in args: %v", root, args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_SystemRootsBeforeWorktree verifies the system binary
+// roots appear before the worktree mount — i.e. immediately after the baseline
+// namespace flags — so the ordering described in BuildArgs is maintained.
+func TestBwrapBuildArgs_SystemRootsBeforeWorktree(t *testing.T) {
+	worktree := t.TempDir()
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      worktree,
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Find index of first system root ro-bind and first worktree bind.
+	nixIdx := -1
+	worktreeIdx := -1
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == "/nix" && nixIdx < 0 {
+			nixIdx = i
+		}
+		if args[i] == "--bind" && args[i+1] == worktree && worktreeIdx < 0 {
+			worktreeIdx = i
+		}
+	}
+	if nixIdx < 0 {
+		t.Fatalf("--ro-bind /nix /nix not found in args: %v", args)
+	}
+	if worktreeIdx < 0 {
+		t.Fatalf("--bind %q %q not found in args: %v", worktree, worktree, args)
+	}
+	if nixIdx >= worktreeIdx {
+		t.Errorf("system root /nix (idx %d) should appear before worktree bind (idx %d)", nixIdx, worktreeIdx)
+	}
+}
+
+// ── Per-user nix profile mounts (conditional) ────────────────────────────────
+
+// TestBwrapBuildArgs_NixProfilePresentWhenExists verifies that when
+// $HOME/.nix-profile exists, BuildArgs emits --ro-bind for it.
+func TestBwrapBuildArgs_NixProfilePresentWhenExists(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Create the nix-profile dir under the fake HOME.
+	nixProfile := filepath.Join(fakeHome, ".nix-profile")
+	if err := os.MkdirAll(nixProfile, 0o755); err != nil {
+		t.Fatalf("MkdirAll nix-profile: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasROBind(args, nixProfile) {
+		t.Errorf("~/.nix-profile %q not found as --ro-bind SRC SRC when it exists: %v", nixProfile, args)
+	}
+}
+
+// TestBwrapBuildArgs_NixProfileAbsentWhenMissing verifies that when
+// $HOME/.nix-profile does not exist, BuildArgs does not emit --ro-bind for it.
+func TestBwrapBuildArgs_NixProfileAbsentWhenMissing(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	nixProfile := filepath.Join(fakeHome, ".nix-profile")
+	// Do NOT create nixProfile — it should be absent.
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasROBind(args, nixProfile) {
+		t.Errorf("~/.nix-profile should be omitted when absent, but found as --ro-bind in args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_LocalStateNixProfilePresentWhenExists verifies that when
+// $HOME/.local/state/nix/profile exists, BuildArgs emits --ro-bind for it.
+func TestBwrapBuildArgs_LocalStateNixProfilePresentWhenExists(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	localStateProfile := filepath.Join(fakeHome, ".local", "state", "nix", "profile")
+	if err := os.MkdirAll(localStateProfile, 0o755); err != nil {
+		t.Fatalf("MkdirAll local state nix profile: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasROBind(args, localStateProfile) {
+		t.Errorf("~/.local/state/nix/profile %q not found as --ro-bind SRC SRC when it exists: %v", localStateProfile, args)
+	}
+}
+
+// TestBwrapBuildArgs_LocalStateNixProfileAbsentWhenMissing verifies that when
+// $HOME/.local/state/nix/profile does not exist, BuildArgs does not emit
+// --ro-bind for it.
+func TestBwrapBuildArgs_LocalStateNixProfileAbsentWhenMissing(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	localStateProfile := filepath.Join(fakeHome, ".local", "state", "nix", "profile")
+	// Do NOT create localStateProfile — it should be absent.
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasROBind(args, localStateProfile) {
+		t.Errorf("~/.local/state/nix/profile should be omitted when absent, but found as --ro-bind in args: %v", args)
+	}
+}
+
+// ── fallbackPATH() function tests ────────────────────────────────────────────
+
+// TestFallbackPATH_BeginsWithPerUserWhenUserSet verifies that when USER is
+// non-empty, fallbackPATH() returns a value that begins with the per-user
+// profile bin path.
+func TestFallbackPATH_BeginsWithPerUserWhenUserSet(t *testing.T) {
+	t.Setenv("USER", "ben")
+	fp := fallbackPATH()
+	wantPrefix := "/etc/profiles/per-user/ben/bin"
+	if !strings.HasPrefix(fp, wantPrefix) {
+		t.Errorf("fallbackPATH() = %q; want it to begin with %q when USER=ben", fp, wantPrefix)
+	}
+}
+
+// TestFallbackPATH_NoPerUserWhenUserEmpty verifies that when USER is empty,
+// fallbackPATH() does not include /etc/profiles/per-user//bin (no empty user
+// path component).
+func TestFallbackPATH_NoPerUserWhenUserEmpty(t *testing.T) {
+	t.Setenv("USER", "")
+	fp := fallbackPATH()
+	badEntry := "/etc/profiles/per-user//bin"
+	if strings.Contains(fp, badEntry) {
+		t.Errorf("fallbackPATH() = %q; must not contain %q when USER is empty", fp, badEntry)
+	}
+	// Also verify no per-user entry at all.
+	perUserPrefix := "/etc/profiles/per-user/"
+	if strings.Contains(fp, perUserPrefix) {
+		t.Errorf("fallbackPATH() = %q; must not contain any per-user entry when USER is empty", fp)
+	}
+}
+
+// TestFallbackPATH_ContainsBaseEntriesAlways verifies that the base NixOS
+// paths are always present in fallbackPATH() regardless of USER.
+func TestFallbackPATH_ContainsBaseEntriesAlways(t *testing.T) {
+	for _, user := range []string{"", "testuser"} {
+		t.Run("USER="+user, func(t *testing.T) {
+			t.Setenv("USER", user)
+			fp := fallbackPATH()
+			for _, entry := range []string{
+				"/run/current-system/sw/bin",
+				"/nix/var/nix/profiles/default/bin",
+				"/usr/bin",
+				"/bin",
+			} {
+				if !strings.Contains(fp, entry) {
+					t.Errorf("fallbackPATH() = %q; must contain %q", fp, entry)
+				}
+			}
+		})
+	}
+}
+
+// TestStandardSandboxEnvArgs_FallbackPathWithUser verifies that when PATH is
+// empty and USER is set, the fallback includes the per-user profile entry.
+func TestStandardSandboxEnvArgs_FallbackPathWithUser(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv("USER", "alice")
+	args := standardSandboxEnvArgs()
+	fp := fallbackPATH()
+	if !hasSetenv(args, "PATH", fp) {
+		t.Errorf("expected --setenv PATH %q (with per-user entry) when USER=alice and PATH empty, got args: %v", fp, args)
+	}
+	if !strings.HasPrefix(fp, "/etc/profiles/per-user/alice/bin") {
+		t.Errorf("fallbackPATH with USER=alice should begin with per-user entry, got %q", fp)
 	}
 }
 
