@@ -410,6 +410,20 @@ func Create(name, directory string, opts Opts) error {
 	return nil
 }
 
+// agentPaneEnvVars builds the env-var map for the agent tmux pane.
+// When opts.Prompt is non-empty, PRISM_INITIAL_PROMPT is included so that
+// "prism agent-run" can read it and populate container.Config.InitialPrompt,
+// activating bwrap's --prompt CLI-append path.
+// Returns nil when no env vars are needed, producing no -e flags in tmux.
+func agentPaneEnvVars(opts Opts) map[string]string {
+	if opts.Prompt == "" {
+		return nil
+	}
+	return map[string]string{
+		"PRISM_INITIAL_PROMPT": opts.Prompt,
+	}
+}
+
 // setupFullLayout configures the three-window layout for a project session:
 // window 0 "edit" (nvim auto-launched), window 1 "agent" (opencode),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
@@ -505,7 +519,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// creation time. This runs the command via "sh -c <cmd>", bypassing
 	// tmux's command parser — semicolons in the readiness-wait script are
 	// delivered verbatim to the shell instead of being consumed by tmux.
-	_ = tmux.NewWindow(name, 1, "agent", directory, agentCmd)
+	// agentPaneEnvVars returns PRISM_INITIAL_PROMPT when a prompt is set,
+	// enabling bwrap's --prompt delivery path via prism agent-run.
+	_ = tmux.NewWindow(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts))
 
 	if !opts.SkipStatusSeed {
 		self, selfErr := os.Executable()
@@ -528,7 +544,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		}
 	}
 
-	_ = tmux.NewWindow(name, 2, "term", directory, "")
+	_ = tmux.NewWindow(name, 2, "term", directory, "", nil)
 
 	focusIdx := 1
 	if strings.Contains(directory, "obsidian") {

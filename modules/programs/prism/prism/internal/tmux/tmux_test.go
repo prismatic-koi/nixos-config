@@ -12,6 +12,8 @@
 package tmux_test
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -704,6 +706,177 @@ func TestCleanupRedirectMultiClient_Direct(t *testing.T) {
 	}
 	if gotC != "nixos-config@main" {
 		t.Errorf("clientC = %q after cleanup redirect, want %q (bystander must not be redirected)", gotC, "nixos-config@main")
+	}
+}
+
+// ─── NewWindow env-var tests ──────────────────────────────────────────────────
+
+// spyTmux creates a fake tmux binary that records its arguments (one per line)
+// to argsFile and exits 0. It redirects TmuxBin for the duration of the test.
+//
+// Only call this from non-parallel tests — TmuxBin is a package-level global.
+func spyTmux(t *testing.T) string {
+	t.Helper()
+	argsFile := t.TempDir() + "/tmux-args"
+	wrapperPath := t.TempDir() + "/tmux"
+	// The script appends each argument on a separate line to argsFile.
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write spy tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+	return argsFile
+}
+
+// readArgs reads the recorded args from a spy tmux invocation.
+func readArgs(argsFile string) []string {
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return nil
+	}
+	var args []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			args = append(args, line)
+		}
+	}
+	return args
+}
+
+// containsSequence returns true when needle appears as a contiguous sub-slice of haystack.
+func containsSequence(haystack, needle []string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j, n := range needle {
+			if haystack[i+j] != n {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// TestNewWindow_EnvVar_WithPrompt verifies that NewWindow emits "-e KEY=VALUE"
+// in its args when envVars contains an entry.
+func TestNewWindow_EnvVar_WithPrompt(t *testing.T) {
+	argsFile := spyTmux(t)
+
+	err := tmux.NewWindow("mysession", 1, "agent", "/tmp", "echo hi", map[string]string{
+		"PRISM_INITIAL_PROMPT": "hello world",
+	})
+	if err != nil {
+		// The spy script exits 0, so an error here is unexpected.
+		t.Fatalf("NewWindow: %v", err)
+	}
+
+	args := readArgs(argsFile)
+	if !containsSequence(args, []string{"-e", "PRISM_INITIAL_PROMPT=hello world"}) {
+		t.Errorf("args %v do not contain [-e PRISM_INITIAL_PROMPT=hello world]", args)
+	}
+}
+
+// TestNewWindow_EnvVar_Empty verifies that NewWindow does NOT emit any "-e"
+// flag when envVars is nil.
+func TestNewWindow_EnvVar_Empty(t *testing.T) {
+	argsFile := spyTmux(t)
+
+	err := tmux.NewWindow("mysession", 1, "agent", "/tmp", "echo hi", nil)
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+
+	args := readArgs(argsFile)
+	for _, a := range args {
+		if a == "-e" {
+			t.Errorf("args %v contain -e flag, expected none when envVars is nil", args)
+			break
+		}
+	}
+}
+
+// TestNewWindow_EnvVar_EmptyMap verifies that NewWindow does NOT emit any "-e"
+// flag when envVars is an empty (non-nil) map.
+func TestNewWindow_EnvVar_EmptyMap(t *testing.T) {
+	argsFile := spyTmux(t)
+
+	err := tmux.NewWindow("mysession", 1, "agent", "/tmp", "echo hi", map[string]string{})
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+
+	args := readArgs(argsFile)
+	for _, a := range args {
+		if a == "-e" {
+			t.Errorf("args %v contain -e flag, expected none when envVars is empty", args)
+			break
+		}
+	}
+}
+
+// TestNewWindow_EnvVar_MultipleKeys verifies that multiple env vars each
+// produce their own "-e KEY=VALUE" pair, in sorted key order.
+func TestNewWindow_EnvVar_MultipleKeys(t *testing.T) {
+	argsFile := spyTmux(t)
+
+	err := tmux.NewWindow("mysession", 1, "agent", "/tmp", "", map[string]string{
+		"ZEBRA": "z",
+		"ALPHA": "a",
+	})
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+
+	args := readArgs(argsFile)
+	// Both env vars must be present.
+	if !containsSequence(args, []string{"-e", "ALPHA=a"}) {
+		t.Errorf("args %v do not contain [-e ALPHA=a]", args)
+	}
+	if !containsSequence(args, []string{"-e", "ZEBRA=z"}) {
+		t.Errorf("args %v do not contain [-e ZEBRA=z]", args)
+	}
+	// ALPHA must appear before ZEBRA (sorted key order).
+	alphaIdx := -1
+	zebraIdx := -1
+	for i, a := range args {
+		if a == "ALPHA=a" {
+			alphaIdx = i
+		}
+		if a == "ZEBRA=z" {
+			zebraIdx = i
+		}
+	}
+	if alphaIdx == -1 || zebraIdx == -1 {
+		t.Fatalf("ALPHA or ZEBRA not found in args: %v", args)
+	}
+	if alphaIdx > zebraIdx {
+		t.Errorf("ALPHA (idx %d) must come before ZEBRA (idx %d) in args: %v", alphaIdx, zebraIdx, args)
+	}
+}
+
+// TestNewWindow_EnvVar_EqualInValue verifies that a prompt containing '='
+// characters is passed verbatim — the env var is split on the FIRST '=' only.
+func TestNewWindow_EnvVar_EqualInValue(t *testing.T) {
+	argsFile := spyTmux(t)
+
+	err := tmux.NewWindow("mysession", 1, "agent", "/tmp", "", map[string]string{
+		"PRISM_INITIAL_PROMPT": "KEY=value is part of the message",
+	})
+	if err != nil {
+		t.Fatalf("NewWindow: %v", err)
+	}
+
+	args := readArgs(argsFile)
+	if !containsSequence(args, []string{"-e", "PRISM_INITIAL_PROMPT=KEY=value is part of the message"}) {
+		t.Errorf("args %v do not contain expected env var with = in value", args)
 	}
 }
 

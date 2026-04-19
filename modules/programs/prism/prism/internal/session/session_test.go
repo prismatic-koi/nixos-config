@@ -1,11 +1,13 @@
 package session
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // TestBuildDirectOpencodeCmd_AgentEnvVars verifies that AgentEnvVars are
@@ -353,5 +355,132 @@ func TestIsolationMode_PodmanWrittenBeforeWindow(t *testing.T) {
 	}
 	if st.IsolationMode != "podman" {
 		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "podman")
+	}
+}
+
+// ── agentPaneEnvVars (initial-prompt env var) ─────────────────────────────────
+
+// TestAgentPaneEnvVars_WithPrompt verifies that agentPaneEnvVars returns a map
+// containing PRISM_INITIAL_PROMPT when opts.Prompt is non-empty.
+func TestAgentPaneEnvVars_WithPrompt(t *testing.T) {
+	opts := Opts{Prompt: "hello"}
+	got := agentPaneEnvVars(opts)
+	if got == nil {
+		t.Fatal("agentPaneEnvVars(Prompt=hello): got nil, want non-nil map")
+	}
+	if v, ok := got["PRISM_INITIAL_PROMPT"]; !ok || v != "hello" {
+		t.Errorf("agentPaneEnvVars(Prompt=hello): PRISM_INITIAL_PROMPT = %q, want %q", v, "hello")
+	}
+}
+
+// TestAgentPaneEnvVars_NoPrompt verifies that agentPaneEnvVars returns nil
+// when opts.Prompt is empty, ensuring no -e flag is emitted.
+func TestAgentPaneEnvVars_NoPrompt(t *testing.T) {
+	opts := Opts{Prompt: ""}
+	got := agentPaneEnvVars(opts)
+	if got != nil {
+		t.Errorf("agentPaneEnvVars(Prompt=''): got %v, want nil", got)
+	}
+}
+
+// TestAgentPaneEnvVars_SpecialChars verifies that a prompt containing newlines,
+// quotes, backticks, and equals signs is stored verbatim.
+func TestAgentPaneEnvVars_SpecialChars(t *testing.T) {
+	prompt := "line1\nline2 'single' \"double\" `backtick` KEY=value"
+	opts := Opts{Prompt: prompt}
+	got := agentPaneEnvVars(opts)
+	if got == nil {
+		t.Fatal("agentPaneEnvVars: got nil, want non-nil map")
+	}
+	if v := got["PRISM_INITIAL_PROMPT"]; v != prompt {
+		t.Errorf("PRISM_INITIAL_PROMPT = %q, want %q", v, prompt)
+	}
+}
+
+// spyTmuxBin creates a fake tmux binary that records its arguments (one per line)
+// to argsFile, redirects tmux.TmuxBin for the duration of the test, and returns
+// the path to argsFile. Only call this from non-parallel tests.
+func spyTmuxBin(t *testing.T) string {
+	t.Helper()
+	argsFile := t.TempDir() + "/tmux-args"
+	wrapperPath := t.TempDir() + "/tmux"
+	script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write spy tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+	return argsFile
+}
+
+// readSpyArgs reads the arguments recorded by the spy tmux binary.
+func readSpyArgs(argsFile string) []string {
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return nil
+	}
+	var args []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" {
+			args = append(args, line)
+		}
+	}
+	return args
+}
+
+// containsSeq returns true when needle appears as a contiguous sub-slice of haystack.
+func containsSeq(haystack, needle []string) bool {
+	if len(needle) == 0 {
+		return true
+	}
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		match := true
+		for j, n := range needle {
+			if haystack[i+j] != n {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSpawnSession_PromptEnvVar_WithPrompt verifies that when opts.Prompt is
+// set, the tmux new-window call for the agent pane contains
+// -e PRISM_INITIAL_PROMPT=<prompt>.
+// It calls tmux.NewWindow directly (the same call path used by setupFullLayout)
+// via the spy so no real tmux session is required.
+func TestSpawnSession_PromptEnvVar_WithPrompt(t *testing.T) {
+	argsFile := spyTmuxBin(t)
+
+	// Call tmux.NewWindow with the env var map that agentPaneEnvVars would
+	// return for a non-empty prompt. This mirrors setupFullLayout's call site.
+	opts := Opts{Prompt: "hello"}
+	_ = tmux.NewWindow("test-session", 1, "agent", "/tmp", "echo hi", agentPaneEnvVars(opts))
+
+	args := readSpyArgs(argsFile)
+	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT=hello"}) {
+		t.Errorf("tmux new-window args %v do not contain [-e PRISM_INITIAL_PROMPT=hello]", args)
+	}
+}
+
+// TestSpawnSession_PromptEnvVar_NoPrompt verifies that when opts.Prompt is
+// empty, the tmux new-window call does NOT include any -e flag.
+func TestSpawnSession_PromptEnvVar_NoPrompt(t *testing.T) {
+	argsFile := spyTmuxBin(t)
+
+	opts := Opts{Prompt: ""}
+	_ = tmux.NewWindow("test-session", 1, "agent", "/tmp", "echo hi", agentPaneEnvVars(opts))
+
+	args := readSpyArgs(argsFile)
+	for _, a := range args {
+		if a == "-e" {
+			t.Errorf("tmux new-window args %v contain -e flag, expected none when no prompt", args)
+			break
+		}
 	}
 }

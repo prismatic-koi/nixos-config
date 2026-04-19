@@ -136,6 +136,13 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		HostAPISockPath:   hostAPISockPath,
 	}
 
+	// Read the initial prompt from the pane env var set by session.go at
+	// window-creation time. When non-empty, populate InitialPrompt so that
+	// bwrap.go's BuildArgs appends --prompt to the opencode invocation.
+	// The env var is set via tmux's -e flag in tmux.NewWindow, which means
+	// it lives only in this pane's environment and dies with the pane.
+	applyInitialPromptEnvVar(&ctrCfg)
+
 	// Construct the Manager. PrepareBwrap will write temp files and build args.
 	m := container.New(ctrCfg)
 
@@ -153,6 +160,17 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// exec replaces the current process with bwrap. argv[0] must be the binary path.
 	argv := append([]string{bwrapBin}, bwrapArgs...)
 	return syscall.Exec(bwrapBin, argv, os.Environ())
+}
+
+// applyInitialPromptEnvVar reads PRISM_INITIAL_PROMPT from the process
+// environment and, when non-empty, sets cfg.InitialPrompt. This feeds the
+// existing bwrap.go BuildArgs --prompt append at lines 466-468 without
+// requiring any new persistent state: the env var is set by tmux.NewWindow
+// via the -e flag and exists only for the lifetime of this pane.
+func applyInitialPromptEnvVar(cfg *container.Config) {
+	if initialPrompt := os.Getenv("PRISM_INITIAL_PROMPT"); initialPrompt != "" {
+		cfg.InitialPrompt = initialPrompt
+	}
 }
 
 // findBwrap locates the bwrap binary on PATH or in well-known Nix store paths.
