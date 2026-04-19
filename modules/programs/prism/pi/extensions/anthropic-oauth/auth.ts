@@ -266,7 +266,6 @@ async function fetchWithRetry(
 function makeTokenHeaders(): HeadersInit {
   return {
     "Content-Type": "application/x-www-form-urlencoded",
-    "User-Agent": USER_AGENT,
   }
 }
 

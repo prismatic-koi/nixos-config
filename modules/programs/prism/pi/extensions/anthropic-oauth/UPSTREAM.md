@@ -48,12 +48,17 @@ it is more actively maintained and is the source of the PR #193 fix.
 
 1. **`auth.ts` token-exchange wire format tracks griffinmartin `credentials.ts::refreshViaOAuth`**.
    The OAuth token endpoint URL (`TOKEN_URL`), request body construction
-   (`URLSearchParams` / `application/x-www-form-urlencoded`), and `User-Agent`
-   header in `auth.ts` now mirror griffinmartin's `credentials.ts::refreshViaOAuth`
-   rather than leohenon's original JSON-body approach. The local-callback-server
-   PKCE flow, `loginAnthropic` / `refreshAnthropicToken` function signatures, and
-   `pi.registerProvider` wrapper continue to mirror leohenon.
-   Ported in: issue #885, griffinmartin SHA `df1b0cbc9e94ff9a8081ac98aa837893fd2be35e`.
+   (`URLSearchParams` / `application/x-www-form-urlencoded`), and absence of a
+   `User-Agent` header in `makeTokenHeaders()` all mirror griffinmartin's
+   `credentials.ts::refreshViaOAuth` exactly. No `User-Agent` is sent on
+   token-exchange or token-refresh requests — Anthropic's Cloudflare WAF on
+   `claude.ai/v1/oauth/token` blocks requests carrying `User-Agent: claude-code/*`
+   with a 429. The `USER_AGENT` constant remains declared and exported for use on
+   the API-call path (`index.ts`), but is not included in token-exchange headers.
+   The local-callback-server PKCE flow, `loginAnthropic` / `refreshAnthropicToken`
+   function signatures, and `pi.registerProvider` wrapper continue to mirror leohenon.
+   Wire-format ported in: issue #885, griffinmartin SHA `df1b0cbc9e94ff9a8081ac98aa837893fd2be35e`.
+   User-Agent removed in: issue #888.
 
 2. **`index.ts` is pi-specific and will never match griffinmartin's `index.ts`**.
    griffinmartin's entry point uses opencode's `Plugin` type with `auth.loader`,
