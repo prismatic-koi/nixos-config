@@ -46,30 +46,39 @@ it is more actively maintained and is the source of the PR #193 fix.
 
 ## Known divergences
 
-1. **`index.ts` is pi-specific and will never match griffinmartin's `index.ts`**.
+1. **`auth.ts` token-exchange wire format tracks griffinmartin `credentials.ts::refreshViaOAuth`**.
+   The OAuth token endpoint URL (`TOKEN_URL`), request body construction
+   (`URLSearchParams` / `application/x-www-form-urlencoded`), and `User-Agent`
+   header in `auth.ts` now mirror griffinmartin's `credentials.ts::refreshViaOAuth`
+   rather than leohenon's original JSON-body approach. The local-callback-server
+   PKCE flow, `loginAnthropic` / `refreshAnthropicToken` function signatures, and
+   `pi.registerProvider` wrapper continue to mirror leohenon.
+   Ported in: issue #885, griffinmartin SHA `df1b0cbc9e94ff9a8081ac98aa837893fd2be35e`.
+
+2. **`index.ts` is pi-specific and will never match griffinmartin's `index.ts`**.
    griffinmartin's entry point uses opencode's `Plugin` type with `auth.loader`,
    `experimental.chat.system.transform`, and `config` hooks. Pi's extension API
    uses `pi.registerProvider(name, { oauth: {...}, streamSimple: ... })`. These
    are structurally different and cannot be reconciled.
 
-2. **`stream.ts` has no griffinmartin equivalent**. griffinmartin delegates HTTP
+3. **`stream.ts` has no griffinmartin equivalent**. griffinmartin delegates HTTP
    and SSE parsing to the opencode runtime; pi requires explicit streaming.
    Our `stream.ts` replaces leohenon's `@anthropic-ai/sdk`-based streaming with
    native `fetch()` + manual SSE parsing, matching the zero-npm-deps commitment.
 
-3. **`betas.ts` reads `PI_ANTHROPIC_ENABLE_1M_CONTEXT`** instead of griffinmartin's
+4. **`betas.ts` reads `PI_ANTHROPIC_ENABLE_1M_CONTEXT`** instead of griffinmartin's
    `ANTHROPIC_ENABLE_1M_CONTEXT` (which goes through `plugin-config.ts`). Pi has
    no plugin config mechanism, so we read the env var directly.
 
-4. **`logger.ts` default log path** is `~/.pi/agent/pi-anthropic-oauth-debug.log`
+5. **`logger.ts` default log path** is `~/.pi/agent/pi-anthropic-oauth-debug.log`
    instead of griffinmartin's `~/.local/share/opencode/claude-auth-debug.log`.
    The env var is `PI_ANTHROPIC_OAUTH_DEBUG` instead of `CLAUDE_AUTH_DEBUG`.
 
-5. **`credentials.ts` is single-account only** (no keychain, no multi-account).
+6. **`credentials.ts` is single-account only** (no keychain, no multi-account).
    griffinmartin's version supports macOS Keychain + multi-account. Pi stores
    credentials in `~/.pi/agent/auth.json` and is single-account.
 
-6. **MD5 hash obfuscation vs PascalCase**: Our `transforms.ts` uses PR #193's
+7. **MD5 hash obfuscation vs PascalCase**: Our `transforms.ts` uses PR #193's
    MD5 approach (`t_<8hex>`) instead of griffinmartin main's `mcp_` PascalCase
    approach. This is intentional — see PR #193 for the rationale.
 
