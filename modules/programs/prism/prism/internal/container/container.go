@@ -727,8 +727,26 @@ func (m *Manager) Shutdown() {
 // missing sources — it simply fails to bind. Eagerly creating the directories
 // avoids confusing "No such file or directory" errors at bwrap startup.
 func (m *Manager) PrepareBwrap() ([]string, error) {
-	// Write a minimal SSH config. Mirrors the Create() path.
-	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile " + m.cfg.SshAccessKeyName + "\n  IdentitiesOnly yes\n"
+	// Write a minimal SSH config for bwrap. Unlike the podman path, which uses
+	// the in-container path "/root/.ssh/access-key" (where the key is mounted),
+	// bwrap uses Dst==Src mounts — the key is visible at its resolved host path
+	// inside the sandbox. Resolve the symlink to get the absolute path that
+	// BuildArgs mounts with --ro-bind.
+	accessKeyName := m.cfg.SshAccessKeyName
+	if accessKeyName == "" {
+		accessKeyName = "prismatic-koi-ed25519"
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.Getenv("HOME")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	accessKeyPath := filepath.Join(sshDir, accessKeyName)
+	if resolved, err := filepath.EvalSymlinks(accessKeyPath); err == nil {
+		// Use the resolved path — that's what BuildArgs mounts with --ro-bind.
+		accessKeyPath = resolved
+	}
+	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile " + accessKeyPath + "\n  IdentitiesOnly yes\n"
 	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
 		return nil, fmt.Errorf("container: bwrap: write ssh config: %w", err)
 	}

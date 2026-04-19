@@ -280,12 +280,11 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	} else if s.HostMode {
 		isoMode = config.IsolationHost
 	} else {
-		// Pre-v10 row without isolation_mode: fall back to global config,
-		// treating the absence of host_mode as container/podman mode.
+		// Pre-v10 row without isolation_mode and without host_mode:
+		// fall back to the global config's effective isolation mode.
+		// This restores pre-v10 sessions with the same mode the machine
+		// is currently configured for.
 		isoMode = cfg.EffectiveIsolationMode()
-		if s.HostMode {
-			isoMode = config.IsolationHost
-		}
 	}
 
 	containerMode := isoMode == config.IsolationPodman
