@@ -195,24 +195,20 @@ func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, 
 		return restoreOutcomeSkipped, nil
 	}
 
-	switch s.SessionName {
-	case "prism-dashboard":
-		// Defensive guard — prism-dashboard is an internal meta-session
-		// explicitly skipped by name in cmd/event.go:tmux-session-start and
-		// will never appear in agent_status under normal operation. This case
-		// is retained as a safety net.
+	// Defensive guard — meta-sessions (scratchpad, prism-dashboard) are
+	// explicitly skipped by IsMetaSession in cmd/event.go:tmux-session-start
+	// and will never appear in agent_status under normal operation. This
+	// block is retained as a safety net. The scratchpad has special restore
+	// behaviour (re-create via ensureAndSwitch); all other meta-sessions are
+	// simply skipped.
+	if session.IsMetaSession(s.SessionName) {
+		if s.SessionName == session.ScratchpadSession {
+			return restoreOutcomeCreated, ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
+		}
 		return restoreOutcomeSkipped, nil
-
-	case "scratchpad":
-		// Defensive guard — scratchpad is an internal meta-session explicitly
-		// skipped by name in cmd/event.go:tmux-session-start and will never
-		// appear in agent_status under normal operation. This case is retained
-		// as a safety net.
-		return restoreOutcomeCreated, ensureAndSwitch("[scratchpad]", "", session.Opts{Headless: true})
-
-	default:
-		return restoreProjectSession(d, s, threshold, pendingStagger, staggerDelay)
 	}
+
+	return restoreProjectSession(d, s, threshold, pendingStagger, staggerDelay)
 }
 
 // restoreProjectSession recreates a project session using the shared
