@@ -235,15 +235,21 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, "--bind", nixCacheDir, nixCacheDir)
 
 	// ── AWS readonly-config (read-only, conditional) ─────────────────────────
+	// Remapped: host ~/.config/aws/readonly-config → sandbox $HOME/.aws/config
+	// (the canonical path the AWS CLI reads by default). The symlink is resolved
+	// to the real Nix store path so the bwrap bind-mount source exists.
 	awsReadonlyConfig := filepath.Join(home, ".config", "aws", "readonly-config")
 	if resolved, err := filepath.EvalSymlinks(awsReadonlyConfig); err == nil {
-		args = append(args, "--ro-bind", resolved, resolved)
+		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".aws", "config"))
 	}
 
 	// ── Kube agents-config (read-only, conditional) ─────────────────────────
+	// Remapped: host ~/.config/kube/agents-config → sandbox $HOME/.kube/config
+	// (the canonical path kubectl reads by default). Only the agents-readonly
+	// kubeconfig is exposed — the admin kubeconfig is never mounted.
 	kubeAgentsConfig := filepath.Join(home, ".config", "kube", "agents-config")
 	if resolved, err := filepath.EvalSymlinks(kubeAgentsConfig); err == nil {
-		args = append(args, "--ro-bind", resolved, resolved)
+		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".kube", "config"))
 	}
 
 	// ── SSH keys (read-only, conditional) ───────────────────────────────────
@@ -280,17 +286,27 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── Generated SSH config (read-only) ────────────────────────────────────
+	// Remapped: generated temp file → sandbox $HOME/.ssh/config (the canonical
+	// path SSH reads). The generated config contains absolute paths to the keys,
+	// which are mounted at their host paths (Dst==Src), so the config resolves
+	// correctly inside the sandbox.
 	sshConfigPath := m.sshConfigFilePath()
-	args = append(args, "--ro-bind", sshConfigPath, sshConfigPath)
+	args = append(args, "--ro-bind", sshConfigPath, filepath.Join(home, ".ssh", "config"))
 
 	// ── Generated .gitconfig (read-only) ────────────────────────────────────
+	// Remapped: generated temp file → sandbox $HOME/.gitconfig (the canonical
+	// path git reads for user identity, signing config, and convenience settings).
 	gitconfigPath := m.gitconfigFilePath()
-	args = append(args, "--ro-bind", gitconfigPath, gitconfigPath)
+	args = append(args, "--ro-bind", gitconfigPath, filepath.Join(home, ".gitconfig"))
 
 	// ── opencode.json (read-only, conditional) ──────────────────────────────
+	// Remapped: generated temp file → sandbox $HOME/.config/opencode/opencode.json
+	// (the canonical path opencode reads for its configuration). This ensures
+	// the role-specific config (with correct model, agent identity, providers)
+	// is visible inside the sandbox at the path opencode expects.
 	if cfg.ConfigContent != "" {
 		opencodeConfigPath := m.opencodeConfigFilePath()
-		args = append(args, "--ro-bind", opencodeConfigPath, opencodeConfigPath)
+		args = append(args, "--ro-bind", opencodeConfigPath, filepath.Join(home, ".config", "opencode", "opencode.json"))
 	}
 
 	// ── opencode config allowlist (read-only, conditional) ──────────────────
@@ -350,9 +366,12 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// ── Additional AWS mounts (read-only, conditional) ───────────────────────
 	// Match the podman buildRunArgs pattern: credentials file and SSO/CLI
 	// cache dirs are conditionally mounted when present on the host.
+	//
+	// Remapped: host ~/.config/aws/credentials → sandbox $HOME/.aws/credentials
+	// (the canonical path the AWS CLI reads by default).
 	awsCredentials := filepath.Join(home, ".config", "aws", "credentials")
 	if resolved, err := filepath.EvalSymlinks(awsCredentials); err == nil {
-		args = append(args, "--ro-bind", resolved, resolved)
+		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".aws", "credentials"))
 	}
 	awsSSOCacheDir := filepath.Join(home, ".aws", "sso")
 	if _, err := os.Stat(awsSSOCacheDir); err == nil {
