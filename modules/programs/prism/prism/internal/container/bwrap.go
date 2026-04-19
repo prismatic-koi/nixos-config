@@ -65,6 +65,22 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 //
 // The returned slice begins with the baseline namespace flags and ends with
 // -- followed by the opencode invocation.
+//
+// # Mounts deferred to the wiring PR (#877)
+//
+// The following mounts exist in Manager.buildRunArgs() (podman) but are
+// intentionally omitted here until the end-to-end wiring is in place:
+//
+//   - opencode config allowlist (~/.config/opencode/{AGENTS.md,plugins,skills,...})
+//   - auth.json overlay (~/.local/share/opencode/auth.json, r/w over session dir)
+//   - opencode plugin cache (~/.cache/opencode/, read-only)
+//   - bun transpiler cache (~/.cache/bun/, read-only)
+//   - Additional AWS mounts (credentials, sso/, cli/ — AC lists only readonly-config)
+//   - Clipboard staging dir (~/.cache/prism/clipboard/)
+//   - WorktreeReadOnly handling (review agents — separate concern from base wiring)
+//   - Darwin Keychain credentials (darwin-only, not applicable on Linux)
+//
+// These are tracked in #877 and will be added when bwrap is wired end-to-end.
 func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
 
