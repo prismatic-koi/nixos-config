@@ -147,6 +147,103 @@ func TestSshKeyNameAbsentKeepsDefault(t *testing.T) {
 	}
 }
 
+func TestIsolationModeFromNewField(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"default_isolation_mode": "bwrap", "container_mode": true}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	cfg := config.LoadFresh()
+
+	// default_isolation_mode takes precedence over container_mode.
+	if cfg.DefaultIsolationMode != config.IsolationBwrap {
+		t.Errorf("DefaultIsolationMode: got %q, want %q", cfg.DefaultIsolationMode, config.IsolationBwrap)
+	}
+	// ContainerMode derived from new field: bwrap is not podman → false.
+	if cfg.ContainerMode {
+		t.Errorf("ContainerMode: got true, want false (bwrap is not podman)")
+	}
+	if cfg.EffectiveIsolationMode() != config.IsolationBwrap {
+		t.Errorf("EffectiveIsolationMode: got %q, want %q", cfg.EffectiveIsolationMode(), config.IsolationBwrap)
+	}
+}
+
+func TestIsolationModeFallbackToContainerMode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// container_mode=true, no default_isolation_mode.
+	raw := `{"container_mode": true}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	cfg := config.LoadFresh()
+
+	if cfg.ContainerMode != true {
+		t.Errorf("ContainerMode: got false, want true")
+	}
+	if cfg.DefaultIsolationMode != config.IsolationPodman {
+		t.Errorf("DefaultIsolationMode: got %q, want %q (derived from container_mode=true)", cfg.DefaultIsolationMode, config.IsolationPodman)
+	}
+	if cfg.EffectiveIsolationMode() != config.IsolationPodman {
+		t.Errorf("EffectiveIsolationMode: got %q, want %q", cfg.EffectiveIsolationMode(), config.IsolationPodman)
+	}
+}
+
+func TestIsolationModeFallbackHostMode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// container_mode=false, no default_isolation_mode.
+	raw := `{"container_mode": false}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	cfg := config.LoadFresh()
+
+	if cfg.DefaultIsolationMode != config.IsolationHost {
+		t.Errorf("DefaultIsolationMode: got %q, want %q (derived from container_mode=false)", cfg.DefaultIsolationMode, config.IsolationHost)
+	}
+	if cfg.EffectiveIsolationMode() != config.IsolationHost {
+		t.Errorf("EffectiveIsolationMode: got %q, want %q", cfg.EffectiveIsolationMode(), config.IsolationHost)
+	}
+}
+
+func TestIsolationModeDefaultWhenNeitherFieldPresent(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+	cfg := config.LoadFresh()
+
+	// Neither field in config — EffectiveIsolationMode falls back to host
+	// (ContainerMode defaults to false).
+	mode := cfg.EffectiveIsolationMode()
+	if mode != config.IsolationHost {
+		t.Errorf("EffectiveIsolationMode: got %q, want %q (default when no config)", mode, config.IsolationHost)
+	}
+}
+
+func TestIsolationModeInvalidIgnored(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// An invalid mode string should be ignored; fall back to container_mode.
+	raw := `{"default_isolation_mode": "unknown-mode", "container_mode": true}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	cfg := config.LoadFresh()
+
+	// Invalid mode is ignored; container_mode=true → DefaultIsolationMode=podman.
+	if cfg.DefaultIsolationMode != config.IsolationPodman {
+		t.Errorf("DefaultIsolationMode: got %q, want %q (invalid mode falls back to container_mode)", cfg.DefaultIsolationMode, config.IsolationPodman)
+	}
+}
+
 func TestMalformedJSON(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

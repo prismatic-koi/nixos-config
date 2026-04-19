@@ -138,8 +138,13 @@ type StartSidecarOpts struct {
 	// Port is the allocated opencode serve port.
 	Port int
 	// ContainerMode, when true, passes --container to the sidecar so it creates
-	// and manages a podman container.
+	// and manages a podman container. Deprecated: use IsolationMode instead.
 	ContainerMode bool
+	// IsolationMode is the resolved isolation mode for this session. When set,
+	// it is passed to the sidecar via --isolation-mode so the sidecar can
+	// branch on it (e.g. skip container creation for "bwrap" and "host").
+	// Valid values: "podman", "bwrap", "host".
+	IsolationMode string
 	// AgentRole is "worker" or "coordinator". Passed via --agent-role when in
 	// container mode to select the appropriate credential set.
 	AgentRole string
@@ -227,8 +232,34 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 		"--opencode-url", opencodeURL,
 	}
 
+	// Pass --isolation-mode when set; the sidecar uses this to branch on
+	// container creation, harness selection, and host-API socket setup.
+	if opts.IsolationMode != "" {
+		cmdArgs = append(cmdArgs, "--isolation-mode", opts.IsolationMode)
+	}
+
+	// --container enables the full container lifecycle (podman create/stop/rm).
+	// For bwrap mode the sidecar is started but --container is NOT passed —
+	// bwrap's process lifecycle is owned by the tmux pane (prism agent-run).
 	if opts.ContainerMode {
 		cmdArgs = append(cmdArgs, "--container")
+		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
+		if opts.AgentRole != "" {
+			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)
+		}
+		if opts.PluginHostPath != "" {
+			cmdArgs = append(cmdArgs, "--plugin-path", opts.PluginHostPath)
+		}
+		if opts.InitialPrompt != "" {
+			cmdArgs = append(cmdArgs, "--initial-prompt", opts.InitialPrompt)
+		}
+		if opts.ConfigContent != "" {
+			cmdArgs = append(cmdArgs, "--config-content", opts.ConfigContent)
+		}
+	} else if opts.IsolationMode == "bwrap" {
+		// bwrap mode: pass --port and common options but not --container.
+		// The sidecar sets up the host-API socket and harness but does not
+		// create a container.
 		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
 		if opts.AgentRole != "" {
 			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)

@@ -90,9 +90,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// for the actual spawn). Only apply the check on the host path.
 	// Load cfg now for the cap check; it is re-used below for ContainerMode.
 	cfg := config.Load()
+	isoMode := cfg.EffectiveIsolationMode()
+	conCapped := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL == "" {
 		// Running on host — check the cap before spawning review containers.
-		if err := checkConcurrencyCap(cmd, "review", cfg.ContainerMode); err != nil {
+		if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {
 			return err
 		}
 	}
@@ -180,6 +182,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	prCtx := review.FetchPRContext(prNumber, 0, 0)
 
 	// Build run options.
+	effectiveContainerMode := isoMode == config.IsolationPodman
 	opts := review.Opts{
 		PRNumber:       prNumber,
 		ParentSession:  parentSession,
@@ -188,7 +191,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Harness:        harnessFlag,
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
-		ContainerMode:  cfg.ContainerMode,
+		ContainerMode:  effectiveContainerMode,
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
 	}
@@ -199,7 +202,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// per-agent opencode.json cannot be mounted, which causes the container
 	// to fall back to the image default (build agent). Surface this as an
 	// explicit error rather than silently spawning broken review containers.
-	if cfg.ContainerMode {
+	if effectiveContainerMode {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr != nil {
 			return fmt.Errorf("prism review: container mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", pfErr)

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -842,19 +841,50 @@ func TestNewBwrapIsolator_ReturnsIsolator(t *testing.T) {
 	var _ Isolator = newBwrapIsolator("test")
 }
 
-// ── No references to bwrapIsolator outside this package ──────────────────────
-// (This is a structural guarantee enforced by the file-scope test below.)
+// ── PrepareBwrap uses bwrapIsolator via container.go (wired in #877) ─────────
+// The old guard test (TestBwrapIsolator_NotUsedInContainerGo) is removed: the
+// wiring PR (#877) intentionally references bwrapIsolator from container.go
+// via Manager.PrepareBwrap(). The structural guarantee from #876 is now met
+// by the AC that bwrap is NOT wired into Manager.Create() (the sidecar path).
 
-func TestBwrapIsolator_NotUsedInContainerGo(t *testing.T) {
-	// Read container.go from the package directory and assert it does not
-	// reference bwrapIsolator. This guards against accidental wiring before
-	// the follow-up PR (#877).
-	containerSrc, err := os.ReadFile(filepath.Join("container.go"))
+func TestPrepareBwrap_WritesSSHConfigAndGitconfig(t *testing.T) {
+	// PrepareBwrap must write the SSH config and gitconfig temp files and
+	// return a non-empty arg list. It must NOT write gitdir fixup files.
+	worktree := t.TempDir()
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@feat",
+		Worktree:      worktree,
+		AllocatedPort: 14020,
+		AgentRole:     "worker",
+		GitUserName:   "Test User",
+		GitUserEmail:  "test@example.com",
+	})
+	defer cleanup()
+
+	args, err := m.PrepareBwrap()
 	if err != nil {
-		t.Fatalf("could not read container.go: %v", err)
+		t.Fatalf("PrepareBwrap: %v", err)
 	}
-	if strings.Contains(string(containerSrc), "bwrapIsolator") {
-		t.Errorf("container.go must not reference bwrapIsolator (wiring is deferred to #877)")
+	if len(args) == 0 {
+		t.Fatalf("PrepareBwrap returned empty arg list")
+	}
+
+	// SSH config must exist.
+	if _, err := os.Stat(m.SshConfigFilePath()); err != nil {
+		t.Errorf("SSH config temp file not written: %v", err)
+	}
+
+	// Gitconfig must exist.
+	if _, err := os.Stat(m.GitconfigFilePath()); err != nil {
+		t.Errorf("Gitconfig temp file not written: %v", err)
+	}
+
+	// Gitdir fixup files must NOT exist (they are podman-only).
+	if _, err := os.Stat(m.GitdirFilePath()); err == nil {
+		t.Errorf("gitdir fixup file should not be written by PrepareBwrap")
+	}
+	if _, err := os.Stat(m.WorktreeGitdirFilePath()); err == nil {
+		t.Errorf("worktree gitdir fixup file should not be written by PrepareBwrap")
 	}
 }
 
