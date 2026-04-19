@@ -84,6 +84,26 @@ type ProfilesFile struct {
 	// opencode command string in buildDirectOpencodeCmd so that sh -c
 	// sessions (which do not load .zshrc or zsh aliases) receive them.
 	AgentEnvVars map[string]string `json:"agent_env_vars,omitempty"`
+	// ContainerResources holds per-container resource cap values to be passed
+	// to podman run as --memory, --memory-swap, and --pids-limit.
+	// Written by Nix under container_resources.
+	ContainerResources ContainerResources `json:"container_resources,omitempty"`
+}
+
+// ContainerResources holds the per-container resource cap values that are
+// passed to podman run via buildRunArgs. Zero values / empty strings mean
+// "no flag emitted" so that callers not running via the nix module are
+// not affected.
+type ContainerResources struct {
+	// MemoryMax is the value for podman run --memory (e.g. "8g").
+	// Empty string means no --memory flag.
+	MemoryMax string `json:"memoryMax,omitempty"`
+	// MemorySwapMax is the value for podman run --memory-swap (e.g. "8g").
+	// Empty string means no --memory-swap flag.
+	MemorySwapMax string `json:"memorySwapMax,omitempty"`
+	// PidsLimit is the value for podman run --pids-limit.
+	// Zero means no --pids-limit flag.
+	PidsLimit int `json:"pidsLimit,omitempty"`
 }
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the

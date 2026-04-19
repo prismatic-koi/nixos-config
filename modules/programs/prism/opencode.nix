@@ -247,6 +247,10 @@
         "prism checkin *" = "allow";
         "prism list-sessions" = "allow";
         "prism prompt *" = "allow";
+        # prism review is denied — it spawns heavy containers and can crash the
+        # host when multiple workers run it concurrently. Use @review-* Task calls.
+        "prism review" = "deny";
+        "prism review *" = "deny";
       };
 
       # Bash commands for the coordinator agent — inverted model: ask by default,
@@ -272,6 +276,10 @@
         "prism prompt *" = "allow";
         "prism cleanup *" = "allow";
         "prism pr *" = "allow";
+        # prism review is denied — spawns heavy containers, can crash host.
+        # Use @review-* Task calls instead.
+        "prism review" = "deny";
+        "prism review *" = "deny";
         # GitHub: PR/issue lifecycle
         "gh pr merge *" = "ask";
         "gh pr edit *" = "allow";
@@ -342,8 +350,7 @@
           Pass the PR number to each. All 5 must return `<verdict>PASS</verdict>` for the review to pass.
           If ANY agent returns FAIL, fix all blocking issues, push, and re-run all 5 agents.
           After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
-          Preferred invocation: `prism review <pr-number>` (spawns all 5 agents automatically, provides dashboard observability).
-          Fallback: invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` directly as parallel Task calls.
+          Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response).
 
         ## Search Scope
 
@@ -444,6 +451,10 @@
         "gh pr merge *" = "deny";
         "nixos-rebuild *" = "deny";
         "sudo nixos-rebuild *" = "deny";
+        # prism review spawns heavy containers — denied to prevent host overload.
+        # Use @review-* Task calls instead.
+        "prism review" = "deny";
+        "prism review *" = "deny";
       };
 
       # Coordinator container: strict deny-by-default allowlist.
@@ -511,6 +522,11 @@
         "rm *" = "deny";
         "mv *" = "deny";
         "mkdir *" = "deny";
+        # prism review spawns heavy containers — denied even under "prism *" = "allow".
+        # Use @review-* Task calls instead. Pattern specificity: these explicit denies
+        # win over the broader "prism *" = "allow" (last match wins).
+        "prism review" = "deny";
+        "prism review *" = "deny";
       };
 
       # Providers to expose in containers — restricts model list to these 3.
@@ -703,6 +719,10 @@
                 "prism spawn *" = "deny";
                 "prism pr" = "deny";
                 "prism pr *" = "deny";
+                # prism review spawns heavy containers — denied to prevent host overload.
+                # Use @review-* Task calls instead.
+                "prism review" = "deny";
+                "prism review *" = "deny";
               }
               // tmuxDenyCommands;
             };

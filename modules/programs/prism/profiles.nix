@@ -169,6 +169,12 @@
               ]
               value
           ) config.nx.programs.prism.agent.envVars;
+          # Per-container resource caps. These are read by the prism sidecar
+          # and passed to container.Config so that podman run receives
+          # --memory, --memory-swap, and --pids-limit for every agent container.
+          # Values flow: nix option → _internal.agentResources → here → profiles.json
+          # → prism sidecar → container.Config → buildRunArgs → podman run.
+          container_resources = config.nx.programs.prism._internal.agentResources;
         };
 
       applyProfile =

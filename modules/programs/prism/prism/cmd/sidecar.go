@@ -137,6 +137,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// harness adapter construction below.
 	agentModel := opencodeAgentModel(agentRole)
 
+	// Load profiles to extract container resource caps. Non-fatal if missing
+	// (e.g. running without the nix module) — resource fields remain at their
+	// zero values and no resource flags are emitted.
+	var containerResources config.ContainerResources
+	if containerMode {
+		if pf, pfErr := config.LoadProfiles(); pfErr == nil {
+			containerResources = pf.ContainerResources
+		}
+	}
+
 	// Build container config if container mode is enabled.
 	var ctrCfg *container.Config
 	if containerMode {
@@ -168,6 +178,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			GitUserEmail:      prismCfg.GitUserEmail,
 			SshAccessKeyName:  prismCfg.SshAccessKeyName,
 			SshSigningKeyName: prismCfg.SshSigningKeyName,
+			MemoryMax:         containerResources.MemoryMax,
+			MemorySwapMax:     containerResources.MemorySwapMax,
+			PidsLimit:         containerResources.PidsLimit,
 		}
 	}
 
