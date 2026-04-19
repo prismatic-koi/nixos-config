@@ -559,6 +559,161 @@ func TestEventStateChange_UpdatesExistingNonWorktreeRow(t *testing.T) {
 	}
 }
 
+// TestEventTmuxSessionStart_AgentRole verifies that when --agent-role is passed
+// to tmux-session-start, the resulting agent_status row has root_agent_name set
+// to the provided role value immediately (before the sidecar writes it).
+func TestEventTmuxSessionStart_AgentRole(t *testing.T) {
+	const session = "myrepo@feature"
+	const agentRole = "worker"
+
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+		"--agent-role", agentRole,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row, got nil")
+	}
+	if status.RootAgentName == nil {
+		t.Fatal("RootAgentName: got nil, want \"worker\"")
+	}
+	if *status.RootAgentName != agentRole {
+		t.Errorf("RootAgentName: got %q, want %q", *status.RootAgentName, agentRole)
+	}
+	if status.State != "idle" {
+		t.Errorf("State: got %q, want \"idle\"", status.State)
+	}
+}
+
+// TestEventTmuxSessionStart_NoAgentRole verifies that when --agent-role is
+// omitted from tmux-session-start, root_agent_name remains NULL (unchanged
+// from prior value or NULL on fresh insert). Existing callers that don't pass
+// --agent-role continue to behave as before.
+func TestEventTmuxSessionStart_NoAgentRole(t *testing.T) {
+	const session = "myrepo@no-role-branch"
+
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+		"--agent-role", "", // explicitly empty to reset any prior test's flag value
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row, got nil")
+	}
+	// Without --agent-role (empty string), root_agent_name must be NULL on fresh insert.
+	if status.RootAgentName != nil {
+		t.Errorf("RootAgentName: got %q, want nil (no --agent-role provided)", *status.RootAgentName)
+	}
+}
+
+// TestEventTmuxSessionStart_AgentRole_PreservesExisting verifies that when a
+// row already exists with root_agent_name set (e.g. from a prior seed), a
+// subsequent tmux-session-start without --agent-role preserves the existing
+// root_agent_name value (COALESCE in UpsertStatus leaves it unchanged).
+func TestEventTmuxSessionStart_AgentRole_PreservesExisting(t *testing.T) {
+	const session = "myrepo@preserve-role-branch"
+
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Pre-seed a row with root_agent_name already set.
+	if err := d.UpsertStatusSeedRootAgentName(session, "myrepo", worktree, "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Fire tmux-session-start without --agent-role (explicitly empty to reset
+	// any prior test's cobra flag value).
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+		"--agent-role", "",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error %v, want nil", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("expected agent_status row, got nil")
+	}
+	// Existing root_agent_name must be preserved.
+	if status.RootAgentName == nil || *status.RootAgentName != "coordinator" {
+		t.Errorf("RootAgentName: got %v, want preserved \"coordinator\"", status.RootAgentName)
+	}
+}
+
 // TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded verifies that when
 // an agent_status row already exists for a non-worktree session with ended_at
 // set, a new tmux-session-start call clears ended_at (making the session
