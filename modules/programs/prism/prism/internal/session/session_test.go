@@ -131,6 +131,71 @@ func TestBuildDirectOpencodeCmd_AgentEnvVarsNil(t *testing.T) {
 	}
 }
 
+// ── Isolation mode command construction ─────────────────────────────────────
+
+// TestBuildOpencodeCmd_PodmanMode verifies that IsolationMode="podman" produces
+// "podman attach --sig-proxy=false <container-name>".
+func TestBuildOpencodeCmd_PodmanMode(t *testing.T) {
+	opts := Opts{
+		IsolationMode: "podman",
+		SessionName:   "nixos-config@feature",
+	}
+	cmd := BuildOpencodeCmd(opts)
+	if !strings.HasPrefix(cmd, "podman attach --sig-proxy=false") {
+		t.Errorf("podman mode: got %q, want prefix 'podman attach --sig-proxy=false'", cmd)
+	}
+}
+
+// TestBuildOpencodeCmd_BwrapMode verifies that IsolationMode="bwrap" produces
+// "prism agent-run --session <session-name>".
+func TestBuildOpencodeCmd_BwrapMode(t *testing.T) {
+	opts := Opts{
+		IsolationMode: "bwrap",
+		SessionName:   "nixos-config@feature",
+	}
+	cmd := BuildOpencodeCmd(opts)
+	if !strings.HasPrefix(cmd, "prism agent-run --session") {
+		t.Errorf("bwrap mode: got %q, want prefix 'prism agent-run --session'", cmd)
+	}
+	if !strings.Contains(cmd, "nixos-config@feature") {
+		t.Errorf("bwrap mode: session name not in cmd: %q", cmd)
+	}
+}
+
+// TestBuildOpencodeCmd_HostMode verifies that IsolationMode="host" produces
+// a direct opencode command (not podman attach).
+func TestBuildOpencodeCmd_HostMode(t *testing.T) {
+	opts := Opts{
+		IsolationMode: "host",
+		Agent:         "worker",
+		Port:          14000,
+		SessionName:   "nixos-config@feature",
+	}
+	cmd := BuildOpencodeCmd(opts)
+	if strings.HasPrefix(cmd, "podman") {
+		t.Errorf("host mode: got podman command %q, want direct opencode invocation", cmd)
+	}
+	if strings.HasPrefix(cmd, "prism agent-run") {
+		t.Errorf("host mode: got prism agent-run command %q, want direct opencode invocation", cmd)
+	}
+	if !strings.Contains(cmd, "opencode") {
+		t.Errorf("host mode: cmd does not contain 'opencode': %q", cmd)
+	}
+}
+
+// TestBuildOpencodeCmd_ContainerModeFallback verifies that ContainerMode=true
+// with no IsolationMode falls back to "podman" (back-compat).
+func TestBuildOpencodeCmd_ContainerModeFallback(t *testing.T) {
+	opts := Opts{
+		ContainerMode: true,
+		SessionName:   "nixos-config@feature",
+	}
+	cmd := BuildOpencodeCmd(opts)
+	if !strings.HasPrefix(cmd, "podman attach --sig-proxy=false") {
+		t.Errorf("ContainerMode fallback: got %q, want 'podman attach --sig-proxy=false ...'", cmd)
+	}
+}
+
 // TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted verifies that env var
 // values containing spaces or special characters are properly shell-quoted.
 func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {

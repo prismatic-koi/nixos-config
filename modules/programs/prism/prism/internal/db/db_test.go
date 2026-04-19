@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=9 (migrations are applied on Open).
+	// Verify schema_version=10 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version: got %d, want 10", version)
 	}
 
 	// Verify WAL mode.
@@ -773,13 +773,13 @@ func TestMigration_V1ToV2(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Verify schema_version=9.
+	// Verify schema_version=10.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -853,8 +853,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1354,8 +1354,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1420,8 +1420,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1490,8 +1490,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1585,8 +1585,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1672,13 +1672,13 @@ func TestMigration_V7ToV8(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must be 9 after migration.
+	// Schema version must be 10 after migration.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2271,13 +2271,13 @@ func TestMigration_V8ToV9(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must be 9 after migration.
+	// Schema version must be 10 after migration.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 9 {
-		t.Errorf("schema_version after migration: got %d, want 9", version)
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2305,6 +2305,97 @@ func TestMigration_V8ToV9(t *testing.T) {
 	}
 	if groupID != nil {
 		t.Errorf("group_id for migrated row: got %v, want nil", groupID)
+	}
+}
+
+// TestMigration_V9ToV10 verifies that Open applies the v9→v10 migration to an
+// existing DB that was created at schema_version=9 (no isolation_mode column).
+func TestMigration_V9ToV10(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v9.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (9);
+		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v9 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v9 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must be 10 after migration.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 10 {
+		t.Errorf("schema_version after migration: got %d, want 10", version)
+	}
+
+	// isolation_mode column must exist (NULL for pre-migration rows).
+	var isoMode *string
+	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'repo@main'").Scan(&isoMode); err != nil {
+		t.Fatalf("query isolation_mode column after migration: %v", err)
+	}
+	if isoMode != nil {
+		t.Errorf("isolation_mode for migrated row: got %q, want nil", *isoMode)
+	}
+
+	// Existing row must still be present and unmodified.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+	// IsolationMode for pre-migration rows must be "".
+	if s.IsolationMode != "" {
+		t.Errorf("IsolationMode: got %q, want \"\" (NULL → empty)", s.IsolationMode)
+	}
+	// EffectiveIsolationMode with HostMode=false falls back to "podman".
+	if s.EffectiveIsolationMode() != "podman" {
+		t.Errorf("EffectiveIsolationMode: got %q, want %q", s.EffectiveIsolationMode(), "podman")
 	}
 }
 

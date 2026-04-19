@@ -68,6 +68,17 @@ var prCmd = &cobra.Command{
 			return nil
 		}
 
+		cfg := config.Load()
+		isoMode := cfg.EffectiveIsolationMode()
+		effectiveContainerMode := isoMode == config.IsolationPodman
+		conCapped := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
+
+		// Concurrency cap check: BEFORE any container-creation side effects
+		// (no worktree, no tmux session, no DB row on refusal).
+		if err := checkConcurrencyCap(cmd, "pr", conCapped); err != nil {
+			return err
+		}
+
 		branch, err := resolveBranch(bareRoot, "", prNumber)
 		if err != nil {
 			return err
@@ -80,13 +91,11 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
-		cfg := config.Load()
-
-		// In container mode, inject the role-specific opencode.json blob as
-		// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+		// In container/bwrap mode, inject the role-specific opencode.json blob
+		// as OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
 		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
 		var configContent string
-		if cfg.ContainerMode {
+		if effectiveContainerMode {
 			pf, pfErr := config.LoadProfiles()
 			if pfErr != nil {
 				return pfErr
@@ -107,7 +116,8 @@ var prCmd = &cobra.Command{
 			Prompt:         promptFlag,
 			Agent:          agentFlag,
 			Headless:       !attachFlag,
-			ContainerMode:  cfg.ContainerMode,
+			ContainerMode:  effectiveContainerMode,
+			IsolationMode:  string(isoMode),
 			PluginHostPath: cfg.SidecarPluginPath,
 			ConfigContent:  configContent,
 			// ForceFresh=true: prism pr creates a new worktree; if a session
@@ -124,5 +134,6 @@ func init() {
 	addPromptFlags(prCmd)
 	prCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
+	prCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(prCmd)
 }

@@ -68,12 +68,27 @@ type Status struct {
 	RootModelID      *string
 	OpencodePort     *int
 	HostMode         bool
+	IsolationMode    string // "podman", "bwrap", or "host"; "" means not recorded (back-compat)
 	InstanceID       *string
 	LastSeen         time.Time
 	EndedAt          *time.Time
 	Harness          *string
 	HarnessSessionID *string
 	HarnessPort      *int
+}
+
+// EffectiveIsolationMode returns the effective isolation mode for this session.
+// When IsolationMode is non-empty it is returned directly. Otherwise the mode
+// is derived from HostMode for back-compat with pre-v10 DB rows:
+// HostMode=true → "host", HostMode=false → "podman".
+func (s Status) EffectiveIsolationMode() string {
+	if s.IsolationMode != "" {
+		return s.IsolationMode
+	}
+	if s.HostMode {
+		return "host"
+	}
+	return "podman"
 }
 
 // BusMessage represents a row in the bus_messages table.
@@ -123,6 +138,7 @@ CREATE TABLE IF NOT EXISTS agent_status (
   root_model_id     TEXT,
   opencode_port     INTEGER,
   host_mode         INTEGER NOT NULL DEFAULT 0,
+  isolation_mode    TEXT,
   instance_id       TEXT,
   last_seen         INTEGER NOT NULL,
   ended_at          INTEGER,
@@ -154,7 +170,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, enforces foreign
-// keys, runs the full schema, and sets schema_version=9 if the table is empty.
+// keys, runs the full schema, and sets schema_version=10 if the table is empty.
 // Pending migrations are applied in order: v1→v2 adds agent_name/model_id;
 // v2→v3 adds root_agent_name/root_model_id; v3→v4 adds opencode_port to
 // agent_status; v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id
@@ -163,7 +179,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // agent_status; v8→v9 adds the session_groups table and group_id FK column
 // (with ON DELETE SET NULL) to agent_status via rename-and-recreate so that
 // the REFERENCES clause is present in the schema metadata and fully enforced
-// by PRAGMA foreign_keys = ON on both fresh and migrated databases.
+// by PRAGMA foreign_keys = ON on both fresh and migrated databases;
+// v9→v10 adds isolation_mode TEXT to agent_status (nullable, back-compat).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -205,15 +222,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=9 if the table is empty (fresh database already has
-	// all columns including the v2–v9 additions, so no migration is needed).
+	// Set schema_version=10 if the table is empty (fresh database already has
+	// all columns including the v2–v10 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (9)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (10)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -425,6 +442,22 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v8→v9: %w", err)
 		}
 		version = 9
+	}
+	if version == 9 {
+		// Migration v9 → v10: add isolation_mode TEXT to agent_status.
+		// Nullable so existing rows receive NULL (back-compat with pre-10 data).
+		// When NULL, callers derive the mode from host_mode for back-compat.
+		migrations := []string{
+			"ALTER TABLE agent_status ADD COLUMN isolation_mode TEXT",
+			"UPDATE schema_version SET version = 10",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v9→v10: %w", err)
+			}
+		}
+		version = 10
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -866,6 +899,21 @@ func (d *DB) SetHostMode(sessionName string, hostMode bool) error {
 	return nil
 }
 
+// SetIsolationMode records the resolved isolation mode for the given session.
+// mode is one of "podman", "bwrap", or "host". This is persisted so that
+// prism restore can re-spawn the session in the same isolation mode.
+// It is a no-op when no row exists for sessionName (returns nil).
+func (d *DB) SetIsolationMode(sessionName, mode string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET isolation_mode = ? WHERE session_name = ?",
+		mode, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set isolation_mode: %w", err)
+	}
+	return nil
+}
+
 // portAvailable checks whether a TCP port is available on localhost by
 // attempting a brief listen. Returns true if the port is free.
 func portAvailable(port int) bool {
@@ -1089,7 +1137,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -1106,7 +1154,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -1115,7 +1163,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -1133,7 +1181,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -1560,10 +1608,11 @@ func scanStatus(s scanner) (*Status, error) {
 	var harness sql.NullString
 	var harnessSessionID sql.NullString
 	var harnessPort sql.NullInt64
+	var isolationMode sql.NullString
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &instanceID, &lastSeen, &endedAt,
+		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &isolationMode, &instanceID, &lastSeen, &endedAt,
 		&harness, &harnessSessionID, &harnessPort,
 	)
 	if err != nil {
@@ -1581,6 +1630,11 @@ func scanStatus(s scanner) (*Status, error) {
 	// host_mode: treat NULL (rows written before migration) as 0/false.
 	if hostMode.Valid {
 		st.HostMode = hostMode.Int64 != 0
+	}
+	// isolation_mode: NULL means not recorded (pre-v10 row); callers derive
+	// the mode from host_mode for back-compat in that case.
+	if isolationMode.Valid {
+		st.IsolationMode = isolationMode.String
 	}
 	if instanceID.Valid {
 		id := instanceID.String

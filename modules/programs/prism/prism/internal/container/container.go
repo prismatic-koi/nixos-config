@@ -208,6 +208,10 @@ type Manager struct {
 	name           string
 	healthCheckURL string
 	httpClient     *http.Client
+	// isolator is the Isolator implementation used to run, shut down, and
+	// inspect the container. It is set unconditionally to a podmanIsolator in
+	// New() and can be replaced in tests.
+	isolator Isolator
 	// allowedSignersReady is true when writeGitconfig successfully wrote the
 	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
 	// so that podman is never given a source path that doesn't exist on disk.
@@ -226,9 +230,10 @@ func New(cfg Config) *Manager {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
+	name := containerName(cfg.SessionName)
 	return &Manager{
 		cfg:  cfg,
-		name: containerName(cfg.SessionName),
+		name: name,
 		// Use /global/health rather than / — the root URL falls through to
 		// UIRoutes which proxies to https://app.opencode.ai/ when there is no
 		// embedded web UI, adding a 3–4 s network round-trip to every startup.
@@ -236,6 +241,7 @@ func New(cfg Config) *Manager {
 		// no MCP initialisation, plugin loading, or external network calls.
 		healthCheckURL: fmt.Sprintf("http://127.0.0.1:%d/global/health", cfg.AllocatedPort),
 		httpClient:     httpClient,
+		isolator:       newPodmanIsolator(name),
 	}
 }
 
@@ -305,6 +311,9 @@ func (m *Manager) gitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
 }
 
+// GitdirFilePath is the exported version of gitdirFilePath for tests.
+func (m *Manager) GitdirFilePath() string { return m.gitdirFilePath() }
+
 // sshConfigFilePath returns the host path for the temporary SSH config
 // written before container start. The container needs a minimal SSH config
 // for git push/fetch over SSH remotes, but the host's ~/.ssh/config is a
@@ -314,12 +323,18 @@ func (m *Manager) sshConfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-ssh-config-"+m.name)
 }
 
+// SshConfigFilePath is the exported version of sshConfigFilePath for tests.
+func (m *Manager) SshConfigFilePath() string { return m.sshConfigFilePath() }
+
 // gitconfigFilePath returns the host path for the temporary .gitconfig
 // written before container start. The container needs a minimal gitconfig
 // for commit identity and SSH signing. Mounted read-only at /root/.gitconfig.
 func (m *Manager) gitconfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
 }
+
+// GitconfigFilePath is the exported version of gitconfigFilePath for tests.
+func (m *Manager) GitconfigFilePath() string { return m.gitconfigFilePath() }
 
 // allowedSignersFilePath returns the host path for the temporary
 // allowed_signers file written before container start. The file is mounted
@@ -501,6 +516,9 @@ func (m *Manager) worktreeGitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-wt-gitdir-"+m.name)
 }
 
+// WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
+func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFilePath() }
+
 // Create creates and starts the podman container for this session.
 // It first calls EnsureRemoved to handle any stale container with the same name.
 // Returns an error if podman create or start fails.
@@ -587,12 +605,9 @@ func (m *Manager) Create(ctx context.Context) error {
 
 	log.Printf("container: creating %q: podman %s", m.name, strings.Join(redactArgs(args), " "))
 
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	cmd.Stdout = os.Stderr // forward container stdout to sidecar's stderr log
-	cmd.Stderr = os.Stderr
 	podmanStart := time.Now()
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container: podman run %q: %w", m.name, err)
+	if err := m.isolator.Run(ctx, args); err != nil {
+		return err
 	}
 	log.Printf("[timing] podman run: %s (total to here: %s)",
 		time.Since(podmanStart).Round(time.Millisecond),
@@ -654,32 +669,13 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 // startup failures are visible without needing to race `podman logs` before
 // the container is removed by Shutdown.
 func (m *Manager) dumpLogs() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "podman", "logs", m.name).CombinedOutput()
-	if err != nil {
-		log.Printf("container: could not fetch logs for %q: %v", m.name, err)
-		return
-	}
-	log.Printf("container: logs for %q:\n%s", m.name, string(out))
+	m.isolator.DumpLogs()
 }
 
 // hasExited checks whether the container has already stopped. Returns true and
 // the exit code if the container is in an exited state.
 func (m *Manager) hasExited() (bool, int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", m.name).Output()
-	if err != nil {
-		return false, 0
-	}
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) == 2 && fields[0] == "exited" {
-		code := 0
-		fmt.Sscanf(fields[1], "%d", &code)
-		return true, code
-	}
-	return false, 0
+	return m.isolator.HasExited()
 }
 
 // isHealthy performs a single HTTP probe and returns true on success.
@@ -697,23 +693,12 @@ func (m *Manager) isHealthy(ctx context.Context) bool {
 }
 
 // Shutdown stops and removes the container. Intended to be called on SIGTERM.
-// It uses a background context so the cleanup proceeds even if the parent ctx
-// is already cancelled.
+// It delegates the podman stop/rm calls to the Isolator and then cleans up
+// the temp files created by Create.
 func (m *Manager) Shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	log.Printf("container: shutting down %q", m.name)
 
-	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
-	if out, err := stopCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
-		log.Printf("container: stop %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
-	}
-
-	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
-	if out, err := rmCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
-		log.Printf("container: rm %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
-	}
+	m.isolator.Shutdown()
 
 	// Clean up temp files created by Create.
 	_ = os.Remove(m.gitdirFilePath())
@@ -725,6 +710,69 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.claudeCredentialsFilePath())
 
 	log.Printf("container: %q removed", m.name)
+}
+
+// PrepareBwrap writes the same temp files that Create() writes for podman
+// sessions (SSH config, gitconfig, opencode.json config) and returns the
+// complete bwrap argument list via bwrapIsolator.BuildArgs. It does NOT write
+// the gitdir fixup files (prism-gitdir-*, prism-wt-gitdir-*) because bwrap
+// uses Dst==Src mounts, so the host git paths are visible at their exact
+// locations inside the sandbox without remapping.
+//
+// Call this from "prism agent-run" in the tmux pane for bwrap mode. The
+// returned args slice is suitable for passing directly to exec.Exec("bwrap").
+//
+// Note: this method also calls prepareVolumeDirs() to ensure bind-mount
+// sources exist. bwrap (unlike podman) does not emit an exit-125 error for
+// missing sources — it simply fails to bind. Eagerly creating the directories
+// avoids confusing "No such file or directory" errors at bwrap startup.
+func (m *Manager) PrepareBwrap() ([]string, error) {
+	// Write a minimal SSH config for bwrap. Unlike the podman path, which uses
+	// the in-container path "/root/.ssh/access-key" (where the key is mounted),
+	// bwrap uses Dst==Src mounts — the key is visible at its resolved host path
+	// inside the sandbox. Resolve the symlink to get the absolute path that
+	// BuildArgs mounts with --ro-bind.
+	accessKeyName := m.cfg.SshAccessKeyName
+	if accessKeyName == "" {
+		accessKeyName = "prismatic-koi-ed25519"
+	}
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.Getenv("HOME")
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	accessKeyPath := filepath.Join(sshDir, accessKeyName)
+	if resolved, err := filepath.EvalSymlinks(accessKeyPath); err == nil {
+		// Use the resolved path — that's what BuildArgs mounts with --ro-bind.
+		accessKeyPath = resolved
+	}
+	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile " + accessKeyPath + "\n  IdentitiesOnly yes\n"
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
+		return nil, fmt.Errorf("container: bwrap: write ssh config: %w", err)
+	}
+
+	// Write the gitconfig. Mirrors the Create() path.
+	if err := m.writeGitconfig(); err != nil {
+		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
+	}
+
+	// Write the opencode config file, if provided.
+	if m.cfg.ConfigContent != "" {
+		if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
+			return nil, fmt.Errorf("container: bwrap: write opencode config: %w", err)
+		}
+	}
+
+	// Pre-create directories that BuildArgs will reference as bind-mount
+	// sources. bwrap silently fails rather than printing a clear error, so
+	// we create eagerly here.
+	if err := m.prepareVolumeDirs(); err != nil {
+		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
+	}
+
+	// Build the bwrap args.
+	b := &bwrapIsolator{name: m.name}
+	return b.BuildArgs(m), nil
 }
 
 // prepareVolumeDirs eagerly creates host directories that buildRunArgs() will

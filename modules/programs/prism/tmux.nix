@@ -97,6 +97,8 @@ in
               set -g status-right-style 'bg=${bg1} fg=${primary}'
               # for kitty images in image.nvim
               set -gq allow-passthrough on
+              # sensible debugging behavior
+              set -g remain-on-exit on
               # Enable OSC 52 clipboard passthrough so opencode running inside a
               # container can write to the host clipboard via the podman attach PTY bridge.
               # Without this, tmux drops OSC 52 sequences and clipboard is silently broken.

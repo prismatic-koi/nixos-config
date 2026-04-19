@@ -11,16 +11,19 @@ package cmd
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
 //	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
-//	--profile <name>      model profile to use (from ~/.config/prism/profiles.json)
+//	--profile <name>      model profile to use from ~/.config/prism/profiles.json
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
-//	--host-mode           bypass container mode and run opencode directly in the tmux pane
+//	--isolation <mode>    isolation mode: podman, bwrap, or host (default: from config.json)
+//	--host-mode           deprecated alias for --isolation host
 //	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -87,9 +90,72 @@ func init() {
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
-	spawnCmd.Flags().Bool("host-mode", false, "Bypass container mode and run opencode directly in the tmux pane")
+	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, or host (default: from ~/.config/prism/config.json)")
+	spawnCmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host; bypass container mode and run opencode directly in the tmux pane")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use (currently only 'opencode' is supported)")
+	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(spawnCmd)
+}
+
+// resolveIsolationMode returns the effective isolation mode for a spawn
+// invocation, applying flag precedence and validation:
+//
+//  1. --isolation flag (explicit override), validated against known values
+//  2. --host-mode flag (deprecated alias for "host")
+//  3. cfg.EffectiveIsolationMode() (from config.json)
+//
+// Returns an error if both --isolation and --host-mode are set, or if
+// --isolation has an unknown value, or if the resolved mode is "bwrap" on
+// a non-Linux platform.
+func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
+	isolationFlag, _ := cmd.Flags().GetString("isolation")
+	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
+
+	// Detect if flags were explicitly set by the user.
+	isolationChanged := cmd.Flags().Changed("isolation")
+	hostModeChanged := cmd.Flags().Changed("host-mode")
+
+	// Reject simultaneous use of --isolation and --host-mode.
+	if isolationChanged && hostModeChanged {
+		return "", fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
+	}
+
+	// --isolation flag takes precedence.
+	if isolationChanged {
+		if !config.IsValidIsolationMode(isolationFlag) {
+			valid := make([]string, len(config.ValidIsolationModes))
+			for i, m := range config.ValidIsolationModes {
+				valid[i] = string(m)
+			}
+			return "", fmt.Errorf("unknown isolation mode %q; valid values: %s", isolationFlag, strings.Join(valid, ", "))
+		}
+		mode := config.IsolationMode(isolationFlag)
+		if err := checkBwrapPlatform(mode); err != nil {
+			return "", err
+		}
+		return mode, nil
+	}
+
+	// --host-mode (deprecated alias).
+	if hostModeChanged && hostModeFlag {
+		return config.IsolationHost, nil
+	}
+
+	// Fall back to config.json default.
+	mode := cfg.EffectiveIsolationMode()
+	if err := checkBwrapPlatform(mode); err != nil {
+		return "", err
+	}
+	return mode, nil
+}
+
+// checkBwrapPlatform returns an error if the isolation mode is "bwrap" on a
+// non-Linux platform (bubblewrap is Linux-only).
+func checkBwrapPlatform(mode config.IsolationMode) error {
+	if mode == config.IsolationBwrap && runtime.GOOS != "linux" {
+		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", mode, runtime.GOOS)
+	}
+	return nil
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
@@ -104,7 +170,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
-	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 
 	// Validate harness BEFORE any session state is created (no worktree, no
@@ -124,19 +189,32 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
 
-	// Determine the effective container mode: cfg.ContainerMode can be
-	// overridden to false when --host-mode is passed.
-	effectiveContainerMode := cfg.ContainerMode
-	if hostModeFlag {
-		effectiveContainerMode = false
+	// Resolve the effective isolation mode. This validates --isolation,
+	// maps --host-mode to "host", and falls back to config.json.
+	// Done BEFORE any side effects (no worktree, no tmux session, no DB row).
+	isolationMode, err := resolveIsolationMode(cmd, cfg)
+	if err != nil {
+		return err
 	}
 
-	// Container availability check: when container mode is active (and
-	// --host-mode is not) verify podman is available before touching anything.
-	if cfg.ContainerMode && !hostModeFlag {
+	// Derive the legacy ContainerMode boolean for callers that still use it.
+	effectiveContainerMode := isolationMode == config.IsolationPodman
+
+	// Container availability check: when container mode is active verify
+	// podman is available before touching anything.
+	if isolationMode == config.IsolationPodman {
 		if err := container.CheckAvailability(); err != nil {
 			return err
 		}
+	}
+
+	// Concurrency cap check: BEFORE any container-creation side effects
+	// (no worktree, no tmux session, no DB row on refusal).
+	// Skipped in host-mode — host-mode sessions don't consume a container slot.
+	// bwrap sessions are treated as concurrency-capped (same as podman).
+	conCapped := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
+	if err := checkConcurrencyCap(cmd, "spawn", conCapped); err != nil {
+		return err
 	}
 
 	// Load the profiles file. It carries container role configs, model profile
@@ -180,7 +258,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	// In container mode, inject the role-specific opencode.json blob as
+	// In container/bwrap mode, inject the role-specific opencode.json blob as
 	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
 	// project-level opencode.jsonc. This ensures agent identity is always
 	// determined by Nix config, not by the project file.
@@ -214,6 +292,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		ConfigContent:  configContent,
 		Headless:       !fromKeybind && !attachFlag,
 		ContainerMode:  effectiveContainerMode,
+		IsolationMode:  string(isolationMode),
 		PluginHostPath: cfg.SidecarPluginPath,
 		// ForceFresh=true: spawn always wants a new instance. If a session with
 		// the same name already exists it is a stale zombie and should be killed.
@@ -229,15 +308,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Persist host_mode in the DB so cleanup can skip container teardown.
-	if hostModeFlag {
-		sessionName := session.NameFor(worktreePath, bareRoot)
-		if d, dbErr := openDB(); dbErr == nil {
+	// Persist isolation_mode in the DB so restore can re-spawn correctly.
+	// Also persist host_mode for back-compat with cleanup code.
+	sessionName := session.NameFor(worktreePath, bareRoot)
+	if d, dbErr := openDB(); dbErr == nil {
+		if setErr := d.SetIsolationMode(sessionName, string(isolationMode)); setErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] spawn: set isolation_mode: %v\n", setErr)
+		}
+		if isolationMode == config.IsolationHost {
 			if setErr := d.SetHostMode(sessionName, true); setErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] spawn: set host_mode: %v\n", setErr)
 			}
-			d.Close()
 		}
+		d.Close()
 	}
 
 	return nil
