@@ -223,8 +223,16 @@ func setupMinimalBareRepo(t *testing.T) (bareRoot, worktreePath, branchName stri
 		"add", "--orphan", "-b", "main", initDir).CombinedOutput(); err != nil {
 		t.Fatalf("git worktree add (orphan): %v\n%s", err, out)
 	}
-	// Stage an empty commit.
-	cfgArgs := []string{"-C", initDir, "-c", "user.email=test@test.com", "-c", "user.name=Test"}
+	// Stage an empty commit. Disable signing explicitly: host gitconfig may
+	// enable gpgsign globally (via home-manager), which would break this
+	// commit in a test env with no signing key.
+	cfgArgs := []string{
+		"-C", initDir,
+		"-c", "user.email=test@test.com",
+		"-c", "user.name=Test",
+		"-c", "commit.gpgsign=false",
+		"-c", "tag.gpgsign=false",
+	}
 	if out, err := exec.Command("git", append(cfgArgs,
 		"commit", "--allow-empty", "-m", "init")...).CombinedOutput(); err != nil {
 		t.Fatalf("git commit (init): %v\n%s", err, out)
@@ -273,6 +281,16 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 	// sidecar state dir instead of the production ~/.local/state/prism/ path.
 	// Must be set before newCmdTestServer starts the tmux server.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
+	// path directly rather than proxying to a sidecar that doesn't know
+	// about the test's isolated tmux server. This env var is inherited when
+	// the test itself runs inside a prism-managed session.
+	t.Setenv("PRISM_HOST_API", "")
+	// Ignore the host's global gitconfig so the spawned prism binary is not
+	// affected by host-level signing config (gpgsign=true without a key
+	// available would break any git commit it runs).
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 
 	prismBin := buildPrismBinary(t)
 
@@ -383,6 +401,16 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 	// sidecar state dir instead of the production ~/.local/state/prism/ path.
 	// Must be set before newCmdTestServer starts the tmux server.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
+	// path directly rather than proxying to a sidecar that doesn't know
+	// about the test's isolated tmux server. This env var is inherited when
+	// the test itself runs inside a prism-managed session.
+	t.Setenv("PRISM_HOST_API", "")
+	// Ignore the host's global gitconfig so the spawned prism binary is not
+	// affected by host-level signing config (gpgsign=true without a key
+	// available would break any git commit it runs).
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 
 	prismBin := buildPrismBinary(t)
 
@@ -558,6 +586,16 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
 
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Ignore the host's global gitconfig so the spawned prism binary is not
+	// affected by host-level signing config (gpgsign=true without a key
+	// available would break any git commit it runs).
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	// Clear PRISM_HOST_API so the spawned binary runs its host-side cleanup
+	// path directly rather than proxying to a sidecar that doesn't know
+	// about the test's isolated tmux server. This env var is inherited when
+	// the test itself runs inside a prism-managed session.
+	t.Setenv("PRISM_HOST_API", "")
 
 	prismBin := buildPrismBinary(t)
 

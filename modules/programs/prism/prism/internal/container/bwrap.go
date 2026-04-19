@@ -81,9 +81,23 @@ func fallbackPATH() string {
 // Rules:
 //   - PATH: always emitted; falls back to fallbackPATH when the host value is
 //     empty (e.g. in a stripped environment).
-//   - HOME, USER, LOGNAME, LANG, LC_ALL, SHELL: forwarded when the host has
-//     them set; omitted entirely when unset, so the sandbox does not receive a
+//   - HOME, USER, LOGNAME, LANG, LC_ALL: forwarded when the host has them
+//     set; omitted entirely when unset, so the sandbox does not receive a
 //     spurious empty string.
+//   - SHELL: forced to /bin/sh regardless of the host value. The host's
+//     SHELL is typically zsh, and NixOS' /etc/zshenv unconditionally sources
+//     set-environment which runs `cat /run/secrets/...` for every sops secret.
+//     Inside bwrap those paths don't exist, so the cat fails AND (critically)
+//     overwrites any --setenv'd GITHUB_TOKEN with an empty string — breaking
+//     every `git push` and `gh` call the agent tries. /bin/sh on NixOS is a
+//     symlink to bash; bash's non-interactive -c invocation does not source
+//     /etc/profile (login-shell only) or /etc/bashrc (interactive-only), so
+//     the injected env survives. We pin /bin/sh (not /bin/bash) because
+//     /bin/ inside the sandbox only contains the NixOS-provided /bin/sh
+//     symlink — bash itself lives in the Nix store at a hash-prefixed path,
+//     not at /bin/bash. Pinning SHELL to /bin/sh means any tool that uses
+//     $SHELL (opencode's bash tool, most TUIs) gets a clean shell that
+//     doesn't wipe credentials.
 //
 // TERM is NOT included here — it is handled separately by BuildArgs so that
 // its fixed value ("xterm-256color") is always used regardless of the host.
@@ -98,11 +112,17 @@ func standardSandboxEnvArgs() []string {
 	args = append(args, "--setenv", "PATH", pathVal)
 
 	// Optional vars — only emitted when the host has them set.
-	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL"} {
 		if val := os.Getenv(key); val != "" {
 			args = append(args, "--setenv", key, val)
 		}
 	}
+
+	// SHELL — forced to /bin/sh. See godoc above for the zsh/set-environment
+	// reason. /bin/sh is always available inside the sandbox (NixOS ships
+	// /bin/sh as a symlink to bash) because BuildArgs ro-binds /bin from
+	// the host.
+	args = append(args, "--setenv", "SHELL", "/bin/sh")
 
 	return args
 }
@@ -140,12 +160,23 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// a fresh /proc and /dev; a tmpfs on /tmp; and a guarantee that the
 	// sandbox dies when the parent process exits.
 	//
+	// --clearenv (first) wipes the inherited environment so that nothing from
+	// the invoking shell leaks into the sandbox. Every var the sandbox needs
+	// must be re-introduced via an explicit --setenv below (see
+	// standardSandboxEnvArgs and credentialEnvVars). Without --clearenv, bwrap
+	// forwards the full host environment — which on a prism coordinator
+	// includes role-specific GitHub tokens (PRISM_GITHUB_TOKEN_*) and other
+	// credentials that must never reach a sandboxed agent. Podman does not
+	// have this problem because its default is to pass nothing from the host;
+	// --clearenv gives bwrap the same baseline.
+	//
 	// --unshare-ipc is intentionally omitted: SQLite WAL mode uses a -shm
 	// shared memory file that relies on mmap() coherency across processes.
 	// --unshare-ipc creates a private IPC namespace which breaks that
 	// coherency between concurrent bwrap sessions, causing subsequent
 	// sessions to hang after DB migration completes (see issue #906).
 	args := []string{
+		"--clearenv",
 		"--unshare-pid",
 		"--unshare-uts",
 		"--proc", "/proc",
@@ -225,9 +256,16 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--bind", mcpAuthDir, mcpAuthDir)
 	}
 
-	// ── opencode session state dir (read-write) ─────────────────────────────
-	opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
-	args = append(args, "--bind", opencodeSessionDir, opencodeSessionDir)
+	// ── opencode shared state dir (read-write) ─────────────────────────────
+	// bwrap sessions share the host's ~/.local/share/opencode/ directly: a
+	// single SQLite DB across all sessions (host mode, bwrap mode, and the
+	// non-prism opencode CLI). The per-session isolation used by the podman
+	// path exists solely to work around a virtiofs WAL-mode locking issue on
+	// Darwin — that path doesn't apply here because bwrap is Linux-only and
+	// SQLite WAL works correctly across concurrent processes on a shared
+	// filesystem.
+	opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
+	args = append(args, "--bind", opencodeDataDir, opencodeDataDir)
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
 	// Mount the parent directory, not the socket file directly (same pattern
@@ -258,6 +296,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── SSH keys (read-only, conditional) ───────────────────────────────────
+	// All SSH artefacts are remapped to canonical generic paths under
+	// $HOME/.ssh/ inside the sandbox. Agents inside both bwrap and podman
+	// sandboxes see the same filenames (access-key, signing-key, signing-key.pub,
+	// allowed_signers, known_hosts) — only the $HOME prefix differs (/root for
+	// podman, <hostHome> for bwrap). The generated ~/.ssh/config and
+	// ~/.gitconfig (see writeSshConfig and writeGitconfig) reference these
+	// canonical paths using the same prefix via sandboxHome().
 	sshDir := filepath.Join(home, ".ssh")
 
 	accessKeyName := cfg.SshAccessKeyName
@@ -265,7 +310,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		accessKeyName = "prismatic-koi-ed25519"
 	}
 	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, accessKeyName)); err == nil {
-		args = append(args, "--ro-bind", resolved, resolved)
+		args = append(args, "--ro-bind", resolved, filepath.Join(sshDir, "access-key"))
 	}
 
 	signingKeyName := cfg.SshSigningKeyName
@@ -276,18 +321,17 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName+".pub"))
 	if errPriv == nil && errPub == nil {
 		args = append(args,
-			"--ro-bind", signingKeyResolved, signingKeyResolved,
-			"--ro-bind", signingKeyPubResolved, signingKeyPubResolved,
+			"--ro-bind", signingKeyResolved, filepath.Join(sshDir, "signing-key"),
+			"--ro-bind", signingKeyPubResolved, filepath.Join(sshDir, "signing-key.pub"),
 		)
 		if m.allowedSignersReady {
-			allowedSignersPath := m.allowedSignersFilePath()
-			args = append(args, "--ro-bind", allowedSignersPath, allowedSignersPath)
+			args = append(args, "--ro-bind", m.allowedSignersFilePath(), filepath.Join(sshDir, "allowed_signers"))
 		}
 	}
 
 	// ── known_hosts (read-only, conditional) ────────────────────────────────
 	if resolved, err := filepath.EvalSymlinks(filepath.Join(sshDir, "known_hosts")); err == nil {
-		args = append(args, "--ro-bind", resolved, resolved)
+		args = append(args, "--ro-bind", resolved, filepath.Join(sshDir, "known_hosts"))
 	}
 
 	// ── Generated SSH config (read-only) ────────────────────────────────────
@@ -351,15 +395,6 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		if _, err := os.Stat(p); err == nil {
 			args = append(args, "--ro-bind", p, p)
 		}
-	}
-
-	// ── auth.json overlay (read-write, conditional) ──────────────────────────
-	// Share the host's OAuth token file across sessions. The opencode-claude-auth
-	// plugin writes back refreshed credentials, so it must be read-write.
-	// Mounted at the exact host path (Dst==Src).
-	opencodeAuthJSON := filepath.Join(home, ".local", "share", "opencode", "auth.json")
-	if _, err := os.Stat(opencodeAuthJSON); err == nil {
-		args = append(args, "--bind", opencodeAuthJSON, opencodeAuthJSON)
 	}
 
 	// ── opencode plugin cache (read-only, conditional) ───────────────────────
@@ -484,10 +519,19 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 // Run launches "bwrap <args...>" and waits for it to complete. Stdout and
 // stderr are forwarded to the sidecar's stderr log. Returns a wrapped error
 // on failure.
+//
+// The bwrap child process runs with a filtered environment (see
+// minimalBwrapExecEnv) so that secrets from the invoking process do not
+// appear in the bwrap process's own /proc/<pid>/environ. This pairs with
+// the --clearenv flag in the baseline args (see BuildArgs) which wipes
+// the sandbox interior env. Defence-in-depth: either layer alone would
+// block the leak; both are kept so regressions in one layer are caught
+// by the other.
 func (b *bwrapIsolator) Run(ctx context.Context, args []string) error {
 	cmd := exec.CommandContext(ctx, "bwrap", args...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
+	cmd.Env = minimalBwrapExecEnv(os.Environ())
 
 	b.mu.Lock()
 	b.cmd = cmd
@@ -497,6 +541,43 @@ func (b *bwrapIsolator) Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("container: bwrap run %q: %w", b.name, err)
 	}
 	return nil
+}
+
+// minimalBwrapExecEnv filters a hostEnv slice (K=V pairs, as returned by
+// os.Environ()) down to a minimal allow-list that the bwrap process itself
+// needs. The returned env is what bwrap's /proc/<pid>/environ contains; it
+// is NOT the sandbox interior env (bwrap starts the sandbox with --clearenv
+// and rebuilds the interior env from explicit --setenv pairs in BuildArgs).
+//
+// See cmd/agent_run.go for the corresponding filter at the syscall.Exec
+// call site. Both filters use the same allow-list; keep them in sync.
+func minimalBwrapExecEnv(hostEnv []string) []string {
+	allow := map[string]bool{
+		"PATH":    true,
+		"HOME":    true,
+		"USER":    true,
+		"LOGNAME": true,
+		"TERM":    true,
+		"LANG":    true,
+		"LC_ALL":  true,
+	}
+	out := make([]string, 0, len(allow))
+	for _, kv := range hostEnv {
+		eq := -1
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				eq = i
+				break
+			}
+		}
+		if eq <= 0 {
+			continue
+		}
+		if allow[kv[:eq]] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // Shutdown sends SIGTERM to the bwrap process if it is still running. It uses

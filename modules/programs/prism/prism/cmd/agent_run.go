@@ -157,9 +157,63 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agent-run: %w", err)
 	}
 
-	// exec replaces the current process with bwrap. argv[0] must be the binary path.
+	// exec replaces the current process with bwrap. argv[0] must be the binary
+	// path. The child env is filtered to a minimal allow-list so that nothing
+	// from the invoking shell leaks into bwrap's own process environment.
+	// This is defence-in-depth: bwrap itself will also run with --clearenv
+	// (see internal/container/bwrap.go) so the sandbox interior is wiped
+	// regardless. Stripping here ensures secrets never appear in bwrap's
+	// own /proc/<pid>/environ either, and means "ps aux" / "bwrap --help"
+	// style debugging can't accidentally expose them.
 	argv := append([]string{bwrapBin}, bwrapArgs...)
-	return syscall.Exec(bwrapBin, argv, os.Environ())
+	return syscall.Exec(bwrapBin, argv, minimalBwrapExecEnv(os.Environ()))
+}
+
+// minimalBwrapExecEnv filters a hostEnv slice (K=V pairs, as returned by
+// os.Environ()) down to a minimal allow-list that bwrap itself needs to run.
+// The returned env is what the bwrap *process* sees; it is NOT the sandbox
+// interior env (bwrap starts the sandbox with --clearenv and rebuilds the
+// interior env from explicit --setenv pairs).
+//
+// Allow-list rationale:
+//
+//   - PATH:     bwrap uses PATH to locate interpreters when parsing some
+//     arguments, and tools that bwrap itself spawns during setup rely on it.
+//   - HOME, USER, LOGNAME: used in default paths, error messages, and (more
+//     importantly) by any subcommand bwrap shells out to internally.
+//   - TERM, LANG, LC_ALL: avoid bwrap logging locale/terminal warnings.
+//
+// Everything else — including PRISM_GITHUB_TOKEN_*, GITHUB_TOKEN,
+// GITHUB_PACKAGES_TOKEN, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and any
+// other secret a prism coordinator might export — is dropped.
+func minimalBwrapExecEnv(hostEnv []string) []string {
+	allow := map[string]bool{
+		"PATH":    true,
+		"HOME":    true,
+		"USER":    true,
+		"LOGNAME": true,
+		"TERM":    true,
+		"LANG":    true,
+		"LC_ALL":  true,
+	}
+	out := make([]string, 0, len(allow))
+	for _, kv := range hostEnv {
+		// Split once on '='; malformed pairs (no '=') are skipped.
+		eq := -1
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				eq = i
+				break
+			}
+		}
+		if eq <= 0 {
+			continue
+		}
+		if allow[kv[:eq]] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // applyInitialPromptEnvVar reads PRISM_INITIAL_PROMPT from the process

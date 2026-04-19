@@ -14,12 +14,14 @@ package cmd
 //   - Missing PID file: function returns silently without error.
 //   - Corrupt PID file: non-integer content, file removed.
 //   - PID recycled to unrelated process: /proc/<pid>/cmdline doesn't contain
-//     "prism", kill is skipped, PID file removed.
+//     the sidecar invariant ("sidecar" + "--session"), kill is skipped,
+//     PID file removed.
 //
 // TestKillSidecar_NormalOperation re-invokes the test binary itself as a stub
-// sidecar subprocess. When PRISM_CMD_TEST_STUB=1 the binary sleeps briefly so
-// its /proc/<pid>/cmdline contains the test binary path (which includes "prism"
-// because the test binary is named after the package). See TestMain below.
+// sidecar subprocess with argv "sidecar --session stub-session". When
+// PRISM_CMD_TEST_STUB=1 TestMain short-circuits into a sleep-and-exit loop
+// so the stub acts as a long-running sidecar whose cmdline matches the
+// invariant KillSidecar looks for. See TestMain below.
 
 import (
 	"fmt"
@@ -104,14 +106,13 @@ func processExists(pid int) bool {
 }
 
 // startStubProcess re-invokes the current test binary with PRISM_CMD_TEST_STUB=1
-// so it acts as a long-running sidecar stub whose cmdline contains the word
-// "prism" (the test binary is typically named cmd.test or similar, but the
-// full path goes through os.Executable which may contain the project name).
+// so it acts as a long-running sidecar stub whose /proc/<pid>/cmdline matches
+// the real-sidecar invariant that KillSidecar checks for: it contains both
+// "sidecar" and "--session".
 //
-// To guarantee the cmdline check passes, the stub binary is invoked via a
-// symlink named "prism-stub" placed in a temp dir and added to PATH. Since the
-// test binary is already a real binary with a path that may or may not contain
-// "prism", we instead copy/symlink to a path that explicitly contains "prism".
+// We pass "sidecar --session <name>" on the argv so the cmdline matches. The
+// PRISM_CMD_TEST_STUB env var forces TestMain to short-circuit into a
+// sleep-and-exit loop instead of running the real sidecar command.
 func startStubProcess(t *testing.T) (pid int, cleanup func()) {
 	t.Helper()
 
@@ -121,15 +122,9 @@ func startStubProcess(t *testing.T) (pid int, cleanup func()) {
 		t.Fatalf("os.Executable: %v", err)
 	}
 
-	// Create a symlink named "prism" → current test binary in a temp dir.
-	// This ensures /proc/<pid>/cmdline will contain the path "…/prism".
-	binDir := t.TempDir()
-	prismLink := filepath.Join(binDir, "prism")
-	if err := os.Symlink(self, prismLink); err != nil {
-		t.Fatalf("symlink prism → test binary: %v", err)
-	}
-
-	cmd := exec.Command(prismLink)
+	// Invoke the test binary with stub-matching argv so cmdline contains
+	// both "sidecar" and "--session" (the invariant KillSidecar checks).
+	cmd := exec.Command(self, "sidecar", "--session", "stub-session")
 	cmd.Env = append(os.Environ(), "PRISM_CMD_TEST_STUB=1")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start stub process: %v", err)
@@ -147,14 +142,15 @@ func TestKillSidecar_NormalOperation(t *testing.T) {
 	pid, cleanupProc := startStubProcess(t)
 	t.Cleanup(cleanupProc)
 
-	// Verify cmdline contains "prism" before we proceed (skip if not).
+	// Verify cmdline matches the sidecar invariant KillSidecar checks for.
 	time.Sleep(30 * time.Millisecond) // Let the process start.
 	cmdlineData, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	if err != nil {
 		t.Skipf("could not read /proc/%d/cmdline: %v (process may have exited already)", pid, err)
 	}
-	if !strings.Contains(string(cmdlineData), "prism") {
-		t.Fatalf("stub process cmdline does not contain 'prism': %q — startStubProcess setup is broken", string(cmdlineData))
+	cmdlineStr := string(cmdlineData)
+	if !strings.Contains(cmdlineStr, "sidecar") || !strings.Contains(cmdlineStr, "--session") {
+		t.Fatalf("stub process cmdline does not contain 'sidecar' and '--session': %q — startStubProcess setup is broken", cmdlineStr)
 	}
 
 	stateDir := t.TempDir()

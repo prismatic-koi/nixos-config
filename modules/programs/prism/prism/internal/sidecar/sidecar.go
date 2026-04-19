@@ -398,57 +398,64 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				s.cfg.OnReady()
 			}
 		}
+	}
 
-		// Start the host-API servers (AC-1, AC-9).
-		// Guard with !isShuttingDown: if SIGTERM arrived between WaitHealthy
-		// and here, Shutdown() will have already run and we must not create
-		// listeners that would never be closed.
-		if !isShuttingDown && s.cfg.HostAPISockPath != "" {
-			// Unix socket server — always started when HostAPISockPath is set,
-			// regardless of platform. On Darwin the container uses TCP
-			// (HostAPITCPPort), but the Unix socket is still available for
-			// host-side tooling.
-			_ = os.Remove(s.cfg.HostAPISockPath)
-			ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
-			if listenErr != nil {
-				log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
-			} else {
-				srv := &http.Server{Handler: s.hostAPIHandler()}
-				s.mu.Lock()
-				s.hostAPIListener = ln
-				s.hostAPISrv = srv
-				s.mu.Unlock()
-				go func() {
-					if err := srv.Serve(ln); err != nil &&
-						!errors.Is(err, http.ErrServerClosed) &&
-						!errors.Is(err, net.ErrClosed) {
-						log.Printf("sidecar: host-API server (unix): %v", err)
-					}
-				}()
-			}
-
-			// TCP server — Darwin only, when the TCP listener was bound before
-			// container creation. Uses a separate http.Server with the same handler
-			// so both transports serve identical API endpoints.
+	// Start the host-API servers (AC-1, AC-9).
+	// This runs for BOTH podman and bwrap isolation modes — any session with
+	// HostAPISockPath set needs the Unix socket so the sandboxed agent can
+	// proxy prism CLI calls back to the host. Previously this block was nested
+	// inside the Container!=nil branch, which meant bwrap coordinators (where
+	// Container is nil) never got a socket.
+	//
+	// Guard with !shuttingDown: if SIGTERM arrived before we reach here,
+	// Shutdown() will have already run and we must not create listeners that
+	// would never be closed.
+	s.mu.Lock()
+	alreadyShuttingDown := s.shuttingDown
+	s.mu.Unlock()
+	if !alreadyShuttingDown && s.cfg.HostAPISockPath != "" {
+		// Unix socket server — always started when HostAPISockPath is set,
+		// regardless of platform. On Darwin the container uses TCP
+		// (HostAPITCPPort), but the Unix socket is still available for
+		// host-side tooling.
+		_ = os.Remove(s.cfg.HostAPISockPath)
+		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
+		if listenErr != nil {
+			log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
+		} else {
+			srv := &http.Server{Handler: s.hostAPIHandler()}
 			s.mu.Lock()
-			tcpLn := s.hostAPITCPListener
+			s.hostAPIListener = ln
+			s.hostAPISrv = srv
 			s.mu.Unlock()
-			if tcpLn != nil {
-				tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
-				s.mu.Lock()
-				s.hostAPITCPSrv = tcpSrv
-				s.mu.Unlock()
-				go func() {
-					if err := tcpSrv.Serve(tcpLn); err != nil &&
-						!errors.Is(err, http.ErrServerClosed) &&
-						!errors.Is(err, net.ErrClosed) {
-						log.Printf("sidecar: host-API server (tcp): %v", err)
-					}
-				}()
-				log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
-			}
-		} else if s.cfg.HostAPISockPath == "" {
-			log.Printf("sidecar: host-API server: HostAPISockPath is empty — skipping (container mode active but no socket path configured)")
+			go func() {
+				if err := srv.Serve(ln); err != nil &&
+					!errors.Is(err, http.ErrServerClosed) &&
+					!errors.Is(err, net.ErrClosed) {
+					log.Printf("sidecar: host-API server (unix): %v", err)
+				}
+			}()
+		}
+
+		// TCP server — Darwin only, when the TCP listener was bound before
+		// container creation. Uses a separate http.Server with the same handler
+		// so both transports serve identical API endpoints.
+		s.mu.Lock()
+		tcpLn := s.hostAPITCPListener
+		s.mu.Unlock()
+		if tcpLn != nil {
+			tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
+			s.mu.Lock()
+			s.hostAPITCPSrv = tcpSrv
+			s.mu.Unlock()
+			go func() {
+				if err := tcpSrv.Serve(tcpLn); err != nil &&
+					!errors.Is(err, http.ErrServerClosed) &&
+					!errors.Is(err, net.ErrClosed) {
+					log.Printf("sidecar: host-API server (tcp): %v", err)
+				}
+			}()
+			log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
 		}
 	}
 
