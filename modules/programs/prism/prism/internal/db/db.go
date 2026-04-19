@@ -545,6 +545,45 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 	return nil
 }
 
+// UpsertStatusSeedRootAgentName is like UpsertStatus but also writes
+// rootAgentName to root_agent_name when it is non-empty. On conflict (update),
+// root_agent_name is written via COALESCE — the existing value is preserved if
+// the incoming rootAgentName is empty.
+//
+// This is the spawn-time seeding path: called when we know the agent role at
+// session creation time (before the sidecar's first upsertState() call fires),
+// so that the DB row has a non-NULL root_agent_name from the first moment.
+// The sidecar will later write the same value idempotently via
+// UpsertStatusWithRootAgent (COALESCE preserves the already-set value).
+func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, opencodeSID *string, rootAgentName string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusSeedRootAgentName")
+	now := time.Now().UnixMilli()
+	// When rootAgentName is empty, fall back to leaving root_agent_name as-is
+	// (COALESCE with NULL excluded value preserves existing). When non-empty,
+	// write it, but still use COALESCE so a later sidecar write of the same
+	// value doesn't produce a spurious update.
+	var rootAgentNamePtr *string
+	if rootAgentName != "" {
+		rootAgentNamePtr = &rootAgentName
+	}
+	const q = `
+INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, root_agent_name, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+ON CONFLICT(session_name) DO UPDATE SET
+  state              = excluded.state,
+  title              = COALESCE(excluded.title, title),
+  opencode_sid       = COALESCE(excluded.opencode_sid, opencode_sid),
+  root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
+  last_seen          = excluded.last_seen,
+  harness            = 'opencode',
+  harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, rootAgentNamePtr, now, opencodeSID)
+	if err != nil {
+		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
+	}
+	return nil
+}
+
 // UpsertStatusWithRootAgent is like UpsertStatusWithAgent but also writes
 // root_agent_name and root_model_id. On conflict (update), root_agent_name and
 // root_model_id prefer the incoming (excluded) value via COALESCE — the sidecar

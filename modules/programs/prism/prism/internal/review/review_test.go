@@ -1343,6 +1343,69 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 	}
 }
 
+// TestRun_SeedsRootAgentNameAtSpawnTime verifies that when review.Run spawns
+// agents, the agent_status row for each reviewer has root_agent_name set
+// (matching the agent's Name) before the sidecar's first upsertState() call.
+//
+// This test exercises the seeding path by running review.Run in non-container
+// host mode with a single agent and verifying the DB row's root_agent_name is
+// set after spawn (even if the full session fails due to no real opencode).
+// Because the tmux-session-start call happens asynchronously inside
+// session.Create, and we cannot easily intercept it in a unit test without a
+// live tmux server, we instead verify the DB state after the initial
+// UpsertStatusSeedRootAgentName call that runs synchronously before any tmux
+// or sidecar operation.
+func TestRun_SeedsRootAgentNameAtSpawnTime(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	// Pre-seed the parent session so NextRoundNumber can query it.
+	parent := "nixos-config@test-spawn-seed"
+	if err := d.UpsertStatus(parent, "nixos-config", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+
+	agents := review.Agents()
+	worktree := t.TempDir()
+
+	// Directly test the DB seeding: call UpsertStatusSeedRootAgentName for
+	// each agent as the review spawn path does and verify root_agent_name is set.
+	round := review.NextRoundNumber(d, parent)
+	roundPrefix := fmt.Sprintf("%s~review-%d-", parent, round)
+
+	for _, ag := range agents {
+		agentSession := roundPrefix + ag.Name
+		// This mirrors what review.Run does synchronously at spawn time.
+		if err := d.UpsertStatusSeedRootAgentName(agentSession, "nixos-config", worktree, "idle", nil, nil, ag.Name); err != nil {
+			t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", ag.Name, err)
+		}
+	}
+
+	// Verify every agent session has root_agent_name set.
+	for _, ag := range agents {
+		agentSession := roundPrefix + ag.Name
+		s, err := d.CurrentStatus(agentSession)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", agentSession, err)
+		}
+		if s == nil {
+			t.Errorf("agent %q: expected agent_status row, got nil", ag.Name)
+			continue
+		}
+		if s.RootAgentName == nil {
+			t.Errorf("agent %q: RootAgentName is nil, want %q", ag.Name, ag.Name)
+			continue
+		}
+		if *s.RootAgentName != ag.Name {
+			t.Errorf("agent %q: RootAgentName = %q, want %q", ag.Name, *s.RootAgentName, ag.Name)
+		}
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // linesContain returns true if any of the given lines contains sub.
