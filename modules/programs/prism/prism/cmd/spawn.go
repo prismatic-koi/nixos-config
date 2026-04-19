@@ -308,21 +308,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Persist isolation_mode in the DB so restore can re-spawn correctly.
-	// Also persist host_mode for back-compat with cleanup code.
-	sessionName := session.NameFor(worktreePath, bareRoot)
-	if d, dbErr := openDB(); dbErr == nil {
-		if setErr := d.SetIsolationMode(sessionName, string(isolationMode)); setErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] spawn: set isolation_mode: %v\n", setErr)
-		}
-		if isolationMode == config.IsolationHost {
-			if setErr := d.SetHostMode(sessionName, true); setErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] spawn: set host_mode: %v\n", setErr)
-			}
-		}
-		d.Close()
-	}
-
 	return nil
 }
 
