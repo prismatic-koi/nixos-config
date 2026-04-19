@@ -10,18 +10,6 @@ import (
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-// findPairs returns all (flag, value) pairs in args where args[i] == flag.
-// For single-value flags like --bind SRC DST, use findTriples.
-func findPairs(args []string, flag string) [][2]string {
-	var out [][2]string
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == flag {
-			out = append(out, [2]string{args[i+1], ""})
-		}
-	}
-	return out
-}
-
 // findTriples returns all (flag, v1, v2) triples where args[i] == flag.
 func findTriples(args []string, flag string) [][3]string {
 	var out [][3]string
@@ -300,6 +288,74 @@ func TestBwrapBuildArgs_NixCacheDirBound(t *testing.T) {
 	nixCacheDir := filepath.Join(fakeHome, ".cache", "nix")
 	if !hasBind(args, nixCacheDir) {
 		t.Errorf("~/.cache/nix %q not found as --bind SRC SRC in args: %v", nixCacheDir, args)
+	}
+}
+
+func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
+	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
+	// worktree private git state are both bound at their host paths (Dst == Src),
+	// not remapped to /prism-git as in the podman path.
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := os.MkdirAll(bareDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll bareDir: %v", err)
+	}
+
+	worktreeGitDir := t.TempDir()
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       t.TempDir(),
+		AllocatedPort:  14010,
+		BareRoot:       bareRoot,
+		WorktreeGitDir: worktreeGitDir,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Bare dir is bound at its actual host path (Dst == Src).
+	if !hasBind(args, bareDir) {
+		t.Errorf("bare dir %q not found as --bind SRC SRC in args: %v", bareDir, args)
+	}
+
+	// Worktree private git state is also bound at its host path (Dst == Src).
+	if !hasBind(args, worktreeGitDir) {
+		t.Errorf("worktree git dir %q not found as --bind SRC SRC in args: %v", worktreeGitDir, args)
+	}
+
+	// Confirm /prism-git is NOT a destination (no remapping).
+	for _, tri := range findTriples(args, "--bind") {
+		if tri[1] == "/prism-git" {
+			t.Errorf("unexpected --bind _ /prism-git found (bwrap must use Dst==Src): %v", args)
+		}
+	}
+}
+
+func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
+	// When BareRoot is set but the .bare directory does not exist,
+	// the bind should be omitted.
+	bareRoot := t.TempDir()
+	// Do NOT create bareRoot/.bare — it should be absent.
+
+	worktreeGitDir := t.TempDir()
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       t.TempDir(),
+		AllocatedPort:  14010,
+		BareRoot:       bareRoot,
+		WorktreeGitDir: worktreeGitDir,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if hasBind(args, bareDir) {
+		t.Errorf("missing bareDir %q should be omitted but found as --bind in args: %v", bareDir, args)
 	}
 }
 

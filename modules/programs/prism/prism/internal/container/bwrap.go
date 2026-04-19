@@ -94,18 +94,21 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--bind", cfg.Worktree, cfg.Worktree)
 	}
 
-	// ── /prism-git (bare repo) ──────────────────────────────────────────────
-	// When BareRoot is set, mount the .bare directory at /prism-git so that
-	// git commondir resolution works inside the sandbox.
+	// ── Bare repo and worktree private git state (read-write) ──────────────
+	// Dst == Src: both directories mount at their host paths inside the
+	// sandbox, not at the /prism-git canonical container path used by the
+	// podman path. This is correct bwrap behaviour — the git commondir pointer
+	// inside WorktreeGitDir/commondir already points at the absolute host path
+	// for the bare dir, so no remapping is needed. PRISM_BARE_ROOT is updated
+	// below to point at the actual host path rather than /prism-git.
 	if cfg.BareRoot != "" && cfg.WorktreeGitDir != "" {
 		bareDir := filepath.Join(cfg.BareRoot, ".bare")
 		if _, err := os.Stat(bareDir); err == nil {
-			args = append(args, "--bind", bareDir, "/prism-git")
+			args = append(args, "--bind", bareDir, bareDir)
 		}
 		// Worktree private git state (HEAD, index, logs, etc.) — read-write.
-		branch := filepath.Base(cfg.WorktreeGitDir)
 		if _, err := os.Stat(cfg.WorktreeGitDir); err == nil {
-			args = append(args, "--bind", cfg.WorktreeGitDir, "/prism-git/worktrees/"+branch)
+			args = append(args, "--bind", cfg.WorktreeGitDir, cfg.WorktreeGitDir)
 		}
 	}
 
@@ -206,11 +209,26 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// TERM: xterm-256color for full SGR mouse support in the TUI.
 	args = append(args, "--setenv", "TERM", "xterm-256color")
 
-	// Prism context variables (mirror the podman path).
-	// PRISM_SPAWN_PATH and PRISM_BARE_ROOT keep their podman values for now
-	// because the wiring PR (#877) will decide whether to remap them for bwrap.
-	args = append(args, "--setenv", "PRISM_SPAWN_PATH", "/workspace")
-	args = append(args, "--setenv", "PRISM_BARE_ROOT", "/prism-git")
+	// Prism context variables.
+	// PRISM_SPAWN_PATH: use the actual host worktree path (not /workspace).
+	// In the bwrap sandbox the worktree is mounted at its host path, so
+	// prism CLI commands inside the sandbox see the same absolute path the
+	// host does — no remap required.
+	if cfg.Worktree != "" {
+		args = append(args, "--setenv", "PRISM_SPAWN_PATH", cfg.Worktree)
+	} else {
+		args = append(args, "--setenv", "PRISM_SPAWN_PATH", "/workspace")
+	}
+	// PRISM_BARE_ROOT: use the actual host bare repo root (not /prism-git).
+	// Dst==Src mounts mean the bare dir is visible at its host path inside
+	// the sandbox. Set PRISM_BARE_ROOT to cfg.BareRoot so that
+	// resolveBareRoot finds it at the correct path.
+	// TODO(#877): confirm the correct value when wiring bwrap end-to-end.
+	if cfg.BareRoot != "" {
+		args = append(args, "--setenv", "PRISM_BARE_ROOT", cfg.BareRoot)
+	} else {
+		args = append(args, "--setenv", "PRISM_BARE_ROOT", "/prism-git")
+	}
 	args = append(args, "--setenv", "PRISM_SESSION_NAME", cfg.SessionName)
 
 	// OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: 15-minute bash timeout.
@@ -224,10 +242,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		)
 	} else if cfg.HostAPISockPath != "" {
 		sockDir := filepath.Dir(cfg.HostAPISockPath)
-		sockFile := filepath.Base(cfg.HostAPISockPath)
 		args = append(args, "--bind", sockDir, sockDir)
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
-		_ = sockFile // sockFile is part of the path already
 	}
 
 	// ── Working directory ────────────────────────────────────────────────────
