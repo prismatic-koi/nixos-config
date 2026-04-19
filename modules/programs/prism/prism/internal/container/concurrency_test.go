@@ -155,9 +155,18 @@ func TestCheckCap_SixSessionsRefuses(t *testing.T) {
 }
 
 // TestCheckCap_SixSessionsWithFlagProceeds verifies the AC: 6 sessions +
-// --ignore-concurrency-cap → the caller gets Exceeded=true but can proceed.
-// The flag logic lives in the command layer; here we verify the raw result
-// that the command layer inspects before deciding to proceed.
+// --ignore-concurrency-cap → the caller gets Exceeded=true (cap is hit) but
+// the warning formatter runs cleanly, and the caller may proceed.
+//
+// The flag decision logic lives in the command layer (cmd/concurrency.go):
+// when Exceeded=true and --ignore-concurrency-cap is set, it calls
+// FormatExceededWarning and returns nil (proceed). This test verifies that:
+//  1. CheckCap correctly reports Exceeded=true at 6 sessions.
+//  2. FormatExceededWarning produces a non-empty, correctly-formatted warning.
+//  3. The warning includes in-flight session names so the caller can log them.
+//
+// Together these guarantee that the "ignoreCap + warning + proceed" path has
+// the data it needs to behave correctly at the command layer.
 func TestCheckCap_SixSessionsWithFlagProceeds(t *testing.T) {
 	d, path := openTestDB(t)
 	for i := 0; i < 6; i++ {
@@ -165,16 +174,31 @@ func TestCheckCap_SixSessionsWithFlagProceeds(t *testing.T) {
 	}
 
 	res := CheckCap(path, DefaultConcurrencyCap, emptyPodman)
-	// Simulate the command layer: if ignoreCap is true, we write the warning
-	// and proceed even though Exceeded is true.
-	ignoreCap := true
-	if res.Exceeded && !ignoreCap {
-		t.Error("this path would refuse — expected ignoreCap to allow proceed")
+
+	// 1. Cap must be exceeded so the command layer knows to inspect the flag.
+	if !res.Exceeded {
+		t.Errorf("expected Exceeded=true at 6 sessions with cap=%d, got false", DefaultConcurrencyCap)
 	}
-	// Verify the warning formatter runs without panic.
+	if res.Count != 6 {
+		t.Errorf("expected Count=6, got %d", res.Count)
+	}
+	if res.Cap != DefaultConcurrencyCap {
+		t.Errorf("expected Cap=%d, got %d", DefaultConcurrencyCap, res.Cap)
+	}
+
+	// 2. Warning formatter must not panic and must produce a non-empty string
+	// mentioning "exceeded" so the user understands the override.
 	warning := FormatExceededWarning(res)
+	if warning == "" {
+		t.Error("FormatExceededWarning should return a non-empty warning string")
+	}
 	if !strings.Contains(warning, "exceeded") {
 		t.Errorf("warning should mention 'exceeded', got: %s", warning)
+	}
+
+	// 3. Warning must list in-flight sessions so the caller can log them.
+	if !strings.Contains(warning, "repo@branch-") {
+		t.Errorf("warning should contain session names, got: %s", warning)
 	}
 }
 
