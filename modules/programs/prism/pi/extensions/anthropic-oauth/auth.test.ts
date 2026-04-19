@@ -79,9 +79,8 @@ describe("refreshAnthropicToken", () => {
       "application/x-www-form-urlencoded",
     )
 
-    // AC: User-Agent header equals USER_AGENT constant
-    assert.equal(headers.get("user-agent"), USER_AGENT)
-    assert.equal(USER_AGENT, "claude-code/2.1.97")
+    // AC: User-Agent must NOT be sent on token-exchange requests (Cloudflare WAF blocks it)
+    assert.equal(headers.has("user-agent"), false)
 
     // AC: form-encoded body with correct fields
     const body = parseBody(init.body)
@@ -169,9 +168,8 @@ describe("loginAnthropic", () => {
       "application/x-www-form-urlencoded",
     )
 
-    // AC: User-Agent
-    assert.equal(headers.get("user-agent"), USER_AGENT)
-    assert.equal(USER_AGENT, "claude-code/2.1.97")
+    // AC: User-Agent must NOT be sent on token-exchange requests (Cloudflare WAF blocks it)
+    assert.equal(headers.has("user-agent"), false)
 
     // AC: form-encoded body with correct fields
     const body = parseBody(init.body)
