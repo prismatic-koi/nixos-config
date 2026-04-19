@@ -1,12 +1,11 @@
 // Unit tests for auth.ts OAuth wire format.
-// Run with: node --experimental-vm-modules --import=data:text/javascript,import{register}from'node:module' auth.test.ts
-// or more simply (Node 20+): node --test auth.test.ts
+// Run with: node --test auth.test.ts  (Node 20+, zero new deps)
 //
 // These tests verify that loginAnthropic and refreshAnthropicToken send
 // requests to the correct URL with the correct headers and form-encoded body.
 // fetch is mocked via globalThis so no network calls are made.
 
-import { describe, it, mock, beforeEach } from "node:test"
+import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 
 // ---------------------------------------------------------------------------
