@@ -46,7 +46,14 @@ type Opts struct {
 	// "opencode --agent <name> --port <n>" to "podman attach <container-name>".
 	// The sidecar is responsible for starting the container and signalling readiness
 	// before the attach command is sent to the tmux pane.
+	// Deprecated: use IsolationMode instead. When IsolationMode is set it
+	// takes precedence; ContainerMode is kept for callers that have not migrated.
 	ContainerMode bool
+
+	// IsolationMode is the resolved isolation mode for this session.
+	// Valid values: "podman", "bwrap", "host". When non-empty it overrides
+	// ContainerMode.
+	IsolationMode string
 	// PluginHostPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin. Only used
 	// when ContainerMode is true.
@@ -139,18 +146,30 @@ func DefaultAgent(directory, explicit string) string {
 	return "worker"
 }
 
+// effectiveIsolationMode returns the resolved isolation mode for opts,
+// falling back to ContainerMode for back-compat.
+func effectiveIsolationMode(opts Opts) string {
+	if opts.IsolationMode != "" {
+		return opts.IsolationMode
+	}
+	if opts.ContainerMode {
+		return "podman"
+	}
+	return "host"
+}
+
 // BuildOpencodeCmd returns the opencode launch command string for the given opts.
 //
-// When opts.ContainerMode is true, the command is "podman attach <container-name>"
-// — a transparent PTY bridge that connects the tmux pane to the opencode TUI
-// running inside the container (RFC #691, Phase 1a / Issue #715). The container
-// name is derived from opts.SessionName via container.NameForSession.
+// Isolation mode determines the command:
+//   - "podman": "podman attach --sig-proxy=false <container-name>"
+//   - "bwrap":  "prism agent-run --session <session-name>"
+//   - "host":   direct opencode invocation (legacy behaviour)
 //
-// When opts.ContainerMode is false (default), the command launches opencode
-// directly as before. PRISM_SESSION_NAME is prepended when opts.SessionName is
-// set, and --port / --hostname are appended when opts.Port is non-zero.
+// For back-compat, ContainerMode=true maps to "podman" when IsolationMode is empty.
 func BuildOpencodeCmd(opts Opts) string {
-	if opts.ContainerMode {
+	mode := effectiveIsolationMode(opts)
+	switch mode {
+	case "podman":
 		if opts.SessionName == "" {
 			// Shouldn't happen — callers must set SessionName before enabling
 			// container mode. Fall back to the non-container command.
@@ -167,8 +186,20 @@ func BuildOpencodeCmd(opts Opts) string {
 		// the session name cannot be interpreted as shell metacharacters when
 		// buildReadinessWaitCmd embeds this string in the readiness shell script.
 		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(opts.SessionName))
+
+	case "bwrap":
+		if opts.SessionName == "" {
+			// Shouldn't happen — fall back to direct opencode command.
+			return buildDirectOpencodeCmd(opts)
+		}
+		// The bwrap sandbox is owned by the tmux pane, not the sidecar.
+		// "prism agent-run" reads the resolved bwrap args from the session
+		// state and execs "bwrap <args...> -- opencode ..." directly.
+		return "prism agent-run --session " + shellQuote(opts.SessionName)
+
+	default: // "host" or any unknown value
+		return buildDirectOpencodeCmd(opts)
 	}
-	return buildDirectOpencodeCmd(opts)
 }
 
 // opencodeExperimentalBashTimeout is the default bash-tool timeout (in ms) injected
@@ -356,24 +387,34 @@ func Create(name, directory string, opts Opts) error {
 // window 0 "edit" (nvim auto-launched), window 1 "agent" (opencode),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
 //
-// In container mode (opts.ContainerMode), the sidecar is started first and the
-// agent window runs a readiness-wait loop before running "podman attach".
+// In podman mode (isolation mode "podman"), the sidecar is started first and
+// the agent window runs a readiness-wait loop before running "podman attach".
 // This ensures the container is healthy before the PTY bridge tries to connect.
+//
+// In bwrap mode (isolation mode "bwrap"), the sidecar is still started (for
+// SSE, state machine, and host-API) but the agent window runs
+// "prism agent-run --session <name>" directly — no readiness wait, because
+// bwrap is owned by the tmux pane and doesn't use a sidecar-written ready file.
 func setupFullLayout(name, directory string, opts Opts) error {
+	mode := effectiveIsolationMode(opts)
+
 	_ = tmux.RenameWindow(name+":0", "edit")
 
 	nvimCmd := NvimCmd(directory)
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
 	// Start the sidecar before creating the agent window.
-	// In container mode the sidecar creates the container; we must start it
-	// before the attach command is queued so readiness signalling works.
+	// In podman and bwrap mode the sidecar handles SSE, state transitions,
+	// and host-API — we must start it before the pane command so readiness
+	// signalling and prompt delivery are in place.
+	// In host mode the sidecar runs without --container (no container creation).
 	if opts.Port == 0 {
 		fmt.Fprintf(os.Stderr, "warning: sidecar skipped for %q — no port allocated\n", name)
 	} else {
 		sidecarOpts := StartSidecarOpts{
 			Port:           opts.Port,
-			ContainerMode:  opts.ContainerMode,
+			ContainerMode:  mode == "podman",
+			IsolationMode:  mode,
 			AgentRole:      opts.Agent,
 			Worktree:       directory,
 			PluginHostPath: opts.PluginHostPath,
@@ -388,13 +429,15 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	}
 
 	// Build the agent window command.
-	// In container mode, prepend a readiness wait so the pane blocks until
+	// In podman mode, prepend a readiness wait so the pane blocks until
 	// the sidecar has health-checked the container (AC-18, AC-19, AC-20).
+	// In bwrap mode, no readiness wait — "prism agent-run" runs immediately
+	// and the sidecar does not write a ready file for bwrap sessions.
 	// opts.SessionName must be set by the caller before setupFullLayout is
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
 	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	agentCmd := BuildOpencodeCmd(opts)
-	if opts.ContainerMode && opts.Port != 0 {
+	if mode == "podman" && opts.Port != 0 {
 		readyPath, pathErr := SidecarReadyPath(name)
 		if pathErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)

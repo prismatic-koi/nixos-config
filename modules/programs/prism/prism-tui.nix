@@ -29,6 +29,7 @@ let
       ) gitCfg.includes;
     in
     if emails != [ ] then builtins.head emails else "";
+  isolationDefault = config.nx.programs.prism.agent.isolation.default;
   prismConfig = {
     color_primary = primary;
     color_secondary = secondary;
@@ -40,7 +41,10 @@ let
     color_foreground = foreground;
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
-    container_mode = pkgs.stdenv.hostPlatform.isLinux;
+    # default_isolation_mode is the authoritative field; container_mode is
+    # derived from it for back-compat with Go code that reads the old field.
+    default_isolation_mode = isolationDefault;
+    container_mode = isolationDefault == "podman";
     sidecar_plugin_path = "${
       config.home-manager.users.${config.nx.username}.xdg.configHome
     }/opencode/plugins/prism-hooks.ts";
@@ -107,7 +111,11 @@ in
     home-manager.users.${config.nx.username} = {
       home.packages = [
         (pkgs.callPackage ../../../pkgs/prism.nix { })
-      ];
+      ]
+      # bubblewrap is required for bwrap isolation mode on Linux.
+      # Included whenever the prism TUI is enabled on Linux so that the
+      # binary is available even before a user opts in to bwrap mode.
+      ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.bubblewrap ];
 
       xdg.configFile."prism/config.json".text = builtins.toJSON prismConfig;
 

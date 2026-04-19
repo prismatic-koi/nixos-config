@@ -311,6 +311,9 @@ func (m *Manager) gitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
 }
 
+// GitdirFilePath is the exported version of gitdirFilePath for tests.
+func (m *Manager) GitdirFilePath() string { return m.gitdirFilePath() }
+
 // sshConfigFilePath returns the host path for the temporary SSH config
 // written before container start. The container needs a minimal SSH config
 // for git push/fetch over SSH remotes, but the host's ~/.ssh/config is a
@@ -320,12 +323,18 @@ func (m *Manager) sshConfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-ssh-config-"+m.name)
 }
 
+// SshConfigFilePath is the exported version of sshConfigFilePath for tests.
+func (m *Manager) SshConfigFilePath() string { return m.sshConfigFilePath() }
+
 // gitconfigFilePath returns the host path for the temporary .gitconfig
 // written before container start. The container needs a minimal gitconfig
 // for commit identity and SSH signing. Mounted read-only at /root/.gitconfig.
 func (m *Manager) gitconfigFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
 }
+
+// GitconfigFilePath is the exported version of gitconfigFilePath for tests.
+func (m *Manager) GitconfigFilePath() string { return m.gitconfigFilePath() }
 
 // allowedSignersFilePath returns the host path for the temporary
 // allowed_signers file written before container start. The file is mounted
@@ -506,6 +515,9 @@ func (m *Manager) writeGitconfig() error {
 func (m *Manager) worktreeGitdirFilePath() string {
 	return filepath.Join(os.TempDir(), "prism-wt-gitdir-"+m.name)
 }
+
+// WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
+func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFilePath() }
 
 // Create creates and starts the podman container for this session.
 // It first calls EnsureRemoved to handle any stale container with the same name.
@@ -698,6 +710,51 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.claudeCredentialsFilePath())
 
 	log.Printf("container: %q removed", m.name)
+}
+
+// PrepareBwrap writes the same temp files that Create() writes for podman
+// sessions (SSH config, gitconfig, opencode.json config) and returns the
+// complete bwrap argument list via bwrapIsolator.BuildArgs. It does NOT write
+// the gitdir fixup files (prism-gitdir-*, prism-wt-gitdir-*) because bwrap
+// uses Dst==Src mounts, so the host git paths are visible at their exact
+// locations inside the sandbox without remapping.
+//
+// Call this from "prism agent-run" in the tmux pane for bwrap mode. The
+// returned args slice is suitable for passing directly to exec.Exec("bwrap").
+//
+// Note: this method also calls prepareVolumeDirs() to ensure bind-mount
+// sources exist. bwrap (unlike podman) does not emit an exit-125 error for
+// missing sources — it simply fails to bind. Eagerly creating the directories
+// avoids confusing "No such file or directory" errors at bwrap startup.
+func (m *Manager) PrepareBwrap() ([]string, error) {
+	// Write a minimal SSH config. Mirrors the Create() path.
+	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile " + m.cfg.SshAccessKeyName + "\n  IdentitiesOnly yes\n"
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
+		return nil, fmt.Errorf("container: bwrap: write ssh config: %w", err)
+	}
+
+	// Write the gitconfig. Mirrors the Create() path.
+	if err := m.writeGitconfig(); err != nil {
+		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
+	}
+
+	// Write the opencode config file, if provided.
+	if m.cfg.ConfigContent != "" {
+		if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
+			return nil, fmt.Errorf("container: bwrap: write opencode config: %w", err)
+		}
+	}
+
+	// Pre-create directories that BuildArgs will reference as bind-mount
+	// sources. bwrap silently fails rather than printing a clear error, so
+	// we create eagerly here.
+	if err := m.prepareVolumeDirs(); err != nil {
+		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
+	}
+
+	// Build the bwrap args.
+	b := &bwrapIsolator{name: m.name}
+	return b.BuildArgs(m), nil
 }
 
 // prepareVolumeDirs eagerly creates host directories that buildRunArgs() will

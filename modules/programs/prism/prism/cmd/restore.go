@@ -267,13 +267,28 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// setupFullLayout from forking "prism event tmux-session-start" — we
 	// manage agent_status directly below via the open DB handle.
 	//
-	// ContainerMode is derived from both the global cfg and the per-session
-	// s.HostMode flag: a session that was explicitly spawned with --host-mode
-	// must be restored in host mode regardless of the current cfg setting.
-	// When ContainerMode is enabled, PluginHostPath is also copied from cfg so
-	// the sidecar can bind-mount the plugin into the container.
+	// IsolationMode is read from the DB row (s.IsolationMode) when recorded.
+	// When absent (pre-v10 rows), fall back to the back-compat derivation:
+	// HostMode=true → "host", else use the global cfg's effective mode.
+	// This ensures sessions spawned before the isolation_mode column was added
+	// are restored with the same behaviour they were created with.
 	cfg := loadRestoreConfig()
-	containerMode := cfg.ContainerMode && !s.HostMode
+
+	var isoMode config.IsolationMode
+	if s.IsolationMode != "" {
+		isoMode = config.IsolationMode(s.IsolationMode)
+	} else if s.HostMode {
+		isoMode = config.IsolationHost
+	} else {
+		// Pre-v10 row without isolation_mode: fall back to global config,
+		// treating the absence of host_mode as container/podman mode.
+		isoMode = cfg.EffectiveIsolationMode()
+		if s.HostMode {
+			isoMode = config.IsolationHost
+		}
+	}
+
+	containerMode := isoMode == config.IsolationPodman
 	opencodeSession := ""
 	if s.OpencodeSID != nil {
 		opencodeSession = *s.OpencodeSID
@@ -286,6 +301,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		Layout:          session.LayoutFull,
 		SkipStatusSeed:  true,
 		ContainerMode:   containerMode,
+		IsolationMode:   string(isoMode),
 	}
 	if containerMode {
 		opts.PluginHostPath = cfg.SidecarPluginPath

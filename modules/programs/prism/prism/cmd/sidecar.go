@@ -5,30 +5,43 @@ package cmd
 //
 // Flags:
 //
-//	--session <name>          prism session name (e.g. "nixos-config@main")
-//	--opencode-url <url>      base URL of the opencode HTTP server
-//	                          (e.g. "http://localhost:14000")
-//	--container               enable container mode: create and manage a podman
-//	                          container running opencode serve before connecting
-//	--agent-role <role>       "worker" or "coordinator" (used in container mode
-//	                          to select the correct GitHub token; when empty,
-//	                          the role is inferred from SSE events at runtime)
-//	--port <n>                allocated host port (required in container mode)
-//	--plugin-path <path>      host path to the prism-hooks.ts plugin; mounted
-//	                          read-only into the container (container mode only)
-//	--config-content <json>   JSON blob for the container's opencode.json;
-//	                          written to a temp file and mounted into the
-//	                          container (container mode only)
+//	--session <name>           prism session name (e.g. "nixos-config@main")
+//	--opencode-url <url>       base URL of the opencode HTTP server
+//	                           (e.g. "http://localhost:14000")
+//	--isolation-mode <mode>    isolation mode: "podman", "bwrap", or "host"
+//	                           (default: "host" for back-compat when absent)
+//	--container                enable container mode: create and manage a podman
+//	                           container running opencode serve before connecting.
+//	                           Deprecated: use --isolation-mode=podman instead.
+//	--agent-role <role>        "worker" or "coordinator" (used in container mode
+//	                           to select the correct GitHub token; when empty,
+//	                           the role is inferred from SSE events at runtime)
+//	--port <n>                 allocated host port (required in container/bwrap mode)
+//	--plugin-path <path>       host path to the prism-hooks.ts plugin; mounted
+//	                           read-only into the container (container mode only)
+//	--config-content <json>    JSON blob for the container's opencode.json;
+//	                           written to a temp file and mounted into the
+//	                           container (container mode only)
 //
 // The sidecar connects to <opencode-url>/event and maps opencode SSE events to
 // agent state transitions, writing them to prism.db. It handles idle debounce,
 // permission tracking, and dashboard sentinel updates — replacing the equivalent
 // logic in opencode/plugins/prism-hooks.ts.
 //
-// In container mode, the sidecar creates a podman container running
-// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode), waits
-// until the HTTP endpoint is healthy, then writes a ready signal so that the
-// tmux pane can run "podman attach" to bridge the PTY (RFC #691, Phase 1a).
+// In podman mode (--isolation-mode=podman or legacy --container), the sidecar
+// creates a podman container running "opencode --port 4096 --hostname 0.0.0.0"
+// (combined TUI + HTTP mode), waits until the HTTP endpoint is healthy, then
+// writes a ready signal so that the tmux pane can run "podman attach" to bridge
+// the PTY (RFC #691, Phase 1a).
+//
+// In bwrap mode (--isolation-mode=bwrap), the sidecar does NOT create a
+// container. The bwrap sandbox is launched and owned by the tmux pane via
+// "prism agent-run". The sidecar still sets up the host-API Unix socket,
+// selects the NewContainerMode harness adapter, and runs the full SSE loop.
+//
+// In host mode (--isolation-mode=host or no --container flag), the sidecar
+// connects to an already-running opencode process. No container or sandbox
+// management is performed.
 //
 // Clean shutdown: SIGINT and SIGTERM write "interrupted" state and (in container
 // mode) stop/remove the container before exiting.
@@ -63,19 +76,24 @@ by prism spawn.
 The sidecar handles: state machine transitions, idle debounce (2s),
 permission tracking, event logging, and dashboard sentinel updates.
 
-In container mode (--container), the sidecar also creates and manages the
-podman container running opencode in combined TUI + HTTP mode, health-checks
-it until ready, then writes a readiness signal so the tmux pane can run
-podman attach to bridge the container PTY (RFC #691, Phase 1a).`,
+In podman mode (--isolation-mode=podman or legacy --container), the sidecar
+also creates and manages the podman container running opencode in combined
+TUI + HTTP mode, health-checks it until ready, then writes a readiness signal
+so the tmux pane can run podman attach to bridge the container PTY (RFC #691).
+
+In bwrap mode (--isolation-mode=bwrap), the sidecar sets up the host-API Unix
+socket and runs the full SSE loop, but does NOT create a container or write a
+readiness signal. The bwrap sandbox is owned by the tmux pane.`,
 	RunE: runSidecar,
 }
 
 func init() {
 	sidecarCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	sidecarCmd.Flags().String("opencode-url", "", "Base URL of the opencode HTTP server")
-	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container)")
+	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: podman, bwrap, or host (default: derived from --container flag)")
+	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container) — deprecated, use --isolation-mode=podman")
 	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (used in container mode; inferred from SSE events when empty)")
-	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container mode)")
+	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container/bwrap mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
 	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
@@ -89,7 +107,8 @@ func init() {
 func runSidecar(cmd *cobra.Command, args []string) error {
 	sessionName, _ := cmd.Flags().GetString("session")
 	opencodeURL, _ := cmd.Flags().GetString("opencode-url")
-	containerMode, _ := cmd.Flags().GetBool("container")
+	isolationModeFlag, _ := cmd.Flags().GetString("isolation-mode")
+	containerFlag, _ := cmd.Flags().GetBool("container")
 	agentRole, _ := cmd.Flags().GetString("agent-role")
 	port, _ := cmd.Flags().GetInt("port")
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
@@ -97,6 +116,27 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	configContent, _ := cmd.Flags().GetString("config-content")
 	instanceID, _ := cmd.Flags().GetString("instance-id")
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
+
+	// Resolve the effective isolation mode. When --isolation-mode is set it
+	// takes precedence. Otherwise fall back to --container for back-compat.
+	var isolationMode config.IsolationMode
+	if isolationModeFlag != "" && config.IsValidIsolationMode(isolationModeFlag) {
+		isolationMode = config.IsolationMode(isolationModeFlag)
+	} else if containerFlag {
+		isolationMode = config.IsolationPodman
+	} else {
+		isolationMode = config.IsolationHost
+	}
+
+	// Derive the legacy bool for paths that still use it.
+	podmanMode := isolationMode == config.IsolationPodman
+	bwrapMode := isolationMode == config.IsolationBwrap
+	// needsHostAPI is true for podman and bwrap (the agent runs in a sandbox
+	// without direct access to host tmux, so the host-API socket is required).
+	needsHostAPI := podmanMode || bwrapMode
+	// useContainerHarness is true for podman and bwrap (opencode is pre-created
+	// with --prompt at launch in both cases).
+	useContainerHarness := podmanMode || bwrapMode
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -141,17 +181,18 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// (e.g. running without the nix module) — resource fields remain at their
 	// zero values and no resource flags are emitted.
 	var containerResources config.ContainerResources
-	if containerMode {
+	if podmanMode {
 		if pf, pfErr := config.LoadProfiles(); pfErr == nil {
 			containerResources = pf.ContainerResources
 		}
 	}
 
-	// Build container config if container mode is enabled.
+	// Build container config — only for podman mode. bwrap mode does not
+	// use a container.Config; the bwrap sandbox is owned by the tmux pane.
 	var ctrCfg *container.Config
-	if containerMode {
+	if podmanMode {
 		if port == 0 {
-			return fmt.Errorf("sidecar: --port is required in container mode")
+			return fmt.Errorf("sidecar: --port is required in podman container mode")
 		}
 		// Derive git bare-root and worktree private git dir so that git works
 		// inside the container without following the absolute host path stored
@@ -184,9 +225,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the host-API socket path for container mode (A-1).
+	// Build the host-API socket path for podman and bwrap modes. The agent
+	// runs in a sandbox without direct access to host tmux in both cases, so
+	// the host-API Unix socket is required for proxying prism CLI calls.
 	var hostAPISockPath string
-	if containerMode {
+	if needsHostAPI {
+		if port == 0 && bwrapMode {
+			return fmt.Errorf("sidecar: --port is required in bwrap mode")
+		}
 		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
 		if err != nil {
 			return fmt.Errorf("sidecar: resolve host-API socket path: %w", err)
@@ -194,13 +240,19 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		hostAPISockPath = sockPath
 		// Wire the socket path into the container config so the container
 		// gets the socket mounted and PRISM_HOST_API injected (A-2).
-		ctrCfg.HostAPISockPath = sockPath
+		// In bwrap mode ctrCfg is nil — the bwrap args are built by
+		// bwrapIsolator.BuildArgs at prism agent-run time, not here.
+		if ctrCfg != nil {
+			ctrCfg.HostAPISockPath = sockPath
+		}
 	}
 
-	// Build the OnReady callback for container mode (AC-18, AC-19).
-	// Written to the config before creating the sidecar.
+	// Build the OnReady callback — only for podman mode (AC-18, AC-19).
+	// In bwrap mode the sidecar does NOT write the readiness signal:
+	// "prism agent-run" in the tmux pane starts immediately without waiting.
+	// In host mode there is no readiness file at all.
 	var onReady func()
-	if containerMode {
+	if podmanMode {
 		onReady = func() {
 			readyPath, pathErr := prismSession.SidecarReadyPath(sessionName)
 			if pathErr != nil {
@@ -227,12 +279,12 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// event mapping. The sidecar calls through the harness.Harness interface
 	// and has no direct dependency on the opencode package (#710).
 	//
-	// In container mode, use NewContainerMode so that:
+	// In podman and bwrap mode, use NewContainerMode so that:
 	//   - CreateSession uses GET /session to retrieve the existing session ID
 	//     (opencode already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
 	var h *opencode.Adapter
-	if containerMode {
+	if useContainerHarness {
 		h = opencode.NewContainerMode(opencodeURL, nil, agentRole, agentModel)
 	} else {
 		h = opencode.New(opencodeURL, nil, agentRole, agentModel)
@@ -280,14 +332,16 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// This implements the TTL sweep that prevents ~/.cache/prism/clipboard/ from
 	// growing unboundedly across multiple paste operations. The sweep is
 	// fire-and-forget; errors are non-fatal (logged by runClipboardClean itself).
-	if containerMode {
+	// Runs for podman and bwrap modes (both run the agent in a sandbox where
+	// the clipboard staging dir is mounted).
+	if needsHostAPI {
 		go func() {
 			_ = runClipboardClean(nil, nil)
 		}()
 	}
 
-	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s container=%v\n",
-		sessionName, opencodeURL, containerMode)
+	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s isolation=%s\n",
+		sessionName, opencodeURL, isolationMode)
 
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("sidecar: %w", err)

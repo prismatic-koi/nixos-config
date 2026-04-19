@@ -66,21 +66,11 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 // The returned slice begins with the baseline namespace flags and ends with
 // -- followed by the opencode invocation.
 //
-// # Mounts deferred to the wiring PR (#877)
+// # Mounts not included (deferred or out of scope)
 //
-// The following mounts exist in Manager.buildRunArgs() (podman) but are
-// intentionally omitted here until the end-to-end wiring is in place:
-//
-//   - opencode config allowlist (~/.config/opencode/{AGENTS.md,plugins,skills,...})
-//   - auth.json overlay (~/.local/share/opencode/auth.json, r/w over session dir)
-//   - opencode plugin cache (~/.cache/opencode/, read-only)
-//   - bun transpiler cache (~/.cache/bun/, read-only)
-//   - Additional AWS mounts (credentials, sso/, cli/ — AC lists only readonly-config)
-//   - Clipboard staging dir (~/.cache/prism/clipboard/)
-//   - WorktreeReadOnly handling (review agents — separate concern from base wiring)
-//   - Darwin Keychain credentials (darwin-only, not applicable on Linux)
-//
-// These are tracked in #877 and will be added when bwrap is wired end-to-end.
+//   - WorktreeReadOnly handling (review agents under bwrap — deferred to a
+//     future PR; bwrap review support is tracked separately).
+//   - Darwin Keychain credentials (darwin-only, not applicable on Linux).
 func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
 
@@ -209,6 +199,70 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	if cfg.ConfigContent != "" {
 		opencodeConfigPath := m.opencodeConfigFilePath()
 		args = append(args, "--ro-bind", opencodeConfigPath, opencodeConfigPath)
+	}
+
+	// ── opencode config allowlist (read-only, conditional) ──────────────────
+	// Mount specific files from ~/.config/opencode/ so agents, skills, and
+	// plugins defined in the Nix module are available inside the sandbox.
+	// opencode.json is NOT mounted from the host — the sandbox uses the temp
+	// file above (ConfigContent). Matching the podman buildRunArgs allowlist.
+	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
+	opencodeAllowlist := []string{
+		"AGENTS.md",
+		"plugins",
+		"skills",
+	}
+	for _, entry := range opencodeAllowlist {
+		p := filepath.Join(opencodeConfigDir, entry)
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--ro-bind", p, p)
+		}
+	}
+
+	// ── auth.json overlay (read-write, conditional) ──────────────────────────
+	// Share the host's OAuth token file across sessions. The opencode-claude-auth
+	// plugin writes back refreshed credentials, so it must be read-write.
+	// Mounted at the exact host path (Dst==Src).
+	opencodeAuthJSON := filepath.Join(home, ".local", "share", "opencode", "auth.json")
+	if _, err := os.Stat(opencodeAuthJSON); err == nil {
+		args = append(args, "--bind", opencodeAuthJSON, opencodeAuthJSON)
+	}
+
+	// ── opencode plugin cache (read-only, conditional) ───────────────────────
+	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
+	if _, err := os.Stat(opencodeCacheDir); err == nil {
+		args = append(args, "--ro-bind", opencodeCacheDir, opencodeCacheDir)
+	}
+
+	// ── bun transpiler cache (read-only, conditional) ───────────────────────
+	bunCacheDir := filepath.Join(home, ".cache", "bun")
+	if _, err := os.Stat(bunCacheDir); err == nil {
+		args = append(args, "--ro-bind", bunCacheDir, bunCacheDir)
+	}
+
+	// ── Additional AWS mounts (read-only, conditional) ───────────────────────
+	// Match the podman buildRunArgs pattern: credentials file and SSO/CLI
+	// cache dirs are conditionally mounted when present on the host.
+	awsCredentials := filepath.Join(home, ".config", "aws", "credentials")
+	if resolved, err := filepath.EvalSymlinks(awsCredentials); err == nil {
+		args = append(args, "--ro-bind", resolved, resolved)
+	}
+	awsSSOCacheDir := filepath.Join(home, ".aws", "sso")
+	if _, err := os.Stat(awsSSOCacheDir); err == nil {
+		args = append(args, "--bind", awsSSOCacheDir, awsSSOCacheDir)
+	}
+	awsCLICacheDir := filepath.Join(home, ".aws", "cli")
+	if _, err := os.Stat(awsCLICacheDir); err == nil {
+		args = append(args, "--bind", awsCLICacheDir, awsCLICacheDir)
+	}
+
+	// ── Clipboard staging dir (read-only, conditional) ───────────────────────
+	// Images staged by `prism clipboard paste-image` on the host are placed here
+	// and bind-mounted read-only so opencode's stat() call resolves without
+	// modification. Dst == Src (no remap needed).
+	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
+	if _, err := os.Stat(clipboardCacheDir); err == nil {
+		args = append(args, "--ro-bind", clipboardCacheDir, clipboardCacheDir)
 	}
 
 	// ── Environment variables ────────────────────────────────────────────────

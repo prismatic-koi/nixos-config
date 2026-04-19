@@ -23,6 +23,29 @@
           description = "Environment variables to set for the AI agent (opencode)";
         };
 
+        isolation = {
+          default = lib.mkOption {
+            type = lib.types.enum [
+              "podman"
+              "bwrap"
+              "host"
+            ];
+            default = if pkgs.stdenv.hostPlatform.isLinux then "podman" else "host";
+            example = "bwrap";
+            description = ''
+              Default isolation mode for new agent sessions. Valid values:
+              - "podman": run opencode inside a rootless podman container (default on Linux).
+              - "bwrap":  run opencode inside a bubblewrap sandbox (Linux-only).
+              - "host":   run opencode directly in the tmux pane with no isolation (default on Darwin).
+
+              This value is written to ~/.config/prism/config.json as default_isolation_mode.
+              It can be overridden per-spawn via `prism spawn --isolation <mode>`.
+
+              Setting "bwrap" on a Darwin host fails at eval time.
+            '';
+          };
+        };
+
         resources = {
           memoryMax = lib.mkOption {
             type = lib.types.str;
@@ -125,38 +148,58 @@
     ./prism-tui.nix
   ];
 
-  config = lib.mkIf config.nx.programs.prism.enable {
-    # Enable all submodules by default (can be individually disabled)
-    nx.programs.prism.neovim.enable = lib.mkDefault true;
-    nx.programs.prism.opencode.enable = lib.mkDefault true;
-    nx.programs.prism.tmux.enable = lib.mkDefault true;
-    nx.programs.prism.sessioniser.enable = lib.mkDefault true;
-    nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
-    nx.programs.prism.claude-code.enable = lib.mkDefault true;
-    nx.programs.prism.pi.enable = lib.mkDefault true;
-    nx.programs.prism.tui.enable = lib.mkDefault true;
+  config = lib.mkIf config.nx.programs.prism.enable (
+    lib.mkMerge [
+      {
+        # Assert that bwrap isolation is not requested on Darwin.
+        # bubblewrap is Linux-only; setting default = "bwrap" on Darwin is
+        # a configuration error that should fail at eval time.
+        assertions = [
+          {
+            assertion =
+              !(config.nx.programs.prism.agent.isolation.default == "bwrap" && !pkgs.stdenv.hostPlatform.isLinux);
+            message = ''
+              nx.programs.prism.agent.isolation.default = "bwrap" requires Linux.
+              bubblewrap is not available on ${pkgs.stdenv.hostPlatform.system}.
+              Use "podman" or "host" instead, or only set "bwrap" on Linux hosts.
+            '';
+          }
+        ];
+      }
+      {
+        # Enable all submodules by default (can be individually disabled)
+        nx.programs.prism.neovim.enable = lib.mkDefault true;
+        nx.programs.prism.opencode.enable = lib.mkDefault true;
+        nx.programs.prism.tmux.enable = lib.mkDefault true;
+        nx.programs.prism.sessioniser.enable = lib.mkDefault true;
+        nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;
+        nx.programs.prism.claude-code.enable = lib.mkDefault true;
+        nx.programs.prism.pi.enable = lib.mkDefault true;
+        nx.programs.prism.tui.enable = lib.mkDefault true;
 
-    # Auto-enable choose on Darwin when contextSwitcher is enabled
-    nx.programs.choose.enable = lib.mkDefault (
-      pkgs.stdenv.isDarwin && config.nx.programs.prism.contextSwitcher.enable
-    );
+        # Auto-enable choose on Darwin when contextSwitcher is enabled
+        nx.programs.choose.enable = lib.mkDefault (
+          pkgs.stdenv.isDarwin && config.nx.programs.prism.contextSwitcher.enable
+        );
 
-    # Computed values that submodules can reference
-    nx.programs.prism._internal = {
-      agentEnvPrefix = lib.concatStringsSep " " (
-        lib.mapAttrsToList (name: value: "${name}=${value}") config.nx.programs.prism.agent.envVars
-      );
-      agentResources = {
-        memoryMax = config.nx.programs.prism.agent.resources.memoryMax;
-        memorySwapMax = config.nx.programs.prism.agent.resources.memorySwapMax;
-        pidsLimit = config.nx.programs.prism.agent.resources.pidsLimit;
-      };
-    };
+        # Computed values that submodules can reference
+        nx.programs.prism._internal = {
+          agentEnvPrefix = lib.concatStringsSep " " (
+            lib.mapAttrsToList (name: value: "${name}=${value}") config.nx.programs.prism.agent.envVars
+          );
+          agentResources = {
+            memoryMax = config.nx.programs.prism.agent.resources.memoryMax;
+            memorySwapMax = config.nx.programs.prism.agent.resources.memorySwapMax;
+            pidsLimit = config.nx.programs.prism.agent.resources.pidsLimit;
+          };
+        };
 
-    # systemd-oomd: enable monitoring on user slices so that oomd can
-    # intervene when memory pressure on the user slice crosses 80%, acting
-    # as a safety net if pressure escapes the per-container cgroup caps.
-    # Guarded by isLinux — Darwin does not have systemd.
-    systemd.oomd.enableUserSlices = lib.mkIf pkgs.stdenv.isLinux true;
-  };
+        # systemd-oomd: enable monitoring on user slices so that oomd can
+        # intervene when memory pressure on the user slice crosses 80%, acting
+        # as a safety net if pressure escapes the per-container cgroup caps.
+        # Guarded by isLinux — Darwin does not have systemd.
+        systemd.oomd.enableUserSlices = lib.mkIf pkgs.stdenv.isLinux true;
+      }
+    ]
+  );
 }

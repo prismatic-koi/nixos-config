@@ -15,6 +15,38 @@ import (
 	"time"
 )
 
+// IsolationMode represents the isolation mechanism for agent sessions.
+// Valid values are "podman", "bwrap", and "host".
+type IsolationMode string
+
+const (
+	// IsolationPodman runs opencode inside a rootless podman container,
+	// managed by the sidecar. The agent window attaches via "podman attach".
+	IsolationPodman IsolationMode = "podman"
+
+	// IsolationBwrap runs opencode inside a bubblewrap sandbox, launched and
+	// owned by the tmux pane via "prism agent-run". The sidecar does not
+	// manage the process lifecycle. Linux only.
+	IsolationBwrap IsolationMode = "bwrap"
+
+	// IsolationHost runs opencode directly in the tmux pane with no isolation.
+	// Equivalent to the legacy --host-mode flag.
+	IsolationHost IsolationMode = "host"
+)
+
+// ValidIsolationModes lists all valid isolation mode strings.
+var ValidIsolationModes = []IsolationMode{IsolationPodman, IsolationBwrap, IsolationHost}
+
+// IsValidIsolationMode reports whether s is a valid isolation mode.
+func IsValidIsolationMode(s string) bool {
+	for _, m := range ValidIsolationModes {
+		if string(m) == s {
+			return true
+		}
+	}
+	return false
+}
+
 // Config holds all host-specific runtime configuration for prism.
 type Config struct {
 	// Theme colours (hex strings, e.g. "#d4be98").
@@ -35,7 +67,15 @@ type Config struct {
 	// ContainerMode, when true, causes spawn and switch to run opencode inside
 	// a podman container managed by the sidecar, using "podman attach" in the
 	// agent window rather than launching opencode directly.
+	// Deprecated: use DefaultIsolationMode instead. When DefaultIsolationMode
+	// is present it takes precedence; ContainerMode is derived from it for
+	// back-compat (ContainerMode == (DefaultIsolationMode == "podman")).
 	ContainerMode bool `json:"container_mode"`
+
+	// DefaultIsolationMode is the machine-level default isolation mode for new
+	// agent sessions. Valid values: "podman", "bwrap", "host". When absent,
+	// falls back to ContainerMode for back-compat (true → "podman", false → "host").
+	DefaultIsolationMode IsolationMode `json:"default_isolation_mode,omitempty"`
 	// SidecarPluginPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin.
 	SidecarPluginPath string `json:"sidecar_plugin_path"`
@@ -83,6 +123,7 @@ type parsedConfig struct {
 	ColorBg0                       string    `json:"color_bg0"`
 	KittyBin                       string    `json:"kitty_bin"`
 	ContainerMode                  *bool     `json:"container_mode"`
+	DefaultIsolationMode           string    `json:"default_isolation_mode"`
 	SidecarPluginPath              string    `json:"sidecar_plugin_path"`
 	GitUserName                    string    `json:"git_user_name"`
 	GitUserEmail                   string    `json:"git_user_email"`
@@ -188,8 +229,20 @@ func load() Config {
 	if parsed.KittyBin != "" {
 		cfg.KittyBin = parsed.KittyBin
 	}
-	if parsed.ContainerMode != nil {
+	// DefaultIsolationMode takes precedence when present and valid.
+	// When absent, fall back to ContainerMode for back-compat.
+	if parsed.DefaultIsolationMode != "" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
+		cfg.DefaultIsolationMode = IsolationMode(parsed.DefaultIsolationMode)
+		// Derive ContainerMode from the new field for back-compat callers.
+		cfg.ContainerMode = cfg.DefaultIsolationMode == IsolationPodman
+	} else if parsed.ContainerMode != nil {
 		cfg.ContainerMode = *parsed.ContainerMode
+		// Derive DefaultIsolationMode from ContainerMode for back-compat.
+		if cfg.ContainerMode {
+			cfg.DefaultIsolationMode = IsolationPodman
+		} else {
+			cfg.DefaultIsolationMode = IsolationHost
+		}
 	}
 	if parsed.SidecarPluginPath != "" {
 		cfg.SidecarPluginPath = parsed.SidecarPluginPath
@@ -266,6 +319,20 @@ func (c Config) CircuitBreakerThreshold() int {
 		return 0
 	}
 	return n
+}
+
+// EffectiveIsolationMode returns the effective isolation mode, applying
+// defaults and back-compat logic. When DefaultIsolationMode is set and valid
+// it is returned directly. Otherwise ContainerMode is used for back-compat:
+// true → "podman", false → "host".
+func (c Config) EffectiveIsolationMode() IsolationMode {
+	if c.DefaultIsolationMode != "" {
+		return c.DefaultIsolationMode
+	}
+	if c.ContainerMode {
+		return IsolationPodman
+	}
+	return IsolationHost
 }
 
 // configFilePath returns the path to look for the config file.

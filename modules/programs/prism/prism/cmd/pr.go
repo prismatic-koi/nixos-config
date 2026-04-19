@@ -69,10 +69,13 @@ var prCmd = &cobra.Command{
 		}
 
 		cfg := config.Load()
+		isoMode := cfg.EffectiveIsolationMode()
+		effectiveContainerMode := isoMode == config.IsolationPodman
+		conCapped := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
 
 		// Concurrency cap check: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
-		if err := checkConcurrencyCap(cmd, "pr", cfg.ContainerMode); err != nil {
+		if err := checkConcurrencyCap(cmd, "pr", conCapped); err != nil {
 			return err
 		}
 
@@ -88,11 +91,11 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
-		// In container mode, inject the role-specific opencode.json blob as
-		// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+		// In container/bwrap mode, inject the role-specific opencode.json blob
+		// as OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
 		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
 		var configContent string
-		if cfg.ContainerMode {
+		if effectiveContainerMode {
 			pf, pfErr := config.LoadProfiles()
 			if pfErr != nil {
 				return pfErr
@@ -113,7 +116,8 @@ var prCmd = &cobra.Command{
 			Prompt:         promptFlag,
 			Agent:          agentFlag,
 			Headless:       !attachFlag,
-			ContainerMode:  cfg.ContainerMode,
+			ContainerMode:  effectiveContainerMode,
+			IsolationMode:  string(isoMode),
 			PluginHostPath: cfg.SidecarPluginPath,
 			ConfigContent:  configContent,
 			// ForceFresh=true: prism pr creates a new worktree; if a session
