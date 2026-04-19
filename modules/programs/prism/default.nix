@@ -22,6 +22,42 @@
           };
           description = "Environment variables to set for the AI agent (opencode)";
         };
+
+        resources = {
+          memoryMax = lib.mkOption {
+            type = lib.types.str;
+            default = "8g";
+            example = "4g";
+            description = ''
+              Maximum memory for each agent container, passed to podman run --memory.
+              Set to an empty string to disable the limit (no flag emitted).
+              Default of 8g allows up to ~3 concurrent workers on a 32 GB host
+              while leaving headroom for the compositor, browser, and system services.
+            '';
+          };
+
+          memorySwapMax = lib.mkOption {
+            type = lib.types.str;
+            default = "8g";
+            example = "8g";
+            description = ''
+              Maximum combined memory+swap for each agent container, passed to
+              podman run --memory-swap. Equal to memoryMax by default, which
+              effectively disables swap for the container so a runaway process
+              dies fast rather than thrashing. Set to an empty string to disable.
+            '';
+          };
+
+          pidsLimit = lib.mkOption {
+            type = lib.types.int;
+            default = 4096;
+            example = 2048;
+            description = ''
+              Maximum number of processes (PIDs) for each agent container, passed
+              to podman run --pids-limit. Set to 0 to disable the limit.
+            '';
+          };
+        };
       };
 
       worktreeExclude = lib.mkOption {
@@ -107,6 +143,17 @@
       agentEnvPrefix = lib.concatStringsSep " " (
         lib.mapAttrsToList (name: value: "${name}=${value}") config.nx.programs.prism.agent.envVars
       );
+      agentResources = {
+        memoryMax = config.nx.programs.prism.agent.resources.memoryMax;
+        memorySwapMax = config.nx.programs.prism.agent.resources.memorySwapMax;
+        pidsLimit = config.nx.programs.prism.agent.resources.pidsLimit;
+      };
     };
+
+    # systemd-oomd: enable monitoring on user slices so that oomd can
+    # intervene when memory pressure on the user slice crosses 80%, acting
+    # as a safety net if pressure escapes the per-container cgroup caps.
+    # Guarded by isLinux — Darwin does not have systemd.
+    systemd.oomd.enableUserSlices = lib.mkIf pkgs.stdenv.isLinux true;
   };
 }

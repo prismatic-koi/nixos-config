@@ -167,6 +167,19 @@ type Config struct {
 	// This replaces the previous POST /session + prompt_async HTTP delivery
 	// which created a second session invisible to the TUI (RFC #691 Phase 1a).
 	InitialPrompt string
+
+	// MemoryMax is the value for podman run --memory (e.g. "8g").
+	// When empty, no --memory flag is emitted. This preserves existing
+	// behaviour for callers not using the nix module.
+	MemoryMax string
+
+	// MemorySwapMax is the value for podman run --memory-swap (e.g. "8g").
+	// When empty, no --memory-swap flag is emitted.
+	MemorySwapMax string
+
+	// PidsLimit is the value for podman run --pids-limit.
+	// When zero, no --pids-limit flag is emitted.
+	PidsLimit int
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -1237,6 +1250,20 @@ func (m *Manager) buildRunArgs() []string {
 	// "./plugins/my-plugin") resolve correctly from the config file's directory.
 	if cfg.ConfigContent != "" {
 		args = append(args, "--volume", m.opencodeConfigFilePath()+":/root/.config/opencode/opencode.json:ro")
+	}
+
+	// Resource caps: emit --memory, --memory-swap, and --pids-limit only when
+	// the corresponding Config field is non-zero / non-empty. This preserves
+	// existing behaviour for callers not using the nix module (empty fields →
+	// no flag emitted).
+	if cfg.MemoryMax != "" {
+		args = append(args, "--memory="+cfg.MemoryMax)
+	}
+	if cfg.MemorySwapMax != "" {
+		args = append(args, "--memory-swap="+cfg.MemorySwapMax)
+	}
+	if cfg.PidsLimit != 0 {
+		args = append(args, fmt.Sprintf("--pids-limit=%d", cfg.PidsLimit))
 	}
 
 	// Image and command: opencode in combined TUI + HTTP mode.
