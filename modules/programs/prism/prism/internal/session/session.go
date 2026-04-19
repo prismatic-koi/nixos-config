@@ -417,9 +417,18 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		if selfErr != nil {
 			return fmt.Errorf("resolve prism binary: %w", selfErr)
 		}
-		if err := exec.Command(self, "event", "tmux-session-start",
+		seedArgs := []string{"event", "tmux-session-start",
 			"--session", name,
-			"--worktree", directory).Run(); err != nil {
+			"--worktree", directory,
+		}
+		// When opts.Agent is known at spawn time, pass it as --agent-role so
+		// that root_agent_name is seeded in the DB row immediately (before the
+		// sidecar's first upsertState() call). Omitting it falls back to the
+		// plain UpsertStatus path that leaves root_agent_name as NULL.
+		if opts.Agent != "" {
+			seedArgs = append(seedArgs, "--agent-role", opts.Agent)
+		}
+		if err := exec.Command(self, seedArgs...).Run(); err != nil {
 			return fmt.Errorf("seed agent_status: %w", err)
 		}
 	}

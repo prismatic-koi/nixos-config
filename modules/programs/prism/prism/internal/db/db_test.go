@@ -2684,3 +2684,158 @@ func TestConsecutiveSidecarFailures_TieBreaker(t *testing.T) {
 		t.Errorf("got %d, want 0 (tie-break: later-inserted finished is most recent)", n)
 	}
 }
+
+// TestUpsertStatusSeedRootAgentName_Insert verifies that a fresh insert via
+// UpsertStatusSeedRootAgentName sets root_agent_name from the first moment.
+func TestUpsertStatusSeedRootAgentName_Insert(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "worker"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if s.RootAgentName == nil {
+		t.Fatal("RootAgentName: got nil, want \"worker\"")
+	}
+	if *s.RootAgentName != "worker" {
+		t.Errorf("RootAgentName: got %q, want \"worker\"", *s.RootAgentName)
+	}
+	// agent_name should NOT be set by this method (spawn-time seeding only
+	// writes root_agent_name, not the transient agent_name).
+	if s.AgentName != nil {
+		t.Errorf("AgentName: got %q, want nil (UpsertStatusSeedRootAgentName must not write agent_name)", *s.AgentName)
+	}
+}
+
+// TestUpsertStatusSeedRootAgentName_EmptyRole verifies that when rootAgentName
+// is empty, the method behaves like UpsertStatus and leaves root_agent_name NULL.
+func TestUpsertStatusSeedRootAgentName_EmptyRole(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, ""); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName (empty role): %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	// root_agent_name must remain NULL when rootAgentName is empty.
+	if s.RootAgentName != nil {
+		t.Errorf("RootAgentName: got %q, want nil (empty role must not write root_agent_name)", *s.RootAgentName)
+	}
+}
+
+// TestUpsertStatusSeedRootAgentName_Idempotent verifies that calling
+// UpsertStatusSeedRootAgentName with the same role twice leaves the row with
+// the original root_agent_name intact (COALESCE preserves the existing value
+// — the sidecar's subsequent write of the same value is a no-op).
+func TestUpsertStatusSeedRootAgentName_Idempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	// First call: seed with "review-code".
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code"); err != nil {
+		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	// Second call: write the same role — must be a no-op for root_agent_name.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "review-code"); err != nil {
+		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil")
+	}
+	if s.RootAgentName == nil || *s.RootAgentName != "review-code" {
+		t.Errorf("RootAgentName: got %v, want \"review-code\" (idempotent write)", s.RootAgentName)
+	}
+	// State should be updated to "active" (non-root fields still update).
+	if s.State != "active" {
+		t.Errorf("State: got %q, want \"active\"", s.State)
+	}
+}
+
+// TestUpsertStatusSeedRootAgentName_PreservesExisting verifies that when a row
+// already has root_agent_name set (e.g. by a prior seed call), a subsequent
+// call with an empty rootAgentName preserves the existing value (COALESCE).
+func TestUpsertStatusSeedRootAgentName_PreservesExisting(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed with a known role.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Update with empty role — existing root_agent_name must survive.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, ""); err != nil {
+		t.Fatalf("update with empty role: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil")
+	}
+	if s.RootAgentName == nil || *s.RootAgentName != "coordinator" {
+		t.Errorf("RootAgentName: got %v, want preserved \"coordinator\"", s.RootAgentName)
+	}
+}
+
+// TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent verifies that when
+// a row was seeded at spawn time (root_agent_name="review-code"), the sidecar's
+// subsequent UpsertStatusWithRootAgent call with the same role is a no-op for
+// root_agent_name (COALESCE in UpsertStatusWithRootAgent preserves the value).
+func TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	// Spawn-time seed: root_agent_name = "review-code", agent_name = nil.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	s1, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (before sidecar): %v", err)
+	}
+	if s1 == nil || s1.RootAgentName == nil || *s1.RootAgentName != "review-code" {
+		t.Fatalf("pre-condition: RootAgentName should be \"review-code\", got %v", s1.RootAgentName)
+	}
+
+	// Sidecar write: UpsertStatusWithRootAgent with the same role — must be
+	// idempotent (root_agent_name stays "review-code", no error).
+	agentName := strPtr("review-code")
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/code/repo/main", "active", nil, nil, agentName, nil); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent (sidecar write): %v", err)
+	}
+
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (after sidecar): %v", err)
+	}
+	if s2 == nil {
+		t.Fatal("CurrentStatus: got nil after sidecar write")
+	}
+	if s2.RootAgentName == nil || *s2.RootAgentName != "review-code" {
+		t.Errorf("RootAgentName after sidecar write: got %v, want \"review-code\" (idempotent)", s2.RootAgentName)
+	}
+	// State must be updated to "active" by the sidecar write.
+	if s2.State != "active" {
+		t.Errorf("State after sidecar write: got %q, want \"active\"", s2.State)
+	}
+}

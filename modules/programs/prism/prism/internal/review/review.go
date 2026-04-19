@@ -470,8 +470,10 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		agentSession := roundPrefix + ag.Name
 		agentSessions[i] = agentSession
 
-		// Seed agent_status for the agent session.
-		if err := d.UpsertStatus(agentSession, repo, worktree, "idle", nil, nil); err != nil {
+		// Seed agent_status for the agent session, including root_agent_name so
+		// the DB reflects the reviewer type from the first moment (closes the
+		// capture gap referenced in #844).
+		if err := d.UpsertStatusSeedRootAgentName(agentSession, repo, worktree, "idle", nil, nil, ag.Name); err != nil {
 			spawnErr[i] = fmt.Errorf("seed status for %s: %w", ag.Name, err)
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), err))

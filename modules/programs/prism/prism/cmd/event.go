@@ -228,6 +228,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
 		worktree, _ := cmd.Flags().GetString("worktree")
+		agentRole, _ := cmd.Flags().GetString("agent-role")
 
 		repo := deriveRepo(worktree)
 		if repo == "" {
@@ -248,8 +249,19 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		}
 		defer d.Close()
 
-		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateIdle), nil, nil); err != nil {
-			return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
+		// When --agent-role is provided, seed root_agent_name immediately so
+		// the DB reflects the agent type from the first moment (before the
+		// sidecar's first upsertState() call). When omitted, fall back to the
+		// plain UpsertStatus path which leaves root_agent_name as-is (NULL on
+		// insert, preserved on update).
+		if agentRole != "" {
+			if err := d.UpsertStatusSeedRootAgentName(session, repo, worktree, string(agent.StateIdle), nil, nil, agentRole); err != nil {
+				return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
+			}
+		} else {
+			if err := d.UpsertStatus(session, repo, worktree, string(agent.StateIdle), nil, nil); err != nil {
+				return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
+			}
 		}
 		if err := d.ClearEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
@@ -565,6 +577,7 @@ func init() {
 	// tmux-session-start flags
 	eventTmuxSessionStartCmd.Flags().String("session", "", "tmux session name")
 	eventTmuxSessionStartCmd.Flags().String("worktree", "", "worktree path")
+	eventTmuxSessionStartCmd.Flags().String("agent-role", "", "agent role to seed into root_agent_name (e.g. worker, coordinator, review-code); when omitted, root_agent_name is left unchanged")
 	_ = eventTmuxSessionStartCmd.MarkFlagRequired("session")
 	_ = eventTmuxSessionStartCmd.MarkFlagRequired("worktree")
 
