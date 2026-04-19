@@ -1,8 +1,8 @@
 // Package db provides the prism SQLite database layer.
 //
 // The database is located at $XDG_STATE_HOME/prism/prism.db, falling back to
-// $HOME/.local/state/prism/prism.db. All four tables (agent_events,
-// agent_status, bus_messages, schema_version) are created on Open if they do
+// $HOME/.local/state/prism/prism.db. All tables (agent_events, agent_status,
+// bus_messages, session_groups, schema_version) are created on Open if they do
 // not already exist.
 package db
 
@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/agent"
 	_ "modernc.org/sqlite" // register sqlite3 driver
 )
@@ -103,6 +104,12 @@ CREATE TABLE IF NOT EXISTS agent_events (
 CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS session_groups (
+  group_id       TEXT PRIMARY KEY,
+  parent_session TEXT NOT NULL,
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS agent_status (
   session_name      TEXT PRIMARY KEY,
   repo              TEXT NOT NULL,
@@ -121,7 +128,8 @@ CREATE TABLE IF NOT EXISTS agent_status (
   ended_at          INTEGER,
   harness           TEXT NOT NULL DEFAULT 'opencode',
   harness_session_id TEXT,
-  harness_port      INTEGER
+  harness_port      INTEGER,
+  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
@@ -145,14 +153,19 @@ CREATE TABLE IF NOT EXISTS schema_version (
 `
 
 // Open opens (or creates) the prism database at path.
-// It creates parent directories as needed, enables WAL mode, runs the full
-// schema, and sets schema_version=8 if the table is empty. Pending migrations
-// are applied in order: v1→v2 adds agent_name/model_id; v2→v3 adds
-// root_agent_name/root_model_id; v3→v4 adds opencode_port to agent_status;
-// v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id to
-// agent_status and to_instance_id to bus_messages; v6→v7 adds failed_at to
+// It creates parent directories as needed, enables WAL mode, enforces foreign
+// keys, runs the full schema, and sets schema_version=9 if the table is empty.
+// Pending migrations are applied in order: v1→v2 adds agent_name/model_id;
+// v2→v3 adds root_agent_name/root_model_id; v3→v4 adds opencode_port to
+// agent_status; v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id
+// to agent_status and to_instance_id to bus_messages; v6→v7 adds failed_at to
 // bus_messages; v7→v8 adds harness, harness_session_id, and harness_port to
+// agent_status; v8→v9 adds the session_groups table and group_id FK column to
 // agent_status.
+//
+// PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
+// It is set explicitly here — the single constructor through which all prism
+// DB connections are opened — so every connection benefits automatically.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -176,21 +189,29 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: set busy timeout: %w", err)
 	}
 
+	// Enforce foreign-key constraints. SQLite disables FK enforcement by
+	// default; this must be set per connection, which is why it lives here
+	// (the single constructor used for every prism DB connection).
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON;"); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("db: enable foreign keys: %w", err)
+	}
+
 	// Create all tables.
 	if _, err := conn.Exec(schema); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=8 if the table is empty (fresh database already has
-	// all columns including the v2, v3, v4, v5, v6, v7, and v8 additions, so no migration is needed).
+	// Set schema_version=9 if the table is empty (fresh database already has
+	// all columns including the v2–v9 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (8)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (9)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -315,6 +336,36 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 8
+	}
+	if version == 8 {
+		// Migration v8 → v9: introduce session_groups table and add group_id FK
+		// column to agent_status. group_id is nullable so existing rows are
+		// unaffected (they receive NULL). The FK is enforced with ON DELETE SET
+		// NULL so that deleting a session_groups row clears group_id on member
+		// sessions without removing their history.
+		//
+		// SQLite does not support adding a column with a REFERENCES clause via
+		// ALTER TABLE, so we add the column first (untyped, nullable) and the FK
+		// constraint is enforced at the application level via PRAGMA foreign_keys
+		// = ON set in Open(). The REFERENCES clause is present in the CREATE TABLE
+		// schema (for new databases); existing databases gain the FK semantics
+		// through PRAGMA enforcement operating on the column we add here.
+		migrations := []string{
+			`CREATE TABLE IF NOT EXISTS session_groups (
+			  group_id       TEXT PRIMARY KEY,
+			  parent_session TEXT NOT NULL,
+			  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`,
+			"ALTER TABLE agent_status ADD COLUMN group_id TEXT",
+			"UPDATE schema_version SET version = 9",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v8→v9: %w", err)
+			}
+		}
+		version = 9
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1508,6 +1559,115 @@ LIMIT ?`
 		return 0, fmt.Errorf("db: consecutive sidecar failures: iterate: %w", err)
 	}
 	return count, nil
+}
+
+// GroupMemberResult holds the terminal state and last assistant message for a
+// single member of a session group. Used by GroupResults to aggregate outcomes.
+type GroupMemberResult struct {
+	SessionName string
+	RootAgent   string // from root_agent_name; empty when not set
+	State       string // terminal state: finished / interrupted / error / deleted
+	LastMessage string // last assistant turn from agent_events; empty when none
+}
+
+// terminalStates is the set of agent states that indicate a session has stopped
+// working and will not make further progress.
+var terminalStates = []string{"finished", "interrupted", "error", "deleted"}
+
+// isTerminalState reports whether state is a terminal agent state.
+func isTerminalState(state string) bool {
+	for _, s := range terminalStates {
+		if state == s {
+			return true
+		}
+	}
+	return false
+}
+
+// RegisterGroup inserts a new row into session_groups and returns the generated
+// group_id. parent_session identifies the session that owns this group (e.g.
+// the worker running `prism review`).
+func (d *DB) RegisterGroup(parentSession string) (string, error) {
+	groupID := uuid.New().String()
+	const q = `INSERT INTO session_groups (group_id, parent_session) VALUES (?, ?)`
+	if _, err := d.conn.Exec(q, groupID, parentSession); err != nil {
+		return "", fmt.Errorf("db: register group: %w", err)
+	}
+	return groupID, nil
+}
+
+// GroupCompleted reports whether every agent_status row with this group_id has
+// reached a terminal state (finished, interrupted, error, or deleted).
+// Returns (true, nil) when all members are terminal (including the case where
+// there are no members yet — caller should guard against that if needed).
+// Returns (false, nil) when at least one member is still running.
+// Returns (false, err) on a database error.
+func (d *DB) GroupCompleted(groupID string) (bool, error) {
+	// Build the NOT IN list for terminal states.
+	placeholders := make([]string, len(terminalStates))
+	args := make([]any, 0, 1+len(terminalStates))
+	args = append(args, groupID)
+	for i, s := range terminalStates {
+		placeholders[i] = "?"
+		args = append(args, s)
+	}
+	q := `SELECT COUNT(*) FROM agent_status WHERE group_id = ? AND state NOT IN (` +
+		strings.Join(placeholders, ",") + `)`
+	var nonTerminalCount int
+	if err := d.conn.QueryRow(q, args...).Scan(&nonTerminalCount); err != nil {
+		return false, fmt.Errorf("db: group completed: %w", err)
+	}
+	return nonTerminalCount == 0, nil
+}
+
+// GroupResults returns the terminal state and last assistant message for every
+// member of the group, keyed by session_name. It is intended for use after
+// GroupCompleted returns true. Members that are still active are included but
+// their State may be non-terminal.
+//
+// LastMessage is populated from the most recent assistant_message event payload
+// for each session. It is empty when no such event has been recorded.
+func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) {
+	// Fetch each member's session_name, state, and root_agent_name.
+	const statusQ = `
+SELECT session_name, state, COALESCE(root_agent_name, '')
+FROM agent_status
+WHERE group_id = ?`
+	rows, err := d.conn.Query(statusQ, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("db: group results: query statuses: %w", err)
+	}
+	defer rows.Close()
+
+	results := make(map[string]GroupMemberResult)
+	for rows.Next() {
+		var r GroupMemberResult
+		if err := rows.Scan(&r.SessionName, &r.State, &r.RootAgent); err != nil {
+			return nil, fmt.Errorf("db: group results: scan status: %w", err)
+		}
+		results[r.SessionName] = r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: group results: iterate statuses: %w", err)
+	}
+
+	// For each member, fetch the last assistant_message event payload.
+	for name, r := range results {
+		const msgQ = `
+SELECT payload FROM agent_events
+WHERE session_name = ? AND type = 'assistant_message'
+ORDER BY created_at DESC, rowid DESC
+LIMIT 1`
+		var payload string
+		err := d.conn.QueryRow(msgQ, name).Scan(&payload)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("db: group results: last message for %q: %w", name, err)
+		}
+		r.LastMessage = payload
+		results[name] = r
+	}
+
+	return results, nil
 }
 
 func scanBusMessage(s scanner) (BusMessage, error) {

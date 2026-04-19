@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=8 (migrations are applied on Open).
+	// Verify schema_version=9 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version: got %d, want 9", version)
 	}
 
 	// Verify WAL mode.
@@ -766,20 +766,20 @@ func TestMigration_V1ToV2(t *testing.T) {
 		t.Fatalf("seed v1 db: %v", err)
 	}
 
-	// Open via db.Open — should apply the v1→v2, v2→v3, v3→v4, v4→v5, v5→v6, v6→v7, and v7→v8 migrations.
+	// Open via db.Open — should apply v1→v2 through v8→v9 migrations.
 	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("db.Open on v1 db: %v", err)
 	}
 	defer d.Close()
 
-	// Verify schema_version=8.
+	// Verify schema_version=9.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -853,8 +853,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1354,8 +1354,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1420,8 +1420,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1490,8 +1490,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1585,8 +1585,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1672,13 +1672,13 @@ func TestMigration_V7ToV8(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must be 8 after migration.
+	// Schema version must be 9 after migration.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("schema_version after migration: got %d, want 8", version)
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2190,6 +2190,419 @@ func TestCheckTransition_EmptyStates(t *testing.T) {
 		t.Logf("UpsertStatus with empty toState returned error (acceptable): %v", err)
 	}
 	// If we reach here, no panic occurred.
+}
+
+// ── TestOpen_CreatesSchema addendum: session_groups and group_id column ────────
+
+// TestOpen_CreatesSessionGroupsTable verifies that the session_groups table and
+// the group_id column on agent_status exist after Open (fresh DB).
+func TestOpen_CreatesSessionGroupsTable(t *testing.T) {
+	d := openTestDB(t)
+
+	// session_groups table must exist.
+	var name string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='session_groups'").Scan(&name); err != nil {
+		t.Fatalf("session_groups table not found: %v", err)
+	}
+	if name != "session_groups" {
+		t.Errorf("session_groups: got %q, want \"session_groups\"", name)
+	}
+
+	// group_id column must exist on agent_status.
+	// We probe it by inserting a NULL group_id row.
+	if err := d.UpsertStatus("repo@main", "repo", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	var groupID *string
+	if err := d.QueryRow("SELECT group_id FROM agent_status WHERE session_name = 'repo@main'").Scan(&groupID); err != nil {
+		t.Fatalf("query group_id column: %v", err)
+	}
+	if groupID != nil {
+		t.Errorf("group_id for new row: got %v, want nil", groupID)
+	}
+}
+
+// ── Migration v8→v9 ────────────────────────────────────────────────────────────
+
+// TestMigration_V8ToV9 verifies that Open applies the v8→v9 migration to an
+// existing DB that was created at schema_version=8 (no session_groups table,
+// no group_id column).
+func TestMigration_V8ToV9(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v8.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT, harness_port INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (8);
+		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v8 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v8 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must be 9 after migration.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 9 {
+		t.Errorf("schema_version after migration: got %d, want 9", version)
+	}
+
+	// session_groups table must exist after migration.
+	var tname string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='table' AND name='session_groups'").Scan(&tname); err != nil {
+		t.Fatalf("session_groups table not found after v8→v9 migration: %v", err)
+	}
+
+	// Existing row must still be present and unmodified.
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after migration: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want existing row")
+	}
+	if s.State != "active" {
+		t.Errorf("State preserved: got %q, want \"active\"", s.State)
+	}
+
+	// group_id column must exist and be NULL for pre-migration rows.
+	var groupID *string
+	if err := d.QueryRow("SELECT group_id FROM agent_status WHERE session_name = 'repo@main'").Scan(&groupID); err != nil {
+		t.Fatalf("query group_id column after migration: %v", err)
+	}
+	if groupID != nil {
+		t.Errorf("group_id for migrated row: got %v, want nil", groupID)
+	}
+}
+
+// ── RegisterGroup, GroupCompleted, GroupResults ───────────────────────────────
+
+// TestRegisterGroup verifies that RegisterGroup inserts a row into
+// session_groups and returns a non-empty group_id.
+func TestRegisterGroup(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if groupID == "" {
+		t.Fatal("RegisterGroup returned empty group_id")
+	}
+
+	// The row must be present in session_groups.
+	var parent string
+	if err := d.QueryRow(
+		"SELECT parent_session FROM session_groups WHERE group_id = ?", groupID,
+	).Scan(&parent); err != nil {
+		t.Fatalf("query session_groups: %v", err)
+	}
+	if parent != "nixos-config@feature" {
+		t.Errorf("parent_session: got %q, want \"nixos-config@feature\"", parent)
+	}
+
+	// Each call must return a distinct group_id.
+	groupID2, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("second RegisterGroup: %v", err)
+	}
+	if groupID2 == groupID {
+		t.Error("RegisterGroup: second call returned same group_id as first")
+	}
+}
+
+// TestGroupCompleted_AllTerminal verifies that GroupCompleted returns true when
+// all members have reached a terminal state.
+func TestGroupCompleted_AllTerminal(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Create three member sessions and assign them to the group.
+	members := []struct {
+		name  string
+		state string
+	}{
+		{"nixos-config@feature~review-1-goal", "finished"},
+		{"nixos-config@feature~review-1-code", "finished"},
+		{"nixos-config@feature~review-1-security", "interrupted"},
+	}
+	for _, m := range members {
+		if err := d.UpsertStatus(m.name, "nixos-config", "/wt", m.state, nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", m.name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, m.name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", m.name, err)
+		}
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if !done {
+		t.Error("GroupCompleted: got false, want true (all members terminal)")
+	}
+}
+
+// TestGroupCompleted_ActiveMember verifies that GroupCompleted returns false
+// when at least one member is still active.
+func TestGroupCompleted_ActiveMember(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	members := []struct {
+		name  string
+		state string
+	}{
+		{"nixos-config@feature~review-1-goal", "finished"},
+		{"nixos-config@feature~review-1-code", "active"}, // still running
+	}
+	for _, m := range members {
+		if err := d.UpsertStatus(m.name, "nixos-config", "/wt", m.state, nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", m.name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, m.name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", m.name, err)
+		}
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if done {
+		t.Error("GroupCompleted: got true, want false (active member present)")
+	}
+}
+
+// TestGroupCompleted_NoMembers verifies that GroupCompleted returns true for a
+// group that exists but has no members assigned yet.
+func TestGroupCompleted_NoMembers(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	// No members = all zero members are terminal = true.
+	if !done {
+		t.Error("GroupCompleted with no members: got false, want true")
+	}
+}
+
+// TestGroupResults verifies that GroupResults returns state and last message for
+// all group members, keyed by session_name.
+func TestGroupResults(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Create two members.
+	for _, name := range []string{"nixos-config@feature~review-1-goal", "nixos-config@feature~review-1-code"} {
+		if err := d.UpsertStatus(name, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", name, err)
+		}
+	}
+
+	// Write an assistant_message event for the first member only.
+	goalSession := "nixos-config@feature~review-1-goal"
+	if err := d.WriteEvent(db.Event{
+		ID:          "evt-assistant-1",
+		SessionName: goalSession,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "assistant_message",
+		Payload:     `{"content":"<verdict>PASS</verdict>"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	results, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("GroupResults: got %d results, want 2", len(results))
+	}
+
+	goalResult, ok := results[goalSession]
+	if !ok {
+		t.Fatalf("GroupResults: missing entry for %q", goalSession)
+	}
+	if goalResult.State != "finished" {
+		t.Errorf("goal State: got %q, want \"finished\"", goalResult.State)
+	}
+	if goalResult.LastMessage != `{"content":"<verdict>PASS</verdict>"}` {
+		t.Errorf("goal LastMessage: got %q, want assistant_message payload", goalResult.LastMessage)
+	}
+
+	codeSession := "nixos-config@feature~review-1-code"
+	codeResult, ok := results[codeSession]
+	if !ok {
+		t.Fatalf("GroupResults: missing entry for %q", codeSession)
+	}
+	if codeResult.State != "finished" {
+		t.Errorf("code State: got %q, want \"finished\"", codeResult.State)
+	}
+	if codeResult.LastMessage != "" {
+		t.Errorf("code LastMessage: got %q, want \"\" (no assistant_message)", codeResult.LastMessage)
+	}
+}
+
+// ── Foreign key enforcement tests ─────────────────────────────────────────────
+
+// TestGroupFK_Violation verifies that attempting to set agent_status.group_id to
+// a value not present in session_groups raises a FK constraint error. This proves
+// PRAGMA foreign_keys = ON is active for every connection opened by db.Open.
+func TestGroupFK_Violation(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Attempt to set group_id to a non-existent group — must fail with FK error.
+	err := d.QueryRow(
+		"UPDATE agent_status SET group_id = 'does-not-exist' WHERE session_name = 'repo@main' RETURNING 1",
+	).Scan(new(int))
+	if err == nil {
+		t.Fatal("expected FK constraint error when setting group_id to non-existent group, got nil")
+	}
+	// The error message from SQLite for FK violations contains "FOREIGN KEY".
+	if !strings.Contains(strings.ToUpper(err.Error()), "FOREIGN KEY") {
+		t.Errorf("error should mention FOREIGN KEY constraint: got %q", err.Error())
+	}
+}
+
+// TestGroupFK_OnDeleteSetNull verifies that deleting a session_groups row clears
+// agent_status.group_id (SET NULL cascade) for all members, while leaving all
+// other columns untouched.
+func TestGroupFK_OnDeleteSetNull(t *testing.T) {
+	d := openTestDB(t)
+
+	// Register a group.
+	groupID, err := d.RegisterGroup("coordinator@main")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Create two member sessions and assign them to the group.
+	for _, name := range []string{"coordinator@main~review-1-goal", "coordinator@main~review-1-code"} {
+		if err := d.UpsertStatus(name, "repo", "/wt", "active", strPtr("My Title"), nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", name, err)
+		}
+	}
+
+	// Confirm group_id is set for both members.
+	var gid *string
+	if err := d.QueryRow(
+		"SELECT group_id FROM agent_status WHERE session_name = 'coordinator@main~review-1-goal'",
+	).Scan(&gid); err != nil || gid == nil || *gid != groupID {
+		t.Fatalf("pre-condition: group_id not set correctly: gid=%v, err=%v", gid, err)
+	}
+
+	// Delete the session_groups row — should cascade SET NULL to members.
+	if err := d.QueryRow(
+		"DELETE FROM session_groups WHERE group_id = ? RETURNING group_id", groupID,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("delete session_groups row: %v", err)
+	}
+
+	// Both members should now have group_id = NULL.
+	for _, name := range []string{"coordinator@main~review-1-goal", "coordinator@main~review-1-code"} {
+		var groupIDAfter *string
+		if err := d.QueryRow(
+			"SELECT group_id FROM agent_status WHERE session_name = ?", name,
+		).Scan(&groupIDAfter); err != nil {
+			t.Fatalf("query group_id for %s: %v", name, err)
+		}
+		if groupIDAfter != nil {
+			t.Errorf("group_id for %s after group deletion: got %v, want nil (SET NULL cascade)", name, *groupIDAfter)
+		}
+
+		// State and title must be preserved (other columns untouched).
+		s, err := d.CurrentStatus(name)
+		if err != nil {
+			t.Fatalf("CurrentStatus %s: %v", name, err)
+		}
+		if s == nil {
+			t.Fatalf("CurrentStatus %s: got nil", name)
+		}
+		if s.State != "active" {
+			t.Errorf("State for %s after group deletion: got %q, want \"active\"", name, s.State)
+		}
+		if s.Title == nil || *s.Title != "My Title" {
+			t.Errorf("Title for %s after group deletion: got %v, want \"My Title\"", name, s.Title)
+		}
+	}
 }
 
 // setPort is a test helper that writes opencode_port directly via QueryRow.
