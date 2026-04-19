@@ -21,13 +21,24 @@ rec {
         system = final.stdenv.hostPlatform.system;
         config.allowUnfree = true;
       };
+      opencodePkgs = import inputs.nixpkgs-opencode {
+        system = final.stdenv.hostPlatform.system;
+        config.allowUnfree = true;
+      };
     in
     {
       # packages where we use master by default for bleeding edge
 
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
-      opencode = masterPkgs.opencode;
+      # Pinned to nixpkgs-opencode (opencode 1.4.6). Upstream 1.4.11 regressed
+      # the --prompt TUI flag (pre-fills instead of auto-submitting), breaking
+      # prism's headless workflows. Unpin when either:
+      #   (a) upstream opencode fixes the --prompt regression, or
+      #   (b) we land the HTTP-submit path in the opencode harness adapter
+      #       (decouples us from --prompt CLI semantics entirely).
+      # See: https://github.com/prismatic-koi/nixos-config/issues/901
+      opencode = opencodePkgs.opencode;
       pi-coding-agent = masterPkgs.pi-coding-agent;
 
       # packages not yet in nixpkgs; use local definitions
