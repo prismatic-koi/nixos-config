@@ -11,7 +11,7 @@ import { log } from "./logger.ts"
 
 const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
-const TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+const TOKEN_URL = "https://claude.ai/v1/oauth/token"
 const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
 const SCOPES = [
   "org:create_api_key",
@@ -135,14 +135,14 @@ export async function loginAnthropic(
     {
       method: "POST",
       headers: makeTokenHeaders(),
-      body: JSON.stringify({
+      body: new URLSearchParams({
         grant_type: "authorization_code",
         client_id: CLIENT_ID,
         code: parsed.code,
         state: parsed.state,
         redirect_uri: redirectUri,
         code_verifier: verifier,
-      }),
+      }).toString(),
       signal: callbacks.signal,
     },
     "Token exchange",
@@ -173,11 +173,11 @@ export async function refreshAnthropicToken(
       {
         method: "POST",
         headers: makeTokenHeaders(),
-        body: JSON.stringify({
+        body: new URLSearchParams({
           grant_type: "refresh_token",
           client_id: CLIENT_ID,
           refresh_token: credentials.refresh,
-        }),
+        }).toString(),
       },
       "Token refresh",
     )
@@ -265,7 +265,7 @@ async function fetchWithRetry(
 
 function makeTokenHeaders(): HeadersInit {
   return {
-    "Content-Type": "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
     "User-Agent": USER_AGENT,
   }
 }

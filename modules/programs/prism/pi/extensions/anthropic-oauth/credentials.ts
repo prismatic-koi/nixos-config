@@ -30,7 +30,7 @@ const CREDENTIAL_CACHE_TTL_MS = 30_000
 
 let cachedCreds: { creds: ClaudeCredentials; cachedAt: number } | null = null
 
-export const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 function getAuthJsonPath(): string {
