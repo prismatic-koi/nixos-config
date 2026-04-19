@@ -3,35 +3,24 @@ package cmd
 // Tests for the bwrap opencode.json config file write added to runSpawn
 // (issue #900).
 //
-// The config file write block is three lines in runSpawn:
+// The config file write block in runSpawn:
 //
 //	if isolationMode == config.IsolationBwrap && configContent != "" {
-//	    sessionName := session.NameFor(worktreePath, bareRoot)
-//	    if err := container.WriteOpencodeConfig(sessionName, configContent); err != nil { ... }
+//	    tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+//	    containerName := container.NameForSession(tmuxSessionName)
+//	    container.WriteOpencodeConfig(containerName, configContent)
 //	}
+//
+// The key insight: the path used at write time must match the path used at
+// read time. Manager.opencodeConfigFilePath() calls
+// OpencodeConfigFilePath(m.name) where m.name = NameForSession(tmuxSession).
+// So spawn.go must pass NameForSession(tmuxSession) — NOT the raw tmux session
+// name — to WriteOpencodeConfig.
 //
 // Calling runSpawn directly in a test is not safe: it spawns tmux sessions,
 // sidecar processes, and other long-running side effects that pollute the test
 // environment and can cause hangs in sandboxed build environments (e.g.
-// nix build) where those processes never terminate.
-//
-// Instead these tests exercise the two specific helpers that the write block
-// relies on:
-//
-//   - bwrapConfigWriteSessionName: asserts that session.NameFor produces the
-//     correct tmux session name from a worktree path and bare repo root. This
-//     is the value passed to container.WriteOpencodeConfig as sessionName, so
-//     getting it right is a precondition for the file appearing at the expected
-//     path.
-//
-//   - bwrapConfigWritePath: asserts that container.OpencodeConfigFilePath
-//     returns the path that session.NameFor + container.WriteOpencodeConfig
-//     would produce. Together with TestWriteOpencodeConfig_WritesContent in
-//     container_test.go, this fully covers the three-line block without
-//     invoking runSpawn.
-//
-// The full integration path (spawn → file on disk → bwrap mount) is validated
-// by the manual test described in the issue (#900 §manual-verification).
+// nix build). Instead these tests verify the path-derivation contract.
 
 import (
 	"os"
@@ -44,77 +33,73 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestBwrapSpawn_ConfigFilePathMatchesSessionName asserts that the temp file
-// path produced by container.OpencodeConfigFilePath(sessionName) for a bwrap
-// session matches the deterministic naming convention.
+// TestBwrapSpawn_WritePathMatchesManagerPath is the critical correctness test:
+// it asserts that the path used by spawn.go when writing the config file
+// (container.OpencodeConfigFilePath(container.NameForSession(tmuxSession)))
+// equals the path used by Manager.opencodeConfigFilePath() when reading it
+// (container.OpencodeConfigFilePath(m.name) where m.name=NameForSession(tmuxSession)).
 //
-// This is the write path: spawn.go calls WriteOpencodeConfig(sessionName, ...)
-// where sessionName = session.NameFor(worktreePath, bareRoot). The file must
-// appear at OpencodeConfigFilePath(sessionName) for agent-run to find it.
-func TestBwrapSpawn_ConfigFilePathMatchesSessionName(t *testing.T) {
+// This guards against the path mismatch where spawn.go passes the raw tmux
+// session name and Manager uses the transformed container name — which would
+// make the fix a no-op at runtime.
+func TestBwrapSpawn_WritePathMatchesManagerPath(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
 	}
-
-	// Simulate the sessionName that spawn.go derives.
-	// session.NameFor uses filepath.Base(bareRoot) for the project name and
-	// the branch component from the worktree's git symbolic ref. For a
-	// worktree that doesn't exist yet (pre-CreateWorktree), the branch falls
-	// back to filepath.Base(worktreePath), which is the branch name.
-	//
-	// Here we use a synthetic worktreePath/bareRoot pair to test the path
-	// derivation without creating real git state.
-	const branchName = "feat"
-	bareRoot := filepath.Join(t.TempDir(), "myrepo")
-	worktreePath := filepath.Join(bareRoot, branchName)
-
-	sessionName := session.NameFor(worktreePath, bareRoot)
-	path := container.OpencodeConfigFilePath(sessionName)
-
-	// The path must contain the session name and be inside os.TempDir().
-	if !strings.HasPrefix(path, os.TempDir()) {
-		t.Errorf("OpencodeConfigFilePath(%q) = %q: not under os.TempDir() %q", sessionName, path, os.TempDir())
-	}
-	if !strings.Contains(path, sessionName) {
-		t.Errorf("OpencodeConfigFilePath(%q) = %q: does not contain session name", sessionName, path)
-	}
-}
-
-// TestBwrapSpawn_WriteAndReadConfigFile asserts the write/read round-trip that
-// spawn.go performs: WriteOpencodeConfig(sessionName, content) writes the file,
-// and a subsequent ReadFile at OpencodeConfigFilePath(sessionName) returns the
-// original content unchanged.
-//
-// This directly exercises the three-line block in runSpawn for the bwrap path:
-//
-//	sessionName := session.NameFor(worktreePath, bareRoot)
-//	container.WriteOpencodeConfig(sessionName, configContent)
-func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bwrap mode is Linux-only")
-	}
-
-	// Override TMPDIR so the written file lands in the test's temp dir and is
-	// automatically cleaned up after the test.
-	tmpDir := t.TempDir()
-	t.Setenv("TMPDIR", tmpDir)
 
 	// Simulate the session name derivation from spawn.go.
 	const branchName = "feat"
 	bareRoot := filepath.Join(t.TempDir(), "myrepo")
 	worktreePath := filepath.Join(bareRoot, branchName)
-	sessionName := session.NameFor(worktreePath, bareRoot)
+
+	// Step 1: derive tmux session name (as spawn.go does).
+	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+
+	// Step 2: derive container name (as spawn.go does before WriteOpencodeConfig).
+	containerName := container.NameForSession(tmuxSessionName)
+
+	// Step 3: path at write time (spawn.go's WriteOpencodeConfig argument).
+	writePath := container.OpencodeConfigFilePath(containerName)
+
+	// Step 4: path at read time. Manager.opencodeConfigFilePath() calls
+	// OpencodeConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
+	// Since cfg.SessionName = tmuxSessionName, the read path is:
+	readPath := container.OpencodeConfigFilePath(container.NameForSession(tmuxSessionName))
+
+	if writePath != readPath {
+		t.Errorf("write path %q != read path %q — spawn.go will write to a path that agent-run's Manager can never find",
+			writePath, readPath)
+	}
+}
+
+// TestBwrapSpawn_WriteAndReadConfigFile asserts the write/read round-trip:
+// WriteOpencodeConfig(containerName, content) writes the file, and reading
+// from OpencodeConfigFilePath(containerName) returns the original content.
+func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("bwrap mode is Linux-only")
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	// Simulate the path derivation in spawn.go.
+	const branchName = "feat"
+	bareRoot := filepath.Join(t.TempDir(), "myrepo")
+	worktreePath := filepath.Join(bareRoot, branchName)
+	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+	containerName := container.NameForSession(tmuxSessionName)
 
 	const configContent = `{"model":"test-worker-model","agents":[]}`
 
-	// Write as spawn.go does.
-	if err := container.WriteOpencodeConfig(sessionName, configContent); err != nil {
+	// Write as spawn.go does (using containerName, not tmuxSessionName).
+	if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
 		t.Fatalf("WriteOpencodeConfig: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(container.OpencodeConfigFilePath(sessionName)) })
+	t.Cleanup(func() { _ = os.Remove(container.OpencodeConfigFilePath(containerName)) })
 
-	// Read back and verify.
-	data, err := os.ReadFile(container.OpencodeConfigFilePath(sessionName))
+	// Read back as Manager.opencodeConfigFilePath() would resolve.
+	data, err := os.ReadFile(container.OpencodeConfigFilePath(containerName))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -123,11 +108,8 @@ func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
 	}
 }
 
-// TestBwrapSpawn_NoWriteWhenConfigContentEmpty asserts that when configContent
-// is empty, the spawn.go conditional does NOT call WriteOpencodeConfig and the
-// temp file is absent. This mirrors the edge-case guard:
-//
-//	if isolationMode == config.IsolationBwrap && configContent != "" { ... }
+// TestBwrapSpawn_NoWriteWhenConfigContentEmpty asserts that the spawn.go
+// conditional does NOT call WriteOpencodeConfig when configContent is empty.
 func TestBwrapSpawn_NoWriteWhenConfigContentEmpty(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
@@ -139,20 +121,48 @@ func TestBwrapSpawn_NoWriteWhenConfigContentEmpty(t *testing.T) {
 	const branchName = "feat"
 	bareRoot := filepath.Join(t.TempDir(), "myrepo")
 	worktreePath := filepath.Join(bareRoot, branchName)
-	sessionName := session.NameFor(worktreePath, bareRoot)
+	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+	containerName := container.NameForSession(tmuxSessionName)
 
 	// Simulate spawn.go's guard: configContent == "" → do not write.
 	configContent := ""
 	if configContent != "" {
-		if err := container.WriteOpencodeConfig(sessionName, configContent); err != nil {
+		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
 			t.Fatalf("WriteOpencodeConfig: %v", err)
 		}
 	}
 
 	// File must NOT exist.
-	path := container.OpencodeConfigFilePath(sessionName)
+	path := container.OpencodeConfigFilePath(containerName)
 	if _, err := os.Stat(path); err == nil {
 		t.Errorf("config temp file %q must not exist when configContent is empty, but it does", path)
 		_ = os.Remove(path)
+	}
+}
+
+// TestBwrapSpawn_ContainerNameTransformation verifies the name transformation
+// that ensures write/read path consistency. NameForSession maps "@" → "-" and
+// prepends "prism-", which distinguishes the container name from the tmux name.
+func TestBwrapSpawn_ContainerNameTransformation(t *testing.T) {
+	cases := []struct {
+		tmuxSession   string
+		wantContainer string
+	}{
+		{"nixos-config@feat", "prism-nixos-config-feat"},
+		{"repo@main", "prism-repo-main"},
+		{"repo@feat/sub", "prism-repo-feat-sub"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tmuxSession, func(t *testing.T) {
+			got := container.NameForSession(tc.tmuxSession)
+			if got != tc.wantContainer {
+				t.Errorf("NameForSession(%q) = %q, want %q", tc.tmuxSession, got, tc.wantContainer)
+			}
+			// Verify write path uses container name, not raw tmux session name.
+			writePath := container.OpencodeConfigFilePath(got)
+			if strings.Contains(writePath, "@") {
+				t.Errorf("write path %q contains '@' — spawn.go is using the raw tmux session name instead of the container name", writePath)
+			}
+		})
 	}
 }

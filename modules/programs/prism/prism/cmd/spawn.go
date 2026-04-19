@@ -302,9 +302,16 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// container.go:580 already writes the file before the container starts.
 	// Host mode does NOT need this write — it uses ~/.config/opencode/opencode.json
 	// directly via xdg.configFile.
+	//
+	// IMPORTANT: the path key used here must match the one used by Manager
+	// internally. Manager.name = container.NameForSession(tmuxSessionName)
+	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
+	// calls OpencodeConfigFilePath(m.name). So we must pass the container name
+	// (not the raw tmux session name) to WriteOpencodeConfig.
 	if isolationMode == config.IsolationBwrap && configContent != "" {
-		sessionName := session.NameFor(worktreePath, bareRoot)
-		if err := container.WriteOpencodeConfig(sessionName, configContent); err != nil {
+		tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+		containerName := container.NameForSession(tmuxSessionName)
+		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
 			return fmt.Errorf("spawn: %w", err)
 		}
 	}
