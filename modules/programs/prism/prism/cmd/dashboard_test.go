@@ -76,9 +76,11 @@ func runAllTestServerCleanups() {
 type cmdTestServer struct {
 	socket string
 	bin    string
-	// cmd is the exec.Cmd for the initial tmux server process (started with
-	// Setpgid=true). Held so that t.Cleanup can kill the entire process
-	// group rather than relying on tmux kill-server.
+	// cmd is the exec.Cmd for the tmux server process. The server is started
+	// with Setpgid:true so its process group can be killed atomically.
+	// When Setpgid:true, the PGID equals the PID of the cmd.Process at Start()
+	// time. The server stays running after Start() returns (it daemonises
+	// internally), so Process.Pid remains the stable PGID for the group.
 	cmd *exec.Cmd
 }
 
@@ -91,35 +93,45 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	socket := fmt.Sprintf("prism-cmd-test-%d-%s", os.Getpid(), randCmdHex(8))
 	s := &cmdTestServer{socket: socket, bin: bin}
 
-	// Start the tmux server in its own process group (Setpgid=true) so that
-	// the entire group (server + any sessions/sidecars it spawns) can be
-	// killed atomically. We use new-session to bootstrap the server.
+	// Start the tmux server in its own process group so the entire group
+	// (server + any sessions/sidecars it spawns) can be killed with a single
+	// syscall.Kill(-pgid, SIGKILL) even if the server becomes unresponsive.
+	//
+	// tmux "new-session -d" creates the server and a background session, then
+	// the client process exits. We use Start() + Wait() (not CombinedOutput)
+	// so we can capture Process.Pid before Wait() clears it: with Setpgid:true
+	// the PGID equals Process.Pid at Start() time, and tmux's server adopts
+	// that PGID after the client forks it — so killing -pgid reaches both the
+	// client and the long-running server.
 	startCmd := exec.Command(bin, "-L", socket, "-f", "/dev/null", "new-session", "-ds", "bootstrap", "-c", "/tmp")
 	startCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if out, err := startCmd.CombinedOutput(); err != nil {
-		t.Fatalf("start test tmux server: %v\n%s", err, out)
+	var startOut []byte
+	startOut, err = startCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start test tmux server: %v\n%s", err, startOut)
 	}
-	// After the server is started, find the server process so we can kill its
-	// pgid on cleanup. The server process stays alive after new-session exits;
-	// we track it via a separate long-lived cmd below.
-	//
-	// Because tmux daemonises after new-session, we cannot track the original
-	// startCmd process. Instead we hold a reference to startCmd purely to
-	// record the pgid convention; the actual cleanup kills by socket.
+	// Capture the PGID before anything can recycle it. With Setpgid:true,
+	// pgid == startCmd.Process.Pid at the moment of Start(). CombinedOutput
+	// calls Start internally and waits; Process.Pid is stable after CombinedOutput
+	// returns even though the client process has exited.
+	pgid := startCmd.Process.Pid
 	s.cmd = startCmd
 
-	// Build the process-group kill func. When Setpgid=true the pgid equals
-	// the pid of the leader — but since tmux forks internally we cannot
-	// reliably get the leader's pid after the fact. Fall back to kill-server
-	// for the normal case and use SIGKILL on the tmux server socket for the
-	// best-effort fallback.
+	// killFn kills the entire process group (catching any daemonised children)
+	// and also sends a cooperative kill-server request as a belt-and-suspenders
+	// measure for cases where the server process has already adopted a new PGID.
 	killFn := func() {
-		// Best-effort: ask tmux to kill its own server cleanly.
+		// Kill the entire process group by negating the PGID. This reaches the
+		// tmux server and any child sessions/sidecars it has spawned, even if
+		// the original client PID has long exited.
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		// Belt-and-suspenders: ask tmux to kill its own server cooperatively.
+		// This handles the case where the server somehow escaped the process group.
 		_ = exec.Command(bin, "-L", socket, "kill-server").Run()
 	}
 
 	// Register in the package-level registry so TestMain's SIGTERM handler
-	// can clean up even if t.Cleanup never fires.
+	// can clean up even if t.Cleanup never fires (e.g. on oomd SIGTERM).
 	deregister := registerTestServerCleanup(killFn)
 
 	t.Cleanup(func() {

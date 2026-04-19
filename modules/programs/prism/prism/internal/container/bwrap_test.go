@@ -179,7 +179,7 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// The first 7 elements must be the baseline namespace flags in order.
+	// The first 9 elements must be the baseline namespace flags in order.
 	// Note: --unshare-ipc is intentionally absent — see issue #906.
 	want := []string{
 		"--unshare-pid",
