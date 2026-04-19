@@ -13,6 +13,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -22,6 +24,47 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// ─── package-level test server registry ──────────────────────────────────────
+//
+// testServerRegistry tracks cleanup funcs for all active cmdTestServers. When
+// the test binary receives SIGTERM (e.g. from oomd), TestMain runs all
+// registered cleanups so that isolated tmux servers do not become orphaned.
+// Each entry is removed from the registry when t.Cleanup fires normally.
+
+var (
+	testServerMu       sync.Mutex
+	testServerCleanups []func()
+)
+
+// registerTestServerCleanup adds fn to the registry and returns a deregister
+// func that removes it (called from t.Cleanup so the entry does not linger
+// after a test completes normally).
+func registerTestServerCleanup(fn func()) func() {
+	testServerMu.Lock()
+	testServerCleanups = append(testServerCleanups, fn)
+	idx := len(testServerCleanups) - 1
+	testServerMu.Unlock()
+	return func() {
+		testServerMu.Lock()
+		testServerCleanups[idx] = nil // nil-out rather than shrink to avoid index shifting
+		testServerMu.Unlock()
+	}
+}
+
+// runAllTestServerCleanups runs every non-nil cleanup func in the registry.
+// Called by TestMain's SIGTERM handler.
+func runAllTestServerCleanups() {
+	testServerMu.Lock()
+	fns := make([]func(), len(testServerCleanups))
+	copy(fns, testServerCleanups)
+	testServerMu.Unlock()
+	for _, fn := range fns {
+		if fn != nil {
+			fn()
+		}
+	}
+}
 
 // ─── minimal server harness (mirrors internal/tmux/harness_test.go) ───────────
 //
@@ -43,11 +86,45 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	}
 	socket := fmt.Sprintf("prism-cmd-test-%d-%s", os.Getpid(), randCmdHex(8))
 	s := &cmdTestServer{socket: socket, bin: bin}
-	if err := s.run("new-session", "-ds", "bootstrap", "-c", "/tmp"); err != nil {
-		t.Fatalf("start test tmux server: %v", err)
+
+	// Start the tmux server in its own process group so the entire group
+	// (server + any sessions/sidecars it spawns) can be killed with a single
+	// syscall.Kill(-pgid, SIGKILL) even if the server becomes unresponsive.
+	//
+	// With Setpgid:true the bootstrap process starts a new process group whose
+	// PGID == its PID. CombinedOutput calls Start internally then waits for the
+	// client to exit. Process.Pid is stable after CombinedOutput returns — Go's
+	// exec.Cmd.Wait never clears Process — so capturing pgid from Process.Pid
+	// after CombinedOutput is safe and correct.
+	startCmd := exec.Command(bin, "-L", socket, "-f", "/dev/null", "new-session", "-ds", "bootstrap", "-c", "/tmp")
+	startCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var startOut []byte
+	startOut, err = startCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("start test tmux server: %v\n%s", err, startOut)
 	}
-	t.Cleanup(func() {
+	pgid := startCmd.Process.Pid
+
+	// killFn kills the entire process group (catching any daemonised children)
+	// and also sends a cooperative kill-server request as a belt-and-suspenders
+	// measure for cases where the server process has already adopted a new PGID.
+	killFn := func() {
+		// Kill the entire process group by negating the PGID. This reaches the
+		// tmux server and any child sessions/sidecars it has spawned, even if
+		// the original client PID has long exited.
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		// Belt-and-suspenders: ask tmux to kill its own server cooperatively.
+		// This handles the case where the server somehow escaped the process group.
 		_ = exec.Command(bin, "-L", socket, "kill-server").Run()
+	}
+
+	// Register in the package-level registry so TestMain's SIGTERM handler
+	// can clean up even if t.Cleanup never fires (e.g. on oomd SIGTERM).
+	deregister := registerTestServerCleanup(killFn)
+
+	t.Cleanup(func() {
+		killFn()
+		deregister()
 	})
 	return s
 }

@@ -179,10 +179,10 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// The first 8 elements must be the baseline namespace flags in order.
+	// The first 9 elements must be the baseline namespace flags in order.
+	// Note: --unshare-ipc is intentionally absent — see issue #906.
 	want := []string{
 		"--unshare-pid",
-		"--unshare-ipc",
 		"--unshare-uts",
 		"--proc", "/proc",
 		"--dev", "/dev",
@@ -1398,11 +1398,16 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 
 	t.Logf("full bwrap args (%d): %v", len(args), args)
 
-	// Baseline flags present.
-	for _, flag := range []string{"--unshare-pid", "--unshare-ipc", "--unshare-uts", "--die-with-parent"} {
+	// Baseline flags present. Note: --unshare-ipc is intentionally absent (see
+	// issue #906 — it breaks SQLite WAL mmap coherency between concurrent sessions).
+	for _, flag := range []string{"--unshare-pid", "--unshare-uts", "--die-with-parent"} {
 		if !hasArg(args, flag) {
 			t.Errorf("baseline flag %q missing from args", flag)
 		}
+	}
+	// Explicitly assert --unshare-ipc is NOT present.
+	if hasArg(args, "--unshare-ipc") {
+		t.Errorf("--unshare-ipc must NOT be present in args (breaks SQLite WAL concurrency — see issue #906)")
 	}
 	for _, pair := range [][2]string{
 		{"--proc", "/proc"},

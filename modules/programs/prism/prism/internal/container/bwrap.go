@@ -136,12 +136,17 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── Baseline namespace flags ────────────────────────────────────────────
-	// These establish the minimal sandbox: private PID, IPC, and UTS
-	// namespaces; a fresh /proc and /dev; a tmpfs on /tmp; and a guarantee
-	// that the sandbox dies when the parent process exits.
+	// These establish the minimal sandbox: private PID and UTS namespaces;
+	// a fresh /proc and /dev; a tmpfs on /tmp; and a guarantee that the
+	// sandbox dies when the parent process exits.
+	//
+	// --unshare-ipc is intentionally omitted: SQLite WAL mode uses a -shm
+	// shared memory file that relies on mmap() coherency across processes.
+	// --unshare-ipc creates a private IPC namespace which breaks that
+	// coherency between concurrent bwrap sessions, causing subsequent
+	// sessions to hang after DB migration completes (see issue #906).
 	args := []string{
 		"--unshare-pid",
-		"--unshare-ipc",
 		"--unshare-uts",
 		"--proc", "/proc",
 		"--dev", "/dev",
