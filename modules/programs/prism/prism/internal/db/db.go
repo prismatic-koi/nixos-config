@@ -160,8 +160,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // agent_status; v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id
 // to agent_status and to_instance_id to bus_messages; v6→v7 adds failed_at to
 // bus_messages; v7→v8 adds harness, harness_session_id, and harness_port to
-// agent_status; v8→v9 adds the session_groups table and group_id FK column to
-// agent_status.
+// agent_status; v8→v9 adds the session_groups table and group_id FK column
+// (with ON DELETE SET NULL) to agent_status via rename-and-recreate so that
+// the REFERENCES clause is present in the schema metadata and fully enforced
+// by PRAGMA foreign_keys = ON on both fresh and migrated databases.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -345,25 +347,82 @@ func Open(path string) (*DB, error) {
 		// sessions without removing their history.
 		//
 		// SQLite does not support adding a column with a REFERENCES clause via
-		// ALTER TABLE, so we add the column first (untyped, nullable) and the FK
-		// constraint is enforced at the application level via PRAGMA foreign_keys
-		// = ON set in Open(). The REFERENCES clause is present in the CREATE TABLE
-		// schema (for new databases); existing databases gain the FK semantics
-		// through PRAGMA enforcement operating on the column we add here.
-		migrations := []string{
-			`CREATE TABLE IF NOT EXISTS session_groups (
-			  group_id       TEXT PRIMARY KEY,
-			  parent_session TEXT NOT NULL,
-			  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-			)`,
-			"ALTER TABLE agent_status ADD COLUMN group_id TEXT",
-			"UPDATE schema_version SET version = 9",
-		}
-		for _, m := range migrations {
-			if _, err := conn.Exec(m); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("db: migration v8→v9: %w", err)
+		// ALTER TABLE ADD COLUMN. We therefore use the recommended rename-and-
+		// recreate pattern: create a new table with the REFERENCES clause, copy
+		// all rows across, drop the old table, and rename the new one. This is
+		// wrapped in a transaction with PRAGMA foreign_keys = OFF (required by
+		// the SQLite docs for schema changes) so the intermediate state — where
+		// the old table has no FK and the new table exists alongside it — is
+		// never visible to concurrent readers and does not trigger spurious FK
+		// violations. foreign_keys is re-enabled immediately after.
+		//
+		// See https://www.sqlite.org/lang_altertable.html#otheralter
+		if err := func() error {
+			if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+				return fmt.Errorf("disable FK: %w", err)
 			}
+			tx, err := conn.Begin()
+			if err != nil {
+				return fmt.Errorf("begin tx: %w", err)
+			}
+			defer tx.Rollback() //nolint:errcheck
+			steps := []string{
+				// Create the session_groups table first (the FK target must
+				// exist before we can reference it).
+				`CREATE TABLE IF NOT EXISTS session_groups (
+				  group_id       TEXT PRIMARY KEY,
+				  parent_session TEXT NOT NULL,
+				  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+				)`,
+				// Recreate agent_status with the REFERENCES clause.
+				`CREATE TABLE agent_status_new (
+				  session_name      TEXT PRIMARY KEY,
+				  repo              TEXT NOT NULL,
+				  worktree          TEXT NOT NULL,
+				  state             TEXT NOT NULL,
+				  title             TEXT,
+				  opencode_sid      TEXT,
+				  agent_name        TEXT,
+				  model_id          TEXT,
+				  root_agent_name   TEXT,
+				  root_model_id     TEXT,
+				  opencode_port     INTEGER,
+				  host_mode         INTEGER NOT NULL DEFAULT 0,
+				  instance_id       TEXT,
+				  last_seen         INTEGER NOT NULL,
+				  ended_at          INTEGER,
+				  harness           TEXT NOT NULL DEFAULT 'opencode',
+				  harness_session_id TEXT,
+				  harness_port      INTEGER,
+				  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+				)`,
+				// Copy all existing rows; new group_id column gets NULL.
+				`INSERT INTO agent_status_new
+				  SELECT session_name, repo, worktree, state, title,
+				         opencode_sid, agent_name, model_id,
+				         root_agent_name, root_model_id, opencode_port,
+				         host_mode, instance_id, last_seen, ended_at,
+				         harness, harness_session_id, harness_port, NULL
+				  FROM agent_status`,
+				"DROP TABLE agent_status",
+				"ALTER TABLE agent_status_new RENAME TO agent_status",
+				"UPDATE schema_version SET version = 9",
+			}
+			for _, s := range steps {
+				if _, err := tx.Exec(s); err != nil {
+					return fmt.Errorf("step %q: %w", s[:min(40, len(s))], err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("commit: %w", err)
+			}
+			if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+				return fmt.Errorf("re-enable FK: %w", err)
+			}
+			return nil
+		}(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v8→v9: %w", err)
 		}
 		version = 9
 	}
@@ -1571,7 +1630,11 @@ type GroupMemberResult struct {
 }
 
 // terminalStates is the set of agent states that indicate a session has stopped
-// working and will not make further progress.
+// working and will not make further progress. Note: this includes "deleted"
+// (cleaned up mid-run) intentionally — a deleted session will never complete,
+// so it counts as terminal for GroupCompleted purposes. This differs from
+// review.go's isTerminalState, which omits "deleted" because prism review
+// uses separate cleanup detection logic.
 var terminalStates = []string{"finished", "interrupted", "error", "deleted"}
 
 // isTerminalState reports whether state is a terminal agent state.
@@ -1625,7 +1688,7 @@ func (d *DB) GroupCompleted(groupID string) (bool, error) {
 // GroupCompleted returns true. Members that are still active are included but
 // their State may be non-terminal.
 //
-// LastMessage is populated from the most recent assistant_message event payload
+// LastMessage is populated from the most recent msg_assistant event payload
 // for each session. It is empty when no such event has been recorded.
 func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) {
 	// Fetch each member's session_name, state, and root_agent_name.
@@ -1651,11 +1714,11 @@ WHERE group_id = ?`
 		return nil, fmt.Errorf("db: group results: iterate statuses: %w", err)
 	}
 
-	// For each member, fetch the last assistant_message event payload.
+	// For each member, fetch the last msg_assistant event payload.
 	for name, r := range results {
 		const msgQ = `
 SELECT payload FROM agent_events
-WHERE session_name = ? AND type = 'assistant_message'
+WHERE session_name = ? AND type = 'msg_assistant'
 ORDER BY created_at DESC, rowid DESC
 LIMIT 1`
 		var payload string

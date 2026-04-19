@@ -2465,14 +2465,14 @@ func TestGroupResults(t *testing.T) {
 		}
 	}
 
-	// Write an assistant_message event for the first member only.
+	// Write a msg_assistant event for the first member only.
 	goalSession := "nixos-config@feature~review-1-goal"
 	if err := d.WriteEvent(db.Event{
 		ID:          "evt-assistant-1",
 		SessionName: goalSession,
 		Repo:        "nixos-config",
 		Worktree:    "/wt",
-		Type:        "assistant_message",
+		Type:        "msg_assistant",
 		Payload:     `{"content":"<verdict>PASS</verdict>"}`,
 		CreatedAt:   time.Now(),
 	}); err != nil {
@@ -2495,7 +2495,7 @@ func TestGroupResults(t *testing.T) {
 		t.Errorf("goal State: got %q, want \"finished\"", goalResult.State)
 	}
 	if goalResult.LastMessage != `{"content":"<verdict>PASS</verdict>"}` {
-		t.Errorf("goal LastMessage: got %q, want assistant_message payload", goalResult.LastMessage)
+		t.Errorf("goal LastMessage: got %q, want msg_assistant payload", goalResult.LastMessage)
 	}
 
 	codeSession := "nixos-config@feature~review-1-code"
@@ -2507,7 +2507,7 @@ func TestGroupResults(t *testing.T) {
 		t.Errorf("code State: got %q, want \"finished\"", codeResult.State)
 	}
 	if codeResult.LastMessage != "" {
-		t.Errorf("code LastMessage: got %q, want \"\" (no assistant_message)", codeResult.LastMessage)
+		t.Errorf("code LastMessage: got %q, want \"\" (no msg_assistant)", codeResult.LastMessage)
 	}
 }
 
@@ -2602,6 +2602,140 @@ func TestGroupFK_OnDeleteSetNull(t *testing.T) {
 		if s.Title == nil || *s.Title != "My Title" {
 			t.Errorf("Title for %s after group deletion: got %v, want \"My Title\"", name, s.Title)
 		}
+	}
+}
+
+// seedV8DB creates a raw SQLite database at dbPath seeded with the v8 schema
+// and an existing agent_status row, simulating a real pre-migration database.
+func seedV8DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v8 db: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT, harness_port INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (8);
+		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v8 db: %v", err)
+	}
+}
+
+// TestGroupFK_Violation_MigratedDB verifies that FK enforcement works on a
+// database that was migrated from v8 to v9 (not freshly created). This is
+// the critical production path: most deployed prism instances will arrive
+// at v9 via migration, not via a fresh Open. The rename-and-recreate pattern
+// used in the migration ensures the REFERENCES clause is present in the
+// schema metadata, so PRAGMA foreign_keys = ON can enforce it.
+func TestGroupFK_Violation_MigratedDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v8_fk_violation.db")
+	seedV8DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v8 db: %v", err)
+	}
+	defer d.Close()
+
+	// Attempt to set group_id to a non-existent group — must fail with FK error.
+	err = d.QueryRow(
+		"UPDATE agent_status SET group_id = 'does-not-exist' WHERE session_name = 'repo@main' RETURNING 1",
+	).Scan(new(int))
+	if err == nil {
+		t.Fatal("expected FK constraint error on migrated DB when setting group_id to non-existent group, got nil")
+	}
+	if !strings.Contains(strings.ToUpper(err.Error()), "FOREIGN KEY") {
+		t.Errorf("error should mention FOREIGN KEY constraint on migrated DB: got %q", err.Error())
+	}
+}
+
+// TestGroupFK_OnDeleteSetNull_MigratedDB verifies that the ON DELETE SET NULL
+// cascade works on a database that was migrated from v8 to v9. The
+// rename-and-recreate migration pattern is required for this to work: a plain
+// ALTER TABLE ADD COLUMN cannot carry a REFERENCES clause, so without the
+// recreate the cascade would silently do nothing.
+func TestGroupFK_OnDeleteSetNull_MigratedDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v8_fk_cascade.db")
+	seedV8DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v8 db: %v", err)
+	}
+	defer d.Close()
+
+	// Register a group, assign the existing row to it.
+	groupID, err := d.RegisterGroup("coordinator@main")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET group_id = ? WHERE session_name = 'repo@main' RETURNING 1",
+		groupID,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("set group_id: %v", err)
+	}
+
+	// Confirm group_id is set.
+	var gid *string
+	if err := d.QueryRow(
+		"SELECT group_id FROM agent_status WHERE session_name = 'repo@main'",
+	).Scan(&gid); err != nil || gid == nil || *gid != groupID {
+		t.Fatalf("pre-condition: group_id not set correctly: gid=%v, err=%v", gid, err)
+	}
+
+	// Delete the session_groups row — ON DELETE SET NULL must clear group_id.
+	if err := d.QueryRow(
+		"DELETE FROM session_groups WHERE group_id = ? RETURNING group_id", groupID,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("delete session_groups: %v", err)
+	}
+
+	// group_id must now be NULL.
+	var groupIDAfter *string
+	if err := d.QueryRow(
+		"SELECT group_id FROM agent_status WHERE session_name = 'repo@main'",
+	).Scan(&groupIDAfter); err != nil {
+		t.Fatalf("query group_id after cascade: %v", err)
+	}
+	if groupIDAfter != nil {
+		t.Errorf("group_id after ON DELETE SET NULL on migrated DB: got %v, want nil", *groupIDAfter)
+	}
+
+	// State must be preserved (other columns untouched).
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil")
+	}
+	if s.State != "active" {
+		t.Errorf("State after cascade on migrated DB: got %q, want \"active\"", s.State)
 	}
 }
 
