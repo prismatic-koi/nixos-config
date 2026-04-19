@@ -18,6 +18,11 @@ func initGitRepo(t *testing.T, dir, branchName string) string {
 		{"git", "init", "-b", branchName},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
+		// Disable signing in the test repo: host gitconfig may enable
+		// gpgsign globally (via home-manager), which would make `git commit`
+		// fail here because no signing key is available in the test env.
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "config", "tag.gpgsign", "false"},
 	}
 	for _, args := range cmds {
 		c := exec.Command(args[0], args[1:]...)

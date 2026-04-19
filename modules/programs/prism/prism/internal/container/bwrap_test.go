@@ -92,20 +92,14 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	dirs := []string{
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
-		filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions"),
+		// Shared opencode data dir — bound directly into the bwrap sandbox.
+		filepath.Join(fakeHome, ".local", "share", "opencode"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("fixture: MkdirAll %q: %v", d, err)
 		}
-	}
-
-	// Ensure the opencode session dir exists (named after the container).
-	containerN := containerName(cfg.SessionName)
-	sessionDir := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", containerN)
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		t.Fatalf("fixture: MkdirAll session dir: %v", err)
 	}
 
 	// Create fake SSH keys (regular files, so EvalSymlinks resolves them).
@@ -179,9 +173,13 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// The first 9 elements must be the baseline namespace flags in order.
+	// The first baseline flags must appear in order, with --clearenv first.
+	// --clearenv wipes the inherited environment so host-shell secrets (e.g.
+	// PRISM_GITHUB_TOKEN_*) do not leak into the sandbox interior; every var
+	// the sandbox needs is added back via explicit --setenv pairs.
 	// Note: --unshare-ipc is intentionally absent — see issue #906.
 	want := []string{
+		"--clearenv",
 		"--unshare-pid",
 		"--unshare-uts",
 		"--proc", "/proc",
@@ -195,6 +193,157 @@ func TestBwrapBuildArgs_BaselineFlags(t *testing.T) {
 		}
 		if args[i] != w {
 			t.Errorf("args[%d] = %q, want %q", i, args[i], w)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_ClearenvBeforeAllSetenv verifies that --clearenv appears
+// before the first --setenv pair. bwrap applies flags left-to-right, so
+// --clearenv MUST come first — any --setenv emitted before it would be wiped.
+func TestBwrapBuildArgs_ClearenvBeforeAllSetenv(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	clearenvIdx := -1
+	firstSetenvIdx := -1
+	for i, a := range args {
+		if a == "--clearenv" && clearenvIdx == -1 {
+			clearenvIdx = i
+		}
+		if a == "--setenv" && firstSetenvIdx == -1 {
+			firstSetenvIdx = i
+		}
+	}
+
+	if clearenvIdx == -1 {
+		t.Fatalf("--clearenv missing from args: %v", args)
+	}
+	if firstSetenvIdx == -1 {
+		t.Fatalf("expected at least one --setenv, got none: %v", args)
+	}
+	if clearenvIdx >= firstSetenvIdx {
+		t.Errorf("--clearenv at index %d must precede first --setenv at index %d (otherwise the setenv is wiped)",
+			clearenvIdx, firstSetenvIdx)
+	}
+}
+
+// TestMinimalBwrapExecEnv_DropsSecrets verifies that minimalBwrapExecEnv
+// strips every env var except the small allow-list bwrap itself needs. This
+// is the second layer of the token-leak defence (the first being --clearenv
+// on the bwrap command line): even the bwrap process's own /proc/<pid>/environ
+// must not contain secrets that could be read by anyone with ptrace rights.
+func TestMinimalBwrapExecEnv_DropsSecrets(t *testing.T) {
+	input := []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/home/ben",
+		"USER=ben",
+		"LOGNAME=ben",
+		"TERM=xterm-256color",
+		"LANG=en_NZ.UTF-8",
+		"LC_ALL=en_NZ.UTF-8",
+
+		// All the secret shapes we've observed leaking.
+		"GITHUB_TOKEN=github_pat_secret",
+		"GITHUB_PACKAGES_TOKEN=ghp_secret",
+		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR=github_pat_role",
+		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER=github_pat_role",
+		"ANTHROPIC_API_KEY=sk-anth",
+		"OPENAI_API_KEY=sk-openai",
+		"OPENROUTER_API_KEY=sk-or",
+
+		// Arbitrary non-secret noise that should also be dropped.
+		"PRISM_SESSION_NAME=leaky",
+		"XDG_RUNTIME_DIR=/run/user/1000",
+		"SSH_AUTH_SOCK=/tmp/ssh-xxx",
+	}
+
+	out := minimalBwrapExecEnv(input)
+
+	wantPresent := []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/home/ben",
+		"USER=ben",
+		"LOGNAME=ben",
+		"TERM=xterm-256color",
+		"LANG=en_NZ.UTF-8",
+		"LC_ALL=en_NZ.UTF-8",
+	}
+	gotSet := map[string]bool{}
+	for _, kv := range out {
+		gotSet[kv] = true
+	}
+	for _, kv := range wantPresent {
+		if !gotSet[kv] {
+			t.Errorf("allow-listed pair %q missing from output: %v", kv, out)
+		}
+	}
+
+	// Every output pair must be on the allow-list — nothing else should leak.
+	allowedKeys := map[string]bool{
+		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true,
+		"TERM": true, "LANG": true, "LC_ALL": true,
+	}
+	for _, kv := range out {
+		eq := -1
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				eq = i
+				break
+			}
+		}
+		if eq <= 0 {
+			t.Errorf("output pair %q is malformed (no '=')", kv)
+			continue
+		}
+		key := kv[:eq]
+		if !allowedKeys[key] {
+			t.Errorf("key %q leaked through minimalBwrapExecEnv (pair: %q)", key, kv)
+		}
+	}
+
+	// Explicitly guard against the specific secret env var shapes.
+	for _, kv := range out {
+		for _, forbidden := range []string{
+			"GITHUB_TOKEN",
+			"GITHUB_PACKAGES_TOKEN",
+			"PRISM_GITHUB_TOKEN_",
+			"ANTHROPIC_API_KEY",
+			"OPENAI_API_KEY",
+			"OPENROUTER_API_KEY",
+		} {
+			if strings.HasPrefix(kv, forbidden) {
+				t.Errorf("forbidden key %q leaked: %q", forbidden, kv)
+			}
+		}
+	}
+}
+
+// TestMinimalBwrapExecEnv_IgnoresMalformed verifies that entries without '='
+// (which should never appear in os.Environ() output but are possible in
+// synthetic inputs) are silently skipped rather than panicking or producing
+// bogus pairs.
+func TestMinimalBwrapExecEnv_IgnoresMalformed(t *testing.T) {
+	out := minimalBwrapExecEnv([]string{
+		"PATH=/usr/bin",
+		"malformed-no-equals",
+		"=starts-with-equals",
+		"HOME=/home/ben",
+	})
+
+	want := []string{"PATH=/usr/bin", "HOME=/home/ben"}
+	if len(out) != len(want) {
+		t.Fatalf("len(out) = %d, want %d: %v", len(out), len(want), out)
+	}
+	for i, w := range want {
+		if out[i] != w {
+			t.Errorf("out[%d] = %q, want %q", i, out[i], w)
 		}
 	}
 }
@@ -252,7 +401,12 @@ func TestBwrapBuildArgs_McpAuthBound(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_OpencodeSessionDirBound(t *testing.T) {
+func TestBwrapBuildArgs_OpencodeSharedDirBound(t *testing.T) {
+	// bwrap mode binds the shared host opencode data dir
+	// (~/.local/share/opencode/) directly into the sandbox so all sessions
+	// share a single SQLite DB. The per-session prism-sessions/<name>/
+	// isolation used by the podman path is not needed on Linux (no virtiofs
+	// WAL-mode locking issue) and is intentionally omitted here.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -263,9 +417,16 @@ func TestBwrapBuildArgs_OpencodeSessionDirBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	sessionDir := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.name)
-	if !hasBind(args, sessionDir) {
-		t.Errorf("opencode session dir %q not found as --bind SRC SRC in args: %v", sessionDir, args)
+	sharedDir := filepath.Join(fakeHome, ".local", "share", "opencode")
+	if !hasBind(args, sharedDir) {
+		t.Errorf("opencode shared data dir %q not found as --bind SRC SRC in args: %v", sharedDir, args)
+	}
+
+	// Confirm the per-session prism-sessions path is NOT bound — bwrap
+	// must use the shared dir, not the per-session one.
+	perSessionDir := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.name)
+	if hasBind(args, perSessionDir) {
+		t.Errorf("per-session opencode dir %q should NOT be bound in bwrap mode, but was: %v", perSessionDir, args)
 	}
 }
 
@@ -412,7 +573,10 @@ func TestBwrapBuildArgs_KubeAgentsConfigROBound(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_SSHAccessKeyROBound(t *testing.T) {
+func TestBwrapBuildArgs_SSHAccessKeyRemapped(t *testing.T) {
+	// The access key is mounted at the host path but exposed inside the
+	// sandbox at the canonical generic path $HOME/.ssh/access-key so that
+	// the generated ~/.ssh/config's IdentityFile line resolves correctly.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -423,13 +587,23 @@ func TestBwrapBuildArgs_SSHAccessKeyROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	accessKey := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519")
-	if !hasROBind(args, accessKey) {
-		t.Errorf("SSH access key %q not found as --ro-bind SRC SRC in args: %v", accessKey, args)
+	accessKeySrc := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519")
+	accessKeyDst := filepath.Join(fakeHome, ".ssh", "access-key")
+	if !hasROBindSrcDst(args, accessKeySrc, accessKeyDst) {
+		t.Errorf("SSH access key: want --ro-bind %q %q in args: %v", accessKeySrc, accessKeyDst, args)
+	}
+	// Must NOT be bound at the host-name path (Dst==Src form was replaced
+	// by the canonical-name remap in the signing-key parity fix).
+	if hasROBindSrcDst(args, accessKeySrc, accessKeySrc) {
+		t.Errorf("SSH access key: --ro-bind %q %q (Dst==Src) should not be emitted; args: %v",
+			accessKeySrc, accessKeySrc, args)
 	}
 }
 
-func TestBwrapBuildArgs_SSHSigningKeyROBound(t *testing.T) {
+func TestBwrapBuildArgs_SSHSigningKeyRemapped(t *testing.T) {
+	// Both halves of the signing key pair are remapped to canonical generic
+	// paths under $HOME/.ssh/ so the generated ~/.gitconfig's signingKey
+	// line resolves to the same path the agent sees at runtime.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -440,17 +614,71 @@ func TestBwrapBuildArgs_SSHSigningKeyROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	signingKey := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey")
-	signingKeyPub := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey.pub")
-	if !hasROBind(args, signingKey) {
-		t.Errorf("SSH signing key (private) %q not found as --ro-bind SRC SRC in args: %v", signingKey, args)
+	signingKeySrc := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey")
+	signingKeyDst := filepath.Join(fakeHome, ".ssh", "signing-key")
+	signingKeyPubSrc := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey.pub")
+	signingKeyPubDst := filepath.Join(fakeHome, ".ssh", "signing-key.pub")
+
+	if !hasROBindSrcDst(args, signingKeySrc, signingKeyDst) {
+		t.Errorf("SSH signing key (private): want --ro-bind %q %q in args: %v",
+			signingKeySrc, signingKeyDst, args)
 	}
-	if !hasROBind(args, signingKeyPub) {
-		t.Errorf("SSH signing key (public) %q not found as --ro-bind SRC SRC in args: %v", signingKeyPub, args)
+	if !hasROBindSrcDst(args, signingKeyPubSrc, signingKeyPubDst) {
+		t.Errorf("SSH signing key (public): want --ro-bind %q %q in args: %v",
+			signingKeyPubSrc, signingKeyPubDst, args)
+	}
+	// Must NOT be bound at the host-name paths.
+	if hasROBindSrcDst(args, signingKeySrc, signingKeySrc) {
+		t.Errorf("SSH signing key (private): --ro-bind %q %q (Dst==Src) should not be emitted",
+			signingKeySrc, signingKeySrc)
+	}
+	if hasROBindSrcDst(args, signingKeyPubSrc, signingKeyPubSrc) {
+		t.Errorf("SSH signing key (public): --ro-bind %q %q (Dst==Src) should not be emitted",
+			signingKeyPubSrc, signingKeyPubSrc)
 	}
 }
 
-func TestBwrapBuildArgs_KnownHostsROBound(t *testing.T) {
+func TestBwrapBuildArgs_AllowedSignersRemapped(t *testing.T) {
+	// When writeGitconfig has successfully written the allowed_signers file,
+	// BuildArgs must mount it at the canonical $HOME/.ssh/allowed_signers
+	// path so that `git verify-commit` (which reads the path from gitconfig)
+	// resolves it inside the sandbox.
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+	defer cleanup()
+
+	// writeGitconfig(isolationBwrap) both writes the gitconfig and, as a
+	// side effect, writes the allowed_signers file and sets
+	// allowedSignersReady — which is what gates the mount below.
+	if err := m.writeGitconfig(isolationBwrap); err != nil {
+		t.Fatalf("writeGitconfig: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	allowedSrc := m.allowedSignersFilePath()
+	allowedDst := filepath.Join(fakeHome, ".ssh", "allowed_signers")
+	if !hasROBindSrcDst(args, allowedSrc, allowedDst) {
+		t.Errorf("allowed_signers: want --ro-bind %q %q in args: %v",
+			allowedSrc, allowedDst, args)
+	}
+}
+
+func TestBwrapBuildArgs_KnownHostsRemapped(t *testing.T) {
+	// known_hosts is mounted with Dst = $HOME/.ssh/known_hosts, matching the
+	// canonical-name pattern used by the other SSH artefacts. This is
+	// functionally identical to Dst==Src because host sshDir already equals
+	// $HOME/.ssh, but the explicit form reads uniformly with the siblings.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -461,9 +689,11 @@ func TestBwrapBuildArgs_KnownHostsROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	knownHosts := filepath.Join(fakeHome, ".ssh", "known_hosts")
-	if !hasROBind(args, knownHosts) {
-		t.Errorf("known_hosts %q not found as --ro-bind SRC SRC in args: %v", knownHosts, args)
+	knownHostsSrc := filepath.Join(fakeHome, ".ssh", "known_hosts")
+	knownHostsDst := filepath.Join(fakeHome, ".ssh", "known_hosts")
+	if !hasROBindSrcDst(args, knownHostsSrc, knownHostsDst) {
+		t.Errorf("known_hosts: want --ro-bind %q %q in args: %v",
+			knownHostsSrc, knownHostsDst, args)
 	}
 }
 
@@ -776,14 +1006,13 @@ func TestStandardSandboxEnvArgs_PathFromHostWhenSet(t *testing.T) {
 }
 
 // TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet verifies that HOME,
-// USER, LOGNAME, LANG, LC_ALL, and SHELL are forwarded when set on the host.
+// USER, LOGNAME, LANG, and LC_ALL are forwarded when set on the host.
 func TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet(t *testing.T) {
 	t.Setenv("HOME", "/home/testuser")
 	t.Setenv("USER", "testuser")
 	t.Setenv("LOGNAME", "testuser")
 	t.Setenv("LANG", "en_US.UTF-8")
 	t.Setenv("LC_ALL", "en_US.UTF-8")
-	t.Setenv("SHELL", "/bin/bash")
 
 	args := standardSandboxEnvArgs()
 
@@ -793,7 +1022,6 @@ func TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet(t *testing.T) {
 		{"LOGNAME", "testuser"},
 		{"LANG", "en_US.UTF-8"},
 		{"LC_ALL", "en_US.UTF-8"},
-		{"SHELL", "/bin/bash"},
 	}
 	for _, c := range cases {
 		if !hasSetenv(args, c[0], c[1]) {
@@ -803,20 +1031,48 @@ func TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet(t *testing.T) {
 }
 
 // TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset verifies that
-// optional vars (HOME, USER, LOGNAME, LANG, LC_ALL, SHELL) are NOT emitted
-// when they are not set on the host.
+// optional vars (HOME, USER, LOGNAME, LANG, LC_ALL) are NOT emitted when
+// they are not set on the host. SHELL is not in this list because it is
+// forced to /bin/sh unconditionally (see TestStandardSandboxEnvArgs_ShellPinnedToBinSh).
 func TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset(t *testing.T) {
-	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL"} {
 		t.Setenv(key, "")
 	}
 	args := standardSandboxEnvArgs()
 
-	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL"} {
 		for i := 0; i+2 < len(args); i++ {
 			if args[i] == "--setenv" && args[i+1] == key {
 				t.Errorf("optional var %s should be omitted when unset but found in args: %v", key, args)
 			}
 		}
+	}
+}
+
+// TestStandardSandboxEnvArgs_ShellPinnedToBinSh verifies that SHELL is always
+// set to /bin/sh, regardless of the host value. On NixOS /bin/sh is a symlink
+// to bash; using /bin/sh (not zsh) avoids NixOS' /etc/zshenv sourcing
+// set-environment, which cats sops paths that don't exist inside the sandbox
+// and silently overwrites GITHUB_TOKEN with an empty string. bash -c does
+// not source /etc/profile or /etc/bashrc for non-interactive invocations, so
+// injected env vars survive intact. We pin /bin/sh (not /bin/bash) because
+// /bin/ inside the sandbox only contains the NixOS /bin/sh symlink — bash
+// itself lives in the Nix store at a hash-prefixed path.
+func TestStandardSandboxEnvArgs_ShellPinnedToBinSh(t *testing.T) {
+	for _, hostShell := range []string{
+		"", // unset host SHELL
+		"/run/current-system/sw/bin/zsh",
+		"/usr/bin/fish",
+		"/bin/bash",
+	} {
+		t.Run("host_SHELL="+hostShell, func(t *testing.T) {
+			t.Setenv("SHELL", hostShell)
+			args := standardSandboxEnvArgs()
+			if !hasSetenv(args, "SHELL", "/bin/sh") {
+				t.Errorf("expected --setenv SHELL /bin/sh regardless of host value %q; got args: %v",
+					hostShell, args)
+			}
+		})
 	}
 }
 
@@ -1400,7 +1656,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 
 	// Baseline flags present. Note: --unshare-ipc is intentionally absent (see
 	// issue #906 — it breaks SQLite WAL mmap coherency between concurrent sessions).
-	for _, flag := range []string{"--unshare-pid", "--unshare-uts", "--die-with-parent"} {
+	for _, flag := range []string{"--clearenv", "--unshare-pid", "--unshare-uts", "--die-with-parent"} {
 		if !hasArg(args, flag) {
 			t.Errorf("baseline flag %q missing from args", flag)
 		}

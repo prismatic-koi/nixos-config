@@ -111,14 +111,26 @@ func KillSidecar(sessionName string) {
 	}
 
 	// Guard against same-user PID recycling: verify the PID belongs to a
-	// prism process by checking /proc/<pid>/cmdline before sending SIGTERM.
-	// This is Linux-specific (codebase targets NixOS), so if the file is
-	// unreadable (e.g. the process is already gone) we fall through and let
-	// the subsequent Kill handle ESRCH gracefully.
+	// prism sidecar process by checking /proc/<pid>/cmdline before sending
+	// SIGTERM. This is Linux-specific (codebase targets NixOS), so if the
+	// file is unreadable (e.g. the process is already gone) we fall through
+	// and let the subsequent Kill handle ESRCH gracefully.
+	//
+	// The check matches the invariant argv shape of a prism-spawned sidecar:
+	//
+	//   <binary> sidecar --session <name> ...
+	//
+	// We require both "sidecar" and "--session" to appear in the cmdline.
+	// A previous implementation checked for "prism" in the binary path, but
+	// that produced false negatives under `go test`, where the sidecar is
+	// spawned by re-invoking the test binary (e.g. "cmd.test sidecar …") —
+	// the cmdline does not contain "prism" at all, so KillSidecar skipped
+	// the kill and sidecars leaked after every test run.
 	if cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); err == nil {
-		if !strings.Contains(string(cmdline), "prism") {
+		cmdlineStr := string(cmdline)
+		if !strings.Contains(cmdlineStr, "sidecar") || !strings.Contains(cmdlineStr, "--session") {
 			// PID has been recycled to an unrelated process — do not kill it.
-			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism process — skipping kill\n", pid)
+			fmt.Fprintf(os.Stderr, "warning: sidecar pid %d does not appear to be a prism sidecar process — skipping kill\n", pid)
 			_ = os.Remove(pidPath)
 			return
 		}

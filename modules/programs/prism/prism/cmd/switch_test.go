@@ -85,6 +85,16 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
 	// starts the tmux server (which inherits the environment).
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Ignore the host's global gitconfig so the spawned prism binary is not
+	// affected by host-level signing config (gpgsign=true without a key
+	// available would break any git commit it runs).
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	// Clear PRISM_HOST_API so the spawned binary runs the host-side switch
+	// path directly rather than proxying to a sidecar that doesn't know
+	// about the test's isolated tmux server. This env var is inherited when
+	// the test itself runs inside a prism-managed session.
+	t.Setenv("PRISM_HOST_API", "")
 
 	prismBin := buildPrismBinary(t)
 
@@ -151,6 +161,12 @@ func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// production ~/.local/state/prism/ path.  Must be set before newCmdTestServer
 	// starts the tmux server (which inherits the environment).
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Ignore the host's global gitconfig and unset PRISM_HOST_API for the
+	// same reasons as the first test in this file — see
+	// TestSwitchPath_SwitchesClientToNewSession.
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	t.Setenv("PRISM_HOST_API", "")
 
 	prismBin := buildPrismBinary(t)
 

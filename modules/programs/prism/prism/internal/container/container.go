@@ -54,6 +54,44 @@ const (
 	healthCheckInterval = 500 * time.Millisecond
 )
 
+// isolationMode identifies which sandbox layer will consume the temp files
+// (gitconfig, ssh config) that writeGitconfig / writeSshConfig generate.
+//
+// The two sandboxes mount the SSH artefacts at different in-sandbox paths:
+//
+//   - podman runs as root, so canonical paths are /root/.ssh/{access-key,
+//     signing-key,signing-key.pub,allowed_signers} — the agent's $HOME is /root.
+//   - bwrap runs as the host user, so canonical paths are
+//     $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
+//     where $HOME is the host user's home directory.
+//
+// Agents inside both sandboxes see the same generic filenames (access-key,
+// signing-key, …); only the $HOME prefix differs. The isolation mode lets the
+// generators substitute the correct prefix into the config files they write.
+type isolationMode int
+
+const (
+	isolationPodman isolationMode = iota
+	isolationBwrap
+)
+
+// sandboxHome returns the in-sandbox $HOME directory for the given isolation
+// mode. For podman this is always /root (the image's user). For bwrap this is
+// the host user's home directory, because bwrap shares the host user namespace
+// and does not switch to root.
+func sandboxHome(mode isolationMode) string {
+	switch mode {
+	case isolationBwrap:
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = os.Getenv("HOME")
+		}
+		return home
+	default:
+		return "/root"
+	}
+}
+
 // Config holds the parameters for creating and managing a container.
 type Config struct {
 	// SessionName is the prism session name (e.g. "nixos-config@feature").
@@ -419,8 +457,30 @@ func (m *Manager) writeClaudeCredentials() {
 	m.claudeCredentialsReady = true
 }
 
+// writeSshConfig generates a minimal ~/.ssh/config for the sandbox and writes
+// it to a temp file. The file is later mounted at $HOME/.ssh/config:ro inside
+// the sandbox, where $HOME depends on the isolation mode (see isolationMode).
+//
+// The config only needs to handle GitHub; other SSH hosts are not expected
+// inside agent sandboxes. The IdentityFile path is $HOME/.ssh/access-key
+// using the sandbox-specific $HOME prefix, which matches the generic name
+// used by both the podman volume mount (/root/.ssh/access-key) and the bwrap
+// bind-mount (<hostHome>/.ssh/access-key).
+func (m *Manager) writeSshConfig(mode isolationMode) error {
+	identityFile := filepath.Join(sandboxHome(mode), ".ssh", "access-key")
+	sshConfig := "Host github.com\n" +
+		"  StrictHostKeyChecking accept-new\n" +
+		"  IdentityFile " + identityFile + "\n" +
+		"  IdentitiesOnly yes\n"
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
+		return fmt.Errorf("container: write ssh config: %w", err)
+	}
+	return nil
+}
+
 // writeGitconfig generates a minimal .gitconfig for the container and writes
-// it to a temp file. The file is later mounted at /root/.gitconfig:ro.
+// it to a temp file. The file is later mounted at $HOME/.gitconfig:ro inside
+// the sandbox, where $HOME depends on the isolation mode (see isolationMode).
 //
 // Sections included:
 //   - [user] — only when GitUserName and GitUserEmail are both non-empty;
@@ -431,7 +491,20 @@ func (m *Manager) writeClaudeCredentials() {
 //
 // Missing identity → [user] section omitted, warning logged (AC-14).
 // Missing signing keys → signing sections omitted, warning logged (AC-13).
-func (m *Manager) writeGitconfig() error {
+//
+// The mode argument controls the paths embedded in the generated file:
+//
+//   - isolationPodman: signingKey = /root/.ssh/signing-key.pub,
+//     allowedSignersFile = /root/.ssh/allowed_signers (paths inside the
+//     podman container, where the agent runs as root).
+//   - isolationBwrap: signingKey = <hostHome>/.ssh/signing-key.pub,
+//     allowedSignersFile = <hostHome>/.ssh/allowed_signers (paths inside
+//     the bwrap sandbox, where the agent runs as the host user).
+//
+// Both sandboxes mount the same underlying host key files — only the $HOME
+// prefix differs. Generic filenames (signing-key.pub, allowed_signers, …)
+// are used in both cases so agents see a uniform layout regardless of mode.
+func (m *Manager) writeGitconfig(mode isolationMode) error {
 	// Reset allowedSignersReady so that a retry or second call doesn't carry
 	// stale state from a previous successful write into a new call that may fail.
 	m.allowedSignersReady = false
@@ -465,13 +538,22 @@ func (m *Manager) writeGitconfig() error {
 
 	var sb strings.Builder
 
+	// Canonical in-sandbox paths for the signing artefacts. Both paths live
+	// at $HOME/.ssh/<generic-name> where $HOME depends on the isolation mode
+	// (see sandboxHome). Agents inside the sandbox see generic filenames —
+	// signing-key.pub / allowed_signers — regardless of which sandbox layer
+	// they're running under.
+	sandboxSshDir := filepath.Join(sandboxHome(mode), ".ssh")
+	sandboxSigningKeyPub := filepath.Join(sandboxSshDir, "signing-key.pub")
+	sandboxAllowedSigners := filepath.Join(sandboxSshDir, "allowed_signers")
+
 	// [user] section — only when identity is present.
 	if m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
 		sb.WriteString("[user]\n")
 		sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
 		sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
 		if hasSigning {
-			sb.WriteString("    signingKey = /root/.ssh/signing-key.pub\n")
+			sb.WriteString("    signingKey = " + sandboxSigningKeyPub + "\n")
 		}
 	} else {
 		log.Printf("container: git identity (name=%q, email=%q) missing; omitting [user] section from gitconfig",
@@ -507,7 +589,7 @@ func (m *Manager) writeGitconfig() error {
 			sb.WriteString("\n[gpg]\n")
 			sb.WriteString("    format = ssh\n")
 			sb.WriteString("\n[gpg \"ssh\"]\n")
-			sb.WriteString("    allowedSignersFile = /root/.ssh/allowed_signers\n")
+			sb.WriteString("    allowedSignersFile = " + sandboxAllowedSigners + "\n")
 		}
 	}
 
@@ -573,12 +655,9 @@ func (m *Manager) Create(ctx context.Context) error {
 	}
 
 	// Write a minimal SSH config for the container. The host's ~/.ssh/config
-	// is a nix store symlink with wrong ownership that SSH rejects. This
-	// config only needs to handle GitHub; other SSH hosts are not expected
-	// inside agent containers.
-	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile /root/.ssh/access-key\n  IdentitiesOnly yes\n"
-	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
-		return fmt.Errorf("container: write ssh config: %w", err)
+	// is a nix store symlink with wrong ownership that SSH rejects.
+	if err := m.writeSshConfig(isolationPodman); err != nil {
+		return err
 	}
 
 	// Write a minimal .gitconfig for the container. The host's git config lives
@@ -586,7 +665,7 @@ func (m *Manager) Create(ctx context.Context) error {
 	// containers. We generate a minimal config with identity, signing, and
 	// convenience settings.
 	t0 := time.Now()
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		return fmt.Errorf("container: write gitconfig: %w", err)
 	}
 	log.Printf("[timing] writeGitconfig: %s", time.Since(t0).Round(time.Millisecond))
@@ -611,7 +690,7 @@ func (m *Manager) Create(ctx context.Context) error {
 	// container and exits 125 if any are absent, so we create them eagerly here.
 	// Failures are logged and non-fatal — podman will surface the real error if
 	// the directory is still absent after this attempt.
-	if err := m.prepareVolumeDirs(); err != nil {
+	if err := m.prepareVolumeDirs(true); err != nil {
 		// prepareVolumeDirs logs individual failures; a non-nil error means
 		// multiple dirs failed and is logged here for observability only.
 		log.Printf("container: prepareVolumeDirs partial failure: %v", err)
@@ -746,32 +825,19 @@ func (m *Manager) Shutdown() {
 // missing sources — it simply fails to bind. Eagerly creating the directories
 // avoids confusing "No such file or directory" errors at bwrap startup.
 func (m *Manager) PrepareBwrap() ([]string, error) {
-	// Write a minimal SSH config for bwrap. Unlike the podman path, which uses
-	// the in-container path "/root/.ssh/access-key" (where the key is mounted),
-	// bwrap uses Dst==Src mounts — the key is visible at its resolved host path
-	// inside the sandbox. Resolve the symlink to get the absolute path that
-	// BuildArgs mounts with --ro-bind.
-	accessKeyName := m.cfg.SshAccessKeyName
-	if accessKeyName == "" {
-		accessKeyName = "prismatic-koi-ed25519"
-	}
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		home = os.Getenv("HOME")
-	}
-	sshDir := filepath.Join(home, ".ssh")
-	accessKeyPath := filepath.Join(sshDir, accessKeyName)
-	if resolved, err := filepath.EvalSymlinks(accessKeyPath); err == nil {
-		// Use the resolved path — that's what BuildArgs mounts with --ro-bind.
-		accessKeyPath = resolved
-	}
-	sshConfig := "Host github.com\n  StrictHostKeyChecking accept-new\n  IdentityFile " + accessKeyPath + "\n  IdentitiesOnly yes\n"
-	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
-		return nil, fmt.Errorf("container: bwrap: write ssh config: %w", err)
+	// Write a minimal SSH config for bwrap. The bwrap SSH key mount remaps
+	// the host signing/access keys to canonical generic paths under
+	// $HOME/.ssh/ inside the sandbox (see bwrap.go), so the IdentityFile path
+	// is $HOME/.ssh/access-key — same generic name as the podman path, just
+	// rooted at the host user's $HOME instead of /root.
+	if err := m.writeSshConfig(isolationBwrap); err != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
-	// Write the gitconfig. Mirrors the Create() path.
-	if err := m.writeGitconfig(); err != nil {
+	// Write the gitconfig. Mirrors the Create() path, but with bwrap-mode
+	// paths (signingKey and allowedSignersFile rooted at <hostHome>/.ssh/
+	// rather than /root/.ssh/).
+	if err := m.writeGitconfig(isolationBwrap); err != nil {
 		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
 	}
 
@@ -785,7 +851,7 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 	// Pre-create directories that BuildArgs will reference as bind-mount
 	// sources. bwrap silently fails rather than printing a clear error, so
 	// we create eagerly here.
-	if err := m.prepareVolumeDirs(); err != nil {
+	if err := m.prepareVolumeDirs(false); err != nil {
 		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
 	}
 
@@ -803,7 +869,12 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 // Individual MkdirAll failures are logged and treated as non-fatal: if the
 // directory is still absent when podman runs, podman will produce the real
 // error. Returns a non-nil error only when multiple dirs fail.
-func (m *Manager) prepareVolumeDirs() error {
+//
+// perSessionOpencode controls whether the per-session opencode state directory
+// (~/.local/share/opencode/prism-sessions/<name>/) is created. The podman path
+// requires it (Darwin virtiofs WAL-mode locking workaround); the bwrap path
+// shares ~/.local/share/opencode/ directly and does not need a per-session dir.
+func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
@@ -811,11 +882,13 @@ func (m *Manager) prepareVolumeDirs() error {
 
 	var errs []string
 
-	// Per-session opencode state directory.
-	opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
-	if err := os.MkdirAll(opencodeSessionDir, 0o755); err != nil {
-		log.Printf("container: failed to create per-session opencode state dir %q: %v", opencodeSessionDir, err)
-		errs = append(errs, err.Error())
+	// Per-session opencode state directory (podman only).
+	if perSessionOpencode {
+		opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
+		if err := os.MkdirAll(opencodeSessionDir, 0o755); err != nil {
+			log.Printf("container: failed to create per-session opencode state dir %q: %v", opencodeSessionDir, err)
+			errs = append(errs, err.Error())
+		}
 	}
 
 	// opencode plugin/model cache.

@@ -1542,7 +1542,7 @@ func TestWriteGitconfig_IncludesPushAndInit(t *testing.T) {
 		AllocatedPort: 14000,
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -1584,7 +1584,7 @@ func TestWriteGitconfig_NoSigningSectionsWhenKeysUnavailable(t *testing.T) {
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -1630,7 +1630,7 @@ func TestWriteGitconfig_SigningSectionsWhenKeysAndIdentityPresent(t *testing.T) 
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1661,6 +1661,118 @@ func TestWriteGitconfig_SigningSectionsWhenKeysAndIdentityPresent(t *testing.T) 
 	}
 }
 
+// TestWriteGitconfig_BwrapMode_UsesHostHomePaths verifies that writeGitconfig
+// in bwrap mode writes signingKey and allowedSignersFile paths rooted at the
+// host user's $HOME (not /root). The bwrap sandbox runs as the host user, so
+// the canonical $HOME/.ssh/<generic-name> paths resolve to the host user's
+// home — not the image root — and must match what bwrap.go mounts.
+func TestWriteGitconfig_BwrapMode_UsesHostHomePaths(t *testing.T) {
+	fakeHome := t.TempDir()
+	sshDir := fakeHome + "/.ssh"
+	if err := os.MkdirAll(sshDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll .ssh: %v", err)
+	}
+	for _, name := range []string{"prismatic-koi-ed25519-signingkey", "prismatic-koi-ed25519-signingkey.pub"} {
+		if err := os.WriteFile(sshDir+"/"+name, []byte("stub"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		GitUserName:   "test-user",
+		GitUserEmail:  "test@example.com",
+	})
+
+	if err := m.writeGitconfig(isolationBwrap); err != nil {
+		t.Fatalf("writeGitconfig(isolationBwrap) returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(m.gitconfigFilePath())
+		_ = os.Remove(m.allowedSignersFilePath())
+	})
+
+	data, err := os.ReadFile(m.gitconfigFilePath())
+	if err != nil {
+		t.Fatalf("read gitconfig: %v", err)
+	}
+	content := string(data)
+
+	wantSigning := "signingKey = " + fakeHome + "/.ssh/signing-key.pub"
+	if !strings.Contains(content, wantSigning) {
+		t.Errorf("bwrap gitconfig missing %q; content:\n%s", wantSigning, content)
+	}
+	wantAllowed := "allowedSignersFile = " + fakeHome + "/.ssh/allowed_signers"
+	if !strings.Contains(content, wantAllowed) {
+		t.Errorf("bwrap gitconfig missing %q; content:\n%s", wantAllowed, content)
+	}
+	// Must NOT contain the podman-only /root/.ssh/... paths.
+	if strings.Contains(content, "/root/.ssh/signing-key.pub") {
+		t.Errorf("bwrap gitconfig must not contain /root/.ssh/signing-key.pub; content:\n%s", content)
+	}
+	if strings.Contains(content, "/root/.ssh/allowed_signers") {
+		t.Errorf("bwrap gitconfig must not contain /root/.ssh/allowed_signers; content:\n%s", content)
+	}
+}
+
+// TestWriteSshConfig_PodmanMode_UsesRootPath verifies that writeSshConfig in
+// podman mode embeds IdentityFile = /root/.ssh/access-key (the path where
+// buildRunArgs mounts the access key inside the podman container).
+func TestWriteSshConfig_PodmanMode_UsesRootPath(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+
+	if err := m.writeSshConfig(isolationPodman); err != nil {
+		t.Fatalf("writeSshConfig(isolationPodman): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.sshConfigFilePath()) })
+
+	data, err := os.ReadFile(m.sshConfigFilePath())
+	if err != nil {
+		t.Fatalf("read ssh config: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "IdentityFile /root/.ssh/access-key") {
+		t.Errorf("podman ssh config missing IdentityFile /root/.ssh/access-key; content:\n%s", content)
+	}
+}
+
+// TestWriteSshConfig_BwrapMode_UsesHostHomePath verifies that writeSshConfig
+// in bwrap mode embeds IdentityFile = <hostHome>/.ssh/access-key rather than
+// /root/.ssh/access-key. bwrap mounts the access key at the host user's
+// $HOME/.ssh/ so the generated SSH config must reference the same path.
+func TestWriteSshConfig_BwrapMode_UsesHostHomePath(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+
+	if err := m.writeSshConfig(isolationBwrap); err != nil {
+		t.Fatalf("writeSshConfig(isolationBwrap): %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(m.sshConfigFilePath()) })
+
+	data, err := os.ReadFile(m.sshConfigFilePath())
+	if err != nil {
+		t.Fatalf("read ssh config: %v", err)
+	}
+	content := string(data)
+	want := "IdentityFile " + fakeHome + "/.ssh/access-key"
+	if !strings.Contains(content, want) {
+		t.Errorf("bwrap ssh config missing %q; content:\n%s", want, content)
+	}
+	if strings.Contains(content, "IdentityFile /root/.ssh/access-key") {
+		t.Errorf("bwrap ssh config must not contain /root/.ssh/access-key; content:\n%s", content)
+	}
+}
+
 func TestWriteGitconfig_UserSectionWhenIdentityPresent(t *testing.T) {
 	// AC-2, AC-14: [user] section present only when both name and email are set.
 	m := New(Config{
@@ -1670,7 +1782,7 @@ func TestWriteGitconfig_UserSectionWhenIdentityPresent(t *testing.T) {
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -1720,7 +1832,7 @@ func TestWriteGitconfig_NoSigningWithoutIdentity(t *testing.T) {
 		// GitUserName and GitUserEmail intentionally left empty.
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -1763,7 +1875,7 @@ func TestWriteGitconfig_NoUserSectionWhenIdentityMissing(t *testing.T) {
 				GitUserEmail:  tc.email,
 			})
 
-			if err := m.writeGitconfig(); err != nil {
+			if err := m.writeGitconfig(isolationPodman); err != nil {
 				t.Fatalf("writeGitconfig returned error: %v", err)
 			}
 			t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -1889,7 +2001,7 @@ func TestWriteGitconfig_CustomSigningKeyName(t *testing.T) {
 		SshSigningKeyName: "my-custom-signingkey",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1936,7 +2048,7 @@ func TestWriteGitconfig_FallbackWhenSigningKeyNameEmpty(t *testing.T) {
 		// SshSigningKeyName intentionally left empty — must fall back to default.
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -1988,7 +2100,7 @@ func TestWriteGitconfig_AllowedSignersFileInGitconfigWhenSigningAvailable(t *tes
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -2023,7 +2135,7 @@ func TestWriteGitconfig_AllowedSignersAbsentWhenSigningUnavailable(t *testing.T)
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(m.gitconfigFilePath()) })
@@ -2066,7 +2178,7 @@ func TestWriteGitconfig_AllowedSignersFileContent(t *testing.T) {
 		GitUserEmail:  "test@example.com",
 	})
 
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig returned error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -2115,7 +2227,7 @@ func TestBuildRunArgs_AllowedSignersMountedWhenSigningAvailable(t *testing.T) {
 
 	// writeGitconfig must be called first — it sets allowedSignersReady which
 	// buildRunArgs uses to gate the bind-mount.
-	if err := m.writeGitconfig(); err != nil {
+	if err := m.writeGitconfig(isolationPodman); err != nil {
 		t.Fatalf("writeGitconfig: %v", err)
 	}
 	t.Cleanup(func() {
@@ -2599,7 +2711,7 @@ func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	t.Setenv("HOME", fakeHome)
 
 	m := New(Config{SessionName: "my-repo@feat", AllocatedPort: 14000})
-	if err := m.prepareVolumeDirs(); err != nil {
+	if err := m.prepareVolumeDirs(true); err != nil {
 		t.Fatalf("prepareVolumeDirs: %v", err)
 	}
 
@@ -2611,6 +2723,38 @@ func TestPrepareVolumeDirs_CreatesSessionDir(t *testing.T) {
 	wantClipboard := filepath.Join(fakeHome, ".cache", "prism", "clipboard")
 
 	for _, dir := range []string{wantSession, wantOpencode, wantBun, wantClipboard} {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			t.Errorf("expected directory to exist: %s (err: %v)", dir, err)
+		}
+	}
+}
+
+// TestPrepareVolumeDirs_BwrapSkipsSessionDir verifies that when called with
+// perSessionOpencode=false (the bwrap path), the per-session opencode state
+// directory under prism-sessions/ is NOT created. bwrap mode shares the host's
+// ~/.local/share/opencode/ directly, so a per-session subdir would just be
+// dead state on disk.
+func TestPrepareVolumeDirs_BwrapSkipsSessionDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{SessionName: "my-repo@feat", AllocatedPort: 14000})
+	if err := m.prepareVolumeDirs(false); err != nil {
+		t.Fatalf("prepareVolumeDirs(false): %v", err)
+	}
+
+	// Per-session dir must NOT exist.
+	perSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
+	if _, err := os.Stat(perSession); !os.IsNotExist(err) {
+		t.Errorf("per-session dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
+	}
+
+	// Other shared dirs that bwrap also relies on should still be created.
+	for _, dir := range []string{
+		filepath.Join(fakeHome, ".cache", "opencode"),
+		filepath.Join(fakeHome, ".cache", "bun"),
+		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
+	} {
 		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 			t.Errorf("expected directory to exist: %s (err: %v)", dir, err)
 		}

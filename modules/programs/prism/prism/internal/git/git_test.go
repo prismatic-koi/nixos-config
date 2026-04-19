@@ -15,6 +15,11 @@ func initRepo(t *testing.T, dir, branchName string) {
 		{"git", "init", "-b", branchName},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
+		// Disable signing in the test repo: host gitconfig may enable
+		// gpgsign globally (via home-manager), which would make `git commit`
+		// fail here because no signing key is available in the test env.
+		{"git", "config", "commit.gpgsign", "false"},
+		{"git", "config", "tag.gpgsign", "false"},
 	}
 	for _, args := range cmds {
 		c := exec.Command(args[0], args[1:]...)
@@ -562,9 +567,14 @@ func TestCloneWorktree_EmptyRepo(t *testing.T) {
 		t.Errorf("no bootstrap instructions in progress messages; got: %v", progressMsgs)
 	}
 
-	// User must be able to make a commit in the orphan worktree.
+	// User must be able to make a commit in the orphan worktree. Disable
+	// signing in the test repo: host gitconfig may enable gpgsign globally
+	// (via home-manager), which would make `git commit` fail here because no
+	// signing key is available in the test env.
 	runGitIn(t, worktreeDir, "config", "user.email", "test@test.com")
 	runGitIn(t, worktreeDir, "config", "user.name", "Test")
+	runGitIn(t, worktreeDir, "config", "commit.gpgsign", "false")
+	runGitIn(t, worktreeDir, "config", "tag.gpgsign", "false")
 	if err := os.WriteFile(filepath.Join(worktreeDir, "README"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
