@@ -51,9 +51,28 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 	return nil
 }
 
-// fallbackPATH is the PATH value used when os.Getenv("PATH") is empty.
-// It covers the NixOS system profile and standard POSIX paths.
-const fallbackPATH = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
+// fallbackPATH returns the PATH value used when os.Getenv("PATH") is empty.
+// It covers the per-user home-manager profile (when USER is set), the NixOS
+// system profile, and standard POSIX paths.
+//
+// The per-user entry (/etc/profiles/per-user/<user>/bin) is prepended only
+// when os.Getenv("USER") is non-empty — an empty USER would produce the
+// invalid path /etc/profiles/per-user//bin.
+func fallbackPATH() string {
+	parts := []string{
+		"/run/current-system/sw/bin",
+		"/nix/var/nix/profiles/default/bin",
+		"/usr/bin",
+		"/bin",
+	}
+	user := os.Getenv("USER")
+	if user != "" {
+		// Per-user home-manager profile — prepend so it takes priority.
+		perUser := "/etc/profiles/per-user/" + user + "/bin"
+		parts = append([]string{perUser}, parts...)
+	}
+	return strings.Join(parts, ":")
+}
 
 // standardSandboxEnvArgs returns the --setenv pairs for the standard set of
 // environment variables that must be propagated from the host into the bwrap
@@ -74,7 +93,7 @@ func standardSandboxEnvArgs() []string {
 	// PATH — always emitted, with fallback when host value is empty.
 	pathVal := os.Getenv("PATH")
 	if pathVal == "" {
-		pathVal = fallbackPATH
+		pathVal = fallbackPATH()
 	}
 	args = append(args, "--setenv", "PATH", pathVal)
 
@@ -128,6 +147,42 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		"--dev", "/dev",
 		"--tmpfs", "/tmp",
 		"--die-with-parent",
+	}
+
+	// ── System binary roots (read-only, unconditional) ─────────────────────
+	// These mounts make all NixOS-managed binaries reachable inside the
+	// sandbox. Without them, PATH entries (even if correctly set via
+	// --setenv) point at directories that simply do not exist inside the
+	// sandbox namespace, causing execvp to fail with ENOENT.
+	//
+	// This is a fundamentally different class of mount from the
+	// cfg-derived paths below: there is no filepath.EvalSymlinks pass,
+	// no conditional stat(), and no Manager config field involved — these
+	// are fixed system locations that must always be present on a NixOS
+	// host for any sandboxed binary to resolve.
+	for _, sysRoot := range []string{
+		"/nix",                // Nix store — all /nix/store/… paths live here
+		"/etc",                // System config + /etc/profiles/per-user/$USER symlink farm
+		"/run/current-system", // Active NixOS system profile
+		"/bin",                // /bin/sh — required; not provided by --proc/--dev/--tmpfs
+		"/run/wrappers",       // NixOS security wrappers (sudo, ping, …)
+	} {
+		args = append(args, "--ro-bind", sysRoot, sysRoot)
+	}
+
+	// ── Per-user nix profiles (read-only, conditional) ──────────────────────
+	// These locations hold the home-manager per-user profile (opencode,
+	// git, nix, …). They are conditional because they may not exist on
+	// all hosts (e.g. fresh installs, CI, Darwin). Use os.Stat — no
+	// EvalSymlinks — matching the pattern for other conditional mounts.
+	nixProfilePaths := []string{
+		filepath.Join(home, ".nix-profile"),
+		filepath.Join(home, ".local", "state", "nix", "profile"),
+	}
+	for _, p := range nixProfilePaths {
+		if _, err := os.Stat(p); err == nil {
+			args = append(args, "--ro-bind", p, p)
+		}
 	}
 
 	// ── Worktree (read-write) ───────────────────────────────────────────────
