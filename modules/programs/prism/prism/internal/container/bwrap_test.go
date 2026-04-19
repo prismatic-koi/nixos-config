@@ -51,6 +51,17 @@ func hasROBind(args []string, src string) bool {
 	return false
 }
 
+// hasROBindSrcDst returns true when args contains --ro-bind src dst (where src
+// and dst may differ — used to assert canonical path remappings).
+func hasROBindSrcDst(args []string, src, dst string) bool {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == src && args[i+2] == dst {
+			return true
+		}
+	}
+	return false
+}
+
 // hasSetenv returns true when args contains --setenv key value.
 func hasSetenv(args []string, key, value string) bool {
 	for i := 0; i+2 < len(args); i++ {
@@ -372,9 +383,12 @@ func TestBwrapBuildArgs_AWSReadonlyConfigROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	awsConfig := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
-	if !hasROBind(args, awsConfig) {
-		t.Errorf("AWS readonly-config %q not found as --ro-bind SRC SRC in args: %v", awsConfig, args)
+	// SRC: host ~/.config/aws/readonly-config (the XDG-compliant location managed by sops-nix)
+	// DST: sandbox $HOME/.aws/config (canonical path the AWS CLI reads by default)
+	awsSrc := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
+	awsDst := filepath.Join(fakeHome, ".aws", "config")
+	if !hasROBindSrcDst(args, awsSrc, awsDst) {
+		t.Errorf("AWS readonly-config: want --ro-bind %q %q in args: %v", awsSrc, awsDst, args)
 	}
 }
 
@@ -389,9 +403,12 @@ func TestBwrapBuildArgs_KubeAgentsConfigROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	kubeConfig := filepath.Join(fakeHome, ".config", "kube", "agents-config")
-	if !hasROBind(args, kubeConfig) {
-		t.Errorf("kube agents-config %q not found as --ro-bind SRC SRC in args: %v", kubeConfig, args)
+	// SRC: host ~/.config/kube/agents-config (XDG-compliant, managed by sops-nix)
+	// DST: sandbox $HOME/.kube/config (canonical path kubectl reads by default)
+	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
+	kubeDst := filepath.Join(fakeHome, ".kube", "config")
+	if !hasROBindSrcDst(args, kubeSrc, kubeDst) {
+		t.Errorf("kube agents-config: want --ro-bind %q %q in args: %v", kubeSrc, kubeDst, args)
 	}
 }
 
@@ -451,7 +468,7 @@ func TestBwrapBuildArgs_KnownHostsROBound(t *testing.T) {
 }
 
 func TestBwrapBuildArgs_GeneratedSSHConfigROBound(t *testing.T) {
-	m, _, cleanup := bwrapFixture(t, Config{
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
@@ -461,14 +478,17 @@ func TestBwrapBuildArgs_GeneratedSSHConfigROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	sshConfigPath := m.sshConfigFilePath()
-	if !hasROBind(args, sshConfigPath) {
-		t.Errorf("generated SSH config %q not found as --ro-bind SRC SRC in args: %v", sshConfigPath, args)
+	// SRC: generated temp file (the SSH config with absolute key paths)
+	// DST: sandbox $HOME/.ssh/config (canonical path SSH reads by default)
+	sshSrc := m.sshConfigFilePath()
+	sshDst := filepath.Join(fakeHome, ".ssh", "config")
+	if !hasROBindSrcDst(args, sshSrc, sshDst) {
+		t.Errorf("generated SSH config: want --ro-bind %q %q in args: %v", sshSrc, sshDst, args)
 	}
 }
 
 func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
-	m, _, cleanup := bwrapFixture(t, Config{
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
@@ -478,14 +498,17 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	gitconfigPath := m.gitconfigFilePath()
-	if !hasROBind(args, gitconfigPath) {
-		t.Errorf("generated gitconfig %q not found as --ro-bind SRC SRC in args: %v", gitconfigPath, args)
+	// SRC: generated temp file (identity, signing config, convenience settings)
+	// DST: sandbox $HOME/.gitconfig (canonical path git reads for user config)
+	gitSrc := m.gitconfigFilePath()
+	gitDst := filepath.Join(fakeHome, ".gitconfig")
+	if !hasROBindSrcDst(args, gitSrc, gitDst) {
+		t.Errorf("generated gitconfig: want --ro-bind %q %q in args: %v", gitSrc, gitDst, args)
 	}
 }
 
 func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
-	m, _, cleanup := bwrapFixture(t, Config{
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
@@ -501,9 +524,12 @@ func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	configPath := m.opencodeConfigFilePath()
-	if !hasROBind(args, configPath) {
-		t.Errorf("opencode.json %q not found as --ro-bind SRC SRC in args: %v", configPath, args)
+	// SRC: generated temp file (role-specific opencode.json with model, agent, providers)
+	// DST: sandbox $HOME/.config/opencode/opencode.json (canonical path opencode reads)
+	configSrc := m.opencodeConfigFilePath()
+	configDst := filepath.Join(fakeHome, ".config", "opencode", "opencode.json")
+	if !hasROBindSrcDst(args, configSrc, configDst) {
+		t.Errorf("opencode.json: want --ro-bind %q %q in args: %v", configSrc, configDst, args)
 	}
 }
 
@@ -1044,16 +1070,18 @@ func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	defer cleanup()
 
 	// Remove AWS readonly-config — should be absent from bwrap args.
-	awsConfig := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
-	if err := os.Remove(awsConfig); err != nil {
+	awsSrc := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
+	if err := os.Remove(awsSrc); err != nil {
 		t.Fatalf("Remove aws config: %v", err)
 	}
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	if hasROBind(args, awsConfig) {
-		t.Errorf("missing AWS readonly-config should be omitted but found as --ro-bind in args: %v", args)
+	// Neither the src (old Dst==Src form) nor the remapped dst should appear.
+	awsDst := filepath.Join(fakeHome, ".aws", "config")
+	if hasROBindSrcDst(args, awsSrc, awsDst) {
+		t.Errorf("missing AWS readonly-config should be omitted but found as --ro-bind %q %q in args: %v", awsSrc, awsDst, args)
 	}
 }
 
@@ -1086,16 +1114,144 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 	})
 	defer cleanup()
 
-	kubeConfig := filepath.Join(fakeHome, ".config", "kube", "agents-config")
-	if err := os.Remove(kubeConfig); err != nil {
+	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
+	if err := os.Remove(kubeSrc); err != nil {
 		t.Fatalf("Remove kube agents-config: %v", err)
 	}
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	if hasROBind(args, kubeConfig) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind in args: %v", args)
+	// Neither the src nor the remapped dst should appear.
+	kubeDst := filepath.Join(fakeHome, ".kube", "config")
+	if hasROBindSrcDst(args, kubeSrc, kubeDst) {
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeDst, args)
+	}
+}
+
+// ── Canonical path remaps (SRC != DST assertions) ────────────────────────────
+
+// TestBwrapBuildArgs_AWSCredentialsRemapped verifies that the AWS credentials
+// file is mounted with the canonical path remap:
+// SRC: ~/.config/aws/credentials → DST: $HOME/.aws/credentials
+func TestBwrapBuildArgs_AWSCredentialsRemapped(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Create the credentials file (bwrapFixture only creates readonly-config).
+	awsDir := filepath.Join(fakeHome, ".config", "aws")
+	credsSrc := filepath.Join(awsDir, "credentials")
+	if err := os.WriteFile(credsSrc, []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile aws credentials: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	credsDst := filepath.Join(fakeHome, ".aws", "credentials")
+	if !hasROBindSrcDst(args, credsSrc, credsDst) {
+		t.Errorf("AWS credentials: want --ro-bind %q %q in args: %v", credsSrc, credsDst, args)
+	}
+}
+
+// TestBwrapBuildArgs_AWSCredentialsMissingOmitted verifies that when
+// ~/.config/aws/credentials does not exist, no --ro-bind for it is emitted.
+func TestBwrapBuildArgs_AWSCredentialsMissingOmitted(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Ensure credentials does NOT exist (bwrapFixture doesn't create it).
+	credsSrc := filepath.Join(fakeHome, ".config", "aws", "credentials")
+	_ = os.Remove(credsSrc) // ignore error if already absent
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	credsDst := filepath.Join(fakeHome, ".aws", "credentials")
+	if hasROBindSrcDst(args, credsSrc, credsDst) {
+		t.Errorf("missing AWS credentials should be omitted but found as --ro-bind %q %q in args: %v", credsSrc, credsDst, args)
+	}
+}
+
+// TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations is a comprehensive table
+// test that asserts each canonical path remap produces the exact (SRC, DST) pair
+// expected. This guards against regressions where a future change accidentally
+// restores the old Dst==Src behaviour for any remapped mount.
+func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		ConfigContent: `{"model":"claude-3-5-sonnet"}`,
+	})
+	defer cleanup()
+
+	// Write the opencode config temp file as Create() would.
+	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile opencode config: %v", err)
+	}
+
+	// Create AWS credentials so the conditional bind fires.
+	credsSrc := filepath.Join(fakeHome, ".config", "aws", "credentials")
+	if err := os.WriteFile(credsSrc, []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile aws credentials: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	cases := []struct {
+		name string
+		src  string
+		dst  string
+	}{
+		{
+			name: "generated SSH config → $HOME/.ssh/config",
+			src:  m.sshConfigFilePath(),
+			dst:  filepath.Join(fakeHome, ".ssh", "config"),
+		},
+		{
+			name: "generated gitconfig → $HOME/.gitconfig",
+			src:  m.gitconfigFilePath(),
+			dst:  filepath.Join(fakeHome, ".gitconfig"),
+		},
+		{
+			name: "opencode.json → $HOME/.config/opencode/opencode.json",
+			src:  m.opencodeConfigFilePath(),
+			dst:  filepath.Join(fakeHome, ".config", "opencode", "opencode.json"),
+		},
+		{
+			name: "kube agents-config → $HOME/.kube/config",
+			src:  filepath.Join(fakeHome, ".config", "kube", "agents-config"),
+			dst:  filepath.Join(fakeHome, ".kube", "config"),
+		},
+		{
+			name: "AWS readonly-config → $HOME/.aws/config",
+			src:  filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+			dst:  filepath.Join(fakeHome, ".aws", "config"),
+		},
+		{
+			name: "AWS credentials → $HOME/.aws/credentials",
+			src:  credsSrc,
+			dst:  filepath.Join(fakeHome, ".aws", "credentials"),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			if !hasROBindSrcDst(args, tc.src, tc.dst) {
+				t.Errorf("remap %q: want --ro-bind %q %q in args: %v", tc.name, tc.src, tc.dst, args)
+			}
+		})
 	}
 }
 
@@ -1277,15 +1433,24 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("expected --prompt 'implement the feature' near end, got %q %q", args[n-2], args[n-1])
 	}
 
-	// Kube and AWS ro-binds present.
-	if !hasROBind(args, filepath.Join(fakeHome, ".config", "aws", "readonly-config")) {
-		t.Errorf("AWS readonly-config --ro-bind missing")
+	// Kube and AWS ro-binds present with correct remapped destinations.
+	if !hasROBindSrcDst(args,
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+		filepath.Join(fakeHome, ".aws", "config"),
+	) {
+		t.Errorf("AWS readonly-config: want --ro-bind src $HOME/.aws/config")
 	}
-	if !hasROBind(args, filepath.Join(fakeHome, ".config", "kube", "agents-config")) {
-		t.Errorf("kube agents-config --ro-bind missing")
+	if !hasROBindSrcDst(args,
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"),
+		filepath.Join(fakeHome, ".kube", "config"),
+	) {
+		t.Errorf("kube agents-config: want --ro-bind src $HOME/.kube/config")
 	}
-	if !hasROBind(args, m.opencodeConfigFilePath()) {
-		t.Errorf("opencode.json --ro-bind missing")
+	if !hasROBindSrcDst(args,
+		m.opencodeConfigFilePath(),
+		filepath.Join(fakeHome, ".config", "opencode", "opencode.json"),
+	) {
+		t.Errorf("opencode.json: want --ro-bind src $HOME/.config/opencode/opencode.json")
 	}
 }
 

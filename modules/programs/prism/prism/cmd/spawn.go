@@ -228,7 +228,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			if effectiveContainerMode || profileFlag != "" {
+			if effectiveContainerMode || isolationMode == config.IsolationBwrap || profileFlag != "" {
 				return loadErr
 			}
 			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
@@ -267,7 +267,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere.
 	// This must run after worktreePath is known so that DefaultAgent can inspect
 	// the directory name (e.g. "main").
-	if effectiveContainerMode && pf != nil {
+	//
+	// This block fires for both podman and bwrap isolation modes. Host-mode
+	// sessions skip it because they run opencode directly with the host's real
+	// ~/.config/opencode/opencode.json via xdg.configFile.
+	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
+	if sandboxed && pf != nil {
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
 		if roleErr != nil {
