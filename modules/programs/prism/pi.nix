@@ -42,6 +42,16 @@
         cp ${awsSkillFile} $out/aws/SKILL.md
         cp -r ${./opencode/skills/acceptance-criteria}/* $out/acceptance-criteria/
       '';
+
+      # Vendored pi extensions directory — built as a single derivation so it
+      # lands at a stable nix-store path and is correctly GC-rooted via
+      # home.file. Mirrors the skillsDir pattern above.
+      # See pi/extensions/anthropic-oauth/UPSTREAM.md for the port procedure.
+      piExtensionsDir = pkgs.runCommand "pi-extensions" { } ''
+        mkdir -p $out/anthropic-oauth
+        cp -r ${./pi/extensions/anthropic-oauth}/* $out/anthropic-oauth/
+      '';
+
       # Pi agent settings.json content, defined once here so a future container
       # role can reference the same value without duplication.
       # Follow-up container support will add containerWorkerSettingsJson /
@@ -55,12 +65,12 @@
         quietStartup = true;
         enableInstallTelemetry = false;
 
-        # Fork fallback: if leohenon/pi-anthropic-oauth becomes unmaintained,
-        # fork to prismatic-koi/pi-anthropic-oauth, publish to npm (or vendor
-        # into the nix store), and update this packages entry. The three most
-        # likely break sites are CLIENT_ID, TOKEN_URL, and AUTHORIZE_URL in
-        # the extension's src/auth.ts.
-        packages = [ "npm:pi-anthropic-oauth@0.1.9" ];
+        # Vendored extension: replaces the previous npm:pi-anthropic-oauth@0.1.9
+        # package. The extension is stored in the nix store as plain TypeScript
+        # files and loaded by pi's jiti-based extension loader at runtime.
+        # To port a future upstream fix, see:
+        #   modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md
+        extensions = [ "${piExtensionsDir}/anthropic-oauth/index.ts" ];
       };
 
       piTheme =
@@ -150,6 +160,10 @@
         # config.theme.name and all colour values come from the system palette.
         home.file.".pi/agent/themes/${config.theme.name}.json".text = piTheme;
         home.file.".pi/agent/skills".source = skillsDir;
+        # Vendored extensions directory — GC-rooted via this home.file entry.
+        # The extension path referenced in settings.json points into this
+        # nix-store path, so nix-store --gc will not remove it.
+        home.file.".pi/agent/extensions".source = piExtensionsDir;
 
         home.persistence."/persist" = {
           directories = [ ".pi" ];
