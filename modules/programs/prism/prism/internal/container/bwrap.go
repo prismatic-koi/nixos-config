@@ -304,8 +304,14 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// (the canonical path opencode reads for its configuration). This ensures
 	// the role-specific config (with correct model, agent identity, providers)
 	// is visible inside the sandbox at the path opencode expects.
-	if cfg.ConfigContent != "" {
-		opencodeConfigPath := m.opencodeConfigFilePath()
+	//
+	// The check is file-existence-based (os.Stat) rather than string-based
+	// (cfg.ConfigContent != "") so that files written at spawn time by
+	// cmd/spawn.go (via container.WriteOpencodeConfig) are picked up even when
+	// this Manager instance was reconstructed by prism agent-run without
+	// ConfigContent in memory (see issue #900).
+	opencodeConfigPath := m.opencodeConfigFilePath()
+	if _, err := os.Stat(opencodeConfigPath); err == nil {
 		args = append(args, "--ro-bind", opencodeConfigPath, filepath.Join(home, ".config", "opencode", "opencode.json"))
 	}
 

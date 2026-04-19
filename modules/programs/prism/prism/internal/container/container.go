@@ -350,7 +350,26 @@ func (m *Manager) allowedSignersFilePath() string {
 // paths (e.g. "./plugins/my-plugin") resolve correctly relative to the config
 // file location.
 func (m *Manager) opencodeConfigFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-opencode-config-"+m.name)
+	return OpencodeConfigFilePath(m.name)
+}
+
+// OpencodeConfigFilePath returns the host path for the temporary opencode.json
+// config file for the given session name. The path is deterministic and
+// derived from the session name, so callers outside the Manager (e.g.
+// cmd/spawn.go) can write the file before the Manager is constructed.
+func OpencodeConfigFilePath(sessionName string) string {
+	return filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName)
+}
+
+// WriteOpencodeConfig writes content to the temp opencode.json file for the
+// given session name. It creates or overwrites the file with mode 0o644.
+// Returns a wrapped error on failure.
+func WriteOpencodeConfig(sessionName, content string) error {
+	path := OpencodeConfigFilePath(sessionName)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("container: write opencode config for session %q: %w", sessionName, err)
+	}
+	return nil
 }
 
 // claudeCredentialsFilePath returns the host path for the temporary Claude

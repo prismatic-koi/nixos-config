@@ -291,6 +291,31 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// don't have dedicated container blobs — empty result is expected.
 	}
 
+	// For bwrap sessions, write the opencode.json config file to disk now so
+	// it is present before the agent pane opens. prism agent-run reconstructs
+	// a container.Manager from DB state (which does not carry ConfigContent),
+	// so the file must be written here at spawn time via the deterministic temp
+	// path. The bwrap.go mount-emission block checks file existence (os.Stat)
+	// rather than cfg.ConfigContent, so it picks this up correctly.
+	//
+	// Podman mode does NOT need this write — the sidecar's Create() path at
+	// container.go:580 already writes the file before the container starts.
+	// Host mode does NOT need this write — it uses ~/.config/opencode/opencode.json
+	// directly via xdg.configFile.
+	//
+	// IMPORTANT: the path key used here must match the one used by Manager
+	// internally. Manager.name = container.NameForSession(tmuxSessionName)
+	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
+	// calls OpencodeConfigFilePath(m.name). So we must pass the container name
+	// (not the raw tmux session name) to WriteOpencodeConfig.
+	if isolationMode == config.IsolationBwrap && configContent != "" {
+		tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+		containerName := container.NameForSession(tmuxSessionName)
+		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+			return fmt.Errorf("spawn: %w", err)
+		}
+	}
+
 	opts := session.Opts{
 		Prompt:         promptFlag,
 		Agent:          agentFlag,
