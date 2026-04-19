@@ -9,4 +9,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Gate passed
-        run: echo "pr-gate: ok"
+        run: echo "pr-gate ok"
