@@ -1,8 +1,11 @@
 package session
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
 // TestBuildDirectOpencodeCmd_AgentEnvVars verifies that AgentEnvVars are
@@ -212,5 +215,143 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 	// Value should be single-quoted.
 	if !strings.Contains(cmd, "GIT_EDITOR='true'") {
 		t.Errorf("expected GIT_EDITOR='true' in cmd, got: %q", cmd)
+	}
+}
+
+// ── isolation mode DB persistence (issue #894 fix) ───────────────────────────
+//
+// These tests verify that the DB writes performed by setupFullLayout BEFORE
+// tmux.NewWindow opens window 1 produce the correct agent_status values.
+// They exercise the same openDB() + SetIsolationMode/SetHostMode path that the
+// fix adds to setupFullLayout, ensuring the mode is persisted correctly for all
+// three isolation modes ("bwrap", "host", "podman").
+//
+// The tests use SetTestDBPath to redirect the session package's openDB() to an
+// isolated temp DB, then seed an agent_status row (as ensureAndSwitch does
+// before calling session.Create/setupFullLayout), invoke the same DB writes,
+// and assert the expected column values.
+
+// openIsolationTestDB creates a fresh temp DB and registers cleanup.
+// It also seeds an agent_status row for sessionName so that SetIsolationMode
+// and SetHostMode have a row to UPDATE.
+func openIsolationTestDB(t *testing.T, sessionName string) *db.DB {
+	t.Helper()
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	// Seed the row — mirrors what ensureAndSwitch does before calling
+	// session.Create/setupFullLayout.
+	if err := d.UpsertStatus(sessionName, "testrepo", "/worktrees/"+sessionName, "idle", nil, nil); err != nil {
+		d.Close()
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() {
+		d.Close()
+		SetTestDBPath("")
+	})
+	return d
+}
+
+// TestIsolationMode_BwrapWrittenBeforeWindow verifies that after the DB writes
+// performed by setupFullLayout (before tmux.NewWindow), the agent_status row
+// has isolation_mode = "bwrap" and host_mode = false.
+//
+// This is the primary regression test for issue #894: prism agent-run reads
+// isolation_mode immediately on start; it must be "bwrap" before window 1 opens.
+func TestIsolationMode_BwrapWrittenBeforeWindow(t *testing.T) {
+	const sessionName = "testrepo@bwrap-test"
+	d := openIsolationTestDB(t, sessionName)
+
+	// Simulate the DB writes that setupFullLayout now performs BEFORE
+	// tmux.NewWindow(name, 1, "agent", ...).
+	d2, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer d2.Close()
+
+	if err := d2.SetIsolationMode(sessionName, "bwrap"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	// Read back and assert.
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if st.IsolationMode != "bwrap" {
+		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "bwrap")
+	}
+	if st.HostMode {
+		t.Errorf("host_mode = true, want false for bwrap mode")
+	}
+}
+
+// TestIsolationMode_HostWrittenBeforeWindow verifies that after the DB writes
+// performed by setupFullLayout, the agent_status row has isolation_mode = "host"
+// AND host_mode = 1 (true).
+func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
+	const sessionName = "testrepo@host-test"
+	d := openIsolationTestDB(t, sessionName)
+
+	d2, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer d2.Close()
+
+	if err := d2.SetIsolationMode(sessionName, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	if err := d2.SetHostMode(sessionName, true); err != nil {
+		t.Fatalf("SetHostMode: %v", err)
+	}
+
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if st.IsolationMode != "host" {
+		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "host")
+	}
+	if !st.HostMode {
+		t.Errorf("host_mode = false, want true for host mode")
+	}
+}
+
+// TestIsolationMode_PodmanWrittenBeforeWindow verifies that after the DB writes
+// performed by setupFullLayout, the agent_status row has isolation_mode = "podman".
+func TestIsolationMode_PodmanWrittenBeforeWindow(t *testing.T) {
+	const sessionName = "testrepo@podman-test"
+	d := openIsolationTestDB(t, sessionName)
+
+	d2, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer d2.Close()
+
+	if err := d2.SetIsolationMode(sessionName, "podman"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if st.IsolationMode != "podman" {
+		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "podman")
 	}
 }
