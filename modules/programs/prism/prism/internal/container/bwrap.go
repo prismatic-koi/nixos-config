@@ -51,6 +51,43 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 	return nil
 }
 
+// fallbackPATH is the PATH value used when os.Getenv("PATH") is empty.
+// It covers the NixOS system profile and standard POSIX paths.
+const fallbackPATH = "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
+
+// standardSandboxEnvArgs returns the --setenv pairs for the standard set of
+// environment variables that must be propagated from the host into the bwrap
+// sandbox. This ensures binaries resolve on PATH and tools behave correctly.
+//
+// Rules:
+//   - PATH: always emitted; falls back to fallbackPATH when the host value is
+//     empty (e.g. in a stripped environment).
+//   - HOME, USER, LOGNAME, LANG, LC_ALL, SHELL: forwarded when the host has
+//     them set; omitted entirely when unset, so the sandbox does not receive a
+//     spurious empty string.
+//
+// TERM is NOT included here — it is handled separately by BuildArgs so that
+// its fixed value ("xterm-256color") is always used regardless of the host.
+func standardSandboxEnvArgs() []string {
+	var args []string
+
+	// PATH — always emitted, with fallback when host value is empty.
+	pathVal := os.Getenv("PATH")
+	if pathVal == "" {
+		pathVal = fallbackPATH
+	}
+	args = append(args, "--setenv", "PATH", pathVal)
+
+	// Optional vars — only emitted when the host has them set.
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+		if val := os.Getenv(key); val != "" {
+			args = append(args, "--setenv", key, val)
+		}
+	}
+
+	return args
+}
+
 // BuildArgs constructs the bwrap argument list that is equivalent to the
 // podman run arguments built by Manager.buildRunArgs(), translating podman
 // syntax into bubblewrap equivalents:
@@ -278,6 +315,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// TERM: xterm-256color for full SGR mouse support in the TUI.
 	args = append(args, "--setenv", "TERM", "xterm-256color")
+
+	// Standard env vars: PATH (with fallback), HOME, USER, LOGNAME, LANG,
+	// LC_ALL, SHELL. These ensure that binaries resolve correctly inside the
+	// sandbox and that tools behave as they do on the host.
+	args = append(args, standardSandboxEnvArgs()...)
 
 	// Prism context variables.
 	// PRISM_SPAWN_PATH: use the actual host worktree path (not /workspace).
