@@ -144,105 +144,24 @@ prism spawn \
   --prompt "find the plex container image in this repo and update it to the latest tag from dockerhub, then open a PR"
 ```
 
-## Running code review with prism review
+## Running code review
 
-`prism review <pr-number>` is the preferred way to run code review from a worker session. It spawns 5 independent review agent sessions and returns findings to stdout when all agents complete.
+Code review is done by invoking the five review subagents **in parallel** — all
+five as Task tool calls in a single response:
 
-```bash
-# Run review — blocks until all agents finish, returns findings to stdout
-result=$(prism review 268)
-echo "$result"
+1. `@review-goal` — pass the original issue/ACs and the PR number
+2. `@review-code` — pass the PR number
+3. `@review-security` — pass the PR number
+4. `@review-qa` — pass the PR number
+5. `@review-context` — pass the PR number
 
-# Re-run only specific agents (useful after a first pass with failures)
-prism review 268 --only review-code,review-security
+Wait for all 5 to complete. ALL must return `<verdict>PASS</verdict>` for the
+review to pass. If ANY returns `<verdict>FAIL</verdict>`, fix all blocking
+issues, push, and re-run all five. After 3 full cycles without convergence,
+stop and escalate — do not run a 4th cycle.
 
-# Custom timeout (default: 10m)
-prism review 268 --timeout 5m
-```
-
-**Output format:**
-```
-✓ review-goal         passed
-✓ review-code         passed
-✗ review-security     [findings...]
-✓ review-qa           passed
-✓ review-context      passed
-
-1 agent(s) failed. Retry: prism review 268 --only review-security
-```
-
-Exit code 0 = all passed, non-zero = failures.
-
-**Session shape:**
-
-Each review agent runs as its own independent top-level tmux session:
-```
-<parent>~review-<N>-review-goal
-<parent>~review-<N>-review-code
-<parent>~review-<N>-review-security
-<parent>~review-<N>-review-qa
-<parent>~review-<N>-review-context
-```
-- `N` is the round number, incremented on each `prism review` invocation.
-- Sessions **persist** after `prism review` completes — you can re-read findings later without re-running.
-- Sessions are only cleaned up when `prism cleanup` is invoked on the parent.
-
-**Review sessions appear in the dashboard** at depth 2, indented under their parent branch (sorted alphabetically by label):
-```
-nixos-config@main                   coordinator
-  ├── @feature-branch               worker
-  │   ├── ~review-1-review-code     finished
-  │   ├── ~review-1-review-context  finished
-  │   ├── ~review-1-review-goal     finished
-  │   ├── ~review-1-review-qa       finished
-  │   ├── ~review-1-review-security finished
-  │   ├── ~review-2-review-code     active
-  │   └── ~review-2-review-security active
-```
-
-Each review agent session is individually selectable in the **`C-f` picker** — after selecting the project repo, review sessions appear as additional entries (e.g. `~review-1-review-security  [finished]`). Jump directly to any reviewer with one keypress.
-
-**Checking in on review progress:**
-```bash
-# From the coordinator session, inspect all review sessions for a worker (grouped by round)
-prism checkin nixos-config@feature-branch~review
-
-# Inspect a specific agent session
-prism checkin nixos-config@feature-branch~review-1-review-security
-
-# Show full per-agent conversation
-prism checkin nixos-config@feature-branch~review --verbose
-```
-
-**Flags:**
-
-| Flag | Description |
-|---|---|
-| `--harness <name>` | Runtime harness (default: `opencode`) |
-| `--timeout <dur>` | Per-agent timeout (default: `10m`) |
-| `--only <csv>` | Run only named agents (e.g. `--only review-code,review-security`). See retry semantics below. |
-
-Note: `--keep` has been retired. Sessions now persist by default until `prism cleanup` on the parent.
-
-**`--only` retry semantics:**
-
-Each `prism review` invocation — including those using `--only` — increments the round counter `N`. Only the named agents are spawned in that round; sessions from previous rounds are left untouched. This means:
-
-- Full round: spawns 5 sessions as `~review-1-review-*`
-- `prism review 268 --only review-code,review-security`: spawns 2 sessions as `~review-2-review-code` and `~review-2-review-security`. The 5 round-1 sessions remain.
-- A subsequent full round: spawns 5 sessions as `~review-3-review-*`.
-
-The output with `--only` contains exactly one line per requested agent — not five lines with three marked "skipped".
-
-### When to use prism review vs direct Task calls
-
-| Situation | Use |
-|---|---|
-| Worker running in a tmux session (normal case) | `prism review` |
-| Want review visible in the dashboard | `prism review` |
-| Running in a context without tmux | Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, `@review-context` as parallel Task calls |
-
-Both invocation styles run the same 5 agents — use whichever fits the context.
+> Note: the `prism review` command is explicitly disabled for agents at the
+> permissions layer. Direct subagent invocation is the canonical path.
 
 ## Example: reviewing a PR (manual spawn)
 

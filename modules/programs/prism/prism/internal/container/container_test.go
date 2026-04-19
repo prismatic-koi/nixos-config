@@ -2947,3 +2947,98 @@ func TestBuildRunArgs_WorkerContainerHasAgentsMount(t *testing.T) {
 		t.Errorf("worker container must have agents/ mount at /root/.config/opencode/agents, but it does not; args: %v", args)
 	}
 }
+
+// ── Resource cap tests (issue #868) ──────────────────────────────────────────
+
+// TestBuildRunArgs_ResourceCapsPresentWhenSet asserts that when MemoryMax,
+// MemorySwapMax, and PidsLimit are set on Config, the corresponding podman flags
+// (--memory, --memory-swap, --pids-limit) appear in the buildRunArgs output.
+func TestBuildRunArgs_ResourceCapsPresentWhenSet(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		MemoryMax:     "8g",
+		MemorySwapMax: "8g",
+		PidsLimit:     4096,
+	})
+	args := m.buildRunArgs()
+
+	wantMemory := "--memory=8g"
+	wantSwap := "--memory-swap=8g"
+	wantPids := "--pids-limit=4096"
+
+	foundMemory, foundSwap, foundPids := false, false, false
+	for _, arg := range args {
+		switch arg {
+		case wantMemory:
+			foundMemory = true
+		case wantSwap:
+			foundSwap = true
+		case wantPids:
+			foundPids = true
+		}
+	}
+	if !foundMemory {
+		t.Errorf("%q not found in args: %v", wantMemory, args)
+	}
+	if !foundSwap {
+		t.Errorf("%q not found in args: %v", wantSwap, args)
+	}
+	if !foundPids {
+		t.Errorf("%q not found in args: %v", wantPids, args)
+	}
+}
+
+// TestBuildRunArgs_ResourceCapsAbsentWhenUnset asserts that when MemoryMax,
+// MemorySwapMax, and PidsLimit are zero/empty (not set), no --memory,
+// --memory-swap, or --pids-limit flags appear in buildRunArgs. This preserves
+// existing behaviour for callers not using the nix module.
+func TestBuildRunArgs_ResourceCapsAbsentWhenUnset(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		// MemoryMax, MemorySwapMax: empty string (zero value)
+		// PidsLimit: 0 (zero value)
+	})
+	args := m.buildRunArgs()
+
+	for _, arg := range args {
+		if arg == "--memory" || strings.HasPrefix(arg, "--memory=") {
+			t.Errorf("unexpected --memory flag when MemoryMax is empty: %q", arg)
+		}
+		if arg == "--memory-swap" || strings.HasPrefix(arg, "--memory-swap=") {
+			t.Errorf("unexpected --memory-swap flag when MemorySwapMax is empty: %q", arg)
+		}
+		if arg == "--pids-limit" || strings.HasPrefix(arg, "--pids-limit=") {
+			t.Errorf("unexpected --pids-limit flag when PidsLimit is zero: %q", arg)
+		}
+	}
+}
+
+// TestBuildRunArgs_ResourceCapMemoryOnlySet asserts that when only MemoryMax
+// is set, only --memory is emitted; --memory-swap and --pids-limit are absent.
+func TestBuildRunArgs_ResourceCapMemoryOnlySet(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		MemoryMax:     "4g",
+		// MemorySwapMax and PidsLimit intentionally left at zero values.
+	})
+	args := m.buildRunArgs()
+
+	foundMemory := false
+	for _, arg := range args {
+		if arg == "--memory=4g" {
+			foundMemory = true
+		}
+		if arg == "--memory-swap" || strings.HasPrefix(arg, "--memory-swap=") {
+			t.Errorf("unexpected --memory-swap when MemorySwapMax is empty: %q", arg)
+		}
+		if arg == "--pids-limit" || strings.HasPrefix(arg, "--pids-limit=") {
+			t.Errorf("unexpected --pids-limit when PidsLimit is zero: %q", arg)
+		}
+	}
+	if !foundMemory {
+		t.Errorf("--memory=4g not found in args: %v", args)
+	}
+}
