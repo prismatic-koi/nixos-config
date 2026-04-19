@@ -76,12 +76,6 @@ func runAllTestServerCleanups() {
 type cmdTestServer struct {
 	socket string
 	bin    string
-	// cmd is the exec.Cmd for the tmux server process. The server is started
-	// with Setpgid:true so its process group can be killed atomically.
-	// When Setpgid:true, the PGID equals the PID of the cmd.Process at Start()
-	// time. The server stays running after Start() returns (it daemonises
-	// internally), so Process.Pid remains the stable PGID for the group.
-	cmd *exec.Cmd
 }
 
 func newCmdTestServer(t *testing.T) *cmdTestServer {
@@ -97,12 +91,11 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	// (server + any sessions/sidecars it spawns) can be killed with a single
 	// syscall.Kill(-pgid, SIGKILL) even if the server becomes unresponsive.
 	//
-	// tmux "new-session -d" creates the server and a background session, then
-	// the client process exits. We use Start() + Wait() (not CombinedOutput)
-	// so we can capture Process.Pid before Wait() clears it: with Setpgid:true
-	// the PGID equals Process.Pid at Start() time, and tmux's server adopts
-	// that PGID after the client forks it — so killing -pgid reaches both the
-	// client and the long-running server.
+	// With Setpgid:true the bootstrap process starts a new process group whose
+	// PGID == its PID. CombinedOutput calls Start internally then waits for the
+	// client to exit. Process.Pid is stable after CombinedOutput returns — Go's
+	// exec.Cmd.Wait never clears Process — so capturing pgid from Process.Pid
+	// after CombinedOutput is safe and correct.
 	startCmd := exec.Command(bin, "-L", socket, "-f", "/dev/null", "new-session", "-ds", "bootstrap", "-c", "/tmp")
 	startCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var startOut []byte
@@ -110,12 +103,7 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	if err != nil {
 		t.Fatalf("start test tmux server: %v\n%s", err, startOut)
 	}
-	// Capture the PGID before anything can recycle it. With Setpgid:true,
-	// pgid == startCmd.Process.Pid at the moment of Start(). CombinedOutput
-	// calls Start internally and waits; Process.Pid is stable after CombinedOutput
-	// returns even though the client process has exited.
 	pgid := startCmd.Process.Pid
-	s.cmd = startCmd
 
 	// killFn kills the entire process group (catching any daemonised children)
 	// and also sends a cooperative kill-server request as a belt-and-suspenders
