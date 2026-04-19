@@ -24,6 +24,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -103,7 +104,7 @@ var eventStateChangeCmd = &cobra.Command{
 		// non-worktree sessions like "obsidian" — are tracked. Mirror the
 		// guard used by tmux-session-start so state transitions flow through
 		// for every session that start already wrote a row for.
-		if session == "scratchpad" || session == "prism-dashboard" {
+		if prismSession.IsMetaSession(session) {
 			return nil
 		}
 
@@ -236,7 +237,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			// non-worktree sessions (e.g. "obsidian") are legitimate user
 			// sessions and get a row with repo="" — consistent with the port
 			// allocation path in switch.go:allocatePortForSession.
-			if session == "scratchpad" || session == "prism-dashboard" {
+			if prismSession.IsMetaSession(session) {
 				return nil
 			}
 			// Fall through: UpsertStatus will be called with repo="" below.

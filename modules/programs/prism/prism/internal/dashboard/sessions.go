@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -475,7 +476,7 @@ func SessionColumnWidth(sessions []AgentSession) int {
 func FilterAgentSessions(all []AgentSession) []AgentSession {
 	var out []AgentSession
 	for _, s := range all {
-		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
+		if session.IsMetaSession(s.Name) {
 			continue
 		}
 		out = append(out, s)
