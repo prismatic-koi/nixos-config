@@ -15,6 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // FetchSessionsFromDB queries agent_status for all active sessions and
@@ -103,7 +104,7 @@ func FetchGitStatsOnly() tea.Msg {
 	seen := map[string]bool{}
 	var paths []string
 	for _, s := range statuses {
-		if s.SessionName == "scratchpad" || s.SessionName == "prism-dashboard" {
+		if session.IsMetaSession(s.SessionName) {
 			continue
 		}
 		if s.Worktree != "" && !seen[s.Worktree] {

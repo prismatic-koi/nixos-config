@@ -31,6 +31,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
+	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -1346,7 +1347,7 @@ func runCheckinNoArg(showAll bool) error {
 	// Convert tmux sessions to a minimal Status slice for the shared renderer.
 	var ss []db.Status
 	for _, s := range sessions {
-		if s.Name == "scratchpad" || s.Name == "prism-dashboard" {
+		if prismSession.IsMetaSession(s.Name) {
 			continue
 		}
 		state := s.AgentState
