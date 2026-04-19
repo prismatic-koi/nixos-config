@@ -3042,3 +3042,81 @@ func TestBuildRunArgs_ResourceCapMemoryOnlySet(t *testing.T) {
 		t.Errorf("--memory=4g not found in args: %v", args)
 	}
 }
+
+// ── OpencodeConfigFilePath / WriteOpencodeConfig tests ───────────────────────
+
+func TestOpencodeConfigFilePath_Deterministic(t *testing.T) {
+	// The path derivation from session name must be stable across calls.
+	const sessionName = "nixos-config@feat"
+	a := OpencodeConfigFilePath(sessionName)
+	b := OpencodeConfigFilePath(sessionName)
+	if a != b {
+		t.Errorf("OpencodeConfigFilePath is not deterministic: %q != %q", a, b)
+	}
+}
+
+func TestOpencodeConfigFilePath_Format(t *testing.T) {
+	// The path must equal filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName).
+	const sessionName = "my-repo@branch"
+	got := OpencodeConfigFilePath(sessionName)
+	want := filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName)
+	if got != want {
+		t.Errorf("OpencodeConfigFilePath(%q) = %q, want %q", sessionName, got, want)
+	}
+}
+
+func TestWriteOpencodeConfig_WritesContent(t *testing.T) {
+	// Override TMPDIR so the written file lands in the test's temp dir.
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	const sessionName = "test-session@write"
+	const content = `{"model":"claude-sonnet-4-6"}`
+
+	if err := WriteOpencodeConfig(sessionName, content); err != nil {
+		t.Fatalf("WriteOpencodeConfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(OpencodeConfigFilePath(sessionName)) })
+
+	data, err := os.ReadFile(OpencodeConfigFilePath(sessionName))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("file content = %q, want %q", string(data), content)
+	}
+}
+
+func TestWriteOpencodeConfig_Mode644(t *testing.T) {
+	// The written file must have mode 0o644.
+	tmpDir := t.TempDir()
+	t.Setenv("TMPDIR", tmpDir)
+
+	const sessionName = "test-session@mode"
+	if err := WriteOpencodeConfig(sessionName, "{}"); err != nil {
+		t.Fatalf("WriteOpencodeConfig returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(OpencodeConfigFilePath(sessionName)) })
+
+	info, err := os.Stat(OpencodeConfigFilePath(sessionName))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("file mode = %04o, want 0644", got)
+	}
+}
+
+func TestOpencodeConfigFilePath_MatchesManagerMethod(t *testing.T) {
+	// The exported function must return the same path as the manager method.
+	m := New(Config{
+		SessionName:   "nixos-config@feature",
+		AllocatedPort: 14001,
+	})
+	exported := OpencodeConfigFilePath(m.name)
+	unexported := m.opencodeConfigFilePath()
+	if exported != unexported {
+		t.Errorf("OpencodeConfigFilePath(%q) = %q, manager.opencodeConfigFilePath() = %q — must be identical",
+			m.name, exported, unexported)
+	}
+}

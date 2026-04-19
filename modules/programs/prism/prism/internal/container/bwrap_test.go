@@ -508,18 +508,22 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 }
 
 func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
+	// The mount is emitted when the temp file exists on disk, regardless of
+	// whether cfg.ConfigContent is set (file-existence check, not string check).
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
-		ConfigContent: `{"model":"claude-3-5-sonnet"}`,
+		// ConfigContent is intentionally NOT set here to verify that the mount
+		// is driven by file existence (os.Stat) rather than cfg.ConfigContent.
 	})
 	defer cleanup()
 
-	// Write the opencode config temp file as Create() would.
-	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o600); err != nil {
+	// Write the opencode config temp file as cmd/spawn.go does at spawn time.
+	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o644); err != nil {
 		t.Fatalf("WriteFile opencode config: %v", err)
 	}
+	t.Cleanup(func() { _ = os.Remove(m.opencodeConfigFilePath()) })
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
@@ -530,6 +534,32 @@ func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
 	configDst := filepath.Join(fakeHome, ".config", "opencode", "opencode.json")
 	if !hasROBindSrcDst(args, configSrc, configDst) {
 		t.Errorf("opencode.json: want --ro-bind %q %q in args: %v", configSrc, configDst, args)
+	}
+}
+
+// TestBwrapBuildArgs_OpencodeJSONNotMountedWhenAbsent asserts that the
+// opencode.json --ro-bind is omitted when the temp file does not exist on disk.
+func TestBwrapBuildArgs_OpencodeJSONNotMountedWhenAbsent(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		// ConfigContent deliberately set to verify it does NOT trigger the mount
+		// when the file is absent (the check is file-existence, not string).
+		ConfigContent: `{"model":"claude-3-5-sonnet"}`,
+	})
+	defer cleanup()
+
+	// Ensure the temp file does NOT exist (do not write it).
+	_ = os.Remove(m.opencodeConfigFilePath())
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	configSrc := m.opencodeConfigFilePath()
+	configDst := filepath.Join(fakeHome, ".config", "opencode", "opencode.json")
+	if hasROBindSrcDst(args, configSrc, configDst) {
+		t.Errorf("opencode.json --ro-bind should be absent when temp file does not exist, but found in args: %v", args)
 	}
 }
 
