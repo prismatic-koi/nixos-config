@@ -25,25 +25,44 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestMain intercepts re-invocations of the test binary used as a stub sidecar.
-// When PRISM_CMD_TEST_STUB=1 the binary sleeps for 60 seconds (simulating a
-// long-running sidecar), then exits. The sleep is interruptible by SIGTERM,
-// which is exactly what KillSidecar sends.
+// TestMain serves two purposes:
+//
+//  1. Stub sidecar: when PRISM_CMD_TEST_STUB=1, the binary sleeps for 60
+//     seconds (simulating a long-running sidecar). The sleep is interruptible
+//     by SIGTERM, which is exactly what KillSidecar sends.
+//
+//  2. SIGTERM handler: when running as a real test binary, register a SIGTERM
+//     handler that kills all active cmdTestServers before exiting. This is a
+//     belt-and-suspenders fallback for when oomd or a test harness kills the
+//     test binary mid-run — t.Cleanup will not fire in that case, but the
+//     SIGTERM handler will.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
+
+	// Register a SIGTERM handler that cleans up orphaned tmux test servers.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		runAllTestServerCleanups()
+		os.Exit(1)
+	}()
+
 	os.Exit(m.Run())
 }
 
