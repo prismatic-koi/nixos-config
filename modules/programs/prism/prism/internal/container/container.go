@@ -208,6 +208,10 @@ type Manager struct {
 	name           string
 	healthCheckURL string
 	httpClient     *http.Client
+	// isolator is the Isolator implementation used to run, shut down, and
+	// inspect the container. It is set unconditionally to a podmanIsolator in
+	// New() and can be replaced in tests.
+	isolator Isolator
 	// allowedSignersReady is true when writeGitconfig successfully wrote the
 	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
 	// so that podman is never given a source path that doesn't exist on disk.
@@ -226,9 +230,10 @@ func New(cfg Config) *Manager {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 5 * time.Second}
 	}
+	name := containerName(cfg.SessionName)
 	return &Manager{
 		cfg:  cfg,
-		name: containerName(cfg.SessionName),
+		name: name,
 		// Use /global/health rather than / — the root URL falls through to
 		// UIRoutes which proxies to https://app.opencode.ai/ when there is no
 		// embedded web UI, adding a 3–4 s network round-trip to every startup.
@@ -236,6 +241,7 @@ func New(cfg Config) *Manager {
 		// no MCP initialisation, plugin loading, or external network calls.
 		healthCheckURL: fmt.Sprintf("http://127.0.0.1:%d/global/health", cfg.AllocatedPort),
 		httpClient:     httpClient,
+		isolator:       newPodmanIsolator(name),
 	}
 }
 
@@ -587,12 +593,9 @@ func (m *Manager) Create(ctx context.Context) error {
 
 	log.Printf("container: creating %q: podman %s", m.name, strings.Join(redactArgs(args), " "))
 
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	cmd.Stdout = os.Stderr // forward container stdout to sidecar's stderr log
-	cmd.Stderr = os.Stderr
 	podmanStart := time.Now()
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("container: podman run %q: %w", m.name, err)
+	if err := m.isolator.Run(ctx, args); err != nil {
+		return err
 	}
 	log.Printf("[timing] podman run: %s (total to here: %s)",
 		time.Since(podmanStart).Round(time.Millisecond),
@@ -654,32 +657,13 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 // startup failures are visible without needing to race `podman logs` before
 // the container is removed by Shutdown.
 func (m *Manager) dumpLogs() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "podman", "logs", m.name).CombinedOutput()
-	if err != nil {
-		log.Printf("container: could not fetch logs for %q: %v", m.name, err)
-		return
-	}
-	log.Printf("container: logs for %q:\n%s", m.name, string(out))
+	m.isolator.DumpLogs()
 }
 
 // hasExited checks whether the container has already stopped. Returns true and
 // the exit code if the container is in an exited state.
 func (m *Manager) hasExited() (bool, int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "podman", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", m.name).Output()
-	if err != nil {
-		return false, 0
-	}
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) == 2 && fields[0] == "exited" {
-		code := 0
-		fmt.Sscanf(fields[1], "%d", &code)
-		return true, code
-	}
-	return false, 0
+	return m.isolator.HasExited()
 }
 
 // isHealthy performs a single HTTP probe and returns true on success.
@@ -697,23 +681,12 @@ func (m *Manager) isHealthy(ctx context.Context) bool {
 }
 
 // Shutdown stops and removes the container. Intended to be called on SIGTERM.
-// It uses a background context so the cleanup proceeds even if the parent ctx
-// is already cancelled.
+// It delegates the podman stop/rm calls to the Isolator and then cleans up
+// the temp files created by Create.
 func (m *Manager) Shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	log.Printf("container: shutting down %q", m.name)
 
-	stopCmd := exec.CommandContext(ctx, "podman", "stop", "--time", "10", m.name)
-	if out, err := stopCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
-		log.Printf("container: stop %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
-	}
-
-	rmCmd := exec.CommandContext(ctx, "podman", "rm", "--force", m.name)
-	if out, err := rmCmd.CombinedOutput(); err != nil && !IsNoSuchContainerError(string(out)) {
-		log.Printf("container: rm %q: %v — %s", m.name, err, strings.TrimSpace(string(out)))
-	}
+	m.isolator.Shutdown()
 
 	// Clean up temp files created by Create.
 	_ = os.Remove(m.gitdirFilePath())
