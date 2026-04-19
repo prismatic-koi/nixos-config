@@ -68,6 +68,14 @@ var prCmd = &cobra.Command{
 			return nil
 		}
 
+		cfg := config.Load()
+
+		// Concurrency cap check: BEFORE any container-creation side effects
+		// (no worktree, no tmux session, no DB row on refusal).
+		if err := checkConcurrencyCap(cmd, "pr", cfg.ContainerMode); err != nil {
+			return err
+		}
+
 		branch, err := resolveBranch(bareRoot, "", prNumber)
 		if err != nil {
 			return err
@@ -79,8 +87,6 @@ var prCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-
-		cfg := config.Load()
 
 		// In container mode, inject the role-specific opencode.json blob as
 		// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
@@ -124,5 +130,6 @@ func init() {
 	addPromptFlags(prCmd)
 	prCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
+	prCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(prCmd)
 }

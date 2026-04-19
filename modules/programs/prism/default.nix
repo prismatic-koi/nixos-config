@@ -26,20 +26,23 @@
         resources = {
           memoryMax = lib.mkOption {
             type = lib.types.str;
-            default = "8g";
+            default = "5g";
             example = "4g";
             description = ''
               Maximum memory for each agent container, passed to podman run --memory.
               Set to an empty string to disable the limit (no flag emitted).
-              Default of 8g allows up to ~3 concurrent workers on a 32 GB host
-              while leaving headroom for the compositor, browser, and system services.
+              Default of 5g is chosen for a 32 GB host: observed steady-state per-container
+              usage is 300–660 MB; Nix builds peak around 4.5 GB before releasing memory.
+              5g provides headroom for peak Nix builds while making the cap functional —
+              a runaway container will OOM-kill itself at 5 GB rather than dragging the host
+              to a panic.
             '';
           };
 
           memorySwapMax = lib.mkOption {
             type = lib.types.str;
-            default = "8g";
-            example = "8g";
+            default = "5g";
+            example = "5g";
             description = ''
               Maximum combined memory+swap for each agent container, passed to
               podman run --memory-swap. Equal to memoryMax by default, which

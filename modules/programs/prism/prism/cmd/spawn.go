@@ -89,6 +89,7 @@ func init() {
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().Bool("host-mode", false, "Bypass container mode and run opencode directly in the tmux pane")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use (currently only 'opencode' is supported)")
+	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -137,6 +138,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		if err := container.CheckAvailability(); err != nil {
 			return err
 		}
+	}
+
+	// Concurrency cap check: BEFORE any container-creation side effects
+	// (no worktree, no tmux session, no DB row on refusal).
+	// Skipped in host-mode — host-mode sessions don't consume a container slot.
+	if err := checkConcurrencyCap(cmd, "spawn", effectiveContainerMode); err != nil {
+		return err
 	}
 
 	// Load the profiles file. It carries container role configs, model profile
