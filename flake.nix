@@ -17,6 +17,7 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     nixpkgs-stable.url = "github:nixos/nixpkgs/nixos-25.11";
     nixpkgs-master.url = "github:nixos/nixpkgs/master";
+    nixpkgs-opencode.url = "github:nixos/nixpkgs/5230db4d0c546b5b7594aa978e6e8aa560351748";
     disko = {
       url = "github:nix-community/disko";
       inputs.nixpkgs.follows = "nixpkgs";
