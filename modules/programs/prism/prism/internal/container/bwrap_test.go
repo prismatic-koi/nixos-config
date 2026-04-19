@@ -559,6 +559,157 @@ func TestBwrapBuildArgs_TermSetenv(t *testing.T) {
 	}
 }
 
+// ── Standard sandbox env vars (PATH, HOME, USER, etc.) ──────────────────────
+
+// TestStandardSandboxEnvArgs_PathFallbackWhenUnset verifies that when PATH is
+// not set, the fallback chain is emitted.
+func TestStandardSandboxEnvArgs_PathFallbackWhenUnset(t *testing.T) {
+	t.Setenv("PATH", "")
+	args := standardSandboxEnvArgs()
+	if !hasSetenv(args, "PATH", fallbackPATH) {
+		t.Errorf("expected --setenv PATH %q when PATH is empty, got args: %v", fallbackPATH, args)
+	}
+}
+
+// TestStandardSandboxEnvArgs_PathFromHostWhenSet verifies that when PATH is
+// set on the host, that exact value is forwarded.
+func TestStandardSandboxEnvArgs_PathFromHostWhenSet(t *testing.T) {
+	hostPath := "/custom/bin:/usr/local/bin:/usr/bin"
+	t.Setenv("PATH", hostPath)
+	args := standardSandboxEnvArgs()
+	if !hasSetenv(args, "PATH", hostPath) {
+		t.Errorf("expected --setenv PATH %q, got args: %v", hostPath, args)
+	}
+}
+
+// TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet verifies that HOME,
+// USER, LOGNAME, LANG, LC_ALL, and SHELL are forwarded when set on the host.
+func TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet(t *testing.T) {
+	t.Setenv("HOME", "/home/testuser")
+	t.Setenv("USER", "testuser")
+	t.Setenv("LOGNAME", "testuser")
+	t.Setenv("LANG", "en_US.UTF-8")
+	t.Setenv("LC_ALL", "en_US.UTF-8")
+	t.Setenv("SHELL", "/bin/bash")
+
+	args := standardSandboxEnvArgs()
+
+	cases := [][2]string{
+		{"HOME", "/home/testuser"},
+		{"USER", "testuser"},
+		{"LOGNAME", "testuser"},
+		{"LANG", "en_US.UTF-8"},
+		{"LC_ALL", "en_US.UTF-8"},
+		{"SHELL", "/bin/bash"},
+	}
+	for _, c := range cases {
+		if !hasSetenv(args, c[0], c[1]) {
+			t.Errorf("expected --setenv %s %q in args: %v", c[0], c[1], args)
+		}
+	}
+}
+
+// TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset verifies that
+// optional vars (HOME, USER, LOGNAME, LANG, LC_ALL, SHELL) are NOT emitted
+// when they are not set on the host.
+func TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset(t *testing.T) {
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+		t.Setenv(key, "")
+	}
+	args := standardSandboxEnvArgs()
+
+	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"} {
+		for i := 0; i+2 < len(args); i++ {
+			if args[i] == "--setenv" && args[i+1] == key {
+				t.Errorf("optional var %s should be omitted when unset but found in args: %v", key, args)
+			}
+		}
+	}
+}
+
+// TestStandardSandboxEnvArgs_PathFallbackExact verifies the fallback PATH is
+// exactly the specified string — not reordered or otherwise altered.
+func TestStandardSandboxEnvArgs_PathFallbackExact(t *testing.T) {
+	t.Setenv("PATH", "")
+	args := standardSandboxEnvArgs()
+	want := "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
+	if !hasSetenv(args, "PATH", want) {
+		t.Errorf("fallback PATH = unexpected value; want exactly %q, got args: %v", want, args)
+	}
+}
+
+// TestBwrapBuildArgs_PathSetenvPresentInBuildArgs verifies that BuildArgs
+// emits --setenv PATH (via standardSandboxEnvArgs) before the -- terminator.
+func TestBwrapBuildArgs_PathSetenvPresentInBuildArgs(t *testing.T) {
+	hostPath := "/nix/store/test/bin:/run/current-system/sw/bin"
+	t.Setenv("PATH", hostPath)
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Confirm --setenv PATH appears before the -- separator.
+	sepIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 0 {
+		t.Fatalf("-- separator not found in args: %v", args)
+	}
+
+	pre := args[:sepIdx]
+	if !hasSetenv(pre, "PATH", hostPath) {
+		t.Errorf("--setenv PATH %q not found before -- in args: %v", hostPath, args)
+	}
+}
+
+// TestBwrapBuildArgs_PathFallbackInBuildArgs verifies that when PATH is empty
+// on the host, BuildArgs emits the fallback PATH via standardSandboxEnvArgs.
+func TestBwrapBuildArgs_PathFallbackInBuildArgs(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "PATH", fallbackPATH) {
+		t.Errorf("expected fallback --setenv PATH %q when PATH empty, got args: %v", fallbackPATH, args)
+	}
+}
+
+// TestBwrapBuildArgs_TermRegression guards the existing TERM=xterm-256color
+// behaviour from #876 — it must still be present after adding standard env vars.
+func TestBwrapBuildArgs_TermRegression(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "TERM", "xterm-256color") {
+		t.Errorf("regression: --setenv TERM xterm-256color missing from args: %v", args)
+	}
+}
+
 func TestBwrapBuildArgs_PrismSessionNameSetenv(t *testing.T) {
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "myrepo@feat",
