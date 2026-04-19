@@ -770,7 +770,7 @@ func createAgentSession(agentSession, worktree, agentCmd string, port int, conta
 	// Create window 1 with the agent command. Window 0 remains as a shell.
 	// Using NewWindow ensures the command runs via "sh -c" and semicolons in
 	// the readiness wait script are not consumed by tmux's command parser.
-	if err := tmux.NewWindow(agentSession, 1, "agent", worktree, cmd); err != nil {
+	if err := tmux.NewWindow(agentSession, 1, "agent", worktree, cmd, nil); err != nil {
 		return fmt.Errorf("new-window for %q: %w", agentSession, err)
 	}
 	// Select the agent window (1) as the default.

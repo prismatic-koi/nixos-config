@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 )
@@ -214,10 +215,26 @@ func RenameWindow(target, name string) error {
 // semicolons in the command being treated as tmux command separators (which
 // would happen with SendKeys). Note: when a command is given, the pane exits
 // when the command exits — the user's default shell is NOT started.
-func NewWindow(session string, idx int, name, dir string, cmd string) error {
+//
+// envVars is an optional map of environment variables to set in the new pane
+// via tmux's -e KEY=VALUE flag. Each entry produces one -e flag. Pass nil or
+// an empty map for no additional env vars. The map is iterated in sorted key
+// order so the resulting argument list is deterministic.
+func NewWindow(session string, idx int, name, dir string, cmd string, envVars map[string]string) error {
 	args := []string{"new-window", "-t", fmt.Sprintf("%s:%d", session, idx), "-n", name}
 	if dir != "" {
 		args = append(args, "-c", dir)
+	}
+	// Emit -e KEY=VALUE flags in sorted key order for determinism.
+	if len(envVars) > 0 {
+		keys := make([]string, 0, len(envVars))
+		for k := range envVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "-e", k+"="+envVars[k])
+		}
 	}
 	if cmd != "" {
 		args = append(args, "sh", "-c", cmd)
