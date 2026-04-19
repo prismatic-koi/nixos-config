@@ -298,11 +298,26 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// plugins defined in the Nix module are available inside the sandbox.
 	// opencode.json is NOT mounted from the host — the sandbox uses the temp
 	// file above (ConfigContent). Matching the podman buildRunArgs allowlist.
+	//
+	// agents/ is excluded for review containers: the host agents/ directory
+	// contains review-*.md files with "mode: subagent" front-matter that
+	// overrides the "mode: primary" declaration in the container's
+	// opencode.json, causing opencode to fall back to the wrong agent. Review
+	// containers embed their role prompt inline via opencode.json instead.
+	// For non-review containers (worker, coordinator, etc.) agents/ is mounted
+	// so that @review-* subagent invocation works and all agents are accessible.
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
 	opencodeAllowlist := []string{
 		"AGENTS.md",
 		"plugins",
 		"skills",
+		"command",
+		"tui.json",
+		".gitignore",
+		"mcp-atlassian-slim-proxy.mjs",
+	}
+	if !strings.HasPrefix(cfg.AgentRole, "review-") {
+		opencodeAllowlist = append(opencodeAllowlist, "agents")
 	}
 	for _, entry := range opencodeAllowlist {
 		p := filepath.Join(opencodeConfigDir, entry)

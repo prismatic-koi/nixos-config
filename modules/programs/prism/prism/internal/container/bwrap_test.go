@@ -507,6 +507,140 @@ func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
 	}
 }
 
+// ── opencode config allowlist entries ────────────────────────────────────────
+
+// TestBwrapBuildArgs_OpencodeAllowlistNewEntries verifies that the entries
+// added to bring the bwrap allowlist to parity with the podman allowlist are
+// emitted when the corresponding paths exist on the host.
+func TestBwrapBuildArgs_OpencodeAllowlistNewEntries(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	opencodeConfigDir := filepath.Join(fakeHome, ".config", "opencode")
+
+	// Create each new allowlist entry so the conditional stat() succeeds.
+	newEntries := []string{
+		"command",
+		"tui.json",
+		".gitignore",
+		"mcp-atlassian-slim-proxy.mjs",
+	}
+	for _, entry := range newEntries {
+		p := filepath.Join(opencodeConfigDir, entry)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("MkdirAll for %q: %v", entry, err)
+		}
+		if err := os.WriteFile(p, []byte("fake"), 0o644); err != nil {
+			t.Fatalf("WriteFile %q: %v", entry, err)
+		}
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for _, entry := range newEntries {
+		p := filepath.Join(opencodeConfigDir, entry)
+		if !hasROBind(args, p) {
+			t.Errorf("opencode allowlist entry %q not found as --ro-bind SRC SRC in args: %v", entry, args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_OpencodeAllowlistNewEntriesOmittedWhenAbsent verifies
+// that new allowlist entries are omitted when they do not exist on the host.
+func TestBwrapBuildArgs_OpencodeAllowlistNewEntriesOmittedWhenAbsent(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	opencodeConfigDir := filepath.Join(fakeHome, ".config", "opencode")
+
+	// Do NOT create the new entries — they should be absent from args.
+	newEntries := []string{
+		"command",
+		"tui.json",
+		".gitignore",
+		"mcp-atlassian-slim-proxy.mjs",
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for _, entry := range newEntries {
+		p := filepath.Join(opencodeConfigDir, entry)
+		if hasROBind(args, p) {
+			t.Errorf("absent opencode allowlist entry %q should be omitted but found as --ro-bind in args: %v", entry, args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_AgentsDirMountedForNonReview verifies that agents/ is
+// included in the allowlist (and therefore bound) when AgentRole is empty,
+// "worker", or "coordinator" — i.e. any non-review-* value.
+func TestBwrapBuildArgs_AgentsDirMountedForNonReview(t *testing.T) {
+	for _, role := range []string{"", "worker", "coordinator"} {
+		t.Run("AgentRole="+role, func(t *testing.T) {
+			m, fakeHome, cleanup := bwrapFixture(t, Config{
+				SessionName:   "repo@main",
+				Worktree:      t.TempDir(),
+				AllocatedPort: 14010,
+				AgentRole:     role,
+			})
+			defer cleanup()
+
+			// Create agents/ so the stat() succeeds.
+			agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll agents: %v", err)
+			}
+
+			b := &bwrapIsolator{name: m.name}
+			args := b.BuildArgs(m)
+
+			if !hasROBind(args, agentsDir) {
+				t.Errorf("AgentRole=%q: agents/ %q not found as --ro-bind SRC SRC in args: %v", role, agentsDir, args)
+			}
+		})
+	}
+}
+
+// TestBwrapBuildArgs_AgentsDirNotMountedForReview verifies that agents/ is
+// NOT bound when AgentRole starts with "review-" (e.g. "review-code",
+// "review-qa", "review-security", "review-goal", "review-context").
+func TestBwrapBuildArgs_AgentsDirNotMountedForReview(t *testing.T) {
+	for _, role := range []string{"review-code", "review-qa", "review-security", "review-goal", "review-context"} {
+		t.Run("AgentRole="+role, func(t *testing.T) {
+			m, fakeHome, cleanup := bwrapFixture(t, Config{
+				SessionName:   "repo@main",
+				Worktree:      t.TempDir(),
+				AllocatedPort: 14010,
+				AgentRole:     role,
+			})
+			defer cleanup()
+
+			// Create agents/ so the stat() would succeed if the code were wrong.
+			agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll agents: %v", err)
+			}
+
+			b := &bwrapIsolator{name: m.name}
+			args := b.BuildArgs(m)
+
+			if hasROBind(args, agentsDir) {
+				t.Errorf("AgentRole=%q: agents/ should NOT be bound for review containers, but found as --ro-bind in args: %v", role, args)
+			}
+		})
+	}
+}
+
 // ── Env vars (--setenv K V) ──────────────────────────────────────────────────
 
 func TestBwrapBuildArgs_EnvVarsTranslated(t *testing.T) {
