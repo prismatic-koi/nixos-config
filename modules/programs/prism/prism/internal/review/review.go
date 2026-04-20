@@ -454,6 +454,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		agents = Agents()
 	}
 
+	// Register a session group for this review round. Every spawned agent
+	// session will carry this group_id, enabling GroupCompleted-based
+	// termination detection and GroupResults-based result aggregation.
+	// Fail fast if RegisterGroup fails — no sessions are spawned without a
+	// group to belong to (AC: edge-case).
+	groupID, groupErr := d.RegisterGroup(opts.ParentSession)
+	if groupErr != nil {
+		return nil, fmt.Errorf("register review group: %w", groupErr)
+	}
+
 	// Spawn each agent as its own independent top-level tmux session.
 	// spawnErr[i] is non-nil if agent i failed to spawn. Agents that fail to
 	// spawn are excluded from polling; they receive an error AgentResult.
@@ -511,8 +521,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			ContainerMode:    opts.ContainerMode,
 			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
-			// GroupID intentionally left empty — Issue E (#860) will wire
-			// review rounds to session_groups once this primitive lands.
+			GroupID:          groupID,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -565,8 +574,9 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		onSessionsCreated(liveSessions)
 	}
 
-	// Poll DB until all live agents finish or timeout.
-	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress)
+	// Poll DB until all live agents finish or timeout. Uses GroupCompleted
+	// for termination detection instead of per-session name-based polling.
+	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress, groupID)
 
 	// Sessions persist — do NOT kill them here. The user can re-read them later.
 	// Sidecar processes are cleaned up since the agents have finished.
@@ -702,11 +712,17 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	return sb.String()
 }
 
-// pollAgents polls the DB until all agents reach "finished" or the timeout expires.
-// spawnTimes[i] is the time agent i was spawned; used to compute durations for
-// progress output. onProgress is called for each "finished" or "timed out" event;
-// it may be nil.
-func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string)) ([]AgentResult, error) {
+// pollAgents polls the DB until all agents reach a terminal state or the
+// timeout expires. Uses db.GroupCompleted(groupID) as the primary termination
+// signal — this replaces the prior name-prefix-based approach (#860, Issue E).
+//
+// Per-agent progress tracking (onProgress callbacks for "finished" and "timed
+// out" events) still checks individual session states so that progress lines
+// are emitted at the right moment.
+//
+// spawnTimes[i] is the time agent i was spawned; used to compute durations.
+// onProgress may be nil.
+func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string), groupID string) ([]AgentResult, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
@@ -718,45 +734,56 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 	const pollInterval = 2 * time.Second
 
 	for {
-		allDone := true
+		// Primary termination check: ask the DB whether all group members
+		// have reached a terminal state. This is the group-id-based path
+		// introduced by #860 (Issue E).
+		groupDone, groupErr := d.GroupCompleted(groupID)
+		if groupErr != nil {
+			// DB error — log and fall through to per-agent checks below
+			// so progress tracking still works.
+			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupCompleted(%s): %v\n", groupID, groupErr)
+		}
+
+		// Even when groupDone is true, scan agents once more to emit any
+		// remaining progress lines for agents whose terminal transition
+		// hasn't been reported yet.
 		for i, agentSession := range agentSessions {
 			if finished[i] || timedOut[i] {
 				continue
 			}
 			status, err := d.CurrentStatus(agentSession)
 			if err != nil {
-				// DB error — treat as still running.
-				allDone = false
 				continue
 			}
 			if status != nil && isTerminalState(status.State) {
 				finished[i] = true
-				// Emit "finished" progress line.
 				if onProgress != nil {
 					elapsed := time.Since(spawnTimes[i])
 					onProgress(fmt.Sprintf("%s finished in %s", FormatAgentDisplayName(agents[i].Name), FormatProgressDuration(elapsed)))
 				}
 			} else if time.Now().After(deadline) {
 				timedOut[i] = true
-				// Emit "timed out" progress line.
 				if onProgress != nil {
 					elapsed := time.Since(spawnTimes[i])
 					onProgress(fmt.Sprintf("%s timed out after %s", FormatAgentDisplayName(agents[i].Name), FormatProgressDuration(elapsed)))
 				}
-			} else {
-				allDone = false
 			}
 		}
 
 		// Check context cancellation.
 		select {
 		case <-ctx.Done():
-			// Build partial results with all non-finished agents as timed out.
-			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true), ctx.Err()
+			for i := range agents {
+				if !finished[i] && !timedOut[i] {
+					timedOut[i] = true
+				}
+			}
+			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true, groupID), ctx.Err()
 		default:
 		}
 
-		if allDone {
+		// If the group is completed (all members terminal), we're done.
+		if groupDone && groupErr == nil {
 			break
 		}
 
@@ -782,12 +809,12 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 					timedOut[i] = true
 				}
 			}
-			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true), ctx.Err()
+			return buildResults(agents, agentSessions, d, finished, timedOut, timeout, true, groupID), ctx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
 
-	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, false), nil
+	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, false, groupID), nil
 }
 
 // isTerminalState returns true if the state is considered terminal (finished or error).
@@ -801,8 +828,8 @@ func isTerminalState(state string) bool {
 
 // BuildResults is the exported entry point for tests. See buildResults.
 // Production code calls buildResults directly (via pollAgents).
-func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
-	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, cancelled)
+func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool, groupID string) []AgentResult {
+	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, cancelled, groupID)
 }
 
 // BuildReviewPromptForTest is an exported wrapper around buildReviewPrompt for
@@ -820,14 +847,24 @@ func TruncateDiffForTest(diff string, maxBytes, maxLines int) (string, bool) {
 // PollAgentsForTest is an exported wrapper around pollAgents for use in tests.
 // It accepts pre-seeded DB rows and returns both results and the progress lines
 // emitted via onProgress.
-func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string)) ([]AgentResult, error) {
-	return pollAgents(ctx, d, agents, agentSessions, timeout, spawnTimes, onProgress)
+//
+// groupID is the session_groups.group_id for the poll loop's GroupCompleted
+// termination check. When empty, the caller must ensure the group has been
+// registered via db.RegisterGroup before calling this function — passing ""
+// will cause GroupCompleted to return true immediately (zero members).
+func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string), groupID string) ([]AgentResult, error) {
+	return pollAgents(ctx, d, agents, agentSessions, timeout, spawnTimes, onProgress, groupID)
 }
 
 // buildResults constructs AgentResult entries from polling outcomes.
 // finished[i] is true when agent i reached a terminal DB state; timedOut[i] is
 // true when it did not finish before the deadline; cancelled is true on context
 // cancellation (e.g. SIGINT).
+//
+// When groupID is non-empty, result data (terminal state and last assistant
+// message) is fetched via db.GroupResults(groupID) in a single batch query.
+// When groupID is empty (tests that pre-date the group wiring), per-session
+// individual queries are used as a fallback.
 //
 // Layer 3 (fail-safe): when cancelled is true, no result may have Passed=true.
 // Every result is either IsError=true or annotated as incomplete. This prevents
@@ -836,7 +873,21 @@ func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessi
 // Layer 2: agents whose DB terminal state is "interrupted" or "error" always
 // produce an error result, regardless of any msg_assistant events they may have.
 // Only agents that reached the "finished" state cleanly proceed to AssessPassed.
-func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool) []AgentResult {
+func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool, groupID string) []AgentResult {
+	// Pre-fetch group member data when a group_id is available. This replaces
+	// individual per-session CurrentStatus + QueryEvents calls with a single
+	// batch query via GroupResults (#860, Issue E).
+	var groupData map[string]db.GroupMemberResult
+	if groupID != "" {
+		var grErr error
+		groupData, grErr = d.GroupResults(groupID)
+		if grErr != nil {
+			// Non-fatal: fall back to per-session queries below.
+			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupResults(%s): %v — falling back to per-session queries\n", groupID, grErr)
+			groupData = nil
+		}
+	}
+
 	results := make([]AgentResult, len(agents))
 	for i, ag := range agents {
 		agentSession := agentSessions[i]
@@ -875,23 +926,40 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 			continue
 		}
 
+		// Resolve state and last message: prefer GroupResults batch data when
+		// available, fall back to individual DB queries.
+		var agentState string
+		var lastPayload string
+		if mr, ok := groupData[agentSession]; ok {
+			agentState = mr.State
+			lastPayload = mr.LastMessage
+		} else {
+			// Fallback: individual per-session queries.
+			status, stErr := d.CurrentStatus(agentSession)
+			if stErr == nil && status != nil {
+				agentState = status.State
+			}
+			events, evtErr := d.QueryEvents(agentSession, 1, nil, nil, []string{"msg_assistant"})
+			if evtErr == nil && len(events) > 0 {
+				lastPayload = events[len(events)-1].Payload
+			}
+		}
+
 		// Layer 2: check the agent's actual DB terminal state. Only "finished"
 		// is considered a clean completion; "interrupted" and "error" are errors
 		// regardless of what msg_assistant events may exist.
-		status, stErr := d.CurrentStatus(agentSession)
-		if stErr == nil && status != nil && (status.State == "interrupted" || status.State == "error") {
+		if agentState == "interrupted" || agentState == "error" {
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
-				Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s)", status.State),
+				Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s)", agentState),
 				IsError: true,
 			}
 			continue
 		}
 
 		// Read last msg_assistant event.
-		events, err := d.QueryEvents(agentSession, 1, nil, nil, []string{"msg_assistant"})
-		if err != nil || len(events) == 0 {
+		if lastPayload == "" {
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
@@ -903,7 +971,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 
 		// Extract text from the last msg_assistant event.
 		// Layer 1 applies here: AssessPassed requires an explicit positive marker.
-		text := extractAssistantText(events[len(events)-1].Payload)
+		text := extractAssistantText(lastPayload)
 		passed, kind := AssessPassed(text)
 
 		if !passed && kind == VerdictNone {

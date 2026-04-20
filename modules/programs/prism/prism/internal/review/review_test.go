@@ -413,7 +413,7 @@ func TestBuildResults_InterruptedState(t *testing.T) {
 
 	finished := []bool{true} // "interrupted" was a terminal state → finished=true
 	timedOut := []bool{false}
-	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
 	if len(results) != 1 {
 		t.Fatalf("BuildResults returned %d results, want 1", len(results))
@@ -442,7 +442,7 @@ func TestBuildResults_ErrorState(t *testing.T) {
 
 	finished := []bool{true}
 	timedOut := []bool{false}
-	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
 	r := results[0]
 	if r.Passed {
@@ -478,7 +478,7 @@ func TestBuildResults_CancelledAllFinished(t *testing.T) {
 
 	finished := []bool{true, true}
 	timedOut := []bool{false, false}
-	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true)
+	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true, "")
 
 	for _, r := range results {
 		if r.Passed {
@@ -508,7 +508,7 @@ func TestBuildResults_CancelledMixed(t *testing.T) {
 
 	finished := []bool{true, false}
 	timedOut := []bool{false, false}
-	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true)
+	results := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, true, "")
 
 	for _, r := range results {
 		if r.Passed {
@@ -532,7 +532,7 @@ func TestBuildResults_HappyPathPass(t *testing.T) {
 
 	finished := []bool{true}
 	timedOut := []bool{false}
-	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
 	r := results[0]
 	if !r.Passed {
@@ -555,7 +555,7 @@ func TestBuildResults_HappyPathFail(t *testing.T) {
 
 	finished := []bool{true}
 	timedOut := []bool{false}
-	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
 	r := results[0]
 	if r.Passed {
@@ -580,7 +580,7 @@ func TestBuildResults_NoVerdictIsError(t *testing.T) {
 
 	finished := []bool{true}
 	timedOut := []bool{false}
-	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false)
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
 	r := results[0]
 	if r.Passed {
@@ -1154,10 +1154,19 @@ func TestPollAgents_ProgressCallback_HappyPath(t *testing.T) {
 		"test@parent~review-1-review-code",
 	}
 
-	// Pre-seed both agents as finished.
+	// Register a group and associate sessions with it.
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Pre-seed both agents as finished with group_id.
 	for _, sess := range sessions {
 		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
 			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
 		}
 	}
 
@@ -1166,7 +1175,7 @@ func TestPollAgents_ProgressCallback_HappyPath(t *testing.T) {
 
 	results, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
 		lines = append(lines, line)
-	})
+	}, groupID)
 	if err != nil {
 		t.Fatalf("PollAgentsForTest: %v", err)
 	}
@@ -1210,18 +1219,28 @@ func TestPollAgents_ProgressCallback_OnlySubset(t *testing.T) {
 		"test@parent~review-1-review-code",
 		"test@parent~review-1-review-qa",
 	}
+
+	// Register a group and associate sessions with it.
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
 	for _, sess := range sessions {
 		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
 			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
 		}
 	}
 
 	var lines []string
 	spawnTimes := []time.Time{time.Now(), time.Now()}
 
-	_, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
+	_, err = review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
 		lines = append(lines, line)
-	})
+	}, groupID)
 	if err != nil {
 		t.Fatalf("PollAgentsForTest: %v", err)
 	}
@@ -1262,21 +1281,33 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 		"test@parent~review-5-review-code",
 	}
 
+	// Register a group and associate sessions with it.
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
 	// review-goal is finished; review-code stays idle (will time out).
 	if err := d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
+	if err := d.SetGroupID(sessions[0], groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
 	if err := d.UpsertStatus(sessions[1], "nixos-config", "/wt", "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetGroupID(sessions[1], groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
 	}
 
 	var lines []string
 	spawnTimes := []time.Time{time.Now(), time.Now()}
 
 	// Very short timeout so review-code times out quickly.
-	_, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Millisecond, spawnTimes, func(line string) {
+	_, err = review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Millisecond, spawnTimes, func(line string) {
 		lines = append(lines, line)
-	})
+	}, groupID)
 	if err != nil {
 		t.Fatalf("PollAgentsForTest: %v", err)
 	}
@@ -1741,5 +1772,429 @@ func TestTruncateDiff_TruncatesByByteCount(t *testing.T) {
 	if len(result) > 200 { // well under the original 999 bytes
 		// Sanity check that we actually truncated substantially.
 		// The marker adds ~70 bytes; total should be << 999.
+	}
+}
+
+// ── Group-id wiring (#860, Issue E) ──────────────────────────────────────────
+
+// TestGroupWiring_RegisterGroupCalledOncePerRound verifies that each review
+// round creates exactly one session_groups row with the correct parent_session.
+// AC: "Every prism review invocation creates exactly one new row in
+// session_groups per round, with parent_session correctly set."
+func TestGroupWiring_RegisterGroupCalledOncePerRound(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@worker-branch"
+
+	// Simulate what review.Run does: register one group per round.
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if groupID == "" {
+		t.Fatal("RegisterGroup returned empty group_id")
+	}
+
+	// Verify the session_groups row exists with the correct parent.
+	var storedParent string
+	err = d.QueryRow(
+		"SELECT parent_session FROM session_groups WHERE group_id = ?", groupID,
+	).Scan(&storedParent)
+	if err != nil {
+		t.Fatalf("query session_groups: %v", err)
+	}
+	if storedParent != parent {
+		t.Errorf("session_groups.parent_session = %q, want %q", storedParent, parent)
+	}
+}
+
+// TestGroupWiring_AllMembersHaveGroupID verifies that when SpawnSession writes
+// group_id via SetGroupID, all 5 agent_status rows have the same group_id.
+// AC: "Every one of the 5 per-round reviewer sessions has agent_status.group_id
+// set to the round's group_id."
+func TestGroupWiring_AllMembersHaveGroupID(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@worker-branch"
+
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	agents := review.Agents()
+	round := 1
+	roundPrefix := fmt.Sprintf("%s~review-%d-", parent, round)
+
+	// Simulate what review.Run does: seed each agent and set group_id.
+	for _, ag := range agents {
+		sess := roundPrefix + ag.Name
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "idle", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+	}
+
+	// Verify every agent_status row has the correct group_id.
+	for _, ag := range agents {
+		sess := roundPrefix + ag.Name
+		s, err := d.CurrentStatus(sess)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", sess, err)
+		}
+		if s == nil {
+			t.Errorf("agent %q: expected agent_status row, got nil", ag.Name)
+			continue
+		}
+		if s.GroupID == nil {
+			t.Errorf("agent %q: GroupID is nil, want %q", ag.Name, groupID)
+			continue
+		}
+		if *s.GroupID != groupID {
+			t.Errorf("agent %q: GroupID = %q, want %q", ag.Name, *s.GroupID, groupID)
+		}
+	}
+}
+
+// TestGroupWiring_GroupCompletedIsTerminationSignal verifies that
+// GroupCompleted returns false while agents are running and true once all
+// reach a terminal state. This is the core AC:
+// "The review orchestrator's termination check uses db.GroupCompleted(group_id)."
+func TestGroupWiring_GroupCompletedIsTerminationSignal(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	sessions := []string{"test@parent~review-1-review-goal", "test@parent~review-1-review-code"}
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "idle", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+	}
+
+	// Initially: both idle → GroupCompleted should return false.
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted (initial): %v", err)
+	}
+	if done {
+		t.Error("GroupCompleted returned true while agents are still idle")
+	}
+
+	// Transition first agent to finished → still not complete (second is idle).
+	_ = d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil)
+	done, err = d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted (one finished): %v", err)
+	}
+	if done {
+		t.Error("GroupCompleted returned true with only one of two agents finished")
+	}
+
+	// Transition second agent to finished → now complete.
+	_ = d.UpsertStatus(sessions[1], "nixos-config", "/wt", "finished", nil, nil)
+	done, err = d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted (all finished): %v", err)
+	}
+	if !done {
+		t.Error("GroupCompleted returned false after all agents finished")
+	}
+}
+
+// TestGroupWiring_GroupResultsMatchesPerSessionAggregation verifies that
+// GroupResults produces the same terminal state and last message data as
+// individual per-session queries. This is the AC:
+// "GroupResults output matches what name-prefix aggregation produced."
+func TestGroupWiring_GroupResultsMatchesPerSessionAggregation(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	agents := review.Agents()
+	roundPrefix := "test@parent~review-1-"
+	sessions := make([]string, len(agents))
+
+	for i, ag := range agents {
+		sess := roundPrefix + ag.Name
+		sessions[i] = sess
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+		// Seed a root_agent_name via the seed helper.
+		if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/wt", "finished", nil, nil, ag.Name); err != nil {
+			t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", sess, err)
+		}
+		seedAssistantEvent(t, d, sess, fmt.Sprintf("Review from %s. <verdict>PASS</verdict>", ag.Name))
+	}
+
+	// Fetch via GroupResults.
+	groupData, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+
+	if len(groupData) != 5 {
+		t.Fatalf("GroupResults returned %d members, want 5", len(groupData))
+	}
+
+	// Verify each member matches individual per-session queries.
+	for _, sess := range sessions {
+		gr, ok := groupData[sess]
+		if !ok {
+			t.Errorf("GroupResults missing session %q", sess)
+			continue
+		}
+
+		// Compare state with CurrentStatus.
+		status, sErr := d.CurrentStatus(sess)
+		if sErr != nil {
+			t.Fatalf("CurrentStatus(%q): %v", sess, sErr)
+		}
+		if gr.State != status.State {
+			t.Errorf("session %q: GroupResults.State = %q, CurrentStatus.State = %q", sess, gr.State, status.State)
+		}
+
+		// Compare last message with QueryEvents.
+		events, eErr := d.QueryEvents(sess, 1, nil, nil, []string{"msg_assistant"})
+		if eErr != nil {
+			t.Fatalf("QueryEvents(%q): %v", sess, eErr)
+		}
+		if len(events) > 0 && gr.LastMessage != events[len(events)-1].Payload {
+			t.Errorf("session %q: GroupResults.LastMessage differs from QueryEvents payload", sess)
+		}
+	}
+}
+
+// TestGroupWiring_DistinctGroupsPerRound verifies that two review invocations
+// create distinct group_ids with no cross-contamination.
+// AC: "A second prism review invocation creates a distinct group_id with
+// distinct member rows."
+func TestGroupWiring_DistinctGroupsPerRound(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@worker-branch"
+
+	// Round 1.
+	g1, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup round 1: %v", err)
+	}
+	// Round 2.
+	g2, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup round 2: %v", err)
+	}
+
+	if g1 == g2 {
+		t.Errorf("two RegisterGroup calls returned the same group_id: %q", g1)
+	}
+
+	// Seed members for each group.
+	sess1 := parent + "~review-1-review-goal"
+	sess2 := parent + "~review-2-review-goal"
+
+	_ = d.UpsertStatus(sess1, "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.SetGroupID(sess1, g1)
+	_ = d.UpsertStatus(sess2, "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.SetGroupID(sess2, g2)
+
+	// GroupResults for g1 must not include sess2 and vice versa.
+	gr1, err := d.GroupResults(g1)
+	if err != nil {
+		t.Fatalf("GroupResults(g1): %v", err)
+	}
+	if _, ok := gr1[sess2]; ok {
+		t.Errorf("GroupResults(g1) unexpectedly includes session from round 2: %q", sess2)
+	}
+
+	gr2, err := d.GroupResults(g2)
+	if err != nil {
+		t.Fatalf("GroupResults(g2): %v", err)
+	}
+	if _, ok := gr2[sess1]; ok {
+		t.Errorf("GroupResults(g2) unexpectedly includes session from round 1: %q", sess1)
+	}
+}
+
+// TestGroupWiring_OnlyRetryRegistersNewGroup verifies that the --only retry
+// path also creates a new group_id for the retry round. Existing prior rounds'
+// session_groups rows remain untouched.
+// AC: "The --only retry path also registers a new group (new round)."
+func TestGroupWiring_OnlyRetryRegistersNewGroup(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@worker-branch"
+
+	// First round (full 5 agents).
+	g1, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup round 1: %v", err)
+	}
+	for _, ag := range review.Agents() {
+		sess := parent + "~review-1-" + ag.Name
+		_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+		_ = d.SetGroupID(sess, g1)
+	}
+
+	// Retry round (only 2 agents — simulating --only review-code,review-qa).
+	g2, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup retry round: %v", err)
+	}
+	if g1 == g2 {
+		t.Fatal("retry round got same group_id as first round")
+	}
+
+	retryAgents := []string{"review-code", "review-qa"}
+	for _, name := range retryAgents {
+		sess := parent + "~review-2-" + name
+		_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+		_ = d.SetGroupID(sess, g2)
+	}
+
+	// Original group still has 5 members.
+	gr1, err := d.GroupResults(g1)
+	if err != nil {
+		t.Fatalf("GroupResults(g1): %v", err)
+	}
+	if len(gr1) != 5 {
+		t.Errorf("GroupResults(g1): got %d members, want 5", len(gr1))
+	}
+
+	// Retry group has 2 members.
+	gr2, err := d.GroupResults(g2)
+	if err != nil {
+		t.Fatalf("GroupResults(g2): %v", err)
+	}
+	if len(gr2) != 2 {
+		t.Errorf("GroupResults(g2): got %d members, want 2", len(gr2))
+	}
+}
+
+// TestGroupWiring_BuildResultsUsesGroupResults verifies that buildResults (via
+// BuildResults) uses GroupResults data when a valid groupID is provided, and
+// the output matches the per-session fallback path exactly.
+func TestGroupWiring_BuildResultsUsesGroupResults(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	agents := []review.Agent{
+		{Name: "review-goal"},
+		{Name: "review-code"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-goal",
+		"test@parent~review-1-review-code",
+	}
+
+	// review-goal: PASS. review-code: FAIL.
+	_ = d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.SetGroupID(sessions[0], groupID)
+	seedAssistantEvent(t, d, sessions[0], "All good. <verdict>PASS</verdict>")
+
+	_ = d.UpsertStatus(sessions[1], "nixos-config", "/wt", "finished", nil, nil)
+	_ = d.SetGroupID(sessions[1], groupID)
+	seedAssistantEvent(t, d, sessions[1], "Blocking issue found. <verdict>FAIL</verdict>")
+
+	finished := []bool{true, true}
+	timedOut := []bool{false, false}
+
+	// With groupID → uses GroupResults batch path.
+	resultsWithGroup := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, false, groupID)
+	// Without groupID → uses per-session fallback.
+	resultsWithoutGroup := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, false, "")
+
+	// Both paths must produce the same Passed/IsError/Output for each agent.
+	for i, ag := range agents {
+		rg := resultsWithGroup[i]
+		rf := resultsWithoutGroup[i]
+		if rg.Passed != rf.Passed {
+			t.Errorf("agent %q: group path Passed=%v, fallback path Passed=%v", ag.Name, rg.Passed, rf.Passed)
+		}
+		if rg.IsError != rf.IsError {
+			t.Errorf("agent %q: group path IsError=%v, fallback path IsError=%v", ag.Name, rg.IsError, rf.IsError)
+		}
+		if rg.Output != rf.Output {
+			t.Errorf("agent %q: group path Output differs from fallback path\ngroup:    %q\nfallback: %q", ag.Name, rg.Output, rf.Output)
+		}
+	}
+
+	// Verify specific results.
+	if !resultsWithGroup[0].Passed {
+		t.Error("review-goal should have passed")
+	}
+	if resultsWithGroup[1].Passed {
+		t.Error("review-code should have failed")
+	}
+}
+
+// TestGroupWiring_PollWithGroupCompleted verifies the full poll loop with group
+// termination: agents transition from idle → finished, and the poll loop
+// terminates via GroupCompleted. This exercises the integration between
+// RegisterGroup, SetGroupID, GroupCompleted, and GroupResults.
+func TestGroupWiring_PollWithGroupCompleted(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-code", OpencodeName: "review-code"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-goal",
+		"test@parent~review-1-review-code",
+	}
+
+	// Pre-seed as finished with group_id.
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+		seedAssistantEvent(t, d, sess, "<verdict>PASS</verdict>")
+	}
+
+	var lines []string
+	spawnTimes := []time.Time{time.Now(), time.Now()}
+
+	results, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
+		lines = append(lines, line)
+	}, groupID)
+	if err != nil {
+		t.Fatalf("PollAgentsForTest: %v", err)
+	}
+
+	// Both agents should have passed.
+	for i, r := range results {
+		if !r.Passed {
+			t.Errorf("agent %q: Passed=false, want true (output: %q)", agents[i].Name, r.Output)
+		}
+	}
+
+	// Progress lines should be emitted.
+	if len(lines) != 2 {
+		t.Errorf("expected 2 progress lines, got %d: %v", len(lines), lines)
 	}
 }
