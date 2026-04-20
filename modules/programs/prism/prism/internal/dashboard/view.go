@@ -117,7 +117,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// treePrefixW=10 sets the total reserved width (prefix + branch) so column
 	// alignment is preserved across all depths.
 	const treePrefixW = 10
-	const agentTypeW = 12 // "coordinator " or "worker      " or "            "
+	const agentTypeW = 15 // widest: "review-security" (15 chars); other types right-pad.
 	const stateW = 10
 	const dotW = 2
 	const sessionWCap = 40  // maximum session width before the rest goes to title
