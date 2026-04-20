@@ -76,6 +76,33 @@ type Harness interface {
 	// "event:" header) must implement this to decode it. Harnesses that use the
 	// SSE "event:" field directly may return evt.Type unchanged.
 	ExtractEventType(evt HarnessEvent) string
+
+	// ConfigEnvVar returns the environment variable name this harness uses
+	// to receive its serialised config content (e.g. "OPENCODE_CONFIG_CONTENT"
+	// for opencode). The returned name is used in both host-mode (inline
+	// shell env-var prefix) and container-mode (podman --env) session
+	// creation to inject config overrides into the agent runtime.
+	ConfigEnvVar() string
+
+	// RuntimeEnv returns additional environment variables this harness needs
+	// set in the container / process it runs in. For opencode, this includes
+	// experimental flags like the bash-tool timeout. The returned map is
+	// merged into the session environment alongside other env vars —
+	// existing vars with the same name are NOT overwritten.
+	RuntimeEnv() map[string]string
+
+	// ValidateAgentRole reports whether a given agent role is supported by
+	// this harness. For opencode, this means the agent definition file
+	// exists in the agents directory. Returns nil when the role is valid.
+	// The error message should mention the harness name and the role.
+	ValidateAgentRole(role string) error
+
+	// EffectiveModel returns the model identifier this harness uses for a
+	// given agent role, applying any harness-specific defaults or
+	// role-specific overrides. Returns an empty string if the model cannot
+	// be determined (e.g. config file missing or the role has no explicit
+	// model).
+	EffectiveModel(role string) string
 }
 
 // HarnessEvent is a raw event received from the agent runtime's event stream.

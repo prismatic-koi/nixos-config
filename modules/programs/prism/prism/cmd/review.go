@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -152,7 +153,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism review: no agents to run")
 	}
 
-	// Pre-flight: verify that the required opencode agent definitions exist.
+	// Pre-flight: verify that the required agent definitions exist.
 	// By the time we reach here, PRISM_HOST_API is guaranteed to be unset (the
 	// proxy-out branch above returned early if it was set), so this process is
 	// always running on the host regardless of cfg.ContainerMode. The agent
@@ -161,7 +162,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// "this host spawns workers in containers"; it is NOT a runtime signal
 	// meaning "this process is running inside a container" — using it as such
 	// would incorrectly skip this check on Darwin hosts with container_mode=true.
-	if err := review.CheckAgentAvailability(agents); err != nil {
+	//
+	// The harness adapter's ValidateAgentRole method encapsulates the
+	// harness-specific check (for opencode: agent .md files in the agents
+	// directory). This keeps opencode-specific filesystem paths out of
+	// cmd/ and review/ packages.
+	h := opencode.New("", nil, "", "")
+	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		return fmt.Errorf("prism review: %w", err)
 	}
 
