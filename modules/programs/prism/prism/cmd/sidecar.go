@@ -48,7 +48,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -173,9 +172,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Load prism runtime config — needed for git identity and SSH key names.
 	prismCfg := config.Load()
 
-	// Resolve the agent model once; used in both the container config and the
-	// harness adapter construction below.
-	agentModel := opencodeAgentModel(agentRole)
+	// Resolve the agent model once via the harness adapter. The adapter is
+	// constructed transiently here for the EffectiveModel call; a fresh
+	// adapter with the resolved model is constructed below for the sidecar.
+	agentModel := opencode.New("", nil, agentRole, "").EffectiveModel(agentRole)
 
 	// Load profiles to extract container resource caps. Non-fatal if missing
 	// (e.g. running without the nix module) — resource fields remain at their
@@ -351,35 +351,4 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// opencodeAgentModel reads the model configured for the given agent role from
-// the opencode config file (~/.config/opencode/opencode.json). Returns empty
-// string if the config cannot be read or the agent has no explicit model.
-func opencodeAgentModel(agentRole string) string {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		configHome = filepath.Join(home, ".config")
-	}
-	data, err := os.ReadFile(filepath.Join(configHome, "opencode", "opencode.json"))
-	if err != nil {
-		return ""
-	}
 
-	// Minimal parse — just enough to extract agent.<role>.model.
-	// Using encoding/json directly to avoid pulling in a full config package.
-	var cfg struct {
-		Agent map[string]struct {
-			Model string `json:"model"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ""
-	}
-	if a, ok := cfg.Agent[agentRole]; ok {
-		return a.Model
-	}
-	return ""
-}

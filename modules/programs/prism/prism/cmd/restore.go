@@ -33,6 +33,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/db"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -293,22 +294,25 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	if s.OpencodeSID != nil {
 		opencodeSession = *s.OpencodeSID
 	}
+	restoreHarness := opencode.New("", nil, "", "")
 	opts := session.Opts{
-		Headless:        true,
-		OpencodeSession: opencodeSession,
-		Agent:           session.DefaultAgent(directory, ""),
-		SessionName:     s.SessionName,
-		Layout:          session.LayoutFull,
-		SkipStatusSeed:  true,
-		ContainerMode:   containerMode,
-		IsolationMode:   string(isoMode),
+		Headless:         true,
+		OpencodeSession:  opencodeSession,
+		Agent:            session.DefaultAgent(directory, ""),
+		SessionName:      s.SessionName,
+		Layout:           session.LayoutFull,
+		SkipStatusSeed:   true,
+		ContainerMode:    containerMode,
+		IsolationMode:    string(isoMode),
+		ConfigEnvVarName: restoreHarness.ConfigEnvVar(),
+		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),
 	}
 	if containerMode {
 		opts.PluginHostPath = cfg.SidecarPluginPath
 	}
 
-	// In sandboxed mode (podman or bwrap), inject the role-specific opencode.json
-	// blob as OPENCODE_CONFIG_CONTENT. This mirrors the pattern in spawn.go.
+	// In sandboxed mode (podman or bwrap), inject the role-specific config
+	// blob as the harness config env var. This mirrors the pattern in spawn.go.
 	// Profile load errors are non-fatal for restore: log and skip config
 	// injection so the session is still recreated without it, rather than
 	// aborting the entire restore run.

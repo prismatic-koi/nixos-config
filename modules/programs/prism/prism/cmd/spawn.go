@@ -31,6 +31,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -259,7 +260,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	// In container/bwrap mode, inject the role-specific opencode.json blob as
-	// OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+	// the harness config env var so it takes precedence (level 6) over any
 	// project-level opencode.jsonc. This ensures agent identity is always
 	// determined by Nix config, not by the project file.
 	//
@@ -324,17 +325,24 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	agentRole := session.DefaultAgent(worktreePath, agentFlag)
 	headless := !fromKeybind && !attachFlag
 
+	// Resolve harness-specific env var names and runtime env vars.
+	// These are populated from the harness adapter and threaded through
+	// SpawnOpts → Opts → buildDirectOpencodeCmd so that no
+	// opencode-specific string literals appear in the session package.
+	h := opencode.New("", nil, "", "")
 	spawnOpts := session.SpawnOpts{
-		SessionName:    sessionName,
-		Repo:           deriveRepo(worktreePath),
-		Worktree:       worktreePath,
-		AgentRole:      agentRole,
-		Prompt:         promptFlag,
-		ConfigContent:  configContent,
-		Layout:         session.LayoutFull,
-		ContainerMode:  effectiveContainerMode,
-		IsolationMode:  string(isolationMode),
-		PluginHostPath: cfg.SidecarPluginPath,
+		SessionName:      sessionName,
+		Repo:             deriveRepo(worktreePath),
+		Worktree:         worktreePath,
+		AgentRole:        agentRole,
+		Prompt:           promptFlag,
+		ConfigContent:    configContent,
+		Layout:           session.LayoutFull,
+		ContainerMode:    effectiveContainerMode,
+		IsolationMode:    string(isolationMode),
+		PluginHostPath:   cfg.SidecarPluginPath,
+		ConfigEnvVarName: h.ConfigEnvVar(),
+		RuntimeEnvVars:   h.RuntimeEnv(),
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.

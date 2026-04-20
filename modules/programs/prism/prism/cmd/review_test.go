@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -322,7 +323,8 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t
 	// If the old if !cfg.ContainerMode guard were still present and
 	// cfg.ContainerMode were true, this call would be skipped and the missing
 	// agents would go undetected.
-	err := review.CheckAgentAvailability(agents)
+	h := opencode.New("", nil, "", "")
+	err := review.CheckAgentAvailability(agents, h.ValidateAgentRole)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents when PRISM_HOST_API is unset, got nil — the pre-flight check must not be skipped")
 	}
@@ -362,7 +364,8 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent_ContainerModeIrrelevan
 	}
 
 	// Verify the check passes — all files are present on the host filesystem.
-	if err := review.CheckAgentAvailability(agents); err != nil {
+	h := opencode.New("", nil, "", "")
+	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		t.Errorf("CheckAgentAvailability: unexpected error when all agent files are present: %v", err)
 	}
 }
