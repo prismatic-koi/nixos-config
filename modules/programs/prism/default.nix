@@ -141,6 +141,7 @@
     ./opencode.nix
     ./pi.nix
     ./profiles.nix
+    ./secrets.nix
     ./tmux.nix
     ./sessioniser.nix
     ./context-switcher.nix
