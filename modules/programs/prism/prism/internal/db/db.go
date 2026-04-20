@@ -1893,3 +1893,80 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 	}
 	return m, nil
 }
+
+// CoordinatorForRepo returns the agent_status row for the active coordinator
+// session of repo (i.e. the row where repo = repo AND root_agent_name =
+// "coordinator" AND ended_at IS NULL). Returns nil when no coordinator exists.
+// When multiple rows match (schema violation), the most-recently-seen row is
+// returned and a duplicate is silently tolerated.
+func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
+ORDER BY last_seen DESC
+LIMIT 1`
+	row := d.conn.QueryRow(q, repo)
+	s, err := scanStatus(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: coordinator for repo: %w", err)
+	}
+	return s, nil
+}
+
+// RootAgentName returns the root_agent_name for sessionName, or "" when the
+// row does not exist or root_agent_name is NULL (pre-migration row).
+func (d *DB) RootAgentName(sessionName string) (string, error) {
+	var name sql.NullString
+	const q = `SELECT root_agent_name FROM agent_status WHERE session_name = ?`
+	if err := d.conn.QueryRow(q, sessionName).Scan(&name); err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", fmt.Errorf("db: root agent name: %w", err)
+	}
+	if !name.Valid {
+		return "", nil
+	}
+	return name.String, nil
+}
+
+// IsGroupMember returns true when sessionName has a non-NULL group_id in
+// agent_status (i.e. it belongs to a session group). Returns false for
+// pre-migration rows where group_id is NULL.
+func (d *DB) IsGroupMember(sessionName string) (bool, error) {
+	var groupID sql.NullString
+	const q = `SELECT group_id FROM agent_status WHERE session_name = ?`
+	if err := d.conn.QueryRow(q, sessionName).Scan(&groupID); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("db: is group member: %w", err)
+	}
+	return groupID.Valid && groupID.String != "", nil
+}
+
+// HasReviewGroup returns true when sessionName is the parent_session of at
+// least one row in session_groups. This is the DB-backed way to detect whether
+// a session has spawned a review group (replacing the "~review" name heuristic).
+func (d *DB) HasReviewGroup(parentSession string) (bool, error) {
+	var count int
+	const q = `SELECT COUNT(*) FROM session_groups WHERE parent_session = ?`
+	if err := d.conn.QueryRow(q, parentSession).Scan(&count); err != nil {
+		return false, fmt.Errorf("db: has review group: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GroupMembersForParent returns all agent_status rows whose group_id belongs
+// to a session_groups row with parent_session = parentSession.
+func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
+	return d.queryStatuses(q, parentSession)
+}

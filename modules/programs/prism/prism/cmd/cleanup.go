@@ -376,7 +376,34 @@ var cleanupCmd = &cobra.Command{
 		defaultBr := git.DefaultBranchFromBareRoot(bareRoot)
 		isDefaultBranch := defaultBr != "" && worktreeName == defaultBr
 
-		if isDefaultBranch {
+		// DB-backed coordinator check: prefer root_agent_name == "coordinator"
+		// over the default-branch heuristic. Fallback to the heuristic when the
+		// DB row is absent or root_agent_name is NULL (pre-migration).
+		isCoordinatorSession := false
+		if d, dbErr := openDB(); dbErr == nil {
+			rootName, rootErr := d.RootAgentName(session)
+			d.Close()
+			if rootErr == nil && rootName != "" {
+				isCoordinatorSession = rootName == "coordinator"
+				if isCoordinatorSession != isDefaultBranch {
+					fmt.Fprintf(os.Stderr, "[debug] cleanup: isCoordinator(%q): DB says %v (root_agent_name=%q), branch heuristic says %v\n",
+						session, isCoordinatorSession, rootName, isDefaultBranch)
+				}
+			} else {
+				// Pre-migration fallback: use branch-name heuristic.
+				if rootErr != nil {
+					fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
+				} else {
+					fmt.Fprintf(os.Stderr, "[deprecation] cleanup: root_agent_name NULL for %q — using branch heuristic\n", session)
+				}
+				isCoordinatorSession = isDefaultBranch
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: could not open DB for %q: %v — using branch heuristic\n", session, dbErr)
+			isCoordinatorSession = isDefaultBranch
+		}
+
+		if isCoordinatorSession {
 			// Default-branch sessions (e.g. repo@main): close the tmux
 			// session and mark the DB as ended, but keep the worktree
 			// and branch intact.

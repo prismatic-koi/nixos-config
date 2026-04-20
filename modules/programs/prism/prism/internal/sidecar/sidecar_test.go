@@ -2571,7 +2571,8 @@ func TestIsReviewAgentSession(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isReviewAgentSession(tc.sessionName)
+			// Pass nil DB to exercise the name-heuristic fallback path.
+			got := isReviewAgentSession(tc.sessionName, nil)
 			if got != tc.want {
 				t.Errorf("isReviewAgentSession(%q) = %v, want %v", tc.sessionName, got, tc.want)
 			}

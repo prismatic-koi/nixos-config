@@ -3464,3 +3464,208 @@ func TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent(t *testing.T) {
 		t.Errorf("State after sidecar write: got %q, want \"active\"", s2.State)
 	}
 }
+
+// TestCoordinatorForRepo verifies the DB-backed coordinator lookup by repo.
+func TestCoordinatorForRepo(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a coordinator row with root_agent_name = "coordinator".
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	// Seed a worker row.
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// Happy path: find the coordinator for the repo.
+	coord, err := d.CoordinatorForRepo("myrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo: %v", err)
+	}
+	if coord == nil {
+		t.Fatal("CoordinatorForRepo: got nil, want coordinator row")
+	}
+	if coord.SessionName != "myrepo@main" {
+		t.Errorf("CoordinatorForRepo: SessionName = %q, want %q", coord.SessionName, "myrepo@main")
+	}
+
+	// No coordinator for an unknown repo returns nil.
+	none, err := d.CoordinatorForRepo("other-repo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo(other-repo): %v", err)
+	}
+	if none != nil {
+		t.Errorf("CoordinatorForRepo(other-repo): got %v, want nil", none)
+	}
+
+	// Pre-migration row: a session named "oldrepo@main" with NULL root_agent_name
+	// is NOT returned by CoordinatorForRepo (it requires the DB field).
+	if err := d.UpsertStatus("oldrepo@main", "oldrepo", "/code/oldrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration coordinator: %v", err)
+	}
+	noPreMig, err := d.CoordinatorForRepo("oldrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo(oldrepo): %v", err)
+	}
+	if noPreMig != nil {
+		t.Errorf("CoordinatorForRepo(oldrepo): expected nil for pre-migration row (NULL root_agent_name), got %v", noPreMig)
+	}
+
+	// Ended coordinator should not be returned.
+	if err := d.SetEnded("myrepo@main"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	ended, err := d.CoordinatorForRepo("myrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo after SetEnded: %v", err)
+	}
+	if ended != nil {
+		t.Errorf("CoordinatorForRepo after SetEnded: got %v, want nil", ended)
+	}
+}
+
+// TestRootAgentName verifies the RootAgentName DB helper.
+func TestRootAgentName(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Non-existent session returns "".
+	name, err := d.RootAgentName("nonexistent@session")
+	if err != nil {
+		t.Fatalf("RootAgentName(nonexistent): %v", err)
+	}
+	if name != "" {
+		t.Errorf("RootAgentName(nonexistent): got %q, want empty", name)
+	}
+
+	// Pre-migration row: root_agent_name is NULL.
+	if err := d.UpsertStatus("repo@old", "repo", "/code", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration: %v", err)
+	}
+	nameNull, err := d.RootAgentName("repo@old")
+	if err != nil {
+		t.Fatalf("RootAgentName(pre-migration): %v", err)
+	}
+	if nameNull != "" {
+		t.Errorf("RootAgentName(pre-migration): got %q, want empty for NULL", nameNull)
+	}
+
+	// Post-migration row: root_agent_name is populated.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	nameCoord, err := d.RootAgentName("repo@main")
+	if err != nil {
+		t.Fatalf("RootAgentName(coordinator): %v", err)
+	}
+	if nameCoord != "coordinator" {
+		t.Errorf("RootAgentName(coordinator): got %q, want \"coordinator\"", nameCoord)
+	}
+}
+
+// TestIsGroupMember verifies the IsGroupMember DB helper.
+func TestIsGroupMember(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a session and a group.
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	groupID, err := d.RegisterGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed a review agent session and assign it to the group.
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal"); err != nil {
+		t.Fatalf("seed review agent: %v", err)
+	}
+	if err := d.SetGroupID("repo@worker~review-1-review-goal", groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+
+	// The review agent IS a group member.
+	isMember, err := d.IsGroupMember("repo@worker~review-1-review-goal")
+	if err != nil {
+		t.Fatalf("IsGroupMember(review agent): %v", err)
+	}
+	if !isMember {
+		t.Error("IsGroupMember(review agent): got false, want true")
+	}
+
+	// The parent worker is NOT a group member (it is the parent, not a member).
+	isParentMember, err := d.IsGroupMember("repo@worker")
+	if err != nil {
+		t.Fatalf("IsGroupMember(parent): %v", err)
+	}
+	if isParentMember {
+		t.Error("IsGroupMember(parent worker): got true, want false (parent is not in a group)")
+	}
+
+	// Pre-migration row (NULL group_id) is not a group member.
+	if err := d.UpsertStatus("repo@old-worker", "repo", "/code", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration: %v", err)
+	}
+	isOldMember, err := d.IsGroupMember("repo@old-worker")
+	if err != nil {
+		t.Fatalf("IsGroupMember(pre-migration): %v", err)
+	}
+	if isOldMember {
+		t.Error("IsGroupMember(pre-migration NULL group_id): got true, want false")
+	}
+
+	// Non-existent session returns false.
+	isNone, err := d.IsGroupMember("nonexistent@session")
+	if err != nil {
+		t.Fatalf("IsGroupMember(nonexistent): %v", err)
+	}
+	if isNone {
+		t.Error("IsGroupMember(nonexistent): got true, want false")
+	}
+}
+
+// TestHasReviewGroup verifies the HasReviewGroup DB helper.
+func TestHasReviewGroup(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a worker session.
+	if err := d.UpsertStatus("repo@worker", "repo", "/code/worker", "active", nil, nil); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// Before registering any group, HasReviewGroup returns false.
+	has, err := d.HasReviewGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (before group): %v", err)
+	}
+	if has {
+		t.Error("HasReviewGroup (before group): got true, want false")
+	}
+
+	// Register a group for the worker.
+	if _, err := d.RegisterGroup("repo@worker"); err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Now HasReviewGroup returns true.
+	hasAfter, err := d.HasReviewGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (after group): %v", err)
+	}
+	if !hasAfter {
+		t.Error("HasReviewGroup (after group): got false, want true")
+	}
+
+	// Different session returns false.
+	hasOther, err := d.HasReviewGroup("repo@other")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (other session): %v", err)
+	}
+	if hasOther {
+		t.Error("HasReviewGroup (other session): got true, want false")
+	}
+}

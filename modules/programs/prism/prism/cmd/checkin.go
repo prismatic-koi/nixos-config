@@ -94,8 +94,23 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 	// Special case: if the session argument ends with "~review" (no round number),
 	// prefix-match all ~review-* rounds for the parent session and display a
 	// summary of each round.
+	//
+	// DB-backed: also detect review groups via session_groups.parent_session.
+	// When the sessionArg itself is a parent_session in session_groups, treat it
+	// as a review-summary request (DB path). The name-suffix heuristic is kept
+	// for backward compat with pre-migration sessions and direct ~review suffixes.
 	if strings.HasSuffix(sessionArg, "~review") {
 		return runCheckinReviewRounds(sessionArg, verbose)
+	}
+	// DB-backed check: is sessionArg a parent of a review group?
+	if d, dbErr := openDB(); dbErr == nil {
+		hasGroup, groupErr := d.HasReviewGroup(sessionArg)
+		d.Close()
+		if groupErr == nil && hasGroup {
+			// sessionArg is a parent session with a review group — use the
+			// group-aware review summary path.
+			return runCheckinReviewRoundsByGroup(sessionArg, verbose)
+		}
 	}
 
 	return runCheckinSession(sessionArg, last, beforePtr, afterPtr, types, verbose)
@@ -1578,6 +1593,83 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 		}
 
 		fmt.Println(styleDim.Render("── end of round ──"))
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// runCheckinReviewRoundsByGroup is the DB-backed replacement for
+// runCheckinReviewRounds. Instead of using a name-prefix scan, it queries
+// session_groups.parent_session to find all review agent sessions belonging to
+// groups owned by parentSession.
+//
+// This is the authoritative path for post-migration sessions where group_id is
+// populated. Falls back to the name-prefix path when no group members are found.
+func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("checkin review (group): open db: %w", err)
+	}
+	defer d.Close()
+
+	members, err := d.GroupMembersForParent(parentSession)
+	if err != nil {
+		return fmt.Errorf("checkin review (group): query members: %w", err)
+	}
+
+	if len(members) == 0 {
+		// No group members — fall back to the legacy name-prefix scan.
+		fmt.Fprintf(os.Stderr, "[deprecation] checkin: no group members found for %q via DB — falling back to name-prefix scan\n", parentSession)
+		return runCheckinReviewRounds(parentSession+"~review", verbose)
+	}
+
+	styleBold := lipgloss.NewStyle().Bold(true)
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	fmt.Printf("%s\n\n", styleBold.Render(fmt.Sprintf("review sessions for %s (%d agent(s))", parentSession, len(members))))
+
+	// Sort by session name for deterministic output.
+	for i := 1; i < len(members); i++ {
+		key := members[i]
+		j := i - 1
+		for j >= 0 && members[j].SessionName > key.SessionName {
+			members[j+1] = members[j]
+			j--
+		}
+		members[j+1] = key
+	}
+
+	for _, m := range members {
+		label := m.SessionName
+		if m.RootAgentName != nil && *m.RootAgentName != "" {
+			label = *m.RootAgentName
+		}
+		fmt.Printf("  %s\n", styleBold.Render(label))
+		stateStyled := stateStyle(m.State).Render(m.State)
+		fmt.Printf("  state: %s\n", stateStyled)
+
+		if verbose {
+			if err := runCheckinSession(m.SessionName, 20, nil, nil, nil, true); err != nil {
+				fmt.Fprintf(os.Stderr, "  [error reading session %s: %v]\n", m.SessionName, err)
+			}
+		} else {
+			events, qerr := d.QueryEvents(m.SessionName, 1, nil, nil, []string{"msg_assistant"})
+			if qerr != nil || len(events) == 0 {
+				fmt.Println(styleDim.Render("  (no output recorded)"))
+			} else {
+				e := events[len(events)-1]
+				ts := e.CreatedAt.Local().Format("15:04:05")
+				var ap struct {
+					Text string `json:"text"`
+				}
+				text := e.Payload
+				if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr == nil && ap.Text != "" {
+					text = ap.Text
+				}
+				fmt.Printf("  [%s]\n  %s\n", ts, strings.ReplaceAll(text, "\n", "\n  "))
+			}
+		}
 		fmt.Println()
 	}
 
