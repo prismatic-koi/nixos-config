@@ -343,8 +343,8 @@ func TestSessionCreated_WritesActiveWithTitle(t *testing.T) {
 	if status.Title == nil || *status.Title != "Fix the widget" {
 		t.Errorf("title = %v, want %q", status.Title, "Fix the widget")
 	}
-	if status.OpencodeSID == nil || *status.OpencodeSID != "oc-session-123" {
-		t.Errorf("opencodeSID = %v, want %q", status.OpencodeSID, "oc-session-123")
+	if status.HarnessSessionID == nil || *status.HarnessSessionID != "oc-session-123" {
+		t.Errorf("opencodeSID = %v, want %q", status.HarnessSessionID, "oc-session-123")
 	}
 }
 
@@ -1572,7 +1572,7 @@ func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar
 }
 
 // seedCoordinatorWithPort inserts a coordinator row with a specific known port
-// and opencode_sid using a SQL exec via db.QueryRow (for testing).
+// and harness_session_id using a SQL exec via db.QueryRow (for testing).
 func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid string) {
 	t.Helper()
 	coordName := repo + "@main"
@@ -1584,7 +1584,7 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	// Set the port directly via a UPDATE … RETURNING to verify it applied.
 	var got int
 	if err := d.QueryRow(
-		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING opencode_port",
+		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
 		port, coordName,
 	).Scan(&got); err != nil {
 		t.Fatalf("seed coordinator: set port: %v", err)
@@ -2098,14 +2098,14 @@ func TestNotifyCoordinator_PortSetButNoSID_TriesAndFails(t *testing.T) {
 
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	// Seed coordinator with a port but no opencode_sid.
+	// Seed coordinator with a port but no harness_session_id.
 	coordName := "test-repo@main"
 	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, nil); err != nil {
 		t.Fatalf("seed coordinator: UpsertStatus: %v", err)
 	}
-	// Set port but leave opencode_sid = NULL.
+	// Set port but leave harness_session_id = NULL.
 	if err := d.QueryRow(
-		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING opencode_port",
+		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
 		srvPort, coordName,
 	).Scan(new(int)); err != nil {
 		t.Fatalf("set port: %v", err)
@@ -5846,8 +5846,8 @@ func TestNotifyCoordinator_StaleSID_FallsBackToMostRecent(t *testing.T) {
 
 	// The coordinator's stored SID must have been updated to the fresh one.
 	coordStatus, _ := d.CurrentStatus("test-repo@main")
-	if coordStatus.OpencodeSID == nil || *coordStatus.OpencodeSID != freshSID {
-		t.Errorf("opencode_sid after fallback: got %v, want %q", coordStatus.OpencodeSID, freshSID)
+	if coordStatus.HarnessSessionID == nil || *coordStatus.HarnessSessionID != freshSID {
+		t.Errorf("opencode_sid after fallback: got %v, want %q", coordStatus.HarnessSessionID, freshSID)
 	}
 }
 
@@ -6027,8 +6027,8 @@ func TestNotifyCoordinator_StaleSIDNoDeliveredAt(t *testing.T) {
 
 	// The coordinator's stored SID must have been refreshed.
 	coordStatus, _ := d.CurrentStatus("test-repo@main")
-	if coordStatus.OpencodeSID == nil || *coordStatus.OpencodeSID != "fresh-sid-abc" {
-		t.Errorf("opencode_sid after stale fallback: got %v, want \"fresh-sid-abc\"", coordStatus.OpencodeSID)
+	if coordStatus.HarnessSessionID == nil || *coordStatus.HarnessSessionID != "fresh-sid-abc" {
+		t.Errorf("opencode_sid after stale fallback: got %v, want \"fresh-sid-abc\"", coordStatus.HarnessSessionID)
 	}
 }
 
@@ -6049,8 +6049,8 @@ func TestHandleSessionCreated_AlwaysUpdatesOpencodeSID(t *testing.T) {
 	}))
 
 	s1, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
-	if s1.OpencodeSID == nil || *s1.OpencodeSID != oldSID {
-		t.Errorf("after first session.created: opencode_sid = %v, want %q", s1.OpencodeSID, oldSID)
+	if s1.HarnessSessionID == nil || *s1.HarnessSessionID != oldSID {
+		t.Errorf("after first session.created: opencode_sid = %v, want %q", s1.HarnessSessionID, oldSID)
 	}
 
 	// Second session.created event with a new SID (simulating /continue or TUI restart).
@@ -6060,8 +6060,8 @@ func TestHandleSessionCreated_AlwaysUpdatesOpencodeSID(t *testing.T) {
 	}))
 
 	s2, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
-	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
-		t.Errorf("after second session.created: opencode_sid = %v, want %q", s2.OpencodeSID, newSID)
+	if s2.HarnessSessionID == nil || *s2.HarnessSessionID != newSID {
+		t.Errorf("after second session.created: opencode_sid = %v, want %q", s2.HarnessSessionID, newSID)
 	}
 }
 
@@ -6092,7 +6092,7 @@ func TestValidateOrRefreshCoordinatorSID_SIDPresent(t *testing.T) {
 func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
 	d := openTestDB(t)
 
-	// Seed coordinator so UpdateOpencodeSID has a row to update.
+	// Seed coordinator so UpdateHarnessSessionID has a row to update.
 	coordName := "test-repo@main"
 	_ = d.UpsertStatus(coordName, "test-repo", "/wt", "active", nil, nil)
 
@@ -6121,8 +6121,8 @@ func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
 
 	// DB must be updated.
 	status, _ := d.CurrentStatus(coordName)
-	if status.OpencodeSID == nil || *status.OpencodeSID != "newer-sid" {
-		t.Errorf("opencode_sid in DB = %v, want \"newer-sid\"", status.OpencodeSID)
+	if status.HarnessSessionID == nil || *status.HarnessSessionID != "newer-sid" {
+		t.Errorf("opencode_sid in DB = %v, want \"newer-sid\"", status.HarnessSessionID)
 	}
 }
 

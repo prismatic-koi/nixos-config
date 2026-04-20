@@ -720,15 +720,15 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	info := payload.Properties.Info
 	s.opencodeSID = info.ID
 
-	// Always persist the new opencode_sid unconditionally so that if the user
-	// creates a new opencode session mid-conversation (e.g. via /continue or
-	// TUI restart), the DB stays current. upsertState uses COALESCE for
-	// opencode_sid (only overwriting when the incoming value is non-nil), which
-	// is insufficient here — we need an unconditional update so that a fresh
-	// session ID always replaces a stale one. (#694)
+	// Always persist the new harness session ID unconditionally so that if the
+	// user creates a new session mid-conversation (e.g. via /continue or TUI
+	// restart), the DB stays current. upsertState uses COALESCE for
+	// harness_session_id (only overwriting when the incoming value is non-nil),
+	// which is insufficient here — we need an unconditional update so that a
+	// fresh session ID always replaces a stale one. (#694)
 	if info.ID != "" {
-		if err := s.cfg.DB.UpdateOpencodeSID(s.cfg.SessionName, info.ID); err != nil {
-			log.Printf("sidecar: handleSessionCreated: UpdateOpencodeSID failed: %v", err)
+		if err := s.cfg.DB.UpdateHarnessSessionID(s.cfg.SessionName, info.ID); err != nil {
+			log.Printf("sidecar: handleSessionCreated: UpdateHarnessSessionID failed: %v", err)
 		}
 	}
 
@@ -1533,17 +1533,17 @@ func (s *Sidecar) notifyCoordinator() {
 	}
 
 	// Require port for HTTP delivery.
-	if coordStatus.OpencodePort == nil {
-		log.Printf("sidecar: notifyCoordinator: coordinator has no opencode port — cannot deliver notification")
+	if coordStatus.HarnessPort == nil {
+		log.Printf("sidecar: notifyCoordinator: coordinator has no harness port — cannot deliver notification")
 		return
 	}
-	port := *coordStatus.OpencodePort
+	port := *coordStatus.HarnessPort
 
 	// storedSID is the SID currently recorded in the DB. May be stale if the
-	// coordinator created a new opencode session after the last DB write.
+	// coordinator created a new harness session after the last DB write.
 	storedSID := ""
-	if coordStatus.OpencodeSID != nil {
-		storedSID = *coordStatus.OpencodeSID
+	if coordStatus.HarnessSessionID != nil {
+		storedSID = *coordStatus.HarnessSessionID
 	}
 
 	const maxAttempts = 3
@@ -1675,8 +1675,8 @@ func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName
 	log.Printf("sidecar: notifyCoordinator: stored SID %q not found in coordinator session list — using most recent SID %q", storedSID, bestSID)
 
 	// Persist the refreshed SID so future deliveries use it.
-	if err := database.UpdateOpencodeSID(coordinatorName, bestSID); err != nil {
-		log.Printf("sidecar: notifyCoordinator: UpdateOpencodeSID failed: %v", err)
+	if err := database.UpdateHarnessSessionID(coordinatorName, bestSID); err != nil {
+		log.Printf("sidecar: notifyCoordinator: UpdateHarnessSessionID failed: %v", err)
 	}
 
 	return bestSID, nil

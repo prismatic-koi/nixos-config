@@ -61,12 +61,10 @@ type Status struct {
 	Worktree         string
 	State            string
 	Title            *string
-	OpencodeSID      *string
 	AgentName        *string
 	ModelID          *string
 	RootAgentName    *string
 	RootModelID      *string
-	OpencodePort     *int
 	HostMode         bool
 	IsolationMode    string // "podman", "bwrap", or "host"; "" means not recorded (back-compat)
 	InstanceID       *string
@@ -135,12 +133,10 @@ CREATE TABLE IF NOT EXISTS agent_status (
   worktree          TEXT NOT NULL,
   state             TEXT NOT NULL,
   title             TEXT,
-  opencode_sid      TEXT,
   agent_name        TEXT,
   model_id          TEXT,
   root_agent_name   TEXT,
   root_model_id     TEXT,
-  opencode_port     INTEGER,
   host_mode         INTEGER NOT NULL DEFAULT 0,
   isolation_mode    TEXT,
   instance_id       TEXT,
@@ -174,7 +170,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 // Open opens (or creates) the prism database at path.
 // It creates parent directories as needed, enables WAL mode, enforces foreign
-// keys, runs the full schema, and sets schema_version=10 if the table is empty.
+// keys, runs the full schema, and sets schema_version=11 if the table is empty.
 // Pending migrations are applied in order: v1→v2 adds agent_name/model_id;
 // v2→v3 adds root_agent_name/root_model_id; v3→v4 adds opencode_port to
 // agent_status; v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id
@@ -184,7 +180,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // (with ON DELETE SET NULL) to agent_status via rename-and-recreate so that
 // the REFERENCES clause is present in the schema metadata and fully enforced
 // by PRAGMA foreign_keys = ON on both fresh and migrated databases;
-// v9→v10 adds isolation_mode TEXT to agent_status (nullable, back-compat).
+// v9→v10 adds isolation_mode TEXT to agent_status (nullable, back-compat);
+// v10→v11 drops the legacy opencode_port and opencode_sid columns from
+// agent_status (harness-agnostic equivalents harness_port and harness_session_id
+// have been the canonical columns since v8; the legacy names were dual-written
+// for back-compat and are now removed).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -226,15 +226,15 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=10 if the table is empty (fresh database already has
-	// all columns including the v2–v10 additions, so no migration is needed).
+	// Set schema_version=11 if the table is empty (fresh database already has
+	// all columns including the v2–v11 additions, so no migration is needed).
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: check schema_version: %w", err)
 	}
 	if count == 0 {
-		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (10)"); err != nil {
+		if _, err := conn.Exec("INSERT INTO schema_version (version) VALUES (11)"); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("db: set schema_version: %w", err)
 		}
@@ -463,6 +463,33 @@ func Open(path string) (*DB, error) {
 		}
 		version = 10
 	}
+	if version == 10 {
+		// Migration v10 → v11: drop the legacy opencode_port and opencode_sid
+		// columns from agent_status. Data in these columns was dual-written to
+		// harness_port and harness_session_id since v8; however for databases
+		// that were not actively used after v8 the harness columns may still be
+		// NULL while the legacy columns carry data. Back-fill first so that no
+		// data is lost, then drop the legacy columns.
+		// SQLite supports ALTER TABLE DROP COLUMN since 3.35 (2021).
+		migrations := []string{
+			// Back-fill harness_session_id from opencode_sid where not already set.
+			`UPDATE agent_status SET harness_session_id = opencode_sid
+			  WHERE harness_session_id IS NULL AND opencode_sid IS NOT NULL`,
+			// Back-fill harness_port from opencode_port where not already set.
+			`UPDATE agent_status SET harness_port = opencode_port
+			  WHERE harness_port IS NULL AND opencode_port IS NOT NULL`,
+			"ALTER TABLE agent_status DROP COLUMN opencode_port",
+			"ALTER TABLE agent_status DROP COLUMN opencode_sid",
+			"UPDATE schema_version SET version = 11",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v10→v11: %w", err)
+			}
+		}
+		version = 11
+	}
 
 	return &DB{conn: conn, path: path}, nil
 }
@@ -496,7 +523,7 @@ func (d *DB) currentStateOf(sessionName string) (agent.AgentState, error) {
 // blocked by an invalid transition.
 //
 // Same-state "transitions" (fromState == toState) are always silently skipped:
-// they represent metadata-only upserts (title, opencode_sid, model_id,
+// they represent metadata-only upserts (title, harness_session_id, model_id,
 // last_seen) where the state value does not actually change, so there is
 // nothing to validate.
 //
@@ -526,35 +553,31 @@ func (d *DB) checkTransition(sessionName string, toState agent.AgentState, calle
 
 // UpsertStatus inserts or updates the agent_status row for sessionName.
 // repo and worktree are only set on initial insert — they do not change on
-// conflict. title, opencodeSID, agentName, and modelID are updated only when
+// conflict. title, harnessSessionID, agentName, and modelID are updated only when
 // non-nil (COALESCE).
-func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *string, opencodeSID *string) error {
-	return d.UpsertStatusWithAgent(sessionName, repo, worktree, state, title, opencodeSID, nil, nil)
+func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *string, harnessSessionID *string) error {
+	return d.UpsertStatusWithAgent(sessionName, repo, worktree, state, title, harnessSessionID, nil, nil)
 }
 
 // UpsertStatusWithAgent is like UpsertStatus but also accepts agentName and
 // modelID, which are written to agent_status.agent_name and agent_status.model_id
 // using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
 // are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
-//
-// Dual-write: harness is always written as 'opencode'; harness_session_id mirrors
-// opencode_sid via COALESCE so reads on the old column continue to work unchanged.
-func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithAgent")
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   title              = COALESCE(excluded.title, title),
-  opencode_sid       = COALESCE(excluded.opencode_sid, opencode_sid),
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
   last_seen          = excluded.last_seen,
   harness            = 'opencode',
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, now, opencodeSID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, now, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status: %w", err)
 	}
@@ -592,7 +615,7 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 // so that the DB row has a non-NULL root_agent_name from the first moment.
 // The sidecar will later write the same value idempotently via
 // UpsertStatusWithRootAgent (COALESCE preserves the already-set value).
-func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, opencodeSID *string, rootAgentName string) error {
+func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, rootAgentName string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusSeedRootAgentName")
 	now := time.Now().UnixMilli()
 	// When rootAgentName is empty, fall back to leaving root_agent_name as-is
@@ -604,17 +627,16 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 		rootAgentNamePtr = &rootAgentName
 	}
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, root_agent_name, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   title              = COALESCE(excluded.title, title),
-  opencode_sid       = COALESCE(excluded.opencode_sid, opencode_sid),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
   harness            = 'opencode',
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, rootAgentNamePtr, now, opencodeSID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
 	}
@@ -632,16 +654,15 @@ ON CONFLICT(session_name) DO UPDATE SET
 // (e.g. from a legacy or race-condition write) is corrected on the very next
 // sidecar call. The TypeScript plugin (prism-hooks.ts) does not write
 // root_agent_name.
-func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, opencodeSID *string, agentName *string, modelID *string) error {
+func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   title              = COALESCE(excluded.title, title),
-  opencode_sid       = COALESCE(excluded.opencode_sid, opencode_sid),
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
@@ -649,7 +670,7 @@ ON CONFLICT(session_name) DO UPDATE SET
   last_seen          = excluded.last_seen,
   harness            = 'opencode',
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, opencodeSID, agentName, modelID, agentName, modelID, now, opencodeSID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, agentName, modelID, now, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status with root agent: %w", err)
 	}
@@ -799,10 +820,10 @@ func (d *DB) ClearEnded(sessionName string) error {
 }
 
 // AllocatePort picks the lowest unused port from the range PortRangeStart–PortRangeEnd,
-// writes it to agent_status.opencode_port for sessionName, and returns it.
+// writes it to agent_status.harness_port for sessionName, and returns it.
 //
 // A port is considered "in use" if it is assigned to a session whose ended_at IS NULL
-// and opencode_port IS NOT NULL. Ports assigned to ended sessions (ended_at IS NOT NULL)
+// and harness_port IS NOT NULL. Ports assigned to ended sessions (ended_at IS NOT NULL)
 // are reclaimed and available for reuse.
 //
 // In addition to the DB check, each candidate port is probed at the OS level via
@@ -814,7 +835,7 @@ func (d *DB) ClearEnded(sessionName string) error {
 func (d *DB) AllocatePort(sessionName string) (int, error) {
 	// Collect ports currently assigned to active (non-ended) sessions.
 	rows, err := d.conn.Query(
-		"SELECT opencode_port FROM agent_status WHERE ended_at IS NULL AND opencode_port IS NOT NULL",
+		"SELECT harness_port FROM agent_status WHERE ended_at IS NULL AND harness_port IS NOT NULL",
 	)
 	if err != nil {
 		return 0, fmt.Errorf("db: allocate port: query used ports: %w", err)
@@ -841,10 +862,10 @@ func (d *DB) AllocatePort(sessionName string) (int, error) {
 		if !portAvailable(port) {
 			continue
 		}
-		// Write the allocated port to agent_status (dual-write: opencode_port and harness_port).
+		// Write the allocated port to agent_status.
 		res, err := d.conn.Exec(
-			"UPDATE agent_status SET opencode_port = ?, harness_port = ? WHERE session_name = ?",
-			port, port, sessionName,
+			"UPDATE agent_status SET harness_port = ? WHERE session_name = ?",
+			port, sessionName,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("db: allocate port: update: %w", err)
@@ -862,13 +883,13 @@ func (d *DB) AllocatePort(sessionName string) (int, error) {
 	return 0, fmt.Errorf("db: allocate port: all ports in range %d–%d are exhausted", PortRangeStart, PortRangeEnd)
 }
 
-// ReleasePort sets opencode_port = NULL for the given session.
+// ReleasePort sets harness_port = NULL for the given session.
 // Returns an error if the session does not exist in agent_status.
-// Calling ReleasePort on a session whose opencode_port is already NULL is
+// Calling ReleasePort on a session whose harness_port is already NULL is
 // idempotent and returns nil.
 func (d *DB) ReleasePort(sessionName string) error {
 	res, err := d.conn.Exec(
-		"UPDATE agent_status SET opencode_port = NULL, harness_port = NULL WHERE session_name = ?",
+		"UPDATE agent_status SET harness_port = NULL WHERE session_name = ?",
 		sessionName,
 	)
 	if err != nil {
@@ -1141,7 +1162,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -1158,7 +1179,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -1167,7 +1188,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -1185,7 +1206,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -1388,23 +1409,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
 	return nil
 }
 
-// UpdateOpencodeSID unconditionally sets opencode_sid for sessionName to the
-// given sid value. Unlike UpsertStatus (which only updates opencode_sid via
-// COALESCE when non-nil), this always overwrites — allowing the sidecar to
-// keep the stored SID current when the user creates a new opencode session
+// UpdateHarnessSessionID unconditionally sets harness_session_id for sessionName
+// to the given sid value. Unlike UpsertStatus (which only updates harness_session_id
+// via COALESCE when non-nil), this always overwrites — allowing the sidecar to
+// keep the stored SID current when the user creates a new harness session
 // mid-conversation (e.g. via /continue or TUI restart).
 //
-// Dual-write: harness_session_id is also written with the same value so that
-// both old and new columns stay in sync.
-//
 // It is a no-op when no row exists for sessionName (returns nil).
-func (d *DB) UpdateOpencodeSID(sessionName, sid string) error {
+func (d *DB) UpdateHarnessSessionID(sessionName, sid string) error {
 	_, err := d.conn.Exec(
-		"UPDATE agent_status SET opencode_sid = ?, harness_session_id = ? WHERE session_name = ?",
-		sid, sid, sessionName,
+		"UPDATE agent_status SET harness_session_id = ? WHERE session_name = ?",
+		sid, sessionName,
 	)
 	if err != nil {
-		return fmt.Errorf("db: update opencode_sid: %w", err)
+		return fmt.Errorf("db: update harness_session_id: %w", err)
 	}
 	return nil
 }
@@ -1623,7 +1641,6 @@ func scanStatus(s scanner) (*Status, error) {
 	var st Status
 	var lastSeen int64
 	var endedAt sql.NullInt64
-	var port sql.NullInt64
 	var hostMode sql.NullInt64
 	var instanceID sql.NullString
 	var harness sql.NullString
@@ -1633,8 +1650,8 @@ func scanStatus(s scanner) (*Status, error) {
 	var groupID sql.NullString
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
-		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &isolationMode, &instanceID, &lastSeen, &endedAt,
+		&st.Title, &st.AgentName, &st.ModelID,
+		&st.RootAgentName, &st.RootModelID, &hostMode, &isolationMode, &instanceID, &lastSeen, &endedAt,
 		&harness, &harnessSessionID, &harnessPort, &groupID,
 	)
 	if err != nil {
@@ -1648,10 +1665,6 @@ func scanStatus(s scanner) (*Status, error) {
 	if endedAt.Valid {
 		t := time.UnixMilli(endedAt.Int64)
 		st.EndedAt = &t
-	}
-	if port.Valid {
-		p := int(port.Int64)
-		st.OpencodePort = &p
 	}
 	// host_mode: treat NULL (rows written before migration) as 0/false.
 	if hostMode.Valid {

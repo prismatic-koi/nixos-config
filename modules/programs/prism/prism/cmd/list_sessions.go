@@ -102,8 +102,8 @@ func renderSessionTable(ss []db.Status) error {
 			title = *s.Title
 		}
 		port := ""
-		if s.OpencodePort != nil {
-			port = fmt.Sprintf("%d", *s.OpencodePort)
+		if s.HarnessPort != nil {
+			port = fmt.Sprintf("%d", *s.HarnessPort)
 		}
 		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title})
 	}

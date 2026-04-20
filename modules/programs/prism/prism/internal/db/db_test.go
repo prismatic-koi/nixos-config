@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=10 (migrations are applied on Open).
+	// Verify schema_version=11 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version: got %d, want 11", version)
 	}
 
 	// Verify WAL mode.
@@ -773,13 +773,13 @@ func TestMigration_V1ToV2(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Verify schema_version=10.
+	// Verify schema_version=11.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -853,8 +853,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1114,11 +1114,11 @@ func TestAllocatePort_NoConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus: %v", err)
 	}
-	if s.OpencodePort == nil {
+	if s.HarnessPort == nil {
 		t.Fatal("OpencodePort: got nil, want non-nil")
 	}
-	if *s.OpencodePort != port {
-		t.Errorf("OpencodePort: got %d, want %d", *s.OpencodePort, port)
+	if *s.HarnessPort != port {
+		t.Errorf("OpencodePort: got %d, want %d", *s.HarnessPort, port)
 	}
 }
 
@@ -1245,8 +1245,8 @@ func TestReleasePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus: %v", err)
 	}
-	if s.OpencodePort != nil {
-		t.Errorf("OpencodePort after release: got %v, want nil", *s.OpencodePort)
+	if s.HarnessPort != nil {
+		t.Errorf("OpencodePort after release: got %v, want nil", *s.HarnessPort)
 	}
 
 	// After release the port must re-enter the pool so a new session can claim it.
@@ -1354,8 +1354,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1365,8 +1365,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if s == nil {
 		t.Fatal("CurrentStatus: got nil, want existing row")
 	}
-	if s.OpencodePort != nil {
-		t.Errorf("OpencodePort: got %v, want nil (newly added column)", s.OpencodePort)
+	if s.HarnessPort != nil {
+		t.Errorf("OpencodePort: got %v, want nil (newly added column)", s.HarnessPort)
 	}
 	if s.AgentName == nil || *s.AgentName != "worker" {
 		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
@@ -1420,8 +1420,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1490,8 +1490,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1585,8 +1585,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1623,11 +1623,12 @@ func TestMigration_V6ToV7(t *testing.T) {
 	}
 }
 
-// TestMigration_V7ToV8 verifies that Open applies the v7→v8 migration to an
-// existing DB at schema_version=7 (no harness/harness_session_id/harness_port columns).
-// The migration is additive: all existing rows must be preserved unmodified, and the
-// new harness column must default to 'opencode' for pre-existing rows (AC-13 from #691).
-func TestMigration_V7ToV8(t *testing.T) {
+// TestMigration_V7ToV11 verifies that Open applies all migrations to an
+// existing DB at schema_version=7 (no harness/harness_session_id/harness_port
+// columns and with legacy opencode_sid/opencode_port columns). After migration
+// the schema is at v11: harness columns are present, legacy columns are gone,
+// and pre-existing data is preserved via back-fill.
+func TestMigration_V7ToV11(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v7.db")
 
 	rawConn, err := sql.Open("sqlite", dbPath)
@@ -1672,13 +1673,13 @@ func TestMigration_V7ToV8(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must be 10 after migration.
+	// Schema version must be 11 after migration.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -1692,23 +1693,18 @@ func TestMigration_V7ToV8(t *testing.T) {
 	if s.State != "active" {
 		t.Errorf("State preserved: got %q, want \"active\"", s.State)
 	}
-	if s.OpencodeSID == nil || *s.OpencodeSID != sid {
-		t.Errorf("OpencodeSID preserved: got %v, want %q", s.OpencodeSID, sid)
+	// v10→v11 back-fills harness_session_id from opencode_sid.
+	if s.HarnessSessionID == nil || *s.HarnessSessionID != sid {
+		t.Errorf("HarnessSessionID after migration: got %v, want %q (back-filled from opencode_sid)", s.HarnessSessionID, sid)
 	}
-	if s.OpencodePort == nil || *s.OpencodePort != 14000 {
-		t.Errorf("OpencodePort preserved: got %v, want 14000", s.OpencodePort)
+	// v10→v11 back-fills harness_port from opencode_port.
+	if s.HarnessPort == nil || *s.HarnessPort != 14000 {
+		t.Errorf("HarnessPort after migration: got %v, want 14000 (back-filled from opencode_port)", s.HarnessPort)
 	}
 
 	// harness column must default to 'opencode' for rows written before migration.
 	if s.Harness == nil || *s.Harness != "opencode" {
 		t.Errorf("Harness: got %v, want \"opencode\" (default for pre-migration rows)", s.Harness)
-	}
-	// harness_session_id and harness_port must be NULL for pre-migration rows.
-	if s.HarnessSessionID != nil {
-		t.Errorf("HarnessSessionID: got %v, want nil (not back-filled by migration)", s.HarnessSessionID)
-	}
-	if s.HarnessPort != nil {
-		t.Errorf("HarnessPort: got %v, want nil (not back-filled by migration)", s.HarnessPort)
 	}
 
 	// Second row (repo@feat) must also be preserved.
@@ -1726,23 +1722,20 @@ func TestMigration_V7ToV8(t *testing.T) {
 		t.Errorf("Harness for repo@feat: got %v, want \"opencode\"", sf.Harness)
 	}
 
-	// Dual-write: UpdateOpencodeSID must now also write harness_session_id.
+	// UpdateHarnessSessionID must unconditionally overwrite harness_session_id.
 	newSID := "new-session-id"
-	if err := d.UpdateOpencodeSID("repo@main", newSID); err != nil {
-		t.Fatalf("UpdateOpencodeSID after migration: %v", err)
+	if err := d.UpdateHarnessSessionID("repo@main", newSID); err != nil {
+		t.Fatalf("UpdateHarnessSessionID after migration: %v", err)
 	}
 	s2, err := d.CurrentStatus("repo@main")
 	if err != nil {
-		t.Fatalf("CurrentStatus after UpdateOpencodeSID: %v", err)
-	}
-	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
-		t.Errorf("OpencodeSID after UpdateOpencodeSID: got %v, want %q", s2.OpencodeSID, newSID)
+		t.Fatalf("CurrentStatus after UpdateHarnessSessionID: %v", err)
 	}
 	if s2.HarnessSessionID == nil || *s2.HarnessSessionID != newSID {
-		t.Errorf("HarnessSessionID after UpdateOpencodeSID: got %v, want %q (dual-write)", s2.HarnessSessionID, newSID)
+		t.Errorf("HarnessSessionID after UpdateHarnessSessionID: got %v, want %q", s2.HarnessSessionID, newSID)
 	}
 
-	// Dual-write: AllocatePort must now also write harness_port.
+	// AllocatePort must write harness_port.
 	// First release the existing port so it's back in the pool, then re-allocate.
 	if err := d.ReleasePort("repo@main"); err != nil {
 		t.Fatalf("ReleasePort before re-allocate: %v", err)
@@ -1755,14 +1748,11 @@ func TestMigration_V7ToV8(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus after AllocatePort: %v", err)
 	}
-	if s3.OpencodePort == nil || *s3.OpencodePort != port {
-		t.Errorf("OpencodePort after AllocatePort: got %v, want %d", s3.OpencodePort, port)
-	}
 	if s3.HarnessPort == nil || *s3.HarnessPort != port {
-		t.Errorf("HarnessPort after AllocatePort: got %v, want %d (dual-write)", s3.HarnessPort, port)
+		t.Errorf("HarnessPort after AllocatePort: got %v, want %d", s3.HarnessPort, port)
 	}
 
-	// ReleasePort must clear both columns.
+	// ReleasePort must clear harness_port.
 	if err := d.ReleasePort("repo@main"); err != nil {
 		t.Fatalf("ReleasePort: %v", err)
 	}
@@ -1770,11 +1760,8 @@ func TestMigration_V7ToV8(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CurrentStatus after ReleasePort: %v", err)
 	}
-	if s4.OpencodePort != nil {
-		t.Errorf("OpencodePort after ReleasePort: got %v, want nil", s4.OpencodePort)
-	}
 	if s4.HarnessPort != nil {
-		t.Errorf("HarnessPort after ReleasePort: got %v, want nil (dual-write)", s4.HarnessPort)
+		t.Errorf("HarnessPort after ReleasePort: got %v, want nil", s4.HarnessPort)
 	}
 }
 
@@ -1849,9 +1836,9 @@ func TestWriteBusMessageDelivered_FailedAtNull(t *testing.T) {
 	}
 }
 
-// TestUpdateOpencodeSID verifies that UpdateOpencodeSID unconditionally
-// overwrites the stored opencode_sid (unlike COALESCE-based upserts).
-func TestUpdateOpencodeSID(t *testing.T) {
+// TestUpdateHarnessSessionID verifies that UpdateHarnessSessionID unconditionally
+// overwrites the stored harness_session_id (unlike COALESCE-based upserts).
+func TestUpdateHarnessSessionID(t *testing.T) {
 	d := openTestDB(t)
 
 	oldSID := "old-session-id"
@@ -1863,29 +1850,29 @@ func TestUpdateOpencodeSID(t *testing.T) {
 	}
 
 	s, _ := d.CurrentStatus("repo@main")
-	if s.OpencodeSID == nil || *s.OpencodeSID != oldSID {
-		t.Fatalf("pre-condition: opencode_sid = %v, want %q", s.OpencodeSID, oldSID)
+	if s.HarnessSessionID == nil || *s.HarnessSessionID != oldSID {
+		t.Fatalf("pre-condition: harness_session_id = %v, want %q", s.HarnessSessionID, oldSID)
 	}
 
-	// UpdateOpencodeSID must overwrite unconditionally.
-	if err := d.UpdateOpencodeSID("repo@main", newSID); err != nil {
-		t.Fatalf("UpdateOpencodeSID: %v", err)
+	// UpdateHarnessSessionID must overwrite unconditionally.
+	if err := d.UpdateHarnessSessionID("repo@main", newSID); err != nil {
+		t.Fatalf("UpdateHarnessSessionID: %v", err)
 	}
 
 	s2, _ := d.CurrentStatus("repo@main")
-	if s2.OpencodeSID == nil || *s2.OpencodeSID != newSID {
-		t.Errorf("opencode_sid after UpdateOpencodeSID: got %v, want %q", s2.OpencodeSID, newSID)
+	if s2.HarnessSessionID == nil || *s2.HarnessSessionID != newSID {
+		t.Errorf("harness_session_id after UpdateHarnessSessionID: got %v, want %q", s2.HarnessSessionID, newSID)
 	}
 }
 
-// TestUpdateOpencodeSID_NoopWhenNoRow verifies that UpdateOpencodeSID is a
+// TestUpdateHarnessSessionID_NoopWhenNoRow verifies that UpdateHarnessSessionID is a
 // no-op when the session does not exist in agent_status.
-func TestUpdateOpencodeSID_NoopWhenNoRow(t *testing.T) {
+func TestUpdateHarnessSessionID_NoopWhenNoRow(t *testing.T) {
 	d := openTestDB(t)
 
 	// Must not error when no row exists.
-	if err := d.UpdateOpencodeSID("nonexistent@branch", "some-sid"); err != nil {
-		t.Errorf("UpdateOpencodeSID on non-existent session: %v (want nil)", err)
+	if err := d.UpdateHarnessSessionID("nonexistent@branch", "some-sid"); err != nil {
+		t.Errorf("UpdateHarnessSessionID on non-existent session: %v (want nil)", err)
 	}
 }
 
@@ -2276,8 +2263,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2365,8 +2352,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 10 {
-		t.Errorf("schema_version after migration: got %d, want 10", version)
+	if version != 11 {
+		t.Errorf("schema_version after migration: got %d, want 11", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -2830,12 +2817,12 @@ func TestGroupFK_OnDeleteSetNull_MigratedDB(t *testing.T) {
 	}
 }
 
-// setPort is a test helper that writes opencode_port directly via QueryRow.
+// setPort is a test helper that writes harness_port directly via QueryRow.
 func setPort(d *db.DB, sessionName string, port int) error {
 	// Use QueryRow with a dummy scan to execute the UPDATE.
 	var dummy int
 	err := d.QueryRow(
-		"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING 1",
+		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING 1",
 		port, sessionName,
 	).Scan(&dummy)
 	return err
