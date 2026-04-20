@@ -309,7 +309,7 @@ func buildDirectOpencodeCmd(opts Opts) string {
 		for _, k := range keys {
 			prefix.WriteString(k)
 			prefix.WriteString("=")
-			prefix.WriteString(opts.RuntimeEnvVars[k])
+			prefix.WriteString(shellQuote(opts.RuntimeEnvVars[k]))
 			prefix.WriteString(" ")
 		}
 		cmd = prefix.String() + cmd
