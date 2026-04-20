@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -94,8 +95,13 @@ var prCmd = &cobra.Command{
 		// In container/bwrap mode, inject the role-specific opencode.json blob
 		// as OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
 		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
+		//
+		// This block fires for both podman and bwrap isolation modes. Host-mode
+		// sessions skip it because they run opencode directly with the host's
+		// real ~/.config/opencode/opencode.json via xdg.configFile.
+		sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
 		var configContent string
-		if effectiveContainerMode {
+		if sandboxed {
 			pf, pfErr := config.LoadProfiles()
 			if pfErr != nil {
 				return pfErr
@@ -109,6 +115,31 @@ var prCmd = &cobra.Command{
 				configContent = roleConfig
 			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
 				fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+			}
+		}
+
+		// For bwrap sessions, write the opencode.json config file to disk now
+		// so it is present before the agent pane opens. prism agent-run
+		// reconstructs a container.Manager from DB state (which does not carry
+		// ConfigContent), so the file must be written here via the deterministic
+		// temp path. The bwrap.go mount-emission block checks file existence
+		// (os.Stat) rather than cfg.ConfigContent, so it picks this up correctly.
+		//
+		// Podman mode does NOT need this write — the sidecar's Create() path
+		// already writes the file before the container starts. Host mode does
+		// NOT need this write — it uses ~/.config/opencode/opencode.json
+		// directly via xdg.configFile.
+		//
+		// IMPORTANT: the path key used here must match the one used by Manager
+		// internally. Manager.name = container.NameForSession(tmuxSessionName),
+		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
+		// So we must pass the container name (not the raw tmux session name) to
+		// WriteOpencodeConfig. This mirrors the pattern in spawn.go.
+		if isoMode == config.IsolationBwrap && configContent != "" {
+			tmuxSessionName := session.NameFor(worktreePath, bareRoot)
+			containerName := container.NameForSession(tmuxSessionName)
+			if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+				return fmt.Errorf("prism pr: %w", err)
 			}
 		}
 
