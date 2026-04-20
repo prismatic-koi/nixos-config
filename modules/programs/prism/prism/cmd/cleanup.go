@@ -381,9 +381,9 @@ var cleanupCmd = &cobra.Command{
 		// DB row is absent or root_agent_name is NULL (pre-migration).
 		isCoordinatorSession := false
 		if d, dbErr := openDB(); dbErr == nil {
-			rootName, rootErr := d.RootAgentName(session)
+			rootName, rowExists, rootErr := d.RootAgentName(session)
 			d.Close()
-			if rootErr == nil && rootName != "" {
+			if rootErr == nil && rowExists && rootName != "" {
 				isCoordinatorSession = rootName == "coordinator"
 				if isCoordinatorSession != isDefaultBranch {
 					fmt.Fprintf(os.Stderr, "[debug] cleanup: isCoordinator(%q): DB says %v (root_agent_name=%q), branch heuristic says %v\n",
@@ -393,9 +393,11 @@ var cleanupCmd = &cobra.Command{
 				// Pre-migration fallback: use branch-name heuristic.
 				if rootErr != nil {
 					fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
-				} else {
+				} else if rowExists {
+					// Row exists but root_agent_name is NULL — pre-migration.
 					fmt.Fprintf(os.Stderr, "[deprecation] cleanup: root_agent_name NULL for %q — using branch heuristic\n", session)
 				}
+				// rowExists=false: no row yet — use heuristic silently.
 				isCoordinatorSession = isDefaultBranch
 			}
 		} else {

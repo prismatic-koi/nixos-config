@@ -1919,19 +1919,23 @@ LIMIT 1`
 
 // RootAgentName returns the root_agent_name for sessionName, or "" when the
 // row does not exist or root_agent_name is NULL (pre-migration row).
-func (d *DB) RootAgentName(sessionName string) (string, error) {
-	var name sql.NullString
+// The second return value (rowExists) distinguishes the two empty cases:
+//   - ("", false, nil)  — no agent_status row found (new/unknown session)
+//   - ("", true, nil)   — row found but root_agent_name is NULL (pre-migration)
+//   - (name, true, nil) — row found with a populated root_agent_name
+func (d *DB) RootAgentName(sessionName string) (name string, rowExists bool, err error) {
+	var ns sql.NullString
 	const q = `SELECT root_agent_name FROM agent_status WHERE session_name = ?`
-	if err := d.conn.QueryRow(q, sessionName).Scan(&name); err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil
+	if scanErr := d.conn.QueryRow(q, sessionName).Scan(&ns); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return "", false, nil
 		}
-		return "", fmt.Errorf("db: root agent name: %w", err)
+		return "", false, fmt.Errorf("db: root agent name: %w", scanErr)
 	}
-	if !name.Valid {
-		return "", nil
+	if !ns.Valid {
+		return "", true, nil
 	}
-	return name.String, nil
+	return ns.String, true, nil
 }
 
 // IsGroupMember returns true when sessionName has a non-NULL group_id in

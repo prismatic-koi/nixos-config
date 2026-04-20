@@ -207,20 +207,21 @@ func DefaultAgentForSession(sessionName, directory, explicit string, d *db.DB) s
 		return explicit
 	}
 	if d != nil {
-		rootName, err := d.RootAgentName(sessionName)
+		rootName, rowExists, err := d.RootAgentName(sessionName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[prism] warning: DefaultAgentForSession: DB error reading root_agent_name for %q: %v — using directory heuristic\n", sessionName, err)
-		} else if rootName != "" {
+		} else if rowExists && rootName != "" {
 			// DB-backed: return the stored root_agent_name.
 			dirBased := DefaultAgent(directory, "")
 			if rootName != dirBased {
 				fmt.Fprintf(os.Stderr, "[debug] DefaultAgentForSession(%q): DB says %q, directory heuristic says %q\n", sessionName, rootName, dirBased)
 			}
 			return rootName
-		} else {
-			// NULL root_agent_name — pre-migration row.
+		} else if rowExists {
+			// Row exists but root_agent_name is NULL — pre-migration row.
 			fmt.Fprintf(os.Stderr, "[deprecation] DefaultAgentForSession(%q): root_agent_name is NULL — using directory heuristic\n", sessionName)
 		}
+		// rowExists=false: no row yet — use directory heuristic silently.
 	}
 	return DefaultAgent(directory, "")
 }

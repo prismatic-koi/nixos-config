@@ -5030,6 +5030,10 @@ func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
 
 func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
 	d := openTestDB(t)
+	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
 	// Session name without "@" — edge case for repoFromSession.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
 	// The sidecar's own session has no "@", which will fail repoFromSession.
@@ -5291,6 +5295,10 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 // message indicating the repo cannot be derived, and no spawn is attempted.
 func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	d := openTestDB(t)
+	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
 	// Session name without "@" — repoFromSession will fail.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch"}`)

@@ -1913,22 +1913,25 @@ func isCoordinator(sessionName string) bool {
 // When d is nil, the name heuristic is used unconditionally.
 func isCoordinatorSession(sessionName string, d *db.DB) bool {
 	if d != nil {
-		name, err := d.RootAgentName(sessionName)
-		if err == nil && name != "" {
-			nameBased := strings.HasSuffix(sessionName, "@main")
-			dbBased := name == "coordinator"
-			if dbBased != nameBased {
-				log.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v",
-					sessionName, dbBased, name, nameBased)
+		name, rowExists, err := d.RootAgentName(sessionName)
+		if err == nil && rowExists {
+			if name != "" {
+				nameBased := strings.HasSuffix(sessionName, "@main")
+				dbBased := name == "coordinator"
+				if dbBased != nameBased {
+					log.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v",
+						sessionName, dbBased, name, nameBased)
+				}
+				return dbBased
 			}
-			return dbBased
-		}
-		if err != nil {
+			// Row exists but root_agent_name is NULL — pre-migration row.
+			log.Printf("[deprecation] sidecar: isCoordinatorSession(%q): root_agent_name is NULL — pre-migration row, using name heuristic", sessionName)
+		} else if err != nil {
 			log.Printf("sidecar: isCoordinatorSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
 		}
+		// rowExists=false means no row — no log needed, just use heuristic.
 	}
 	// Pre-migration fallback or DB unavailable: use name-suffix heuristic.
-	log.Printf("[deprecation] sidecar: isCoordinatorSession(%q): using name heuristic — session may predate root_agent_name migration", sessionName)
 	return strings.HasSuffix(sessionName, "@main")
 }
 

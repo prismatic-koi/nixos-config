@@ -3531,37 +3531,46 @@ func TestRootAgentName(t *testing.T) {
 	d := openTestDB(t)
 	defer d.Close()
 
-	// Non-existent session returns "".
-	name, err := d.RootAgentName("nonexistent@session")
+	// Non-existent session returns ("", false, nil).
+	name, rowExists, err := d.RootAgentName("nonexistent@session")
 	if err != nil {
 		t.Fatalf("RootAgentName(nonexistent): %v", err)
 	}
 	if name != "" {
 		t.Errorf("RootAgentName(nonexistent): got %q, want empty", name)
 	}
+	if rowExists {
+		t.Error("RootAgentName(nonexistent): got rowExists=true, want false")
+	}
 
-	// Pre-migration row: root_agent_name is NULL.
+	// Pre-migration row: root_agent_name is NULL — returns ("", true, nil).
 	if err := d.UpsertStatus("repo@old", "repo", "/code", "active", nil, nil); err != nil {
 		t.Fatalf("seed pre-migration: %v", err)
 	}
-	nameNull, err := d.RootAgentName("repo@old")
+	nameNull, rowExistsNull, err := d.RootAgentName("repo@old")
 	if err != nil {
 		t.Fatalf("RootAgentName(pre-migration): %v", err)
 	}
 	if nameNull != "" {
 		t.Errorf("RootAgentName(pre-migration): got %q, want empty for NULL", nameNull)
 	}
+	if !rowExistsNull {
+		t.Error("RootAgentName(pre-migration): got rowExists=false, want true")
+	}
 
-	// Post-migration row: root_agent_name is populated.
+	// Post-migration row: root_agent_name is populated — returns (name, true, nil).
 	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
-	nameCoord, err := d.RootAgentName("repo@main")
+	nameCoord, rowExistsCoord, err := d.RootAgentName("repo@main")
 	if err != nil {
 		t.Fatalf("RootAgentName(coordinator): %v", err)
 	}
 	if nameCoord != "coordinator" {
 		t.Errorf("RootAgentName(coordinator): got %q, want \"coordinator\"", nameCoord)
+	}
+	if !rowExistsCoord {
+		t.Error("RootAgentName(coordinator): got rowExists=false, want true")
 	}
 }
 
