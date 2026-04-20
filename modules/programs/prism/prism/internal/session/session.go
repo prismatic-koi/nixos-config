@@ -157,6 +157,12 @@ const (
 	// LayoutFull sets up the standard three-window layout:
 	// window 0 "edit" (nvim), window 1 "agent" (opencode), window 2 "term".
 	LayoutFull
+
+	// LayoutAgentOnly sets up a minimal two-window layout: window 0 is a
+	// bare shell, window 1 runs the agent command. Used by review-style
+	// sessions (spawned via SpawnSession) that do not need an editor or
+	// terminal window — the worktree is read-only for them.
+	LayoutAgentOnly
 )
 
 // DefaultAgent returns the agent to use for the given directory.

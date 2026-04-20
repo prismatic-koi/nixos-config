@@ -75,6 +75,10 @@ type Status struct {
 	Harness          *string
 	HarnessSessionID *string
 	HarnessPort      *int
+	// GroupID is the session_groups.group_id this session belongs to, or nil
+	// when this session is not part of a group. Populated by SpawnSession
+	// when opts.GroupID is non-empty (see #849 §3.1 and #859).
+	GroupID *string
 }
 
 // EffectiveIsolationMode returns the effective isolation mode for this session.
@@ -1137,7 +1141,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -1154,7 +1158,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -1163,7 +1167,7 @@ WHERE ended_at IS NULL`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -1181,7 +1185,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port
+SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -1245,6 +1249,23 @@ func (d *DB) SetInstanceID(sessionName, instanceID string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("db: set instance_id: %w", err)
+	}
+	return nil
+}
+
+// SetGroupID writes a group_id to the agent_status row for sessionName. Called
+// by SpawnSession when opts.GroupID is non-empty to associate the new session
+// with a session_groups entry (Issue E hook — see #849 §3.1 and #860).
+//
+// No-op when sessionName has no agent_status row (the UPDATE affects zero rows
+// and returns nil).
+func (d *DB) SetGroupID(sessionName, groupID string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET group_id = ? WHERE session_name = ?",
+		groupID, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set group_id: %w", err)
 	}
 	return nil
 }
@@ -1609,14 +1630,19 @@ func scanStatus(s scanner) (*Status, error) {
 	var harnessSessionID sql.NullString
 	var harnessPort sql.NullInt64
 	var isolationMode sql.NullString
+	var groupID sql.NullString
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.OpencodeSID, &st.AgentName, &st.ModelID,
 		&st.RootAgentName, &st.RootModelID, &port, &hostMode, &isolationMode, &instanceID, &lastSeen, &endedAt,
-		&harness, &harnessSessionID, &harnessPort,
+		&harness, &harnessSessionID, &harnessPort, &groupID,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if groupID.Valid {
+		g := groupID.String
+		st.GroupID = &g
 	}
 	st.LastSeen = time.UnixMilli(lastSeen)
 	if endedAt.Valid {
