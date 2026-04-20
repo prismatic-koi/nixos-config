@@ -379,31 +379,7 @@ var cleanupCmd = &cobra.Command{
 		// DB-backed coordinator check: prefer root_agent_name == "coordinator"
 		// over the default-branch heuristic. Fallback to the heuristic when the
 		// DB row is absent or root_agent_name is NULL (pre-migration).
-		isCoordinatorSession := false
-		if d, dbErr := openDB(); dbErr == nil {
-			rootName, rowExists, rootErr := d.RootAgentName(session)
-			d.Close()
-			if rootErr == nil && rowExists && rootName != "" {
-				isCoordinatorSession = rootName == "coordinator"
-				if isCoordinatorSession != isDefaultBranch {
-					fmt.Fprintf(os.Stderr, "[debug] cleanup: isCoordinator(%q): DB says %v (root_agent_name=%q), branch heuristic says %v\n",
-						session, isCoordinatorSession, rootName, isDefaultBranch)
-				}
-			} else {
-				// Pre-migration fallback: use branch-name heuristic.
-				if rootErr != nil {
-					fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
-				} else if rowExists {
-					// Row exists but root_agent_name is NULL — pre-migration.
-					fmt.Fprintf(os.Stderr, "[deprecation] cleanup: root_agent_name NULL for %q — using branch heuristic\n", session)
-				}
-				// rowExists=false: no row yet — use heuristic silently.
-				isCoordinatorSession = isDefaultBranch
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: could not open DB for %q: %v — using branch heuristic\n", session, dbErr)
-			isCoordinatorSession = isDefaultBranch
-		}
+		isCoordinatorSession := isCoordinatorFromDB(session, isDefaultBranch)
 
 		if isCoordinatorSession {
 			// Default-branch sessions (e.g. repo@main): close the tmux
@@ -747,5 +723,39 @@ func removeContainerIfExists(sessionName string) {
 	// after KillSidecar so we cannot rely on that — remove it directly.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
+	}
+}
+
+// isCoordinatorFromDB checks whether session is a coordinator using the
+// DB-backed root_agent_name read. When the DB is unavailable, the row is
+// missing, or root_agent_name is NULL (pre-migration), falls back to the
+// branch-name heuristic (isDefaultBranch).
+//
+// This function is extracted from cleanupCmd.RunE to allow unit testing of
+// the DB-backed coordinator detection independently of the full cleanup flow.
+func isCoordinatorFromDB(session string, isDefaultBranch bool) bool {
+	if d, dbErr := openDB(); dbErr == nil {
+		rootName, rowExists, rootErr := d.RootAgentName(session)
+		d.Close()
+		if rootErr == nil && rowExists && rootName != "" {
+			isCoord := rootName == "coordinator"
+			if isCoord != isDefaultBranch {
+				fmt.Fprintf(os.Stderr, "[debug] cleanup: isCoordinator(%q): DB says %v (root_agent_name=%q), branch heuristic says %v\n",
+					session, isCoord, rootName, isDefaultBranch)
+			}
+			return isCoord
+		}
+		// Pre-migration fallback: use branch-name heuristic.
+		if rootErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
+		} else if rowExists {
+			// Row exists but root_agent_name is NULL — pre-migration.
+			fmt.Fprintf(os.Stderr, "[deprecation] cleanup: root_agent_name NULL for %q — using branch heuristic\n", session)
+		}
+		// rowExists=false: no row yet — use heuristic silently.
+		return isDefaultBranch
+	} else {
+		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: could not open DB for %q: %v — using branch heuristic\n", session, dbErr)
+		return isDefaultBranch
 	}
 }

@@ -20,6 +20,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -91,26 +92,28 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 
 	sessionArg := args[0]
 
-	// Special case: if the session argument ends with "~review" (no round number),
-	// prefix-match all ~review-* rounds for the parent session and display a
-	// summary of each round.
+	// Special case: render a review-group summary when the session arg is the
+	// parent of a review group. The DB-backed path (HasReviewGroup) is the
+	// primary check; the "~review" name-suffix heuristic is the fallback for
+	// pre-migration sessions where session_groups has not yet been populated.
 	//
-	// DB-backed: also detect review groups via session_groups.parent_session.
-	// When the sessionArg itself is a parent_session in session_groups, treat it
-	// as a review-summary request (DB path). The name-suffix heuristic is kept
-	// for backward compat with pre-migration sessions and direct ~review suffixes.
-	if strings.HasSuffix(sessionArg, "~review") {
-		return runCheckinReviewRounds(sessionArg, verbose)
-	}
-	// DB-backed check: is sessionArg a parent of a review group?
+	// For sessions with a trailing "~review" that are NOT yet registered in
+	// session_groups (pre-migration), the name heuristic fires as a fallback.
 	if d, dbErr := openDB(); dbErr == nil {
 		hasGroup, groupErr := d.HasReviewGroup(sessionArg)
 		d.Close()
 		if groupErr == nil && hasGroup {
-			// sessionArg is a parent session with a review group — use the
+			// DB-backed: sessionArg is a registered parent_session — use the
 			// group-aware review summary path.
 			return runCheckinReviewRoundsByGroup(sessionArg, verbose)
 		}
+		// DB open succeeded but no group found; fall through to name heuristic.
+	}
+	// Pre-migration fallback: session ends with "~review" but has no DB group.
+	// Keep backward compat for sessions created before session_groups existed.
+	if strings.HasSuffix(sessionArg, "~review") {
+		log.Printf("[deprecation] checkin: no session_groups row for %q — falling back to ~review name heuristic", sessionArg)
+		return runCheckinReviewRounds(sessionArg, verbose)
 	}
 
 	return runCheckinSession(sessionArg, last, beforePtr, afterPtr, types, verbose)

@@ -667,6 +667,86 @@ func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 	}
 }
 
+// TestIsCoordinatorFromDB verifies the DB-backed coordinator detection helper.
+// It covers the post-migration DB path, pre-migration NULL fallback, no-row
+// fallback, and the core correctness assertion: a coordinator on a non-@main
+// branch is correctly identified via root_agent_name, not branch name.
+func TestIsCoordinatorFromDB(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Post-migration coordinator on the conventional @main branch.
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator @main: %v", err)
+	}
+
+	// Core correctness assertion: coordinator on a non-@main branch.
+	// root_agent_name = "coordinator" must be the deciding factor, not the
+	// branch name. This is the primary motivation for the DB-backed migration.
+	// Use a different repo name to avoid the unique-active-coordinator-per-repo constraint.
+	if err := d.UpsertStatusSeedRootAgentName("custom-repo@custom-branch", "custom-repo", "/code/custom", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator on custom branch: %v", err)
+	}
+
+	// Post-migration worker on @main-named branch (should not be detected as coordinator).
+	if err := d.UpsertStatusSeedRootAgentName("otherwork@main", "otherwork", "/code/other/main", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker @main: %v", err)
+	}
+
+	// Pre-migration: row exists but root_agent_name is NULL.
+	if err := d.UpsertStatus("prerepo@main", "prerepo", "/code/pre/main", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration: %v", err)
+	}
+
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	tests := []struct {
+		session         string
+		isDefaultBranch bool
+		want            bool
+		description     string
+	}{
+		{
+			session: "myrepo@main", isDefaultBranch: true, want: true,
+			description: "post-migration coordinator on @main: DB and heuristic agree",
+		},
+		{
+			session: "custom-repo@custom-branch", isDefaultBranch: false, want: true,
+			description: "post-migration coordinator on non-main branch: DB says coordinator, heuristic says false — DB wins",
+		},
+		{
+			session: "otherwork@main", isDefaultBranch: true, want: false,
+			description: "post-migration worker on @main branch: DB says worker, heuristic says true — DB wins",
+		},
+		{
+			session: "prerepo@main", isDefaultBranch: true, want: true,
+			description: "pre-migration NULL root_agent_name on @main: falls back to heuristic",
+		},
+		{
+			session: "prerepo@feature", isDefaultBranch: false, want: false,
+			description: "no row at all on non-main branch: falls back to heuristic",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.description, func(t *testing.T) {
+			got := isCoordinatorFromDB(tc.session, tc.isDefaultBranch)
+			if got != tc.want {
+				t.Errorf("isCoordinatorFromDB(%q, isDefaultBranch=%v) = %v, want %v",
+					tc.session, tc.isDefaultBranch, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded verifies that
 // headlessCloseSession marks the DB row as ended even when the tmux session
 // no longer exists (already killed or never started). This calls

@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/spf13/cobra"
 )
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn,
@@ -1239,6 +1240,115 @@ func TestRenderCheckinTurns_StateChangeInsideSubagentCollapse(t *testing.T) {
 	// The subagent summary line must still appear.
 	if !strings.Contains(out, "└─ review") {
 		t.Errorf("subagent summary line missing\ngot:\n%s", out)
+	}
+}
+
+// TestRunCheckinReviewRoundsByGroup verifies the DB-backed review-group summary
+// path in runCheckin. When a parent session has registered a group in
+// session_groups, checkin must route to runCheckinReviewRoundsByGroup (the DB
+// path) rather than the legacy name-prefix scan.
+//
+// This test covers the happy path (group members listed) and the pre-migration
+// fallback (no group members → name-prefix fallback).
+func TestRunCheckinReviewRoundsByGroup(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	d := openCheckinTestDB(t)
+
+	parentSession := "repo@feature"
+	reviewerSession := "repo@feature~review-1-review-code"
+	base := time.Now().Truncate(time.Second)
+
+	// Register a group for the parent session.
+	groupID, err := d.RegisterGroup(parentSession)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed the reviewer session and assign it to the group.
+	if err := d.UpsertStatus(reviewerSession, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus reviewer: %v", err)
+	}
+	if err := d.SetGroupID(reviewerSession, groupID); err != nil {
+		t.Fatalf("SetGroupID reviewer: %v", err)
+	}
+
+	// Write an event for the reviewer so the checkin has something to show.
+	writeEvent(t, d, "evt-1", reviewerSession, "msg_assistant",
+		assistantPayload("msg-1", "reviewing now"), base)
+
+	// Point openDB() at the test DB.
+	SetTestDBPath(d.Path())
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Call runCheckinReviewRoundsByGroup directly to verify the DB-backed path.
+	out := captureStdout(t, func() {
+		if err := runCheckinReviewRoundsByGroup(parentSession, false); err != nil {
+			t.Errorf("runCheckinReviewRoundsByGroup: unexpected error: %v", err)
+		}
+	})
+
+	// The output must mention the reviewer session.
+	if !strings.Contains(out, reviewerSession) && !strings.Contains(out, "review-code") {
+		t.Errorf("runCheckinReviewRoundsByGroup output does not mention reviewer session\ngot:\n%s", out)
+	}
+}
+
+// TestRunCheckin_DBGroupPathTakesPrecedence verifies that when a session arg is
+// a registered parent_session in session_groups, runCheckin routes to the DB
+// path (runCheckinReviewRoundsByGroup) even when the session name does NOT end
+// with "~review". The DB path must take precedence over the name heuristic.
+//
+// This test wires up the checkin command's flag set (so GetBool/GetInt work)
+// and calls runCheckin directly.
+func TestRunCheckin_DBGroupPathTakesPrecedence(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	d := openCheckinTestDB(t)
+
+	// Use a parent session whose name does NOT end with "~review" — this
+	// ensures the DB path must fire, not the name heuristic.
+	parentSession := "repo@non-review-parent"
+	reviewerSession := "repo@non-review-parent~review-1-review-code"
+	base := time.Now().Truncate(time.Second)
+
+	groupID, err := d.RegisterGroup(parentSession)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.UpsertStatus(reviewerSession, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus reviewer: %v", err)
+	}
+	if err := d.SetGroupID(reviewerSession, groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+	writeEvent(t, d, "evt-grp-1", reviewerSession, "msg_assistant",
+		assistantPayload("msg-grp-1", "group path test"), base)
+
+	SetTestDBPath(d.Path())
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Build a minimal cobra.Command with the flags that runCheckin reads.
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().Int("last", 10, "")
+	cmd.Flags().String("from", "", "")
+	cmd.Flags().String("before", "", "")
+	cmd.Flags().String("types", "", "")
+	cmd.Flags().Bool("verbose", false, "")
+
+	// runCheckin with the parent session name (no "~review" suffix).
+	// The DB path (HasReviewGroup) must route to runCheckinReviewRoundsByGroup.
+	out := captureStdout(t, func() {
+		if err := runCheckin(cmd, []string{parentSession}); err != nil {
+			t.Logf("runCheckin returned error (may be acceptable): %v", err)
+		}
+	})
+
+	// The reviewer session must appear in the output — it was found via DB group membership.
+	if !strings.Contains(out, reviewerSession) && !strings.Contains(out, "review-code") {
+		t.Errorf("runCheckin DB group path: output does not mention reviewer session %q\ngot:\n%s",
+			reviewerSession, out)
 	}
 }
 

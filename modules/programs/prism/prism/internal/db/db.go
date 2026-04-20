@@ -184,7 +184,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // v10→v11 drops the legacy opencode_port and opencode_sid columns from
 // agent_status (harness-agnostic equivalents harness_port and harness_session_id
 // have been the canonical columns since v8; the legacy names were dual-written
-// for back-compat and are now removed).
+// for back-compat and are now removed);
+// v11→v12 adds a partial unique index to enforce at most one active coordinator
+// per repo (§6.1 from #849): UNIQUE (repo) WHERE root_agent_name='coordinator'
+// AND ended_at IS NULL. The IF NOT EXISTS guard makes this idempotent so that
+// databases already at v12 (e.g. from a re-run) do not fail.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -226,8 +230,9 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=11 if the table is empty (fresh database already has
-	// all columns including the v2–v11 additions, so no migration is needed).
+	// Set schema_version=11 if the table is empty. Fresh databases have all
+	// current columns from the schema above. The v11→v12 migration (partial
+	// unique index for coordinator-per-repo) runs immediately below.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -489,6 +494,28 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 11
+	}
+	if version == 11 {
+		// Migration v11 → v12: add a partial unique index enforcing at most one
+		// active coordinator per repo (§6.1 from #849). The index is partial so
+		// that:
+		//   - ended coordinators (ended_at IS NOT NULL) are excluded, allowing
+		//     a new coordinator to start for the same repo after the previous one ends.
+		//   - sessions without root_agent_name='coordinator' are unaffected.
+		// CREATE INDEX IF NOT EXISTS makes this idempotent.
+		migrations := []string{
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+			   ON agent_status (repo)
+			   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL`,
+			"UPDATE schema_version SET version = 12",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v11→v12: %w", err)
+			}
+		}
+		version = 12
 	}
 
 	return &DB{conn: conn, path: path}, nil
