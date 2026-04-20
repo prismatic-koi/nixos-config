@@ -110,7 +110,15 @@ func Run() error {
 		_ = gitRun("switch", "main")
 	}()
 
-	if err := gitRun("commit", "-m", title); err != nil {
+	// Build commit args: always include title; include body as a separate -m
+	// flag if non-empty. Git joins multiple -m flags with blank lines, giving
+	// a proper "subject\n\nbody" commit. For single-commit PRs this flows
+	// straight into GitHub's squash merge extended description.
+	commitArgs := []string{"commit", "-m", title}
+	if body != "" {
+		commitArgs = append(commitArgs, "-m", body)
+	}
+	if err := gitRun(commitArgs...); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
 
