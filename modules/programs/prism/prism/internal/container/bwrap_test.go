@@ -1,7 +1,6 @@
 package container
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1265,7 +1264,12 @@ func TestBwrapBuildArgs_Terminator(t *testing.T) {
 	if tail[1] != "--port" {
 		t.Errorf("tail[1] = %q, want --port", tail[1])
 	}
-	wantPort := fmt.Sprintf("%d", ContainerPort)
+	// bwrap binds directly to the per-session AllocatedPort (shared host
+	// network namespace — no --publish remap). The fixture sets AllocatedPort
+	// = 14010 above; asserting that value confirms the opencode --port flag
+	// tracks it rather than the fixed ContainerPort (which would cause every
+	// second bwrap session to fail with EADDRINUSE).
+	wantPort := "14010"
 	if tail[2] != wantPort {
 		t.Errorf("tail[2] = %q, want %q", tail[2], wantPort)
 	}
@@ -1275,6 +1279,67 @@ func TestBwrapBuildArgs_Terminator(t *testing.T) {
 	if tail[4] != "127.0.0.1" {
 		t.Errorf("tail[4] = %q, want 127.0.0.1", tail[4])
 	}
+}
+
+// TestBwrapBuildArgs_PortTracksAllocatedPort verifies that the opencode --port
+// flag in the bwrap argv reflects cfg.AllocatedPort rather than being
+// hardcoded. Two distinct AllocatedPort values must produce two distinct --port
+// values in the resulting argv. Regression guard for the bug where every bwrap
+// session bound the fixed ContainerPort and the second session silently failed
+// with EADDRINUSE (because bwrap shares the host network namespace).
+func TestBwrapBuildArgs_PortTracksAllocatedPort(t *testing.T) {
+	portOf := func(t *testing.T, allocated int) string {
+		t.Helper()
+		m, _, cleanup := bwrapFixture(t, Config{
+			SessionName:   "repo@main",
+			Worktree:      t.TempDir(),
+			AllocatedPort: allocated,
+		})
+		defer cleanup()
+		b := &bwrapIsolator{name: m.name}
+		args := b.BuildArgs(m)
+		// Locate the terminator and return the --port value.
+		for i, a := range args {
+			if a == "--" && i+3 < len(args) && args[i+1] == "opencode" && args[i+2] == "--port" {
+				return args[i+3]
+			}
+		}
+		t.Fatalf("did not find '-- opencode --port <value>' in args: %v", args)
+		return ""
+	}
+
+	if got := portOf(t, 14010); got != "14010" {
+		t.Errorf("AllocatedPort=14010: --port = %q, want \"14010\"", got)
+	}
+	if got := portOf(t, 14020); got != "14020" {
+		t.Errorf("AllocatedPort=14020: --port = %q, want \"14020\"", got)
+	}
+}
+
+// TestBwrapBuildArgs_PortFallbackWhenUnset verifies that when AllocatedPort is
+// 0 (unset — e.g. a malformed session row with no opencode_port in the DB), the
+// argv falls back to ContainerPort rather than emitting "--port 0" which would
+// make opencode bind to an arbitrary ephemeral port the sidecar can't locate.
+func TestBwrapBuildArgs_PortFallbackWhenUnset(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName: "repo@main",
+		Worktree:    t.TempDir(),
+		// AllocatedPort intentionally left as zero-value.
+	})
+	defer cleanup()
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	want := "4096" // ContainerPort — keep in sync with container.ContainerPort.
+	for i, a := range args {
+		if a == "--" && i+3 < len(args) && args[i+1] == "opencode" && args[i+2] == "--port" {
+			if args[i+3] != want {
+				t.Errorf("fallback --port = %q, want %q (ContainerPort)", args[i+3], want)
+			}
+			return
+		}
+	}
+	t.Fatalf("did not find '-- opencode --port <value>' in args: %v", args)
 }
 
 func TestBwrapBuildArgs_AgentRoleAndPromptInTail(t *testing.T) {
@@ -1715,7 +1780,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("-- separator missing from args")
 	}
 
-	// Tail: opencode --port 4096 --hostname 127.0.0.1 --agent worker --prompt ...
+	// Tail: opencode --port <AllocatedPort> --hostname 127.0.0.1 --agent worker --prompt ...
 	n := len(args)
 	if args[n-4] != "--agent" || args[n-3] != "worker" {
 		t.Errorf("expected --agent worker near end, got %q %q", args[n-4], args[n-3])

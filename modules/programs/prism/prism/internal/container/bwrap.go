@@ -397,16 +397,26 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
-	// ── opencode plugin cache (read-only, conditional) ───────────────────────
+	// ── opencode plugin cache (read-write, conditional) ─────────────────────
+	// Must be writable: opencode refreshes ~/.cache/opencode/models.json from
+	// models.dev on startup and writes back to disk. A read-only mount causes
+	// EROFS, which opencode swallows into a silent "Failed to start server"
+	// error (logged to ~/.local/share/opencode/log/*.log, NOT to stderr), so
+	// the sidecar loops on connection-refused and the pane stays blank. See
+	// the bwrap-spawn-hangs investigation for the full signature.
 	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
 	if _, err := os.Stat(opencodeCacheDir); err == nil {
-		args = append(args, "--ro-bind", opencodeCacheDir, opencodeCacheDir)
+		args = append(args, "--bind", opencodeCacheDir, opencodeCacheDir)
 	}
 
-	// ── bun transpiler cache (read-only, conditional) ───────────────────────
+	// ── bun transpiler cache (read-write, conditional) ──────────────────────
+	// Must be writable alongside the opencode cache: bun writes transpile
+	// outputs and lockfile updates here on plugin load. Mirrors the opencode
+	// cache treatment above for the same reason — EROFS on write would also
+	// manifest as a silent startup hang.
 	bunCacheDir := filepath.Join(home, ".cache", "bun")
 	if _, err := os.Stat(bunCacheDir); err == nil {
-		args = append(args, "--ro-bind", bunCacheDir, bunCacheDir)
+		args = append(args, "--bind", bunCacheDir, bunCacheDir)
 	}
 
 	// ── Additional AWS mounts (read-only, conditional) ───────────────────────
@@ -500,9 +510,23 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// ── Terminator: -- opencode --port <port> --hostname 127.0.0.1 ──────────
 	// bwrap uses 127.0.0.1 (not 0.0.0.0): the host network namespace is shared
 	// (no --unshare-net), so binding to 0.0.0.0 would be overly broad.
+	//
+	// The port is cfg.AllocatedPort (the per-session host port picked by prism)
+	// rather than the fixed ContainerPort. Because bwrap shares the host network
+	// namespace, every sandbox binds directly to a host port — two sessions both
+	// trying to bind ContainerPort (4096) would collide with EADDRINUSE and the
+	// second would silently fail with "Failed to start server on port 4096" in
+	// the opencode log. ContainerPort is retained as a fallback for the
+	// theoretical case where AllocatedPort is unset (e.g. a malformed session
+	// row); in normal operation cfg.AllocatedPort is always populated by
+	// agent-run from the DB's opencode_port column.
+	opencodePort := cfg.AllocatedPort
+	if opencodePort == 0 {
+		opencodePort = ContainerPort
+	}
 	args = append(args, "--",
 		"opencode",
-		"--port", fmt.Sprintf("%d", ContainerPort),
+		"--port", fmt.Sprintf("%d", opencodePort),
 		"--hostname", "127.0.0.1",
 	)
 
