@@ -2198,3 +2198,114 @@ func TestGroupWiring_PollWithGroupCompleted(t *testing.T) {
 		t.Errorf("expected 2 progress lines, got %d: %v", len(lines), lines)
 	}
 }
+
+// ── CleanupReviewSessionsForParent / KillReviewSessionsForParentWithDB ────────
+
+// TestCleanupReviewSessionsForParent_DBBacked verifies that when group members
+// exist in the DB (post-migration), CleanupReviewSessionsForParent marks them
+// as ended via the DB-backed path.
+func TestCleanupReviewSessionsForParent_DBBacked(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@main"
+	member1 := parent + "~review-1-review-goal"
+	member2 := parent + "~review-1-review-code"
+
+	// Seed parent row with root_agent_name = "coordinator".
+	if err := d.UpsertStatusSeedRootAgentName(parent, "nixos-config", "/wt/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+
+	// Register a group and seed member rows.
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	for _, m := range []string{member1, member2} {
+		if err := d.UpsertStatus(m, "nixos-config", "/wt/"+m, "running", nil, nil); err != nil {
+			t.Fatalf("seed member %q: %v", m, err)
+		}
+		if err := d.SetGroupID(m, groupID); err != nil {
+			t.Fatalf("SetGroupID %q: %v", m, err)
+		}
+	}
+
+	// Call the function under test (KillSessionsByNames will fail silently — no tmux).
+	review.CleanupReviewSessionsForParent(d, parent)
+
+	// Verify both member rows have ended_at set (SetEnded was called).
+	for _, m := range []string{member1, member2} {
+		s, err := d.CurrentStatus(m)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", m, err)
+		}
+		if s == nil {
+			t.Fatalf("CurrentStatus(%q): no row found", m)
+		}
+		if s.EndedAt == nil {
+			t.Errorf("session %q: EndedAt is nil, want non-nil (SetEnded should have been called)", m)
+		}
+	}
+}
+
+// TestCleanupReviewSessionsForParent_PreMigrationFallback verifies that when no
+// group members exist in the DB (pre-migration), the function falls back to the
+// name-prefix scan.
+func TestCleanupReviewSessionsForParent_PreMigrationFallback(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@legacy"
+	member := parent + "~review-1-review-goal"
+
+	// Seed member row WITHOUT group_id (pre-migration shape).
+	if err := d.UpsertStatus(member, "nixos-config", "/wt/"+member, "running", nil, nil); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+
+	// No group registered — GroupMembersForParent returns empty slice.
+	review.CleanupReviewSessionsForParent(d, parent)
+
+	// Verify the member row had ended_at set via the prefix-scan fallback path.
+	s, err := d.CurrentStatus(member)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatalf("CurrentStatus: no row found")
+	}
+	if s.EndedAt == nil {
+		t.Errorf("session %q: EndedAt is nil, want non-nil (prefix-scan fallback should have called SetEnded)", member)
+	}
+}
+
+// TestKillReviewSessionsForParentWithDB_DBBacked verifies that when group
+// members exist, KillReviewSessionsForParentWithDB uses the DB-backed path
+// (returns without calling KillSessionPrefix — no tmux panic for nonexistent sessions).
+func TestKillReviewSessionsForParentWithDB_DBBacked(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@main"
+	member := parent + "~review-1-review-goal"
+
+	if err := d.UpsertStatusSeedRootAgentName(parent, "nixos-config", "/wt/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.UpsertStatus(member, "nixos-config", "/wt/"+member, "running", nil, nil); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	if err := d.SetGroupID(member, groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+
+	// Should not panic even though tmux is not running (KillSessionsByNames is best-effort).
+	review.KillReviewSessionsForParentWithDB(d, parent)
+}
+
+// TestKillReviewSessionsForParentWithDB_NilDB verifies that when d is nil,
+// KillReviewSessionsForParentWithDB delegates to KillSessionPrefix (name-prefix path).
+func TestKillReviewSessionsForParentWithDB_NilDB(t *testing.T) {
+	// With nil DB the function falls through to KillSessionPrefix.
+	// KillSessionPrefix calls tmux (best-effort, non-fatal). Verify no panic.
+	review.KillReviewSessionsForParentWithDB(nil, "nixos-config@main")
+}
