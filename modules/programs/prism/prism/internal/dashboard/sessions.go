@@ -353,15 +353,14 @@ func SortDisplayed(ss []AgentSession) {
 }
 
 // agentTypeLabel returns a display label for the agent_name value.
+//
+// This is a pass-through: every agent type (coordinator, worker, review-goal,
+// review-code, review-security, review-qa, review-context, ac, retro, and any
+// future type) renders as its own name. An empty input yields an empty label.
+// See #849 for the session-uniformity rationale behind the flat-allowlist
+// removal.
 func agentTypeLabel(agentName string) string {
-	switch agentName {
-	case "coordinator":
-		return "coordinator"
-	case "worker":
-		return "worker"
-	default:
-		return ""
-	}
+	return agentName
 }
 
 // SessionColumnWidth computes the session column width (sessionW) from the
