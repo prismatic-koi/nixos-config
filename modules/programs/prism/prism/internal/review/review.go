@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
-	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -470,28 +469,6 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		agentSession := roundPrefix + ag.Name
 		agentSessions[i] = agentSession
 
-		// Seed agent_status for the agent session, including root_agent_name so
-		// the DB reflects the reviewer type from the first moment (closes the
-		// capture gap referenced in #844).
-		if err := d.UpsertStatusSeedRootAgentName(agentSession, repo, worktree, "idle", nil, nil, ag.Name); err != nil {
-			spawnErr[i] = fmt.Errorf("seed status for %s: %w", ag.Name, err)
-			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), err))
-			}
-			continue
-		}
-
-		// Allocate a port for this agent session.
-		port, portErr := d.AllocatePort(agentSession)
-		if portErr != nil {
-			_ = d.SetEnded(agentSession)
-			spawnErr[i] = fmt.Errorf("allocate port for %s: %w", ag.Name, portErr)
-			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), portErr))
-			}
-			continue
-		}
-
 		// Build the prompt for the review agent.
 		// Inject the worktree path into PRCtx so agents know where the
 		// branch is checked out (and that it is read-only).
@@ -512,7 +489,6 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// surfaces this as an explicit error to prevent silent build-agent spawns.
 		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
 		if configErr != nil {
-			_ = d.SetEnded(agentSession)
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
@@ -520,35 +496,38 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			continue
 		}
 
-		// Start the sidecar for this agent.
+		// Spawn the per-agent session via the shared primitive. SpawnSession
+		// handles DB seed (with root_agent_name from AgentRole), port
+		// allocation, tmux session creation, and sidecar startup — keeping
+		// review.go free of direct db/tmux/sidecar machinery (#859).
+		//
 		// WorktreeReadOnly=true ensures review containers cannot modify the
 		// branch under review (satisfies the [security] acceptance criterion).
-		sidecarOpts := session.StartSidecarOpts{
-			Port:             port,
-			ContainerMode:    opts.ContainerMode,
-			AgentRole:        ag.Name,
+		spawnOpts := session.SpawnOpts{
+			SessionName:      agentSession,
+			Repo:             repo,
 			Worktree:         worktree,
-			PluginHostPath:   opts.PluginHostPath,
-			InitialPrompt:    prompt,
+			AgentRole:        ag.Name,
+			Prompt:           prompt,
 			ConfigContent:    agentConfigContent,
+			Layout:           session.LayoutAgentOnly,
+			ContainerMode:    opts.ContainerMode,
+			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
+			// GroupID intentionally left empty — Issue E (#860) will wire
+			// review rounds to session_groups once this primitive lands.
 		}
-		if sidecarErr := session.StartSidecarWithOpts(agentSession, sidecarOpts); sidecarErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism review] warning: could not start sidecar for %s: %v\n", ag.Name, sidecarErr)
-		}
-
-		// Create the independent top-level tmux session for this agent.
-		agentCmd := buildAgentCommand(ag, agentSession, port, prompt, opts.ContainerMode)
-		if err := createAgentSession(agentSession, worktree, agentCmd, port, opts.ContainerMode); err != nil {
-			// Emit spawn-failure progress line immediately.
+		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), err))
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnSessErr))
 			}
 			// Clean up this agent's resources (sidecar, DB row, tmux session).
+			// SpawnSession may have partially progressed; be defensive so a
+			// second spawn attempt with the same name doesn't see stale state.
 			session.KillSidecar(agentSession)
 			cleanupAgentSession(d, agentSession)
 			_ = tmux.KillSession(agentSession)
-			spawnErr[i] = fmt.Errorf("create session for %s: %w", ag.Name, err)
+			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
 			continue
 		}
 
@@ -724,71 +703,6 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	sb.WriteString("---\n\n")
 
 	return sb.String()
-}
-
-// buildAgentCommand returns the command string for a review agent session.
-// agentSession is the full session name (e.g. "nixos-config@feature~review-1-review-goal"),
-// used as PRISM_SESSION_NAME so the plugin correctly identifies the DB row.
-func buildAgentCommand(ag Agent, agentSession string, port int, prompt string, containerMode bool) string {
-	if containerMode {
-		// Use podman attach to bridge the tmux pane to the container's PTY.
-		// The container runs opencode in combined TUI + HTTP mode (RFC #691, Phase 1a).
-		// --sig-proxy=false prevents podman from forwarding signals (e.g. SIGINT from
-		// Ctrl-C) to the container process; instead the ^C byte reaches opencode's TUI
-		// as literal stdin input, which it handles as an interrupt keystroke — matching
-		// host-mode behaviour where Ctrl-C interrupts the current turn, not the process.
-		// The container name is shell-quoted so that any unexpected characters in
-		// the session name cannot be interpreted as shell metacharacters when
-		// buildReadinessWaitCmd embeds this string in the readiness shell script.
-		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(agentSession))
-	}
-	escapedPrompt := shellQuote(prompt)
-	// Prepend the experimental bash-tool timeout env var so review agents also
-	// get the 15-min default. Scoped to opencode only — not pi or other harnesses.
-	return fmt.Sprintf("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000 PRISM_SESSION_NAME=%s opencode --agent %s --port %d --hostname 127.0.0.1 --prompt %s",
-		shellQuote(agentSession), ag.OpencodeName, port, escapedPrompt)
-}
-
-// createAgentSession creates a new independent top-level tmux session for a
-// review agent. In container mode it prepends a readiness wait like the
-// standard session setup. The session is created with a single "agent" window
-// that runs the given command.
-func createAgentSession(agentSession, worktree, agentCmd string, port int, containerMode bool) error {
-	cmd := agentCmd
-	if containerMode && port != 0 {
-		readyPath, pathErr := session.SidecarReadyPath(agentSession)
-		if pathErr == nil {
-			// Remove any stale ready file from a previous lifecycle.
-			_ = os.Remove(readyPath)
-			cmd = buildReadinessWaitCmd(readyPath, agentCmd)
-		}
-	}
-	// Create the session (starts with a bare shell in window 0).
-	if err := tmux.NewSessionDetached(agentSession, worktree); err != nil {
-		return fmt.Errorf("new-session %q: %w", agentSession, err)
-	}
-	// Create window 1 with the agent command. Window 0 remains as a shell.
-	// Using NewWindow ensures the command runs via "sh -c" and semicolons in
-	// the readiness wait script are not consumed by tmux's command parser.
-	if err := tmux.NewWindow(agentSession, 1, "agent", worktree, cmd, nil); err != nil {
-		return fmt.Errorf("new-window for %q: %w", agentSession, err)
-	}
-	// Select the agent window (1) as the default.
-	_ = tmux.SelectWindow(agentSession, 1)
-	return nil
-}
-
-// buildReadinessWaitCmd mirrors session.buildReadinessWaitCmd (unexported).
-// Polls for the readiness file and runs the attach command directly once ready.
-func buildReadinessWaitCmd(readyPath, attachCmd string) string {
-	return fmt.Sprintf(
-		`i=0; while [ ! -f %s ] && [ $i -lt 240 ]; do sleep 0.5; i=$((i+1)); done; `+
-			`if [ ! -f %s ]; then `+
-			`echo "prism: container did not become ready within 120s" >&2; exit 1; `+
-			`fi; `+
-			`%s`,
-		shellQuote(readyPath), shellQuote(readyPath), attachCmd,
-	)
 }
 
 // pollAgents polls the DB until all agents reach "finished" or the timeout expires.
@@ -1192,11 +1106,6 @@ func deriveRepo(sessionName string) string {
 		return sessionName[:idx]
 	}
 	return sessionName
-}
-
-// shellQuote wraps s in single quotes, escaping any single quotes within.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // formatDuration formats a duration as "Xm" or "Xs" for display.

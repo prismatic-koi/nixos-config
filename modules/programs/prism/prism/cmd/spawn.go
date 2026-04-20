@@ -316,29 +316,52 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	opts := session.Opts{
+	// Build SpawnOpts and call session.SpawnSession — the single shared
+	// primitive for creating a prism session end-to-end (port allocation,
+	// DB seed with root_agent_name, tmux session creation, sidecar startup).
+	// See #849 §3.1 and #859.
+	sessionName := session.NameFor(worktreePath, bareRoot)
+	agentRole := session.DefaultAgent(worktreePath, agentFlag)
+	headless := !fromKeybind && !attachFlag
+
+	spawnOpts := session.SpawnOpts{
+		SessionName:    sessionName,
+		Repo:           deriveRepo(worktreePath),
+		Worktree:       worktreePath,
+		AgentRole:      agentRole,
 		Prompt:         promptFlag,
-		Agent:          agentFlag,
 		ConfigContent:  configContent,
-		Headless:       !fromKeybind && !attachFlag,
+		Layout:         session.LayoutFull,
 		ContainerMode:  effectiveContainerMode,
 		IsolationMode:  string(isolationMode),
 		PluginHostPath: cfg.SidecarPluginPath,
-		// ForceFresh=true: spawn always wants a new instance. If a session with
-		// the same name already exists it is a stale zombie and should be killed.
+		// ForceFresh=true: spawn always wants a new instance. If a session
+		// with the same name already exists it is a stale zombie and should
+		// be killed.
 		ForceFresh: true,
+		Headless:   headless,
 	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
 	// receive env vars via podman --env flags in the sidecar.
 	if pf != nil && !effectiveContainerMode {
-		opts.AgentEnvVars = pf.AgentEnvVars
+		spawnOpts.AgentEnvVars = pf.AgentEnvVars
 	}
 
-	if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
+	d, dbErr := openDB()
+	if dbErr != nil {
+		return fmt.Errorf("spawn: open db: %w", dbErr)
+	}
+	defer d.Close()
+
+	if err := session.SpawnSession(d, spawnOpts); err != nil {
 		return err
 	}
 
-	return nil
+	if headless {
+		fmt.Printf("session %q created\n", sessionName)
+		return nil
+	}
+	return session.Attach(sessionName)
 }
 
 // resolveBareRoot returns the bare repo root to operate on.
