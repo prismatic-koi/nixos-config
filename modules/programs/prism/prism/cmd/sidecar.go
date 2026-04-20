@@ -290,6 +290,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		h = opencode.New(opencodeURL, nil, agentRole, agentModel)
 	}
 
+	// Inject harness-specific runtime env vars into the container config.
+	// This replaces the previously hard-coded OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS
+	// in container.go and bwrap.go with values from the harness adapter.
+	if ctrCfg != nil {
+		ctrCfg.RuntimeEnv = h.RuntimeEnv()
+	}
+
 	cfg := sidecar.Config{
 		SessionName:     sessionName,
 		Repo:            repo,
