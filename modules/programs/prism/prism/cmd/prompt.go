@@ -127,11 +127,11 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	// Require port and session ID for HTTP delivery.
-	if status.OpencodePort == nil || status.OpencodeSID == nil {
-		return fmt.Errorf("session %q has no opencode port or session ID — cannot deliver prompt", sessionName)
+	if status.HarnessPort == nil || status.HarnessSessionID == nil {
+		return fmt.Errorf("session %q has no harness port or session ID — cannot deliver prompt", sessionName)
 	}
 
-	httpErr := deliverViaHTTP(*status.OpencodePort, *status.OpencodeSID, promptText, status)
+	httpErr := deliverViaHTTP(*status.HarnessPort, *status.HarnessSessionID, promptText, status)
 	if httpErr != nil {
 		return fmt.Errorf("HTTP delivery failed: %w", httpErr)
 	}

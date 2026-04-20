@@ -94,19 +94,22 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ContainerMode(t *testing.T) {
 
 // TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty verifies that an empty
 // AgentEnvVars map produces no change to the command (beyond the
-// outermost OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS prefix).
+// outermost RuntimeEnvVars prefix when provided via the harness).
 func TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty(t *testing.T) {
 	opts := Opts{
 		Agent:        "worker",
 		Port:         14000,
 		SessionName:  "myrepo@branch",
 		AgentEnvVars: map[string]string{},
+		RuntimeEnvVars: map[string]string{
+			"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+		},
 	}
 	cmd := buildDirectOpencodeCmd(opts)
 
-	// Cmd should begin with the experimental timeout prefix.
+	// Cmd should begin with the runtime env var prefix (from harness).
 	if !strings.HasPrefix(cmd, "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=") {
-		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when AgentEnvVars is empty, got: %q", cmd)
+		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when RuntimeEnvVars is set, got: %q", cmd)
 	}
 	// PRISM_SESSION_NAME should still appear in the command.
 	if !strings.Contains(cmd, "PRISM_SESSION_NAME=") {
@@ -116,19 +119,22 @@ func TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty(t *testing.T) {
 
 // TestBuildDirectOpencodeCmd_AgentEnvVarsNil verifies that a nil AgentEnvVars
 // map produces no change to the command (beyond the
-// outermost OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS prefix).
+// outermost RuntimeEnvVars prefix when provided via the harness).
 func TestBuildDirectOpencodeCmd_AgentEnvVarsNil(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
 		Port:        14000,
 		SessionName: "myrepo@branch",
 		// AgentEnvVars intentionally nil
+		RuntimeEnvVars: map[string]string{
+			"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+		},
 	}
 	cmd := buildDirectOpencodeCmd(opts)
 
-	// Cmd should begin with the experimental timeout prefix.
+	// Cmd should begin with the runtime env var prefix (from harness).
 	if !strings.HasPrefix(cmd, "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=") {
-		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when AgentEnvVars is nil, got: %q", cmd)
+		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when RuntimeEnvVars is set, got: %q", cmd)
 	}
 	// PRISM_SESSION_NAME should still appear in the command.
 	if !strings.Contains(cmd, "PRISM_SESSION_NAME=") {

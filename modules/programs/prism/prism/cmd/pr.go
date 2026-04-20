@@ -23,6 +23,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -93,7 +94,7 @@ var prCmd = &cobra.Command{
 		}
 
 		// In container/bwrap mode, inject the role-specific opencode.json blob
-		// as OPENCODE_CONFIG_CONTENT so it takes precedence (level 6) over any
+		// as the harness config env var so it takes precedence (level 6) over any
 		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
 		//
 		// This block fires for both podman and bwrap isolation modes. Host-mode
@@ -143,14 +144,17 @@ var prCmd = &cobra.Command{
 			}
 		}
 
+		prHarness := opencode.New("", nil, "", "")
 		opts := session.Opts{
-			Prompt:         promptFlag,
-			Agent:          agentFlag,
-			Headless:       !attachFlag,
-			ContainerMode:  effectiveContainerMode,
-			IsolationMode:  string(isoMode),
-			PluginHostPath: cfg.SidecarPluginPath,
-			ConfigContent:  configContent,
+			Prompt:           promptFlag,
+			Agent:            agentFlag,
+			Headless:         !attachFlag,
+			ContainerMode:    effectiveContainerMode,
+			IsolationMode:    string(isoMode),
+			PluginHostPath:   cfg.SidecarPluginPath,
+			ConfigContent:    configContent,
+			ConfigEnvVarName: prHarness.ConfigEnvVar(),
+			RuntimeEnvVars:   prHarness.RuntimeEnv(),
 			// ForceFresh=true: prism pr creates a new worktree; if a session
 			// with the same name exists it is a stale zombie and should be
 			// killed, matching the same semantics as prism spawn.

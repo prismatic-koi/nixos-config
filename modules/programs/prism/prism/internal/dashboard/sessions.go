@@ -22,15 +22,15 @@ import (
 // virtual session key (e.g. "nixos-config@feature~review-1") and AgentState
 // holds the escalated state across the children.
 type AgentSession struct {
-	Name         string
-	AgentState   string // active | waiting | finished | compacting | error | idle | ""
-	AgentPath    string // worktree path — used for git diff stats
-	AgentTitle   string // current session title from agent_status.title
-	AgentName    string // coordinator | worker | "" — from agent_status.agent_name
-	ModelID      string // model identifier from agent_status.model_id
-	Harness      string // harness name from agent_status.harness, defaults to "opencode"
-	OpencodePort *int   // allocated port from agent_status.opencode_port, nil when unset
-	ClientCount  int    // tmux clients currently attached (best-effort, 0 on error)
+	Name        string
+	AgentState  string // active | waiting | finished | compacting | error | idle | ""
+	AgentPath   string // worktree path — used for git diff stats
+	AgentTitle  string // current session title from agent_status.title
+	AgentName   string // coordinator | worker | "" — from agent_status.agent_name
+	ModelID     string // model identifier from agent_status.model_id
+	Harness     string // harness name from agent_status.harness, defaults to "opencode"
+	HarnessPort *int   // allocated port from agent_status.harness_port, nil when unset
+	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
 	// IsReviewGroup marks a virtual ~review-N group row (not a real session).
 	// Selecting this row in the picker toggles expand/collapse rather than switching.
 	IsReviewGroup bool
@@ -56,15 +56,15 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 		harness = *s.Harness
 	}
 	return AgentSession{
-		Name:         s.SessionName,
-		AgentState:   s.State,
-		AgentPath:    s.Worktree,
-		AgentTitle:   title,
-		AgentName:    agentName,
-		ModelID:      modelID,
-		Harness:      harness,
-		OpencodePort: s.OpencodePort,
-		ClientCount:  clientCounts[s.SessionName],
+		Name:        s.SessionName,
+		AgentState:  s.State,
+		AgentPath:   s.Worktree,
+		AgentTitle:  title,
+		AgentName:   agentName,
+		ModelID:     modelID,
+		Harness:     harness,
+		HarnessPort: s.HarnessPort,
+		ClientCount: clientCounts[s.SessionName],
 	}
 }
 
@@ -602,8 +602,8 @@ func RenderSessionRow(
 	// portLabel is the compact port display shown when a port is allocated.
 	// It is rendered at the start of the title column, before the title text.
 	portLabel := ""
-	if s.OpencodePort != nil {
-		portLabel = fmt.Sprintf(":%d", *s.OpencodePort)
+	if s.HarnessPort != nil {
+		portLabel = fmt.Sprintf(":%d", *s.HarnessPort)
 	}
 
 	// When a portLabel is present, reserve its width (plus one space separator)

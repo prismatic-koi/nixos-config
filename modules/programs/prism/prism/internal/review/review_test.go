@@ -11,6 +11,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -664,7 +665,8 @@ func TestCheckAgentAvailability_AllPresent(t *testing.T) {
 		}
 	}
 
-	if err := review.CheckAgentAvailability(agents); err != nil {
+	h := opencode.New("", nil, "", "")
+	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		t.Errorf("CheckAgentAvailability: unexpected error: %v", err)
 	}
 }
@@ -684,8 +686,9 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	h := opencode.New("", nil, "", "")
 	agents := review.Agents()
-	err := review.CheckAgentAvailability(agents)
+	err := review.CheckAgentAvailability(agents, h.ValidateAgentRole)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents, got nil")
 	}
@@ -706,19 +709,21 @@ func TestCheckAgentAvailability_AllMissing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	// Don't create the agents directory at all.
 
+	h := opencode.New("", nil, "", "")
 	agents := review.Agents()
-	err := review.CheckAgentAvailability(agents)
+	err := review.CheckAgentAvailability(agents, h.ValidateAgentRole)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for all missing agents, got nil")
 	}
 }
 
 func TestCheckAgentAvailability_EmptyAgentList(t *testing.T) {
-	// An empty agent list should always pass.
-	if err := review.CheckAgentAvailability(nil); err != nil {
+	// An empty agent list should always pass (validator is never called).
+	h := opencode.New("", nil, "", "")
+	if err := review.CheckAgentAvailability(nil, h.ValidateAgentRole); err != nil {
 		t.Errorf("CheckAgentAvailability(nil): unexpected error: %v", err)
 	}
-	if err := review.CheckAgentAvailability([]review.Agent{}); err != nil {
+	if err := review.CheckAgentAvailability([]review.Agent{}, h.ValidateAgentRole); err != nil {
 		t.Errorf("CheckAgentAvailability([]): unexpected error: %v", err)
 	}
 }

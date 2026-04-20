@@ -34,6 +34,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -100,11 +101,11 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
 	}
 
-	// Resolve port from the DB status. AllocatedPort is used for the opencode
+	// Resolve port from the DB status. HarnessPort is used for the opencode
 	// --port flag in the bwrap args.
 	port := 0
-	if status.OpencodePort != nil {
-		port = *status.OpencodePort
+	if status.HarnessPort != nil {
+		port = *status.HarnessPort
 	}
 
 	// Resolve agent role from status.
@@ -122,6 +123,8 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		hostAPISockPath = sockPath
 	}
 
+	// Populate harness-specific runtime env vars for the bwrap sandbox.
+	agentRunHarness := opencode.New("", nil, "", "")
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -134,6 +137,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
+		RuntimeEnv:        agentRunHarness.RuntimeEnv(),
 	}
 
 	// Read the initial prompt from the pane env var set by session.go at

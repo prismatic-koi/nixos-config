@@ -87,8 +87,8 @@ func TestSpawnSession_AgentOnly_SeedsRootAgentName(t *testing.T) {
 	if st.Worktree != "/worktrees/myrepo-branch" {
 		t.Errorf("worktree = %q, want %q", st.Worktree, "/worktrees/myrepo-branch")
 	}
-	if st.OpencodePort == nil || *st.OpencodePort == 0 {
-		t.Error("expected non-zero opencode_port; got nil or 0")
+	if st.HarnessPort == nil || *st.HarnessPort == 0 {
+		t.Error("expected non-zero harness_port; got nil or 0")
 	}
 	if st.GroupID != nil {
 		t.Errorf("group_id = %q, want nil (GroupID was not set in opts)", *st.GroupID)
