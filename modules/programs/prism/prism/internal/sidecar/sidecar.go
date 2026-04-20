@@ -1718,10 +1718,15 @@ func deliverNotificationViaHTTP(port int, opencodeSID string, text string, statu
 }
 
 // buildNotifyPromptBody constructs the request body for the coordinator
-// notification prompt_async call. When root_agent_name and root_model_id are
-// known, they are included so the session continues using its root agent/model.
-// Falls back to agent_name/model_id for sessions created before the root fields
-// migration. Mirrors the buildPromptBody logic in cmd/prompt.go.
+// notification prompt_async call. When root_model_id is known, it is included
+// so the session continues using its root model. Falls back to model_id for
+// sessions created before the root fields migration.
+//
+// The receiving session's active-turn agent context is deliberately NOT
+// overridden: the notification is processed by whichever agent the session is
+// configured to run. Setting an "agent" field here would let an incoming
+// notification switch a subagent's context to the notifier's agent — a real
+// bug that caused subagent context-switch incidents. See issue #848.
 func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
 	body := map[string]any{
 		"parts": []map[string]string{
@@ -1729,18 +1734,12 @@ func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
 		},
 	}
 
-	agentName := status.RootAgentName
-	if agentName == nil {
-		agentName = status.AgentName
-	}
 	modelID := status.RootModelID
 	if modelID == nil {
 		modelID = status.ModelID
 	}
 
-	if agentName != nil && modelID != nil {
-		body["agent"] = *agentName
-
+	if modelID != nil {
 		// Split model_id on the first "/" to get providerID and modelID.
 		slashIdx := strings.Index(*modelID, "/")
 		providerID := *modelID
