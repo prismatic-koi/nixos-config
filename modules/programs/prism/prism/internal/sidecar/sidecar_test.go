@@ -1573,6 +1573,8 @@ func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar
 
 // seedCoordinatorWithPort inserts a coordinator row with a specific known port
 // and harness_session_id using a SQL exec via db.QueryRow (for testing).
+// root_agent_name is also set to "coordinator" so that isCoordinatorSession
+// and CoordinatorForRepo exercise the DB-backed path rather than the name heuristic.
 func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid string) {
 	t.Helper()
 	coordName := repo + "@main"
@@ -1580,6 +1582,14 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	modelID := "anthropic/claude-sonnet-4-5"
 	if err := d.UpsertStatusWithAgent(coordName, repo, "/tmp/coord-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
 		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
+	}
+	// Set root_agent_name = 'coordinator' so the DB-backed coordinator detection
+	// path is exercised by tests that call notifyCoordinator / CoordinatorForRepo.
+	if err := d.QueryRow(
+		"UPDATE agent_status SET root_agent_name = 'coordinator' WHERE session_name = ? RETURNING session_name",
+		coordName,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("seed coordinator: set root_agent_name: %v", err)
 	}
 	// Set the port directly via a UPDATE … RETURNING to verify it applied.
 	var got int
@@ -2571,11 +2581,133 @@ func TestIsReviewAgentSession(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := isReviewAgentSession(tc.sessionName)
+			// Pass nil DB to exercise the name-heuristic fallback path.
+			got := isReviewAgentSession(tc.sessionName, nil)
 			if got != tc.want {
 				t.Errorf("isReviewAgentSession(%q) = %v, want %v", tc.sessionName, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsReviewAgentSession_DBBackedPath verifies that isReviewAgentSession
+// returns true via the DB-backed group_id path even when the session name
+// does NOT contain "~review". This is the core correctness assertion for the
+// DB migration: a review agent on any session-name shape is identified by
+// group membership, not by name.
+func TestIsReviewAgentSession_DBBackedPath(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	parentSession := "repo@feature"
+	reviewSession := "repo@feature~review-1-review-code"
+	// A reviewer with an unconventional name (post-migration; group_id set but
+	// no "~review" in the name — verifies the DB path is primary).
+	unconventionalReviewer := "repo@feature-review-agent-custom"
+
+	// Register a group for the parent session.
+	groupID, err := d.RegisterGroup(parentSession)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed the conventional reviewer and assign it to the group.
+	if err := d.UpsertStatus(reviewSession, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus reviewer: %v", err)
+	}
+	if err := d.SetGroupID(reviewSession, groupID); err != nil {
+		t.Fatalf("SetGroupID reviewer: %v", err)
+	}
+
+	// Seed an unconventional reviewer (no "~review" in name) and assign to group.
+	if err := d.UpsertStatus(unconventionalReviewer, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus unconventional: %v", err)
+	}
+	if err := d.SetGroupID(unconventionalReviewer, groupID); err != nil {
+		t.Fatalf("SetGroupID unconventional: %v", err)
+	}
+
+	// Conventional reviewer: DB group membership takes precedence over name check.
+	if !isReviewAgentSession(reviewSession, d) {
+		t.Error("isReviewAgentSession(conventional, DB group set): got false, want true")
+	}
+
+	// Unconventional reviewer: DB identifies it without relying on the name heuristic.
+	if !isReviewAgentSession(unconventionalReviewer, d) {
+		t.Errorf("isReviewAgentSession(%q, DB group set, no ~review in name): got false, want true — DB path must identify group members regardless of name", unconventionalReviewer)
+	}
+
+	// Parent session itself: NOT a group member.
+	if isReviewAgentSession(parentSession, d) {
+		t.Error("isReviewAgentSession(parent session): got true, want false — parent is not a group member")
+	}
+
+	// Pre-migration: session with "~review" in name but no group_id set.
+	// Falls back to name heuristic.
+	preMigrationReviewer := "repo@pre-migration~review-1"
+	if err := d.UpsertStatus(preMigrationReviewer, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus pre-migration: %v", err)
+	}
+	// group_id is NOT set — simulates pre-migration row.
+	if !isReviewAgentSession(preMigrationReviewer, d) {
+		t.Errorf("isReviewAgentSession(pre-migration ~review name, no group_id): got false, want true — name heuristic fallback must fire")
+	}
+}
+
+// TestIsCoordinatorSession verifies the DB-backed isCoordinatorSession helper.
+func TestIsCoordinatorSession(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Happy path: post-migration coordinator row on the conventional @main branch.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	if !isCoordinatorSession("repo@main", d) {
+		t.Error("isCoordinatorSession(post-migration coordinator @main): got false, want true")
+	}
+
+	// Core value of the change: coordinator on a non-@main branch name.
+	// The DB read must identify it correctly regardless of branch name.
+	// Use a different repo name to avoid the unique-coordinator-per-repo constraint.
+	if err := d.UpsertStatusSeedRootAgentName("other-repo@custom-branch", "other-repo", "/code/custom", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator on custom branch: %v", err)
+	}
+	if !isCoordinatorSession("other-repo@custom-branch", d) {
+		t.Error("isCoordinatorSession(post-migration coordinator on non-main branch): got false, want true — this is the core correctness assertion of the DB-backed migration")
+	}
+
+	// Post-migration worker row: DB says false.
+	if err := d.UpsertStatusSeedRootAgentName("repo@feature", "repo", "/code/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	if isCoordinatorSession("repo@feature", d) {
+		t.Error("isCoordinatorSession(post-migration worker): got true, want false")
+	}
+
+	// Pre-migration NULL root_agent_name: row exists but NULL — falls back to name heuristic.
+	if err := d.UpsertStatus("repo@main-old", "repo", "/code/main-old", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration coordinator: %v", err)
+	}
+	// repo@main-old does NOT end with "@main", so heuristic returns false.
+	if isCoordinatorSession("repo@main-old", d) {
+		t.Error("isCoordinatorSession(pre-migration non-main): got true, want false")
+	}
+	// Create a session that ends with @main but has NULL root_agent_name.
+	if err := d.UpsertStatus("other@main", "other", "/code/other/main", "active", nil, nil); err != nil {
+		t.Fatalf("seed other@main: %v", err)
+	}
+	// Pre-migration row with @main suffix: heuristic returns true.
+	if !isCoordinatorSession("other@main", d) {
+		t.Error("isCoordinatorSession(pre-migration @main): got false, want true (name heuristic)")
+	}
+
+	// No DB row: falls back to name heuristic.
+	if !isCoordinatorSession("newrepo@main", nil) {
+		t.Error("isCoordinatorSession(nil DB, @main): got false, want true")
+	}
+	if isCoordinatorSession("newrepo@feature", nil) {
+		t.Error("isCoordinatorSession(nil DB, non-main): got true, want false")
 	}
 }
 
@@ -5029,6 +5161,10 @@ func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
 
 func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
 	d := openTestDB(t)
+	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
 	// Session name without "@" — edge case for repoFromSession.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
 	// The sidecar's own session has no "@", which will fail repoFromSession.
@@ -5290,6 +5426,10 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 // message indicating the repo cannot be derived, and no spawn is attempted.
 func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	d := openTestDB(t)
+	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
 	// Session name without "@" — repoFromSession will fail.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch"}`)

@@ -195,6 +195,37 @@ func DefaultAgent(directory, explicit string) string {
 	return "worker"
 }
 
+// DefaultAgentForSession returns the agent to use for the given session,
+// using a DB-backed read of root_agent_name when available.
+// If explicit is non-empty it is returned unchanged.
+// Otherwise it reads root_agent_name from the DB; if the row has a non-NULL
+// root_agent_name it is returned directly. Falls back to DefaultAgent (directory
+// heuristic) for pre-migration rows where root_agent_name is NULL.
+// When d is nil, falls back to DefaultAgent unconditionally.
+func DefaultAgentForSession(sessionName, directory, explicit string, d *db.DB) string {
+	if explicit != "" {
+		return explicit
+	}
+	if d != nil {
+		rootName, rowExists, err := d.RootAgentName(sessionName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: DefaultAgentForSession: DB error reading root_agent_name for %q: %v — using directory heuristic\n", sessionName, err)
+		} else if rowExists && rootName != "" {
+			// DB-backed: return the stored root_agent_name.
+			dirBased := DefaultAgent(directory, "")
+			if rootName != dirBased {
+				fmt.Fprintf(os.Stderr, "[debug] DefaultAgentForSession(%q): DB says %q, directory heuristic says %q\n", sessionName, rootName, dirBased)
+			}
+			return rootName
+		} else if rowExists {
+			// Row exists but root_agent_name is NULL — pre-migration row.
+			fmt.Fprintf(os.Stderr, "[deprecation] DefaultAgentForSession(%q): root_agent_name is NULL — using directory heuristic\n", sessionName)
+		}
+		// rowExists=false: no row yet — use directory heuristic silently.
+	}
+	return DefaultAgent(directory, "")
+}
+
 // effectiveIsolationMode returns the resolved isolation mode for opts,
 // falling back to ContainerMode for back-compat.
 func effectiveIsolationMode(opts Opts) string {

@@ -298,7 +298,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	opts := session.Opts{
 		Headless:         true,
 		OpencodeSession:  opencodeSession,
-		Agent:            session.DefaultAgent(directory, ""),
+		Agent:            session.DefaultAgentForSession(s.SessionName, directory, "", d),
 		SessionName:      s.SessionName,
 		Layout:           session.LayoutFull,
 		SkipStatusSeed:   true,
@@ -325,7 +325,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		if pfErr != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
 		} else {
-			effectiveRole := session.DefaultAgent(directory, "")
+			effectiveRole := session.DefaultAgentForSession(s.SessionName, directory, "", d)
 			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
 			if roleErr != nil {
 				fmt.Fprintf(os.Stderr, "restore %q: container config for role %q: %v — skipping config injection\n", s.SessionName, effectiveRole, roleErr)

@@ -490,3 +490,99 @@ func TestSpawnSession_PromptEnvVar_NoPrompt(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultAgentForSession_DBHappyPath verifies that when root_agent_name is
+// set in the DB, DefaultAgentForSession returns it regardless of directory.
+func TestDefaultAgentForSession_DBHappyPath(t *testing.T) {
+	const sessionName = "testrepo@main"
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	got := DefaultAgentForSession(sessionName, "/worktrees/main", "", d)
+	if got != "coordinator" {
+		t.Errorf("DefaultAgentForSession = %q, want %q", got, "coordinator")
+	}
+}
+
+// TestDefaultAgentForSession_ExplicitOverridesDB verifies that an explicit
+// agent value is returned as-is, bypassing the DB.
+func TestDefaultAgentForSession_ExplicitOverridesDB(t *testing.T) {
+	const sessionName = "testrepo@main"
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	got := DefaultAgentForSession(sessionName, "/worktrees/main", "worker", d)
+	if got != "worker" {
+		t.Errorf("DefaultAgentForSession = %q, want %q (explicit should win)", got, "worker")
+	}
+}
+
+// TestDefaultAgentForSession_PreMigrationNULL verifies that when the DB row
+// exists but root_agent_name is NULL (pre-migration), DefaultAgentForSession
+// falls back to the directory heuristic.
+func TestDefaultAgentForSession_PreMigrationNULL(t *testing.T) {
+	const sessionName = "testrepo@main"
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	// Seed a row WITHOUT root_agent_name (NULL).
+	if err := d.UpsertStatus(sessionName, "testrepo", "/worktrees/nixos-config", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Directory heuristic for /worktrees/nixos-config returns "coordinator".
+	got := DefaultAgentForSession(sessionName, "/worktrees/nixos-config", "", d)
+	want := DefaultAgent("/worktrees/nixos-config", "")
+	if got != want {
+		t.Errorf("DefaultAgentForSession = %q, want directory heuristic %q", got, want)
+	}
+}
+
+// TestDefaultAgentForSession_NilDB verifies that when d is nil,
+// DefaultAgentForSession falls back to the directory heuristic unconditionally.
+func TestDefaultAgentForSession_NilDB(t *testing.T) {
+	got := DefaultAgentForSession("testrepo@main", "/worktrees/nixos-config", "", nil)
+	want := DefaultAgent("/worktrees/nixos-config", "")
+	if got != want {
+		t.Errorf("DefaultAgentForSession (nil DB) = %q, want %q", got, want)
+	}
+}
+
+// TestDefaultAgentForSession_NoRow verifies that when no DB row exists for the
+// session (new session, not yet seeded), DefaultAgentForSession silently falls
+// back to the directory heuristic (no deprecation warning emitted).
+func TestDefaultAgentForSession_NoRow(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	// No row seeded — rowExists=false path.
+	got := DefaultAgentForSession("testrepo@main", "/worktrees/nixos-config", "", d)
+	want := DefaultAgent("/worktrees/nixos-config", "")
+	if got != want {
+		t.Errorf("DefaultAgentForSession (no row) = %q, want %q", got, want)
+	}
+}

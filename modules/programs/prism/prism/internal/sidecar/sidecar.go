@@ -1451,8 +1451,37 @@ func touchDashboardSentinel() {
 // These sessions are short-lived internal helpers; their finish events are
 // consumed by the parent worker's pollAgents DB loop and must not propagate
 // further up the chain as coordinator notifications.
-func isReviewAgentSession(sessionName string) bool {
-	return strings.Contains(sessionName, "~review")
+//
+// DB-backed check: a session is a review agent if it belongs to a session group
+// (non-NULL group_id). The name-match heuristic is used as a fallback when the
+// DB is unavailable or the row has no group_id (pre-migration rows).
+func isReviewAgentSession(sessionName string, d *db.DB) bool {
+	nameBased := strings.Contains(sessionName, "~review")
+	if d != nil {
+		isMember, err := d.IsGroupMember(sessionName)
+		if err != nil {
+			log.Printf("sidecar: isReviewAgentSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
+			return nameBased
+		}
+		if isMember {
+			// DB-backed: confirmed group member.
+			if !nameBased {
+				log.Printf("[debug] sidecar: isReviewAgentSession(%q): DB says group member, name heuristic says false",
+					sessionName)
+			}
+			return true
+		}
+		// DB says not a group member. If the name heuristic says it IS a review
+		// agent, this is likely a pre-migration row (group_id not yet set).
+		// Fall back to the name heuristic.
+		if nameBased {
+			log.Printf("[deprecation] sidecar: isReviewAgentSession(%q): group_id not set but name heuristic matches — pre-migration row, using name heuristic", sessionName)
+			return true
+		}
+		return false
+	}
+	// No DB available — use name heuristic.
+	return nameBased
 }
 
 // notifyCoordinator sends a "finished" notification to the coordinator session
@@ -1480,9 +1509,10 @@ func isReviewAgentSession(sessionName string) bool {
 // returns an empty list, delivery fails immediately (no retry). If GET /session
 // fails with a network or non-200 error, the retry policy applies.
 func (s *Sidecar) notifyCoordinator() {
-	// Self-notification guard: if this session is the coordinator, skip.
-	coordinatorName := s.cfg.Repo + "@main"
-	if s.cfg.SessionName == coordinatorName {
+	// Self-notification guard: if this session IS the coordinator, skip.
+	// DB-backed: check root_agent_name == "coordinator" for self.
+	// Fallback to name heuristic for pre-migration rows.
+	if isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
 		return
 	}
 
@@ -1490,25 +1520,44 @@ func (s *Sidecar) notifyCoordinator() {
 	// prism review invocation. Their finish events are discovered by the
 	// worker's pollAgents DB poll and must not be forwarded to the coordinator
 	// as noise notifications.
-	if isReviewAgentSession(s.cfg.SessionName) {
+	if isReviewAgentSession(s.cfg.SessionName, s.cfg.DB) {
 		log.Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
 		return
 	}
 
-	// Look up coordinator status.
-	coordStatus, err := s.cfg.DB.CurrentStatus(coordinatorName)
+	// DB-backed coordinator lookup: find the active coordinator for this repo.
+	coordStatus, err := s.cfg.DB.CoordinatorForRepo(s.cfg.Repo)
 	if err != nil {
-		log.Printf("sidecar: notifyCoordinator: look up coordinator: %v", err)
-		return
+		log.Printf("sidecar: notifyCoordinator: DB lookup coordinator for repo %q: %v — falling back to name-based lookup", s.cfg.Repo, err)
 	}
 	if coordStatus == nil {
-		// No coordinator session — silent skip.
+		// No coordinator with root_agent_name='coordinator' found — fall back to
+		// the name-based convention for pre-migration rows.
+		fallbackName := s.cfg.Repo + "@main"
+		var fallbackStatus *db.Status
+		fallbackStatus, err = s.cfg.DB.CurrentStatus(fallbackName)
+		if err != nil {
+			log.Printf("sidecar: notifyCoordinator: fallback look up coordinator: %v", err)
+			return
+		}
+		if fallbackStatus != nil {
+			// Name-based fallback succeeded: a pre-migration coordinator row was
+			// found via the @main name convention. Log deprecation only here,
+			// not when no coordinator is running at all (which is a normal state).
+			log.Printf("[deprecation] sidecar: notifyCoordinator: no DB-backed coordinator found for %q — falling back to name convention %q (pre-migration row)", s.cfg.Repo, fallbackName)
+		}
+		coordStatus = fallbackStatus
+	}
+	if coordStatus == nil {
+		// No coordinator session at all — silent skip.
 		return
 	}
 	if coordStatus.EndedAt != nil {
 		// Coordinator has ended — silent skip.
 		return
 	}
+
+	coordinatorName := coordStatus.SessionName
 
 	notifyText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
 
@@ -1859,8 +1908,37 @@ func repoFromSession(sessionName string) (string, error) {
 }
 
 // isCoordinator returns true when the session name ends with "@main", which is
-// the convention for coordinator sessions in the prism model.
+// the legacy convention for coordinator sessions in the prism model.
+// Deprecated: prefer isCoordinatorSession which also checks the DB.
 func isCoordinator(sessionName string) bool {
+	return strings.HasSuffix(sessionName, "@main")
+}
+
+// isCoordinatorSession returns true when the session is a coordinator, using
+// a DB-backed read of root_agent_name when available. Falls back to the
+// name-suffix heuristic for pre-migration rows (NULL root_agent_name).
+// When d is nil, the name heuristic is used unconditionally.
+func isCoordinatorSession(sessionName string, d *db.DB) bool {
+	if d != nil {
+		name, rowExists, err := d.RootAgentName(sessionName)
+		if err == nil && rowExists {
+			if name != "" {
+				nameBased := strings.HasSuffix(sessionName, "@main")
+				dbBased := name == "coordinator"
+				if dbBased != nameBased {
+					log.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v",
+						sessionName, dbBased, name, nameBased)
+				}
+				return dbBased
+			}
+			// Row exists but root_agent_name is NULL — pre-migration row.
+			log.Printf("[deprecation] sidecar: isCoordinatorSession(%q): root_agent_name is NULL — pre-migration row, using name heuristic", sessionName)
+		} else if err != nil {
+			log.Printf("sidecar: isCoordinatorSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
+		}
+		// rowExists=false means no row — no log needed, just use heuristic.
+	}
+	// Pre-migration fallback or DB unavailable: use name-suffix heuristic.
 	return strings.HasSuffix(sessionName, "@main")
 }
 
@@ -2045,10 +2123,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		return true
 	}
 
-	// requireCoordinator checks that the calling sidecar's AgentRole is
-	// "coordinator". Returns false and writes HTTP 403 if not.
+	// requireCoordinator checks that the calling sidecar is a coordinator
+	// session. Uses the DB-backed isCoordinatorSession check (same helper as
+	// isCoordinator) which reads root_agent_name and falls back to AgentRole
+	// for pre-migration rows. Returns false and writes HTTP 403 if not.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
-		if s.cfg.AgentRole != "coordinator" {
+		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("workers cannot perform %s", operation))
 			return false
@@ -2146,7 +2226,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		crossRepo := targetRepo != ownRepo
-		if crossRepo && !isCoordinator(targetSession) {
+		if crossRepo && !isCoordinatorSession(targetSession, s.cfg.DB) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("cross-repo checkin can only target coordinators (<repo>@main), got %q", targetSession))
 			return
@@ -2312,7 +2392,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
 			return
 		}
-		if targetRepo != ownRepo && !isCoordinator(targetSession) {
+		if targetRepo != ownRepo && !isCoordinatorSession(targetSession, s.cfg.DB) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("cross-repo logs can only target coordinators (<repo>@main), got %q", targetSession))
 			return
@@ -2405,14 +2485,37 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		if s.cfg.AgentRole == "coordinator" {
 			// Coordinator: own repo any session allowed; cross-repo only @main.
-			if crossRepo && !isCoordinator(req.Session) {
+			if crossRepo && !isCoordinatorSession(req.Session, s.cfg.DB) {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("cross-repo prompts can only target coordinators (<repo>@main), got %q", req.Session))
 				return
 			}
 		} else {
-			// Worker: only own coordinator (@main) allowed.
-			ownCoordinator := ownRepo + "@main"
+			// Worker: only own coordinator allowed.
+			// DB-backed: look up the coordinator for this repo.
+			coordStatus, coordErr := s.cfg.DB.CoordinatorForRepo(ownRepo)
+			if coordErr != nil {
+				log.Printf("sidecar: /prompt worker check: DB error looking up coordinator for %q: %v — falling back to name heuristic", ownRepo, coordErr)
+				coordStatus = nil
+			}
+			var ownCoordinator string
+			if coordStatus != nil {
+				ownCoordinator = coordStatus.SessionName
+			} else {
+				// No coordinator with root_agent_name='coordinator' in DB.
+				// Fall back to name convention for pre-migration rows.
+				fallbackCoord := ownRepo + "@main"
+				fallbackStatus, _ := s.cfg.DB.CurrentStatus(fallbackCoord)
+				if fallbackStatus != nil {
+					// Pre-migration row found via name convention — log deprecation
+					// only when the fallback actually finds a row.
+					log.Printf("[deprecation] sidecar: /prompt worker check: no DB-backed coordinator for %q — using name convention %q (pre-migration row)", ownRepo, fallbackCoord)
+					ownCoordinator = fallbackCoord
+				} else {
+					// Normal "no coordinator running" state — silent fallback.
+					ownCoordinator = fallbackCoord
+				}
+			}
 			if req.Session != ownCoordinator {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("workers can only prompt their own coordinator (%s), got %q", ownCoordinator, req.Session))

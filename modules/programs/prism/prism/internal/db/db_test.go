@@ -44,13 +44,21 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=11 (migrations are applied on Open).
+	// Verify schema_version=12 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version: got %d, want 12", version)
+	}
+
+	// Verify the partial unique index for coordinator-per-repo was created (v12).
+	var indexName string
+	if err := d.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_active_coordinator_per_repo'",
+	).Scan(&indexName); err != nil {
+		t.Errorf("idx_active_coordinator_per_repo index not found: %v", err)
 	}
 
 	// Verify WAL mode.
@@ -773,13 +781,13 @@ func TestMigration_V1ToV2(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Verify schema_version=11.
+	// Verify schema_version=12.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -853,8 +861,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1354,8 +1362,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1420,8 +1428,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1490,8 +1498,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1585,8 +1593,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1678,8 +1686,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2263,8 +2271,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2352,8 +2360,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 11 {
-		t.Errorf("schema_version after migration: got %d, want 11", version)
+	if version != 12 {
+		t.Errorf("schema_version after migration: got %d, want 12", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -3462,5 +3470,271 @@ func TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent(t *testing.T) {
 	// State must be updated to "active" by the sidecar write.
 	if s2.State != "active" {
 		t.Errorf("State after sidecar write: got %q, want \"active\"", s2.State)
+	}
+}
+
+// TestCoordinatorForRepo verifies the DB-backed coordinator lookup by repo.
+func TestCoordinatorForRepo(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a coordinator row with root_agent_name = "coordinator".
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	// Seed a worker row.
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// Happy path: find the coordinator for the repo.
+	coord, err := d.CoordinatorForRepo("myrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo: %v", err)
+	}
+	if coord == nil {
+		t.Fatal("CoordinatorForRepo: got nil, want coordinator row")
+	}
+	if coord.SessionName != "myrepo@main" {
+		t.Errorf("CoordinatorForRepo: SessionName = %q, want %q", coord.SessionName, "myrepo@main")
+	}
+
+	// No coordinator for an unknown repo returns nil.
+	none, err := d.CoordinatorForRepo("other-repo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo(other-repo): %v", err)
+	}
+	if none != nil {
+		t.Errorf("CoordinatorForRepo(other-repo): got %v, want nil", none)
+	}
+
+	// Pre-migration row: a session named "oldrepo@main" with NULL root_agent_name
+	// is NOT returned by CoordinatorForRepo (it requires the DB field).
+	if err := d.UpsertStatus("oldrepo@main", "oldrepo", "/code/oldrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration coordinator: %v", err)
+	}
+	noPreMig, err := d.CoordinatorForRepo("oldrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo(oldrepo): %v", err)
+	}
+	if noPreMig != nil {
+		t.Errorf("CoordinatorForRepo(oldrepo): expected nil for pre-migration row (NULL root_agent_name), got %v", noPreMig)
+	}
+
+	// Ended coordinator should not be returned.
+	if err := d.SetEnded("myrepo@main"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	ended, err := d.CoordinatorForRepo("myrepo")
+	if err != nil {
+		t.Fatalf("CoordinatorForRepo after SetEnded: %v", err)
+	}
+	if ended != nil {
+		t.Errorf("CoordinatorForRepo after SetEnded: got %v, want nil", ended)
+	}
+}
+
+// TestRootAgentName verifies the RootAgentName DB helper.
+func TestRootAgentName(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Non-existent session returns ("", false, nil).
+	name, rowExists, err := d.RootAgentName("nonexistent@session")
+	if err != nil {
+		t.Fatalf("RootAgentName(nonexistent): %v", err)
+	}
+	if name != "" {
+		t.Errorf("RootAgentName(nonexistent): got %q, want empty", name)
+	}
+	if rowExists {
+		t.Error("RootAgentName(nonexistent): got rowExists=true, want false")
+	}
+
+	// Pre-migration row: root_agent_name is NULL — returns ("", true, nil).
+	if err := d.UpsertStatus("repo@old", "repo", "/code", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration: %v", err)
+	}
+	nameNull, rowExistsNull, err := d.RootAgentName("repo@old")
+	if err != nil {
+		t.Fatalf("RootAgentName(pre-migration): %v", err)
+	}
+	if nameNull != "" {
+		t.Errorf("RootAgentName(pre-migration): got %q, want empty for NULL", nameNull)
+	}
+	if !rowExistsNull {
+		t.Error("RootAgentName(pre-migration): got rowExists=false, want true")
+	}
+
+	// Post-migration row: root_agent_name is populated — returns (name, true, nil).
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	nameCoord, rowExistsCoord, err := d.RootAgentName("repo@main")
+	if err != nil {
+		t.Fatalf("RootAgentName(coordinator): %v", err)
+	}
+	if nameCoord != "coordinator" {
+		t.Errorf("RootAgentName(coordinator): got %q, want \"coordinator\"", nameCoord)
+	}
+	if !rowExistsCoord {
+		t.Error("RootAgentName(coordinator): got rowExists=false, want true")
+	}
+}
+
+// TestIsGroupMember verifies the IsGroupMember DB helper.
+func TestIsGroupMember(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a session and a group.
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	groupID, err := d.RegisterGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed a review agent session and assign it to the group.
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal"); err != nil {
+		t.Fatalf("seed review agent: %v", err)
+	}
+	if err := d.SetGroupID("repo@worker~review-1-review-goal", groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+
+	// The review agent IS a group member.
+	isMember, err := d.IsGroupMember("repo@worker~review-1-review-goal")
+	if err != nil {
+		t.Fatalf("IsGroupMember(review agent): %v", err)
+	}
+	if !isMember {
+		t.Error("IsGroupMember(review agent): got false, want true")
+	}
+
+	// The parent worker is NOT a group member (it is the parent, not a member).
+	isParentMember, err := d.IsGroupMember("repo@worker")
+	if err != nil {
+		t.Fatalf("IsGroupMember(parent): %v", err)
+	}
+	if isParentMember {
+		t.Error("IsGroupMember(parent worker): got true, want false (parent is not in a group)")
+	}
+
+	// Pre-migration row (NULL group_id) is not a group member.
+	if err := d.UpsertStatus("repo@old-worker", "repo", "/code", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration: %v", err)
+	}
+	isOldMember, err := d.IsGroupMember("repo@old-worker")
+	if err != nil {
+		t.Fatalf("IsGroupMember(pre-migration): %v", err)
+	}
+	if isOldMember {
+		t.Error("IsGroupMember(pre-migration NULL group_id): got true, want false")
+	}
+
+	// Non-existent session returns false.
+	isNone, err := d.IsGroupMember("nonexistent@session")
+	if err != nil {
+		t.Fatalf("IsGroupMember(nonexistent): %v", err)
+	}
+	if isNone {
+		t.Error("IsGroupMember(nonexistent): got true, want false")
+	}
+}
+
+// TestGroupMembersForParent verifies the GroupMembersForParent DB helper.
+func TestGroupMembersForParent(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Empty result when no groups exist.
+	rows, err := d.GroupMembersForParent("repo@worker")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (no groups): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("GroupMembersForParent (no groups): got %d rows, want 0", len(rows))
+	}
+
+	// Seed a worker session and register a group.
+	if err := d.UpsertStatus("repo@worker", "repo", "/code/worker", "active", nil, nil); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	groupID, err := d.RegisterGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed two reviewer sessions and assign them to the group.
+	for _, name := range []string{"repo@worker~review-1-code", "repo@worker~review-2-goal"} {
+		if err := d.UpsertStatus(name, "repo", "/code/"+name, "active", nil, nil); err != nil {
+			t.Fatalf("seed reviewer %q: %v", name, err)
+		}
+		if err := d.SetGroupID(name, groupID); err != nil {
+			t.Fatalf("SetGroupID %q: %v", name, err)
+		}
+	}
+
+	// GroupMembersForParent should return both reviewer rows.
+	members, err := d.GroupMembersForParent("repo@worker")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (with members): %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("GroupMembersForParent (with members): got %d rows, want 2", len(members))
+	}
+
+	// Different parent session returns empty.
+	other, err := d.GroupMembersForParent("repo@other")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (other parent): %v", err)
+	}
+	if len(other) != 0 {
+		t.Errorf("GroupMembersForParent (other parent): got %d rows, want 0", len(other))
+	}
+}
+
+// TestHasReviewGroup verifies the HasReviewGroup DB helper.
+func TestHasReviewGroup(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Seed a worker session.
+	if err := d.UpsertStatus("repo@worker", "repo", "/code/worker", "active", nil, nil); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// Before registering any group, HasReviewGroup returns false.
+	has, err := d.HasReviewGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (before group): %v", err)
+	}
+	if has {
+		t.Error("HasReviewGroup (before group): got true, want false")
+	}
+
+	// Register a group for the worker.
+	if _, err := d.RegisterGroup("repo@worker"); err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Now HasReviewGroup returns true.
+	hasAfter, err := d.HasReviewGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (after group): %v", err)
+	}
+	if !hasAfter {
+		t.Error("HasReviewGroup (after group): got false, want true")
+	}
+
+	// Different session returns false.
+	hasOther, err := d.HasReviewGroup("repo@other")
+	if err != nil {
+		t.Fatalf("HasReviewGroup (other session): %v", err)
+	}
+	if hasOther {
+		t.Error("HasReviewGroup (other session): got true, want false")
 	}
 }

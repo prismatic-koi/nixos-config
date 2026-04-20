@@ -184,7 +184,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // v10→v11 drops the legacy opencode_port and opencode_sid columns from
 // agent_status (harness-agnostic equivalents harness_port and harness_session_id
 // have been the canonical columns since v8; the legacy names were dual-written
-// for back-compat and are now removed).
+// for back-compat and are now removed);
+// v11→v12 adds a partial unique index to enforce at most one active coordinator
+// per repo (§6.1 from #849): UNIQUE (repo) WHERE root_agent_name='coordinator'
+// AND ended_at IS NULL. The IF NOT EXISTS guard makes this idempotent so that
+// databases already at v12 (e.g. from a re-run) do not fail.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -226,8 +230,9 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	// Set schema_version=11 if the table is empty (fresh database already has
-	// all columns including the v2–v11 additions, so no migration is needed).
+	// Set schema_version=11 if the table is empty. Fresh databases have all
+	// current columns from the schema above. The v11→v12 migration (partial
+	// unique index for coordinator-per-repo) runs immediately below.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -489,6 +494,28 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 11
+	}
+	if version == 11 {
+		// Migration v11 → v12: add a partial unique index enforcing at most one
+		// active coordinator per repo (§6.1 from #849). The index is partial so
+		// that:
+		//   - ended coordinators (ended_at IS NOT NULL) are excluded, allowing
+		//     a new coordinator to start for the same repo after the previous one ends.
+		//   - sessions without root_agent_name='coordinator' are unaffected.
+		// CREATE INDEX IF NOT EXISTS makes this idempotent.
+		migrations := []string{
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+			   ON agent_status (repo)
+			   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL`,
+			"UPDATE schema_version SET version = 12",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v11→v12: %w", err)
+			}
+		}
+		version = 12
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1892,4 +1919,85 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 		m.ToInstanceID = &id
 	}
 	return m, nil
+}
+
+// CoordinatorForRepo returns the agent_status row for the active coordinator
+// session of repo (i.e. the row where repo = repo AND root_agent_name =
+// "coordinator" AND ended_at IS NULL). Returns nil when no coordinator exists.
+// When multiple rows match (schema violation), the most-recently-seen row is
+// returned and a duplicate is silently tolerated.
+func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
+ORDER BY last_seen DESC
+LIMIT 1`
+	row := d.conn.QueryRow(q, repo)
+	s, err := scanStatus(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: coordinator for repo: %w", err)
+	}
+	return s, nil
+}
+
+// RootAgentName returns the root_agent_name for sessionName, or "" when the
+// row does not exist or root_agent_name is NULL (pre-migration row).
+// The second return value (rowExists) distinguishes the two empty cases:
+//   - ("", false, nil)  — no agent_status row found (new/unknown session)
+//   - ("", true, nil)   — row found but root_agent_name is NULL (pre-migration)
+//   - (name, true, nil) — row found with a populated root_agent_name
+func (d *DB) RootAgentName(sessionName string) (name string, rowExists bool, err error) {
+	var ns sql.NullString
+	const q = `SELECT root_agent_name FROM agent_status WHERE session_name = ?`
+	if scanErr := d.conn.QueryRow(q, sessionName).Scan(&ns); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("db: root agent name: %w", scanErr)
+	}
+	if !ns.Valid {
+		return "", true, nil
+	}
+	return ns.String, true, nil
+}
+
+// IsGroupMember returns true when sessionName has a non-NULL group_id in
+// agent_status (i.e. it belongs to a session group). Returns false for
+// pre-migration rows where group_id is NULL.
+func (d *DB) IsGroupMember(sessionName string) (bool, error) {
+	var groupID sql.NullString
+	const q = `SELECT group_id FROM agent_status WHERE session_name = ?`
+	if err := d.conn.QueryRow(q, sessionName).Scan(&groupID); err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("db: is group member: %w", err)
+	}
+	return groupID.Valid && groupID.String != "", nil
+}
+
+// HasReviewGroup returns true when sessionName is the parent_session of at
+// least one row in session_groups. This is the DB-backed way to detect whether
+// a session has spawned a review group (replacing the "~review" name heuristic).
+func (d *DB) HasReviewGroup(parentSession string) (bool, error) {
+	var count int
+	const q = `SELECT COUNT(*) FROM session_groups WHERE parent_session = ?`
+	if err := d.conn.QueryRow(q, parentSession).Scan(&count); err != nil {
+		return false, fmt.Errorf("db: has review group: %w", err)
+	}
+	return count > 0, nil
+}
+
+// GroupMembersForParent returns all agent_status rows whose group_id belongs
+// to a session_groups row with parent_session = parentSession.
+func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
+	return d.queryStatuses(q, parentSession)
 }
