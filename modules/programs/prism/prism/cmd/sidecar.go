@@ -177,13 +177,15 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// adapter with the resolved model is constructed below for the sidecar.
 	agentModel := opencode.New("", nil, agentRole, "").EffectiveModel(agentRole)
 
-	// Load profiles to extract container resource caps. Non-fatal if missing
-	// (e.g. running without the nix module) — resource fields remain at their
-	// zero values and no resource flags are emitted.
+	// Load profiles to extract container resource caps and agent env vars.
+	// Non-fatal if missing (e.g. running without the nix module) — resource
+	// fields remain at their zero values and no resource flags are emitted.
 	var containerResources config.ContainerResources
+	var agentEnvVars map[string]string
 	if podmanMode {
 		if pf, pfErr := config.LoadProfiles(); pfErr == nil {
 			containerResources = pf.ContainerResources
+			agentEnvVars = pf.AgentEnvVars
 		}
 	}
 
@@ -222,6 +224,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 			MemoryMax:         containerResources.MemoryMax,
 			MemorySwapMax:     containerResources.MemorySwapMax,
 			PidsLimit:         containerResources.PidsLimit,
+			AgentEnvVars:      agentEnvVars,
 		}
 	}
 

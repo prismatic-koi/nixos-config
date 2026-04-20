@@ -244,7 +244,8 @@ func TestMinimalBwrapExecEnv_DropsSecrets(t *testing.T) {
 		"HOME=/home/ben",
 		"USER=ben",
 		"LOGNAME=ben",
-		"TERM=xterm-256color",
+		"TERM=tmux-256color",
+		"COLORTERM=truecolor",
 		"LANG=en_NZ.UTF-8",
 		"LC_ALL=en_NZ.UTF-8",
 
@@ -270,7 +271,8 @@ func TestMinimalBwrapExecEnv_DropsSecrets(t *testing.T) {
 		"HOME=/home/ben",
 		"USER=ben",
 		"LOGNAME=ben",
-		"TERM=xterm-256color",
+		"TERM=tmux-256color",
+		"COLORTERM=truecolor",
 		"LANG=en_NZ.UTF-8",
 		"LC_ALL=en_NZ.UTF-8",
 	}
@@ -287,7 +289,7 @@ func TestMinimalBwrapExecEnv_DropsSecrets(t *testing.T) {
 	// Every output pair must be on the allow-list — nothing else should leak.
 	allowedKeys := map[string]bool{
 		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true,
-		"TERM": true, "LANG": true, "LC_ALL": true,
+		"TERM": true, "COLORTERM": true, "LANG": true, "LC_ALL": true,
 	}
 	for _, kv := range out {
 		eq := -1
@@ -963,7 +965,33 @@ func TestBwrapBuildArgs_NixConfigSetenv(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_TermSetenv(t *testing.T) {
+// TestBwrapBuildArgs_TermPassthrough verifies that the host TERM value is
+// passed through verbatim into the sandbox (e.g. tmux-256color). bwrap mode
+// bind-mounts the host terminfo tree so any host TERM entry is resolvable
+// inside the sandbox.
+func TestBwrapBuildArgs_TermPassthrough(t *testing.T) {
+	t.Setenv("TERM", "tmux-256color")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "TERM", "tmux-256color") {
+		t.Errorf("--setenv TERM tmux-256color not found in args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_TermFallbackWhenUnset verifies that when TERM is unset on
+// the host, the sandbox receives the safe fallback value xterm-256color.
+func TestBwrapBuildArgs_TermFallbackWhenUnset(t *testing.T) {
+	t.Setenv("TERM", "")
+
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -975,7 +1003,29 @@ func TestBwrapBuildArgs_TermSetenv(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TERM", "xterm-256color") {
-		t.Errorf("--setenv TERM xterm-256color not found in args: %v", args)
+		t.Errorf("--setenv TERM xterm-256color (fallback) not found when TERM is empty, args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_TermUnusualValue verifies that unusual TERM values
+// (e.g. alacritty-direct) are passed through verbatim without any shell
+// interpretation, since bwrap --setenv takes KEY and VALUE as distinct argv
+// elements.
+func TestBwrapBuildArgs_TermUnusualValue(t *testing.T) {
+	t.Setenv("TERM", "alacritty-direct")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "TERM", "alacritty-direct") {
+		t.Errorf("--setenv TERM alacritty-direct not found in args: %v", args)
 	}
 }
 
@@ -1143,9 +1193,14 @@ func TestBwrapBuildArgs_PathFallbackInBuildArgs(t *testing.T) {
 	}
 }
 
-// TestBwrapBuildArgs_TermRegression guards the existing TERM=xterm-256color
-// behaviour from #876 — it must still be present after adding standard env vars.
+// TestBwrapBuildArgs_TermRegression guards that TERM is always injected into
+// the sandbox. When TERM is set on the host it is passed through; when unset
+// it falls back to xterm-256color (the previous hardcoded value, now a safe
+// default rather than an override).
 func TestBwrapBuildArgs_TermRegression(t *testing.T) {
+	// Simulate a normal tmux pane with TERM set.
+	t.Setenv("TERM", "tmux-256color")
+
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -1156,8 +1211,8 @@ func TestBwrapBuildArgs_TermRegression(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	if !hasSetenv(args, "TERM", "xterm-256color") {
-		t.Errorf("regression: --setenv TERM xterm-256color missing from args: %v", args)
+	if !hasSetenv(args, "TERM", "tmux-256color") {
+		t.Errorf("regression: --setenv TERM tmux-256color missing from args: %v", args)
 	}
 }
 
@@ -1174,6 +1229,137 @@ func TestBwrapBuildArgs_PrismSessionNameSetenv(t *testing.T) {
 
 	if !hasSetenv(args, "PRISM_SESSION_NAME", "myrepo@feat") {
 		t.Errorf("--setenv PRISM_SESSION_NAME myrepo@feat not found in args: %v", args)
+	}
+}
+
+// ── COLORTERM pass-through ────────────────────────────────────────────────────
+
+// TestBwrapBuildArgs_ColortermPassthrough verifies that when COLORTERM is set
+// on the host, it is injected into the sandbox so TUI libraries receive the
+// truecolor signal.
+func TestBwrapBuildArgs_ColortermPassthrough(t *testing.T) {
+	t.Setenv("COLORTERM", "truecolor")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "COLORTERM", "truecolor") {
+		t.Errorf("--setenv COLORTERM truecolor not found in args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_ColortermOmittedWhenUnset verifies that when COLORTERM is
+// not set on the host, no COLORTERM is injected into the sandbox (no fabricated
+// value).
+func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
+	t.Setenv("COLORTERM", "")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "COLORTERM" {
+			t.Errorf("COLORTERM should be omitted when unset but found --setenv COLORTERM %q in args: %v", args[i+2], args)
+		}
+	}
+}
+
+// ── AgentEnvVars (--setenv K V) ───────────────────────────────────────────────
+
+// TestBwrapBuildArgs_AgentEnvVarsInjected verifies that entries in
+// Config.AgentEnvVars (e.g. GIT_EDITOR, KUBECONFIG, AWS_CONFIG_FILE) are
+// emitted as --setenv K V in the bwrap arg list.
+func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars: map[string]string{
+			"GIT_EDITOR":      "true",
+			"KUBECONFIG":      "/home/ben/.config/kube/agents-config",
+			"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config",
+		},
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	cases := [][2]string{
+		{"GIT_EDITOR", "true"},
+		{"KUBECONFIG", "/home/ben/.config/kube/agents-config"},
+		{"AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config"},
+	}
+	for _, c := range cases {
+		if !hasSetenv(args, c[0], c[1]) {
+			t.Errorf("--setenv %s %q not found in args: %v", c[0], c[1], args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_AgentEnvVarsEmptyNoExtra verifies that an empty
+// AgentEnvVars map produces no extra --setenv flags.
+func TestBwrapBuildArgs_AgentEnvVarsEmptyNoExtra(t *testing.T) {
+	// Collect baseline arg count with nil AgentEnvVars.
+	mNil, _, cleanupNil := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars:  nil,
+	})
+	defer cleanupNil()
+	bNil := &bwrapIsolator{name: mNil.name}
+	argsNil := bNil.BuildArgs(mNil)
+
+	// Empty map should produce the same args as nil.
+	mEmpty, _, cleanupEmpty := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars:  map[string]string{},
+	})
+	defer cleanupEmpty()
+	bEmpty := &bwrapIsolator{name: mEmpty.name}
+	argsEmpty := bEmpty.BuildArgs(mEmpty)
+
+	if len(argsEmpty) != len(argsNil) {
+		t.Errorf("empty AgentEnvVars should produce same arg count as nil: nil=%d, empty=%d", len(argsNil), len(argsEmpty))
+	}
+}
+
+// TestBwrapBuildArgs_AgentEnvVarsSpecialChars verifies that values containing
+// spaces and single quotes are passed through verbatim, since bwrap --setenv
+// takes VALUE as a distinct argv element and does no shell interpretation.
+func TestBwrapBuildArgs_AgentEnvVarsSpecialChars(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars: map[string]string{
+			"TRICKY_VAR": "value with spaces and 'quotes'",
+		},
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "TRICKY_VAR", "value with spaces and 'quotes'") {
+		t.Errorf("--setenv TRICKY_VAR with special chars not found verbatim in args: %v", args)
 	}
 }
 

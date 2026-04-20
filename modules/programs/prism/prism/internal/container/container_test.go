@@ -3264,3 +3264,88 @@ func TestOpencodeConfigFilePath_MatchesManagerMethod(t *testing.T) {
 			m.name, exported, unexported)
 	}
 }
+
+// ── AgentEnvVars (--env K=V) ──────────────────────────────────────────────────
+
+// TestBuildRunArgs_AgentEnvVarsInjected verifies that entries in
+// Config.AgentEnvVars (e.g. GIT_EDITOR, KUBECONFIG, AWS_CONFIG_FILE) are
+// emitted as --env KEY=VALUE in the podman run arg list.
+func TestBuildRunArgs_AgentEnvVarsInjected(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars: map[string]string{
+			"GIT_EDITOR":      "true",
+			"KUBECONFIG":      "/home/ben/.config/kube/agents-config",
+			"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config",
+		},
+	})
+	args := m.buildRunArgs()
+
+	cases := [][2]string{
+		{"GIT_EDITOR", "true"},
+		{"KUBECONFIG", "/home/ben/.config/kube/agents-config"},
+		{"AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config"},
+	}
+	for _, c := range cases {
+		want := c[0] + "=" + c[1]
+		found := false
+		for i, arg := range args {
+			if arg == "--env" && i+1 < len(args) && args[i+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("--env %q not found in podman args: %v", want, args)
+		}
+	}
+}
+
+// TestBuildRunArgs_AgentEnvVarsEmptyNoExtra verifies that a nil or empty
+// AgentEnvVars map does not emit extra --env flags beyond the credential vars.
+func TestBuildRunArgs_AgentEnvVarsEmptyNoExtra(t *testing.T) {
+	mNil := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars:  nil,
+	})
+	argsNil := mNil.buildRunArgs()
+
+	mEmpty := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars:  map[string]string{},
+	})
+	argsEmpty := mEmpty.buildRunArgs()
+
+	if len(argsEmpty) != len(argsNil) {
+		t.Errorf("empty AgentEnvVars should produce same arg count as nil: nil=%d, empty=%d", len(argsNil), len(argsEmpty))
+	}
+}
+
+// TestBuildRunArgs_AgentEnvVarsSpecialChars verifies that values containing
+// spaces and single quotes are passed through verbatim as --env KEY=VALUE since
+// podman --env takes the value as a distinct argv element without shell parsing.
+func TestBuildRunArgs_AgentEnvVarsSpecialChars(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars: map[string]string{
+			"TRICKY_VAR": "value with spaces and 'quotes'",
+		},
+	})
+	args := m.buildRunArgs()
+
+	want := "TRICKY_VAR=value with spaces and 'quotes'"
+	found := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("--env %q not found verbatim in podman args: %v", want, args)
+	}
+}

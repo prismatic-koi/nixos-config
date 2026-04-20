@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -225,6 +226,14 @@ type Config struct {
 	// harness.Harness.RuntimeEnv() by the sidecar at container creation
 	// time. When nil, no harness-specific env vars are injected.
 	RuntimeEnv map[string]string
+
+	// AgentEnvVars holds the profile-level environment variables to inject
+	// into the agent shell. Each entry is emitted as --env KEY=VALUE (podman)
+	// or --setenv KEY VALUE (bwrap). Sourced from profiles.json agent_env_vars
+	// (written by Nix). These carry entries such as GIT_EDITOR=true,
+	// KUBECONFIG, and AWS_CONFIG_FILE into the sandboxed agent.
+	// When nil or empty, no profile env vars are injected.
+	AgentEnvVars map[string]string
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -1388,6 +1397,20 @@ func (m *Manager) buildRunArgs() []string {
 	// Inject credentials as environment variables (AC-10, AC-11).
 	for _, kv := range m.credentialEnvVars() {
 		args = append(args, "--env", kv)
+	}
+
+	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true, KUBECONFIG,
+	// AWS_CONFIG_FILE). These come from profiles.json agent_env_vars (written
+	// by Nix). Emitted in sorted key order for determinism.
+	if len(cfg.AgentEnvVars) > 0 {
+		keys := make([]string, 0, len(cfg.AgentEnvVars))
+		for k := range cfg.AgentEnvVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--env", k+"="+cfg.AgentEnvVars[k])
+		}
 	}
 
 	// opencode.json: mount the generated config file when ConfigContent is set.
