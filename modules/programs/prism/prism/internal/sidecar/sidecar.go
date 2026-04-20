@@ -2113,10 +2113,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		return true
 	}
 
-	// requireCoordinator checks that the calling sidecar's AgentRole is
-	// "coordinator". Returns false and writes HTTP 403 if not.
+	// requireCoordinator checks that the calling sidecar is a coordinator
+	// session. Uses the DB-backed isCoordinatorSession check (same helper as
+	// isCoordinator) which reads root_agent_name and falls back to AgentRole
+	// for pre-migration rows. Returns false and writes HTTP 403 if not.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
-		if s.cfg.AgentRole != "coordinator" {
+		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("workers cannot perform %s", operation))
 			return false

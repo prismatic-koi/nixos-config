@@ -3627,6 +3627,58 @@ func TestIsGroupMember(t *testing.T) {
 	}
 }
 
+// TestGroupMembersForParent verifies the GroupMembersForParent DB helper.
+func TestGroupMembersForParent(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Empty result when no groups exist.
+	rows, err := d.GroupMembersForParent("repo@worker")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (no groups): %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("GroupMembersForParent (no groups): got %d rows, want 0", len(rows))
+	}
+
+	// Seed a worker session and register a group.
+	if err := d.UpsertStatus("repo@worker", "repo", "/code/worker", "active", nil, nil); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	groupID, err := d.RegisterGroup("repo@worker")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Seed two reviewer sessions and assign them to the group.
+	for _, name := range []string{"repo@worker~review-1-code", "repo@worker~review-2-goal"} {
+		if err := d.UpsertStatus(name, "repo", "/code/"+name, "active", nil, nil); err != nil {
+			t.Fatalf("seed reviewer %q: %v", name, err)
+		}
+		if err := d.SetGroupID(name, groupID); err != nil {
+			t.Fatalf("SetGroupID %q: %v", name, err)
+		}
+	}
+
+	// GroupMembersForParent should return both reviewer rows.
+	members, err := d.GroupMembersForParent("repo@worker")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (with members): %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("GroupMembersForParent (with members): got %d rows, want 2", len(members))
+	}
+
+	// Different parent session returns empty.
+	other, err := d.GroupMembersForParent("repo@other")
+	if err != nil {
+		t.Fatalf("GroupMembersForParent (other parent): %v", err)
+	}
+	if len(other) != 0 {
+		t.Errorf("GroupMembersForParent (other parent): got %d rows, want 0", len(other))
+	}
+}
+
 // TestHasReviewGroup verifies the HasReviewGroup DB helper.
 func TestHasReviewGroup(t *testing.T) {
 	d := openTestDB(t)
