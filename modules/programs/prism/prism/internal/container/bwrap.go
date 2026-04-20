@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,8 +100,9 @@ func fallbackPATH() string {
 //     $SHELL (opencode's bash tool, most TUIs) gets a clean shell that
 //     doesn't wipe credentials.
 //
-// TERM is NOT included here — it is handled separately by BuildArgs so that
-// its fixed value ("xterm-256color") is always used regardless of the host.
+// TERM is NOT included here — it is handled separately by BuildArgs, where
+// the host's TERM is passed through verbatim (falling back to xterm-256color
+// only when TERM is unset on the host). COLORTERM is similarly handled there.
 func standardSandboxEnvArgs() []string {
 	var args []string
 
@@ -455,11 +457,47 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", k, v)
 	}
 
+	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true, KUBECONFIG,
+	// AWS_CONFIG_FILE). These come from profiles.json agent_env_vars (written
+	// by Nix). Emitted in sorted key order for determinism. bwrap --setenv
+	// takes KEY and VALUE as distinct argv elements so no shell quoting is
+	// needed — special characters in values are passed verbatim.
+	if len(cfg.AgentEnvVars) > 0 {
+		keys := make([]string, 0, len(cfg.AgentEnvVars))
+		for k := range cfg.AgentEnvVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--setenv", k, cfg.AgentEnvVars[k])
+		}
+	}
+
 	// NIX_CONFIG: tell nix to use the host daemon for store operations.
 	args = append(args, "--setenv", "NIX_CONFIG", "store = daemon")
 
-	// TERM: xterm-256color for full SGR mouse support in the TUI.
-	args = append(args, "--setenv", "TERM", "xterm-256color")
+	// TERM: pass through the host's TERM so that the sandbox sees the same
+	// terminal type as the tmux pane (e.g. tmux-256color). In bwrap mode the
+	// host terminfo tree is already bind-mounted (/etc, /nix, /run/current-system),
+	// so any terminfo entry the host has is resolvable inside the sandbox.
+	// This is intentionally different from the podman path, which hardcodes
+	// xterm-256color because the container image may not ship tmux-256color.
+	// Fallback to xterm-256color only if TERM is unset on the host (shouldn't
+	// happen from a tmux pane, but guard anyway).
+	{
+		termVal := os.Getenv("TERM")
+		if termVal == "" {
+			termVal = "xterm-256color"
+		}
+		args = append(args, "--setenv", "TERM", termVal)
+	}
+
+	// COLORTERM: pass through the host's COLORTERM when set so that TUI
+	// libraries receive the truecolor signal. Only injected when the host
+	// has it set — no fabricated value is inserted when it is absent.
+	if colorterm := os.Getenv("COLORTERM"); colorterm != "" {
+		args = append(args, "--setenv", "COLORTERM", colorterm)
+	}
 
 	// Standard env vars: PATH (with fallback), HOME, USER, LOGNAME, LANG,
 	// LC_ALL, SHELL. These ensure that binaries resolve correctly inside the
@@ -581,13 +619,14 @@ func (b *bwrapIsolator) Run(ctx context.Context, args []string) error {
 // call site. Both filters use the same allow-list; keep them in sync.
 func minimalBwrapExecEnv(hostEnv []string) []string {
 	allow := map[string]bool{
-		"PATH":    true,
-		"HOME":    true,
-		"USER":    true,
-		"LOGNAME": true,
-		"TERM":    true,
-		"LANG":    true,
-		"LC_ALL":  true,
+		"PATH":      true,
+		"HOME":      true,
+		"USER":      true,
+		"LOGNAME":   true,
+		"TERM":      true,
+		"COLORTERM": true,
+		"LANG":      true,
+		"LC_ALL":    true,
 	}
 	out := make([]string, 0, len(allow))
 	for _, kv := range hostEnv {

@@ -123,6 +123,14 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		hostAPISockPath = sockPath
 	}
 
+	// Load profiles.json for agent env vars (e.g. GIT_EDITOR, KUBECONFIG,
+	// AWS_CONFIG_FILE). Non-fatal if missing — agent env vars are injected on
+	// a best-effort basis.
+	var agentEnvVars map[string]string
+	if pf, pfErr := config.LoadProfiles(); pfErr == nil && pf != nil {
+		agentEnvVars = pf.AgentEnvVars
+	}
+
 	// Populate harness-specific runtime env vars for the bwrap sandbox.
 	agentRunHarness := opencode.New("", nil, "", "")
 	ctrCfg := container.Config{
@@ -138,6 +146,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
 		RuntimeEnv:        agentRunHarness.RuntimeEnv(),
+		AgentEnvVars:      agentEnvVars,
 	}
 
 	// Read the initial prompt from the pane env var set by session.go at
@@ -192,13 +201,14 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 // other secret a prism coordinator might export — is dropped.
 func minimalBwrapExecEnv(hostEnv []string) []string {
 	allow := map[string]bool{
-		"PATH":    true,
-		"HOME":    true,
-		"USER":    true,
-		"LOGNAME": true,
-		"TERM":    true,
-		"LANG":    true,
-		"LC_ALL":  true,
+		"PATH":      true,
+		"HOME":      true,
+		"USER":      true,
+		"LOGNAME":   true,
+		"TERM":      true,
+		"COLORTERM": true,
+		"LANG":      true,
+		"LC_ALL":    true,
 	}
 	out := make([]string, 0, len(allow))
 	for _, kv := range hostEnv {
