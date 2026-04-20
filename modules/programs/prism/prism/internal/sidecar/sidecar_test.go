@@ -6640,3 +6640,120 @@ exit 0
 		t.Errorf("PRISM_SESSION_NAME = %q, want %q (must be injected by sidecar)", got, "nixos-config@741-fix")
 	}
 }
+
+// ── buildNotifyPromptBody tests (issue #848) ────────────────────────────────
+
+// TestBuildNotifyPromptBody_OmitsAgentField verifies that the outgoing
+// notification body never carries an "agent" field. Setting this field lets an
+// incoming notification switch the receiving session's active-turn agent
+// context (e.g. a subagent gets promoted to the coordinator's agent). See
+// issue #848 — the "agent" override was a host-mode-era workaround that is no
+// longer needed and causes a real context-switch bug.
+func TestBuildNotifyPromptBody_OmitsAgentField(t *testing.T) {
+	rootAgent := "coordinator"
+	agentName := "explore"
+	rootModel := "anthropic/claude-opus-4"
+	modelID := "anthropic/claude-sonnet-4"
+
+	cases := []struct {
+		name   string
+		status *db.Status
+	}{
+		{
+			name: "root fields present",
+			status: &db.Status{
+				RootAgentName: &rootAgent,
+				RootModelID:   &rootModel,
+				AgentName:     &agentName,
+				ModelID:       &modelID,
+			},
+		},
+		{
+			name: "only legacy fields present",
+			status: &db.Status{
+				AgentName: &agentName,
+				ModelID:   &modelID,
+			},
+		},
+		{
+			name: "only root fields present",
+			status: &db.Status{
+				RootAgentName: &rootAgent,
+				RootModelID:   &rootModel,
+			},
+		},
+		{
+			name:   "no fields present",
+			status: &db.Status{},
+		},
+		{
+			name: "agent known but no model",
+			status: &db.Status{
+				RootAgentName: &rootAgent,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := buildNotifyPromptBody("hello", tc.status)
+			if _, ok := body["agent"]; ok {
+				t.Errorf("body must not contain \"agent\" field (got %v); setting it switches the receiving session's agent context — see issue #848", body["agent"])
+			}
+		})
+	}
+}
+
+// TestBuildNotifyPromptBody_IncludesTextAndModel verifies that the notification
+// body still carries the prompt text and, when a model is known, the split
+// provider/model identifiers. Model is preferred from RootModelID, falling
+// back to ModelID for pre-migration sessions.
+func TestBuildNotifyPromptBody_IncludesTextAndModel(t *testing.T) {
+	rootModel := "anthropic/claude-opus-4"
+	legacyModel := "openai/gpt-4o"
+
+	t.Run("root model preferred", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			RootModelID: &rootModel,
+			ModelID:     &legacyModel,
+		})
+
+		parts, ok := body["parts"].([]map[string]string)
+		if !ok || len(parts) != 1 || parts[0]["text"] != "hello" {
+			t.Errorf("parts = %v, want single text part with \"hello\"", body["parts"])
+		}
+
+		model, ok := body["model"].(map[string]string)
+		if !ok {
+			t.Fatalf("model = %v, want map[string]string", body["model"])
+		}
+		if model["providerID"] != "anthropic" || model["modelID"] != "claude-opus-4" {
+			t.Errorf("model = %v, want providerID=anthropic modelID=claude-opus-4", model)
+		}
+	})
+
+	t.Run("legacy model fallback", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			ModelID: &legacyModel,
+		})
+		model, ok := body["model"].(map[string]string)
+		if !ok {
+			t.Fatalf("model = %v, want map[string]string", body["model"])
+		}
+		if model["providerID"] != "openai" || model["modelID"] != "gpt-4o" {
+			t.Errorf("model = %v, want providerID=openai modelID=gpt-4o", model)
+		}
+	})
+
+	t.Run("no model omits model field", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{})
+		if _, ok := body["model"]; ok {
+			t.Errorf("model field must be absent when no model known, got %v", body["model"])
+		}
+		// text must still be present
+		parts, ok := body["parts"].([]map[string]string)
+		if !ok || len(parts) != 1 || parts[0]["text"] != "hello" {
+			t.Errorf("parts = %v, want single text part with \"hello\"", body["parts"])
+		}
+	})
+}
