@@ -52,7 +52,7 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 
 // bashTimeoutPrefix is the env-var prefix injected into all host-mode opencode commands
 // when RuntimeEnvVars is populated from the opencode harness adapter.
-const bashTimeoutPrefix = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000 "
+const bashTimeoutPrefix = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS='900000' "
 
 // opencodeRuntimeEnv returns the RuntimeEnvVars map matching what the opencode
 // harness adapter provides. Used by tests that exercise buildDirectOpencodeCmd
