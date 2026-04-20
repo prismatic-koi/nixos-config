@@ -2502,9 +2502,19 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			if coordStatus != nil {
 				ownCoordinator = coordStatus.SessionName
 			} else {
-				// Pre-migration fallback or no coordinator in DB.
-				ownCoordinator = ownRepo + "@main"
-				log.Printf("[deprecation] sidecar: /prompt worker check: no coordinator found in DB for %q — using name convention %q", ownRepo, ownCoordinator)
+				// No coordinator with root_agent_name='coordinator' in DB.
+				// Fall back to name convention for pre-migration rows.
+				fallbackCoord := ownRepo + "@main"
+				fallbackStatus, _ := s.cfg.DB.CurrentStatus(fallbackCoord)
+				if fallbackStatus != nil {
+					// Pre-migration row found via name convention — log deprecation
+					// only when the fallback actually finds a row.
+					log.Printf("[deprecation] sidecar: /prompt worker check: no DB-backed coordinator for %q — using name convention %q (pre-migration row)", ownRepo, fallbackCoord)
+					ownCoordinator = fallbackCoord
+				} else {
+					// Normal "no coordinator running" state — silent fallback.
+					ownCoordinator = fallbackCoord
+				}
 			}
 			if req.Session != ownCoordinator {
 				writeError(w, http.StatusForbidden,
