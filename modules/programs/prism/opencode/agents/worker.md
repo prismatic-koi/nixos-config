@@ -77,14 +77,59 @@ If ANY agent returns `<verdict>FAIL</verdict>`:
    A fix in one area can create issues in another, so the full set must re-run
    every cycle.
 
-### Escalation
+### Escalating to the coordinator — a first-class outcome
 
-If you have completed **3 full review cycles** (3 push + full 5-agent review
-runs) without all 5 agents passing: **stop**. Do not run a 4th cycle.
+Escalating is not a failure state. It is the correct path when continuing would
+cause scope creep, force convergence on a bad path, or hand a decision to the
+reviewer that belongs with the coordinator. A clean escalation is equivalent in
+status to an all-PASS review — the mahi is done; it just needs a different next
+step.
 
-Document what is blocking convergence:
-- What was originally requested
-- What each review cycle found
-- What you fixed and why it is not converging
+**Escalate immediately when any of the following are true** — treat these as
+falsifiable self-checks, not guidelines:
 
-Then hand off to the coordinator. The coordinator will escalate to the user.
+1. You have completed **3 full review cycles** (3 push + 5-agent runs) without
+   all 5 agents passing. Do not run a 4th.
+2. A single reviewer has flagged the same blocking issue across **2+ cycles**
+   after you have already pushed clarifying code or comments addressing it.
+3. A reviewer's blocker contradicts an explicit scope clarification in your
+   spawn prompt (the reviewer is out of scope; the prompt wins).
+4. You identify an internal contradiction in the AC text — e.g. AC #N requires
+   X, but the Out-of-scope section says not-X.
+5. Fixing a reviewer's blocker would require changes **substantially outside**
+   your spawn prompt's described scope.
+
+If you are reading this after already passing the 3-cycle limit — escalate now.
+Do not continue because "the damage is already done." Stopping late is still
+correct.
+
+**How to escalate.** The coordinator's session follows the `<repo>@main`
+convention. See the lookup and state-check flow in the prism skill at
+`modules/programs/prism/opencode/skills/prism/SKILL.md:114`.
+
+```bash
+# Find the coordinator session
+prism list-sessions | grep '@main'
+
+# Send the escalation (adjust repo name as needed)
+prism prompt nixos-config@main --prompt 'PR #N is stuck at review cycle M.
+Agents passing: review-code, review-security, review-qa, review-context.
+Agent failing: review-goal.
+Unresolved blocker (verbatim): "<exact text from the agent>"
+My proposed resolution: <one sentence>.
+Decision needed: <specific yes/no or choice>.'
+```
+
+**What your escalation message must include:**
+
+- PR number and current cycle count
+- Which review agents pass, which fail
+- The specific unresolved blocker — copy it verbatim, do not paraphrase
+- Your proposed resolution
+- The specific decision you need from the coordinator
+
+A well-shaped escalation gets a one-line directive back. A vague "I'm stuck"
+gets a diagnostic check-in. Give the coordinator enough to act immediately.
+
+**After escalating, stop.** Do not run further review cycles. Do not push
+further changes. Wait for the coordinator's response, then act on that directive.
