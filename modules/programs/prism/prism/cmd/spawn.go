@@ -272,6 +272,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// This block fires for both podman and bwrap isolation modes. Host-mode
 	// sessions skip it because they run opencode directly with the host's real
 	// ~/.config/opencode/opencode.json via xdg.configFile.
+	//
+	// DefaultAgent (not DefaultAgentForSession) is intentional: at spawn time the
+	// session has no DB row yet, so this call ASSIGNS the role rather than reading it.
 	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
 	if sandboxed && pf != nil {
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
@@ -322,6 +325,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// DB seed with root_agent_name, tmux session creation, sidecar startup).
 	// See #849 §3.1 and #859.
 	sessionName := session.NameFor(worktreePath, bareRoot)
+	// DefaultAgent (not DefaultAgentForSession) is intentional here: at spawn
+	// time the session does not yet have a DB row, so there is no root_agent_name
+	// to read back. This call ASSIGNS the agent type for the new session (written
+	// to DB via SpawnOpts.AgentRole → UpsertStatusSeedRootAgentName). Reads of an
+	// existing session's type use DefaultAgentForSession (e.g. in restore.go).
 	agentRole := session.DefaultAgent(worktreePath, agentFlag)
 	headless := !fromKeybind && !attachFlag
 
