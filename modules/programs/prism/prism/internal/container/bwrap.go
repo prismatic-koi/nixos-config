@@ -523,7 +523,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// the opencode log. ContainerPort is retained as a fallback for the
 	// theoretical case where AllocatedPort is unset (e.g. a malformed session
 	// row); in normal operation cfg.AllocatedPort is always populated by
-	// agent-run from the DB's opencode_port column.
+	// agent-run from the DB's harness_port column.
 	opencodePort := cfg.AllocatedPort
 	if opencodePort == 0 {
 		opencodePort = ContainerPort

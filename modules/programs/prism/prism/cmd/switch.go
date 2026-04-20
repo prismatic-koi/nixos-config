@@ -554,7 +554,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	}
 
 	// Allocate a port for full-layout sessions. The agent_status row must
-	// exist before we can write opencode_port to it, so we allocate after
+	// exist before we can write harness_port to it, so we allocate after
 	// session.Create (which seeds agent_status via `prism event
 	// tmux-session-start`). However, BuildOpencodeCmd needs the port at
 	// session creation time (it's called inside setupFullLayout). To break
