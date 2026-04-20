@@ -201,6 +201,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		ContainerMode:  effectiveContainerMode,
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
+		RuntimeEnvVars: h.RuntimeEnv(),
 	}
 
 	// Load profiles for container mode — passed through to review.Run so

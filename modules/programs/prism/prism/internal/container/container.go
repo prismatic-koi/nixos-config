@@ -218,6 +218,13 @@ type Config struct {
 	// PidsLimit is the value for podman run --pids-limit.
 	// When zero, no --pids-limit flag is emitted.
 	PidsLimit int
+
+	// RuntimeEnv holds harness-specific environment variables to inject
+	// into the container. Each entry is emitted as --env KEY=VALUE (podman)
+	// or --setenv KEY VALUE (bwrap). Populated from
+	// harness.Harness.RuntimeEnv() by the sidecar at container creation
+	// time. When nil, no harness-specific env vars are injected.
+	RuntimeEnv map[string]string
 }
 
 // NameForSession returns the stable podman container name for a session.
@@ -1413,13 +1420,14 @@ func (m *Manager) buildRunArgs() []string {
 	// connects to the SSE endpoint on the mapped host port exactly as before.
 	// The tmux agent window uses "podman attach" to bridge the PTY (RFC #691,
 	// Phase 1a / Issue #715).
-	// Raise the bash-tool default timeout inside the container to 15 min
-	// (same value used for host-mode sessions). Scoped to opencode only —
-	// this env var is not forwarded to any other process in the container.
-	// Precedence: podman --env overrides any same-named ENV instruction baked
-	// into the image, so 900000 is what opencode inside the container sees
-	// regardless of the image's default. Currently no image default is set.
-	args = append(args, "--env", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=900000")
+	// Inject harness-specific runtime env vars into the container. These are
+	// populated from harness.Harness.RuntimeEnv() by the sidecar. For opencode,
+	// this includes the experimental bash-tool timeout (15 min). Precedence:
+	// podman --env overrides any same-named ENV instruction baked into the
+	// image, so the harness values are what the agent runtime sees.
+	for k, v := range cfg.RuntimeEnv {
+		args = append(args, "--env", k+"="+v)
+	}
 
 	args = append(args, Image,
 		"opencode",

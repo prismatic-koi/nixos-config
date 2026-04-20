@@ -363,6 +363,12 @@ type Opts struct {
 	Agents []Agent
 	// Harness is the runtime harness to use ("opencode").
 	Harness string
+	// RuntimeEnvVars holds harness-specific environment variables to inject
+	// into each spawned agent session (host-mode only; container-mode sessions
+	// receive env vars via the container runtime). Populated from
+	// harness.Harness.RuntimeEnv() by the caller. When nil, no harness-specific
+	// env vars are injected.
+	RuntimeEnvVars map[string]string
 	// Timeout is the per-agent maximum wait time.
 	Timeout time.Duration
 	// DBPath is the path to the prism database. If empty, the default is used.
@@ -522,6 +528,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
+			RuntimeEnvVars:   opts.RuntimeEnvVars,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
