@@ -2580,6 +2580,53 @@ func TestIsReviewAgentSession(t *testing.T) {
 	}
 }
 
+// TestIsCoordinatorSession verifies the DB-backed isCoordinatorSession helper.
+func TestIsCoordinatorSession(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	// Happy path: post-migration coordinator row.
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("seed coordinator: %v", err)
+	}
+	if !isCoordinatorSession("repo@main", d) {
+		t.Error("isCoordinatorSession(post-migration coordinator): got false, want true")
+	}
+
+	// Post-migration worker row: DB says false.
+	if err := d.UpsertStatusSeedRootAgentName("repo@feature", "repo", "/code/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	if isCoordinatorSession("repo@feature", d) {
+		t.Error("isCoordinatorSession(post-migration worker): got true, want false")
+	}
+
+	// Pre-migration NULL root_agent_name: row exists but NULL — falls back to name heuristic.
+	if err := d.UpsertStatus("repo@main-old", "repo", "/code/main-old", "active", nil, nil); err != nil {
+		t.Fatalf("seed pre-migration coordinator: %v", err)
+	}
+	// repo@main-old does NOT end with "@main", so heuristic returns false.
+	if isCoordinatorSession("repo@main-old", d) {
+		t.Error("isCoordinatorSession(pre-migration non-main): got true, want false")
+	}
+	// Create a session that ends with @main but has NULL root_agent_name.
+	if err := d.UpsertStatus("other@main", "other", "/code/other/main", "active", nil, nil); err != nil {
+		t.Fatalf("seed other@main: %v", err)
+	}
+	// Pre-migration row with @main suffix: heuristic returns true.
+	if !isCoordinatorSession("other@main", d) {
+		t.Error("isCoordinatorSession(pre-migration @main): got false, want true (name heuristic)")
+	}
+
+	// No DB row: falls back to name heuristic.
+	if !isCoordinatorSession("newrepo@main", nil) {
+		t.Error("isCoordinatorSession(nil DB, @main): got false, want true")
+	}
+	if isCoordinatorSession("newrepo@feature", nil) {
+		t.Error("isCoordinatorSession(nil DB, non-main): got true, want false")
+	}
+}
+
 // TestNotifyCoordinator_ParentWorkerStillNotifies verifies that the parent
 // worker's own finish event (the session that ran `prism review`) continues to
 // propagate to the coordinator after its review-cycle completes. The parent
