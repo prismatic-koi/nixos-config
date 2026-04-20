@@ -100,8 +100,9 @@ func fallbackPATH() string {
 //     $SHELL (opencode's bash tool, most TUIs) gets a clean shell that
 //     doesn't wipe credentials.
 //
-// TERM is NOT included here — it is handled separately by BuildArgs so that
-// its fixed value ("xterm-256color") is always used regardless of the host.
+// TERM is NOT included here — it is handled separately by BuildArgs, where
+// the host's TERM is passed through verbatim (falling back to xterm-256color
+// only when TERM is unset on the host). COLORTERM is similarly handled there.
 func standardSandboxEnvArgs() []string {
 	var args []string
 
