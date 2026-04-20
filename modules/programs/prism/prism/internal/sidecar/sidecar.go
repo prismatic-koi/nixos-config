@@ -1534,12 +1534,19 @@ func (s *Sidecar) notifyCoordinator() {
 		// No coordinator with root_agent_name='coordinator' found — fall back to
 		// the name-based convention for pre-migration rows.
 		fallbackName := s.cfg.Repo + "@main"
-		log.Printf("[deprecation] sidecar: notifyCoordinator: no DB-backed coordinator found for %q — falling back to name convention %q", s.cfg.Repo, fallbackName)
-		coordStatus, err = s.cfg.DB.CurrentStatus(fallbackName)
+		var fallbackStatus *db.Status
+		fallbackStatus, err = s.cfg.DB.CurrentStatus(fallbackName)
 		if err != nil {
 			log.Printf("sidecar: notifyCoordinator: fallback look up coordinator: %v", err)
 			return
 		}
+		if fallbackStatus != nil {
+			// Name-based fallback succeeded: a pre-migration coordinator row was
+			// found via the @main name convention. Log deprecation only here,
+			// not when no coordinator is running at all (which is a normal state).
+			log.Printf("[deprecation] sidecar: notifyCoordinator: no DB-backed coordinator found for %q — falling back to name convention %q (pre-migration row)", s.cfg.Repo, fallbackName)
+		}
+		coordStatus = fallbackStatus
 	}
 	if coordStatus == nil {
 		// No coordinator session at all — silent skip.
