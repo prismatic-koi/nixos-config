@@ -383,3 +383,130 @@ func TestAgentNameStrings(t *testing.T) {
 		}
 	}
 }
+
+// ── rejectIfCoordinator tests ─────────────────────────────────────────────────
+//
+// These tests cover the coordinator guard added by issue #846.
+// All tests set PRISM_SESSION_NAME (and TMUX="" to avoid tmux look-ups) to
+// control which session is detected, and set testDBPath to an isolated temp DB.
+
+// TestRejectIfCoordinator_BlocksCoordinatorSession verifies that a session
+// whose root_agent_name is "coordinator" in the DB causes rejectIfCoordinator
+// to return a non-nil error. This is the primary functional AC: a coordinator
+// session running prism review must be rejected before any sessions spawn.
+func TestRejectIfCoordinator_BlocksCoordinatorSession(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const coordSession = "nixos-config@main"
+	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	// Make review.LookupParentSession return the coordinator session.
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "") // ensure no tmux fallback
+
+	err := rejectIfCoordinator()
+	if err == nil {
+		t.Fatal("rejectIfCoordinator: expected error for coordinator session, got nil — coordinator must be blocked")
+	}
+	if !strings.Contains(err.Error(), "worker sessions only") {
+		t.Errorf("rejectIfCoordinator error %q does not mention 'worker sessions only'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "prism spawn") {
+		t.Errorf("rejectIfCoordinator error %q does not mention 'prism spawn'", err.Error())
+	}
+}
+
+// TestRejectIfCoordinator_AllowsWorkerSession verifies that a session whose
+// root_agent_name is "worker" in the DB is NOT blocked by rejectIfCoordinator.
+// This is the regression AC: worker sessions must continue to work as before.
+func TestRejectIfCoordinator_AllowsWorkerSession(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const workerSession = "nixos-config@feature-branch"
+	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature-branch", "idle", nil, nil, "worker"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	t.Setenv("PRISM_SESSION_NAME", workerSession)
+	t.Setenv("TMUX", "")
+
+	if err := rejectIfCoordinator(); err != nil {
+		t.Errorf("rejectIfCoordinator: unexpected error for worker session: %v", err)
+	}
+}
+
+// TestRejectIfCoordinator_NullRootAgentName_MainFallback verifies that a
+// pre-migration row with NULL root_agent_name and a @main session name causes
+// rejectIfCoordinator to fall back to the name-suffix heuristic and return an
+// error (the @main heuristic identifies it as a coordinator).
+func TestRejectIfCoordinator_NullRootAgentName_MainFallback(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	// UpsertStatus leaves root_agent_name NULL (pre-migration path).
+	const coordSession = "nixos-config@main"
+	if err := d.UpsertStatus(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	// The heuristic should identify nixos-config@main as a coordinator.
+	err := rejectIfCoordinator()
+	if err == nil {
+		t.Fatal("rejectIfCoordinator: expected error for @main session with NULL root_agent_name, got nil")
+	}
+	if !strings.Contains(err.Error(), "worker sessions only") {
+		t.Errorf("rejectIfCoordinator error %q does not mention 'worker sessions only'", err.Error())
+	}
+}
+
+// TestRejectIfCoordinator_NullRootAgentName_WorkerFallback verifies that a
+// pre-migration row with NULL root_agent_name and a non-@main session name
+// does NOT cause rejectIfCoordinator to block (heuristic: not @main → worker).
+func TestRejectIfCoordinator_NullRootAgentName_WorkerFallback(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const workerSession = "nixos-config@feature-branch"
+	if err := d.UpsertStatus(workerSession, "nixos-config", "/worktree/feature-branch", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	t.Setenv("PRISM_SESSION_NAME", workerSession)
+	t.Setenv("TMUX", "")
+
+	if err := rejectIfCoordinator(); err != nil {
+		t.Errorf("rejectIfCoordinator: unexpected error for non-@main session with NULL root_agent_name: %v", err)
+	}
+}
+
+// TestRejectIfCoordinator_NoSession_NoError verifies that when no session can
+// be determined (PRISM_SESSION_NAME unset, TMUX unset), rejectIfCoordinator
+// returns nil — ad-hoc (non-tmux) invocations must not be blocked.
+func TestRejectIfCoordinator_NoSession_NoError(t *testing.T) {
+	openReviewTestDB(t) // use isolated DB even though we don't query it
+
+	t.Setenv("PRISM_SESSION_NAME", "")
+	t.Setenv("TMUX", "")
+
+	if err := rejectIfCoordinator(); err != nil {
+		t.Errorf("rejectIfCoordinator: unexpected error when no session can be determined: %v", err)
+	}
+}
+
+// TestRejectIfCoordinator_NameHeuristicMainBlocked verifies that a @main
+// session blocks even when the DB has no row for it (no migration yet).
+// This covers the pure heuristic path for unregistered sessions.
+func TestRejectIfCoordinator_NameHeuristicMainBlocked(t *testing.T) {
+	openReviewTestDB(t) // empty DB — no rows
+
+	t.Setenv("PRISM_SESSION_NAME", "nixos-config@main")
+	t.Setenv("TMUX", "")
+
+	err := rejectIfCoordinator()
+	if err == nil {
+		t.Fatal("rejectIfCoordinator: expected error for @main session with no DB row, got nil")
+	}
+}
