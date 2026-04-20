@@ -1901,7 +1901,7 @@ func scanBusMessage(s scanner) (BusMessage, error) {
 // returned and a duplicate is silently tolerated.
 func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
 ORDER BY last_seen DESC
@@ -1969,7 +1969,7 @@ func (d *DB) HasReviewGroup(parentSession string) (bool, error) {
 // to a session_groups row with parent_session = parentSession.
 func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, opencode_sid, agent_name, model_id, root_agent_name, root_model_id, opencode_port, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
 	return d.queryStatuses(q, parentSession)
