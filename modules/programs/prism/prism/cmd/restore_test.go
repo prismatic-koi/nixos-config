@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -1168,5 +1169,246 @@ func TestRestoreSession_CircuitBreakerSkipsNotEnded_IdempotentRestore(t *testing
 	}
 	if isEnded(t, d, sessionName) {
 		t.Error("second call: session was marked ended — must not be")
+	}
+}
+
+// ─── bwrap restore tests (issue #904) ─────────────────────────────────────────
+//
+// These tests cover the fix for issue #904: when restoring a session whose
+// recorded isolation mode is bwrap, restoreProjectSession must:
+//
+//  1. Run the configContent generation block (widened "sandboxed" gate), so
+//     the worker/coordinator opencode.json blob ends up in opts.ConfigContent.
+//  2. Write the opencode.json temp file to disk via
+//     container.WriteOpencodeConfig(container.NameForSession(s.SessionName), …)
+//     so the bwrap sandbox can bind-mount it at
+//     $HOME/.config/opencode/opencode.json.
+//
+// The tests exercise restoreProjectSession with a DB row whose isolation_mode
+// column is set to "bwrap" (the authoritative source of truth post-v10), and
+// assert both the opts.ConfigContent and the temp file contents.
+
+// TestRestoreSession_BwrapMode_WorkerConfigContent verifies that a bwrap
+// session (IsolationMode="bwrap" recorded in the DB) flows the worker
+// opencode.json blob into opts.ConfigContent — the same way container mode
+// does. This is the widened "sandboxed" gate behaviour.
+func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	// Isolate the temp dir so the opencode temp file written by the restore
+	// path lands in t.TempDir() and does not pollute /tmp.
+	t.Setenv("TMPDIR", t.TempDir())
+
+	withRestoreConfig(t, config.Config{
+		// ContainerMode is intentionally false — bwrap is the session's
+		// recorded isolation mode, not the global default.
+	})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	// Non-main worktree → DefaultAgent returns "worker".
+	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@bwrap-worker"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	// Record bwrap as the authoritative isolation mode for this session.
+	if err := d.SetIsolationMode(sessionName, string(config.IsolationBwrap)); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	status.IsolationMode = string(config.IsolationBwrap)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+	t.Cleanup(func() {
+		_ = os.Remove(container.OpencodeConfigFilePath(container.NameForSession(sessionName)))
+	})
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// The worker blob must be in ConfigContent — the widened "sandboxed" gate
+	// must fire for bwrap too.
+	if capturedOpts.ConfigContent != pf.ContainerWorkerConfig {
+		t.Errorf("opts.ConfigContent = %q, want %q (worker blob)",
+			capturedOpts.ConfigContent, pf.ContainerWorkerConfig)
+	}
+
+	// IsolationMode must be recorded as bwrap on the opts, so session.Create
+	// downstream routes the session through the bwrap path.
+	if capturedOpts.IsolationMode != string(config.IsolationBwrap) {
+		t.Errorf("opts.IsolationMode = %q, want %q",
+			capturedOpts.IsolationMode, config.IsolationBwrap)
+	}
+}
+
+// TestRestoreSession_BwrapMode_TempFileWritten verifies that when a bwrap
+// session is restored, the opencode.json temp file is written to the
+// deterministic container path via container.WriteOpencodeConfig. The content
+// on disk must match the worker blob injected into opts.ConfigContent, and
+// the path must match what the Manager will look up via
+// OpencodeConfigFilePath(NameForSession(sessionName)).
+func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+	t.Setenv("TMPDIR", t.TempDir())
+
+	withRestoreConfig(t, config.Config{})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := filepath.Join(t.TempDir(), "feature-x")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@bwrap-file"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+	if err := d.SetIsolationMode(sessionName, string(config.IsolationBwrap)); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	status.IsolationMode = string(config.IsolationBwrap)
+
+	// Ensure the temp file does not exist beforehand — we want to confirm the
+	// restore path creates it.
+	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	_ = os.Remove(expectedPath)
+	t.Cleanup(func() { _ = os.Remove(expectedPath) })
+
+	withCreateSessionHook(t, func(opts session.Opts) {})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	// The temp file must exist and contain the worker blob.
+	data, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatalf("opencode temp file %q not written for bwrap restore: %v", expectedPath, err)
+	}
+	if string(data) != pf.ContainerWorkerConfig {
+		t.Errorf("opencode temp file content = %q, want %q (worker blob)",
+			string(data), pf.ContainerWorkerConfig)
+	}
+}
+
+// TestRestoreSession_HostMode_NoTempFileWritten verifies that host-mode
+// restore does NOT write the opencode temp file — host sessions use the real
+// ~/.config/opencode/opencode.json directly and must not leak a stray file
+// into TMPDIR.
+func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+	t.Setenv("TMPDIR", t.TempDir())
+
+	withRestoreConfig(t, config.Config{
+		// Force EffectiveIsolationMode() → IsolationHost for pre-v10 rows.
+		DefaultIsolationMode: config.IsolationHost,
+	})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := filepath.Join(t.TempDir(), "feature-host")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@host-worker"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+	if err := d.SetIsolationMode(sessionName, string(config.IsolationHost)); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	status.IsolationMode = string(config.IsolationHost)
+
+	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	_ = os.Remove(expectedPath) // precondition: file absent
+	t.Cleanup(func() { _ = os.Remove(expectedPath) })
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	// Host mode: configContent must be empty (the sandboxed gate must not fire).
+	if capturedOpts.ConfigContent != "" {
+		t.Errorf("opts.ConfigContent = %q, want empty (host mode must skip injection)",
+			capturedOpts.ConfigContent)
+	}
+
+	// Temp file must NOT exist.
+	if _, err := os.Stat(expectedPath); err == nil {
+		t.Errorf("host-mode restore leaked opencode temp file at %q — must not write for host isolation",
+			expectedPath)
+	}
+}
+
+// TestRestoreSession_PodmanMode_NoTempFileWritten verifies that podman-mode
+// restore does NOT write the opencode temp file via the new code path — the
+// podman sidecar's Create() flow handles that file itself. Writing it in
+// restore.go for podman would be a no-op at best and a source of drift at worst.
+func TestRestoreSession_PodmanMode_NoTempFileWritten(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+	t.Setenv("TMPDIR", t.TempDir())
+
+	withRestoreConfig(t, config.Config{ContainerMode: true})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := filepath.Join(t.TempDir(), "feature-pod")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@podman-worker"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+	if err := d.SetIsolationMode(sessionName, string(config.IsolationPodman)); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	status.IsolationMode = string(config.IsolationPodman)
+
+	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	_ = os.Remove(expectedPath) // precondition
+	t.Cleanup(func() { _ = os.Remove(expectedPath) })
+
+	withCreateSessionHook(t, func(opts session.Opts) {})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	// Podman mode: restore.go must NOT preemptively write the temp file.
+	// The sidecar's own Create() path writes it just before container start.
+	if _, err := os.Stat(expectedPath); err == nil {
+		t.Errorf("podman restore wrote opencode temp file at %q — must not write for podman (sidecar handles it)",
+			expectedPath)
 	}
 }
