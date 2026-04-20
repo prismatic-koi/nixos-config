@@ -448,7 +448,7 @@ in
         enable = true;
         udevTrigger = false; # The mouse doesn't have a standard udev event
         levelCmd = "${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep Battery | sed 's/[^0-9]*//g' || echo 100";
-        statusCmd = "if ${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep -q '[(]charging[)]'; then echo 'Charging'; else echo 'Discharging'; fi";
+        statusCmd = "if ${pkgs.polychromatic}/bin/polychromatic-cli -d mouse -k | grep -qF \"(charging)\"; then echo Charging; else echo Discharging; fi";
         lowThreshold = 20;
         dismissThreshold = 50;
         ignoreZero = true;
