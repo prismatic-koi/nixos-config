@@ -23,14 +23,15 @@ import (
 // holds the escalated state across the children.
 type AgentSession struct {
 	Name        string
-	AgentState  string // active | waiting | finished | compacting | error | idle | ""
-	AgentPath   string // worktree path — used for git diff stats
-	AgentTitle  string // current session title from agent_status.title
-	AgentName   string // coordinator | worker | "" — from agent_status.agent_name
-	ModelID     string // model identifier from agent_status.model_id
-	Harness     string // harness name from agent_status.harness, defaults to "opencode"
-	HarnessPort *int   // allocated port from agent_status.harness_port, nil when unset
-	ClientCount int    // tmux clients currently attached (best-effort, 0 on error)
+	AgentState  string  // active | waiting | finished | compacting | error | idle | ""
+	AgentPath   string  // worktree path — used for git diff stats
+	AgentTitle  string  // current session title from agent_status.title
+	AgentName   string  // coordinator | worker | "" — from agent_status.agent_name
+	ModelID     string  // model identifier from agent_status.model_id
+	Harness     string  // harness name from agent_status.harness, defaults to "opencode"
+	HarnessPort *int    // allocated port from agent_status.harness_port, nil when unset
+	ClientCount int     // tmux clients currently attached (best-effort, 0 on error)
+	GroupID     *string // from agent_status.group_id; non-nil when session belongs to a review group
 	// IsReviewGroup marks a virtual ~review-N group row (not a real session).
 	// Selecting this row in the picker toggles expand/collapse rather than switching.
 	IsReviewGroup bool
@@ -65,6 +66,7 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 		Harness:     harness,
 		HarnessPort: s.HarnessPort,
 		ClientCount: clientCounts[s.SessionName],
+		GroupID:     s.GroupID,
 	}
 }
 
