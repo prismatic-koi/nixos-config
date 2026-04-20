@@ -30,6 +30,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 var reviewCmd = &cobra.Command{
@@ -57,6 +58,17 @@ func init() {
 
 func runReview(cmd *cobra.Command, args []string) error {
 	prNumber := args[0]
+
+	// Coordinator guard: prism review is a worker-only command.
+	// Check before spawning any sessions so that a coordinator hitting this
+	// guard does not create orphaned review-agent sessions.
+	// Detection: DB-backed (root_agent_name == "coordinator") with a name-suffix
+	// heuristic fallback for pre-migration rows (session ends with "@main").
+	// A NULL root_agent_name row (pre-migration) falls back to the heuristic
+	// with a deprecation log — not a hard failure.
+	if err := rejectIfCoordinator(); err != nil {
+		return err
+	}
 
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
@@ -325,4 +337,45 @@ func agentNameStrings(agents []review.Agent) []string {
 		names[i] = a.Name
 	}
 	return names
+}
+
+// rejectIfCoordinator returns an error if the invoking session is a coordinator.
+// It resolves the current session name from PRISM_SESSION_NAME (set inside
+// containers/agents) or the current tmux session, then uses a DB-backed lookup
+// (root_agent_name == "coordinator") with a name-suffix heuristic fallback
+// for pre-migration rows. When no session can be identified, the check is
+// skipped (no error) so that ad-hoc invocations outside any session are not
+// blocked.
+func rejectIfCoordinator() error {
+	// Resolve the caller's session name.
+	callerSession := review.LookupParentSession()
+	if callerSession == "" {
+		// Cannot determine session — skip the guard to avoid blocking
+		// ad-hoc (non-tmux) invocations.
+		return nil
+	}
+
+	// Open the DB for the lookup. A DB open failure is non-fatal: we fall
+	// back to the name-suffix heuristic inside IsCoordinatorSession.
+	d, dbErr := openDB()
+	if dbErr != nil {
+		d = nil
+	}
+	if d != nil {
+		defer d.Close()
+	}
+
+	if session.IsCoordinatorSession(callerSession, d) {
+		return fmt.Errorf(`prism review: this command is for worker sessions only.
+
+Coordinators do not run review directly. To review a PR, delegate to a worker:
+
+  prism spawn --pr <number> --prompt 'read the PR and linked issue, run prism review <number>, and report findings'
+
+The worker will run the review agents as children of its own session, which is
+the correct parent for review attribution.
+
+See: modules/programs/prism/opencode/agents/coordinator.md`)
+	}
+	return nil
 }
