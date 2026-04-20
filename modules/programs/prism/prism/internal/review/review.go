@@ -275,41 +275,38 @@ func Agents() []Agent {
 	}
 }
 
-// CheckAgentAvailability verifies that the opencode agent definition files for
-// all given agents exist on the host filesystem. Returns a descriptive error
-// listing any missing agents; returns nil when all are present.
+// RoleValidator is a function that reports whether a given agent role is
+// valid for the active harness. Returns nil when valid; an error with a
+// descriptive message when invalid. This matches the signature of
+// harness.Harness.ValidateAgentRole — callers pass h.ValidateAgentRole
+// directly.
+type RoleValidator func(role string) error
+
+// CheckAgentAvailability verifies that all given agents are valid for the
+// active harness. The validator function should be h.ValidateAgentRole from
+// the active harness adapter. Returns a descriptive error listing any
+// invalid agents; returns nil when all are valid.
 //
-// This performs a best-effort pre-flight check by looking for agent .md files
-// in $XDG_CONFIG_HOME/opencode/agents/ (or ~/.config/opencode/agents/). It is
-// intentionally skipped in container mode because the check cannot reliably
-// inspect the container filesystem.
-func CheckAgentAvailability(agents []Agent) error {
-	dir := opencodeAgentsDir()
-	var missing []string
+// This is intentionally skipped in container mode because the check cannot
+// reliably inspect the container filesystem.
+func CheckAgentAvailability(agents []Agent, validate RoleValidator) error {
+	var invalid []string
+	var firstErr error
 	for _, ag := range agents {
-		path := filepath.Join(dir, ag.Name+".md")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			missing = append(missing, ag.Name)
+		if err := validate(ag.Name); err != nil {
+			invalid = append(invalid, ag.Name)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	if len(missing) > 0 {
+	if len(invalid) > 0 {
 		return fmt.Errorf(
-			"review requires opencode agent definitions that are not present in %s: %s\n"+
-				"hint: ensure the system has been rebuilt with the prism NixOS module",
-			dir, strings.Join(missing, ", "),
+			"review agents not available: %s\n%v",
+			strings.Join(invalid, ", "), firstErr,
 		)
 	}
 	return nil
-}
-
-// opencodeAgentsDir returns the path to the opencode agents directory.
-func opencodeAgentsDir() string {
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, _ := os.UserHomeDir()
-		configHome = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configHome, "opencode", "agents")
 }
 
 // AgentsByName filters the agents slice to only those whose Name is in the
@@ -366,6 +363,12 @@ type Opts struct {
 	Agents []Agent
 	// Harness is the runtime harness to use ("opencode").
 	Harness string
+	// RuntimeEnvVars holds harness-specific environment variables to inject
+	// into each spawned agent session (host-mode only; container-mode sessions
+	// receive env vars via the container runtime). Populated from
+	// harness.Harness.RuntimeEnv() by the caller. When nil, no harness-specific
+	// env vars are injected.
+	RuntimeEnvVars map[string]string
 	// Timeout is the per-agent maximum wait time.
 	Timeout time.Duration
 	// DBPath is the path to the prism database. If empty, the default is used.
@@ -525,6 +528,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
+			RuntimeEnvVars:   opts.RuntimeEnvVars,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -460,4 +462,101 @@ func (a *Adapter) ExtractMessage(evt harness.HarnessEvent) (harness.Message, boo
 		ID:   info.ID,
 		Role: info.Role,
 	}, true
+}
+
+// configEnvVarName is the environment variable opencode uses to receive
+// serialised config content (model, variant, and provider overrides).
+const configEnvVarName = "OPENCODE_CONFIG_CONTENT"
+
+// bashTimeoutEnvVar is the env var that controls opencode's experimental
+// bash-tool execution timeout (in milliseconds).
+const bashTimeoutEnvVar = "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"
+
+// bashTimeoutValue is the default bash-tool timeout value (15 minutes).
+// This raises the 2-minute default so that long-running commands
+// (e.g. prism review, nix build) are not killed mid-flight.
+const bashTimeoutValue = "900000"
+
+// ConfigEnvVar returns "OPENCODE_CONFIG_CONTENT" — the environment variable
+// opencode uses to receive its serialised config content.
+// It satisfies the harness.Harness interface.
+func (a *Adapter) ConfigEnvVar() string {
+	return configEnvVarName
+}
+
+// RuntimeEnv returns the additional environment variables opencode needs
+// in the container / process it runs in. Currently this is just the
+// experimental bash-tool timeout raised to 15 minutes.
+// It satisfies the harness.Harness interface.
+func (a *Adapter) RuntimeEnv() map[string]string {
+	return map[string]string{
+		bashTimeoutEnvVar: bashTimeoutValue,
+	}
+}
+
+// ValidateAgentRole reports whether the given agent role is supported by
+// opencode. It checks that the agent definition file (<role>.md) exists in
+// the opencode agents directory ($XDG_CONFIG_HOME/opencode/agents/).
+//
+// Returns nil when the role is valid. Returns a descriptive error
+// mentioning the harness name ("opencode") and the role when the agent
+// definition is missing.
+//
+// It satisfies the harness.Harness interface.
+func (a *Adapter) ValidateAgentRole(role string) error {
+	dir := agentsDir()
+	path := filepath.Join(dir, role+".md")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf(
+			"opencode: agent role %q is not available — no definition file at %s\n"+
+				"hint: ensure the system has been rebuilt with the prism NixOS module",
+			role, path,
+		)
+	}
+	return nil
+}
+
+// agentsDir returns the path to the opencode agents directory.
+func agentsDir() string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, _ := os.UserHomeDir()
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, "opencode", "agents")
+}
+
+// EffectiveModel returns the model identifier configured for the given
+// agent role in opencode's config file (~/.config/opencode/opencode.json).
+// Returns an empty string if the config cannot be read or the role has no
+// explicit model override.
+//
+// It satisfies the harness.Harness interface.
+func (a *Adapter) EffectiveModel(role string) string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	data, err := os.ReadFile(filepath.Join(configHome, "opencode", "opencode.json"))
+	if err != nil {
+		return ""
+	}
+
+	// Minimal parse — just enough to extract agent.<role>.model.
+	var cfg struct {
+		Agent map[string]struct {
+			Model string `json:"model"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	if ag, ok := cfg.Agent[role]; ok {
+		return ag.Model
+	}
+	return ""
 }

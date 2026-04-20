@@ -118,6 +118,19 @@ type SpawnOpts struct {
 	// not call Attach; this field is carried through for composition with
 	// higher-level wrappers.
 	Headless bool
+
+	// ConfigEnvVarName is the environment variable name used to inject
+	// serialised config content into the agent runtime. Populated from
+	// harness.Harness.ConfigEnvVar() by callers that have a harness
+	// instance (e.g. "OPENCODE_CONFIG_CONTENT" for opencode).
+	ConfigEnvVarName string
+
+	// RuntimeEnvVars holds harness-specific environment variables to
+	// inject into host-mode sessions. Populated from
+	// harness.Harness.RuntimeEnv() by callers that have a harness
+	// instance. These are prepended outermost (before AgentEnvVars and
+	// PRISM_SESSION_NAME) in the agent command string.
+	RuntimeEnvVars map[string]string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -211,20 +224,22 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 // starts the sidecar from inside setupFullLayout.
 func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 	createOpts := Opts{
-		Prompt:         opts.Prompt,
-		Agent:          opts.AgentRole,
-		ConfigContent:  opts.ConfigContent,
-		SessionName:    opts.SessionName,
-		Port:           port,
-		ContainerMode:  opts.ContainerMode,
-		IsolationMode:  opts.IsolationMode,
-		PluginHostPath: opts.PluginHostPath,
-		InstanceID:     opts.InstanceID,
-		AgentEnvVars:   opts.AgentEnvVars,
-		Layout:         LayoutFull,
-		ForceFresh:     opts.ForceFresh,
-		Headless:       opts.Headless,
-		DB:             d,
+		Prompt:           opts.Prompt,
+		Agent:            opts.AgentRole,
+		ConfigContent:    opts.ConfigContent,
+		SessionName:      opts.SessionName,
+		Port:             port,
+		ContainerMode:    opts.ContainerMode,
+		IsolationMode:    opts.IsolationMode,
+		PluginHostPath:   opts.PluginHostPath,
+		InstanceID:       opts.InstanceID,
+		AgentEnvVars:     opts.AgentEnvVars,
+		ConfigEnvVarName: opts.ConfigEnvVarName,
+		RuntimeEnvVars:   opts.RuntimeEnvVars,
+		Layout:           LayoutFull,
+		ForceFresh:       opts.ForceFresh,
+		Headless:         opts.Headless,
+		DB:               d,
 	}
 	return Create(opts.SessionName, opts.Worktree, createOpts)
 }
@@ -272,14 +287,16 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// script so the pane blocks until the sidecar has health-checked the
 	// container.
 	buildOpts := Opts{
-		Prompt:         opts.Prompt,
-		Agent:          opts.AgentRole,
-		ConfigContent:  opts.ConfigContent,
-		SessionName:    opts.SessionName,
-		Port:           port,
-		ContainerMode:  opts.ContainerMode,
-		IsolationMode:  mode,
-		PluginHostPath: opts.PluginHostPath,
+		Prompt:           opts.Prompt,
+		Agent:            opts.AgentRole,
+		ConfigContent:    opts.ConfigContent,
+		SessionName:      opts.SessionName,
+		Port:             port,
+		ContainerMode:    opts.ContainerMode,
+		IsolationMode:    mode,
+		PluginHostPath:   opts.PluginHostPath,
+		ConfigEnvVarName: opts.ConfigEnvVarName,
+		RuntimeEnvVars:   opts.RuntimeEnvVars,
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}

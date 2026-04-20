@@ -488,8 +488,12 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 	args = append(args, "--setenv", "PRISM_SESSION_NAME", cfg.SessionName)
 
-	// OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: 15-minute bash timeout.
-	args = append(args, "--setenv", "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS", "900000")
+	// Inject harness-specific runtime env vars. For opencode, this includes
+	// the experimental bash-tool timeout (15 min). Populated from
+	// harness.Harness.RuntimeEnv() via the container Config.
+	for k, v := range cfg.RuntimeEnv {
+		args = append(args, "--setenv", k, v)
+	}
 
 	// Host-API env var.
 	if cfg.HostAPITCPPort != 0 {

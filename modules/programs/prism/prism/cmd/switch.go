@@ -21,6 +21,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/git"
+	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -1078,11 +1079,16 @@ var switchCmd = &cobra.Command{
 			}
 		}
 
+		// Populate harness-specific env var names from the adapter so that
+		// no opencode-specific string literals appear in session.go.
+		switchHarness := opencode.New("", nil, "", "")
 		opts := session.Opts{
-			Fresh:          fresh,
-			ContainerMode:  effectiveContainerMode,
-			IsolationMode:  string(isoMode),
-			PluginHostPath: cfg.SidecarPluginPath,
+			Fresh:            fresh,
+			ContainerMode:    effectiveContainerMode,
+			IsolationMode:    string(isoMode),
+			PluginHostPath:   cfg.SidecarPluginPath,
+			ConfigEnvVarName: switchHarness.ConfigEnvVar(),
+			RuntimeEnvVars:   switchHarness.RuntimeEnv(),
 		}
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
 		// receive env vars via podman --env flags in the sidecar (podman) or
