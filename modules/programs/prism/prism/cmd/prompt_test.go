@@ -42,7 +42,7 @@ func seedSession(t *testing.T, d *db.DB, sessionName, state string, port *int, o
 	if port != nil {
 		var dummy int
 		err := d.QueryRow(
-			"UPDATE agent_status SET opencode_port = ? WHERE session_name = ? RETURNING 1",
+			"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING 1",
 			*port, sessionName,
 		).Scan(&dummy)
 		if err != nil {
@@ -287,7 +287,7 @@ func TestRunPrompt_HTTPDelivery(t *testing.T) {
 }
 
 // TestRunPrompt_NoPort_ReturnsError verifies that prompts return an error
-// when opencode_port is NULL (no HTTP delivery possible).
+// when harness_port is NULL (no HTTP delivery possible).
 func TestRunPrompt_NoPort_ReturnsError(t *testing.T) {
 	d := openPromptTestDB(t)
 	seedSession(t, d, "repo@legacy", "active", nil, nil, nil, nil)
@@ -297,7 +297,7 @@ func TestRunPrompt_NoPort_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when session has no port, got nil")
 	}
-	if !strings.Contains(err.Error(), "no opencode port") {
+	if !strings.Contains(err.Error(), "no harness port") {
 		t.Errorf("error should mention missing port: got %q", err.Error())
 	}
 }

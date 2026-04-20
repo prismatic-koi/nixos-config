@@ -290,8 +290,8 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 
 	containerMode := isoMode == config.IsolationPodman
 	opencodeSession := ""
-	if s.OpencodeSID != nil {
-		opencodeSession = *s.OpencodeSID
+	if s.HarnessSessionID != nil {
+		opencodeSession = *s.HarnessSessionID
 	}
 	opts := session.Opts{
 		Headless:        true,

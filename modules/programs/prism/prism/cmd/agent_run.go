@@ -100,11 +100,11 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
 	}
 
-	// Resolve port from the DB status. AllocatedPort is used for the opencode
+	// Resolve port from the DB status. HarnessPort is used for the opencode
 	// --port flag in the bwrap args.
 	port := 0
-	if status.OpencodePort != nil {
-		port = *status.OpencodePort
+	if status.HarnessPort != nil {
+		port = *status.HarnessPort
 	}
 
 	// Resolve agent role from status.

@@ -597,8 +597,8 @@ func allocatePortForSession(sessionName, directory string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("current status: %w", err)
 	}
-	if existing != nil && existing.OpencodePort != nil {
-		return *existing.OpencodePort, nil
+	if existing != nil && existing.HarnessPort != nil {
+		return *existing.HarnessPort, nil
 	}
 
 	// Ensure the agent_status row exists (idempotent upsert).
