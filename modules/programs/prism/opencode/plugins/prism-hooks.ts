@@ -159,19 +159,21 @@ export const PrismHooks: Plugin = async (pluginInput) => {
         const text = pendingSteeringPrompt;
         pendingSteeringPrompt = null;
         // Inject a synthetic user-role message at the end of the history.
-        // The message ID is timestamp-based to ensure uniqueness.
+        // IDs use the msg_/prt_ prefixes required by opencode's MessageID/PartID
+        // schemas. The text field (not content) is what TextPart expects.
+        const now = Date.now();
         const syntheticMsg: any = {
           info: {
-            id: `doom-loop-${Date.now()}`,
+            id: `msg_doom-loop-${now}`,
             role: "user",
-            time: { created: Date.now() },
+            time: { created: now },
           },
           parts: [
             {
-              id: `doom-loop-part-${Date.now()}`,
+              id: `prt_doom-loop-${now}`,
               type: "text",
-              content: text,
-              time: { created: Date.now() },
+              text: text,
+              time: { created: now },
             },
           ],
         };
