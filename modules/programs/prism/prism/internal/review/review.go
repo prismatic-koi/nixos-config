@@ -1128,20 +1128,67 @@ func IsPerAgentSession(sessionName, parentSession string) bool {
 	return agentPart != "" && !strings.Contains(agentPart, "~")
 }
 
-// KillReviewSessionsForParent kills all ~review-* tmux sessions for the given parent.
+// KillReviewSessionsForParent kills all review sessions for the given parent.
+// Uses DB group membership (GroupMembersForParent) as the primary source, with
+// a name-prefix fallback for pre-migration rows where group_id is not set.
 // This is the public API used by cleanup.go for cascading parent cleanup.
 // It kills ALL review sessions across all rounds (for prism cleanup --yes --session <parent>).
 func KillReviewSessionsForParent(parentSession string) {
+	KillReviewSessionsForParentWithDB(nil, parentSession)
+}
+
+// KillReviewSessionsForParentWithDB is like KillReviewSessionsForParent but
+// uses the DB for group membership when available.
+func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 	prefix := parentSession + "~review-"
+
+	// Try DB-backed group membership first (post-migration rows).
+	if d != nil {
+		members, err := d.GroupMembersForParent(parentSession)
+		if err == nil && len(members) > 0 {
+			names := make([]string, 0, len(members))
+			for _, m := range members {
+				names = append(names, m.SessionName)
+			}
+			KillSessionsByNames(names)
+			return
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: KillReviewSessionsForParentWithDB: DB error for %q: %v — using name-prefix fallback\n", parentSession, err)
+		}
+		// len(members) == 0: fall through to name-prefix for pre-migration rows.
+	}
+
+	// Pre-migration fallback: kill by name prefix.
 	KillSessionPrefix(prefix)
 }
 
-// CleanupReviewSessionsForParent kills all ~review-* tmux sessions for the
+// CleanupReviewSessionsForParent kills all review sessions for the
 // given parent AND cleans up their DB rows (port allocations, ended state,
 // bus messages). Called by prism cleanup --yes --session <parent> to cascade
 // the cleanup to all review sessions.
+// Uses DB group membership (GroupMembersForParent) as the primary source, with
+// a name-prefix fallback for pre-migration rows where group_id is not set.
 func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 	prefix := parentSession + "~review-"
+
+	// Try DB-backed group membership first (post-migration rows).
+	members, err := d.GroupMembersForParent(parentSession)
+	if err == nil && len(members) > 0 {
+		// DB-backed: clean up only the actual group members.
+		names := make([]string, 0, len(members))
+		for _, row := range members {
+			cleanupAgentSession(d, row.SessionName)
+			names = append(names, row.SessionName)
+		}
+		// Kill the tmux sessions (best effort, idempotent).
+		KillSessionsByNames(names)
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[prism] warning: CleanupReviewSessionsForParent: DB group error for %q: %v — using name-prefix fallback\n", parentSession, err)
+	}
+	// Pre-migration fallback: find rows by name prefix and kill by prefix.
 
 	// Find all review session rows in the DB.
 	rows, err := d.AllStatusesWithPrefix(prefix)
