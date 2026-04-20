@@ -11,8 +11,40 @@ let
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
 
-  # Host-side clipboard paste bridge script for container-mode opencode panes.
-  # Invoked by the tmux Ctrl-V keybind when pane_current_command is "podman".
+  # Sandboxed-pane guard for tmux if-shell.
+  #
+  # Returns 0 when the pane's current command indicates a prism agent pane
+  # running under a supported isolation mode, 1 otherwise. The five
+  # container-mode keybinds below (C-v paste bridge + C-u/C-d/C-g/C-M-g
+  # opencode scrolling) call this script via if-shell to decide whether to
+  # fire the agent-specific action or fall through to a pass-through.
+  #
+  # The single argument is the value of tmux's #{pane_current_command} format
+  # variable, expanded by tmux before the shell receives it.
+  #
+  # Matched values:
+  #   podman   — legacy podman isolation (`podman attach` is the pane command).
+  #   bwrap    — bwrap isolation: `prism agent-run` execs bwrap directly, so
+  #              the pane's direct child is the bwrap process.
+  #   opencode — defensive fallback for bwrap cases where tmux reports the
+  #              foregrounded descendant rather than bwrap itself, and for
+  #              host-mode panes that run opencode directly (Linux legacy /
+  #              Darwin). Opencode is only ever launched in agent panes by
+  #              prism, so matching it here does not affect plain shells,
+  #              editors, or dashboard panes.
+  #
+  # Extracting this guard into a script keeps the five call sites consistent —
+  # no binding keeps a hand-rolled pane_current_command equality check.
+  sandboxedPaneGuard = pkgs.writeShellScript "prism-tmux-sandboxed-pane" ''
+    case "$1" in
+      podman|bwrap|opencode) exit 0 ;;
+      *) exit 1 ;;
+    esac
+  '';
+
+  # Host-side clipboard paste bridge script for sandboxed opencode panes.
+  # Invoked by the tmux Ctrl-V keybind when the pane is running a prism
+  # agent (see sandboxedPaneGuard above for the matching rules).
   # Argument $1 is the tmux pane ID (e.g. "%3") to inject the paste into.
   #
   # Two cases:
@@ -39,7 +71,8 @@ let
     # No image: fall back to text clipboard paste.
     # This preserves pre-PR behaviour: before this keybind existed, the terminal
     # emulator's own bracketed-paste handled text Ctrl-V transparently through
-    # the podman attach PTY. Since we now intercept C-v we must replicate this.
+    # the sandbox (podman attach PTY / bwrap PTY). Since we now intercept C-v
+    # we must replicate this.
     if [ -n "$WAYLAND_DISPLAY" ]; then
       txt="$(wl-paste --no-newline 2>/dev/null)"
     elif [ -n "$DISPLAY" ]; then
@@ -100,8 +133,9 @@ in
               # sensible debugging behavior
               set -g remain-on-exit on
               # Enable OSC 52 clipboard passthrough so opencode running inside a
-              # container can write to the host clipboard via the podman attach PTY bridge.
-              # Without this, tmux drops OSC 52 sequences and clipboard is silently broken.
+              # sandbox (podman or bwrap) can write to the host clipboard via the
+              # sandbox PTY bridge. Without this, tmux drops OSC 52 sequences and
+              # clipboard is silently broken.
               set -g set-clipboard on
               # pane switching
               bind -r h select-pane -L
@@ -191,17 +225,21 @@ in
               bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single \
                 "${prism} spawn --attach"
 
-              # opencode scrolling keybinds (only active when opencode is running inside podman)
-              # Note: after the podman-attach migration, the agent pane command is "podman"
-              bind -n C-u if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys C-M-u' 'send-keys C-u'
-              bind -n C-d if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys C-M-d' 'send-keys C-d'
-              bind -n C-g if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys Home'
-              bind -n C-M-g if-shell '[ "#{pane_current_command}" = "podman" ]' 'send-keys End'
+              # opencode scrolling keybinds — active when the pane is a prism agent
+              # running under either supported isolation mode (podman or bwrap),
+              # or hosting opencode directly. See sandboxedPaneGuard above for the
+              # matching rules. In any other pane (plain shell, editor, dashboard)
+              # the literal keystroke is sent through unchanged.
+              bind -n C-u if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys C-M-u' 'send-keys C-u'
+              bind -n C-d if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys C-M-d' 'send-keys C-d'
+              bind -n C-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys Home'
+              bind -n C-M-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys End'
 
-              # Clipboard paste bridge for container-mode opencode panes (issue #752).
+              # Clipboard paste bridge for sandboxed opencode panes (issue #752).
               #
-              # When Ctrl-V is pressed in a pane whose current command is "podman"
-              # (i.e. `podman attach` is running the container's opencode TUI):
+              # When Ctrl-V is pressed in a pane whose current command is one of
+              # the sandboxed-agent values matched by sandboxedPaneGuard (podman
+              # attach / bwrap / direct opencode):
               #
               #   Image path: `prism clipboard paste-image` reads the host clipboard,
               #   stages the PNG to ~/.cache/prism/clipboard/<uuid>.png, and prints
@@ -211,20 +249,21 @@ in
               #   Text fallback path: if paste-image exits non-zero (no image in
               #   clipboard), read text from the host clipboard and inject it as a
               #   bracketed-paste sequence. This ensures text Ctrl-V continues to
-              #   work in container panes even though tmux has intercepted C-v.
-              #   Without this fallback, text paste would be silently dropped.
+              #   work in agent panes even though tmux has intercepted C-v. Without
+              #   this fallback, text paste would be silently dropped.
               #
-              # Guard: if-shell checks pane_current_command and only intercepts when
-              # it equals "podman". All other panes (plain shell, editor, non-container
-              # windows) are unaffected — Ctrl-V reaches them via the else branch
-              # which sends a literal Ctrl-V (standard bracketed-paste passthrough).
+              # Guard: if-shell runs sandboxedPaneGuard against #{pane_current_command}
+              # and only intercepts when the pane is a sandboxed agent pane. All
+              # other panes (plain shell, editor, non-agent windows) are unaffected —
+              # Ctrl-V reaches them via the else branch which sends a literal Ctrl-V
+              # (standard bracketed-paste passthrough).
               #
               # The script is written to the Nix store via writeShellScript to avoid
               # complex quoting of ESC bytes and printf format strings inside the
               # tmux bind-key string. #{pane_id} is expanded by tmux before the
               # shell receives it as $1.
               bind -n C-v \
-                if-shell '[ "#{pane_current_command}" = "podman" ]' \
+                if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' \
                   'run-shell "${clipboardPasteScript} #{pane_id}"' \
                   'send-keys C-v'
 
