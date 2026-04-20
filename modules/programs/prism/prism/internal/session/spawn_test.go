@@ -21,7 +21,6 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // openSpawnTestDB creates a fresh temp DB and registers cleanup.
@@ -334,8 +333,3 @@ func TestSpawnSession_UnsupportedLayout_ReturnsError(t *testing.T) {
 		t.Errorf("error %q does not mention layout", err.Error())
 	}
 }
-
-// sentinel to ensure the tmux spy package import is retained even if the
-// signature of tmux changes — the _ reference prevents a "declared and not
-// used" error if all in-line uses are removed by a refactor.
-var _ = tmux.TmuxBin

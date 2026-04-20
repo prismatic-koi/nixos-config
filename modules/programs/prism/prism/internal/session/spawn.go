@@ -82,10 +82,11 @@ type SpawnOpts struct {
 	// into the container.
 	PluginHostPath string
 
-	// InstanceID is the UUID for this session incarnation. When empty,
-	// callers that need a stable instance_id should generate one and
-	// populate this field before calling SpawnSession; otherwise the sidecar
-	// / tmux-session-start hook will generate one.
+	// InstanceID is the UUID for this session incarnation. For LayoutFull,
+	// SpawnSession auto-generates one when this field is empty and writes it
+	// to agent_status before the sidecar starts. For LayoutAgentOnly, the
+	// field is passed through verbatim — the sidecar and tmux-session-start
+	// hook will generate one downstream if it remains empty.
 	InstanceID string
 
 	// WorktreeReadOnly, when true, mounts the worktree read-only inside the
@@ -210,20 +211,20 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 // starts the sidecar from inside setupFullLayout.
 func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 	createOpts := Opts{
-		Prompt:           opts.Prompt,
-		Agent:            opts.AgentRole,
-		ConfigContent:    opts.ConfigContent,
-		SessionName:      opts.SessionName,
-		Port:             port,
-		ContainerMode:    opts.ContainerMode,
-		IsolationMode:    opts.IsolationMode,
-		PluginHostPath:   opts.PluginHostPath,
-		InstanceID:       opts.InstanceID,
-		AgentEnvVars:     opts.AgentEnvVars,
-		Layout:           LayoutFull,
-		ForceFresh:       opts.ForceFresh,
-		Headless:         opts.Headless,
-		DB:               d,
+		Prompt:         opts.Prompt,
+		Agent:          opts.AgentRole,
+		ConfigContent:  opts.ConfigContent,
+		SessionName:    opts.SessionName,
+		Port:           port,
+		ContainerMode:  opts.ContainerMode,
+		IsolationMode:  opts.IsolationMode,
+		PluginHostPath: opts.PluginHostPath,
+		InstanceID:     opts.InstanceID,
+		AgentEnvVars:   opts.AgentEnvVars,
+		Layout:         LayoutFull,
+		ForceFresh:     opts.ForceFresh,
+		Headless:       opts.Headless,
+		DB:             d,
 	}
 	return Create(opts.SessionName, opts.Worktree, createOpts)
 }
