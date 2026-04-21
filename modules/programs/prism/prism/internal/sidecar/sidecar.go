@@ -1914,10 +1914,14 @@ func isCoordinator(sessionName string) bool {
 	return strings.HasSuffix(sessionName, "@main")
 }
 
-// isCoordinatorSession returns true when the session is a coordinator, using
-// a DB-backed read of root_agent_name when available. Falls back to the
-// name-suffix heuristic for pre-migration rows (NULL root_agent_name).
-// When d is nil, the name heuristic is used unconditionally.
+// isCoordinatorSession returns true when the session is a coordinator. When d
+// is non-nil and the session has a row with a non-NULL root_agent_name, it
+// computes dbBased = (root_agent_name == "coordinator") and nameBased =
+// (sessionName ends with "@main") and returns dbBased || nameBased. This means
+// the @main heuristic wins when it disagrees with a stale or incorrect DB value
+// (e.g. "worker" written during an SSE inference race); a [debug] log is emitted
+// on mismatch. Falls back to the name-suffix heuristic for pre-migration rows
+// (NULL root_agent_name) and when d is nil.
 func isCoordinatorSession(sessionName string, d *db.DB) bool {
 	if d != nil {
 		name, rowExists, err := d.RootAgentName(sessionName)

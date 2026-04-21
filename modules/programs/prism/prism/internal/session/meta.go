@@ -24,15 +24,18 @@ func IsMetaSession(name string) bool {
 
 // IsCoordinatorSession reports whether the named session is a coordinator.
 //
-// Detection strategy (in order):
+// Detection strategy:
 //  1. DB-backed: if d is non-nil and the session has a row with a non-NULL
-//     root_agent_name, return root_agent_name == "coordinator". This is the
-//     primary signal introduced by PR #928 (Issue F / #861).
+//     root_agent_name, compute dbBased = (root_agent_name == "coordinator") and
+//     nameBased = sessionName ends with "@main". Return dbBased || nameBased —
+//     meaning the @main heuristic wins when it disagrees with the DB value (e.g.
+//     stale "worker" from an SSE inference race). A [debug] log is emitted when
+//     the two signals disagree.
 //  2. NULL root_agent_name (pre-migration row): log a deprecation warning and
 //     fall through to the name-suffix heuristic.
 //  3. No DB, DB error, or no row: fall back to the name-suffix heuristic
 //     (session name ends with "@main"), which matches the convention used by
-//     isCoordinator() in sidecar.go.
+//     isCoordinatorSession() in sidecar.go.
 //
 // The d parameter may be nil; when nil the DB-backed lookup is skipped and
 // only the heuristic is used.
