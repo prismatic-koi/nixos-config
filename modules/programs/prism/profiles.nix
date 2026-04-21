@@ -122,6 +122,15 @@
             };
           };
         };
+        quickProfiles = {
+          pr = {
+            model = "google/gemini-3.1-flash-lite-preview";
+            providerOrder = [
+              "google"
+              "google-vertex"
+            ];
+          };
+        };
       };
 
       json =
@@ -169,6 +178,8 @@
               ]
               value
           ) config.nx.programs.prism.agent.envVars;
+          # Quick command profiles — lightweight model configs for prism quick subcommands.
+          quick_profiles = config.nx.programs.prism.profiles.data.quickProfiles;
           # Per-container resource caps. These are read by the prism sidecar
           # and passed to container.Config so that podman run receives
           # --memory, --memory-swap, and --pids-limit for every agent container.

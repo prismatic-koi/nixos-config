@@ -88,6 +88,9 @@ type ProfilesFile struct {
 	// to podman run as --memory, --memory-swap, and --pids-limit.
 	// Written by Nix under container_resources.
 	ContainerResources ContainerResources `json:"container_resources,omitempty"`
+	// QuickProfiles holds lightweight model configs for prism quick subcommands.
+	// Written by Nix under quick_profiles.
+	QuickProfiles map[string]QuickProfile `json:"quick_profiles,omitempty"`
 }
 
 // ContainerResources holds the per-container resource cap values that are
@@ -104,6 +107,16 @@ type ContainerResources struct {
 	// PidsLimit is the value for podman run --pids-limit.
 	// Zero means no --pids-limit flag.
 	PidsLimit int `json:"pidsLimit,omitempty"`
+}
+
+// QuickProfile holds the model and provider routing config for a prism quick
+// subcommand (e.g. "pr"). Written by Nix under quick_profiles.<name>.
+type QuickProfile struct {
+	// Model is the OpenRouter model slug (e.g. "google/gemini-3.1-flash-lite-preview").
+	Model string `json:"model"`
+	// ProviderOrder is the ordered list of OpenRouter provider slugs to try
+	// (e.g. ["google", "google-vertex"]). Maps to provider.order in the API request.
+	ProviderOrder []string `json:"providerOrder,omitempty"`
 }
 
 // ContainerConfigForRole returns the OPENCODE_CONFIG_CONTENT blob for the
