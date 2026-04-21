@@ -29,9 +29,16 @@
             		options.capabilities = default_capabilities
             	end
 
-            	local cmd = options.cmd or vim.lsp.config[name].cmd
-            	if cmd and vim.fn.executable(cmd[1]) == 1 then
-            		vim.lsp.config[name] = vim.tbl_extend('force', vim.lsp.config[name] or {}, options)
+            	local lsp_config = vim.lsp.config[name]
+            	local cmd = options.cmd or (lsp_config and lsp_config.cmd)
+            	-- cmd can be a string[] or a function (e.g. vim.lsp.rpc.connect).
+            	-- Only check executability when cmd is a table; functions are always
+            	-- accepted since we cannot inspect their target executable.
+            	local can_start = cmd ~= nil and (
+            		type(cmd) == 'function' or vim.fn.executable(cmd[1]) == 1
+            	)
+            	if can_start then
+            		vim.lsp.config[name] = vim.tbl_extend('force', lsp_config or {}, options)
             		vim.lsp.enable(name)
             	end
             end
