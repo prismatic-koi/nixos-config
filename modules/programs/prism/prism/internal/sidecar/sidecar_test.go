@@ -2711,6 +2711,79 @@ func TestIsCoordinatorSession(t *testing.T) {
 	}
 }
 
+// TestNotifyCoordinator_SelfNotificationSkipped_StaleRootAgentName verifies
+// that a coordinator session with a stale root_agent_name="worker" in the DB
+// (e.g. from an SSE inference race) does NOT receive a self-notification when
+// transitioning to finished. The @main heuristic must win over the stale value.
+func TestNotifyCoordinator_SelfNotificationSkipped_StaleRootAgentName(t *testing.T) {
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-coord-stale-worktree",
+		OpencodeURL: "http://localhost:14000",
+		DB:          d,
+		Clock:       clk,
+		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+	}
+	coordinator := New(cfg)
+
+	// Seed with stale root_agent_name="worker" — simulates the bug scenario.
+	if err := d.UpsertStatusSeedRootAgentName(coordinator.cfg.SessionName, coordinator.cfg.Repo, coordinator.cfg.Worktree, "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed stale worker: %v", err)
+	}
+
+	// Trigger idle debounce → finished.
+	coordinator.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, coordinator.cfg.SessionName); state != "finished" {
+		t.Errorf("coordinator state = %q, want finished", state)
+	}
+
+	// Give a brief window for any spurious goroutines to write.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written (self-notification skipped).
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages for self-notification (stale DB value), got %d", totalMsgs)
+	}
+}
+
+// TestIsCoordinatorSession_StaleRootAgentName_MainWins verifies the low-level
+// helper directly: @main session with root_agent_name="worker" must return true.
+func TestIsCoordinatorSession_StaleRootAgentName_MainWins(t *testing.T) {
+	d := openTestDB(t)
+	defer d.Close()
+
+	sess := "myrepo@main"
+	if err := d.UpsertStatusSeedRootAgentName(sess, "myrepo", "/code/main", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed stale worker: %v", err)
+	}
+
+	if !isCoordinatorSession(sess, d) {
+		t.Errorf("isCoordinatorSession(%q) = false, want true (@main heuristic must win over stale root_agent_name)", sess)
+	}
+
+	// Worker on a non-@main branch must still return false.
+	workerSess := "myrepo@feature"
+	if err := d.UpsertStatusSeedRootAgentName(workerSess, "myrepo", "/code/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+	if isCoordinatorSession(workerSess, d) {
+		t.Errorf("isCoordinatorSession(%q) = true, want false (non-@main worker must not be promoted)", workerSess)
+	}
+}
+
 // TestNotifyCoordinator_ParentWorkerStillNotifies verifies that the parent
 // worker's own finish event (the session that ran `prism review`) continues to
 // propagate to the coordinator after its review-cycle completes. The parent

@@ -44,10 +44,10 @@ func IsCoordinatorSession(sessionName string, d *db.DB) bool {
 				dbBased := name == "coordinator"
 				nameBased := strings.HasSuffix(sessionName, "@main")
 				if dbBased != nameBased {
-					log.Printf("[debug] session: IsCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v",
+					log.Printf("[debug] session: IsCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v — heuristic wins",
 						sessionName, dbBased, name, nameBased)
 				}
-				return dbBased
+				return dbBased || nameBased
 			}
 			// Row exists but root_agent_name is NULL — pre-migration row.
 			log.Printf("[deprecation] session: IsCoordinatorSession(%q): root_agent_name is NULL — pre-migration row, falling back to name heuristic", sessionName)
