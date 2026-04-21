@@ -120,7 +120,14 @@ rec {
           jsonschema = "${placeholder "out"}/share/opencode/schema.json";
         };
       });
-      pi-coding-agent = masterPkgs.pi-coding-agent;
+      pi-coding-agent = masterPkgs.pi-coding-agent.overrideAttrs (old: {
+        postPatch = (old.postPatch or "") + ''
+          substituteInPlace packages/coding-agent/src/modes/interactive/interactive-mode.ts \
+            --replace-fail \
+              'this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);' \
+              '/* anthropic subscription warning suppressed */'
+        '';
+      });
 
       # packages not yet in nixpkgs; use local definitions
       # playwright-cli depends on chromium which is Linux-only
