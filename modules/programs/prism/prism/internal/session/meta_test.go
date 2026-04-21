@@ -67,17 +67,18 @@ func TestIsCoordinatorSession_DBBackedCoordinator(t *testing.T) {
 }
 
 // TestIsCoordinatorSession_DBBackedWorker verifies that a session with
-// root_agent_name == "worker" returns false, even though its name ends with @main
-// (pathological edge-case: a worker named with @main suffix).
+// root_agent_name == "worker" returns false when it does NOT end with @main.
+// NOTE: if the session name ends with @main, the heuristic wins and returns
+// true (see TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins).
 func TestIsCoordinatorSession_DBBackedWorker(t *testing.T) {
 	d := openTestDB(t)
-	// A worker session that happens to end with @main — DB must win over heuristic.
-	const sess = "nixos-config@main"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/main", "idle", nil, nil, "worker"); err != nil {
+	// A worker session on a non-@main branch — DB value must cause false.
+	const sess = "nixos-config@feature-worker"
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/feature-worker", "idle", nil, nil, "worker"); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	if IsCoordinatorSession(sess, d) {
-		t.Errorf("IsCoordinatorSession(%q) = true, want false (DB says worker)", sess)
+		t.Errorf("IsCoordinatorSession(%q) = true, want false (DB says worker, non-@main)", sess)
 	}
 }
 
@@ -143,5 +144,40 @@ func TestIsCoordinatorSession_NilDB_FallsBackToHeuristic(t *testing.T) {
 	// Edge case: empty session name should not be considered coordinator.
 	if IsCoordinatorSession("", nil) {
 		t.Error("IsCoordinatorSession(\"\", nil) = true, want false")
+	}
+}
+
+// TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins verifies the
+// fix for the bug where a coordinator session with root_agent_name="worker"
+// (stale/incorrect DB value) would incorrectly return false, allowing
+// self-notification to proceed.
+func TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins(t *testing.T) {
+	d := openTestDB(t)
+
+	sess := "nixos-config@main"
+	// Seed the session with a stale root_agent_name of "worker".
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/main", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed stale worker: %v", err)
+	}
+
+	// Despite DB saying "worker", @main heuristic must win → true.
+	if !IsCoordinatorSession(sess, d) {
+		t.Errorf("IsCoordinatorSession(%q) = false, want true (@main heuristic must win over stale DB value)", sess)
+	}
+}
+
+// TestIsCoordinatorSession_StaleRootAgentName_NonMain verifies that the fix
+// does not accidentally promote a genuine worker session with a non-@main name.
+func TestIsCoordinatorSession_StaleRootAgentName_NonMain(t *testing.T) {
+	d := openTestDB(t)
+
+	sess := "nixos-config@feature"
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/feature", "active", nil, nil, "worker"); err != nil {
+		t.Fatalf("seed worker: %v", err)
+	}
+
+	// DB says worker, name does not end in @main → must return false.
+	if IsCoordinatorSession(sess, d) {
+		t.Errorf("IsCoordinatorSession(%q) = true, want false (non-@main worker must not be promoted)", sess)
 	}
 }
