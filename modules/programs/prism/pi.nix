@@ -60,7 +60,7 @@
       piSettings = {
         steeringMode = "one-at-a-time";
         transport = "sse";
-        theme = "dark";
+        theme = config.theme.name;
         treeFilterMode = "default";
         quietStartup = true;
         enableInstallTelemetry = false;
@@ -108,7 +108,7 @@
             mdHeading = orange;
             mdLink = blue;
             mdLinkUrl = grey0;
-            mdCode = aqua;
+            mdCode = green;
             mdCodeBlock = "";
             mdCodeBlockBorder = grey0;
             mdQuote = grey0;
@@ -131,10 +131,10 @@
             syntaxPunctuation = grey1;
             # Thinking Level Borders
             thinkingOff = grey0;
-            thinkingMinimal = primary;
-            thinkingLow = blue;
-            thinkingMedium = aqua;
-            thinkingHigh = purple;
+            thinkingMinimal = grey1;
+            thinkingLow = aqua;
+            thinkingMedium = green;
+            thinkingHigh = orange;
             thinkingXhigh = red;
             # Bash Mode
             bashMode = orange;
