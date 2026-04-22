@@ -432,7 +432,13 @@ func promptBranchInput(prompt string) string {
 // the effective isolation mode is podman or bwrap.
 func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, cmdName string) error {
 	effectiveRole := session.DefaultAgent(path, opts.Agent)
-	roleConfig, err := config.ContainerConfigForRole(pf, effectiveRole)
+	// Non-worktree paths (effectiveRole == "") use the coordinator config blob
+	// so that build/plan agents are available, but pass no --agent flag.
+	lookupRole := effectiveRole
+	if lookupRole == "" {
+		lookupRole = "coordinator"
+	}
+	roleConfig, err := config.ContainerConfigForRole(pf, lookupRole)
 	if err != nil {
 		return err
 	}

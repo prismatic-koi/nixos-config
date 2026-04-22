@@ -1,27 +1,52 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
+// makeBareWorktree creates a temporary directory layout simulating a prism
+// bare+worktree project:
+//
+//	<tmp>/
+//	  .bare     ← IsBareRepo marker
+//	  main/     ← coordinator worktree
+//	  <branch>/ ← worker worktree
+//
+// Returns the project root path. The caller's t.TempDir() is used so cleanup
+// is automatic.
+func makeBareWorktree(t *testing.T, branches ...string) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range append([]string{"main"}, branches...) {
+		if err := os.MkdirAll(filepath.Join(root, b), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
 func TestDefaultAgent_CoordinatorForMain(t *testing.T) {
-	got := session.DefaultAgent("/home/user/repos/project/main", "")
+	root := makeBareWorktree(t)
+	mainDir := filepath.Join(root, "main")
+	got := session.DefaultAgent(mainDir, "")
 	if got != "coordinator" {
-		t.Errorf("DefaultAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
+		t.Errorf("DefaultAgent(%q, %q) = %q, want %q", mainDir, "", got, "coordinator")
 	}
 }
 
 func TestDefaultAgent_WorkerForNonMain(t *testing.T) {
+	root := makeBareWorktree(t, "feature-foo", "maintain", "main-branch")
 	cases := []string{
-		"/home/user/repos/project/feature-foo",
-		"/home/user/repos/project/maintain",
-		"/home/user/repos/project/main-branch",
-		"/home/user/repos/project/MAIN",
-		"/home/user/repos/project/Main",
-		"/home/user",
+		filepath.Join(root, "feature-foo"),
+		filepath.Join(root, "maintain"),
+		filepath.Join(root, "main-branch"),
 	}
 	for _, dir := range cases {
 		t.Run(filepath.Base(dir), func(t *testing.T) {
@@ -33,14 +58,36 @@ func TestDefaultAgent_WorkerForNonMain(t *testing.T) {
 	}
 }
 
+// TestDefaultAgent_NonWorktreePath verifies that directories whose parent does
+// NOT contain a .bare entry return "" (non-worktree path).
+func TestDefaultAgent_NonWorktreePath(t *testing.T) {
+	tmp := t.TempDir()
+	cases := []string{
+		tmp,
+		filepath.Join(tmp, "regular-repo"),
+		filepath.Join(tmp, "main"), // named "main" but parent has no .bare
+	}
+	for _, dir := range cases {
+		t.Run(filepath.Base(dir), func(t *testing.T) {
+			got := session.DefaultAgent(dir, "")
+			if got != "" {
+				t.Errorf("DefaultAgent(%q, %q) = %q, want %q (empty)", dir, "", got, "")
+			}
+		})
+	}
+}
+
 func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
+	root := makeBareWorktree(t, "feature")
+	tmp := t.TempDir()
 	cases := []struct {
 		dir   string
 		agent string
 	}{
-		{"/home/user/repos/project/main", "custom-agent"},
-		{"/home/user/repos/project/feature", "custom-agent"},
-		{"/home/user/repos/project/main", "worker"},
+		{filepath.Join(root, "main"), "custom-agent"},
+		{filepath.Join(root, "feature"), "custom-agent"},
+		{filepath.Join(root, "main"), "worker"},
+		{tmp, "coordinator"}, // non-worktree, explicit wins
 	}
 	for _, tc := range cases {
 		got := session.DefaultAgent(tc.dir, tc.agent)
@@ -77,9 +124,9 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
 		// Fresh=true suppresses the stored session ID even if set.
 		{session.Opts{Agent: "worker", Fresh: true, OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
-		// Safety-net fallback: empty agent still yields "worker".
-		{session.Opts{OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker -s ses_abc123"},
-		{session.Opts{RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
+		// Empty agent (non-worktree path) — no --agent flag at all.
+		{session.Opts{OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode -s ses_abc123"},
+		{session.Opts{RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode"},
 		// Prompt with no special characters.
 		{session.Opts{Agent: "worker", Prompt: "fix the login bug", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker --prompt 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.

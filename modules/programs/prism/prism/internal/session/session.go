@@ -183,16 +183,24 @@ const (
 
 // DefaultAgent returns the agent to use for the given directory.
 // If explicit is non-empty it is returned unchanged.
-// Otherwise "coordinator" is returned for the "main" worktree and "worker" for
-// everything else.
+// Otherwise the parent directory is checked for a .bare entry (prism
+// bare+worktree layout):
+//   - parent has .bare AND basename == "main"  → "coordinator"
+//   - parent has .bare AND basename ≠ "main"   → "worker"
+//   - parent does NOT have .bare               → "" (non-worktree path)
+//
+// Callers must treat "" as "no --agent flag, but use coordinator config blob".
 func DefaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if filepath.Base(directory) == "main" {
-		return "coordinator"
+	if git.IsBareRepo(filepath.Dir(directory)) {
+		if filepath.Base(directory) == "main" {
+			return "coordinator"
+		}
+		return "worker"
 	}
-	return "worker"
+	return ""
 }
 
 // DefaultAgentForSession returns the agent to use for the given session,
@@ -285,10 +293,12 @@ func BuildOpencodeCmd(opts Opts) string {
 // buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).
 func buildDirectOpencodeCmd(opts Opts) string {
 	agent := opts.Agent
-	if agent == "" {
-		agent = "worker"
+	var cmd string
+	if agent != "" {
+		cmd = "opencode --agent " + agent
+	} else {
+		cmd = "opencode"
 	}
-	cmd := "opencode --agent " + agent
 	if opts.Port != 0 {
 		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
 	}

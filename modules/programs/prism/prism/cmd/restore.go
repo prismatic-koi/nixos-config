@@ -326,7 +326,13 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
 		} else {
 			effectiveRole := session.DefaultAgentForSession(s.SessionName, directory, "", d)
-			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+			// Non-worktree paths (effectiveRole == "") use the coordinator config blob
+			// so that build/plan agents are available, but pass no --agent flag.
+			lookupRole := effectiveRole
+			if lookupRole == "" {
+				lookupRole = "coordinator"
+			}
+			roleConfig, roleErr := config.ContainerConfigForRole(pf, lookupRole)
 			if roleErr != nil {
 				fmt.Fprintf(os.Stderr, "restore %q: container config for role %q: %v — skipping config injection\n", s.SessionName, effectiveRole, roleErr)
 			} else if roleConfig != "" {
