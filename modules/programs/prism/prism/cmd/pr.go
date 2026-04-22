@@ -108,7 +108,13 @@ var prCmd = &cobra.Command{
 				return pfErr
 			}
 			effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
-			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
+			// Non-worktree paths (effectiveRole == "") use the coordinator config blob
+			// so that build/plan agents are available, but pass no --agent flag.
+			lookupRole := effectiveRole
+			if lookupRole == "" {
+				lookupRole = "coordinator"
+			}
+			roleConfig, roleErr := config.ContainerConfigForRole(pf, lookupRole)
 			if roleErr != nil {
 				return roleErr
 			}

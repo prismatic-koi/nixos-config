@@ -10,7 +10,67 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// TestBuildDirectOpencodeCmd_AgentEnvVars verifies that AgentEnvVars are
+// TestDefaultAgent covers the three cases described in issue #952:
+//  1. main worktree (parent has .bare, basename == "main") → "coordinator"
+//  2. non-main worktree (parent has .bare, basename ≠ "main") → "worker"
+//  3. non-worktree path (parent does NOT have .bare) → ""
+//
+// It also verifies that an explicit non-empty value always wins regardless of
+// directory type.
+func TestDefaultAgent(t *testing.T) {
+	// Set up a temporary directory structure:
+	//   <tmp>/
+	//     bare-root/       ← acts as the bare+worktree project root
+	//       .bare          ← signals prism bare layout to IsBareRepo
+	//       main/          ← worktree at "main"
+	//       feature-branch/ ← non-main worktree
+	//     regular-repo/    ← plain directory (no .bare in parent)
+
+	tmp := t.TempDir()
+	bareRoot := filepath.Join(tmp, "bare-root")
+	if err := os.MkdirAll(filepath.Join(bareRoot, "main"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(bareRoot, "feature-branch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create .bare marker so IsBareRepo(bareRoot) returns true.
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	regularRepo := filepath.Join(tmp, "regular-repo")
+	if err := os.MkdirAll(regularRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	mainWorktree := filepath.Join(bareRoot, "main")
+	featureWorktree := filepath.Join(bareRoot, "feature-branch")
+
+	tests := []struct {
+		name      string
+		directory string
+		explicit  string
+		want      string
+	}{
+		{"main worktree → coordinator", mainWorktree, "", "coordinator"},
+		{"feature worktree → worker", featureWorktree, "", "worker"},
+		{"regular repo → empty", regularRepo, "", ""},
+		{"non-git dir → empty", filepath.Join(tmp, "documents"), "", ""},
+		{"explicit overrides main", mainWorktree, "worker", "worker"},
+		{"explicit overrides feature", featureWorktree, "coordinator", "coordinator"},
+		{"explicit overrides regular", regularRepo, "worker", "worker"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DefaultAgent(tc.directory, tc.explicit)
+			if got != tc.want {
+				t.Errorf("DefaultAgent(%q, %q) = %q, want %q", tc.directory, tc.explicit, got, tc.want)
+			}
+		})
+	}
+}
+
 // prepended to the command string before PRISM_SESSION_NAME in host-mode
 // (ContainerMode = false) sessions.
 func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {

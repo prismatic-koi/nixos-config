@@ -616,10 +616,12 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Agent pane start command must contain "opencode --agent ...", not "podman attach".
+	// Agent pane start command must contain "opencode" but NOT "podman attach".
+	// For a non-worktree path (no .bare parent), no --agent flag is added,
+	// but the command is still opencode directly (host mode).
 	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "opencode --agent") {
-		t.Errorf("agent pane missing 'opencode --agent' — captured:\n%s", pane)
+	if !strings.Contains(pane, "opencode") {
+		t.Errorf("agent pane missing 'opencode' — captured:\n%s", pane)
 	}
 	if strings.Contains(pane, "podman attach") {
 		t.Errorf("agent pane contains 'podman attach' but should be in host mode — captured:\n%s", pane)
@@ -728,8 +730,12 @@ func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// Use a non-main worktree directory so DefaultAgent returns "worker".
-	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
+	// Use a non-main worktree directory in a bare-root so DefaultAgent returns "worker".
+	bareRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot, "feature-branch")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -776,8 +782,12 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// "main" as the base name causes DefaultAgent to return "coordinator".
-	worktreeDir := filepath.Join(t.TempDir(), "main")
+	// "main" as the base name in a bare-root causes DefaultAgent to return "coordinator".
+	bareRoot2 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot2, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot2, "main")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1211,8 +1221,12 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// Non-main worktree → DefaultAgent returns "worker".
-	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
+	// Non-main worktree in a bare-root → DefaultAgent returns "worker".
+	bareRoot3 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot3, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot3, "feature-branch")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -1275,7 +1289,11 @@ func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	worktreeDir := filepath.Join(t.TempDir(), "feature-x")
+	bareRoot4 := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot4, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot4, "feature-x")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
