@@ -107,16 +107,22 @@ var prCmd = &cobra.Command{
 			if pfErr != nil {
 				return pfErr
 			}
-			effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
-			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
-			if roleErr != nil {
-				return roleErr
-			}
-			if roleConfig != "" {
-				configContent = roleConfig
-			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
-				fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
-			}
+		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
+		// Non-worktree paths (effectiveRole == "") use the coordinator config blob
+		// so that build/plan agents are available, but pass no --agent flag.
+		lookupRole := effectiveRole
+		if lookupRole == "" {
+			lookupRole = "coordinator"
+		}
+		roleConfig, roleErr := config.ContainerConfigForRole(pf, lookupRole)
+		if roleErr != nil {
+			return roleErr
+		}
+		if roleConfig != "" {
+			configContent = roleConfig
+		} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+			fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+		}
 		}
 
 		// For bwrap sessions, write the opencode.json config file to disk now
