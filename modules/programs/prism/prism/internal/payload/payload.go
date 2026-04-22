@@ -46,6 +46,11 @@ type MsgUser struct {
 // ContextWindowPct is the context window utilization as a percentage (0-100),
 // calculated as (inputTokens / contextWindowSize) * 100. Zero means
 // "not available" (model context window size unknown or inputTokens absent).
+//
+// Cost is the cost of the turn in USD as reported directly by the opencode
+// event payload. This is populated for providers (e.g. openrouter) that
+// report cost in the event metadata but are not in the local pricing table.
+// Zero means "not available" — use the local pricing table instead.
 type MsgAssistant struct {
 	MessageID        string  `json:"messageId"`
 	Text             string  `json:"text"`
@@ -58,6 +63,7 @@ type MsgAssistant struct {
 	DurationMs       int64   `json:"durationMs,omitempty"`
 	TtftMs           int64   `json:"ttftMs,omitempty"`
 	ContextWindowPct float64 `json:"contextWindowPct,omitempty"`
+	Cost             float64 `json:"cost,omitempty"`
 }
 
 // ToolCall is the payload for tool_call events.

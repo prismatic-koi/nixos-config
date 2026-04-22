@@ -79,6 +79,13 @@ func assistantPayloadWithAgentModel(msgID, agent, model string, inputTokens, out
 		msgID, agent, model, inputTokens, outputTokens)
 }
 
+// assistantPayloadWithEventCost creates an assistant payload that includes a
+// provider-reported cost (e.g. for openrouter/* models not in the pricing table).
+func assistantPayloadWithEventCost(msgID, model string, inputTokens, outputTokens int, cost float64) string {
+	return fmt.Sprintf(`{"messageId":%q,"text":"reply","agent":"coordinator","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":5000,"cost":%g}`,
+		msgID, model, inputTokens, outputTokens, cost)
+}
+
 // --- per-session detail tests ---
 
 // TestRunStatsSession_TokenTotals verifies that token counts are summed
@@ -141,7 +148,159 @@ func TestRunStatsSession_CostEstimate(t *testing.T) {
 	}
 }
 
-// TestRunStatsSession_TurnDurations verifies turn timing is displayed.
+// TestRunStatsSession_OpenrouterEventCost verifies that for openrouter/* models
+// (not in the local pricing table), the event-reported cost is displayed.
+func TestRunStatsSession_OpenrouterEventCost(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Two turns: event reports $1.20 and $0.76 for a total of $1.96.
+	writeStatsEvent(t, d, session, "msg_assistant",
+		assistantPayloadWithEventCost("msg-1", "openrouter/z-ai/glm-4.7", 622000, 10000, 1.20),
+		base)
+	writeStatsEvent(t, d, session, "msg_assistant",
+		assistantPayloadWithEventCost("msg-2", "openrouter/z-ai/glm-4.7", 0, 4000, 0.76),
+		base.Add(time.Minute))
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "~$1.96") {
+		t.Errorf("output missing openrouter event cost '~$1.96'\ngot:\n%s", out)
+	}
+	// Token counts must still be shown.
+	if !strings.Contains(out, "622K") {
+		t.Errorf("output missing input token count '622K'\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_OpenrouterNoCost verifies that when an openrouter model
+// reports no cost (zero) in the event payload, "—" is shown instead of $0.00.
+func TestRunStatsSession_OpenrouterNoCost(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Event cost is exactly 0.0 — unknown model, no pricing table entry.
+	writeStatsEvent(t, d, session, "msg_assistant",
+		assistantPayloadWithEventCost("msg-1", "openrouter/unknown/model", 1000, 500, 0.0),
+		base)
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	// Cost section should not appear (zero cost → not rendered).
+	if strings.Contains(out, "est. cost") {
+		t.Errorf("output should not show cost for zero-cost openrouter event\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsSession_KnownModelUnchanged verifies that sessions using models
+// present in the local pricing table continue to use the table-derived cost,
+// ignoring the event-reported cost field even if present.
+func TestRunStatsSession_KnownModelUnchanged(t *testing.T) {
+	d := openStatsTestDB(t)
+	const session = "testrepo@main"
+	base := time.Now().Truncate(time.Second)
+
+	if err := d.UpsertStatus(session, "testrepo", "/code/testrepo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// 100K input at $3/M = $0.30, 10K output at $15/M = $0.15 → ~$0.45.
+	// Even though we embed a wildly different event cost (e.g. $9.99),
+	// the pricing table should take precedence.
+	payload := fmt.Sprintf(`{"messageId":"msg-1","text":"reply","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100000,"outputTokens":10000,"durationMs":5000,"cost":9.99}`)
+	writeStatsEvent(t, d, session, "msg_assistant", payload, base)
+
+	out := captureStdout(t, func() {
+		if err := runStatsSession(session, false); err != nil {
+			t.Errorf("runStatsSession: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "~$0.45") {
+		t.Errorf("expected table-derived cost '~$0.45', pricing table should take precedence\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "~$9.99") {
+		t.Errorf("event-reported cost should be ignored for known models\ngot:\n%s", out)
+	}
+}
+
+// TestCollectMetrics_OpenrouterEventCostAccumulated verifies that EventCost is
+// summed across turns in collectMetrics.
+func TestCollectMetrics_OpenrouterEventCostAccumulated(t *testing.T) {
+	sid := "sid-openrouter-1"
+	events := []db.Event{
+		{
+			ID:          "e1",
+			SessionName: "testrepo@main",
+			Type:        "msg_assistant",
+			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":622000,"outputTokens":14000,"cost":1.96}`,
+			CreatedAt:   time.Now(),
+			OpencodeSID: &sid,
+		},
+		{
+			ID:          "e2",
+			SessionName: "testrepo@main",
+			Type:        "msg_assistant",
+			Payload:     `{"messageId":"msg-2","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":1000,"outputTokens":500,"cost":0.04}`,
+			CreatedAt:   time.Now().Add(time.Minute),
+			OpencodeSID: &sid,
+		},
+	}
+
+	m := collectMetrics(events, sid)
+
+	if m.EventCost != 2.0 {
+		t.Errorf("EventCost = %v, want 2.0", m.EventCost)
+	}
+	// totalCost() should return EventCost since model is not in pricing table.
+	got := m.totalCost()
+	if got != 2.0 {
+		t.Errorf("totalCost() = %v, want 2.0 (from EventCost fallback)", got)
+	}
+}
+
+// TestCollectMetrics_EventCostZeroDisplaysDash verifies that zero EventCost
+// (no cost reported) results in totalCost() returning 0, which callers render as "—".
+func TestCollectMetrics_EventCostZeroDisplaysDash(t *testing.T) {
+	sid := "sid-nocost"
+	events := []db.Event{
+		{
+			ID:          "e1",
+			SessionName: "testrepo@main",
+			Type:        "msg_assistant",
+			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/some/model","inputTokens":1000,"outputTokens":500}`,
+			CreatedAt:   time.Now(),
+			OpencodeSID: &sid,
+		},
+	}
+
+	m := collectMetrics(events, sid)
+
+	if m.EventCost != 0 {
+		t.Errorf("EventCost = %v, want 0", m.EventCost)
+	}
+	if got := m.totalCost(); got != 0 {
+		t.Errorf("totalCost() = %v, want 0 (should display as —)", got)
+	}
+}
 func TestRunStatsSession_TurnDurations(t *testing.T) {
 	d := openStatsTestDB(t)
 	const session = "testrepo@main"

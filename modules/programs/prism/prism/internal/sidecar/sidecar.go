@@ -946,6 +946,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 						Write int `json:"write"`
 					} `json:"cache"`
 				} `json:"tokens"`
+				Cost float64 `json:"cost"`
 				Time *struct {
 					Created   *float64 `json:"created"`
 					Completed *float64 `json:"completed"`
@@ -1141,6 +1142,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 					eventPayload["cacheWriteTokens"] = info.Tokens.Cache.Write
 				}
 			}
+		}
+
+		if info.Cost > 0 {
+			eventPayload["cost"] = info.Cost
 		}
 
 		if info.Time != nil && info.Time.Created != nil && info.Time.Completed != nil {
