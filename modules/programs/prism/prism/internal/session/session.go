@@ -183,16 +183,25 @@ const (
 
 // DefaultAgent returns the agent to use for the given directory.
 // If explicit is non-empty it is returned unchanged.
-// Otherwise "coordinator" is returned for the "main" worktree and "worker" for
-// everything else.
+// Otherwise:
+//   - For prism bare+worktree sessions (parent dir contains .bare), returns
+//     "coordinator" for the "main" worktree and "worker" for other branches.
+//   - For non-worktree paths (regular git repos, non-git dirs), returns ""
+//     (empty string) so no --agent flag is passed to opencode.
 func DefaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if filepath.Base(directory) == "main" {
-		return "coordinator"
+	// Only apply the coordinator/worker split for prism bare+worktree sessions.
+	// A path whose parent contains .bare is a linked worktree; everything else
+	// (regular git repo, non-git dir) is a plain project and gets no role assigned.
+	if git.IsBareRepo(filepath.Dir(directory)) {
+		if filepath.Base(directory) == "main" {
+			return "coordinator"
+		}
+		return "worker"
 	}
-	return "worker"
+	return "" // non-worktree: caller must not pass --agent
 }
 
 // DefaultAgentForSession returns the agent to use for the given session,
@@ -284,11 +293,12 @@ func BuildOpencodeCmd(opts Opts) string {
 
 // buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).
 func buildDirectOpencodeCmd(opts Opts) string {
-	agent := opts.Agent
-	if agent == "" {
-		agent = "worker"
+	cmd := "opencode"
+	// Only add --agent flag if opts.Agent is non-empty. Empty string means
+	// "let opencode fall back to its own config" (used for non-worktree paths).
+	if opts.Agent != "" {
+		cmd += " --agent " + opts.Agent
 	}
-	cmd := "opencode --agent " + agent
 	if opts.Port != 0 {
 		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
 	}

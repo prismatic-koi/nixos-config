@@ -436,6 +436,12 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 	if err != nil {
 		return err
 	}
+	// When effectiveRole is "" (non-worktree path), use the coordinator config blob
+	// but do not pass --agent flag (opts.Agent will be "" and buildDirectOpencodeCmd
+	// will not add --agent). This ensures build/plan mode agents are available.
+	if effectiveRole == "" {
+		roleConfig = pf.ContainerCoordinatorConfig
+	}
 	if roleConfig != "" {
 		opts.ConfigContent = roleConfig
 	} else if effectiveRole == "worker" || effectiveRole == "coordinator" {

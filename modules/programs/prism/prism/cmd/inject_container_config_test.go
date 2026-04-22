@@ -6,13 +6,15 @@ package cmd
 // looks up the role's config blob from the profiles file, and sets
 // opts.ConfigContent. These tests exercise:
 //
-//   - Worker role (non-"main" directory base) receives ContainerWorkerConfig.
-//   - Coordinator role ("main" directory base) receives ContainerCoordinatorConfig.
+//   - Worker role (non-"main" worktree under a bare repo) receives ContainerWorkerConfig.
+//   - Coordinator role ("main" worktree under a bare repo) receives ContainerCoordinatorConfig.
+//   - Non-worktree path receives ContainerCoordinatorConfig but with no --agent flag.
 //   - An explicit Agent override is respected over the DefaultAgent derivation.
 //   - Empty config blob (role present but no config set) leaves ConfigContent empty
 //     and does not return an error.
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -29,12 +31,32 @@ func makeInjectTestProfile() *config.ProfilesFile {
 	}
 }
 
+// setupBareWorktree creates a temporary bare repo with a worktree for testing.
+// Returns the bare repo path and the worktree path.
+func setupBareWorktree(t *testing.T, branchName string) (bareRoot, worktreePath string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	bareRoot = filepath.Join(tmpDir, "myrepo")
+	worktreePath = filepath.Join(bareRoot, branchName)
+
+	// Create bare repo structure with .bare marker.
+	if err := os.MkdirAll(worktreePath, 0755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	// Create .bare marker in parent directory to simulate a prism bare repo.
+	if err := os.MkdirAll(filepath.Join(bareRoot, ".bare"), 0755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
+	}
+
+	return bareRoot, worktreePath
+}
+
 // TestInjectContainerConfig_WorkerRole verifies that a non-"main" worktree
-// directory causes injectContainerConfig to select ContainerWorkerConfig.
+// directory under a bare repo causes injectContainerConfig to select ContainerWorkerConfig.
 func TestInjectContainerConfig_WorkerRole(t *testing.T) {
 	pf := makeInjectTestProfile()
 	opts := session.Opts{}
-	worktreePath := filepath.Join("/some/repo/.bare/worktrees", "feature-branch")
+	_, worktreePath := setupBareWorktree(t, "feature-branch")
 
 	if err := injectContainerConfig(worktreePath, pf, &opts, "test"); err != nil {
 		t.Fatalf("injectContainerConfig: %v", err)
@@ -47,11 +69,11 @@ func TestInjectContainerConfig_WorkerRole(t *testing.T) {
 }
 
 // TestInjectContainerConfig_CoordinatorRole verifies that a worktree directory
-// named "main" causes injectContainerConfig to select ContainerCoordinatorConfig.
+// named "main" under a bare repo causes injectContainerConfig to select ContainerCoordinatorConfig.
 func TestInjectContainerConfig_CoordinatorRole(t *testing.T) {
 	pf := makeInjectTestProfile()
 	opts := session.Opts{}
-	worktreePath := filepath.Join("/some/repo/.bare/worktrees", "main")
+	_, worktreePath := setupBareWorktree(t, "main")
 
 	if err := injectContainerConfig(worktreePath, pf, &opts, "test"); err != nil {
 		t.Fatalf("injectContainerConfig: %v", err)
@@ -63,13 +85,36 @@ func TestInjectContainerConfig_CoordinatorRole(t *testing.T) {
 	}
 }
 
+// TestInjectContainerConfig_NonWorktreePath verifies that a non-worktree path
+// (no .bare in parent) receives the coordinator blob but no --agent flag.
+func TestInjectContainerConfig_NonWorktreePath(t *testing.T) {
+	pf := makeInjectTestProfile()
+	opts := session.Opts{}
+	// Use a path that is not under a bare repo (no .bare in parent).
+	worktreePath := "/some/regular/repo"
+
+	if err := injectContainerConfig(worktreePath, pf, &opts, "test"); err != nil {
+		t.Fatalf("injectContainerConfig: %v", err)
+	}
+
+	// Non-worktree paths should receive coordinator config.
+	if opts.ConfigContent != pf.ContainerCoordinatorConfig {
+		t.Errorf("ConfigContent = %q, want %q (coordinator blob for non-worktree)",
+			opts.ConfigContent, pf.ContainerCoordinatorConfig)
+	}
+	// Agent should be empty (no --agent flag passed).
+	if opts.Agent != "" {
+		t.Errorf("Agent = %q, want %q (no --agent flag for non-worktree)", opts.Agent, "")
+	}
+}
+
 // TestInjectContainerConfig_ExplicitAgentOverride verifies that an explicit
 // opts.Agent override is respected: when opts.Agent is "coordinator", the
 // coordinator blob is selected even for a non-"main" directory.
 func TestInjectContainerConfig_ExplicitAgentOverride(t *testing.T) {
 	pf := makeInjectTestProfile()
 	opts := session.Opts{Agent: "coordinator"}
-	worktreePath := filepath.Join("/some/repo/.bare/worktrees", "feature-branch")
+	_, worktreePath := setupBareWorktree(t, "feature-branch")
 
 	if err := injectContainerConfig(worktreePath, pf, &opts, "test"); err != nil {
 		t.Fatalf("injectContainerConfig: %v", err)
@@ -93,7 +138,7 @@ func TestInjectContainerConfig_EmptyBlobNoError(t *testing.T) {
 		ContainerCoordinatorConfig: "",
 	}
 	opts := session.Opts{}
-	worktreePath := filepath.Join("/some/repo/.bare/worktrees", "feature-branch")
+	_, worktreePath := setupBareWorktree(t, "feature-branch")
 
 	if err := injectContainerConfig(worktreePath, pf, &opts, "test"); err != nil {
 		t.Fatalf("injectContainerConfig returned error on empty blob: %v", err)

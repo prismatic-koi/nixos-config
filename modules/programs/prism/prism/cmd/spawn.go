@@ -265,7 +265,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// determined by Nix config, not by the project file.
 	//
 	// effectiveRole is derived the same way the session uses: explicit --agent
-	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere.
+	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere,
+	// or "" for non-worktree paths (regular git repos, non-git dirs).
 	// This must run after worktreePath is known so that DefaultAgent can inspect
 	// the directory name (e.g. "main").
 	//
@@ -281,6 +282,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
 		if roleErr != nil {
 			return roleErr
+		}
+		// When effectiveRole is "" (non-worktree path), use the coordinator config blob
+		// but do not pass --agent flag (opts.Agent will be "" and buildDirectOpencodeCmd
+		// will not add --agent). This ensures build/plan mode agents are available.
+		if effectiveRole == "" {
+			roleConfig = pf.ContainerCoordinatorConfig
 		}
 		if roleConfig != "" {
 			// Role config supersedes profile/model overrides for identity &

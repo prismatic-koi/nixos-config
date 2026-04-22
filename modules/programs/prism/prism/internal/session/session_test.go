@@ -586,3 +586,78 @@ func TestDefaultAgentForSession_NoRow(t *testing.T) {
 		t.Errorf("DefaultAgentForSession (no row) = %q, want %q", got, want)
 	}
 }
+
+// ── DefaultAgent tests ──────────────────────────────────────────────────────────
+
+// TestDefaultAgent_ExplicitAgent verifies that an explicit agent value is
+// returned as-is, bypassing all directory heuristics.
+func TestDefaultAgent_ExplicitAgent(t *testing.T) {
+	got := DefaultAgent("/any/path", "my-custom-agent")
+	if got != "my-custom-agent" {
+		t.Errorf("DefaultAgent with explicit agent = %q, want %q", got, "my-custom-agent")
+	}
+}
+
+// TestDefaultAgent_ThreeWayLogic verifies the three-way logic:
+// 1. main worktree (parent contains .bare, basename is "main") → "coordinator"
+// 2. Non-main worktree branch (parent contains .bare, basename ≠ "main") → "worker"
+// 3. Non-worktree path (parent does NOT contain .bare) → ""
+func TestDefaultAgent_ThreeWayLogic(t *testing.T) {
+	// Create a temporary directory structure for testing.
+	tmpDir := t.TempDir()
+	bareRoot := filepath.Join(tmpDir, "myrepo")
+	mainWorktree := filepath.Join(bareRoot, "main")
+	featureWorktree := filepath.Join(bareRoot, "feature-branch")
+	regularRepo := filepath.Join(tmpDir, "regular-repo")
+	nonGitDir := filepath.Join(tmpDir, "non-git-dir")
+
+	// Create bare repo structure.
+	if err := os.MkdirAll(mainWorktree, 0755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	if err := os.MkdirAll(featureWorktree, 0755); err != nil {
+		t.Fatalf("mkdir feature worktree: %v", err)
+	}
+	// Create .bare marker in parent directory to simulate a prism bare repo.
+	if err := os.MkdirAll(filepath.Join(bareRoot, ".bare"), 0755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
+	}
+
+	// Create regular git repo.
+	if err := os.MkdirAll(regularRepo, 0755); err != nil {
+		t.Fatalf("mkdir regular repo: %v", err)
+	}
+	// Create .git directory to simulate a regular git repo.
+	if err := os.MkdirAll(filepath.Join(regularRepo, ".git"), 0755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	// Create non-git directory.
+	if err := os.MkdirAll(nonGitDir, 0755); err != nil {
+		t.Fatalf("mkdir non-git dir: %v", err)
+	}
+
+	// Test case 1: main worktree → "coordinator"
+	got1 := DefaultAgent(mainWorktree, "")
+	if got1 != "coordinator" {
+		t.Errorf("DefaultAgent(main worktree) = %q, want %q", got1, "coordinator")
+	}
+
+	// Test case 2: non-main worktree branch → "worker"
+	got2 := DefaultAgent(featureWorktree, "")
+	if got2 != "worker" {
+		t.Errorf("DefaultAgent(feature worktree) = %q, want %q", got2, "worker")
+	}
+
+	// Test case 3: regular git repo → ""
+	got3 := DefaultAgent(regularRepo, "")
+	if got3 != "" {
+		t.Errorf("DefaultAgent(regular git repo) = %q, want %q (empty string)", got3, "")
+	}
+
+	// Test case 4: non-git directory → ""
+	got4 := DefaultAgent(nonGitDir, "")
+	if got4 != "" {
+		t.Errorf("DefaultAgent(non-git dir) = %q, want %q (empty string)", got4, "")
+	}
+}

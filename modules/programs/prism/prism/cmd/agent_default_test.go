@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -8,26 +9,66 @@ import (
 )
 
 func TestDefaultAgent_CoordinatorForMain(t *testing.T) {
-	got := session.DefaultAgent("/home/user/repos/project/main", "")
+	// Create a temporary bare repo structure for testing.
+	tmpDir := t.TempDir()
+	bareRoot := filepath.Join(tmpDir, "project")
+	mainWorktree := filepath.Join(bareRoot, "main")
+
+	// Create bare repo structure with .bare marker.
+	if err := os.MkdirAll(mainWorktree, 0755); err != nil {
+		t.Fatalf("mkdir main worktree: %v", err)
+	}
+	// Create .bare marker in parent directory to simulate a prism bare repo.
+	if err := os.MkdirAll(filepath.Join(bareRoot, ".bare"), 0755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
+	}
+
+	got := session.DefaultAgent(mainWorktree, "")
 	if got != "coordinator" {
-		t.Errorf("DefaultAgent(%q, %q) = %q, want %q", "/home/user/repos/project/main", "", got, "coordinator")
+		t.Errorf("DefaultAgent(%q, %q) = %q, want %q", mainWorktree, "", got, "coordinator")
 	}
 }
 
 func TestDefaultAgent_WorkerForNonMain(t *testing.T) {
-	cases := []string{
-		"/home/user/repos/project/feature-foo",
-		"/home/user/repos/project/maintain",
-		"/home/user/repos/project/main-branch",
-		"/home/user/repos/project/MAIN",
-		"/home/user/repos/project/Main",
-		"/home/user",
+	// Create a temporary bare repo structure for testing.
+	tmpDir := t.TempDir()
+	bareRoot := filepath.Join(tmpDir, "project")
+
+	// Create bare repo structure with .bare marker.
+	if err := os.MkdirAll(filepath.Join(bareRoot, ".bare"), 0755); err != nil {
+		t.Fatalf("mkdir .bare: %v", err)
 	}
-	for _, dir := range cases {
-		t.Run(filepath.Base(dir), func(t *testing.T) {
+
+	// Create worktree branches.
+	worktrees := []string{"feature-foo", "maintain", "main-branch", "feature-branch"}
+	for _, branch := range worktrees {
+		if err := os.MkdirAll(filepath.Join(bareRoot, branch), 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", branch, err)
+		}
+	}
+
+	// Test that non-main worktrees return "worker".
+	for _, branch := range worktrees {
+		t.Run(branch, func(t *testing.T) {
+			dir := filepath.Join(bareRoot, branch)
 			got := session.DefaultAgent(dir, "")
 			if got != "worker" {
 				t.Errorf("DefaultAgent(%q, %q) = %q, want %q", dir, "", got, "worker")
+			}
+		})
+	}
+
+	// Test that paths that are NOT worktrees (no .bare in parent) return "".
+	nonWorktreePaths := []string{
+		"/home/user/repos/project/MAIN",   // Not under a bare repo
+		"/home/user/repos/project/Main",   // Not under a bare repo
+		"/home/user",                      // Not under a bare repo
+	}
+	for _, dir := range nonWorktreePaths {
+		t.Run(filepath.Base(dir)+"_nonworktree", func(t *testing.T) {
+			got := session.DefaultAgent(dir, "")
+			if got != "" {
+				t.Errorf("DefaultAgent(%q, %q) = %q, want %q (empty string for non-worktree)", dir, "", got, "")
 			}
 		})
 	}
@@ -77,9 +118,9 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
 		// Fresh=true suppresses the stored session ID even if set.
 		{session.Opts{Agent: "worker", Fresh: true, OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
-		// Safety-net fallback: empty agent still yields "worker".
-		{session.Opts{OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker -s ses_abc123"},
-		{session.Opts{RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
+		// Empty agent means no --agent flag (non-worktree path case).
+		{session.Opts{OpencodeSession: "ses_abc123", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode -s ses_abc123"},
+		{session.Opts{RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode"},
 		// Prompt with no special characters.
 		{session.Opts{Agent: "worker", Prompt: "fix the login bug", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker --prompt 'fix the login bug'"},
 		// Prompt containing a single quote — exercises shellQuote escaping.
