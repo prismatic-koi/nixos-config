@@ -1280,9 +1280,10 @@ func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
 
 // ── AgentEnvVars (--setenv K V) ───────────────────────────────────────────────
 
-// TestBwrapBuildArgs_AgentEnvVarsInjected verifies that entries in
-// Config.AgentEnvVars (e.g. GIT_EDITOR, KUBECONFIG, AWS_CONFIG_FILE) are
-// emitted as --setenv K V in the bwrap arg list.
+// TestBwrapBuildArgs_AgentEnvVarsInjected verifies that plain entries in
+// Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --setenv K V in the
+// bwrap arg list, while KUBECONFIG and AWS_CONFIG_FILE are suppressed because
+// those files are bind-mounted at their canonical default paths.
 func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -1299,14 +1300,141 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	cases := [][2]string{
-		{"GIT_EDITOR", "true"},
-		{"KUBECONFIG", "/home/ben/.config/kube/agents-config"},
-		{"AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config"},
+	// GIT_EDITOR must be injected.
+	if !hasSetenv(args, "GIT_EDITOR", "true") {
+		t.Errorf("--setenv GIT_EDITOR true not found in args: %v", args)
 	}
-	for _, c := range cases {
-		if !hasSetenv(args, c[0], c[1]) {
-			t.Errorf("--setenv %s %q not found in args: %v", c[0], c[1], args)
+
+	// KUBECONFIG and AWS_CONFIG_FILE must NOT be injected — the files are
+	// already bind-mounted at their canonical default paths inside the sandbox.
+	for i, arg := range args {
+		if arg == "--setenv" && i+1 < len(args) {
+			key := args[i+1]
+			if key == "KUBECONFIG" {
+				t.Errorf("KUBECONFIG must not be injected in bwrap mode; found in args: %v", args)
+			}
+			if key == "AWS_CONFIG_FILE" {
+				t.Errorf("AWS_CONFIG_FILE must not be injected in bwrap mode; found in args: %v", args)
+			}
+		}
+	}
+}
+
+// TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent verifies that KUBECONFIG
+// is suppressed even when ~/.config/kube/agents-config does not exist (mount
+// is skipped but the host path is still wrong inside the sandbox).
+func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Do NOT create kube dir — file absent.
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", fakeHome); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	// Minimal fixture: create the dirs/files required by BuildArgs.
+	for _, d := range []string{
+		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".mcp-auth"),
+		filepath.Join(fakeHome, ".local", "share", "opencode"),
+		filepath.Join(fakeHome, ".cache", "nix"),
+		filepath.Join(fakeHome, ".ssh"),
+		filepath.Join(fakeHome, ".config", "aws"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	for _, f := range []string{
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey.pub"),
+		filepath.Join(fakeHome, ".ssh", "known_hosts"),
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+	} {
+		if err := os.WriteFile(f, []byte("fake"), 0o600); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
+	}
+
+	m := newBwrapManager(Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars:  map[string]string{"KUBECONFIG": "/home/ben/.config/kube/agents-config"},
+	})
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile ssh config: %v", err)
+	}
+	if err := os.WriteFile(m.gitconfigFilePath(), []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile gitconfig: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for i, arg := range args {
+		if arg == "--setenv" && i+1 < len(args) && args[i+1] == "KUBECONFIG" {
+			t.Errorf("KUBECONFIG must not be injected even when kube file is absent; found in args: %v", args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent verifies that
+// AWS_CONFIG_FILE is suppressed even when ~/.config/aws/readonly-config does
+// not exist.
+func TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
+	fakeHome := t.TempDir()
+	// Do NOT create aws dir — file absent.
+	origHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", fakeHome); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer func() { _ = os.Setenv("HOME", origHome) }()
+
+	for _, d := range []string{
+		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".mcp-auth"),
+		filepath.Join(fakeHome, ".local", "share", "opencode"),
+		filepath.Join(fakeHome, ".cache", "nix"),
+		filepath.Join(fakeHome, ".ssh"),
+		filepath.Join(fakeHome, ".config", "kube"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("MkdirAll %q: %v", d, err)
+		}
+	}
+	for _, f := range []string{
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519-signingkey.pub"),
+		filepath.Join(fakeHome, ".ssh", "known_hosts"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"),
+	} {
+		if err := os.WriteFile(f, []byte("fake"), 0o600); err != nil {
+			t.Fatalf("WriteFile %q: %v", f, err)
+		}
+	}
+
+	m := newBwrapManager(Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars:  map[string]string{"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config"},
+	})
+	if err := os.WriteFile(m.sshConfigFilePath(), []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile ssh config: %v", err)
+	}
+	if err := os.WriteFile(m.gitconfigFilePath(), []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile gitconfig: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for i, arg := range args {
+		if arg == "--setenv" && i+1 < len(args) && args[i+1] == "AWS_CONFIG_FILE" {
+			t.Errorf("AWS_CONFIG_FILE must not be injected even when aws file is absent; found in args: %v", args)
 		}
 	}
 }

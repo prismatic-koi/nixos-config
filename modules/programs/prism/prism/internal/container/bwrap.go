@@ -457,15 +457,27 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", k, v)
 	}
 
-	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true, KUBECONFIG,
-	// AWS_CONFIG_FILE). These come from profiles.json agent_env_vars (written
-	// by Nix). Emitted in sorted key order for determinism. bwrap --setenv
-	// takes KEY and VALUE as distinct argv elements so no shell quoting is
-	// needed — special characters in values are passed verbatim.
+	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true). These come
+	// from profiles.json agent_env_vars (written by Nix). Emitted in sorted
+	// key order for determinism. bwrap --setenv takes KEY and VALUE as distinct
+	// argv elements so no shell quoting is needed — special characters in
+	// values are passed verbatim.
+	//
+	// KUBECONFIG and AWS_CONFIG_FILE are intentionally suppressed here: both
+	// files are already bind-mounted at their canonical default paths
+	// (~/.kube/config and ~/.aws/config respectively), so the host XDG paths
+	// held in AgentEnvVars do not exist inside the sandbox and would only
+	// override the correctly-mounted locations.
+	sandboxMountedByDefault := map[string]bool{
+		"KUBECONFIG":      true,
+		"AWS_CONFIG_FILE": true,
+	}
 	if len(cfg.AgentEnvVars) > 0 {
 		keys := make([]string, 0, len(cfg.AgentEnvVars))
 		for k := range cfg.AgentEnvVars {
-			keys = append(keys, k)
+			if !sandboxMountedByDefault[k] {
+				keys = append(keys, k)
+			}
 		}
 		sort.Strings(keys)
 		for _, k := range keys {

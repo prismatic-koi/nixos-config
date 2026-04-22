@@ -1399,13 +1399,25 @@ func (m *Manager) buildRunArgs() []string {
 		args = append(args, "--env", kv)
 	}
 
-	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true, KUBECONFIG,
-	// AWS_CONFIG_FILE). These come from profiles.json agent_env_vars (written
-	// by Nix). Emitted in sorted key order for determinism.
+	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true). These come
+	// from profiles.json agent_env_vars (written by Nix). Emitted in sorted
+	// key order for determinism.
+	//
+	// KUBECONFIG and AWS_CONFIG_FILE are intentionally suppressed here: both
+	// files are already bind-mounted at their canonical default paths
+	// (/root/.kube/config and /root/.aws/config respectively), so the host
+	// XDG paths held in AgentEnvVars do not exist inside the container and
+	// would only override the correctly-mounted locations.
+	sandboxMountedByDefault := map[string]bool{
+		"KUBECONFIG":      true,
+		"AWS_CONFIG_FILE": true,
+	}
 	if len(cfg.AgentEnvVars) > 0 {
 		keys := make([]string, 0, len(cfg.AgentEnvVars))
 		for k := range cfg.AgentEnvVars {
-			keys = append(keys, k)
+			if !sandboxMountedByDefault[k] {
+				keys = append(keys, k)
+			}
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
