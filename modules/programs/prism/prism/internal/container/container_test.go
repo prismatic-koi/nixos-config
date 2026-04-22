@@ -3267,9 +3267,10 @@ func TestOpencodeConfigFilePath_MatchesManagerMethod(t *testing.T) {
 
 // ── AgentEnvVars (--env K=V) ──────────────────────────────────────────────────
 
-// TestBuildRunArgs_AgentEnvVarsInjected verifies that entries in
-// Config.AgentEnvVars (e.g. GIT_EDITOR, KUBECONFIG, AWS_CONFIG_FILE) are
-// emitted as --env KEY=VALUE in the podman run arg list.
+// TestBuildRunArgs_AgentEnvVarsInjected verifies that plain entries in
+// Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --env KEY=VALUE in the
+// podman run arg list, while KUBECONFIG and AWS_CONFIG_FILE are suppressed
+// because those files are bind-mounted at their canonical default paths.
 func TestBuildRunArgs_AgentEnvVarsInjected(t *testing.T) {
 	m := New(Config{
 		SessionName:   "repo@feat",
@@ -3282,22 +3283,65 @@ func TestBuildRunArgs_AgentEnvVarsInjected(t *testing.T) {
 	})
 	args := m.buildRunArgs()
 
-	cases := [][2]string{
-		{"GIT_EDITOR", "true"},
-		{"KUBECONFIG", "/home/ben/.config/kube/agents-config"},
-		{"AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config"},
+	// GIT_EDITOR must be injected.
+	want := "GIT_EDITOR=true"
+	found := false
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && args[i+1] == want {
+			found = true
+			break
+		}
 	}
-	for _, c := range cases {
-		want := c[0] + "=" + c[1]
-		found := false
-		for i, arg := range args {
-			if arg == "--env" && i+1 < len(args) && args[i+1] == want {
-				found = true
-				break
+	if !found {
+		t.Errorf("--env %q not found in podman args: %v", want, args)
+	}
+
+	// KUBECONFIG and AWS_CONFIG_FILE must NOT be injected — the files are
+	// already bind-mounted at their canonical default paths inside the container.
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) {
+			val := args[i+1]
+			if strings.HasPrefix(val, "KUBECONFIG=") {
+				t.Errorf("KUBECONFIG must not be injected in podman mode; found %q in args: %v", val, args)
+			}
+			if strings.HasPrefix(val, "AWS_CONFIG_FILE=") {
+				t.Errorf("AWS_CONFIG_FILE must not be injected in podman mode; found %q in args: %v", val, args)
 			}
 		}
-		if !found {
-			t.Errorf("--env %q not found in podman args: %v", want, args)
+	}
+}
+
+// TestBuildRunArgs_KubeconfigNotInjectedWhenAbsent verifies that KUBECONFIG is
+// suppressed even when ~/.config/kube/agents-config does not exist on the host.
+func TestBuildRunArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars:  map[string]string{"KUBECONFIG": "/home/ben/.config/kube/agents-config"},
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && strings.HasPrefix(args[i+1], "KUBECONFIG=") {
+			t.Errorf("KUBECONFIG must not be injected even when kube file is absent; found %q in args: %v", args[i+1], args)
+		}
+	}
+}
+
+// TestBuildRunArgs_AwsConfigFileNotInjectedWhenAbsent verifies that
+// AWS_CONFIG_FILE is suppressed even when ~/.config/aws/readonly-config does
+// not exist on the host.
+func TestBuildRunArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+		AgentEnvVars:  map[string]string{"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config"},
+	})
+	args := m.buildRunArgs()
+
+	for i, arg := range args {
+		if arg == "--env" && i+1 < len(args) && strings.HasPrefix(args[i+1], "AWS_CONFIG_FILE=") {
+			t.Errorf("AWS_CONFIG_FILE must not be injected even when aws file is absent; found %q in args: %v", args[i+1], args)
 		}
 	}
 }
