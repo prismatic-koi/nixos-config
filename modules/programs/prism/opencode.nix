@@ -431,6 +431,7 @@
         anthropic = { };
         github-copilot = { };
         google = { };
+        openrouter = { };
       };
       hmUser = config.home-manager.users.${config.nx.username};
 
@@ -534,6 +535,7 @@
         "anthropic"
         "github-copilot"
         "google"
+        "openrouter"
       ];
 
       # Relative paths resolve from the opencode.json config file location
