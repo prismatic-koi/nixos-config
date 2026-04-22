@@ -598,6 +598,8 @@ INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
+  repo               = excluded.repo,
+  worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
@@ -658,6 +660,8 @@ INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent
 VALUES (?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
+  repo               = excluded.repo,
+  worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
@@ -689,6 +693,8 @@ INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
+  repo               = excluded.repo,
+  worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),

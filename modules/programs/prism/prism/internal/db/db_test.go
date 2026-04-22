@@ -3738,3 +3738,85 @@ func TestHasReviewGroup(t *testing.T) {
 		t.Error("HasReviewGroup (other session): got true, want false")
 	}
 }
+
+// TestUpsertStatusWithAgent_WorktreeUpdatedOnConflict verifies that a second
+// call to UpsertStatusWithAgent with the same session name but a different
+// worktree overwrites the stored worktree rather than silently keeping the old
+// value.
+func TestUpsertStatusWithAgent_WorktreeUpdatedOnConflict(t *testing.T) {
+	d := openTestDB(t)
+
+	agentName := "opencode"
+	modelID := "gpt-4o"
+
+	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/old/worktree", "idle", nil, nil, &agentName, &modelID); err != nil {
+		t.Fatalf("first UpsertStatusWithAgent: %v", err)
+	}
+	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/new/worktree", "active", nil, nil, &agentName, &modelID); err != nil {
+		t.Fatalf("second UpsertStatusWithAgent: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if s.Worktree != "/new/worktree" {
+		t.Errorf("Worktree: got %q, want %q", s.Worktree, "/new/worktree")
+	}
+}
+
+// TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict verifies that a
+// second call to UpsertStatusSeedRootAgentName with the same session name but a
+// different worktree overwrites the stored worktree.
+func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/old/worktree", "idle", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/new/worktree", "active", nil, nil, "coordinator"); err != nil {
+		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if s.Worktree != "/new/worktree" {
+		t.Errorf("Worktree: got %q, want %q", s.Worktree, "/new/worktree")
+	}
+}
+
+// TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict verifies that a
+// second call to UpsertStatusWithRootAgent with the same session name but a
+// different worktree overwrites the stored worktree.
+func TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict(t *testing.T) {
+	d := openTestDB(t)
+
+	agentName := "opencode"
+	modelID := "gpt-4o"
+
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/old/worktree", "idle", nil, nil, &agentName, &modelID); err != nil {
+		t.Fatalf("first UpsertStatusWithRootAgent: %v", err)
+	}
+	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/new/worktree", "active", nil, nil, &agentName, &modelID); err != nil {
+		t.Fatalf("second UpsertStatusWithRootAgent: %v", err)
+	}
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil, want a row")
+	}
+	if s.Worktree != "/new/worktree" {
+		t.Errorf("Worktree: got %q, want %q", s.Worktree, "/new/worktree")
+	}
+}
