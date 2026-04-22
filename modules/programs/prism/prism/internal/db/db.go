@@ -579,9 +579,8 @@ func (d *DB) checkTransition(sessionName string, toState agent.AgentState, calle
 }
 
 // UpsertStatus inserts or updates the agent_status row for sessionName.
-// repo and worktree are only set on initial insert — they do not change on
-// conflict. title, harnessSessionID, agentName, and modelID are updated only when
-// non-nil (COALESCE).
+// repo and worktree are always overwritten on conflict. title, harnessSessionID,
+// agentName, and modelID are updated only when non-nil (COALESCE).
 func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *string, harnessSessionID *string) error {
 	return d.UpsertStatusWithAgent(sessionName, repo, worktree, state, title, harnessSessionID, nil, nil)
 }
@@ -984,10 +983,10 @@ func portAvailable(port int) bool {
 }
 
 // RefreshWorktree unconditionally updates the repo and worktree columns for an
-// existing agent_status row. Unlike UpsertStatus, which only writes repo and
-// worktree on the initial INSERT, this corrects any previously-corrupted values
-// (e.g. from the session-created hook race described in issue #380) and also
-// resets state to idle and refreshes last_seen.
+// existing agent_status row. It also resets state to idle and refreshes
+// last_seen, making it useful for prism restore (which needs a clean idle state
+// regardless of what the prior session left behind). Unlike UpsertStatus, this
+// does not insert a new row when none exists — it is a no-op for unknown sessions.
 //
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
