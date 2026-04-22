@@ -144,4 +144,3 @@ func TestInjectContainerConfig_EmptyBlobNoError(t *testing.T) {
 		t.Errorf("ConfigContent = %q, want empty (no blob for role)", opts.ConfigContent)
 	}
 }
-
