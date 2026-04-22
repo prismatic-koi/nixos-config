@@ -297,7 +297,7 @@ func buildDirectOpencodeCmd(opts Opts) string {
 	// Only add --agent flag if opts.Agent is non-empty. Empty string means
 	// "let opencode fall back to its own config" (used for non-worktree paths).
 	if opts.Agent != "" {
-		cmd += " --agent " + opts.Agent
+		cmd += " --agent " + shellQuote(opts.Agent)
 	}
 	if opts.Port != 0 {
 		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
