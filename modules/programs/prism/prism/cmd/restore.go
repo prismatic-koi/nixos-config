@@ -329,10 +329,16 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 			roleConfig, roleErr := config.ContainerConfigForRole(pf, effectiveRole)
 			if roleErr != nil {
 				fmt.Fprintf(os.Stderr, "restore %q: container config for role %q: %v — skipping config injection\n", s.SessionName, effectiveRole, roleErr)
-			} else if roleConfig != "" {
-				opts.ConfigContent = roleConfig
-			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
-				fmt.Fprintf(os.Stderr, "[prism restore] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+			} else {
+				// When effectiveRole is "" (non-worktree path), use the coordinator config blob.
+				if effectiveRole == "" {
+					roleConfig = pf.ContainerCoordinatorConfig
+				}
+				if roleConfig != "" {
+					opts.ConfigContent = roleConfig
+				} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
+					fmt.Fprintf(os.Stderr, "[prism restore] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
+				}
 			}
 		}
 

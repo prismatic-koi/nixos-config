@@ -584,7 +584,7 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	worktreeDir := t.TempDir()
+	_, worktreeDir := setupBareWorktree(t, "host-mode")
 	sessionName := "myrepo@host-mode"
 	// Seed the row first, then mark it as host_mode=true. Re-read so the
 	// Status passed to restoreSession has the correct HostMode value.
@@ -728,11 +728,8 @@ func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// Use a non-main worktree directory so DefaultAgent returns "worker".
-	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	// Use a non-main worktree directory under a bare repo so DefaultAgent returns "worker".
+	_, worktreeDir := setupBareWorktree(t, "feature-branch")
 	sessionName := "myrepo@feature"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 
@@ -776,11 +773,8 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// "main" as the base name causes DefaultAgent to return "coordinator".
-	worktreeDir := filepath.Join(t.TempDir(), "main")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	// "main" as the base name under a bare repo causes DefaultAgent to return "coordinator".
+	_, worktreeDir := setupBareWorktree(t, "main")
 	sessionName := "myrepo@main"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 
@@ -1211,11 +1205,8 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	// Non-main worktree → DefaultAgent returns "worker".
-	worktreeDir := filepath.Join(t.TempDir(), "feature-branch")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	// Non-main worktree under a bare repo → DefaultAgent returns "worker".
+	_, worktreeDir := setupBareWorktree(t, "feature-branch")
 	sessionName := "myrepo@bwrap-worker"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 
@@ -1275,10 +1266,7 @@ func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 
 	d := openRestoreTestDB(t)
 
-	worktreeDir := filepath.Join(t.TempDir(), "feature-x")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	_, worktreeDir := setupBareWorktree(t, "feature-x")
 	sessionName := "myrepo@bwrap-file"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 	if err := d.SetIsolationMode(sessionName, string(config.IsolationBwrap)); err != nil {

@@ -10,7 +10,7 @@ package cmd
 //	--repo <name>         repo shorthand name or absolute path (default: inferred from current pane)
 //	--prompt <text>       pass an initial prompt to opencode on launch
 //	--prompt-file <path>  read the initial prompt from a file
-//	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--agent <name>        opencode agent to use (default: "coordinator" on main worktree, "worker" on other worktrees, no flag for non-worktree paths)
 //	--profile <name>      model profile to use from ~/.config/prism/profiles.json
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
@@ -86,7 +86,7 @@ func init() {
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
 	spawnCmd.Flags().String("repo", "", "Repo shorthand name or absolute path (default: inferred from current pane)")
 	addPromptFlags(spawnCmd)
-	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
+	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main worktree, "worker" on other worktrees, no flag for non-worktree paths)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
