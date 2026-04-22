@@ -176,6 +176,12 @@ type sessionMetrics struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 
+	// EventCost is the sum of per-turn costs reported directly in the opencode
+	// SSE event payload (MsgAssistant.Cost). It is used as a fallback when the
+	// model is not present in the local modelCosts pricing table — for example,
+	// openrouter/* models that are billed at rates not known to this client.
+	EventCost float64
+
 	// Turn metrics.
 	AssistantTurns int
 	UserTurns      int
@@ -203,7 +209,9 @@ func (m *sessionMetrics) totalCost() float64 {
 	model := m.ModelID
 	costs, ok := modelCosts[model]
 	if !ok {
-		return 0
+		// Model not in local pricing table — fall back to the cost reported
+		// directly in the event payload (e.g. openrouter/* models).
+		return m.EventCost
 	}
 	return (float64(m.InputTokens)*costs.Input +
 		float64(m.OutputTokens)*costs.Output +
@@ -291,6 +299,7 @@ func collectMetrics(events []db.Event, opencodeSID string) *sessionMetrics {
 				m.OutputTokens += p.OutputTokens
 				m.CacheReadTokens += p.CacheReadTokens
 				m.CacheWriteTokens += p.CacheWriteTokens
+				m.EventCost += p.Cost
 				if p.DurationMs > 0 {
 					m.TurnDurations = append(m.TurnDurations, time.Duration(p.DurationMs)*time.Millisecond)
 				}
@@ -1554,11 +1563,15 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 		}
 
 		// Cost using the full key (provider/model).
+		// If the model is not in the local pricing table, fall back to the
+		// cost reported in the event payload (e.g. openrouter/* models).
 		if costs, ok := modelCosts[key]; ok {
 			m.Cost += (float64(p.InputTokens)*costs.Input +
 				float64(p.OutputTokens)*costs.Output +
 				float64(p.CacheReadTokens)*costs.CacheRead +
 				float64(p.CacheWriteTokens)*costs.CacheWrite) / 1_000_000
+		} else {
+			m.Cost += p.Cost
 		}
 
 		// Latency and throughput only for turns with valid duration.
