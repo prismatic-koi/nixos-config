@@ -71,7 +71,6 @@ func TestDefaultAgent(t *testing.T) {
 	}
 }
 
-
 // prepended to the command string before PRISM_SESSION_NAME in host-mode
 // (ContainerMode = false) sessions.
 func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
