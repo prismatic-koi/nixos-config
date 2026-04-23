@@ -7029,6 +7029,39 @@ func TestSessionError_DelayedSessionUpdated_DoesResume(t *testing.T) {
 	}
 }
 
+// TestSessionStatusRetry_ImmediateUpdated_DoesNotResume verifies that the
+// error-resume debounce also protects the session.status{retry} path.
+// session.status{retry} writes StateError independently of session.error; a
+// immediately-following session.updated must NOT transition back to active
+// within the debounce window.
+func TestSessionStatusRetry_ImmediateUpdated_DoesNotResume(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.status{retry} → StateError + lastErrorAt set.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "retry"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.status{retry}, want %q", state, agent.StateError)
+	}
+
+	// session.updated arrives immediately (within debounce window). Clock has not advanced.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-retry-churn",
+			"title": "Post-retry churn",
+		},
+	}))
+
+	// State must remain error — the false resume must be suppressed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after immediate session.updated following retry, want %q (debounce must also protect session.status{retry} path)", state, agent.StateError)
+	}
+}
+
 // TestSessionError_MessageAbortedError_PathUnchanged verifies edge-case: the
 // MessageAbortedError path (user pressed Escape) is unchanged by the fix.
 // It must still write interrupted (not error) and NOT set lastErrorAt, so the

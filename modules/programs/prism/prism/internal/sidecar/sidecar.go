@@ -672,7 +672,13 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 			s.writeStateChange(agent.StateActive)
 		}
 	case "retry":
+		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
+		// Record lastErrorAt so that handleSessionUpdated's error-resume debounce
+		// also protects this path. session.status{retry} independently writes
+		// StateError; without this, an immediate session.updated would bypass the
+		// debounce guard and false-resume.
+		s.lastErrorAt = s.cfg.Clock.Now()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 	}
