@@ -6,6 +6,7 @@
 package cmd
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -174,6 +175,40 @@ func scriptCmdArgs(cmd string) []string {
 	return []string{"-q", "-c", cmd, "/dev/null"}
 }
 
+// isInsideBwrap returns true when the test process is running inside a
+// bubblewrap (bwrap) sandbox. It checks whether PID 1 in the current PID
+// namespace is bwrap — the reliable indicator that bwrap used --unshare-pid to
+// create an isolated namespace.
+//
+// This is used to gate multi-client tmux integration tests that require two
+// simultaneous script-attached PTY clients. In bwrap's isolated /dev/pts
+// namespace, a second tmux attach-session conflicts with the first in a way that
+// causes both clients to exit immediately — a kernel/tmux interaction specific to
+// bwrap's devpts mount. Single-client tests are unaffected.
+func isInsideBwrap() bool {
+	comm, err := os.ReadFile("/proc/1/comm")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(comm)) == "bwrap"
+}
+
+// skipIfBwrapMultiClient calls t.Skip when the test requires multiple
+// simultaneous script-attached tmux clients and the process is running inside
+// a bwrap sandbox. In bwrap's isolated /dev/pts namespace, a second
+// attach-session causes both the new and existing PTY clients to immediately
+// exit — the server's devpts mount does not support concurrent script-attached
+// clients the way a full host PTY namespace does. Tests that need only a single
+// attached client are unaffected by this constraint.
+func skipIfBwrapMultiClient(t *testing.T) {
+	t.Helper()
+	if isInsideBwrap() {
+		t.Skip("skipping multi-client PTY test: running inside bwrap sandbox " +
+			"where a second script-attached tmux client causes both clients to " +
+			"exit (bwrap devpts namespace constraint — run from a host shell to exercise this path)")
+	}
+}
+
 func (s *cmdTestServer) run(args ...string) error {
 	// -f /dev/null suppresses the user's tmux.conf so no hooks (e.g.
 	// session-created → prism event tmux-session-start) fire against the live DB.
@@ -225,7 +260,9 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 			beforeSet[c] = true
 		}
 	}
+	var scriptStderr bytes.Buffer
 	cmd := exec.Command("script", scriptCmdArgs(s.bin+" -L "+s.socket+" -f /dev/null attach-session -t "+targetSession)...)
+	cmd.Stderr = &scriptStderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}
@@ -235,9 +272,11 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 	})
 	deadline := time.Now().Add(5 * time.Second)
 	var clientName string
+	var lastListOut string
 	for time.Now().Before(deadline) {
 		out, err := s.output("list-clients", "-F", "#{client_name}")
 		if err == nil {
+			lastListOut = out
 			for _, c := range strings.Split(out, "\n") {
 				c = strings.TrimSpace(c)
 				if c != "" && !beforeSet[c] {
@@ -252,7 +291,22 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 		time.Sleep(50 * time.Millisecond)
 	}
 	if clientName == "" {
-		t.Fatalf("new client for session %q never appeared in list-clients (timeout)", targetSession)
+		// Capture script process state for diagnosis.
+		scriptAlive := "alive"
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			scriptAlive = fmt.Sprintf("dead (%v)", err)
+		}
+		t.Fatalf(
+			"new client for session %q never appeared in list-clients (timeout)\n"+
+				"  script process state:  %s\n"+
+				"  script stderr:         %q\n"+
+				"  list-clients after timeout: %q\n"+
+				"  clients before attach: %q\n"+
+				"  tip: if running inside bwrap (prism/opencode), a second simultaneous\n"+
+				"  script-attached client may not work due to bwrap devpts constraints;\n"+
+				"  call skipIfBwrapMultiClient(t) at the top of tests needing 2+ clients",
+			targetSession, scriptAlive, scriptStderr.String(), lastListOut, before,
+		)
 	}
 	return clientName
 }
@@ -1088,6 +1142,7 @@ func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
 // the one that pressed Enter (tmux's "current client" for the pane is the one
 // that most recently sent input).
 func TestPersistentModelEnterMultiClient(t *testing.T) {
+	skipIfBwrapMultiClient(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1157,6 +1212,7 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 // calls CurrentClientFunc at switch time, which returns the client that most
 // recently sent input to the pane (simulated here by overriding the func).
 func TestPersistentModelEnterStaleStamp(t *testing.T) {
+	skipIfBwrapMultiClient(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1234,6 +1290,7 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 // Before the fix, m.Client was used directly in the Enter handler, so B would
 // be switched instead of A.
 func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
+	skipIfBwrapMultiClient(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 	s.newSession("nixos-config@main")
@@ -1298,6 +1355,7 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 // model calls SwitchClientLast for the current client (A) while client B,
 // viewing a different session, is unaffected.
 func TestPersistentModelQuitMultiClient(t *testing.T) {
+	skipIfBwrapMultiClient(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1366,6 +1424,7 @@ func TestPersistentModelQuitMultiClient(t *testing.T) {
 // popupModel switches client A to the selected session. Client B, a bystander,
 // must remain on its original session.
 func TestPopupModelEnterMultiClient(t *testing.T) {
+	skipIfBwrapMultiClient(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")

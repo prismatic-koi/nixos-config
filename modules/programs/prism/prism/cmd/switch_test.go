@@ -155,6 +155,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 // other.
 func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// Mutates TmuxBin via withCmdServer — must not be parallel.
+	skipIfBwrapMultiClient(t)
 
 	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
 	// writes its DB and sidecar state to an isolated location instead of the
