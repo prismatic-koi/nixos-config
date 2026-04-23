@@ -2355,16 +2355,22 @@ func TestStandardSandboxEnvArgs_FallbackPathWithUser(t *testing.T) {
 // is set, BuildArgs binds only the socket FILE (not the parent directory).
 // Mounting the directory would expose all live sessions' sockets inside the
 // sandbox, allowing cross-session host-API access (security fix #960).
+// The path uses the new per-session subdirectory format: run/<session>/hostapi.sock
 func TestBwrapBuildArgs_HostAPISockFileBindNotDir(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "run", "repo@feat-hostapi.sock")
-	sockDir := filepath.Dir(sockPath)
-	if err := os.MkdirAll(sockDir, 0o755); err != nil {
+	// Use the new per-session directory format (run/<session>/hostapi.sock)
+	// matching what SidecarHostAPIPath now returns.
+	sockDir := filepath.Join(t.TempDir(), "run", "repo@feat")
+	sockPath := filepath.Join(sockDir, "hostapi.sock")
+	// prepareVolumeDirs pre-creates this directory in production; simulate that here.
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll sockDir: %v", err)
 	}
-	// Create the socket file so the path exists.
+	// Create the socket file so the bind exists (as prepareVolumeDirs + sidecar would).
 	if err := os.WriteFile(sockPath, []byte{}, 0o600); err != nil {
 		t.Fatalf("WriteFile socket: %v", err)
 	}
+	// The shared run/ directory (parent of the per-session dir) should NOT be mounted.
+	sharedRunDir := filepath.Dir(sockDir)
 
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:     "repo@feat",
@@ -2382,18 +2388,23 @@ func TestBwrapBuildArgs_HostAPISockFileBindNotDir(t *testing.T) {
 		t.Errorf("socket file %q not found as --bind SRC SRC in args: %v", sockPath, args)
 	}
 
-	// The parent directory must NOT be bind-mounted.
+	// The per-session directory must NOT be bind-mounted (file mount is sufficient for bwrap).
 	if hasBind(args, sockDir) {
-		t.Errorf("socket DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sockDir, args)
+		t.Errorf("per-session socket DIRECTORY %q must not be mounted in bwrap mode; found as --bind in args: %v", sockDir, args)
+	}
+
+	// The shared run/ directory must NOT be bind-mounted (security fix #960).
+	if hasBind(args, sharedRunDir) {
+		t.Errorf("shared run/ DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sharedRunDir, args)
 	}
 }
 
 // TestBwrapBuildArgs_HostAPISockEnvVarSet verifies that PRISM_HOST_API is set
 // to the unix:// path of the session's own socket when HostAPISockPath is set.
 func TestBwrapBuildArgs_HostAPISockEnvVarSet(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "run", "repo@feat-hostapi.sock")
-	sockDir := filepath.Dir(sockPath)
-	if err := os.MkdirAll(sockDir, 0o755); err != nil {
+	sockDir := filepath.Join(t.TempDir(), "run", "repo@feat")
+	sockPath := filepath.Join(sockDir, "hostapi.sock")
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll sockDir: %v", err)
 	}
 	if err := os.WriteFile(sockPath, []byte{}, 0o600); err != nil {

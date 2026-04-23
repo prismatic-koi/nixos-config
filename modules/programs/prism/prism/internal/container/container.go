@@ -935,14 +935,18 @@ func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 		errs = append(errs, err.Error())
 	}
 
-	// Per-session host-API socket directory (podman only, security fix #960).
-	// Each podman session mounts only its own socket directory
-	// (~/.local/state/prism/run/<sessionName>/) instead of the entire run/
-	// directory, preventing sandboxed agents from accessing other sessions'
-	// sockets. The directory must be pre-created here (before podman run) so
-	// the bind-mount source exists even though the socket file inside it is
-	// only created by the sidecar after the container becomes healthy.
-	if perSessionOpencode && m.cfg.HostAPISockPath != "" {
+	// Per-session host-API socket directory (both podman and bwrap, security fix #960).
+	// Each session places its socket in its own subdirectory
+	// (~/.local/state/prism/run/<sessionName>/hostapi.sock) instead of the
+	// shared run/ directory. The directory must be pre-created here so it
+	// exists before the sandboxed process starts:
+	//   - podman: directory must pre-exist before "podman run" evaluates the
+	//     bind-mount source; the sidecar creates the socket inside it later.
+	//   - bwrap: directory must pre-exist before the sidecar calls
+	//     net.Listen("unix", sockPath); bwrap is exec'd after.
+	// Using 0o700 (owner-only) so other users on the host cannot list or
+	// access this session's socket directory.
+	if m.cfg.HostAPISockPath != "" {
 		sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 		if err := os.MkdirAll(sockDir, 0o700); err != nil {
 			log.Printf("container: failed to create host-API socket dir %q: %v", sockDir, err)

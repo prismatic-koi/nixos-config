@@ -2815,6 +2815,84 @@ func TestPrepareVolumeDirs_BwrapSkipsSessionDir(t *testing.T) {
 	}
 }
 
+// TestPrepareVolumeDirs_CreatesSocketDirForPodman verifies that when
+// HostAPISockPath is set and perSessionOpencode=true (podman path),
+// prepareVolumeDirs creates the per-session socket directory so that podman
+// can bind-mount it before the sidecar creates the socket inside it.
+func TestPrepareVolumeDirs_CreatesSocketDirForPodman(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	sockDir := filepath.Join(fakeHome, "run", "repo@feat")
+	sockPath := filepath.Join(sockDir, "hostapi.sock")
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: sockPath,
+	})
+	if err := m.prepareVolumeDirs(true); err != nil {
+		t.Fatalf("prepareVolumeDirs(true): %v", err)
+	}
+
+	// The per-session socket directory must be created.
+	if fi, err := os.Stat(sockDir); err != nil || !fi.IsDir() {
+		t.Errorf("expected per-session socket dir %q to exist (err: %v)", sockDir, err)
+	}
+}
+
+// TestPrepareVolumeDirs_CreatesSocketDirForBwrap verifies that when
+// HostAPISockPath is set and perSessionOpencode=false (bwrap path),
+// prepareVolumeDirs still creates the per-session socket directory so that
+// the sidecar can call net.Listen("unix", sockPath) before bwrap is exec'd.
+func TestPrepareVolumeDirs_CreatesSocketDirForBwrap(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	sockDir := filepath.Join(fakeHome, "run", "repo@feat")
+	sockPath := filepath.Join(sockDir, "hostapi.sock")
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: sockPath,
+	})
+	if err := m.prepareVolumeDirs(false); err != nil {
+		t.Fatalf("prepareVolumeDirs(false): %v", err)
+	}
+
+	// The per-session socket directory must be created even in bwrap mode.
+	if fi, err := os.Stat(sockDir); err != nil || !fi.IsDir() {
+		t.Errorf("expected per-session socket dir %q to exist for bwrap mode (err: %v)", sockDir, err)
+	}
+
+	// The per-session opencode dir must NOT exist (bwrap shares the host opencode dir directly).
+	perSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
+	if _, err := os.Stat(perSession); !os.IsNotExist(err) {
+		t.Errorf("per-session opencode dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
+	}
+}
+
+// TestPrepareVolumeDirs_SocketDirOmittedWhenNoSockPath verifies that when
+// HostAPISockPath is empty, no socket directory is created.
+func TestPrepareVolumeDirs_SocketDirOmittedWhenNoSockPath(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: "", // no socket path
+	})
+	if err := m.prepareVolumeDirs(false); err != nil {
+		t.Fatalf("prepareVolumeDirs(false): %v", err)
+	}
+
+	// No run/<session>/ directory should be created when there's no socket path.
+	runDir := filepath.Join(fakeHome, "run")
+	if _, err := os.Stat(runDir); !os.IsNotExist(err) {
+		t.Errorf("run dir %q should not exist when HostAPISockPath is empty (stat err: %v)", runDir, err)
+	}
+}
+
 // ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
 
 // TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
