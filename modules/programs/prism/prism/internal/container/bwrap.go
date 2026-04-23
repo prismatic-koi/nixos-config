@@ -222,13 +222,21 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// /etc/wpa_supplicant/ — wpa_supplicant configs may contain Wi-Fi
 	// credentials and network identifiers. Agents have no need for these.
 	//
-	// These --tmpfs arguments are unconditional: bwrap silently ignores a
-	// --tmpfs on a path that does not exist inside the sandbox namespace,
-	// so omitting a host-side existence check is safe and correct.
-	args = append(args,
-		"--tmpfs", "/etc/wireguard",
-		"--tmpfs", "/etc/wpa_supplicant",
-	)
+	// The --tmpfs mounts are conditional on the directory existing on the
+	// host: bwrap requires the mount-point to already exist inside the
+	// namespace (the /etc ro-bind makes the host tree visible, so the check
+	// is a plain os.Stat on the host path). On machines where these
+	// directories were never created (e.g. wgnord is disabled and
+	// impermanence has not yet run), the mount is simply omitted — there
+	// are no secrets to shadow in that case.
+	for _, sensitiveEtcDir := range []string{
+		"/etc/wireguard",
+		"/etc/wpa_supplicant",
+	} {
+		if _, err := os.Stat(sensitiveEtcDir); err == nil {
+			args = append(args, "--tmpfs", sensitiveEtcDir)
+		}
+	}
 
 	// ── Per-user nix profiles (read-only, conditional) ──────────────────────
 	// These locations hold the home-manager per-user profile (opencode,

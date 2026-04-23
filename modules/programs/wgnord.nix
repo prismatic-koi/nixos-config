@@ -185,8 +185,11 @@
     system.activationScripts.wgnord-setup = /* bash */ ''
       if [ ! -f /var/lib/wgnord/template.conf ]; then
         cp /etc/wgnord-template.conf /var/lib/wgnord/template.conf
-        chmod 600 /var/lib/wgnord/template.conf
       fi
+      # Always tighten permissions on the template — this remediates
+      # existing deployments where the file was previously copied at
+      # mode 0644 (before this change), as well as fresh copies above.
+      chmod 600 /var/lib/wgnord/template.conf
 
       # Copy countries files if they don't exist
       if [ ! -f /var/lib/wgnord/countries.txt ]; then
