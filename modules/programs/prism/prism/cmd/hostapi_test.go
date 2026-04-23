@@ -312,6 +312,63 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	}
 }
 
+// TestProxySpawn_IgnoreConcurrencyCapForwarded verifies that when
+// --ignore-concurrency-cap is set, proxySpawn includes ignore_concurrency_cap:true
+// in the JSON body sent to the host-API sidecar.
+func TestProxySpawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
+	type spawnReq struct {
+		Branch               string `json:"branch"`
+		IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spawn" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		var req spawnReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@cap-branch"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
+	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
+	cmd.Flags().String("harness", "opencode", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "cap-branch")
+	_ = cmd.Flags().Set("ignore-concurrency-cap", "true")
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Branch != "cap-branch" {
+			t.Errorf("branch = %q, want %q", req.Branch, "cap-branch")
+		}
+		if !req.IgnoreConcurrencyCap {
+			t.Errorf("ignore_concurrency_cap = false, want true")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
 // ── cleanup proxy tests (AC-2, AC-11) ─────────────────────────────────────────
 
 // TestHeadlessCleanup_Proxy verifies AC-11 for cleanup: when PRISM_HOST_API is

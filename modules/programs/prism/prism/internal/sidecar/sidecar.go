@@ -2560,17 +2560,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requireCoordinator(w, "spawn") {
 			return
 		}
-		var req struct {
-			Repo     string `json:"repo"` // accepted but ignored — ownRepo is always used
-			Branch   string `json:"branch"`
-			Prompt   string `json:"prompt"`
-			Agent    string `json:"agent"`
-			Profile  string `json:"profile"`
-			Model    string `json:"model"`
-			Variant  string `json:"variant"`
-			HostMode bool   `json:"host_mode"`
-			Harness  string `json:"harness"`
-		}
+	var req struct {
+		Repo                 string `json:"repo"` // accepted but ignored — ownRepo is always used
+		Branch               string `json:"branch"`
+		Prompt               string `json:"prompt"`
+		Agent                string `json:"agent"`
+		Profile              string `json:"profile"`
+		Model                string `json:"model"`
+		Variant              string `json:"variant"`
+		HostMode             bool   `json:"host_mode"`
+		Harness              string `json:"harness"`
+		IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
+	}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
@@ -2619,6 +2620,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
+		if req.IgnoreConcurrencyCap {
+			args = append(args, "--ignore-concurrency-cap")
+		}
 		args = append(args, "--harness", req.Harness)
 		args = append(args, "--repo", ownRepo)
 
@@ -2642,6 +2646,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
 		}
+		if req.IgnoreConcurrencyCap {
+			logArgs = append(logArgs, "--ignore-concurrency-cap")
+		}
 		logArgs = append(logArgs, "--harness", req.Harness)
 		logArgs = append(logArgs, "--repo", ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
@@ -2649,7 +2656,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("spawn failed: %v", err))
+			msg := fmt.Sprintf("spawn failed: %v", err)
+			if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+				msg = fmt.Sprintf("spawn failed: %v\n%s", err, trimmed)
+			}
+			writeError(w, http.StatusInternalServerError, msg)
 			return
 		}
 

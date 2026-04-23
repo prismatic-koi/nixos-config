@@ -5,8 +5,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "prism",
-	Short: "Prism — tmux-based AI development environment",
+	Use:          "prism",
+	Short:        "Prism — tmux-based AI development environment",
+	SilenceUsage: true,
 }
 
 func Execute() error {

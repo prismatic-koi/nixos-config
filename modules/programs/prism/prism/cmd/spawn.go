@@ -52,6 +52,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
+	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
@@ -60,14 +61,15 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		SessionName string `json:"session_name"`
 	}
 	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-		"branch":    branchFlag,
-		"prompt":    promptFlag,
-		"agent":     agentFlag,
-		"profile":   profileFlag,
-		"model":     modelFlag,
-		"variant":   variantFlag,
-		"host_mode": hostModeFlag,
-		"harness":   harnessFlag,
+		"branch":                 branchFlag,
+		"prompt":                 promptFlag,
+		"agent":                  agentFlag,
+		"profile":                profileFlag,
+		"model":                  modelFlag,
+		"variant":                variantFlag,
+		"host_mode":              hostModeFlag,
+		"harness":                harnessFlag,
+		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}, &resp); err != nil {
 		return err
 	}
