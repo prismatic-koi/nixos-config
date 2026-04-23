@@ -162,6 +162,11 @@ func checkBwrapPlatform(mode config.IsolationMode) error {
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
+	// Silence the cobra usage block for runtime errors. Flag parse errors
+	// (unknown flags, wrong argument count) are handled before RunE is called
+	// and still print usage — this only silences errors returned from RunE.
+	cmd.SilenceUsage = true
+
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxySpawn(apiURL, cmd)
 	}

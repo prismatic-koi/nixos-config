@@ -2560,18 +2560,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requireCoordinator(w, "spawn") {
 			return
 		}
-	var req struct {
-		Repo                 string `json:"repo"` // accepted but ignored — ownRepo is always used
-		Branch               string `json:"branch"`
-		Prompt               string `json:"prompt"`
-		Agent                string `json:"agent"`
-		Profile              string `json:"profile"`
-		Model                string `json:"model"`
-		Variant              string `json:"variant"`
-		HostMode             bool   `json:"host_mode"`
-		Harness              string `json:"harness"`
-		IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
-	}
+		var req struct {
+			Repo                 string `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch               string `json:"branch"`
+			Prompt               string `json:"prompt"`
+			Agent                string `json:"agent"`
+			Profile              string `json:"profile"`
+			Model                string `json:"model"`
+			Variant              string `json:"variant"`
+			HostMode             bool   `json:"host_mode"`
+			Harness              string `json:"harness"`
+			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
