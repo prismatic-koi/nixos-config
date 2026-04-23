@@ -93,6 +93,13 @@ func (c *testClock) TimerCount() int {
 	return len(c.timers)
 }
 
+// Advance moves the clock forward by d.
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 // ── test helpers ────────────────────────────────────────────────────────────
 
 func openTestDB(t *testing.T) *db.DB {
@@ -6914,6 +6921,185 @@ func TestBuildNotifyPromptBody_OmitsAgentField(t *testing.T) {
 				t.Errorf("body must not contain \"agent\" field (got %v); setting it switches the receiving session's agent context — see issue #848", body["agent"])
 			}
 		})
+	}
+}
+
+// ── error-state debounce tests (issue #923) ─────────────────────────────────
+
+// TestSessionError_NonAbort_CancelsIdleTimer verifies Fix 1: when session.error
+// fires with a non-MessageAbortedError name, any in-flight idle timer is
+// cancelled. Without this fix, the idle timer could fire after the false resume
+// rewrites active state and produce a spurious finished transition.
+func TestSessionError_NonAbort_CancelsIdleTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Start an idle timer first.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer to be created")
+	}
+
+	// Fire session.error with a non-MessageAbortedError — must cancel the idle timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "APIError"},
+	}))
+
+	// State must be error.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	// Try to fire the now-stopped timer — state must NOT change to finished.
+	timer.Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after cancelled idle timer fired, want %q (idle timer must have been cancelled)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_ImmediateSessionUpdated_DoesNotResume verifies Fix 2
+// (debounce window): when session.updated arrives within ErrorResumeDebounce
+// after session.error, the session must NOT transition from error to active.
+// This is the core regression test for the bug described in issue #923.
+func TestSessionError_ImmediateSessionUpdated_DoesNotResume(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.error arrives — state becomes error.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "InvalidPromptError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.error, want %q", state, agent.StateError)
+	}
+
+	// session.updated arrives in the same millisecond (within debounce window).
+	// Clock has not advanced — time.Since(lastErrorAt) ≈ 0, well within 5 s.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-post-error",
+			"title": "Post-error churn",
+		},
+	}))
+
+	// State must remain error — the false resume must be suppressed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after immediate session.updated, want %q (resume must be suppressed within debounce window)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_DelayedSessionUpdated_DoesResume verifies that after the
+// ErrorResumeDebounce window has elapsed, a genuine session.updated correctly
+// transitions the session from error to active.
+func TestSessionError_DelayedSessionUpdated_DoesResume(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.error fires.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "APIError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.error, want %q", state, agent.StateError)
+	}
+
+	// Advance the clock past the debounce window.
+	clk.Advance(ErrorResumeDebounce + time.Second)
+
+	// session.updated arrives after the debounce window — genuine user resume.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-genuine-resume",
+			"title": "User resumed after error",
+		},
+	}))
+
+	// State must transition to active — the genuine resume must proceed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after delayed session.updated, want %q (genuine resume after debounce window must proceed)", state, agent.StateActive)
+	}
+}
+
+// TestSessionStatusRetry_ImmediateUpdated_DoesNotResume verifies that the
+// error-resume debounce also protects the session.status{retry} path.
+// session.status{retry} writes StateError independently of session.error; a
+// immediately-following session.updated must NOT transition back to active
+// within the debounce window.
+func TestSessionStatusRetry_ImmediateUpdated_DoesNotResume(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.status{retry} → StateError + lastErrorAt set.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "retry"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.status{retry}, want %q", state, agent.StateError)
+	}
+
+	// session.updated arrives immediately (within debounce window). Clock has not advanced.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-retry-churn",
+			"title": "Post-retry churn",
+		},
+	}))
+
+	// State must remain error — the false resume must be suppressed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after immediate session.updated following retry, want %q (debounce must also protect session.status{retry} path)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_MessageAbortedError_PathUnchanged verifies edge-case: the
+// MessageAbortedError path (user pressed Escape) is unchanged by the fix.
+// It must still write interrupted (not error) and NOT set lastErrorAt, so the
+// debounce does not affect subsequent session.updated events.
+func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// MessageAbortedError → interrupted.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "MessageAbortedError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateInterrupted) {
+		t.Fatalf("state = %q after MessageAbortedError, want %q", state, agent.StateInterrupted)
+	}
+
+	// lastErrorAt must NOT be set (MessageAbortedError takes the other branch).
+	sc.mu.Lock()
+	lastErrorAt := sc.lastErrorAt
+	sc.mu.Unlock()
+	if !lastErrorAt.IsZero() {
+		t.Errorf("lastErrorAt = %v, want zero (MessageAbortedError must not set lastErrorAt)", lastErrorAt)
+	}
+
+	// A session.updated after MessageAbortedError (interrupted state) must
+	// resume normally — the error debounce must not interfere.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-abort-resume",
+			"title": "Resumed after abort",
+		},
+	}))
+
+	// State must transition to active (resume from interrupted is unaffected).
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after session.updated following MessageAbortedError, want %q (abort path must not be affected by error debounce)", state, agent.StateActive)
 	}
 }
 
