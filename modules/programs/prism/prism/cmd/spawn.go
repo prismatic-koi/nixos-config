@@ -52,6 +52,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
+	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
@@ -60,14 +61,15 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		SessionName string `json:"session_name"`
 	}
 	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-		"branch":    branchFlag,
-		"prompt":    promptFlag,
-		"agent":     agentFlag,
-		"profile":   profileFlag,
-		"model":     modelFlag,
-		"variant":   variantFlag,
-		"host_mode": hostModeFlag,
-		"harness":   harnessFlag,
+		"branch":                 branchFlag,
+		"prompt":                 promptFlag,
+		"agent":                  agentFlag,
+		"profile":                profileFlag,
+		"model":                  modelFlag,
+		"variant":                variantFlag,
+		"host_mode":              hostModeFlag,
+		"harness":                harnessFlag,
+		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}, &resp); err != nil {
 		return err
 	}
@@ -160,6 +162,11 @@ func checkBwrapPlatform(mode config.IsolationMode) error {
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
+	// Silence the cobra usage block for runtime errors. Flag parse errors
+	// (unknown flags, wrong argument count) are handled before RunE is called
+	// and still print usage — this only silences errors returned from RunE.
+	cmd.SilenceUsage = true
+
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxySpawn(apiURL, cmd)
 	}
@@ -211,9 +218,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	// Concurrency cap check: BEFORE any container-creation side effects
 	// (no worktree, no tmux session, no DB row on refusal).
-	// Skipped in host-mode — host-mode sessions don't consume a container slot.
-	// bwrap sessions are treated as concurrency-capped (same as podman).
-	conCapped := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
+	// Skipped in host-mode and bwrap-mode — the cap exists to guard host memory
+	// against podman container overhead; bwrap sessions are plain host processes
+	// with no per-session memory cap, so they do not count against it.
+	conCapped := isolationMode == config.IsolationPodman
 	if err := checkConcurrencyCap(cmd, "spawn", conCapped); err != nil {
 		return err
 	}
