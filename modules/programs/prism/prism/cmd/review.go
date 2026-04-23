@@ -104,7 +104,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// Load cfg now for the cap check; it is re-used below for ContainerMode.
 	cfg := config.Load()
 	isoMode := cfg.EffectiveIsolationMode()
-	conCapped := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
+	// bwrap sessions are plain host processes — only podman triggers the cap.
+	conCapped := isoMode == config.IsolationPodman
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL == "" {
 		// Running on host — check the cap before spawning review containers.
 		if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {

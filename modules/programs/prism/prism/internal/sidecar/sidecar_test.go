@@ -93,6 +93,13 @@ func (c *testClock) TimerCount() int {
 	return len(c.timers)
 }
 
+// Advance moves the clock forward by d.
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
 // ── test helpers ────────────────────────────────────────────────────────────
 
 func openTestDB(t *testing.T) *db.DB {
@@ -5616,6 +5623,104 @@ echo "session \"${last}@host-mode-branch\" created"
 	}
 }
 
+// TestHostAPI_Spawn_IgnoreConcurrencyCapForwarded verifies that when a client
+// sends {"ignore_concurrency_cap":true}, the sidecar includes
+// "--ignore-concurrency-cap" in the args passed to the prism binary.
+func TestHostAPI_Spawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@cap-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"cap-branch","ignore_concurrency_cap":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--ignore-concurrency-cap") {
+		t.Errorf("captured args %q do not contain --ignore-concurrency-cap; ignore_concurrency_cap:true was not forwarded", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Spawn_SubprocessOutputIncludedInError verifies that when the
+// host-side prism spawn subprocess exits non-zero, the error response includes
+// the subprocess stdout/stderr output (not just "exit status 1").
+func TestHostAPI_Spawn_SubprocessOutputIncludedInError(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "error: prism concurrency cap reached (6 agent containers already in flight)"
+echo ""
+echo "Active containers:"
+echo "  nixos-config@main   (coordinator)"
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"cap-branch"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	errMsg := errResp["error"]
+	if !strings.Contains(errMsg, "concurrency cap reached") {
+		t.Errorf("error %q should include subprocess output (concurrency cap message)", errMsg)
+	}
+	if !strings.Contains(errMsg, "nixos-config@main") {
+		t.Errorf("error %q should include subprocess output (active container list)", errMsg)
+	}
+	// Verify trailing whitespace/newlines are trimmed.
+	if strings.HasSuffix(errMsg, "\n") || strings.HasSuffix(errMsg, " ") {
+		t.Errorf("error %q has trailing whitespace/newline — should be trimmed", errMsg)
+	}
+}
+
 func TestHostAPI_Cleanup_CoordinatorCrossRepoForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
@@ -6914,6 +7019,185 @@ func TestBuildNotifyPromptBody_OmitsAgentField(t *testing.T) {
 				t.Errorf("body must not contain \"agent\" field (got %v); setting it switches the receiving session's agent context — see issue #848", body["agent"])
 			}
 		})
+	}
+}
+
+// ── error-state debounce tests (issue #923) ─────────────────────────────────
+
+// TestSessionError_NonAbort_CancelsIdleTimer verifies Fix 1: when session.error
+// fires with a non-MessageAbortedError name, any in-flight idle timer is
+// cancelled. Without this fix, the idle timer could fire after the false resume
+// rewrites active state and produce a spurious finished transition.
+func TestSessionError_NonAbort_CancelsIdleTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Start an idle timer first.
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer to be created")
+	}
+
+	// Fire session.error with a non-MessageAbortedError — must cancel the idle timer.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "APIError"},
+	}))
+
+	// State must be error.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	// Try to fire the now-stopped timer — state must NOT change to finished.
+	timer.Fire()
+
+	state = getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after cancelled idle timer fired, want %q (idle timer must have been cancelled)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_ImmediateSessionUpdated_DoesNotResume verifies Fix 2
+// (debounce window): when session.updated arrives within ErrorResumeDebounce
+// after session.error, the session must NOT transition from error to active.
+// This is the core regression test for the bug described in issue #923.
+func TestSessionError_ImmediateSessionUpdated_DoesNotResume(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.error arrives — state becomes error.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "InvalidPromptError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.error, want %q", state, agent.StateError)
+	}
+
+	// session.updated arrives in the same millisecond (within debounce window).
+	// Clock has not advanced — time.Since(lastErrorAt) ≈ 0, well within 5 s.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-post-error",
+			"title": "Post-error churn",
+		},
+	}))
+
+	// State must remain error — the false resume must be suppressed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after immediate session.updated, want %q (resume must be suppressed within debounce window)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_DelayedSessionUpdated_DoesResume verifies that after the
+// ErrorResumeDebounce window has elapsed, a genuine session.updated correctly
+// transitions the session from error to active.
+func TestSessionError_DelayedSessionUpdated_DoesResume(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.error fires.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "APIError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.error, want %q", state, agent.StateError)
+	}
+
+	// Advance the clock past the debounce window.
+	clk.Advance(ErrorResumeDebounce + time.Second)
+
+	// session.updated arrives after the debounce window — genuine user resume.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-genuine-resume",
+			"title": "User resumed after error",
+		},
+	}))
+
+	// State must transition to active — the genuine resume must proceed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after delayed session.updated, want %q (genuine resume after debounce window must proceed)", state, agent.StateActive)
+	}
+}
+
+// TestSessionStatusRetry_ImmediateUpdated_DoesNotResume verifies that the
+// error-resume debounce also protects the session.status{retry} path.
+// session.status{retry} writes StateError independently of session.error; a
+// immediately-following session.updated must NOT transition back to active
+// within the debounce window.
+func TestSessionStatusRetry_ImmediateUpdated_DoesNotResume(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// session.status{retry} → StateError + lastErrorAt set.
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "retry"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("state = %q after session.status{retry}, want %q", state, agent.StateError)
+	}
+
+	// session.updated arrives immediately (within debounce window). Clock has not advanced.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-retry-churn",
+			"title": "Post-retry churn",
+		},
+	}))
+
+	// State must remain error — the false resume must be suppressed.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after immediate session.updated following retry, want %q (debounce must also protect session.status{retry} path)", state, agent.StateError)
+	}
+}
+
+// TestSessionError_MessageAbortedError_PathUnchanged verifies edge-case: the
+// MessageAbortedError path (user pressed Escape) is unchanged by the fix.
+// It must still write interrupted (not error) and NOT set lastErrorAt, so the
+// debounce does not affect subsequent session.updated events.
+func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// MessageAbortedError → interrupted.
+	sc.HandleEvent(makeSSE("session.error", map[string]any{
+		"error": map[string]string{"name": "MessageAbortedError"},
+	}))
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateInterrupted) {
+		t.Fatalf("state = %q after MessageAbortedError, want %q", state, agent.StateInterrupted)
+	}
+
+	// lastErrorAt must NOT be set (MessageAbortedError takes the other branch).
+	sc.mu.Lock()
+	lastErrorAt := sc.lastErrorAt
+	sc.mu.Unlock()
+	if !lastErrorAt.IsZero() {
+		t.Errorf("lastErrorAt = %v, want zero (MessageAbortedError must not set lastErrorAt)", lastErrorAt)
+	}
+
+	// A session.updated after MessageAbortedError (interrupted state) must
+	// resume normally — the error debounce must not interfere.
+	sc.HandleEvent(makeSSE("session.updated", map[string]any{
+		"info": map[string]any{
+			"id":    "oc-session-abort-resume",
+			"title": "Resumed after abort",
+		},
+	}))
+
+	// State must transition to active (resume from interrupted is unaffected).
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after session.updated following MessageAbortedError, want %q (abort path must not be affected by error debounce)", state, agent.StateActive)
 	}
 }
 

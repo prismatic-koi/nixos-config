@@ -62,6 +62,18 @@ const IdleDebounce = 2 * time.Second
 // this timer.
 const ReconnectRecoveryDelay = 60 * time.Second
 
+// ErrorResumeDebounce is the window after a non-MessageAbortedError session.error
+// during which a session.updated event is treated as post-error churn and does NOT
+// transition the session from error to active. After this window, a genuine
+// user-initiated resume (session.updated) transitions normally.
+//
+// The opencode runtime emits a rapid burst of events in the same millisecond
+// after an error (session.error → session.status → session.updated → session.idle),
+// and the session.updated is internal housekeeping, not a user action. Without
+// this guard, the false resume would erase the error state and the coordinator
+// would see a spurious "finished" notification.
+const ErrorResumeDebounce = 5 * time.Second
+
 // Clock abstracts time and timer operations for testing.
 type Clock interface {
 	Now() time.Time
@@ -220,6 +232,11 @@ type Sidecar struct {
 	// can update the title display immediately without a DB round-trip.
 	// Protected by s.mu.
 	lastTitle string
+	// lastErrorAt records the time when handleSessionError last wrote StateError
+	// for a non-MessageAbortedError. Used by handleSessionUpdated to suppress
+	// false resumes caused by the post-error session.updated churn that opencode
+	// emits in the same millisecond as session.error. Protected by s.mu.
+	lastErrorAt time.Time
 }
 
 // New creates a Sidecar with the given configuration.
@@ -655,7 +672,13 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 			s.writeStateChange(agent.StateActive)
 		}
 	case "retry":
+		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
+		// Record lastErrorAt so that handleSessionUpdated's error-resume debounce
+		// also protects this path. session.status{retry} independently writes
+		// StateError; without this, an immediate session.updated would bypass the
+		// debounce guard and false-resume.
+		s.lastErrorAt = s.cfg.Clock.Now()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 	}
@@ -783,7 +806,26 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		// No prior row — treat as session creation.
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
-	case agent.StateInterrupted, agent.StateError, agent.StateFinished:
+	case agent.StateError:
+		// Resume from error: only transition to active if we are outside the
+		// post-error debounce window. Within ErrorResumeDebounce of the last
+		// session.error, this event is treated as post-error churn that opencode
+		// emits in the same millisecond burst (session.error → session.updated),
+		// not as a genuine user-initiated resume. After the window, genuine
+		// resumes (e.g. user presses Enter) transition normally.
+		if !s.lastErrorAt.IsZero() && s.cfg.Clock.Now().Sub(s.lastErrorAt) < ErrorResumeDebounce {
+			// Within debounce window: treat as churn. Update metadata only.
+			log.Printf("sidecar: session.updated within error-resume debounce window (%v since error) — suppressing resume", s.cfg.Clock.Now().Sub(s.lastErrorAt))
+			s.upsertState(currentState, title, sid)
+			return
+		}
+		// Outside debounce window (or no error recorded): genuine resume.
+		if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
+			log.Printf("sidecar: ClearEnded failed on resume: %v", err)
+		}
+		s.upsertState(agent.StateActive, title, sid)
+		s.writeStateChange(agent.StateActive)
+	case agent.StateInterrupted, agent.StateFinished:
 		// Resume: transition back to active. Clear ended_at so the session
 		// becomes visible again in AllActiveStatus / dashboard filters
 		// (both query WHERE ended_at IS NULL).
@@ -825,7 +867,12 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	} else {
+		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
+		// Record the error time so handleSessionUpdated can suppress the
+		// post-error session.updated churn that opencode emits in the same
+		// millisecond as session.error (see ErrorResumeDebounce).
+		s.lastErrorAt = s.cfg.Clock.Now()
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
@@ -2561,15 +2608,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Repo     string `json:"repo"` // accepted but ignored — ownRepo is always used
-			Branch   string `json:"branch"`
-			Prompt   string `json:"prompt"`
-			Agent    string `json:"agent"`
-			Profile  string `json:"profile"`
-			Model    string `json:"model"`
-			Variant  string `json:"variant"`
-			HostMode bool   `json:"host_mode"`
-			Harness  string `json:"harness"`
+			Repo                 string `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch               string `json:"branch"`
+			Prompt               string `json:"prompt"`
+			Agent                string `json:"agent"`
+			Profile              string `json:"profile"`
+			Model                string `json:"model"`
+			Variant              string `json:"variant"`
+			HostMode             bool   `json:"host_mode"`
+			Harness              string `json:"harness"`
+			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -2619,6 +2667,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
+		if req.IgnoreConcurrencyCap {
+			args = append(args, "--ignore-concurrency-cap")
+		}
 		args = append(args, "--harness", req.Harness)
 		args = append(args, "--repo", ownRepo)
 
@@ -2642,6 +2693,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
 		}
+		if req.IgnoreConcurrencyCap {
+			logArgs = append(logArgs, "--ignore-concurrency-cap")
+		}
 		logArgs = append(logArgs, "--harness", req.Harness)
 		logArgs = append(logArgs, "--repo", ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
@@ -2649,7 +2703,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("spawn failed: %v", err))
+			msg := fmt.Sprintf("spawn failed: %v", err)
+			if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+				msg = fmt.Sprintf("spawn failed: %v\n%s", err, trimmed)
+			}
+			writeError(w, http.StatusInternalServerError, msg)
 			return
 		}
 

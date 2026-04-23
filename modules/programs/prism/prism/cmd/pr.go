@@ -54,15 +54,17 @@ var prCmd = &cobra.Command{
 			if branchErr != nil {
 				return branchErr
 			}
+			ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 			repo := filepath.Base(bareRoot)
 			var resp struct {
 				SessionName string `json:"session_name"`
 			}
 			if proxyErr := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-				"repo":   repo,
-				"branch": branch,
-				"prompt": promptFlag,
-				"agent":  agentFlag,
+				"repo":                   repo,
+				"branch":                 branch,
+				"prompt":                 promptFlag,
+				"agent":                  agentFlag,
+				"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			}, &resp); proxyErr != nil {
 				return proxyErr
 			}
@@ -73,7 +75,8 @@ var prCmd = &cobra.Command{
 		cfg := config.Load()
 		isoMode := cfg.EffectiveIsolationMode()
 		effectiveContainerMode := isoMode == config.IsolationPodman
-		conCapped := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
+		// bwrap sessions are plain host processes — only podman triggers the cap.
+		conCapped := isoMode == config.IsolationPodman
 
 		// Concurrency cap check: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).

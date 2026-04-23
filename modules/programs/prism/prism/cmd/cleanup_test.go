@@ -273,6 +273,7 @@ func setupMinimalBareRepo(t *testing.T) (bareRoot, worktreePath, branchName stri
 //     test server's socket and the binary can use tmux commands correctly.
 func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+	skipIfSandboxPTY(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
@@ -393,6 +394,7 @@ func TestCleanupYes_RedirectsClientsAndKillsSession(t *testing.T) {
 //   - clientOther attached to "other"
 func TestCleanupYes_DefaultBranch(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+	skipIfSandboxPTY(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
@@ -584,6 +586,7 @@ func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
 //     bare repo — if git ops were called they would fail and surface as errors).
 func TestCleanupYes_NonWorktreeSession(t *testing.T) {
 	// Uses withCmdServer which mutates TmuxBin — must not be parallel.
+	skipIfSandboxPTY(t)
 
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// Ignore the host's global gitconfig so the spawned prism binary is not
