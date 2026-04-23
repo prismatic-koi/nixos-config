@@ -5623,6 +5623,104 @@ echo "session \"${last}@host-mode-branch\" created"
 	}
 }
 
+// TestHostAPI_Spawn_IgnoreConcurrencyCapForwarded verifies that when a client
+// sends {"ignore_concurrency_cap":true}, the sidecar includes
+// "--ignore-concurrency-cap" in the args passed to the prism binary.
+func TestHostAPI_Spawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@cap-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"cap-branch","ignore_concurrency_cap":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--ignore-concurrency-cap") {
+		t.Errorf("captured args %q do not contain --ignore-concurrency-cap; ignore_concurrency_cap:true was not forwarded", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Spawn_SubprocessOutputIncludedInError verifies that when the
+// host-side prism spawn subprocess exits non-zero, the error response includes
+// the subprocess stdout/stderr output (not just "exit status 1").
+func TestHostAPI_Spawn_SubprocessOutputIncludedInError(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "error: prism concurrency cap reached (6 agent containers already in flight)"
+echo ""
+echo "Active containers:"
+echo "  nixos-config@main   (coordinator)"
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"cap-branch"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
+	}
+
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	errMsg := errResp["error"]
+	if !strings.Contains(errMsg, "concurrency cap reached") {
+		t.Errorf("error %q should include subprocess output (concurrency cap message)", errMsg)
+	}
+	if !strings.Contains(errMsg, "nixos-config@main") {
+		t.Errorf("error %q should include subprocess output (active container list)", errMsg)
+	}
+	// Verify trailing whitespace/newlines are trimmed.
+	if strings.HasSuffix(errMsg, "\n") || strings.HasSuffix(errMsg, " ") {
+		t.Errorf("error %q has trailing whitespace/newline — should be trimmed", errMsg)
+	}
+}
+
 func TestHostAPI_Cleanup_CoordinatorCrossRepoForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
