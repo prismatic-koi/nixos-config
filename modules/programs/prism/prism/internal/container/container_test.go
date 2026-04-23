@@ -585,8 +585,10 @@ func TestBuildRunArgs_NoGitMountsWhenBareRootEmpty(t *testing.T) {
 }
 
 func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
-	// AC-1, AC-2: when HostAPISockPath is non-empty, buildRunArgs must include
-	// the socket directory volume mount and the PRISM_HOST_API env var.
+	// Security fix #960: when HostAPISockPath is non-empty, buildRunArgs must
+	// mount only the socket FILE (not the parent directory) and set PRISM_HOST_API.
+	// Mounting the directory would expose all live sessions' sockets inside the
+	// sandbox, allowing cross-session host-API access.
 	m := New(Config{
 		SessionName:     "repo@feat",
 		AllocatedPort:   14000,
@@ -594,22 +596,26 @@ func TestBuildRunArgs_HostAPISockMountAndEnvWhenSet(t *testing.T) {
 	})
 	args := m.buildRunArgs()
 
-	// AC-1: --volume <host-dir>:/var/run/prism-host:Z must be present.
-	foundMount := false
+	// Must mount only the socket FILE at /var/run/prism-host/<sockfilename>:Z.
+	// The parent directory must NOT be mounted.
+	foundFileMount := false
 	for i, arg := range args {
 		if arg == "--volume" && i+1 < len(args) {
 			v := args[i+1]
+			if v == "/home/user/.local/state/prism/run/repo@feat-hostapi.sock:/var/run/prism-host/repo@feat-hostapi.sock:Z" {
+				foundFileMount = true
+			}
+			// The parent directory must not be mounted (security: would expose other sessions' sockets).
 			if v == "/home/user/.local/state/prism/run:/var/run/prism-host:Z" {
-				foundMount = true
-				break
+				t.Errorf("host-API socket DIRECTORY must not be mounted (security fix #960); got: %q", v)
 			}
 		}
 	}
-	if !foundMount {
-		t.Errorf("host-API socket volume mount not found in args: %v", args)
+	if !foundFileMount {
+		t.Errorf("host-API socket file mount not found in args: %v", args)
 	}
 
-	// AC-2: --env PRISM_HOST_API=unix:///var/run/prism-host/<sockfilename> must be present.
+	// --env PRISM_HOST_API=unix:///var/run/prism-host/<sockfilename> must be present.
 	foundEnv := false
 	for i, arg := range args {
 		if arg == "--env" && i+1 < len(args) {
@@ -711,6 +717,33 @@ func TestBuildRunArgs_NoHostAPISockWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_HostAPISockDirNotMounted is a security regression test for
+// issue #960: verifies that the host-API socket parent DIRECTORY is never
+// mounted into the container. Mounting the directory would expose all live
+// sessions' sockets inside the sandbox, allowing cross-session host-API access.
+func TestBuildRunArgs_HostAPISockDirNotMounted(t *testing.T) {
+	const sockPath = "/home/user/.local/state/prism/run/repo@feat-hostapi.sock"
+	sockDir := "/home/user/.local/state/prism/run"
+
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: sockPath,
+		HostAPITCPPort:  0, // Linux path
+	})
+	args := m.buildRunArgs()
+
+	// The parent directory must NOT be mounted as a volume (security fix #960).
+	for i, arg := range args {
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if strings.HasPrefix(v, sockDir+":") {
+				t.Errorf("host-API socket DIRECTORY %q must not be mounted (security fix #960); got volume: %q", sockDir, v)
+			}
+		}
+	}
+}
+
 // ── HostAPITCPPort / Darwin TCP path tests ───────────────────────────────────
 
 // TestBuildRunArgs_HostAPITCPPortPublishAndEnv asserts that when HostAPITCPPort
@@ -773,9 +806,9 @@ func TestBuildRunArgs_HostAPITCPPortPublishAndEnv(t *testing.T) {
 }
 
 // TestBuildRunArgs_HostAPISockUnixPathLinux asserts that when HostAPITCPPort is
-// zero and HostAPISockPath is non-empty (Linux path), the args still include the
-// unix:// env var and socket-directory volume, and no --publish flag for port
-// 4097 is present.
+// zero and HostAPISockPath is non-empty (Linux path), the args include the
+// unix:// env var and a socket FILE volume (not a directory volume), and no
+// --publish flag for port 4097 is present.
 func TestBuildRunArgs_HostAPISockUnixPathLinux(t *testing.T) {
 	const sockPath = "/home/user/.local/state/prism/run/repo@feat-hostapi.sock"
 	m := New(Config{
@@ -799,13 +832,19 @@ func TestBuildRunArgs_HostAPISockUnixPathLinux(t *testing.T) {
 		t.Errorf("expected --env %s in args, not found: %v", wantEnv, args)
 	}
 
-	// Must have socket-directory volume mount.
-	wantMount := "/home/user/.local/state/prism/run:/var/run/prism-host:Z"
+	// Must have socket FILE volume mount (not a directory mount — security fix #960).
+	wantMount := "/home/user/.local/state/prism/run/repo@feat-hostapi.sock:/var/run/prism-host/repo@feat-hostapi.sock:Z"
 	foundMount := false
 	for i, arg := range args {
-		if arg == "--volume" && i+1 < len(args) && args[i+1] == wantMount {
-			foundMount = true
-			break
+		if arg == "--volume" && i+1 < len(args) {
+			v := args[i+1]
+			if v == wantMount {
+				foundMount = true
+			}
+			// The parent directory must NOT be mounted (security: exposes other sessions' sockets).
+			if v == "/home/user/.local/state/prism/run:/var/run/prism-host:Z" {
+				t.Errorf("host-API socket DIRECTORY must not be mounted (security fix #960); got: %q", v)
+			}
 		}
 	}
 	if !foundMount {

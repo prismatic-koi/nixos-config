@@ -552,8 +552,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 			fmt.Sprintf("http://host.containers.internal:%d", cfg.HostAPITCPPort),
 		)
 	} else if cfg.HostAPISockPath != "" {
-		sockDir := filepath.Dir(cfg.HostAPISockPath)
-		args = append(args, "--bind", sockDir, sockDir)
+		// Bind only the session's own socket file, not the entire directory.
+		// Mounting the directory would expose all live sessions' sockets to the
+		// sandboxed agent, allowing cross-session host-API access (issue #960).
+		// The PRISM_HOST_API env var already contains the full socket path, so
+		// no agent-side client changes are needed — it finds its socket at the
+		// same path as before.
+		args = append(args, "--bind", cfg.HostAPISockPath, cfg.HostAPISockPath)
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
 	}
 

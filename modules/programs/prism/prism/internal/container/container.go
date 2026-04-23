@@ -155,10 +155,12 @@ type Config struct {
 	WorktreeGitDir string
 
 	// HostAPISockPath is the absolute host path to the sidecar's host-API Unix socket.
-	// When non-empty and HostAPITCPPort is zero, the socket's parent directory is
-	// bind-mounted into the container at /var/run/prism-host and PRISM_HOST_API is set
-	// to unix:///var/run/prism-host/<sockfilename> so that prism CLI commands inside
-	// the container can proxy tmux operations to the host sidecar. On Darwin this field
+	// When non-empty and HostAPITCPPort is zero, only the socket file itself is
+	// bind-mounted into the container at /var/run/prism-host/<sockfilename> and
+	// PRISM_HOST_API is set to unix:///var/run/prism-host/<sockfilename> so that
+	// prism CLI commands inside the container can proxy tmux operations to the host
+	// sidecar. Mounting only the file (not the parent directory) prevents the sandboxed
+	// agent from accessing other sessions' sockets (issue #960). On Darwin this field
 	// is still set but HostAPITCPPort takes precedence over the Unix socket.
 	HostAPISockPath string
 
@@ -1225,16 +1227,21 @@ func (m *Manager) buildRunArgs() []string {
 	// (192.168.127.254, the gvproxy bridge IP) — no --publish flag is needed
 	// because this is container→host outbound traffic, not inbound port forwarding.
 	//
-	// On Linux (cfg.HostAPITCPPort == 0): the Unix socket directory is mounted
-	// and PRISM_HOST_API is set to the unix:// path (existing behaviour).
+	// On Linux (cfg.HostAPITCPPort == 0): only the session's own socket file is
+	// mounted (not the entire directory). Mounting the directory would expose all
+	// live sessions' sockets inside the sandbox, allowing cross-session host-API
+	// access (issue #960). The socket is mounted at its canonical container path
+	// (/var/run/prism-host/<sockfilename>) so PRISM_HOST_API resolves correctly
+	// without any agent-side client changes.
 	if cfg.HostAPITCPPort != 0 {
 		args = append(args,
 			"--env", fmt.Sprintf("PRISM_HOST_API=http://host.containers.internal:%d", cfg.HostAPITCPPort),
 		)
 	} else if cfg.HostAPISockPath != "" {
+		sockBase := filepath.Base(cfg.HostAPISockPath)
 		args = append(args,
-			"--volume", filepath.Dir(cfg.HostAPISockPath)+":/var/run/prism-host:Z",
-			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+filepath.Base(cfg.HostAPISockPath),
+			"--volume", cfg.HostAPISockPath+":/var/run/prism-host/"+sockBase+":Z",
+			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+sockBase,
 		)
 	}
 

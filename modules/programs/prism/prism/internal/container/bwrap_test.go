@@ -2349,6 +2349,140 @@ func TestStandardSandboxEnvArgs_FallbackPathWithUser(t *testing.T) {
 	}
 }
 
+// ── Host-API socket isolation (security fix #960) ────────────────────────────
+
+// TestBwrapBuildArgs_HostAPISockFileBindNotDir verifies that when HostAPISockPath
+// is set, BuildArgs binds only the socket FILE (not the parent directory).
+// Mounting the directory would expose all live sessions' sockets inside the
+// sandbox, allowing cross-session host-API access (security fix #960).
+func TestBwrapBuildArgs_HostAPISockFileBindNotDir(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "run", "repo@feat-hostapi.sock")
+	sockDir := filepath.Dir(sockPath)
+	if err := os.MkdirAll(sockDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sockDir: %v", err)
+	}
+	// Create the socket file so the path exists.
+	if err := os.WriteFile(sockPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("WriteFile socket: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:     "repo@feat",
+		Worktree:        t.TempDir(),
+		AllocatedPort:   14010,
+		HostAPISockPath: sockPath,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// The socket FILE must be bind-mounted at its own path (SRC == DST).
+	if !hasBind(args, sockPath) {
+		t.Errorf("socket file %q not found as --bind SRC SRC in args: %v", sockPath, args)
+	}
+
+	// The parent directory must NOT be bind-mounted.
+	if hasBind(args, sockDir) {
+		t.Errorf("socket DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sockDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_HostAPISockEnvVarSet verifies that PRISM_HOST_API is set
+// to the unix:// path of the session's own socket when HostAPISockPath is set.
+func TestBwrapBuildArgs_HostAPISockEnvVarSet(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "run", "repo@feat-hostapi.sock")
+	sockDir := filepath.Dir(sockPath)
+	if err := os.MkdirAll(sockDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll sockDir: %v", err)
+	}
+	if err := os.WriteFile(sockPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("WriteFile socket: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:     "repo@feat",
+		Worktree:        t.TempDir(),
+		AllocatedPort:   14010,
+		HostAPISockPath: sockPath,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	wantVal := "unix://" + sockPath
+	if !hasSetenv(args, "PRISM_HOST_API", wantVal) {
+		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, args)
+	}
+}
+
+// TestBwrapBuildArgs_HostAPITCPPortUsesHTTPNotSocket verifies that when
+// HostAPITCPPort is set (Darwin path), PRISM_HOST_API is set to the TCP URL
+// and no socket bind-mount is emitted.
+func TestBwrapBuildArgs_HostAPITCPPortUsesHTTPNotSocket(t *testing.T) {
+	const tcpPort = 51234
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:     "repo@feat",
+		Worktree:        t.TempDir(),
+		AllocatedPort:   14010,
+		HostAPITCPPort:  tcpPort,
+		HostAPISockPath: "/home/user/.local/state/prism/run/repo@feat-hostapi.sock",
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Must have TCP-based PRISM_HOST_API.
+	wantVal := "http://host.containers.internal:51234"
+	if !hasSetenv(args, "PRISM_HOST_API", wantVal) {
+		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, args)
+	}
+
+	// Must NOT have unix:// PRISM_HOST_API.
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PRISM_HOST_API" {
+			if strings.HasPrefix(args[i+2], "unix://") {
+				t.Errorf("unexpected unix:// PRISM_HOST_API when HostAPITCPPort is set: %q", args[i+2])
+			}
+		}
+	}
+
+	// Must NOT mount the socket file or directory.
+	sockPath := "/home/user/.local/state/prism/run/repo@feat-hostapi.sock"
+	sockDir := filepath.Dir(sockPath)
+	if hasBind(args, sockPath) {
+		t.Errorf("socket file %q must not be mounted when HostAPITCPPort is set: %v", sockPath, args)
+	}
+	if hasBind(args, sockDir) {
+		t.Errorf("socket dir %q must not be mounted when HostAPITCPPort is set: %v", sockDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_NoHostAPIWhenSockPathEmpty verifies that when both
+// HostAPISockPath and HostAPITCPPort are zero/empty, no PRISM_HOST_API
+// setenv or socket bind is emitted.
+func TestBwrapBuildArgs_NoHostAPIWhenSockPathEmpty(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@feat",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		// HostAPISockPath and HostAPITCPPort intentionally left empty.
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PRISM_HOST_API" {
+			t.Errorf("unexpected --setenv PRISM_HOST_API when HostAPISockPath is empty: %q", args[i+2])
+		}
+	}
+}
+
 // ── findPairs/findTriples smoke tests ────────────────────────────────────────
 
 func TestHelpers_FindTriples(t *testing.T) {
