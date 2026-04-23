@@ -175,17 +175,28 @@ func scriptCmdArgs(cmd string) []string {
 	return []string{"-q", "-c", cmd, "/dev/null"}
 }
 
-// isInsideBwrap returns true when the test process is running inside a
-// bubblewrap (bwrap) sandbox. It checks whether PID 1 in the current PID
-// namespace is bwrap — the reliable indicator that bwrap used --unshare-pid to
-// create an isolated namespace.
+// insideSandbox returns true when the test process is running inside an
+// isolated sandbox environment where PTY-based tmux client attachment does not
+// work reliably. Two environments are detected:
 //
-// This is used to gate multi-client tmux integration tests that require two
-// simultaneous script-attached PTY clients. In bwrap's isolated /dev/pts
-// namespace, a second tmux attach-session conflicts with the first in a way that
-// causes both clients to exit immediately — a kernel/tmux interaction specific to
-// bwrap's devpts mount. Single-client tests are unaffected.
-func isInsideBwrap() bool {
+//  1. Nix build sandbox: detects via $NIX_BUILD_TOP being non-empty (always set
+//     by nix during buildGoModule's checkPhase). In the nix sandbox, script(1)
+//     runs but the PTY slave cannot become the controlling terminal for tmux's
+//     client process, so the client never appears in list-clients.
+//
+//  2. opencode/prism bwrap sandbox: detects via /proc/1/comm == "bwrap". This
+//     sandbox uses --unshare-pid so bwrap itself is PID 1. In this environment
+//     a single script-attached client works, but a second concurrent attachment
+//     causes both clients to exit immediately due to bwrap devpts namespace
+//     constraints.
+//
+// Callers should only skip PTY-attach tests on this basis, not all tmux tests.
+func insideSandbox() bool {
+	// Nix build sandbox: NIX_BUILD_TOP is always exported during nix builds.
+	if os.Getenv("NIX_BUILD_TOP") != "" {
+		return true
+	}
+	// opencode/prism bwrap sandbox: PID 1 is the bwrap binary itself.
 	comm, err := os.ReadFile("/proc/1/comm")
 	if err != nil {
 		return false
@@ -193,19 +204,24 @@ func isInsideBwrap() bool {
 	return strings.TrimSpace(string(comm)) == "bwrap"
 }
 
-// skipIfBwrapMultiClient calls t.Skip when the test requires multiple
-// simultaneous script-attached tmux clients and the process is running inside
-// a bwrap sandbox. In bwrap's isolated /dev/pts namespace, a second
-// attach-session causes both the new and existing PTY clients to immediately
-// exit — the server's devpts mount does not support concurrent script-attached
-// clients the way a full host PTY namespace does. Tests that need only a single
-// attached client are unaffected by this constraint.
-func skipIfBwrapMultiClient(t *testing.T) {
+// skipIfSandboxPTY calls t.Skip when the test requires script-based PTY
+// attachment and the process is running in a sandbox that prevents it.
+//
+// In the nix build sandbox (detectable via $NIX_BUILD_TOP), script(1) runs
+// but tmux's client process cannot acquire a controlling terminal, so the
+// client never appears in list-clients. In the opencode bwrap sandbox
+// (/proc/1/comm == "bwrap"), a second concurrent script-attached client causes
+// both clients to exit immediately. Neither environment supports the full PTY
+// attach lifecycle needed by these tests.
+//
+// Tests needing only non-PTY tmux operations (session creation, window listing,
+// option setting) do not need this guard and will run in both environments.
+func skipIfSandboxPTY(t *testing.T) {
 	t.Helper()
-	if isInsideBwrap() {
-		t.Skip("skipping multi-client PTY test: running inside bwrap sandbox " +
-			"where a second script-attached tmux client causes both clients to " +
-			"exit (bwrap devpts namespace constraint — run from a host shell to exercise this path)")
+	if insideSandbox() {
+		t.Skip("skipping PTY-attach integration test: running in a sandbox " +
+			"(nix build or bwrap) where script-based tmux client attachment is " +
+			"not supported — run from a host shell to exercise this path")
 	}
 }
 
@@ -786,6 +802,7 @@ func withCurrentClient(t *testing.T, client string) {
 // tea.Cmd closure) to determine the correct client, rather than using a cached
 // m.Client value that may be stale.
 func TestPersistentModelEnterSwitchesClient(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -842,6 +859,7 @@ func TestPersistentModelEnterSwitchesClient(t *testing.T) {
 // calls SwitchClientLast (switch-client -l) on Client to return it to its
 // previous session, and does NOT quit the TUI.
 func TestPersistentModelQuitSwitchesClientLast(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1142,7 +1160,7 @@ func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
 // the one that pressed Enter (tmux's "current client" for the pane is the one
 // that most recently sent input).
 func TestPersistentModelEnterMultiClient(t *testing.T) {
-	skipIfBwrapMultiClient(t)
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1212,7 +1230,7 @@ func TestPersistentModelEnterMultiClient(t *testing.T) {
 // calls CurrentClientFunc at switch time, which returns the client that most
 // recently sent input to the pane (simulated here by overriding the func).
 func TestPersistentModelEnterStaleStamp(t *testing.T) {
-	skipIfBwrapMultiClient(t)
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1290,7 +1308,7 @@ func TestPersistentModelEnterStaleStamp(t *testing.T) {
 // Before the fix, m.Client was used directly in the Enter handler, so B would
 // be switched instead of A.
 func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
-	skipIfBwrapMultiClient(t)
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 	s.newSession("nixos-config@main")
@@ -1355,7 +1373,7 @@ func TestPersistentModelEnterIgnoresStaleClient(t *testing.T) {
 // model calls SwitchClientLast for the current client (A) while client B,
 // viewing a different session, is unaffected.
 func TestPersistentModelQuitMultiClient(t *testing.T) {
-	skipIfBwrapMultiClient(t)
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
@@ -1424,7 +1442,7 @@ func TestPersistentModelQuitMultiClient(t *testing.T) {
 // popupModel switches client A to the selected session. Client B, a bystander,
 // must remain on its original session.
 func TestPopupModelEnterMultiClient(t *testing.T) {
-	skipIfBwrapMultiClient(t)
+	skipIfSandboxPTY(t)
 	s := newCmdTestServer(t)
 	withCmdServer(t, s) // redirects TmuxBin; must not be called from parallel tests
 	s.newSession("nixos-config@main")
