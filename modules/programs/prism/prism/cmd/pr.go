@@ -54,15 +54,17 @@ var prCmd = &cobra.Command{
 			if branchErr != nil {
 				return branchErr
 			}
+			ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 			repo := filepath.Base(bareRoot)
 			var resp struct {
 				SessionName string `json:"session_name"`
 			}
 			if proxyErr := proxyToHostAPI(apiURL, "/spawn", map[string]any{
-				"repo":   repo,
-				"branch": branch,
-				"prompt": promptFlag,
-				"agent":  agentFlag,
+				"repo":                   repo,
+				"branch":                 branch,
+				"prompt":                 promptFlag,
+				"agent":                  agentFlag,
+				"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			}, &resp); proxyErr != nil {
 				return proxyErr
 			}
