@@ -22,8 +22,8 @@ import (
 //
 // cmd is the cobra.Command that owns the --ignore-concurrency-cap flag.
 // callerName is used in warning/error messages (e.g. "spawn", "pr", "review").
-// conCapped must be true for modes that consume a container/sandbox slot —
-// currently "podman" and "bwrap". Pass false for "host" mode (no cap needed).
+// conCapped must be true for modes that consume a container slot —
+// currently "podman" only. Pass false for "host" and "bwrap" modes (no cap needed).
 func checkConcurrencyCap(cmd *cobra.Command, callerName string, conCapped bool) error {
 	if !conCapped {
 		return nil

@@ -2190,6 +2190,122 @@ func TestBwrapBuildArgs_SystemRootsBeforeWorktree(t *testing.T) {
 	}
 }
 
+// ── Security: sensitive /etc subtree shadowing ───────────────────────────────
+
+// TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed verifies that when
+// /etc/wireguard and /etc/wpa_supplicant exist on the host, BuildArgs emits
+// --tmpfs for each AFTER the /etc ro-bind-mount. The ordering is critical:
+// bwrap applies mounts left-to-right, so the tmpfs must come after the ro-bind
+// to shadow the subtree rather than being overwritten by it.
+func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
+	// Create fake /etc/wireguard and /etc/wpa_supplicant directories in a temp
+	// location, then temporarily point the os.Stat checks at them by creating
+	// them at the actual paths used by BuildArgs. Since BuildArgs hard-codes
+	// /etc/wireguard and /etc/wpa_supplicant, we create the real directories
+	// if they don't exist, run the test, then clean up only if we created them.
+	type tempDir struct {
+		path    string
+		created bool
+	}
+	sensitives := []tempDir{
+		{path: "/etc/wireguard"},
+		{path: "/etc/wpa_supplicant"},
+	}
+	for i := range sensitives {
+		if _, err := os.Stat(sensitives[i].path); os.IsNotExist(err) {
+			if mkErr := os.MkdirAll(sensitives[i].path, 0o755); mkErr != nil {
+				t.Skipf("cannot create %s for test (insufficient permissions): %v", sensitives[i].path, mkErr)
+			}
+			sensitives[i].created = true
+		}
+	}
+	defer func() {
+		for _, d := range sensitives {
+			if d.created {
+				_ = os.Remove(d.path)
+			}
+		}
+	}()
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Find the index of the /etc ro-bind-mount.
+	etcROBindIdx := -1
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == "/etc" && args[i+2] == "/etc" {
+			etcROBindIdx = i
+			break
+		}
+	}
+	if etcROBindIdx < 0 {
+		t.Fatalf("--ro-bind /etc /etc not found in args: %v", args)
+	}
+
+	// Assert each sensitive directory is shadowed by --tmpfs AFTER the
+	// /etc ro-bind.
+	for _, d := range sensitives {
+		tmpfsIdx := -1
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--tmpfs" && args[i+1] == d.path {
+				tmpfsIdx = i
+				break
+			}
+		}
+		if tmpfsIdx < 0 {
+			t.Errorf("--tmpfs %s not found in args — sensitive subtree is not shadowed: %v", d.path, args)
+			continue
+		}
+		if tmpfsIdx <= etcROBindIdx {
+			t.Errorf("--tmpfs %s (idx %d) must appear AFTER --ro-bind /etc /etc (idx %d); "+
+				"bwrap applies mounts left-to-right so the ordering is security-critical",
+				d.path, tmpfsIdx, etcROBindIdx)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing verifies that when
+// /etc/wireguard and /etc/wpa_supplicant do not exist on the host, BuildArgs
+// does NOT emit --tmpfs for them. On a machine without wgnord enabled and
+// without the directories pre-created, the mounts must be omitted to avoid
+// failing with EROFS when bwrap tries to create the mount-point inside the
+// read-only /etc namespace.
+func TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing(t *testing.T) {
+	// This test only runs meaningfully when the directories are absent.
+	// If they both exist (e.g. this is the navi machine with impermanence),
+	// there's nothing to verify here — skip gracefully.
+	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant"} {
+		if _, err := os.Stat(p); err == nil {
+			t.Skipf("%s exists on this host — cannot test the absent-path branch", p)
+		}
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant"} {
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--tmpfs" && args[i+1] == p {
+				t.Errorf("--tmpfs %s should NOT appear in args when the directory does not exist on the host, but it does: %v", p, args)
+			}
+		}
+	}
+}
+
 // ── Per-user nix profile mounts (conditional) ────────────────────────────────
 
 // TestBwrapBuildArgs_NixProfilePresentWhenExists verifies that when

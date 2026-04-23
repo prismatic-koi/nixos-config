@@ -79,6 +79,7 @@ func runInNewWindow(t *testing.T, s *cmdTestServer, targetSession, workdir, cmd 
 func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 	// This test mutates package-level state (TmuxBin) via withCmdServer, so it
 	// must NOT run in parallel.
+	skipIfSandboxPTY(t)
 
 	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
 	// writes its DB and sidecar state to an isolated location instead of the
@@ -155,6 +156,7 @@ func TestSwitchPath_SwitchesClientToNewSession(t *testing.T) {
 // other.
 func TestSwitchPath_OnlyMovesTargetClient(t *testing.T) {
 	// Mutates TmuxBin via withCmdServer — must not be parallel.
+	skipIfSandboxPTY(t)
 
 	// Redirect XDG_STATE_HOME to a per-test temp dir so the prism binary
 	// writes its DB and sidecar state to an isolated location instead of the
