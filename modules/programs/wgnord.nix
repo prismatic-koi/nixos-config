@@ -161,7 +161,8 @@
       "d /var/lib/wgnord 0755 root root - -"
     ];
 
-    # Create default template.conf
+    # Create default template.conf — mode 0600 so the plaintext WireGuard
+    # key material is not world-readable on the host filesystem.
     environment.etc."wgnord-template.conf" = {
       text = ''
         [Interface]
@@ -177,14 +178,14 @@
         Endpoint = SERVER_IP:51820
         PersistentKeepalive = 25
       '';
-      mode = "0644";
+      mode = "0600";
     };
 
     # Copy template and countries files to wgnord directory on activation
     system.activationScripts.wgnord-setup = /* bash */ ''
       if [ ! -f /var/lib/wgnord/template.conf ]; then
         cp /etc/wgnord-template.conf /var/lib/wgnord/template.conf
-        chmod 644 /var/lib/wgnord/template.conf
+        chmod 600 /var/lib/wgnord/template.conf
       fi
 
       # Copy countries files if they don't exist
@@ -194,6 +195,14 @@
       if [ ! -f /var/lib/wgnord/countries_iso31662.txt ]; then
         cp ${pkgs.wgnord}/share/countries_iso31662.txt /var/lib/wgnord/countries_iso31662.txt 2>/dev/null || true
       fi
+
+      # Tighten permissions on any existing WireGuard interface configs written
+      # by wgnord. These files contain the private key in plaintext; they must
+      # not be world-readable. The glob is safe to run on every activation —
+      # if /etc/wireguard/ does not exist or is empty the loop is a no-op.
+      for f in /etc/wireguard/*.conf; do
+        [ -f "$f" ] && chmod 600 "$f" || true
+      done
     '';
   };
 }

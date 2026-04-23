@@ -208,6 +208,28 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--ro-bind", sysRoot, sysRoot)
 	}
 
+	// ── Security: shadow sensitive /etc subtrees with empty tmpfs ──────────
+	// The /etc ro-bind above exposes all of /etc to the sandbox, including
+	// directories that contain secrets agents have no legitimate need for.
+	// bwrap applies mounts in order, so a --tmpfs placed after the /etc
+	// bind-mount shadows that subtree with an empty, unwritable tmpfs inside
+	// the sandbox. The host filesystem is unaffected.
+	//
+	// /etc/wireguard/ — WireGuard interface configs contain private keys,
+	// peer endpoints, and DNS in plaintext. An agent in possession of the
+	// private key could reconstruct the full VPN tunnel or exfiltrate it.
+	//
+	// /etc/wpa_supplicant/ — wpa_supplicant configs may contain Wi-Fi
+	// credentials and network identifiers. Agents have no need for these.
+	//
+	// These --tmpfs arguments are unconditional: bwrap silently ignores a
+	// --tmpfs on a path that does not exist inside the sandbox namespace,
+	// so omitting a host-side existence check is safe and correct.
+	args = append(args,
+		"--tmpfs", "/etc/wireguard",
+		"--tmpfs", "/etc/wpa_supplicant",
+	)
+
 	// ── Per-user nix profiles (read-only, conditional) ──────────────────────
 	// These locations hold the home-manager per-user profile (opencode,
 	// git, nix, …). They are conditional because they may not exist on
