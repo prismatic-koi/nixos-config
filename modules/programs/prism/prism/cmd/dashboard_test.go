@@ -318,9 +318,9 @@ func (s *cmdTestServer) attachClientToSession(t *testing.T, targetSession string
 				"  script stderr:         %q\n"+
 				"  list-clients after timeout: %q\n"+
 				"  clients before attach: %q\n"+
-				"  tip: if running inside bwrap (prism/opencode), a second simultaneous\n"+
-				"  script-attached client may not work due to bwrap devpts constraints;\n"+
-				"  call skipIfBwrapMultiClient(t) at the top of tests needing 2+ clients",
+				"  tip: if running inside bwrap or nix build sandbox, PTY-attached\n"+
+				"  tmux clients may not work; call skipIfSandboxPTY(t) at the top\n"+
+				"  of tests that need any script-attached tmux client",
 			targetSession, scriptAlive, scriptStderr.String(), lastListOut, before,
 		)
 	}
