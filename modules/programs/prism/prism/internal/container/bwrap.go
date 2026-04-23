@@ -582,13 +582,22 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 			fmt.Sprintf("http://host.containers.internal:%d", cfg.HostAPITCPPort),
 		)
 	} else if cfg.HostAPISockPath != "" {
-		// Bind only the session's own socket file, not the entire directory.
-		// Mounting the directory would expose all live sessions' sockets to the
-		// sandboxed agent, allowing cross-session host-API access (issue #960).
-		// The PRISM_HOST_API env var already contains the full socket path, so
-		// no agent-side client changes are needed — it finds its socket at the
-		// same path as before.
-		args = append(args, "--bind", cfg.HostAPISockPath, cfg.HostAPISockPath)
+		// Bind the session's own per-session socket DIRECTORY (not the individual
+		// socket file and not the shared run/ directory). Security fix #960:
+		// SidecarHostAPIPath now places each session's socket in its own
+		// subdirectory (run/<session>/hostapi.sock), so binding only that
+		// directory means the sandbox cannot see other sessions' sockets.
+		//
+		// A directory bind (not file bind) is required here for the same reason
+		// as the podman path: the sidecar creates the socket file after startup,
+		// and a file-level bind would pin the original inode — meaning the sandbox
+		// would not see the new socket after os.Remove + net.Listen replaced it.
+		// Binding the directory makes the socket file appear inside the sandbox
+		// once the sidecar calls net.Listen (same inode-transparency behaviour as
+		// a directory mount). The per-session directory is pre-created by
+		// prepareVolumeDirs before this code runs.
+		sockDir := filepath.Dir(cfg.HostAPISockPath)
+		args = append(args, "--bind", sockDir, sockDir)
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
 	}
 

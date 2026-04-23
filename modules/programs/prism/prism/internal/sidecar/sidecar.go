@@ -587,6 +587,10 @@ func (s *Sidecar) Shutdown() {
 	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
+		// Also remove the per-session socket directory introduced by security
+		// fix #960. os.Remove only succeeds when the directory is empty (which
+		// it will be after the socket file is removed), so this is safe.
+		_ = os.Remove(filepath.Dir(s.cfg.HostAPISockPath))
 	}
 	// Close the TCP host-API listener/server (Darwin only). Idempotent when
 	// the listener was never started (both are nil on Linux or when container
