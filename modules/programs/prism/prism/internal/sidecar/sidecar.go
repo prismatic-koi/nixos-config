@@ -435,6 +435,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// regardless of platform. On Darwin the container uses TCP
 		// (HostAPITCPPort), but the Unix socket is still available for
 		// host-side tooling.
+		// For bwrap mode, the per-session socket directory may not yet exist —
+		// prepareVolumeDirs runs in agent-run (after the sidecar starts). Create it
+		// here so net.Listen succeeds. For podman, prepareVolumeDirs already ran
+		// inside mgr.Create(), so this is a no-op.
+		if err := os.MkdirAll(filepath.Dir(s.cfg.HostAPISockPath), 0o700); err != nil {
+			log.Printf("sidecar: host-API socket dir: %v", err)
+		}
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 		if listenErr != nil {
