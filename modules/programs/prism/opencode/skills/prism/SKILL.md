@@ -146,8 +146,28 @@ prism spawn \
 
 ## Running code review
 
-Code review is done by invoking the five review subagents **in parallel** — all
-five as Task tool calls in a single response:
+Code review is done with `prism review <pr>`, which is **async**: it spawns 5
+review agents, registers a group, and returns immediately with an
+acknowledgement. Results are delivered to you via a follow-up `prism prompt`
+when all agents complete.
+
+```bash
+prism review <pr-number>
+```
+
+**Do NOT commit, merge, or announce completion** until the review-complete
+prompt arrives. When it does, handle PASS/FAIL per the worker agent instructions.
+
+If no review-complete prompt arrives within 30 minutes, check progress with:
+
+```bash
+prism checkin <session>~review-<N>-review-goal
+```
+
+### Fallback: Task-call subagents
+
+If `prism review` is unavailable, invoke the five subagents **in parallel** —
+all five as Task tool calls in a single response:
 
 1. `@review-goal` — pass the original issue/ACs and the PR number
 2. `@review-code` — pass the PR number
@@ -159,9 +179,6 @@ Wait for all 5 to complete. ALL must return `<verdict>PASS</verdict>` for the
 review to pass. If ANY returns `<verdict>FAIL</verdict>`, fix all blocking
 issues, push, and re-run all five. After 3 full cycles without convergence,
 stop and escalate — do not run a 4th cycle.
-
-> Note: the `prism review` command is explicitly disabled for agents at the
-> permissions layer. Direct subagent invocation is the canonical path.
 
 ## Example: reviewing a PR (manual spawn)
 

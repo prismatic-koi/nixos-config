@@ -3,9 +3,10 @@ package cmd
 // prism review <pr-number> — platform-native review primitive.
 //
 // Spawns review agent sessions as independent top-level tmux sessions named
-// <parent-session>~review-N-<agent> (N = 1-indexed round number), polls the
-// prism DB until all agents reach the "finished" state, reads their last
-// msg_assistant event, and returns aggregated findings to stdout.
+// <parent-session>~review-N-<agent> (N = 1-indexed round number), registers a
+// group in session_groups, and returns immediately with an acknowledgement.
+// A background monitor process watches the group for completion and delivers
+// the aggregated results to the worker session via prism prompt.
 //
 // Sessions persist until prism cleanup is invoked on the parent — this allows
 // re-reading review-security's findings tomorrow without re-running.
@@ -17,12 +18,9 @@ package cmd
 //	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -35,15 +33,17 @@ import (
 
 var reviewCmd = &cobra.Command{
 	Use:   "review <pr-number>",
-	Short: "Run review agents against a PR and return aggregated findings",
-	Long: `Spawn review agent sessions as independent top-level tmux sessions and poll
-the prism DB until all agents complete. Returns aggregated findings to stdout.
+	Short: "Spawn review agents for a PR and return immediately (async)",
+	Long: `Spawn review agent sessions as independent top-level tmux sessions, register
+a group, and return immediately with a review-in-progress acknowledgement.
 
 Each agent gets its own session named <parent-session>~review-N-<agent> where N
-is incremented on each invocation. Previous rounds' sessions persist until
-prism cleanup is invoked on the parent.
+is incremented on each invocation. A background monitor process watches for
+group completion and delivers aggregated results to this worker via prism prompt.
 
-Exit code 0 = all agents passed. Non-zero = one or more agents failed or errored.`,
+Previous rounds' sessions persist until prism cleanup is invoked on the parent.
+
+Do NOT commit, merge, or announce completion until the review-complete prompt arrives.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runReview,
 }
@@ -115,7 +115,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Container-mode detection: when PRISM_HOST_API is set the process is
 	// running inside a container where tmux is not available. Route the review
-	// through the host sidecar instead of calling review.Run() directly.
+	// through the host sidecar instead of calling review.RunAsync() directly.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		// Agent list was already resolved and validated above (client-side,
 		// inside the container). This ensures that the --only flag is applied
@@ -129,16 +129,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 		if timeoutFlag > 0 {
 			timeoutStr = timeoutFlag.String()
 		}
-		output, passed, err := proxyReview(apiURL, prNumber, agentNames, timeoutStr)
+		output, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr)
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
 		}
 		fmt.Print(output)
 		if output != "" && !strings.HasSuffix(output, "\n") {
 			fmt.Println()
-		}
-		if !passed {
-			os.Exit(1)
 		}
 		return nil
 	}
@@ -206,6 +203,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	opts := review.Opts{
 		PRNumber:       prNumber,
 		ParentSession:  parentSession,
+		WorkerSession:  parentSession, // async delivery goes back to this session
 		Worktree:       worktree,
 		Agents:         agents,
 		Harness:        harnessFlag,
@@ -217,7 +215,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		RuntimeEnvVars: h.RuntimeEnv(),
 	}
 
-	// Load profiles for container mode — passed through to review.Run so
+	// Load profiles for container mode — passed through to review.RunAsync so
 	// each agent's sidecar receives its own per-agent hardened config blob.
 	// In container mode a missing or malformed profiles.json means the
 	// per-agent opencode.json cannot be mounted, which causes the container
@@ -231,52 +229,16 @@ func runReview(cmd *cobra.Command, args []string) error {
 		opts.ProfilesFile = pf
 	}
 
-	// Set up context with signal handling.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// currentRoundSessions holds the session names spawned in this invocation.
-	// It is written once by Run's onSessionsCreated callback (before polling
-	// begins) and read by the SIGINT handler. Protected by the assumption that
-	// the callback fires before the goroutine needs to read it (the goroutine
-	// only acts on a signal, which arrives after spawning is complete).
-	var currentRoundSessions []string
-
-	// Install SIGTERM/SIGINT handler. On signal, kill only the current round's
-	// in-progress sessions — previous rounds' persisted sessions remain untouched.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-sigCh
-		review.KillCurrentRoundSessions(currentRoundSessions)
-		cancel()
-	}()
-
-	// Run the review.
-	results, runErr := review.Run(ctx, opts, func(sessionNames []string) {
-		currentRoundSessions = sessionNames
-		for _, name := range sessionNames {
-			fmt.Fprintf(os.Stderr, "[prism review] agent session: %s\n", name)
-		}
-	})
-
-	signal.Stop(sigCh)
-
-	if runErr != nil && runErr != context.Canceled {
+	// RunAsync spawns the agents, registers the group, starts the monitor, and
+	// returns immediately. No blocking poll — the monitor process handles that.
+	result, runErr := review.RunAsync(opts, "")
+	if runErr != nil {
 		return fmt.Errorf("prism review: %w", runErr)
 	}
 
-	// Print a blank line to separate progress output from the aggregated summary.
-	fmt.Fprintln(os.Stdout)
+	// Print acknowledgement to stdout immediately.
+	fmt.Print(result.Ack)
 	_ = os.Stdout.Sync()
-
-	// Format and print results.
-	output, allPassed := review.FormatResults(results, prNumber)
-	fmt.Print(output)
-
-	if !allPassed {
-		os.Exit(1)
-	}
 	return nil
 }
 

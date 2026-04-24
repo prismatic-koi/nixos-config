@@ -116,10 +116,11 @@ one represents a PR that may be blocking the next piece of work.
 
 When a spawned agent opens a PR:
 
-1. **Trust the worker review.** The worker has already run all 5 review agents
-   (`@review-goal`, `@review-code`, `@review-security`, `@review-qa`,
-   `@review-context`) and fixed all blocking issues before announcing completion.
-   Do not re-review the code yourself — that is the worker's job.
+1. **Trust the worker review.** The worker runs `prism review <pr>` (async) —
+   it spawns 5 review agents as a group and waits for the review-complete
+   `prism prompt` delivery before announcing completion. All blocking issues are
+   fixed before the worker hands off. Do not re-review the code yourself — that
+   is the worker's job.
 2. **Do a lightweight sense-check.** Run `gh pr view <number>` and verify:
    - PR title and description are clear and accurate
    - `Closes #N` is present and references the correct issue
