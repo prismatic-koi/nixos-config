@@ -225,7 +225,7 @@ func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 		resp, err := perAttemptClient.Do(req)
 		if err != nil {
 			lastErr = err
-			log.Printf("sidecar: GET /session attempt %d/%d: %v", attempt, createSessionMaxAttempts, err)
+			log.Printf("sidecar: CreateSession: attempt %d: err=%v (elapsed=%s)", attempt, err, time.Since(sessionStart).Round(time.Millisecond))
 			if attempt < createSessionMaxAttempts {
 				select {
 				case <-ctx.Done():
@@ -293,7 +293,7 @@ func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 				// Transport error during empty-list poll — treat as a fresh
 				// transport failure and let the outer retry loop handle it.
 				lastErr = err2
-				log.Printf("sidecar: GET /session attempt %d/%d: %v", attempt, createSessionMaxAttempts, err2)
+				log.Printf("sidecar: CreateSession: attempt %d: err=%v (elapsed=%s)", attempt, err2, time.Since(sessionStart).Round(time.Millisecond))
 				break
 			}
 

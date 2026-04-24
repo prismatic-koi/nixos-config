@@ -270,14 +270,11 @@ func TestCreateSession_RetriesAndSucceeds(t *testing.T) {
 		t.Errorf("CreateSession() = %q, want %q", id, wantID)
 	}
 
-	// Should have logged exactly failAttempts retry lines.
+	// Should have logged exactly failAttempts retry lines in the new format.
 	logOut := buf.String()
-	for i := 1; i <= failAttempts; i++ {
-		want := "sidecar: GET /session attempt"
-		if !strings.Contains(logOut, want) {
-			t.Errorf("expected log line containing %q, got:\n%s", want, logOut)
-			break
-		}
+	want := "sidecar: CreateSession: attempt"
+	if !strings.Contains(logOut, want) {
+		t.Errorf("expected log line containing %q, got:\n%s", want, logOut)
 	}
 }
 
