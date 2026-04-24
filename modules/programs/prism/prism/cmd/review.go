@@ -243,6 +243,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
 		ContainerMode:  effectiveContainerMode,
+		IsolationMode:  string(isoMode),
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
 		RuntimeEnvVars: h.RuntimeEnv(),
