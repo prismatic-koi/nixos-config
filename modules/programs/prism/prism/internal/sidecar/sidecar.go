@@ -2726,13 +2726,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// pr_number must be a numeric string (e.g. "123"). Non-numeric values are rejected.
 	// agents is optional (empty = full set resolved by prism review on host).
 	// timeout is optional (default: 10m).
-	// Response: {"output":"...","passed":true} | {"error":"..."}
+	// Response: {"output":"<ack-text>"} | {"error":"..."}
 	//
-	// This endpoint is called by workers and coordinators running inside
-	// containers that cannot reach tmux directly. The sidecar runs on the host
-	// where tmux is available, so it delegates to `prism review` on the host.
-	// Both worker and coordinator role sidecars are permitted: workers call
-	// `prism review` as part of their own PR workflow.
+	// The review is async: prism review spawns agents, registers a group, starts
+	// a monitor process, and returns immediately with an acknowledgement message.
+	// The response output field contains the ack text (not the final review results).
+	//
+	// This endpoint is called by workers running inside containers that cannot
+	// reach tmux directly. The sidecar runs on the host where tmux is available,
+	// so it delegates to `prism review` on the host.
 	//
 	// PRISM_SESSION_NAME is injected into the subprocess environment so that
 	// `review.LookupParentSession()` can determine the parent session name
@@ -2784,18 +2786,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		log.Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
 
-		// Parse the timeout to determine an appropriate exec deadline.
-		// Default to 10 minutes per agent; add 2 minutes of overhead.
-		// We must not cut off the prism review process before its own timeout fires.
-		execTimeout := 12 * time.Minute
-		if req.Timeout != "" {
-			if d, parseErr := time.ParseDuration(req.Timeout); parseErr == nil {
-				// Add 2 minutes overhead so the HTTP request outlives the review timeout.
-				execTimeout = d + 2*time.Minute
-			}
-		}
+		// Async review: prism review returns quickly (just spawning + ack).
+		// Use a short exec deadline — 30 seconds is more than enough.
+		const execTimeout = 30 * time.Second
 
-		// Use a context with deadline so hung review processes don't block forever.
 		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
@@ -2807,36 +2801,28 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		env := append(os.Environ(), "PRISM_SESSION_NAME="+s.cfg.SessionName)
 		cmd.Env = env
 
-		// Capture stdout (formatted results); stderr is logged server-side only.
+		// Capture stdout (the ack message); stderr is logged server-side only.
 		out, err := cmd.Output()
 		if err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
-				// Log stderr for diagnostics but do not include it in the HTTP
-				// response to avoid leaking internal paths or credentials to
-				// the container caller.
 				if len(exitErr.Stderr) > 0 {
 					log.Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(string(exitErr.Stderr)))
 				}
 			}
+			// Async review should never exit non-zero for agent failures
+			// (those are delivered later via prism prompt). Treat any non-zero
+			// exit as an infrastructure failure.
+			if output := strings.TrimRight(string(out), "\n"); output == "" {
+				log.Printf("sidecar: host-API /review: review process failed: %v", err)
+				writeError(w, http.StatusInternalServerError, "review process failed — check host logs for details")
+				return
+			}
 		}
 
-		// prism review exits non-zero when one or more agents fail (exit 1).
-		// This is expected and not an infrastructure error — return the output
-		// with passed=false. Only treat it as a hard error if there is no output.
-		passed := err == nil
 		output := strings.TrimRight(string(out), "\n")
-
-		if output == "" && err != nil {
-			// No output produced — infrastructure failure. Log error server-side
-			// and return a generic message to avoid leaking details to the caller.
-			log.Printf("sidecar: host-API /review: review process failed: %v", err)
-			writeError(w, http.StatusInternalServerError, "review process failed — check host logs for details")
-			return
-		}
-
 		writeJSON(w, http.StatusOK, map[string]any{
 			"output": output,
-			"passed": passed,
+			"passed": true, // always true for async ack (results delivered separately)
 		})
 	})
 

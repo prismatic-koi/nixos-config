@@ -220,21 +220,22 @@ func proxyPrompt(apiURL, session, prompt string) error {
 }
 
 // reviewHostAPIResponse holds the response from the host-API /review endpoint.
+// For the async path, only Output is populated (Passed is always true because
+// the review has not yet completed when the ack is returned).
 type reviewHostAPIResponse struct {
 	Output string `json:"output"`
 	Passed bool   `json:"passed"`
 }
 
-// proxyReview proxies a review request to the host-API sidecar when running
-// inside a container (PRISM_HOST_API is set). It sends POST /review to the
-// sidecar, which runs `prism review` on the host where tmux is available,
-// and streams back the aggregated review output.
+// proxyReviewAsync proxies an async review request to the host-API sidecar
+// when running inside a container (PRISM_HOST_API is set). It sends POST /review
+// to the sidecar, which runs `prism review` on the host where tmux is available,
+// and returns immediately with the async acknowledgement.
 //
 // prNumber is the PR number to review (e.g. "123"). agents is an optional
 // list of agent names for --only filtering. timeout is an optional duration
-// string (e.g. "10m"). Returns the formatted output text, whether all agents
-// passed, and any error.
-func proxyReview(apiURL, prNumber string, agents []string, timeout string) (string, bool, error) {
+// string (e.g. "10m"). Returns the acknowledgement text and any error.
+func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) (string, error) {
 	// Build request body.
 	body := map[string]any{
 		"pr_number": prNumber,
@@ -246,18 +247,10 @@ func proxyReview(apiURL, prNumber string, agents []string, timeout string) (stri
 		body["timeout"] = timeout
 	}
 
-	// Parse the timeout to set an appropriate HTTP client deadline.
-	// The sidecar will enforce its own deadline; we add 3 minutes of overhead
-	// so the HTTP transport does not time out before the sidecar responds.
-	clientTimeout := 13 * time.Minute // default: 10m review + 3m overhead
-	if timeout != "" {
-		if d, err := time.ParseDuration(timeout); err == nil {
-			clientTimeout = d + 3*time.Minute
-		}
-	}
+	// Async reviews return quickly (just spawning + ack), so 30 s is plenty.
+	const clientTimeout = 30 * time.Second
 
-	// Build a custom client with the extended timeout so review requests
-	// (which can take 10+ minutes) are not cut off by the default 60s timeout.
+	// Build a custom client.
 	var (
 		client *http.Client
 		reqURL string
@@ -268,7 +261,7 @@ func proxyReview(apiURL, prNumber string, agents []string, timeout string) (stri
 	} else {
 		sockPath, parseErr := parseUnixSocketURL(apiURL)
 		if parseErr != nil {
-			return "", false, fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+			return "", fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
 		}
 		client = &http.Client{
 			Transport: &http.Transport{
@@ -288,25 +281,25 @@ func proxyReview(apiURL, prNumber string, agents []string, timeout string) (stri
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return "", false, fmt.Errorf("proxyReview: marshal request body: %w", err)
+		return "", fmt.Errorf("proxyReviewAsync: marshal request body: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return "", false, fmt.Errorf("proxyReview: build request: %w", err)
+		return "", fmt.Errorf("proxyReviewAsync: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", false, fmt.Errorf("host-API /review: %w", err)
+		return "", fmt.Errorf("host-API /review: %w", err)
 	}
 
 	var reviewResp reviewHostAPIResponse
 	if err := readHostAPIResponse("/review", resp, &reviewResp); err != nil {
-		return "", false, err
+		return "", err
 	}
-	return reviewResp.Output, reviewResp.Passed, nil
+	return reviewResp.Output, nil
 }
 
 // proxyLogsFromHostAPI proxies a GET /logs request to the host-API server and

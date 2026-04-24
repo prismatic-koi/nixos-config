@@ -345,12 +345,13 @@
 
         ## Pull Request Reviews
 
-          After opening a pull request, invoke ALL 5 review agents **in parallel** before announcing completion:
-          `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context`.
-          Pass the PR number to each. All 5 must return `<verdict>PASS</verdict>` for the review to pass.
-          If ANY agent returns FAIL, fix all blocking issues, push, and re-run all 5 agents.
+          `prism review <pr>` is **async** — it spawns 5 review agents, registers a group, and returns immediately with an acknowledgement.
+          Results are delivered to you via a follow-up `prism prompt` when all agents complete.
+          **Do NOT commit, merge, or announce completion** until the review-complete prompt arrives.
+          When the review-complete prompt arrives, handle PASS/FAIL per the worker agent instructions.
+          If no review-complete prompt arrives within 30 minutes, investigate with `prism checkin <session>~review-<N>-review-goal`.
           After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
-          Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response).
+          Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response) as a fallback when `prism review` is unavailable.
 
         ## Search Scope
 
