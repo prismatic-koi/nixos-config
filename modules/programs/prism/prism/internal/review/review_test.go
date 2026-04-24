@@ -2309,3 +2309,168 @@ func TestKillReviewSessionsForParentWithDB_NilDB(t *testing.T) {
 	// KillSessionPrefix calls tmux (best-effort, non-fatal). Verify no panic.
 	review.KillReviewSessionsForParentWithDB(nil, "nixos-config@main")
 }
+
+// ── RunAsync ──────────────────────────────────────────────────────────────────
+
+// TestRunAsync_ReturnsImmediately verifies that RunAsync returns promptly
+// (well under 5 seconds) without blocking on agent completion. This is the
+// core AC for the async model: "prism review <pr> becomes non-blocking".
+//
+// The test exercises the spawn-failure path (container mode with nil
+// ProfilesFile) so that RunAsync fails quickly at config-resolution time —
+// meaning all agents fail to spawn — rather than attempting real tmux calls.
+// The key assertion is that RunAsync returns an error quickly, NOT that it
+// blocks for any agent work to complete. In production, all agents would spawn
+// successfully and the monitor would be started before RunAsync returns.
+//
+// A separate test (TestRunAsync_AllSpawnFailReturnsError) confirms the error
+// path. This test focuses solely on timing.
+func TestRunAsync_ReturnsImmediately(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	parent := "nixos-config@async-timing-test"
+	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+
+	opts := review.Opts{
+		PRNumber:      "864",
+		ParentSession: parent,
+		WorkerSession: parent,
+		Worktree:      t.TempDir(),
+		Agents:        review.Agents()[:1], // single agent for speed
+		Timeout:       30 * time.Second,
+		DBPath:        dbPath,
+		ContainerMode: true,
+		ProfilesFile:  nil, // triggers immediate config-resolution failure → fast return
+	}
+
+	start := time.Now()
+	// RunAsync should return quickly (either with an error due to all agents
+	// failing to spawn, or with an AsyncResult after spawning successfully).
+	// We pass a non-existent prismBinary so StartMonitorProcess fails fast.
+	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
+	elapsed := time.Since(start)
+
+	// Regardless of success or failure, RunAsync must not block.
+	const maxElapsed = 5 * time.Second
+	if elapsed > maxElapsed {
+		t.Errorf("RunAsync took %v — expected to return in under %v (must not block on agent completion)", elapsed, maxElapsed)
+	}
+
+	// With ContainerMode=true and nil ProfilesFile, all agents fail at config
+	// resolution → RunAsync returns "all review agents failed to spawn".
+	if runErr == nil {
+		t.Logf("RunAsync returned nil error (agents spawned — monitor start failed silently as expected)")
+	} else {
+		t.Logf("RunAsync returned error (expected for container-mode nil-pf path): %v", runErr)
+	}
+}
+
+// TestRunAsync_AllSpawnFailReturnsError verifies that RunAsync returns an
+// error when all agents fail to spawn (same path as Run).
+func TestRunAsync_AllSpawnFailReturnsError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	parent := "nixos-config@async-allfail-test"
+	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+
+	opts := review.Opts{
+		PRNumber:      "99",
+		ParentSession: parent,
+		WorkerSession: parent,
+		Worktree:      t.TempDir(),
+		Agents:        review.Agents()[:1],
+		Timeout:       30 * time.Second,
+		DBPath:        dbPath,
+		ContainerMode: true,
+		ProfilesFile:  nil, // → all agents fail to spawn
+	}
+
+	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
+	if runErr == nil {
+		t.Fatal("RunAsync: expected error when all agents fail to spawn, got nil")
+	}
+	if !findSubstring(runErr.Error(), "failed") {
+		t.Errorf("error should mention failure: %v", runErr)
+	}
+}
+
+// TestRunAsync_MissingWorkerSession verifies that RunAsync returns an error
+// when WorkerSession is empty (required field for async delivery).
+func TestRunAsync_MissingWorkerSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+	opts := review.Opts{
+		PRNumber:      "42",
+		ParentSession: "nixos-config@test",
+		WorkerSession: "", // missing
+		Worktree:      t.TempDir(),
+		DBPath:        dbPath,
+	}
+	_, err := review.RunAsync(opts, "")
+	if err == nil {
+		t.Fatal("RunAsync: expected error for missing WorkerSession, got nil")
+	}
+	if !findSubstring(err.Error(), "worker session") {
+		t.Errorf("error should mention 'worker session': %v", err)
+	}
+}
+
+// TestRunAsync_DuplicateInProgress verifies that calling RunAsync when a round
+// is already in progress for the same parent returns a clear error rather than
+// silently spawning a duplicate round.
+func TestRunAsync_DuplicateInProgress(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	parent := "nixos-config@async-dup-test"
+	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+
+	// Simulate an in-progress round by registering a group with an active member.
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	activeSess := parent + "~review-1-review-goal"
+	if err := d.UpsertStatus(activeSess, "nixos-config", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus active: %v", err)
+	}
+	if err := d.SetGroupID(activeSess, groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+
+	opts := review.Opts{
+		PRNumber:      "55",
+		ParentSession: parent,
+		WorkerSession: parent,
+		Worktree:      t.TempDir(),
+		Agents:        review.Agents()[:1],
+		DBPath:        dbPath,
+	}
+
+	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
+	if runErr == nil {
+		t.Fatal("RunAsync: expected error for in-progress round, got nil")
+	}
+	if !findSubstring(runErr.Error(), "in progress") && !findSubstring(runErr.Error(), "already") {
+		t.Errorf("error should mention 'in progress' or 'already': %v", runErr)
+	}
+}
