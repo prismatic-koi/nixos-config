@@ -133,13 +133,12 @@ func runReview(cmd *cobra.Command, args []string) error {
 		if timeoutFlag > 0 {
 			timeoutStr = timeoutFlag.String()
 		}
-		output, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr)
+		// proxyReviewAsync streams each output line to os.Stdout as it
+		// arrives — no further printing is needed here. The returned string
+		// is the buffered copy used for error context only.
+		_, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr)
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
-		}
-		fmt.Print(output)
-		if output != "" && !strings.HasSuffix(output, "\n") {
-			fmt.Println()
 		}
 		return nil
 	}
