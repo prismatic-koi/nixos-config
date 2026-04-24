@@ -189,6 +189,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // per repo (§6.1 from #849): UNIQUE (repo) WHERE root_agent_name='coordinator'
 // AND ended_at IS NULL. The IF NOT EXISTS guard makes this idempotent so that
 // databases already at v12 (e.g. from a re-run) do not fail.
+// v12→v13 is a one-shot maintenance migration that ends (sets ended_at=now)
+// any agent_status rows whose session_name matches legacy malformed double-
+// ~review patterns from a historical recursive-review bug (#826). Only rows
+// where ended_at IS NULL and last_seen IS NULL, zero, or older than 7 days are
+// touched, to avoid accidentally closing any currently-active sessions.
+// Rows already with ended_at set are left alone (idempotent).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -516,6 +522,40 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 12
+	}
+	if version == 12 {
+		// Migration v12 → v13: one-shot maintenance cleanup of agent_status rows
+		// whose session_name matches legacy malformed double-~review patterns
+		// produced by a historical recursive-review bug (#826).
+		//
+		// Patterns matched:
+		//   %~review-%~review%  — doubled ~review with no role suffix
+		//   %~review~review%    — back-to-back ~review (older variant)
+		//
+		// The current valid shape, <parent>~review-<N>-review-<role>, is NOT
+		// matched by either pattern because it does not contain ~review-<N>~review
+		// or back-to-back ~review~review.
+		//
+		// Only rows where ended_at IS NULL and last_seen is NULL, zero, or older
+		// than 7 days are touched — this avoids accidentally closing any session
+		// that might still be active.  Rows that already have ended_at set are
+		// left alone (the WHERE ended_at IS NULL guard makes this idempotent).
+		migrations := []string{
+			`UPDATE agent_status
+			   SET ended_at = unixepoch('now')
+			 WHERE ended_at IS NULL
+			   AND (last_seen IS NULL OR last_seen = 0 OR last_seen < (unixepoch('now') - 604800))
+			   AND (session_name LIKE '%~review-%~review%'
+			    OR  session_name LIKE '%~review~review%')`,
+			"UPDATE schema_version SET version = 13",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v12→v13: %w", err)
+			}
+		}
+		version = 13
 	}
 
 	return &DB{conn: conn, path: path}, nil
