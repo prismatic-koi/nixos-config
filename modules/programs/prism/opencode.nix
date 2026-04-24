@@ -247,10 +247,11 @@
         "prism checkin *" = "allow";
         "prism list-sessions" = "allow";
         "prism prompt *" = "allow";
-        # prism review is denied — it spawns heavy containers and can crash the
-        # host when multiple workers run it concurrently. Use @review-* Task calls.
-        "prism review" = "deny";
-        "prism review *" = "deny";
+        # prism review is the primary async review path for workers (#864).
+        # It spawns agents, registers a group, and returns immediately.
+        # Concurrency is controlled by the cap in cmd/concurrency.go.
+        "prism review" = "allow";
+        "prism review *" = "allow";
       };
 
       # Bash commands for the coordinator agent — inverted model: ask by default,
@@ -453,10 +454,10 @@
         "gh pr merge *" = "deny";
         "nixos-rebuild *" = "deny";
         "sudo nixos-rebuild *" = "deny";
-        # prism review spawns heavy containers — denied to prevent host overload.
-        # Use @review-* Task calls instead.
-        "prism review" = "deny";
-        "prism review *" = "deny";
+        # prism review is the primary async review path for workers (#864).
+        # The async model is non-blocking and concurrency-capped — allow.
+        # Note: container workers call this via the host sidecar (PRISM_HOST_API path),
+        # so the actual spawning happens on the host where tmux is available.
       };
 
       # Coordinator container: strict deny-by-default allowlist.
@@ -722,10 +723,8 @@
                 "prism spawn *" = "deny";
                 "prism pr" = "deny";
                 "prism pr *" = "deny";
-                # prism review spawns heavy containers — denied to prevent host overload.
-                # Use @review-* Task calls instead.
-                "prism review" = "deny";
-                "prism review *" = "deny";
+                # prism review is allowed for workers — async model is non-blocking
+                # and concurrency-capped (#864). The bwrap sandbox is the safety net.
               }
               // tmuxDenyCommands;
             };
