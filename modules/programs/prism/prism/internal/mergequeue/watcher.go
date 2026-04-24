@@ -157,7 +157,7 @@ func (w *Watcher) tick(ctx context.Context) {
 // "sha1" message) leaves watching; on other errors transitions to failed.
 func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 	log.Printf("[mergequeue] PR #%d CLEAN — attempting gh pr merge --squash", head.PR)
-	out, err := runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash", "--auto")
+	out, err := runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash")
 	if err == nil {
 		log.Printf("[mergequeue] PR #%d merged successfully", head.PR)
 		w.succeedAndNotify(ctx, head)
