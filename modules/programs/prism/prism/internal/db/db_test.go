@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=13 (migrations are applied on Open).
+	// Verify schema_version=16 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version: got %d, want 16", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -983,8 +983,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1058,8 +1058,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1559,8 +1559,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1625,8 +1625,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1695,8 +1695,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1790,8 +1790,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1883,8 +1883,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2468,8 +2468,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2557,8 +2557,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -4160,8 +4160,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// Check each row.
@@ -4583,13 +4583,13 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must advance to 15.
+	// Schema version must advance to 16.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4706,7 +4706,7 @@ func TestMigration_V13ToV14_Idempotent(t *testing.T) {
 	}
 	d1.Close()
 
-	// Second open: migration is at v15; the backfill WHERE guard means rows with
+	// Second open: migration is at v16; the backfill WHERE guard means rows with
 	// last_seen != 0 are not touched.
 	d2, err := db.Open(dbPath)
 	if err != nil {
@@ -4858,13 +4858,13 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must advance to 15.
+	// Schema version must advance to 16.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 15 {
-		t.Errorf("schema_version after migration: got %d, want 15", version)
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -4911,7 +4911,7 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 		t.Errorf("evt-2 harness_session_id: got %v, want nil", gotNull)
 	}
 
-	// Idempotency: opening the same (now v15) DB a second time must not error.
+	// Idempotency: opening the same (now v16) DB a second time must not error.
 	d2, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("second db.Open on already-migrated db: %v", err)
@@ -4969,5 +4969,622 @@ func TestMigration_V12ToV13_PostMigrationQueryReturnsZero(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("AC query: got %d active malformed rows, want 0 after migration", count)
+	}
+}
+
+// ── Migration v15→v16 ─────────────────────────────────────────────────────────
+
+// seedV15DB creates a raw SQLite database at dbPath seeded at schema_version=15
+// (the full v15 schema: agent_status, agent_events with harness_session_id,
+// session_groups, bus_messages). It inserts one live and one ended agent_status
+// row, along with several agent_events rows, for use by v15→v16 migration tests.
+func seedV15DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v15 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+
+		INSERT INTO schema_version (version) VALUES (15);
+
+		-- Live session with instance_id (should be backfilled into sessions).
+		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen)
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'iid-live-1', 'opencode', 1000);
+
+		-- Ended session with instance_id (not backfilled: ended_at IS NOT NULL).
+		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen, ended_at)
+		  VALUES ('repo@feat', 'repo', '/code/repo/feat', 'finished', 'iid-ended-2', 'opencode', 2000, 3000);
+
+		-- Live session WITHOUT instance_id (should be skipped by backfill).
+		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen)
+		  VALUES ('repo@noid', 'repo', '/code/repo/noid', 'active', NULL, 'opencode', 4000);
+
+		-- Events for the live session.
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
+		  VALUES ('evt-1', 'repo@main', 'repo', '/code/repo/main', 'state_change', '{"state":"active"}', 1000);
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
+		  VALUES ('evt-2', 'repo@feat', 'repo', '/code/repo/feat', 'state_change', '{"state":"finished"}', 2000);
+
+		-- Bus message and session_group rows.
+		INSERT INTO session_groups (group_id, parent_session)
+		  VALUES ('grp-1', 'repo@main');
+		INSERT INTO bus_messages (id, from_session, to_session, repo, text, urgency, sent_at)
+		  VALUES ('msg-1', 'repo@main', 'repo@feat', 'repo', 'hello', 'normal', 1000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v15 db: %v", err)
+	}
+}
+
+// TestMigration_V15ToV16_CreatesSessionsTable verifies that the v15→v16
+// migration creates the sessions table with all required columns and indexes,
+// adds instance_id to agent_events, and backfills sessions from live
+// agent_status rows.
+func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v15_sessions.db")
+	seedV15DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v15 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must advance to 16.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 16 {
+		t.Errorf("schema_version after migration: got %d, want 16", version)
+	}
+
+	// sessions table must exist.
+	var tname string
+	if err := d.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+	).Scan(&tname); err != nil {
+		t.Fatalf("sessions table not found after v15→v16 migration: %v", err)
+	}
+
+	// idx_sessions_repo_started must exist.
+	var idxName string
+	if err := d.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sessions_repo_started'",
+	).Scan(&idxName); err != nil {
+		t.Fatalf("idx_sessions_repo_started not found: %v", err)
+	}
+
+	// idx_sessions_name must exist.
+	if err := d.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_sessions_name'",
+	).Scan(&idxName); err != nil {
+		t.Fatalf("idx_sessions_name not found: %v", err)
+	}
+
+	// instance_id column must now exist in agent_events.
+	var colExists int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'instance_id'`,
+	).Scan(&colExists); err != nil {
+		t.Fatalf("pragma_table_info agent_events.instance_id: %v", err)
+	}
+	if colExists == 0 {
+		t.Error("instance_id column not found in agent_events after v15→v16 migration")
+	}
+}
+
+// TestMigration_V15ToV16_BackfillsLiveSessions verifies that the backfill step
+// creates exactly one sessions row per live agent_status row with a non-empty
+// instance_id, and skips both ended rows and rows with NULL instance_id.
+func TestMigration_V15ToV16_BackfillsLiveSessions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v15_backfill.db")
+	seedV15DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v15 db: %v", err)
+	}
+	defer d.Close()
+
+	// Only the live 'repo@main' row has ended_at IS NULL AND instance_id != ''.
+	// 'repo@feat' is ended; 'repo@noid' has NULL instance_id.
+	var sessionCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&sessionCount); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if sessionCount != 1 {
+		t.Errorf("sessions count after backfill: got %d, want 1 (only live sessions with instance_id)", sessionCount)
+	}
+
+	// The backfilled row must have instance_id = 'iid-live-1'.
+	var iid string
+	if err := d.QueryRow("SELECT instance_id FROM sessions WHERE session_name = 'repo@main'").Scan(&iid); err != nil {
+		t.Fatalf("query sessions for repo@main: %v", err)
+	}
+	if iid != "iid-live-1" {
+		t.Errorf("backfilled instance_id: got %q, want %q", iid, "iid-live-1")
+	}
+}
+
+// TestMigration_V15ToV16_PreservesExistingRows verifies that existing rows in
+// agent_events, agent_status, bus_messages, and session_groups are unmodified
+// after the v15→v16 migration (counts and content preserved).
+func TestMigration_V15ToV16_PreservesExistingRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v15_preserve.db")
+	seedV15DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v15 db: %v", err)
+	}
+	defer d.Close()
+
+	// agent_events: 2 rows, instance_id now NULL (pre-migration events are not backfilled).
+	var evtCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM agent_events").Scan(&evtCount); err != nil {
+		t.Fatalf("count agent_events: %v", err)
+	}
+	if evtCount != 2 {
+		t.Errorf("agent_events count: got %d, want 2", evtCount)
+	}
+	// Pre-migration agent_events rows must have instance_id = NULL.
+	var nullCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM agent_events WHERE instance_id IS NULL").Scan(&nullCount); err != nil {
+		t.Fatalf("count agent_events with NULL instance_id: %v", err)
+	}
+	if nullCount != 2 {
+		t.Errorf("pre-migration events with NULL instance_id: got %d, want 2", nullCount)
+	}
+
+	// agent_status: 3 rows (live+ended+noid).
+	var statusCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM agent_status").Scan(&statusCount); err != nil {
+		t.Fatalf("count agent_status: %v", err)
+	}
+	if statusCount != 3 {
+		t.Errorf("agent_status count: got %d, want 3", statusCount)
+	}
+
+	// bus_messages: 1 row.
+	var msgCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages").Scan(&msgCount); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if msgCount != 1 {
+		t.Errorf("bus_messages count: got %d, want 1", msgCount)
+	}
+
+	// session_groups: 1 row.
+	var grpCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM session_groups").Scan(&grpCount); err != nil {
+		t.Fatalf("count session_groups: %v", err)
+	}
+	if grpCount != 1 {
+		t.Errorf("session_groups count: got %d, want 1", grpCount)
+	}
+}
+
+// TestMigration_V15ToV16_Idempotent verifies that running the v15→v16
+// migration twice (opening an already-migrated DB) is a no-op.
+func TestMigration_V15ToV16_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v15_idempotent.db")
+	seedV15DB(t, dbPath)
+
+	// First open: applies the migration.
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	// Second open: must succeed without error (idempotent).
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open on already-migrated db: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 16 {
+		t.Errorf("schema_version after second open: got %d, want 16", version)
+	}
+}
+
+// ── sessions table AC tests ───────────────────────────────────────────────────
+
+// TestOpen_CreatesSessionsTable verifies that the sessions table exists and has
+// all required columns on a fresh DB (no migration needed).
+func TestOpen_CreatesSessionsTable(t *testing.T) {
+	d := openTestDB(t)
+
+	// sessions table must exist.
+	var name string
+	if err := d.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+	).Scan(&name); err != nil {
+		t.Fatalf("sessions table not found: %v", err)
+	}
+	if name != "sessions" {
+		t.Errorf("sessions table name: got %q, want \"sessions\"", name)
+	}
+
+	// Verify columns exist by probing the declarative schema.
+	requiredCols := []string{
+		"instance_id", "session_name", "agent_role", "root_agent_name",
+		"repo", "worktree", "harness", "harness_session_id", "group_id",
+		"started_at", "ended_at", "end_state", "archive_path", "prism_version",
+	}
+	for _, col := range requiredCols {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info('sessions') for %q: %v", col, err)
+		}
+		if n == 0 {
+			t.Errorf("column %q not found in sessions table", col)
+		}
+	}
+
+	// agent_events.instance_id must exist on a fresh DB too.
+	var aeCol int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'instance_id'`,
+	).Scan(&aeCol); err != nil {
+		t.Fatalf("pragma_table_info agent_events.instance_id: %v", err)
+	}
+	if aeCol == 0 {
+		t.Error("instance_id column not found in agent_events on fresh DB")
+	}
+}
+
+// TestInsertSession_Basic verifies that InsertSession inserts a row with the
+// expected values and that the row is retrievable.
+func TestInsertSession_Basic(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/code/repo/main",
+		Harness:     "opencode",
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	var gotIID, gotSession, gotRepo, gotWorktree, gotHarness string
+	var startedAt int64
+	if err := d.QueryRow(
+		`SELECT instance_id, session_name, repo, worktree, harness, started_at
+		   FROM sessions WHERE instance_id = ?`, iid,
+	).Scan(&gotIID, &gotSession, &gotRepo, &gotWorktree, &gotHarness, &startedAt); err != nil {
+		t.Fatalf("query sessions: %v", err)
+	}
+	if gotIID != iid {
+		t.Errorf("instance_id: got %q, want %q", gotIID, iid)
+	}
+	if gotSession != "repo@main" {
+		t.Errorf("session_name: got %q, want %q", gotSession, "repo@main")
+	}
+	if gotRepo != "repo" {
+		t.Errorf("repo: got %q, want %q", gotRepo, "repo")
+	}
+	if gotWorktree != "/code/repo/main" {
+		t.Errorf("worktree: got %q, want %q", gotWorktree, "/code/repo/main")
+	}
+	if gotHarness != "opencode" {
+		t.Errorf("harness: got %q, want \"opencode\"", gotHarness)
+	}
+	if startedAt == 0 {
+		t.Error("started_at: got 0, want non-zero")
+	}
+}
+
+// TestInsertSession_Idempotent verifies that inserting the same instance_id
+// twice is a no-op (INSERT OR IGNORE).
+func TestInsertSession_Idempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("first InsertSession: %v", err)
+	}
+	// Second insert with same instance_id must not fail.
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("second InsertSession (idempotent): %v", err)
+	}
+
+	var rowCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM sessions WHERE instance_id = ?", iid).Scan(&rowCount); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if rowCount != 1 {
+		t.Errorf("sessions count after duplicate insert: got %d, want 1", rowCount)
+	}
+}
+
+// TestUpdateSessionEnded verifies that UpdateSessionEnded sets ended_at and
+// end_state on the sessions row.
+func TestUpdateSessionEnded(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	// Verify ended_at is NULL before update.
+	var endedAtBefore *int64
+	if err := d.QueryRow("SELECT ended_at FROM sessions WHERE instance_id = ?", iid).Scan(&endedAtBefore); err != nil {
+		t.Fatalf("query ended_at before: %v", err)
+	}
+	if endedAtBefore != nil {
+		t.Errorf("ended_at before update: got %v, want nil", endedAtBefore)
+	}
+
+	if err := d.UpdateSessionEnded(iid, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded: %v", err)
+	}
+
+	var endedAt *int64
+	var endState *string
+	if err := d.QueryRow(
+		"SELECT ended_at, end_state FROM sessions WHERE instance_id = ?", iid,
+	).Scan(&endedAt, &endState); err != nil {
+		t.Fatalf("query sessions after UpdateSessionEnded: %v", err)
+	}
+	if endedAt == nil {
+		t.Error("ended_at: got nil, want non-nil after UpdateSessionEnded")
+	}
+	if endState == nil || *endState != "finished" {
+		t.Errorf("end_state: got %v, want \"finished\"", endState)
+	}
+}
+
+// TestUpdateSessionEnded_NoopWhenNoRow verifies that UpdateSessionEnded on a
+// non-existent instance_id does not error (it is a no-op).
+func TestUpdateSessionEnded_NoopWhenNoRow(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpdateSessionEnded("does-not-exist", "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded on non-existent row: %v (want nil)", err)
+	}
+}
+
+// TestWriteEvent_PropagatesInstanceID verifies that WriteEvent stores
+// instance_id on the event row and that QueryEvents returns it.
+func TestWriteEvent_PropagatesInstanceID(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	// Insert a sessions row so the FK is satisfied.
+	if err := d.InsertSession(db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	evtID := uuid.New().String()
+	e := db.Event{
+		ID:          evtID,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		InstanceID:  &iid,
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   time.Now(),
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	events, err := d.QueryEvents("repo@main", 10, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count: got %d, want 1", len(events))
+	}
+	if events[0].InstanceID == nil {
+		t.Fatal("InstanceID: got nil, want non-nil")
+	}
+	if *events[0].InstanceID != iid {
+		t.Errorf("InstanceID: got %q, want %q", *events[0].InstanceID, iid)
+	}
+}
+
+// TestWriteEvent_NullInstanceID verifies that WriteEvent with InstanceID=nil
+// succeeds and stores NULL in agent_events.instance_id (legacy-compatible path).
+func TestWriteEvent_NullInstanceID(t *testing.T) {
+	d := openTestDB(t)
+
+	evtID := uuid.New().String()
+	e := db.Event{
+		ID:          evtID,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		InstanceID:  nil, // no instance_id
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   time.Now(),
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent with nil InstanceID: %v", err)
+	}
+
+	events, err := d.QueryEvents("repo@main", 10, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count: got %d, want 1", len(events))
+	}
+	if events[0].InstanceID != nil {
+		t.Errorf("InstanceID: got %v, want nil (legacy-compatible NULL)", events[0].InstanceID)
+	}
+}
+
+// TestWriteEvent_ForeignKeyViolation verifies that writing an agent_events row
+// with a non-NULL instance_id that does not exist in sessions fails with a
+// foreign-key error (AC from issue #996).
+func TestWriteEvent_ForeignKeyViolation(t *testing.T) {
+	d := openTestDB(t)
+
+	nonExistentIID := uuid.New().String()
+	evtID := uuid.New().String()
+	e := db.Event{
+		ID:          evtID,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		InstanceID:  &nonExistentIID,
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   time.Now(),
+	}
+	err := d.WriteEvent(e)
+	if err == nil {
+		t.Fatal("WriteEvent with non-existent instance_id: expected FK error, got nil")
+	}
+	if !strings.Contains(strings.ToUpper(err.Error()), "FOREIGN KEY") {
+		t.Errorf("error should mention FOREIGN KEY constraint: got %q", err.Error())
+	}
+}
+
+// TestSessionsFK_OnDeleteSetNull verifies that deleting a session_groups row
+// sets sessions.group_id to NULL (ON DELETE SET NULL cascade), preserving the
+// sessions row itself.
+func TestSessionsFK_OnDeleteSetNull(t *testing.T) {
+	d := openTestDB(t)
+
+	// Register a group.
+	groupID, err := d.RegisterGroup("repo@main")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Insert a sessions row referencing the group.
+	iid := uuid.New().String()
+	g := groupID
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+		GroupID:     &g,
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	// Confirm group_id is set.
+	var gid *string
+	if err := d.QueryRow("SELECT group_id FROM sessions WHERE instance_id = ?", iid).Scan(&gid); err != nil {
+		t.Fatalf("query group_id before delete: %v", err)
+	}
+	if gid == nil || *gid != groupID {
+		t.Fatalf("pre-condition: group_id = %v, want %q", gid, groupID)
+	}
+
+	// Delete the session_groups row — should cascade SET NULL to sessions.group_id.
+	if err := d.QueryRow(
+		"DELETE FROM session_groups WHERE group_id = ? RETURNING group_id", groupID,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("delete session_groups: %v", err)
+	}
+
+	// sessions.group_id must now be NULL.
+	var gidAfter *string
+	if err := d.QueryRow("SELECT group_id FROM sessions WHERE instance_id = ?", iid).Scan(&gidAfter); err != nil {
+		t.Fatalf("query group_id after delete: %v", err)
+	}
+	if gidAfter != nil {
+		t.Errorf("group_id after ON DELETE SET NULL: got %v, want nil", *gidAfter)
+	}
+
+	// sessions row must still exist.
+	var sessName string
+	if err := d.QueryRow("SELECT session_name FROM sessions WHERE instance_id = ?", iid).Scan(&sessName); err != nil {
+		t.Fatalf("sessions row should still exist after group deletion: %v", err)
+	}
+	if sessName != "repo@main" {
+		t.Errorf("session_name after group deletion: got %q, want %q", sessName, "repo@main")
 	}
 }

@@ -232,7 +232,13 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
 			}
+			instanceIDForSessions := instanceIDFromStatus(d, m.session)
 			_ = d.SetEnded(m.session)
+			if instanceIDForSessions != "" {
+				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
+				}
+			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
 		} else {
@@ -493,7 +499,14 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
 		}
+		// Capture instance_id before SetEnded clears the row's lifecycle fields.
+		instanceIDForSessions := instanceIDFromStatus(d, session)
 		_ = d.SetEnded(session)
+		if instanceIDForSessions != "" {
+			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
+			}
+		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
 	} else {
@@ -537,7 +550,13 @@ func closeSession(session string) error {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
 		}
+		instanceIDForSessions := instanceIDFromStatus(d, session)
 		_ = d.SetEnded(session)
+		if instanceIDForSessions != "" {
+			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
+			}
+		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
 	} else {
@@ -593,7 +612,13 @@ func headlessCloseSession(session string) error {
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
 		}
+		instanceIDForSessions := instanceIDFromStatus(d, session)
 		_ = d.SetEnded(session)
+		if instanceIDForSessions != "" {
+			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
+			}
+		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
 	} else {
@@ -671,6 +696,18 @@ func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	rootCmd.AddCommand(cleanupCmd)
+}
+
+// instanceIDFromStatus returns the instance_id from the agent_status row for
+// sessionName, or an empty string when the row is missing, instance_id is
+// NULL, or on any DB error. Used by cleanup paths to record the incarnation ID
+// in the sessions table before SetEnded clears lifecycle data.
+func instanceIDFromStatus(d *db.DB, sessionName string) string {
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil || status.InstanceID == nil {
+		return ""
+	}
+	return *status.InstanceID
 }
 
 // hostModeFromDB queries the already-open database d and returns true when
