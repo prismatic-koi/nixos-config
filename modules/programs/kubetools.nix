@@ -24,12 +24,13 @@ in
       {
         home-manager.users.${username} = {
           home.packages = with pkgs; [
-            kubectl
-            kubernetes-helm
-            kubelogin-oidc
-            kubelogin
             fluxcd
             krew
+            kubectl
+            kubelogin
+            kubelogin-oidc
+            kubernetes-helm
+            kustomize
           ];
           home.sessionVariables = {
             KUBECONFIG = "${kubeDir}/config";

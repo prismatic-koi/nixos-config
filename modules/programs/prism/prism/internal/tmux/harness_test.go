@@ -16,6 +16,7 @@
 package tmux_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -23,11 +24,64 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// ─── sandbox detection ────────────────────────────────────────────────────────
+
+// insideSandbox returns true when the test process is running inside an
+// isolated sandbox environment where PTY-based tmux client attachment does not
+// work reliably. Two environments are detected:
+//
+//  1. Nix build sandbox: detects via $NIX_BUILD_TOP being non-empty (always set
+//     by nix during buildGoModule's checkPhase). In the nix sandbox, script(1)
+//     runs but the PTY slave cannot become the controlling terminal for tmux's
+//     client process, so the client never appears in list-clients.
+//
+//  2. opencode/prism bwrap sandbox: detects via /proc/1/comm == "bwrap". This
+//     sandbox uses --unshare-pid so bwrap itself is PID 1. In this environment
+//     a single script-attached client works, but a second concurrent attachment
+//     causes both clients to exit immediately due to bwrap devpts namespace
+//     constraints.
+//
+// Callers should only skip PTY-attach tests on this basis, not all tmux tests.
+func insideSandbox() bool {
+	// Nix build sandbox: NIX_BUILD_TOP is always exported during nix builds.
+	if os.Getenv("NIX_BUILD_TOP") != "" {
+		return true
+	}
+	// opencode/prism bwrap sandbox: PID 1 is the bwrap binary itself.
+	comm, err := os.ReadFile("/proc/1/comm")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(comm)) == "bwrap"
+}
+
+// skipIfSandboxPTY calls t.Skip when the test requires script-based PTY
+// attachment and the process is running in a sandbox that prevents it.
+//
+// In the nix build sandbox (detectable via $NIX_BUILD_TOP), script(1) runs
+// but tmux's client process cannot acquire a controlling terminal, so the
+// client never appears in list-clients. In the opencode bwrap sandbox
+// (/proc/1/comm == "bwrap"), a second concurrent script-attached client causes
+// both clients to exit immediately. Neither environment supports the full PTY
+// attach lifecycle needed by multi-client tests.
+//
+// Tests needing only non-PTY tmux operations (session creation, window listing,
+// option setting) do not need this guard and will run in both environments.
+func skipIfSandboxPTY(t *testing.T) {
+	t.Helper()
+	if insideSandbox() {
+		t.Skip("skipping PTY-attach integration test: running in a sandbox " +
+			"(nix build or bwrap) where script-based tmux client attachment is " +
+			"not supported — run from a host shell to exercise this path")
+	}
+}
 
 // ─── server harness ───────────────────────────────────────────────────────────
 
@@ -196,7 +250,9 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 		}
 	}
 
+	var scriptStderr bytes.Buffer
 	cmd := exec.Command("script", scriptArgs(s.bin+" -L "+s.socket+" -f /dev/null attach-session -t "+targetSession)...)
+	cmd.Stderr = &scriptStderr
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("attach client to %q: %v", targetSession, err)
 	}
@@ -210,9 +266,11 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 	// client appears that wasn't in beforeSet.
 	deadline := time.Now().Add(5 * time.Second)
 	var clientName string
+	var lastListOut string
 	for time.Now().Before(deadline) {
 		out, err := s.output("list-clients", "-F", "#{client_name}")
 		if err == nil {
+			lastListOut = out
 			for _, c := range strings.Split(out, "\n") {
 				c = strings.TrimSpace(c)
 				if c != "" && !beforeSet[c] {
@@ -228,7 +286,22 @@ func (s *server) attachClientToSession(t *testing.T, targetSession string) strin
 	}
 
 	if clientName == "" {
-		t.Fatalf("new client for session %q never appeared in list-clients (timeout)", targetSession)
+		// Capture script process state for diagnosis.
+		scriptAlive := "alive"
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			scriptAlive = fmt.Sprintf("dead (%v)", err)
+		}
+		t.Fatalf(
+			"new client for session %q never appeared in list-clients (timeout)\n"+
+				"  script process state:  %s\n"+
+				"  script stderr:         %q\n"+
+				"  list-clients after timeout: %q\n"+
+				"  clients before attach: %q\n"+
+				"  tip: if running inside bwrap or nix build sandbox, PTY-attached\n"+
+				"  tmux clients may not work; call skipIfSandboxPTY(t) at the top\n"+
+				"  of tests that need any script-attached tmux client",
+			targetSession, scriptAlive, scriptStderr.String(), lastListOut, before,
+		)
 	}
 
 	return clientName

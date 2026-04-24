@@ -59,6 +59,7 @@ in
   environment.systemPackages =
     with pkgs;
     [
+      _1password-cli
       arping
       gnutar
       mysql84

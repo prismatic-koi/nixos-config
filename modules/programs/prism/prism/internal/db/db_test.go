@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=12 (migrations are applied on Open).
+	// Verify schema_version=13 (migrations are applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version: got %d, want 13", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -781,13 +781,13 @@ func TestMigration_V1ToV2(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Verify schema_version=12.
+	// Verify schema_version=13.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -861,8 +861,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1362,8 +1362,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1428,8 +1428,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1498,8 +1498,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1593,8 +1593,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1686,8 +1686,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2271,8 +2271,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2360,8 +2360,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 12 {
-		t.Errorf("schema_version after migration: got %d, want 12", version)
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -3818,5 +3818,369 @@ func TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 	}
 	if s.Worktree != "/new/worktree" {
 		t.Errorf("Worktree: got %q, want %q", s.Worktree, "/new/worktree")
+	}
+}
+
+// ── Migration v12→v13: malformed session name cleanup (#826) ──────────────────
+
+// seedV12DB creates a raw SQLite database at dbPath at schema_version=12 with
+// the full current schema (including isolation_mode and group_id columns).
+// It inserts the given agent_status rows directly so the v12→v13 migration can
+// be exercised without going through db.Open.
+func seedV12DB(t *testing.T, dbPath string, rows []struct {
+	sessionName string
+	lastSeen    int64 // 0 means store as 0 (simulates unpopulated)
+	endedAt     *int64
+}) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v12 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (12);
+	`)
+	if err != nil {
+		t.Fatalf("seed v12 schema: %v", err)
+	}
+
+	for _, row := range rows {
+		_, err = rawConn.Exec(
+			`INSERT INTO agent_status (session_name, repo, worktree, state, last_seen, ended_at)
+			 VALUES (?, 'repo', '/wt', 'interrupted', ?, ?)`,
+			row.sessionName, row.lastSeen, row.endedAt,
+		)
+		if err != nil {
+			t.Fatalf("insert row %q: %v", row.sessionName, err)
+		}
+	}
+}
+
+// TestMigration_V12ToV13_LegacyRowsEnded verifies that the v12→v13 migration
+// sets ended_at on rows whose session_name matches the legacy malformed double-
+// ~review patterns AND whose last_seen is NULL (0), zero, or old.
+//
+// Also verifies that the current valid shape <parent>~review-<N>-review-<role>
+// is NOT matched (AC edge-case check from issue #826).
+func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v12_malformed.db")
+
+	// Build the set of test rows. last_seen=0 simulates the unpopulated state
+	// that matches `last_seen IS NULL OR last_seen = 0` in the migration guard.
+	var noEnded *int64 // ended_at = NULL (these are the rows we expect to be cleaned up)
+	rows := []struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+		wantEnded   bool // whether we expect the migration to set ended_at
+	}{
+		// Legacy doubled-review with number: matched by %~review-%~review%
+		{"nixos-config@fix-tmux~review-1-review~review-1-review", 0, noEnded, true},
+		// Legacy back-to-back ~review~review: matched by %~review~review%
+		{"nixos-config@fix-tmux~review-1~review", 0, noEnded, true},
+		// Another back-to-back variant
+		{"nixos-config@fix-tmux~review-3~review", 0, noEnded, true},
+		// Variant with number in both positions
+		{"nixos-config@fix-tmux~review-4~review~review-1~review", 0, noEnded, true},
+		// Bare review suffix with no role (listed first in issue #826 example output):
+		// matched by %~review-%-review
+		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded, true},
+
+		// *** MUST NOT be matched: current valid shape <parent>~review-<N>-review-<role> ***
+		// These end in "-<role>" (non-empty after "-review-"), so the third LIKE
+		// pattern (%~review-%-review) does NOT match them.
+		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded, false},
+		{"nixos-config@fix-tmux~review-1-review-goal", 0, noEnded, false},
+		{"nixos-config@fix-tmux~review-3-review-security", 0, noEnded, false},
+
+		// Normal sessions: must not be touched
+		{"nixos-config@fix-tmux", 0, noEnded, false},
+		{"nixos-config@main", 0, noEnded, false},
+	}
+
+	seedRows := make([]struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+	}, len(rows))
+	for i, r := range rows {
+		seedRows[i] = struct {
+			sessionName string
+			lastSeen    int64
+			endedAt     *int64
+		}{r.sessionName, r.lastSeen, r.endedAt}
+	}
+	seedV12DB(t, dbPath, seedRows)
+
+	// Run the migration via db.Open.
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	// Verify schema_version=13.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 13 {
+		t.Errorf("schema_version after migration: got %d, want 13", version)
+	}
+
+	// Check each row.
+	for _, r := range rows {
+		s, err := d.CurrentStatus(r.sessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", r.sessionName, err)
+		}
+		if s == nil {
+			t.Fatalf("CurrentStatus(%q): got nil, want row", r.sessionName)
+		}
+		if r.wantEnded {
+			if s.EndedAt == nil {
+				t.Errorf("session %q: expected ended_at to be set by migration, got nil", r.sessionName)
+			}
+		} else {
+			if s.EndedAt != nil {
+				t.Errorf("session %q: expected ended_at to be nil (not matched by migration), got %v", r.sessionName, s.EndedAt)
+			}
+		}
+	}
+}
+
+// TestMigration_V12ToV13_AlreadyEndedUntouched verifies that rows which already
+// have ended_at set are not re-touched by the migration (idempotency of the
+// ended_at guard).
+func TestMigration_V12ToV13_AlreadyEndedUntouched(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v12_already_ended.db")
+
+	// A sentinel value we can use to verify ended_at was not overwritten.
+	existingEndedAt := int64(1000000)
+
+	rows := []struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+	}{
+		// Legacy malformed name, BUT already ended — must NOT be updated.
+		{"repo@feat~review-1~review", 0, &existingEndedAt},
+		// Another legacy shape, already ended.
+		{"repo@feat~review-1-review~review-1-review", 0, &existingEndedAt},
+	}
+	seedV12DB(t, dbPath, rows)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	for _, r := range rows {
+		s, err := d.CurrentStatus(r.sessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", r.sessionName, err)
+		}
+		if s == nil {
+			t.Fatalf("CurrentStatus(%q): got nil", r.sessionName)
+		}
+		if s.EndedAt == nil {
+			t.Errorf("session %q: ended_at was cleared (should have been preserved)", r.sessionName)
+			continue
+		}
+		// ended_at must retain the original value, not be overwritten by the migration.
+		gotMs := s.EndedAt.UnixMilli()
+		if gotMs != existingEndedAt {
+			t.Errorf("session %q: ended_at = %d, want original %d (migration must not overwrite)", r.sessionName, gotMs, existingEndedAt)
+		}
+	}
+}
+
+// TestMigration_V12ToV13_RecentLastSeenUntouched verifies that rows with a
+// recent last_seen (within the 7-day window) are NOT touched by the migration,
+// even if their session_name matches a legacy pattern.
+func TestMigration_V12ToV13_RecentLastSeenUntouched(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v12_recent.db")
+
+	// last_seen in Unix milliseconds (the unit used throughout the codebase).
+	// A recent value is well above the 7-day threshold
+	// ((unixepoch('now') - 604800) * 1000), so the age guard must NOT fire.
+	recentLastSeen := time.Now().UnixMilli()
+
+	rows := []struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+	}{
+		// Legacy malformed name, but last_seen is recent — must NOT be ended.
+		{"repo@feat~review-1~review", recentLastSeen, nil},
+	}
+	seedV12DB(t, dbPath, rows)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	s, err := d.CurrentStatus("repo@feat~review-1~review")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil")
+	}
+	if s.EndedAt != nil {
+		t.Errorf("session with recent last_seen was incorrectly ended by migration (ended_at = %v)", s.EndedAt)
+	}
+}
+
+// TestMigration_V12ToV13_Idempotent verifies that running the migration a
+// second time (by opening the DB again after it has already been migrated to
+// v13) is a no-op — rows already with ended_at set keep their value, and
+// rows that were not matched on the first pass are still not touched.
+func TestMigration_V12ToV13_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v12_idempotent.db")
+
+	var noEnded *int64
+	rows := []struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+	}{
+		// Legacy malformed name — will be ended on first open.
+		{"repo@feat~review-1~review", 0, noEnded},
+		// Valid current shape — must never be touched.
+		{"repo@feat~review-2-review-code", 0, noEnded},
+	}
+	seedV12DB(t, dbPath, rows)
+
+	// First open: applies the migration.
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+
+	s1Legacy, err := d1.CurrentStatus("repo@feat~review-1~review")
+	if err != nil {
+		t.Fatalf("first pass CurrentStatus (legacy): %v", err)
+	}
+	if s1Legacy == nil || s1Legacy.EndedAt == nil {
+		t.Fatal("first pass: legacy row should have ended_at set after migration")
+	}
+	firstEndedAt := s1Legacy.EndedAt.UnixMilli()
+	d1.Close()
+
+	// Second open: migration is at v13 already; the UPDATE WHERE ended_at IS NULL
+	// guard means rows already ended are untouched.
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	s2Legacy, err := d2.CurrentStatus("repo@feat~review-1~review")
+	if err != nil {
+		t.Fatalf("second pass CurrentStatus (legacy): %v", err)
+	}
+	if s2Legacy == nil || s2Legacy.EndedAt == nil {
+		t.Fatal("second pass: legacy row ended_at should still be set")
+	}
+	secondEndedAt := s2Legacy.EndedAt.UnixMilli()
+	if secondEndedAt != firstEndedAt {
+		t.Errorf("second pass: ended_at changed (first=%d, second=%d); migration is not idempotent", firstEndedAt, secondEndedAt)
+	}
+
+	// Valid shape must still have no ended_at after both passes.
+	s2Valid, err := d2.CurrentStatus("repo@feat~review-2-review-code")
+	if err != nil {
+		t.Fatalf("second pass CurrentStatus (valid shape): %v", err)
+	}
+	if s2Valid == nil {
+		t.Fatal("second pass: valid-shape row not found")
+	}
+	if s2Valid.EndedAt != nil {
+		t.Errorf("second pass: valid-shape row incorrectly ended (ended_at = %v)", s2Valid.EndedAt)
+	}
+}
+
+// TestMigration_V12ToV13_PostMigrationQueryReturnsZero verifies the AC
+// assertion from issue #826: after the migration, a query for rows that are
+// active AND match the legacy malformed pattern returns zero results.
+//
+//	SELECT COUNT(*) FROM agent_status
+//	WHERE ended_at IS NULL AND session_name GLOB '*~review-*~review*'
+func TestMigration_V12ToV13_PostMigrationQueryReturnsZero(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v12_ac_query.db")
+
+	var noEnded *int64
+	rows := []struct {
+		sessionName string
+		lastSeen    int64
+		endedAt     *int64
+	}{
+		{"nixos-config@fix-tmux~review-1-review~review-1-review", 0, noEnded},
+		{"nixos-config@fix-tmux~review-1~review", 0, noEnded},
+		{"nixos-config@fix-tmux~review-3~review", 0, noEnded},
+		// Bare review suffix (no role) — first example in issue #826.
+		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded},
+		// A current valid shape — should NOT be counted by this query.
+		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded},
+	}
+	seedV12DB(t, dbPath, rows)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	var count int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM agent_status WHERE ended_at IS NULL AND session_name GLOB '*~review-*~review*'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("AC query: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("AC query: got %d active malformed rows, want 0 after migration", count)
 	}
 }
