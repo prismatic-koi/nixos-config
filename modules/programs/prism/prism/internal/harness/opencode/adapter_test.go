@@ -1,8 +1,16 @@
 package opencode
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -172,6 +180,139 @@ func TestEffectiveModel_InvalidJSON(t *testing.T) {
 	a := New("", nil, "", "")
 	if got := a.EffectiveModel("worker"); got != "" {
 		t.Errorf("EffectiveModel(worker) = %q, want empty string for invalid JSON", got)
+	}
+}
+
+// ── CreateSession retry ───────────────────────────────────────────────────────
+
+// sessionResponse is a helper that writes a JSON session list to the response.
+func sessionResponse(w http.ResponseWriter, sessions []sessionEntry) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sessions)
+}
+
+// TestCreateSession_SucceedsFirstAttempt verifies that when the server
+// responds immediately with a session, CreateSession succeeds with no retry
+// log lines emitted.
+func TestCreateSession_SucceedsFirstAttempt(t *testing.T) {
+	wantID := "sess-abc-123"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" {
+			http.NotFound(w, r)
+			return
+		}
+		sessionResponse(w, []sessionEntry{{ID: wantID}})
+	}))
+	defer srv.Close()
+
+	// Capture log output.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	a := NewContainerMode(srv.URL, nil, "worker", "")
+	id, err := a.CreateSession(context.Background())
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v, want nil", err)
+	}
+	if id != wantID {
+		t.Errorf("CreateSession() = %q, want %q", id, wantID)
+	}
+
+	// The happy path must not emit any retry log lines.
+	logOut := buf.String()
+	if strings.Contains(logOut, "attempt") {
+		t.Errorf("expected no retry log lines on first-attempt success, got:\n%s", logOut)
+	}
+}
+
+// TestCreateSession_RetriesAndSucceeds verifies that when the first N attempts
+// fail with a transport error, CreateSession retries and eventually succeeds
+// once the server starts responding.
+func TestCreateSession_RetriesAndSucceeds(t *testing.T) {
+	const failAttempts = 3
+	wantID := "sess-retry-ok"
+
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" {
+			http.NotFound(w, r)
+			return
+		}
+		n := callCount.Add(1)
+		if n <= failAttempts {
+			// Simulate a slow/hung server by closing the connection immediately,
+			// which causes a transport error on the client side.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "hijack unavailable", http.StatusInternalServerError)
+				return
+			}
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+			return
+		}
+		sessionResponse(w, []sessionEntry{{ID: wantID}})
+	}))
+	defer srv.Close()
+
+	// Capture log output.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	a := NewContainerMode(srv.URL, nil, "worker", "")
+	id, err := a.CreateSession(context.Background())
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v, want nil after retries", err)
+	}
+	if id != wantID {
+		t.Errorf("CreateSession() = %q, want %q", id, wantID)
+	}
+
+	// Should have logged exactly failAttempts retry lines in the new format.
+	logOut := buf.String()
+	want := "sidecar: CreateSession: attempt"
+	if !strings.Contains(logOut, want) {
+		t.Errorf("expected log line containing %q, got:\n%s", want, logOut)
+	}
+}
+
+// TestCreateSession_ExhaustsRetries verifies that when all attempts fail,
+// CreateSession returns a descriptive error and logs the final failure.
+func TestCreateSession_ExhaustsRetries(t *testing.T) {
+	// Server that always closes the connection immediately (transport failure).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijack unavailable", http.StatusInternalServerError)
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	// Capture log output.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	a := NewContainerMode(srv.URL, nil, "worker", "")
+	_, err := a.CreateSession(context.Background())
+	if err == nil {
+		t.Fatal("CreateSession() error = nil, want error after all retries exhausted")
+	}
+
+	// Error message must mention how many attempts were made.
+	if !strings.Contains(err.Error(), "failed after") {
+		t.Errorf("error %q does not describe exhausted retries", err.Error())
+	}
+
+	// Log must contain the final-failure line.
+	logOut := buf.String()
+	if !strings.Contains(logOut, "GET /session failed after") {
+		t.Errorf("expected final-failure log line, got:\n%s", logOut)
 	}
 }
 
