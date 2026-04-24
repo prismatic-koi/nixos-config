@@ -187,16 +187,16 @@ type DoomLoopDetected struct {
 // they survive worktree cleanup.
 //
 // The Command field contains the full command string as passed to the bash tool.
-// SessionName, OpencodeSID, and MessageID provide forensic attribution.
+// SessionName, HarnessSessionID, and MessageID provide forensic attribution.
 //
 // Note: an instanceId field (per issue #641) is intentionally absent until
 // the instance-ID feature lands. Once #641 is implemented, add an InstanceID
 // field here and populate it from the sidecar's instance ID so that audit
 // events can be attributed to a specific sidecar process invocation.
 type Audit struct {
-	Tool        string `json:"tool"`
-	Command     string `json:"command"`
-	SessionName string `json:"sessionName"`
-	OpencodeSID string `json:"opencodeSID,omitempty"`
-	MessageID   string `json:"messageId,omitempty"`
+	Tool             string `json:"tool"`
+	Command          string `json:"command"`
+	SessionName      string `json:"sessionName"`
+	HarnessSessionID string `json:"harnessSessionID,omitempty"`
+	MessageID        string `json:"messageId,omitempty"`
 }

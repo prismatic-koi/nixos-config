@@ -378,8 +378,8 @@ func groupEventsByHarnessSessionID(events []db.Event) (map[string][]db.Event, []
 
 	for _, e := range events {
 		key := legacySentinel
-		if e.OpencodeSID != nil {
-			key = *e.OpencodeSID
+		if e.HarnessSessionID != nil {
+			key = *e.HarnessSessionID
 		}
 		if _, exists := grouped[key]; !exists {
 			order = append(order, key)
@@ -1548,8 +1548,8 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 
 		// Count sessions by harness_session_id when available; fall back to session_name
 		// for NULL-sid (legacy) events so they still contribute a session count.
-		if e.OpencodeSID != nil && *e.OpencodeSID != "" {
-			m.Sessions[*e.OpencodeSID] = struct{}{}
+		if e.HarnessSessionID != nil && *e.HarnessSessionID != "" {
+			m.Sessions[*e.HarnessSessionID] = struct{}{}
 		} else {
 			m.Sessions["legacy:"+e.SessionName] = struct{}{}
 		}

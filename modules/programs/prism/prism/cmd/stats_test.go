@@ -53,7 +53,7 @@ func writeStatsEventWithSID(t *testing.T, d *db.DB, session, sid, typ, payload s
 		SessionName: session,
 		Repo:        "testrepo",
 		Worktree:    "/code/testrepo/main",
-		OpencodeSID: &sid,
+		HarnessSessionID: &sid,
 		Type:        typ,
 		Payload:     payload,
 		CreatedAt:   ts,
@@ -253,7 +253,7 @@ func TestCollectMetrics_OpenrouterEventCostAccumulated(t *testing.T) {
 			Type:        "msg_assistant",
 			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":622000,"outputTokens":14000,"cost":1.96}`,
 			CreatedAt:   time.Now(),
-			OpencodeSID: &sid,
+			HarnessSessionID: &sid,
 		},
 		{
 			ID:          "e2",
@@ -261,7 +261,7 @@ func TestCollectMetrics_OpenrouterEventCostAccumulated(t *testing.T) {
 			Type:        "msg_assistant",
 			Payload:     `{"messageId":"msg-2","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":1000,"outputTokens":500,"cost":0.04}`,
 			CreatedAt:   time.Now().Add(time.Minute),
-			OpencodeSID: &sid,
+			HarnessSessionID: &sid,
 		},
 	}
 
@@ -288,7 +288,7 @@ func TestCollectMetrics_EventCostZeroDisplaysDash(t *testing.T) {
 			Type:        "msg_assistant",
 			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/some/model","inputTokens":1000,"outputTokens":500}`,
 			CreatedAt:   time.Now(),
-			OpencodeSID: &sid,
+			HarnessSessionID: &sid,
 		},
 	}
 
@@ -664,10 +664,10 @@ func TestGroupEventsByHarnessSessionID(t *testing.T) {
 	sid2 := "ses_bbb"
 
 	events := []db.Event{
-		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid1, Payload: `{}`, CreatedAt: time.Now()},
-		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid2, Payload: `{}`, CreatedAt: time.Now()},
-		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: nil, Payload: `{}`, CreatedAt: time.Now()},   // NULL → sentinel
-		{ID: "4", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid1, Payload: `{}`, CreatedAt: time.Now()}, // same as id=1
+		{ID: "1", SessionName: "s", Type: "msg_assistant", HarnessSessionID: &sid1, Payload: `{}`, CreatedAt: time.Now()},
+		{ID: "2", SessionName: "s", Type: "msg_assistant", HarnessSessionID: &sid2, Payload: `{}`, CreatedAt: time.Now()},
+		{ID: "3", SessionName: "s", Type: "msg_assistant", HarnessSessionID: nil, Payload: `{}`, CreatedAt: time.Now()},   // NULL → sentinel
+		{ID: "4", SessionName: "s", Type: "msg_assistant", HarnessSessionID: &sid1, Payload: `{}`, CreatedAt: time.Now()}, // same as id=1
 	}
 
 	grouped, order := groupEventsByHarnessSessionID(events)
@@ -702,13 +702,13 @@ func TestCollectMetrics_CoordinatorModelPreferred(t *testing.T) {
 	// 3 turns on opus (build/review), 1 turn on sonnet (coordinator).
 	// Coordinator model should win despite being less frequent.
 	events := []db.Event{
-		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "1", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
-		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "2", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"review","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
-		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "3", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
-		{ID: "4", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "4", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
 	}
 
@@ -726,11 +726,11 @@ func TestCollectMetrics_CoordinatorModelPreferred(t *testing.T) {
 // turn exists, the most-frequent model is used.
 func TestCollectMetrics_FallbackToMostFrequent(t *testing.T) {
 	events := []db.Event{
-		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "1", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"build","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
-		{ID: "2", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "2", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"review","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
-		{ID: "3", SessionName: "s", Type: "msg_assistant", OpencodeSID: strPtr("ses_abc"),
+		{ID: "3", SessionName: "s", Type: "msg_assistant", HarnessSessionID: strPtr("ses_abc"),
 			Payload: `{"agent":"explore","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
 	}
 
@@ -746,7 +746,7 @@ func TestCollectMetrics_FallbackToMostFrequent(t *testing.T) {
 // correctly for NULL-sid events.
 func TestCollectMetrics_NullSidLegacy(t *testing.T) {
 	events := []db.Event{
-		{ID: "1", SessionName: "s", Type: "msg_assistant", OpencodeSID: nil,
+		{ID: "1", SessionName: "s", Type: "msg_assistant", HarnessSessionID: nil,
 			Payload: `{"agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50}`, CreatedAt: time.Now()},
 	}
 
@@ -1176,13 +1176,13 @@ func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
 	// Three distinct opencode sessions all within the same tmux session "repo@main",
 	// all using the same model.
 	events := []db.Event{
-		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid1,
+		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: &sid1,
 			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
 			CreatedAt: time.Now()},
-		{ID: "2", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid2,
+		{ID: "2", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: &sid2,
 			Payload:   `{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
 			CreatedAt: time.Now()},
-		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: &sid3,
+		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: &sid3,
 			Payload:   `{"messageId":"m3","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50,"durationMs":5000}`,
 			CreatedAt: time.Now()},
 	}
@@ -1204,14 +1204,14 @@ func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
 func TestRunStatsModel_NullSidFallbackSessionName(t *testing.T) {
 	// Two different sessions, both with NULL harness_session_id, same model.
 	events := []db.Event{
-		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: nil,
+		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: nil,
 			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
 			CreatedAt: time.Now()},
-		{ID: "2", SessionName: "repo@feature", Type: "msg_assistant", OpencodeSID: nil,
+		{ID: "2", SessionName: "repo@feature", Type: "msg_assistant", HarnessSessionID: nil,
 			Payload:   `{"messageId":"m2","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
 			CreatedAt: time.Now()},
 		// Same session_name as first but different event — should NOT add another session count.
-		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: nil,
+		{ID: "3", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: nil,
 			Payload:   `{"messageId":"m3","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,
 			CreatedAt: time.Now()},
 	}
