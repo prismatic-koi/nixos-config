@@ -35,6 +35,12 @@ import (
 	"time"
 )
 
+// ErrAlreadyExists is returned by Run when the final archive directory already
+// exists. Callers that need to distinguish "already archived" from other
+// failures (e.g. to propagate a non-zero exit code) can check with
+// errors.Is(err, ErrAlreadyExists).
+var ErrAlreadyExists = fmt.Errorf("archive directory already exists")
+
 const (
 	// ArchiveVersion stamps the directory layout format. Increment when the
 	// layout changes in a backward-incompatible way.
@@ -45,7 +51,7 @@ const (
 	// produce JSONL — the manifest format must be consistent across PRs.
 	PiMonoVersion = 3
 
-	archiveDirMode = 0o700
+	archiveDirMode  = 0o700
 	archiveFileMode = 0o600
 )
 
@@ -118,7 +124,7 @@ func Run(p Params) (archivePath string, err error) {
 
 	// Check whether target already exists before touching anything.
 	if _, statErr := os.Stat(finalDir); statErr == nil {
-		return "", fmt.Errorf("archive: target directory already exists: %s", finalDir)
+		return "", fmt.Errorf("%w: %s", ErrAlreadyExists, finalDir)
 	}
 
 	// Ensure the repo-level directory exists (0700; world-private).

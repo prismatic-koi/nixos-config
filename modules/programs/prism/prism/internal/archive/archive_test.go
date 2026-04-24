@@ -2,6 +2,7 @@ package archive
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,10 +316,13 @@ func TestRunIdempotencyError(t *testing.T) {
 		t.Fatalf("write sentinel: %v", writeErr)
 	}
 
-	// Second run — should fail.
+	// Second run — should fail with ErrAlreadyExists.
 	_, err = Run(p)
 	if err == nil {
 		t.Fatal("second Run() succeeded, want error")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Errorf("second Run() error = %v, want errors.Is(err, ErrAlreadyExists)", err)
 	}
 
 	// The existing directory must be intact.

@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -241,7 +242,14 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
 				}
 				// Archive the session storage after recording the end state.
-				runArchive(d, m.session, instanceIDForSessions, isolationMode)
+				if archiveErr := runArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
+					if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+						_ = d.PurgeBusMessages(m.session)
+						d.Close()
+						return cleanupDoneMsg{archiveErr}
+					}
+					// Other archive errors are non-fatal — cleanup continues.
+				}
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
@@ -513,7 +521,14 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			runArchive(d, session, instanceIDForSessions, isolationMode)
+			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
+			}
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -566,7 +581,14 @@ func closeSession(session string) error {
 				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			runArchive(d, session, instanceIDForSessions, isolationMode)
+			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
+			}
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -631,7 +653,14 @@ func headlessCloseSession(session string) error {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			runArchive(d, session, instanceIDForSessions, isolationMode)
+			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
+			}
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -712,15 +741,20 @@ func worktreePathFromSession(session string) string {
 // sessions row has ended_at and end_state populated.
 //
 // On success it calls UpdateSessionArchivePath to record the archive directory
-// path in the DB. On any error it logs a warning and returns — archive failure
-// is non-fatal and must not block the rest of cleanup.
+// path in the DB.
+//
+// Return value: the error from archive.Run, or nil on success. The caller is
+// responsible for deciding whether the error should be fatal:
+//   - archive.ErrAlreadyExists should be propagated — the AC requires cleanup
+//     to exit non-zero when the archive directory already exists on a re-run.
+//   - Other errors are treated as non-fatal (logged + cleanup continues).
 //
 // Sessions with unknown or unsupported isolation modes log a clear warning and
-// are skipped (AC: edge-case — unknown isolation mode).
-func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) {
+// are skipped (AC: edge-case — unknown isolation mode); returns nil.
+func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
 	if instanceID == "" {
 		// No instance_id — nothing to archive.
-		return
+		return nil
 	}
 
 	// Validate isolation mode before doing any work.
@@ -730,32 +764,32 @@ func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) {
 	default:
 		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — unsupported isolation mode %q\n",
 			sessionName, statusIsolationMode)
-		return
+		return nil
 	}
 
 	// Fetch the full sessions row (has ended_at/end_state set by caller).
 	sess, err := d.GetSession(instanceID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
-		return
+		return nil
 	}
 	if sess == nil {
 		// No sessions row — pre-migration or session that never inserted.
 		fmt.Fprintf(os.Stderr, "[prism] archive: no sessions row for instance_id %q — skipping archive\n", instanceID)
-		return
+		return nil
 	}
 
 	// Build archive params from DB fields.
 	params := archive.Params{
-		InstanceID:    sess.InstanceID,
-		SessionName:   sess.SessionName,
-		Harness:       sess.Harness,
-		Repo:          sess.Repo,
-		Worktree:      sess.Worktree,
-		StartedAt:     sess.StartedAt,
-		EndedAt:       time.Now(), // EndedAt was just set in DB; use now as fallback
-		IsolationMode: statusIsolationMode,
-		PrismVersion:  archive.PrismGitSHA(),
+		InstanceID:     sess.InstanceID,
+		SessionName:    sess.SessionName,
+		Harness:        sess.Harness,
+		Repo:           sess.Repo,
+		Worktree:       sess.Worktree,
+		StartedAt:      sess.StartedAt,
+		EndedAt:        time.Now(), // EndedAt was just set in DB; use now as fallback
+		IsolationMode:  statusIsolationMode,
+		PrismVersion:   archive.PrismGitSHA(),
 		HarnessVersion: archive.HarnessVersion(),
 	}
 	if sess.AgentRole != nil {
@@ -783,12 +817,13 @@ func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) {
 	archivePath, archiveErr := archive.Run(params)
 	if archiveErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism] archive: copy failed for session %q: %v\n", sessionName, archiveErr)
-		return
+		return archiveErr
 	}
 
 	if updErr := d.UpdateSessionArchivePath(instanceID, archivePath); updErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
+	return nil
 }
 
 func init() {
