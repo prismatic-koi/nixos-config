@@ -188,6 +188,9 @@ func TestRemoveContainerIfExists_NoSuchContainer(t *testing.T) {
 // Covers the host_mode short-circuit added in #471.
 func TestHeadlessCleanup_HostMode_SkipsPodman(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
+	// path does not reach the live tmux server.
+	withNoopTmux(t)
 	logFile := installFakePodman(t, "ok")
 
 	// Seed a temp DB with a host-mode row.
@@ -246,6 +249,9 @@ func TestHeadlessCleanup_HostMode_SkipsPodman(t *testing.T) {
 // Covers AC-2 (headlessCleanup path) directly.
 func TestHeadlessCleanup_ContainerMode_StopsAndRemoves(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
+	// path does not reach the live tmux server.
+	withNoopTmux(t)
 	logFile := installFakePodman(t, "ok")
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")

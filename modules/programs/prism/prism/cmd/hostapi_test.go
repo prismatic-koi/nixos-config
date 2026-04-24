@@ -514,6 +514,9 @@ func TestProxyToHostAPI_NotCalledWhenEnvUnset(t *testing.T) {
 
 	// Ensure PRISM_HOST_API is explicitly unset.
 	t.Setenv("PRISM_HOST_API", "")
+	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
+	// path does not reach the live tmux server.
+	withNoopTmux(t)
 
 	// headlessCleanup with no PRISM_HOST_API should NOT contact the server.
 	// We use a temp DB to avoid touching production state.
