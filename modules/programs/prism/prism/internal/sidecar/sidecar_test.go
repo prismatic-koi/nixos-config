@@ -6786,18 +6786,21 @@ exit 0
 	}
 }
 
-// TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse verifies that
-// when `prism review` exits non-zero with output, the response has passed=false
-// and the output is included (this is the normal "agents found issues" case).
-func TestHostAPI_Review_FailedReviewReturnsOutputWithPassedFalse(t *testing.T) {
+// TestHostAPI_Review_AckReturnedOnSuccess verifies that when `prism review`
+// exits 0 with an ack message (async model), the response has passed=true
+// and the ack output is included. In the async model, prism review never
+// exits non-zero for agent failures — results are delivered later via
+// prism prompt.
+func TestHostAPI_Review_AckReturnedOnSuccess(t *testing.T) {
 	d := openTestDB(t)
 
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	// Exit 1 with output: indicates agents found issues (not an infra failure).
+	// Async ack: exit 0 with ack message (agent results are delivered separately).
 	stubScript := `#!/bin/sh
-echo "✗ review-code"
-echo "  blocking issue found"
-exit 1
+echo "Review in progress — PR #100, round 1"
+echo "Spawned 5 review agents."
+echo "Results will be delivered to session via prism prompt."
+exit 0
 `
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
@@ -6818,15 +6821,16 @@ exit 1
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"100"}`)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 for agent failure (not infra failure); body = %s", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
 	var respBody map[string]any
 	decodeJSONBody(t, rr, &respBody)
-	if respBody["passed"] != false {
-		t.Errorf("passed = %v, want false", respBody["passed"])
+	// Async reviews always return passed=true at the ack phase.
+	if respBody["passed"] != true {
+		t.Errorf("passed = %v, want true (async ack is always passed=true)", respBody["passed"])
 	}
-	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "blocking issue found") {
-		t.Errorf("output %q should contain 'blocking issue found'", respBody["output"])
+	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "Review in progress") {
+		t.Errorf("output %q should contain 'Review in progress' ack message", respBody["output"])
 	}
 }
 

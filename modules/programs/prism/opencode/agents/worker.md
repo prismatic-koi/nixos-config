@@ -53,11 +53,44 @@ When your work is complete and quality gates pass:
    all 5 agents pass.
 5. Provide a clear handoff summary so the coordinator has full context.
 
-## Parallel review
+## Running a review
 
-Before announcing your PR as complete, and after each push to an open PR, run
-code review by invoking the five review subagents **in parallel** (in a single
-response with 5 Task tool calls):
+`prism review <pr>` is **async**. It spawns 5 review agents in a group and
+returns immediately with a "review in progress" acknowledgement. Results are
+delivered to you via a follow-up `prism prompt` when all agents complete.
+
+**Do NOT block waiting for review results.** You are free to do other work
+(answer clarifications, etc.), but:
+
+- **Do NOT commit further changes, merge, or announce completion** until the
+  review-complete prompt arrives.
+- When the review completes, you will receive a follow-up prompt containing the
+  aggregated findings from all 5 reviewers. Handle PASS/FAIL per the guidance
+  below.
+- If no review-complete prompt arrives within 30 minutes of running
+  `prism review`, investigate with `prism checkin <session>~review-<N>-review-goal`
+  to see per-agent progress.
+
+### Handling review results
+
+When the review-complete prompt arrives:
+
+**ALL 5 must pass** for the review to pass.
+
+If ANY agent returns `<verdict>FAIL</verdict>`:
+
+1. Read each agent's `<blocking_issues>` carefully
+2. Fix every blocking issue identified
+3. Commit and push your fixes
+4. Re-run `prism review <pr>` — not just the failed agents (a fix in one area
+   can create issues in another, so the full set must re-run every cycle).
+   Use `prism review <pr> --only review-goal,review-code` for targeted reruns.
+
+### Fallback: Task-call subagents
+
+If `prism review` is unavailable or the environment does not support it, invoke
+the five review subagents **in parallel** (in a single response with 5 Task tool
+calls) as a fallback:
 
 1. `@review-goal` — pass the original issue/ACs and the PR number
 2. `@review-code` — pass the PR number
