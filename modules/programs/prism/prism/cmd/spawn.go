@@ -216,14 +216,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Concurrency cap check: BEFORE any container-creation side effects
+	// Concurrency cap checks: BEFORE any container-creation side effects
 	// (no worktree, no tmux session, no DB row on refusal).
-	// Skipped in host-mode and bwrap-mode — the cap exists to guard host memory
-	// against podman container overhead; bwrap sessions are plain host processes
-	// with no per-session memory cap, so they do not count against it.
+	// The podman cap guards host memory against container overhead.
+	// The bwrap cap guards against process-count exhaustion from uncapped
+	// bwrap sessions (each is a host process with no per-session memory ceil).
 	conCapped := isolationMode == config.IsolationPodman
 	if err := checkConcurrencyCap(cmd, "spawn", conCapped); err != nil {
 		return err
+	}
+	if isolationMode == config.IsolationBwrap {
+		if err := checkBwrapConcurrencyCap(cmd, "spawn"); err != nil {
+			return err
+		}
 	}
 
 	// Load the profiles file. It carries container role configs, model profile
