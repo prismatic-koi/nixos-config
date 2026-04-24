@@ -75,13 +75,18 @@ var prCmd = &cobra.Command{
 		cfg := config.Load()
 		isoMode := cfg.EffectiveIsolationMode()
 		effectiveContainerMode := isoMode == config.IsolationPodman
-		// bwrap sessions are plain host processes — only podman triggers the cap.
+		// bwrap sessions are plain host processes — only podman triggers the container cap.
 		conCapped := isoMode == config.IsolationPodman
 
-		// Concurrency cap check: BEFORE any container-creation side effects
+		// Concurrency cap checks: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
 		if err := checkConcurrencyCap(cmd, "pr", conCapped); err != nil {
 			return err
+		}
+		if isoMode == config.IsolationBwrap {
+			if err := checkBwrapConcurrencyCap(cmd, "pr"); err != nil {
+				return err
+			}
 		}
 
 		branch, err := resolveBranch(bareRoot, "", prNumber)
