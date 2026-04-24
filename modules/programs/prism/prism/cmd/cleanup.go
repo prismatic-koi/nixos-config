@@ -33,6 +33,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/piexport"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -823,6 +824,13 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if updErr := d.UpdateSessionArchivePath(instanceID, archivePath); updErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
+
+	// Translate the raw archive to pi-mono v3 JSONL. Failure is non-fatal:
+	// the raw archive remains intact for re-translation later.
+	if translateErr := piexport.Translate(archivePath); translateErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, translateErr)
+	}
+
 	return nil
 }
 
