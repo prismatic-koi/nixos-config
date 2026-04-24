@@ -32,6 +32,13 @@ type AgentSession struct {
 	HarnessPort *int    // allocated port from agent_status.harness_port, nil when unset
 	ClientCount int     // tmux clients currently attached (best-effort, 0 on error)
 	GroupID     *string // from agent_status.group_id; non-nil when session belongs to a review group
+	// ParentSession is the authoritative parent session name, resolved from
+	// session_groups.parent_session (DB-backed). It is populated by
+	// FetchSessionsFromDB via db.AllGroupParents() for post-migration sessions.
+	// For pre-migration rows (GroupID == nil) it is empty and callers fall
+	// back to the name-heuristic (Depth2ParentBranch). It is also set on
+	// virtual IsReviewGroup rows to identify their parent.
+	ParentSession string
 	// IsReviewGroup marks a virtual ~review-N group row (not a real session).
 	// Selecting this row in the picker toggles expand/collapse rather than switching.
 	IsReviewGroup bool
@@ -39,7 +46,9 @@ type AgentSession struct {
 
 // StatusToAgentSession converts a db.Status into an AgentSession.
 // clientCounts is a map from session name → client count (from tmux).
-func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession {
+// groupParents is a map from group_id → parent_session (from db.AllGroupParents);
+// pass nil when not available (e.g. in tests that pre-date the group wiring).
+func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents map[string]string) AgentSession {
 	title := ""
 	if s.Title != nil {
 		title = *s.Title
@@ -56,17 +65,36 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int) AgentSession
 	if s.Harness != nil && *s.Harness != "" {
 		harness = *s.Harness
 	}
+
+	// Resolve parent session: prefer DB-backed group attribution; fall back to
+	// name heuristic for pre-migration rows (group_id IS NULL).
+	parentSession := ""
+	if s.GroupID != nil && groupParents != nil {
+		parentSession = groupParents[*s.GroupID]
+	}
+	if parentSession == "" {
+		// Name-heuristic fallback: strip the "~…" suffix from the branch part.
+		// This matches the resolution in db.ParentSessionFor (step 2).
+		if idx := strings.Index(s.SessionName, "@"); idx >= 0 {
+			branch := s.SessionName[idx+1:]
+			if tildeIdx := strings.Index(branch, "~"); tildeIdx >= 0 {
+				parentSession = s.SessionName[:idx] + "@" + branch[:tildeIdx]
+			}
+		}
+	}
+
 	return AgentSession{
-		Name:        s.SessionName,
-		AgentState:  s.State,
-		AgentPath:   s.Worktree,
-		AgentTitle:  title,
-		AgentName:   agentName,
-		ModelID:     modelID,
-		Harness:     harness,
-		HarnessPort: s.HarnessPort,
-		ClientCount: clientCounts[s.SessionName],
-		GroupID:     s.GroupID,
+		Name:          s.SessionName,
+		AgentState:    s.State,
+		AgentPath:     s.Worktree,
+		AgentTitle:    title,
+		AgentName:     agentName,
+		ModelID:       modelID,
+		Harness:       harness,
+		HarnessPort:   s.HarnessPort,
+		ClientCount:   clientCounts[s.SessionName],
+		GroupID:       s.GroupID,
+		ParentSession: parentSession,
 	}
 }
 
@@ -320,12 +348,27 @@ func BuildDisplayRows(sessions []AgentSession, collapsedGroups map[string]bool, 
 // sorted immediately after their parent branch. Uses insertion sort
 // (no stdlib import needed for small N).
 func SortDisplayed(ss []AgentSession) {
-	// sessionKey returns a sort key for a session:
-	//   - Plain sessions (no @): "repo\x00<name>"  — sorts first within repo
-	//   - @main sessions:        "repo\x00<name>"  — sorts first within repo
-	//   - Branch sessions:       "repo\x01<branch>\x00"  — sorts after @main
-	//   - Depth-2 review:        "repo\x01<parent-branch>\x00~<label>"
-	//     — sorts immediately after the parent branch
+	// sessionKey returns a sort key for a session such that depth-2 review
+	// sessions always sort immediately after their parent branch session.
+	//
+	// Key structure:
+	//   - Plain sessions (no @): "repo\x00<name>"           — sorts first within repo
+	//   - @main sessions:        "repo\x00repo@main"        — sorts first within repo
+	//   - Branch sessions:       "repo\x01<branch>\x00"     — sorts after @main
+	//   - Depth-2 child of @main:  "repo\x00repo@main\x01<label>"
+	//     — sorts immediately after @main (still in the \x00 band)
+	//   - Depth-2 child of @branch: "repo\x01<parent-branch>\x00<label>"
+	//     — sorts immediately after the parent branch (in the \x01 band)
+	//
+	// The critical fix: depth-2 children of @main previously used
+	// "repo\x01@main\x00<label>", which sorted them after ALL depth-1
+	// branch sessions (because \x01@main > \x01@anything-earlier). They now
+	// use the parent's own sort key (the \x00 band) with the label appended,
+	// so they appear directly after @main in the display list.
+	//
+	// Parent attribution uses s.ParentSession (DB-backed, the single source of
+	// truth) when available, falling back to Depth2ParentBranch (name heuristic)
+	// for pre-migration rows where ParentSession is empty.
 	sessionKey := func(s AgentSession) string {
 		repo := SessionRepo(s.Name)
 		branch := SessionBranch(s.Name)
@@ -335,8 +378,24 @@ func SortDisplayed(ss []AgentSession) {
 		}
 		// Depth-2 session: sort directly after its parent branch.
 		if IsDepth2Session(s.Name) {
-			parentBranch := Depth2ParentBranch(s.Name)
+			// Resolve parent: prefer DB-backed ParentSession; fall back to name heuristic.
+			parentSession := s.ParentSession
+			var parentBranch string
+			if parentSession != "" {
+				parentBranch = SessionBranch(parentSession) // e.g. "@main" or "@feature"
+			} else {
+				parentBranch = Depth2ParentBranch(s.Name)
+			}
 			label := Depth2Label(s.Name)
+			if parentBranch == "@main" {
+				// Parent is @main (the \x00 band). Use the same band so depth-2
+				// children of @main appear right after @main, before any depth-1
+				// branch sessions (\x01 band).
+				parentName := repo + "@main"
+				return repo + "\x00" + parentName + "\x01" + label
+			}
+			// Parent is a regular branch (the \x01 band). Append the label
+			// after the parent's key so depth-2 children sort right after it.
 			return repo + "\x01" + parentBranch + "\x00" + label
 		}
 		// Regular branch session.

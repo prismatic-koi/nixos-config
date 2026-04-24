@@ -2112,6 +2112,79 @@ func (d *DB) HasReviewGroup(parentSession string) (bool, error) {
 	return count > 0, nil
 }
 
+// AllGroupParents returns a map of group_id → parent_session for all rows in
+// session_groups. This is the efficient batch counterpart to ParentSessionFor:
+// callers that need parent attribution for a large set of sessions can fetch the
+// whole map in one query rather than issuing N individual lookups.
+//
+// The returned map only contains groups registered in session_groups; sessions
+// whose group_id is NULL (pre-migration rows) or whose group_id has no matching
+// session_groups row are absent from the map (callers should fall back to the
+// name heuristic for those).
+func (d *DB) AllGroupParents() (map[string]string, error) {
+	const q = `SELECT group_id, parent_session FROM session_groups`
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("db: all group parents: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var groupID, parent string
+		if err := rows.Scan(&groupID, &parent); err != nil {
+			return nil, fmt.Errorf("db: all group parents: scan: %w", err)
+		}
+		result[groupID] = parent
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: all group parents: iterate: %w", err)
+	}
+	return result, nil
+}
+
+// ParentSessionFor returns the authoritative parent session name for the given
+// session. It is the single named source of truth for parent attribution,
+// used by both the dashboard (via AllGroupParents + StatusToAgentSession) and
+// prism list-sessions (via AllGroupParents in the renderSessionTable sort key).
+//
+// Resolution order:
+//  1. DB-backed (post-migration): looks up session_groups.parent_session via
+//     agent_status.group_id. This is the most reliable source — it records the
+//     actual caller at spawn time.
+//  2. Name-heuristic fallback (pre-migration rows where group_id IS NULL):
+//     strips the "~…" suffix from the session name and returns the prefix as
+//     the parent name. e.g. "nixos-config@main~review-1-review-code" → parent
+//     is "nixos-config@main".
+//
+// Returns "" when no parent can be determined (top-level sessions, sessions
+// with no group_id and no "~" in the branch component, or DB errors).
+func (d *DB) ParentSessionFor(sessionName string) string {
+	// Step 1: try DB-backed group_id → session_groups.parent_session.
+	const q = `
+SELECT sg.parent_session
+FROM agent_status AS a
+JOIN session_groups AS sg ON a.group_id = sg.group_id
+WHERE a.session_name = ?`
+	var parent string
+	err := d.conn.QueryRow(q, sessionName).Scan(&parent)
+	if err == nil && parent != "" {
+		return parent
+	}
+	// err == sql.ErrNoRows or group_id IS NULL: fall through to name heuristic.
+
+	// Step 2: name-heuristic fallback — strip the "~…" suffix from the branch
+	// component.  Session names are of the form "repo@branch~suffix" where
+	// "~suffix" marks a depth-2 review session.  The parent is "repo@branch".
+	if idx := strings.Index(sessionName, "@"); idx >= 0 {
+		branch := sessionName[idx+1:] // e.g. "main~review-1-review-code"
+		if tildeIdx := strings.Index(branch, "~"); tildeIdx >= 0 {
+			return sessionName[:idx] + "@" + branch[:tildeIdx]
+		}
+	}
+	return ""
+}
+
 // GroupMembersForParent returns all agent_status rows whose group_id belongs
 // to a session_groups row with parent_session = parentSession.
 func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
