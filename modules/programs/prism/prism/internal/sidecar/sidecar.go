@@ -421,6 +421,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
+			} else {
+				log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
 			}
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
