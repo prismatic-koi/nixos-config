@@ -189,6 +189,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // per repo (§6.1 from #849): UNIQUE (repo) WHERE root_agent_name='coordinator'
 // AND ended_at IS NULL. The IF NOT EXISTS guard makes this idempotent so that
 // databases already at v12 (e.g. from a re-run) do not fail.
+// v12→v13 is a one-shot maintenance migration that ends (sets ended_at=now,
+// in milliseconds) any agent_status rows whose session_name matches legacy
+// malformed review-session patterns from a historical recursive-review bug
+// (#826): doubled ~review, back-to-back ~review~review, or bare ~review-N-review
+// (no role suffix). Only rows where ended_at IS NULL and last_seen IS NULL,
+// zero, or older than 7 days are touched. The 7-day threshold is also expressed
+// in milliseconds ((unixepoch('now') - 604800) * 1000) to match the column unit.
+// Rows already with ended_at set are left alone (idempotent).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -516,6 +524,54 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 12
+	}
+	if version == 12 {
+		// Migration v12 → v13: one-shot maintenance cleanup of agent_status rows
+		// whose session_name matches legacy malformed review-agent patterns
+		// produced by a historical recursive-review bug (#826).
+		//
+		// Patterns matched (three LIKE clauses cover all observed shapes):
+		//   %~review-%~review%  — doubled ~review with no role suffix
+		//                         e.g. ~review-1-review~review-1-review
+		//   %~review~review%    — back-to-back ~review (older variant)
+		//                         e.g. ~review-3~review
+		//   %~review-%-review   — bare review suffix with no role component
+		//                         e.g. ~review-1-review (trailing, no ~prefix)
+		//
+		// The current valid shape, <parent>~review-<N>-review-<role>, has a
+		// non-empty role suffix (e.g. "-code", "-goal") and does NOT end in
+		// "-review" with nothing after it, so it is NOT matched by the third
+		// pattern.  It also contains no back-to-back ~review~review or
+		// doubled ~review-%~review, so it is not matched by the first two.
+		//
+		// ended_at and last_seen are both stored in Unix milliseconds throughout
+		// the codebase (time.Now().UnixMilli() / time.UnixMilli()), so:
+		//   - ended_at is set to unixepoch('now') * 1000 (ms)
+		//   - the 7-day staleness threshold is (unixepoch('now') - 604800) * 1000
+		//     where 604800 is 7 × 86400 seconds.
+		//
+		// Only rows where ended_at IS NULL and last_seen is NULL, zero, or older
+		// than 7 days are touched — this avoids accidentally closing any session
+		// that might still be active.  Rows that already have ended_at set are
+		// left alone (the WHERE ended_at IS NULL guard makes this idempotent).
+		migrations := []string{
+			`UPDATE agent_status
+			   SET ended_at = unixepoch('now') * 1000
+			 WHERE ended_at IS NULL
+			   AND (last_seen IS NULL OR last_seen = 0
+			        OR last_seen < ((unixepoch('now') - 604800) * 1000))
+			   AND (session_name LIKE '%~review-%~review%'
+			    OR  session_name LIKE '%~review~review%'
+			    OR  session_name LIKE '%~review-%-review')`,
+			"UPDATE schema_version SET version = 13",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v12→v13: %w", err)
+			}
+		}
+		version = 13
 	}
 
 	return &DB{conn: conn, path: path}, nil
