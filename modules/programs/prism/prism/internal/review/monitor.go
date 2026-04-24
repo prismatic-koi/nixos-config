@@ -157,7 +157,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath)
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
-		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", opts.PRNumber, opts.Round)
+		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(opts.PRNumber), opts.Round)
 		fmt.Fprintf(os.Stderr, "[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
 		writeErr := os.WriteFile(fallbackPath, []byte(deliveryText), 0o644)
 		if writeErr != nil {
@@ -431,7 +431,7 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 	// Detach the process: use setsid so it survives the parent process exiting.
 	detachProcess(cmd)
 	// Redirect stdout/stderr to log file for diagnostics.
-	logPath := fmt.Sprintf("/tmp/prism-monitor-review-%s-round-%d.log", opts.PRNumber, opts.Round)
+	logPath := fmt.Sprintf("/tmp/prism-monitor-review-%s-round-%d.log", sanitisePRNumber(opts.PRNumber), opts.Round)
 	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if logErr == nil {
 		cmd.Stdout = logFile
@@ -521,9 +521,10 @@ func ReviewRoundForGroup(members []db.Status) int {
 }
 
 // WriteFallbackResult writes the review result to the standard fallback file
-// when delivery fails. Exported for testing.
+// when delivery fails. prNumber is sanitised to prevent path traversal.
+// Exported for testing.
 func WriteFallbackResult(prNumber string, round int, content string) (string, error) {
-	path := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", prNumber, round)
+	path := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write fallback result: %w", err)
 	}
@@ -546,8 +547,9 @@ func LoadMonitorOptsFromFile(path string) (MonitorOpts, error) {
 }
 
 // fallbackFilePath returns the standard fallback result file path.
+// prNumber is sanitised to prevent path traversal.
 func fallbackFilePath(prNumber string, round int) string {
-	return filepath.Join("/tmp", fmt.Sprintf("prism-review-%s-round-%d-result.md", prNumber, round))
+	return filepath.Join("/tmp", fmt.Sprintf("prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round))
 }
 
 // BuildMonitorResultsForTest is an exported wrapper around buildMonitorResults

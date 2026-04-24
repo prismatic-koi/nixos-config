@@ -1545,10 +1545,28 @@ const DefaultFindingsSizeBudget = 20 * 1024 // 20 KB
 // default findings size budget. Set to an integer byte count (e.g. "10240").
 const FindingsSizeBudgetEnvVar = "PRISM_REVIEW_SIZE_BUDGET"
 
+// sanitisePRNumber returns a version of prNumber safe for use in a filename by
+// retaining only alphanumeric characters and hyphens. This prevents path
+// traversal when prNumber comes from user-supplied CLI input.
+func sanitisePRNumber(prNumber string) string {
+	var b strings.Builder
+	for _, r := range prNumber {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	safe := b.String()
+	if safe == "" {
+		safe = "unknown"
+	}
+	return safe
+}
+
 // FindingsFilePath returns the path where full findings are written when the
-// size budget is exceeded. prNumber and round identify the review run.
+// size budget is exceeded. prNumber is sanitised before use to prevent path
+// traversal; round identifies the review round.
 func FindingsFilePath(prNumber string, round int) string {
-	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.md", prNumber, round)
+	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.md", sanitisePRNumber(prNumber), round)
 }
 
 // resolveSizeBudget returns the effective size budget. sizeBudget ≤ 0 means use
