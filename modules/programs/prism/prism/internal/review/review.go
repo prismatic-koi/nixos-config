@@ -357,6 +357,11 @@ type Opts struct {
 	PRNumber string
 	// ParentSession is the prism session name of the calling worker/coordinator.
 	ParentSession string
+	// WorkerSession is the session name that will receive the async delivery
+	// prompt when the review completes. For RunAsync, this MUST be set to the
+	// session running `prism review`. For the synchronous Run path, it is
+	// unused and may be left empty.
+	WorkerSession string
 	// Worktree is the absolute path to the parent session's worktree.
 	Worktree string
 	// Agents is the list of review agents to spawn.
@@ -609,6 +614,213 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	}
 
 	return results, pollErr
+}
+
+// AsyncResult is returned immediately by RunAsync. It contains the group_id
+// and session names for the spawned review agents, and a human-readable
+// acknowledgement message.
+type AsyncResult struct {
+	// GroupID is the session_groups.group_id for this review round.
+	GroupID string
+	// SessionNames is the list of spawned agent session names.
+	SessionNames []string
+	// Round is the 1-indexed review round number.
+	Round int
+	// Ack is a human-readable acknowledgement message to display to the worker.
+	Ack string
+}
+
+// RunAsync spawns the review agents (same as Run's spawn phase), registers a
+// group, starts a detached monitor process, and returns immediately with an
+// AsyncResult. The monitor process will poll for group completion and deliver
+// aggregated results to opts.WorkerSession via prism prompt.
+//
+// Unlike Run, RunAsync does NOT block while agents execute. The caller should
+// display Ack to the worker and proceed without waiting for review results.
+//
+// opts.WorkerSession must be set to the session name that will receive the
+// delivery prompt when the review completes.
+//
+// prismBinary is passed to StartMonitorProcess; pass "" to use os.Executable().
+func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
+	if opts.ParentSession == "" {
+		return nil, fmt.Errorf("parent session name is required")
+	}
+	if opts.WorkerSession == "" {
+		return nil, fmt.Errorf("worker session name is required for async review")
+	}
+
+	worktree := opts.Worktree
+	if worktree == "" {
+		return nil, fmt.Errorf("worktree path is required")
+	}
+
+	dbPath := opts.DBPath
+	if dbPath == "" {
+		dbPath = defaultDBPath()
+	}
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	defer d.Close()
+
+	agents := opts.Agents
+	if len(agents) == 0 {
+		agents = Agents()
+	}
+
+	// In-progress guard: reject if a round is already active for this parent.
+	// We check for any group with at least one non-terminal member.
+	activeGroupID, activeErr := ActiveReviewGroupForParent(d, opts.ParentSession)
+	if activeErr != nil {
+		// Non-fatal: log and proceed (better to allow duplicate than block falsely).
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not check for active review group: %v\n", activeErr)
+	} else if activeGroupID != "" {
+		// Determine the round number for a useful error message.
+		members, _ := d.GroupMembersForParent(opts.ParentSession)
+		activeRound := ReviewRoundForGroup(members)
+		if activeRound > 0 {
+			return nil, fmt.Errorf("prism review: round %d is already in progress for this PR (group %s).\n"+
+				"Wait for it to complete or cancel the sessions with `prism cleanup`.",
+				activeRound, activeGroupID)
+		}
+		return nil, fmt.Errorf("prism review: a review round is already in progress for session %q (group %s).\n"+
+			"Wait for it to complete or cancel the sessions with `prism cleanup`.",
+			opts.ParentSession, activeGroupID)
+	}
+
+	// Determine round number from DB.
+	round := NextRoundNumber(d, opts.ParentSession)
+	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
+	repo := deriveRepo(opts.ParentSession)
+
+	// Register session group.
+	groupID, groupErr := d.RegisterGroup(opts.ParentSession)
+	if groupErr != nil {
+		return nil, fmt.Errorf("register review group: %w", groupErr)
+	}
+
+	// Spawn each agent.
+	agentSessions := make([]string, len(agents))
+	spawnErr := make([]error, len(agents))
+
+	for i, ag := range agents {
+		agentSession := roundPrefix + ag.Name
+		agentSessions[i] = agentSession
+
+		prCtxWithWorktree := opts.PRCtx
+		if prCtxWithWorktree != nil && !prCtxWithWorktree.FetchFailed {
+			ctxCopy := *prCtxWithWorktree
+			ctxCopy.WorktreePath = worktree
+			prCtxWithWorktree = &ctxCopy
+		}
+		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
+
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
+		if configErr != nil {
+			spawnErr[i] = configErr
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
+			}
+			continue
+		}
+
+		spawnOpts := session.SpawnOpts{
+			SessionName:      agentSession,
+			Repo:             repo,
+			Worktree:         worktree,
+			AgentRole:        ag.Name,
+			Prompt:           prompt,
+			ConfigContent:    agentConfigContent,
+			Layout:           session.LayoutAgentOnly,
+			ContainerMode:    opts.ContainerMode,
+			PluginHostPath:   opts.PluginHostPath,
+			WorktreeReadOnly: true,
+			GroupID:          groupID,
+			RuntimeEnvVars:   opts.RuntimeEnvVars,
+		}
+		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnSessErr))
+			}
+			session.KillSidecar(agentSession)
+			cleanupAgentSession(d, agentSession)
+			_ = tmux.KillSession(agentSession)
+			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
+			continue
+		}
+
+		if opts.OnProgress != nil {
+			opts.OnProgress(fmt.Sprintf("%s started", FormatAgentDisplayName(ag.Name)))
+		}
+	}
+
+	// Check if all agents failed to spawn.
+	allFailed := true
+	for _, se := range spawnErr {
+		if se == nil {
+			allFailed = false
+			break
+		}
+	}
+	if allFailed {
+		return nil, fmt.Errorf("all review agents failed to spawn")
+	}
+
+	// Collect successfully-spawned sessions.
+	var liveSessions []string
+	var liveAgents []Agent
+	for i, se := range spawnErr {
+		if se == nil {
+			liveSessions = append(liveSessions, agentSessions[i])
+			liveAgents = append(liveAgents, agents[i])
+		}
+	}
+
+	// Start the detached monitor process.
+	monitorOpts := MonitorOpts{
+		GroupID:       groupID,
+		WorkerSession: opts.WorkerSession,
+		PRNumber:      opts.PRNumber,
+		Round:         round,
+		Agents:        liveAgents,
+		AgentSessions: liveSessions,
+		DBPath:        dbPath,
+		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
+	}
+	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
+		// Monitor failed to start — not fatal for spawning, but warn loudly.
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not start monitor process: %v\n"+
+			"Review results will NOT be delivered automatically.\n"+
+			"Check agent progress with: prism checkin %s~review-%d-<agent>\n",
+			startErr, opts.ParentSession, round)
+	}
+
+	// Build acknowledgement message.
+	ack := buildAsyncAck(opts.PRNumber, round, groupID, liveSessions, opts.WorkerSession)
+
+	return &AsyncResult{
+		GroupID:      groupID,
+		SessionNames: liveSessions,
+		Round:        round,
+		Ack:          ack,
+	}, nil
+}
+
+// buildAsyncAck constructs the acknowledgement message returned to the worker
+// immediately after spawning the review agents.
+func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []string, workerSession string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Review in progress — PR #%s, round %d (group: %s)\n\n", prNumber, round, groupID))
+	sb.WriteString(fmt.Sprintf("Spawned %d review agents:\n", len(sessionNames)))
+	for _, name := range sessionNames {
+		sb.WriteString(fmt.Sprintf("  • %s\n", name))
+	}
+	sb.WriteString(fmt.Sprintf("\nResults will be delivered to session %q via prism prompt when all agents complete.\n", workerSession))
+	sb.WriteString("\n**Do NOT commit, merge, or announce completion** until the review-complete prompt arrives.\n")
+	sb.WriteString(fmt.Sprintf("\nYou may monitor progress with:\n  prism checkin %s~review-%d-review-goal\n", workerSession, round))
+	return sb.String()
 }
 
 // ResolveAgentConfigContent resolves the per-agent opencode.json config blob
