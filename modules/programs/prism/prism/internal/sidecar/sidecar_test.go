@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -7202,6 +7203,362 @@ func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
 	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
 	if state != string(agent.StateActive) {
 		t.Errorf("state = %q after session.updated following MessageAbortedError, want %q (abort path must not be affected by error debounce)", state, agent.StateActive)
+	}
+}
+
+// ── Gap 3: finish-cause annotation ──────────────────────────────────────────
+
+// captureLog redirects the standard logger to a buffer for the duration of the
+// test and returns a function that reads everything logged so far.
+func captureLog(t *testing.T) func() string {
+	t.Helper()
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return func() string { return buf.String() }
+}
+
+// TestTransitionCause_IdleDebounce verifies that transitioning to finished via
+// the session.idle debounce emits cause=idle_debounce.
+func TestTransitionCause_IdleDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer to be created")
+	}
+	timer.Fire()
+
+	logs := getLogs()
+	if !strings.Contains(logs, "cause=idle_debounce") {
+		t.Errorf("expected cause=idle_debounce in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "transition -> finished") {
+		t.Errorf("expected 'transition -> finished' in log; got:\n%s", logs)
+	}
+}
+
+// TestTransitionCause_RootAgentIdleDebounce verifies that the root-agent
+// message debounce path emits cause=root_agent_idle_debounce.
+func TestTransitionCause_RootAgentIdleDebounce(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+	sc.rootAgent = "worker"
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Build a message.updated event for the root agent with time.completed set.
+	evt := makeSSE("message.updated", map[string]any{
+		"info": map[string]any{
+			"id":   "msg-001",
+			"role": "assistant",
+			"agent": "worker",
+			"time": map[string]any{
+				"created":   float64(1000),
+				"completed": float64(2000),
+			},
+		},
+	})
+	// Seed text so the message write proceeds.
+	sc.textByMessage["msg-001"] = "hello"
+	sc.HandleEvent(evt)
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected root-agent idle debounce timer to be created")
+	}
+	timer.Fire()
+
+	logs := getLogs()
+	if !strings.Contains(logs, "cause=root_agent_idle_debounce") {
+		t.Errorf("expected cause=root_agent_idle_debounce in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "transition -> finished") {
+		t.Errorf("expected 'transition -> finished' in log; got:\n%s", logs)
+	}
+}
+
+// TestTransitionCause_ErrorFinish verifies that session.error emits
+// cause=error_finish.
+func TestTransitionCause_ErrorFinish(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	evt := makeSSE("session.error", map[string]any{
+		"error": map[string]string{
+			"name":    "ModelMessageSchemaError",
+			"message": "Invalid prompt: The messages do not match the ModelMessage[] schema",
+		},
+	})
+	sc.HandleEvent(evt)
+
+	logs := getLogs()
+	if !strings.Contains(logs, "cause=error_finish") {
+		t.Errorf("expected cause=error_finish in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "transition -> error") {
+		t.Errorf("expected 'transition -> error' in log; got:\n%s", logs)
+	}
+}
+
+// TestTransitionCause_InterruptedByDenial verifies that MessageAbortedError
+// emits cause=interrupted_by_denial.
+func TestTransitionCause_InterruptedByDenial(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	evt := makeSSE("session.error", map[string]any{
+		"error": map[string]string{
+			"name":    "MessageAbortedError",
+			"message": "user cancelled",
+		},
+	})
+	sc.HandleEvent(evt)
+
+	logs := getLogs()
+	if !strings.Contains(logs, "cause=interrupted_by_denial") {
+		t.Errorf("expected cause=interrupted_by_denial in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "transition -> interrupted") {
+		t.Errorf("expected 'transition -> interrupted' in log; got:\n%s", logs)
+	}
+}
+
+// TestTransitionCause_RecoveryTimer verifies that the reconnect recovery timer
+// emits cause=recovery_timer.
+func TestTransitionCause_RecoveryTimer(t *testing.T) {
+	sc, clk := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	// Pre-set to active so handleServerConnected starts the recovery timer.
+	sc.lastState = agent.StateActive
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected recovery timer to be created")
+	}
+	timer.Fire()
+
+	logs := getLogs()
+	if !strings.Contains(logs, "cause=recovery_timer") {
+		t.Errorf("expected cause=recovery_timer in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "transition -> finished") {
+		t.Errorf("expected 'transition -> finished' in log; got:\n%s", logs)
+	}
+}
+
+// ── Gap 5: tool_error DB event ───────────────────────────────────────────────
+
+// TestToolCallFailed_WritesToolErrorEvent verifies that a tool part with
+// status=error writes a tool_error event to the DB and logs the failure.
+func TestToolCallFailed_WritesToolErrorEvent(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.opencodeSID = "sid-abc"
+
+	evt := makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-001",
+			"tool":      "bash",
+			"state": map[string]any{
+				"status": "error",
+				"output": "exit status 1: command not found",
+			},
+		},
+	})
+	sc.HandleEvent(evt)
+
+	// Verify log line.
+	logs := getLogs()
+	if !strings.Contains(logs, "sidecar: tool call failed") {
+		t.Errorf("expected 'sidecar: tool call failed' in log; got:\n%s", logs)
+	}
+	if !strings.Contains(logs, "tool=bash") {
+		t.Errorf("expected tool=bash in log; got:\n%s", logs)
+	}
+
+	// Verify DB event.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var toolErrorEvents []db.Event
+	for _, e := range events {
+		if e.Type == "tool_error" {
+			toolErrorEvents = append(toolErrorEvents, e)
+		}
+	}
+	if len(toolErrorEvents) != 1 {
+		t.Fatalf("expected 1 tool_error event, got %d (all events: %v)", len(toolErrorEvents), events)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(toolErrorEvents[0].Payload), &payload); err != nil {
+		t.Fatalf("unmarshal tool_error payload: %v", err)
+	}
+	if payload["tool"] != "bash" {
+		t.Errorf("tool_error payload tool = %q, want %q", payload["tool"], "bash")
+	}
+	if payload["messageId"] != "msg-001" {
+		t.Errorf("tool_error payload messageId = %q, want %q", payload["messageId"], "msg-001")
+	}
+	if !strings.Contains(payload["err"], "exit status 1") {
+		t.Errorf("tool_error payload err = %q, want to contain 'exit status 1'", payload["err"])
+	}
+}
+
+// TestToolCallFailed_ErrTruncated verifies that tool call error strings longer
+// than 200 chars are truncated using the existing truncate() helper.
+func TestToolCallFailed_ErrTruncated(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	longErr := strings.Repeat("x", 300)
+
+	evt := makeSSE("message.part.updated", map[string]any{
+		"part": map[string]any{
+			"type":      "tool",
+			"messageID": "msg-002",
+			"tool":      "read",
+			"state": map[string]any{
+				"status": "error",
+				"output": longErr,
+			},
+		},
+	})
+	sc.HandleEvent(evt)
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var toolErrorEvents []db.Event
+	for _, e := range events {
+		if e.Type == "tool_error" {
+			toolErrorEvents = append(toolErrorEvents, e)
+		}
+	}
+	if len(toolErrorEvents) != 1 {
+		t.Fatalf("expected 1 tool_error event, got %d", len(toolErrorEvents))
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal([]byte(toolErrorEvents[0].Payload), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(payload["err"]) > 200 {
+		t.Errorf("err field length = %d, want ≤ 200 (should be truncated)", len(payload["err"]))
+	}
+}
+
+// ── Gap 6: unknown event type deduplication ──────────────────────────────────
+
+// TestUnknownEventType_LoggedOnce verifies that an unknown event type is
+// logged exactly once, not on every occurrence.
+func TestUnknownEventType_LoggedOnce(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Send the same unknown event type 5 times.
+	for range 5 {
+		sc.HandleEvent(makeSSE("new.event.type", map[string]any{}))
+	}
+
+	logs := getLogs()
+
+	// Count occurrences of the "unhandled" marker.
+	count := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	if count != 1 {
+		t.Errorf("expected exactly 1 'unhandled' log line for duplicate event type, got %d; logs:\n%s", count, logs)
+	}
+
+	// Verify seenUnknown was set.
+	if !sc.seenUnknown["new.event.type"] {
+		t.Error("expected new.event.type in seenUnknown map")
+	}
+}
+
+// TestUnknownEventType_MultipleTypes verifies that each unique unknown event
+// type is logged once.
+func TestUnknownEventType_MultipleTypes(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	unknownTypes := []string{"alpha.event", "beta.event", "gamma.event"}
+	for _, typ := range unknownTypes {
+		sc.HandleEvent(makeSSE(typ, map[string]any{}))
+		sc.HandleEvent(makeSSE(typ, map[string]any{})) // duplicate
+	}
+
+	logs := getLogs()
+
+	count := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	if count != len(unknownTypes) {
+		t.Errorf("expected %d 'unhandled' log lines (one per unique type), got %d; logs:\n%s",
+			len(unknownTypes), count, logs)
+	}
+}
+
+// TestUnknownEventType_CapReached verifies that the seenUnknown map is capped
+// at seenUnknownCap and a "cap reached" log line fires once.
+func TestUnknownEventType_CapReached(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Send seenUnknownCap + 10 unique unknown types.
+	for i := range seenUnknownCap + 10 {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("unknown.event.%d", i), map[string]any{}))
+	}
+
+	logs := getLogs()
+
+	// Cap-reached line should appear exactly once.
+	capCount := strings.Count(logs, "sidecar: unknown-event log cap reached")
+	if capCount != 1 {
+		t.Errorf("expected exactly 1 'cap reached' log line, got %d; logs:\n%s", capCount, logs)
+	}
+
+	// seenUnknown should not exceed seenUnknownCap.
+	if len(sc.seenUnknown) > seenUnknownCap {
+		t.Errorf("seenUnknown map has %d entries, want ≤ %d", len(sc.seenUnknown), seenUnknownCap)
+	}
+
+	// Types beyond the cap should NOT have been logged as "unhandled".
+	unhandledCount := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	if unhandledCount > seenUnknownCap {
+		t.Errorf("expected ≤ %d 'unhandled' log lines (cap), got %d", seenUnknownCap, unhandledCount)
+	}
+}
+
+// TestUnknownEventType_CapReachedOnce verifies that once the cap is reached,
+// sending more unique unknown types does not emit additional "cap reached" lines.
+func TestUnknownEventType_CapReachedOnce(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(t)
+
+	// Fill to cap.
+	for i := range seenUnknownCap + 20 {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("cap.test.%d", i), map[string]any{}))
+	}
+
+	logs := getLogs()
+	capCount := strings.Count(logs, "sidecar: unknown-event log cap reached")
+	if capCount != 1 {
+		t.Errorf("expected exactly 1 cap-reached line (idempotent), got %d", capCount)
 	}
 }
 
