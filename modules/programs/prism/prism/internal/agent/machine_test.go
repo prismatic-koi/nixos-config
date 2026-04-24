@@ -31,6 +31,9 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateCompacting, StateInterrupted, "pane-died during compaction"},
 		{StateError, StateInterrupted, "pane-died after error"},
 
+		// Container startup failure path (issue #994)
+		{StateIdle, StateError, "container startup failure before session.created (WaitHealthy/CreateSession)"},
+
 		// Edge cases from acceptance criteria
 		{StateFinished, StateInterrupted, "non-zero exit overrides finished (pane-died)"},
 		{StateFinished, StateActive, "session resumed after prior close"},
@@ -71,7 +74,6 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateIdle, StateWaiting, "idle → waiting (no permission before active)"},
 		{StateIdle, StateFinished, "idle → finished (nothing happened)"},
 		{StateIdle, StateCompacting, "idle → compacting (nothing happened)"},
-		{StateIdle, StateError, "idle → error (nothing happened)"},
 
 		// Compacting resumes to active; finished is no longer a valid direct transition
 		{StateCompacting, StateFinished, "compacting → finished (compaction ≠ task completion)"},

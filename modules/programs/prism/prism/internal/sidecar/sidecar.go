@@ -390,7 +390,12 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				mgr.Shutdown()
 				closeTCPListenerOnError()
 			}
-			return fmt.Errorf("sidecar: container health check: %w", err)
+			// Gap 1 fix: write StateError directly so the DB row transitions to
+			// "error" (not "interrupted" via the pane-died hook). This is reliable
+			// regardless of tmux hook timing.
+			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
+			s.writeStartupError(startupErr)
+			return startupErr
 		}
 		healthyAt := time.Now()
 		log.Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
@@ -422,22 +427,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
-			} else {
-				log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
+				// Gap 1 fix: write StateError directly so the DB row transitions to
+				// "error" on CreateSession failure. Also notify the parent worker.
+				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
+				s.writeStartupError(startupErr)
+				return startupErr
 			}
+			log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
 				s.cfg.OnReady()
 			}
-			if createErr == nil {
-				initialPrompt := s.cfg.InitialPrompt
-				go func() {
-					if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
-						log.Printf("sidecar: deliverInitialPrompt: %v", err)
-					}
-					log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
-				}()
-			}
+			initialPrompt := s.cfg.InitialPrompt
+			go func() {
+				if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
+					log.Printf("sidecar: deliverInitialPrompt: %v", err)
+				}
+				log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			}()
 		} else if !isShuttingDown {
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if s.cfg.OnReady != nil {
@@ -1641,6 +1648,129 @@ func isReviewAgentSession(sessionName string, d *db.DB) bool {
 	}
 	// No DB available — use name heuristic.
 	return nameBased
+}
+
+// writeStartupError writes StateError to the DB and, when this session is a
+// review agent, sends a notification to the parent worker session. It must be
+// called WITHOUT s.mu held (it acquires the mutex internally via upsertState,
+// and the notification goroutine also runs without the lock).
+//
+// This is the Gap 1 + Gap 2 fix for startup failures (WaitHealthy timeout,
+// CreateSession failure). Calling it ensures:
+//   - The DB row transitions to "error" immediately in the sidecar, not via the
+//     fragile pane-died tmux hook.
+//   - The parent worker is notified when a review-agent container fails to start.
+func (s *Sidecar) writeStartupError(startupErr error) {
+	s.mu.Lock()
+	log.Printf("sidecar: startup failure — writing error state: %v", startupErr)
+	s.upsertState(agent.StateError, nil, nil)
+	s.writeStateChange(agent.StateError)
+	s.mu.Unlock()
+
+	// Gap 2 fix: notify the parent worker when this is a review-agent session.
+	// Normal finish notifications for review agents remain suppressed in
+	// notifyCoordinator — this is an exception only for the startup-failure path.
+	go s.notifyParentWorkerOnStartupFailure(startupErr)
+}
+
+// reviewAgentParentSession derives the parent worker session name from a
+// review-agent session name. Review-agent sessions follow the naming convention:
+//
+//	<parent>~review-<N>-<role>   e.g. nixos-config@feature~review-2-review-goal
+//
+// The parent session name is the prefix before "~review".
+// Returns ("", false) when the session name does not contain "~review".
+func reviewAgentParentSession(sessionName string) (string, bool) {
+	idx := strings.Index(sessionName, "~review")
+	if idx < 0 {
+		return "", false
+	}
+	return sessionName[:idx], true
+}
+
+// notifyParentWorkerOnStartupFailure sends a notification to the parent worker
+// when a review-agent container fails to start. It is called asynchronously via
+// go from writeStartupError, so s.mu must NOT be held.
+//
+// If the parent worker session cannot be found or has ended, the failure is
+// logged and the sidecar exits cleanly (the notification failure is not fatal).
+//
+// Normal finish notifications for review agents (on the success path) remain
+// suppressed via the isReviewAgentSession guard in notifyCoordinator. This
+// function is an exception only for the startup-failure path.
+func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
+	// Only apply to review-agent sessions.
+	parentSession, isReview := reviewAgentParentSession(s.cfg.SessionName)
+	if !isReview {
+		return
+	}
+
+	// Look up the parent worker in the DB.
+	parentStatus, err := s.cfg.DB.CurrentStatus(parentSession)
+	if err != nil {
+		log.Printf("sidecar: notifyParentWorker: DB lookup for parent %q: %v — skipping notification", parentSession, err)
+		return
+	}
+	if parentStatus == nil {
+		log.Printf("sidecar: notifyParentWorker: parent session %q not found in DB — skipping notification", parentSession)
+		return
+	}
+	if parentStatus.EndedAt != nil {
+		log.Printf("sidecar: notifyParentWorker: parent session %q has ended — skipping notification", parentSession)
+		return
+	}
+	if parentStatus.HarnessPort == nil {
+		log.Printf("sidecar: notifyParentWorker: parent session %q has no harness port — cannot deliver notification", parentSession)
+		return
+	}
+	port := *parentStatus.HarnessPort
+
+	notifyText := fmt.Sprintf("review agent %s failed to start: %v", s.cfg.SessionName, startupErr)
+
+	storedSID := ""
+	if parentStatus.HarnessSessionID != nil {
+		storedSID = *parentStatus.HarnessSessionID
+	}
+
+	const maxAttempts = 3
+	backoff := []time.Duration{500 * time.Millisecond, 1 * time.Second}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			time.Sleep(backoff[attempt-2])
+		}
+
+		targetSID, validationErr := validateOrRefreshCoordinatorSID(
+			port, storedSID, parentSession, s.cfg.DB, s.cfg.HTTPClient,
+		)
+		if validationErr != nil {
+			lastErr = fmt.Errorf("attempt %d: SID validation failed: %w", attempt, validationErr)
+			log.Printf("sidecar: notifyParentWorker: %v (parent=%s)", lastErr, parentSession)
+			if errors.Is(validationErr, errEmptySessionList) {
+				break
+			}
+			continue
+		}
+		storedSID = targetSID
+
+		log.Printf("sidecar: notifyParentWorker: attempt %d/%d POST to parent=%s sid=%s",
+			attempt, maxAttempts, parentSession, targetSID)
+
+		httpErr := deliverNotificationViaHTTP(port, targetSID, notifyText, parentStatus, s.cfg.HTTPClient)
+		if httpErr != nil {
+			lastErr = fmt.Errorf("attempt %d: HTTP delivery failed: %w", attempt, httpErr)
+			log.Printf("sidecar: notifyParentWorker: %v (parent=%s sid=%s)", lastErr, parentSession, targetSID)
+			continue
+		}
+
+		log.Printf("sidecar: notifyParentWorker: delivered to parent=%s sid=%s", parentSession, targetSID)
+		return
+	}
+
+	// All retries exhausted — log and exit cleanly (notification failure is not fatal).
+	log.Printf("sidecar: notifyParentWorker: FAILED after %d attempts — parent=%s reason=%v",
+		maxAttempts, parentSession, lastErr)
 }
 
 // notifyCoordinator sends a "finished" notification to the coordinator session

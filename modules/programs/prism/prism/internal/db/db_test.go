@@ -2259,7 +2259,7 @@ func TestCheckTransition_SameState(t *testing.T) {
 }
 
 // TestCheckTransition_InvalidTransition verifies that a genuinely invalid
-// transition (e.g. idle → error, idle → finished) still logs a warning to
+// transition (e.g. idle → finished) still logs a warning to
 // stderr after the same-state early-return fix is in place.
 func TestCheckTransition_InvalidTransition(t *testing.T) {
 	// "error → active" is valid per ValidTransitions; use only pairs that are
@@ -2268,7 +2268,6 @@ func TestCheckTransition_InvalidTransition(t *testing.T) {
 		from string
 		to   string
 	}{
-		{"idle", "error"},
 		{"idle", "finished"},
 		{"deleted", "active"},
 		{"idle", "waiting"},
