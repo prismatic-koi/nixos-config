@@ -344,6 +344,60 @@ func TestSetEnded_NoChildrenIsNoop(t *testing.T) {
 	}
 }
 
+// TestSetEnded_LikeWildcardsInSessionName verifies that session names containing
+// SQL LIKE wildcard characters (%, _, \) are handled correctly and do not
+// cause the cascade to match unintended sibling rows.
+func TestSetEnded_LikeWildcardsInSessionName(t *testing.T) {
+	d := openTestDB(t)
+
+	// A session name containing an underscore (produced by NameFor when the
+	// repo name contains a dot, e.g. "my.repo" → "my_repo").
+	parent := "my_repo@feat"
+	child := parent + "~review-1-review-goal"
+
+	// A session that would be matched if _ acted as a wildcard:
+	// "myXrepo@feat~review-1-review-goal" — the X can be any character.
+	decoy := "myXrepo@feat~review-1-review-goal"
+
+	for _, sess := range []string{parent, child, decoy} {
+		if err := d.UpsertStatus(sess, "myrepo", "/wt", "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %q: %v", sess, err)
+		}
+	}
+
+	// End the parent. Only the parent and its exact-prefix child should be ended.
+	if err := d.SetEnded(parent); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Parent must be ended.
+	sp, err := d.CurrentStatus(parent)
+	if err != nil || sp == nil {
+		t.Fatalf("CurrentStatus parent: %v", err)
+	}
+	if sp.EndedAt == nil {
+		t.Error("parent: EndedAt is nil, want non-nil")
+	}
+
+	// Child must be ended.
+	sc, err := d.CurrentStatus(child)
+	if err != nil || sc == nil {
+		t.Fatalf("CurrentStatus child: %v", err)
+	}
+	if sc.EndedAt == nil {
+		t.Error("child: EndedAt is nil, want non-nil")
+	}
+
+	// Decoy (different repo prefix) must NOT be ended.
+	sd, err := d.CurrentStatus(decoy)
+	if err != nil || sd == nil {
+		t.Fatalf("CurrentStatus decoy: %v", err)
+	}
+	if sd.EndedAt != nil {
+		t.Errorf("decoy session %q: EndedAt is non-nil; _ was treated as wildcard", decoy)
+	}
+}
+
 // TestAllActiveStatus_ExcludesEnded verifies that ended sessions are not returned.
 func TestAllActiveStatus_ExcludesEnded(t *testing.T) {
 	d := openTestDB(t)

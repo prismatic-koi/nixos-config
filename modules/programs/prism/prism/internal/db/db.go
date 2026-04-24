@@ -891,8 +891,15 @@ WHERE session_name = ?
 // session_name matches the pattern "<sessionName>~review-%", setting
 // ended_at only on rows where it is not already set (idempotent).
 // Both the parent and child updates are performed in a single transaction.
+//
+// The session name is escaped for SQL LIKE wildcards before being used as a
+// pattern prefix (using the same escaping as AllStatusesWithPrefix) so that
+// session names containing `%`, `_`, or `\` are handled correctly.
 func (d *DB) SetEnded(sessionName string) error {
 	now := time.Now().UnixMilli()
+	// Escape LIKE special characters in sessionName so that literal `%`, `_`,
+	// and `\` in the name are matched exactly, not as wildcards.
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("db: set ended: begin tx: %w", err)
@@ -902,9 +909,9 @@ func (d *DB) SetEnded(sessionName string) error {
 	const q = `
 UPDATE agent_status
 SET    ended_at = ?
-WHERE  (session_name = ? OR session_name LIKE ? || '~review-%')
+WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
   AND  ended_at IS NULL`
-	if _, err := tx.Exec(q, now, sessionName, sessionName); err != nil {
+	if _, err := tx.Exec(q, now, sessionName, escaped); err != nil {
 		return fmt.Errorf("db: set ended: %w", err)
 	}
 
