@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -255,6 +256,15 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	mode := opts.IsolationMode
 	if mode == "" && opts.ContainerMode {
 		mode = "podman"
+	}
+	// When IsolationMode is still empty (neither field set), resolve the
+	// machine default from config rather than silently falling back to host.
+	// A silent host fallback breaks bwrap sessions: review agents would run
+	// without the sandbox, pick up the host opencode.json (which only defines
+	// the build agent), and trigger the recursive review explosion described
+	// in issue #1001.
+	if mode == "" {
+		mode = string(config.Load().EffectiveIsolationMode())
 	}
 
 	// Start the sidecar BEFORE creating the agent window so that the
