@@ -333,6 +333,7 @@ in
 
         home.persistence."/persist" = {
           directories = [
+            ".local/share/prism"
             ".local/state/prism"
           ];
         };

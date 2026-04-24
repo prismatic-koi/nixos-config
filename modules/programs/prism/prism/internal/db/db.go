@@ -1691,60 +1691,6 @@ UPDATE sessions
 	return nil
 }
 
-// GetSession returns the sessions row for instanceID, or nil if not found.
-func (d *DB) GetSession(instanceID string) (*Session, error) {
-	const q = `
-SELECT instance_id, session_name, agent_role, root_agent_name, repo, worktree,
-       harness, harness_session_id, group_id, started_at, ended_at, end_state,
-       archive_path, prism_version
-  FROM sessions
- WHERE instance_id = ?`
-	row := d.conn.QueryRow(q, instanceID)
-	var s Session
-	var agentRole, rootAgentName, harnessSessionID, groupID, endState, archivePath, prismVersion sql.NullString
-	var startedAt int64
-	var endedAt sql.NullInt64
-	err := row.Scan(
-		&s.InstanceID, &s.SessionName, &agentRole, &rootAgentName,
-		&s.Repo, &s.Worktree, &s.Harness, &harnessSessionID,
-		&groupID, &startedAt, &endedAt, &endState,
-		&archivePath, &prismVersion,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("db: get session: %w", err)
-	}
-	s.StartedAt = time.UnixMilli(startedAt)
-	if agentRole.Valid {
-		s.AgentRole = &agentRole.String
-	}
-	if rootAgentName.Valid {
-		s.RootAgentName = &rootAgentName.String
-	}
-	if harnessSessionID.Valid {
-		s.HarnessSessionID = &harnessSessionID.String
-	}
-	if groupID.Valid {
-		s.GroupID = &groupID.String
-	}
-	if endedAt.Valid {
-		t := time.UnixMilli(endedAt.Int64)
-		s.EndedAt = &t
-	}
-	if endState.Valid {
-		s.EndState = &endState.String
-	}
-	if archivePath.Valid {
-		s.ArchivePath = &archivePath.String
-	}
-	if prismVersion.Valid {
-		s.PrismVersion = &prismVersion.String
-	}
-	return &s, nil
-}
-
 // UpdateSessionArchivePath sets archive_path on the sessions row for
 // instanceID. Called during prism cleanup after the archive copy completes
 // successfully. It is a no-op when no row exists for instanceID (returns nil).

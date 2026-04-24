@@ -242,7 +242,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
 				}
 				// Archive the session storage after recording the end state.
-				if archiveErr := runArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if archiveErr := runSessionArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
 					if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 						_ = d.PurgeBusMessages(m.session)
 						d.Close()
@@ -521,7 +521,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 					_ = d.PurgeBusMessages(session)
 					d.Close()
@@ -581,7 +581,7 @@ func closeSession(session string) error {
 				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 					_ = d.PurgeBusMessages(session)
 					d.Close()
@@ -653,7 +653,7 @@ func headlessCloseSession(session string) error {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
 			}
 			// Archive the session storage after recording the end state.
-			if archiveErr := runArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 					_ = d.PurgeBusMessages(session)
 					d.Close()
@@ -735,7 +735,7 @@ func worktreePathFromSession(session string) string {
 	return ""
 }
 
-// runArchive performs the opencode-storage copy for the session identified by
+// runSessionArchive performs the opencode-storage copy for the session identified by
 // instanceID using the already-open DB d and the agent_status isolation mode
 // from statusIsolationMode. It is called after UpdateSessionEnded so the
 // sessions row has ended_at and end_state populated.
@@ -751,7 +751,7 @@ func worktreePathFromSession(session string) string {
 //
 // Sessions with unknown or unsupported isolation modes log a clear warning and
 // are skipped (AC: edge-case — unknown isolation mode); returns nil.
-func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
+func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
 	if instanceID == "" {
 		// No instance_id — nothing to archive.
 		return nil
@@ -768,7 +768,7 @@ func runArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) e
 	}
 
 	// Fetch the full sessions row (has ended_at/end_state set by caller).
-	sess, err := d.GetSession(instanceID)
+	sess, err := d.SessionByInstanceID(instanceID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
 		return nil
