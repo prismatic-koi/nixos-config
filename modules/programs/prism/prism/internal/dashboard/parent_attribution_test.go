@@ -17,7 +17,6 @@ package dashboard_test
 //     @main, not after all other depth-1 branches.
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -180,27 +179,14 @@ func TestSortDisplayed_MainParentChildrenSortAfterMain(t *testing.T) {
 		t.Errorf("first review session at position %d, want %d (right after @main at %d)", firstReviewIdx, mainIdx+1, mainIdx)
 	}
 
-	// All depth-1 branches must appear AFTER the review sessions.
-	depth1After := true
-	for i, s := range sessions {
-		if i <= lastReviewIdx {
-			continue
-		}
-		branch := dashboard.SessionBranch(s.Name)
-		if branch != s.Name && branch != "@main" && !dashboard.IsDepth2Session(s.Name) {
-			// This is a depth-1 child — should appear after the review sessions.
-			_ = branch
-		}
-	}
+	// All depth-1 branches must appear AFTER all review sessions.
 	for i, s := range sessions {
 		branch := dashboard.SessionBranch(s.Name)
 		isDep1 := branch != s.Name && branch != "@main" && !dashboard.IsDepth2Session(s.Name)
-		if isDep1 && i < firstReviewIdx {
-			depth1After = false
-			t.Errorf("depth-1 session %q at position %d appears before first review session at %d", s.Name, i, firstReviewIdx)
+		if isDep1 && i <= lastReviewIdx {
+			t.Errorf("depth-1 session %q at position %d appears before or at last review session (position %d)", s.Name, i, lastReviewIdx)
 		}
 	}
-	_ = depth1After
 }
 
 // TestBothViews_ParentChildAgreement is the primary AC test: it exercises both
@@ -580,5 +566,4 @@ func TestSortDisplayed_WithDBBackedParent(t *testing.T) {
 	}
 }
 
-// Ensure the os import is used (for tempdir in some test helpers).
-var _ = os.TempDir
+
