@@ -62,20 +62,24 @@ var modelCosts = map[string]struct {
 }
 
 var statsCmd = &cobra.Command{
-	Use:   "stats [session]",
+	Use:   "stats [instance-id|session-name]",
 	Short: "Session metrics and statistics",
-	Long: `Display metrics and statistics for agent sessions.
+	Long: `Display metrics and statistics for agent session incarnations.
 
-With no arguments, shows a summary table of all active sessions across all repos.
+With no arguments, shows one row per incarnation in the sessions table,
+ordered by started_at DESC (most recent first).
 
-With a session name argument, shows per-session metrics. Long-lived sessions
-(e.g. nixos-config@main) that contain multiple opencode sessions are shown as
-a compact table — one row per opencode session. Short-lived worktree sessions
-with a single opencode session are shown as a detailed block.
+With an argument that is a full 36-character UUID (or an unambiguous prefix),
+shows detail for the matching incarnation. Use --instance to force UUID lookup
+even when the argument might also match a session name.
 
-Use --detail to force the detailed block format even for multi-session tmux sessions.
+With a session-name argument, shows detail for the most recent incarnation of
+that session name.
 
-Use --days N to show aggregate statistics over the last N days.
+Filter flags:
+  --repo <name>     only show incarnations where sessions.repo matches
+  --since <date>    only show incarnations started on or after <date>
+                    (ISO 8601 or YYYY-MM-DD, e.g. 2026-04-01)
 
 Use --doomloops to show doom_loop_detected events. Defaults to the last 7 days
 cross-session; combine with --days N to change the window; combine with a
@@ -89,18 +93,45 @@ Use --asks to show permission_ask events aggregated by (session, tool, pattern).
 Defaults to the last 7 days cross-session; combine with --days N to change the
 window; combine with a session name argument to filter to a specific session.
 
+Use --days N to show historical aggregate statistics over the last N days.
+
 Use the 'model' subcommand for a per-provider/model performance breakdown.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStats,
 }
 
 func init() {
-	statsCmd.Flags().Int("days", 0, "Show aggregate statistics over the last N days")
+	statsCmd.Flags().Int("days", 0, "Show aggregate statistics over the last N days (historical view)")
 	statsCmd.Flags().Bool("detail", false, "Force detailed block format even for multi-session tmux sessions")
 	statsCmd.Flags().Bool("doomloops", false, "Show doom_loop_detected events (last 7 days by default)")
 	statsCmd.Flags().Bool("denials", false, "Show permission_denied events aggregated by (session, tool) (last 7 days by default)")
 	statsCmd.Flags().Bool("asks", false, "Show permission_ask events aggregated by (session, tool, pattern) (last 7 days by default)")
+	statsCmd.Flags().String("repo", "", "Filter rows to those where sessions.repo equals this value")
+	statsCmd.Flags().String("since", "", "Filter rows to those started on or after this date (ISO 8601 or YYYY-MM-DD)")
+	statsCmd.Flags().Bool("instance", false, "Treat the argument as a full instance_id (UUID) even if it might match a session name")
 	rootCmd.AddCommand(statsCmd)
+}
+
+// parseSinceFlag parses the --since flag value into a Unix millisecond timestamp.
+// Returns (0, nil) when since is empty. Returns an error when unparseable.
+func parseSinceFlag(since string) (int64, error) {
+	if since == "" {
+		return 0, nil
+	}
+	// Try common date formats.
+	formats := []string{
+		"2006-01-02",
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05",
+		time.RFC3339,
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, since); err == nil {
+			return t.UnixMilli(), nil
+		}
+	}
+	return 0, fmt.Errorf("cannot parse --since value %q: expected ISO 8601 date (e.g. 2026-04-01)", since)
 }
 
 func runStats(cmd *cobra.Command, args []string) error {
@@ -109,8 +140,11 @@ func runStats(cmd *cobra.Command, args []string) error {
 	doomloops, _ := cmd.Flags().GetBool("doomloops")
 	denials, _ := cmd.Flags().GetBool("denials")
 	asks, _ := cmd.Flags().GetBool("asks")
+	repoFilter, _ := cmd.Flags().GetString("repo")
+	sinceStr, _ := cmd.Flags().GetString("since")
+	forceInstance, _ := cmd.Flags().GetBool("instance")
 
-	// --doomloops, --denials, and --asks bypass the --days+session guard.
+	// --doomloops, --denials, and --asks bypass the per-incarnation view.
 	// They each have their own session-filter path and --days is additive.
 	if doomloops || denials || asks {
 		// Default window is 7 days; --days N overrides it.
@@ -141,22 +175,323 @@ func runStats(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// --days: historical aggregate view.
 	if days > 0 && len(args) > 0 {
 		return fmt.Errorf("--days is mutually exclusive with a session name")
 	}
-
 	if days > 0 {
 		return runStatsHistorical(days)
 	}
 
-	if len(args) == 1 {
-		return runStatsSession(args[0], detail)
+	// Parse --since before doing anything else so we fail-fast on bad input.
+	sinceMs, err := parseSinceFlag(sinceStr)
+	if err != nil {
+		return err
 	}
 
-	return runStatsSummary()
+	// With an argument: detail view for a specific incarnation or session name.
+	if len(args) == 1 {
+		return runStatsDetail(args[0], forceInstance, detail)
+	}
+
+	// No argument: per-incarnation summary table.
+	return runStatsIncarnations(repoFilter, sinceMs)
 }
 
-// ---------- per-session detail ----------
+// ---------- per-incarnation summary table ----------
+
+// runStatsIncarnations shows one row per row in the sessions table, ordered by
+// started_at DESC. Filtered by repo and/or sinceMs when provided.
+func runStatsIncarnations(repoFilter string, sinceMs int64) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("stats: %w", err)
+	}
+	defer d.Close()
+
+	var sessions []db.Session
+	switch {
+	case repoFilter != "" && sinceMs > 0:
+		sessions, err = d.SessionsForRepoSince(repoFilter, sinceMs)
+	case repoFilter != "":
+		sessions, err = d.SessionsForRepo(repoFilter)
+	case sinceMs > 0:
+		sessions, err = d.SessionsSince(sinceMs)
+	default:
+		sessions, err = d.AllSessions()
+	}
+	if err != nil {
+		return fmt.Errorf("stats: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		fmt.Println("no sessions yet")
+		return nil
+	}
+
+	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	now := time.Now()
+
+	const (
+		wID      = 8
+		wName    = 32
+		wAgent   = 14
+		wState   = 10
+		wDur     = 10
+		wTokens  = 8
+		wCost    = 8
+	)
+
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %*s  %*s",
+		wID, "INSTANCE",
+		wName, "SESSION_NAME",
+		wAgent, "AGENT",
+		wState, "STATE",
+		wDur, "DURATION",
+		wTokens, "TOKENS",
+		wCost, "COST",
+	)
+	fmt.Println(styleHeader.Render(header))
+	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
+
+	for _, s := range sessions {
+		shortID := s.InstanceID
+		if len(shortID) > wID {
+			shortID = shortID[:wID]
+		}
+
+		sessionName := s.SessionName
+		if len(sessionName) > wName {
+			sessionName = sessionName[:wName-3] + "..."
+		}
+
+		agentName := "—"
+		if s.RootAgentName != nil && *s.RootAgentName != "" {
+			agentName = agentShortName(*s.RootAgentName)
+		} else if s.AgentRole != nil && *s.AgentRole != "" {
+			agentName = agentShortName(*s.AgentRole)
+		}
+		if len(agentName) > wAgent {
+			agentName = agentName[:wAgent-3] + "..."
+		}
+
+		state := "active"
+		if s.EndState != nil && *s.EndState != "" {
+			state = *s.EndState
+		} else if s.EndedAt != nil {
+			state = "ended"
+		}
+
+		var dur time.Duration
+		if s.EndedAt != nil {
+			dur = s.EndedAt.Sub(s.StartedAt)
+		} else {
+			dur = now.Sub(s.StartedAt)
+		}
+		durStr := formatDurationLong(dur)
+
+		// Compute token/cost totals from agent_events for this instance_id.
+		turns, terr := d.SessionTurnTokens(s.InstanceID)
+		var totalTokens int
+		var totalCost float64
+		if terr == nil {
+			for _, t := range turns {
+				totalTokens += t.Input + t.Output
+				totalCost += computeTurnCost(t)
+			}
+		}
+
+		tokStr := "—"
+		if totalTokens > 0 {
+			tokStr = formatTokenCount(totalTokens)
+		}
+		costStr := "—"
+		if totalCost > 0 {
+			costStr = formatCost(totalCost)
+		}
+
+		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-*s", wState, truncateStr(state, wState)))
+
+		fmt.Printf("%-*s  %-*s  %-*s  %s  %-*s  %*s  %*s\n",
+			wID, shortID,
+			wName, sessionName,
+			wAgent, agentName,
+			stateStyled,
+			wDur, durStr,
+			wTokens, tokStr,
+			wCost, costStr,
+		)
+	}
+
+	fmt.Println()
+	fmt.Println(styleDim.Render("run `prism stats <instance-id>` or `prism stats <session-name>` for detail"))
+	return nil
+}
+
+// computeTurnCost computes the cost for a single msg_assistant turn.
+// Uses the local pricing table when the model is known; falls back to
+// the event-reported cost for unknown models (e.g. openrouter/*).
+func computeTurnCost(t db.TokenTurn) float64 {
+	costs, ok := modelCosts[t.Model]
+	if !ok {
+		return t.EventCost
+	}
+	return (float64(t.Input)*costs.Input +
+		float64(t.Output)*costs.Output +
+		float64(t.CacheRead)*costs.CacheRead +
+		float64(t.CacheWrite)*costs.CacheWrite) / 1_000_000
+}
+
+// ---------- per-incarnation detail view ----------
+
+// runStatsDetail resolves an argument to a specific sessions row and renders
+// detail for it. The argument may be a full UUID, a UUID prefix (when
+// unambiguous), or a session name.
+func runStatsDetail(arg string, forceInstance bool, detail bool) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("stats: %w", err)
+	}
+	defer d.Close()
+
+	sess, err := resolveSessionArg(d, arg, forceInstance)
+	if err != nil {
+		return err
+	}
+
+	renderIncarnationDetail(d, sess)
+	return nil
+}
+
+// resolveSessionArg resolves an argument to a single sessions row.
+// Disambiguation rules (from issue #999):
+//  1. Full 36-char UUID (or --instance flag) → SessionByInstanceID
+//  2. Exact match in sessions.session_name → MostRecentSessionForName
+//  3. UUID prefix → SessionsByInstanceIDPrefix (must be unambiguous)
+//  4. Not found → error
+func resolveSessionArg(d *db.DB, arg string, forceInstance bool) (*db.Session, error) {
+	// Step 1: full UUID (36 chars) or --instance flag.
+	if forceInstance || len(arg) == 36 {
+		sess, err := d.SessionByInstanceID(arg)
+		if err != nil {
+			return nil, fmt.Errorf("stats: lookup instance %q: %w", arg, err)
+		}
+		if sess != nil {
+			return sess, nil
+		}
+		return nil, fmt.Errorf("stats: instance %q not found", arg)
+	}
+
+	// Step 2: try exact session_name match first.
+	sess, err := d.MostRecentSessionForName(arg)
+	if err != nil {
+		return nil, fmt.Errorf("stats: lookup session name %q: %w", arg, err)
+	}
+	if sess != nil {
+		return sess, nil
+	}
+
+	// Step 3: try UUID prefix match.
+	matches, err := d.SessionsByInstanceIDPrefix(arg)
+	if err != nil {
+		return nil, fmt.Errorf("stats: lookup instance prefix %q: %w", arg, err)
+	}
+	if len(matches) == 1 {
+		return &matches[0], nil
+	}
+	if len(matches) > 1 {
+		var candidates []string
+		for _, m := range matches {
+			candidates = append(candidates, m.InstanceID)
+		}
+		return nil, fmt.Errorf("stats: %q is ambiguous — multiple incarnations match:\n  %s\nuse the full instance_id to disambiguate",
+			arg, strings.Join(candidates, "\n  "))
+	}
+
+	return nil, fmt.Errorf("stats: %q is not a known instance_id or session_name", arg)
+}
+
+// renderIncarnationDetail renders the full detail block for a single sessions row.
+func renderIncarnationDetail(d *db.DB, sess *db.Session) {
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	now := time.Now()
+
+	fmt.Println(styleHeader.Render("incarnation: " + sess.InstanceID))
+	fmt.Println()
+
+	fmt.Printf("%s %s\n", styleLabel.Render("session:"), sess.SessionName)
+	fmt.Printf("%s %s\n", styleLabel.Render("repo:"), sess.Repo)
+
+	if sess.RootAgentName != nil && *sess.RootAgentName != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.RootAgentName)
+	} else if sess.AgentRole != nil && *sess.AgentRole != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.AgentRole)
+	}
+
+	state := "active"
+	if sess.EndState != nil && *sess.EndState != "" {
+		state = *sess.EndState
+	} else if sess.EndedAt != nil {
+		state = "ended"
+	}
+	fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(state).Render(state))
+
+	fmt.Printf("%s %s\n", styleLabel.Render("started:"), sess.StartedAt.Format("2006-01-02 15:04:05"))
+	if sess.EndedAt != nil {
+		fmt.Printf("%s %s\n", styleLabel.Render("ended:"), sess.EndedAt.Format("2006-01-02 15:04:05"))
+		dur := sess.EndedAt.Sub(sess.StartedAt)
+		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
+	} else {
+		dur := now.Sub(sess.StartedAt)
+		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
+	}
+
+	// Archive path.
+	if sess.ArchivePath != nil && *sess.ArchivePath != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), *sess.ArchivePath)
+	} else {
+		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), styleDim.Render("(not yet archived)"))
+	}
+	fmt.Println()
+
+	// Token/cost totals from agent_events.
+	fmt.Println(styleHeader.Render("Token Usage"))
+	turns, err := d.SessionTurnTokens(sess.InstanceID)
+	if err != nil || len(turns) == 0 {
+		fmt.Println(styleDim.Render("  no token data (pre-migration events excluded)"))
+	} else {
+		var totalInput, totalOutput, totalCacheRead, totalCacheWrite int
+		var totalCost float64
+		for _, t := range turns {
+			totalInput += t.Input
+			totalOutput += t.Output
+			totalCacheRead += t.CacheRead
+			totalCacheWrite += t.CacheWrite
+			totalCost += computeTurnCost(t)
+		}
+		if totalInput+totalOutput > 0 {
+			fmt.Printf("  %s %s\n", styleLabel.Render("input:"), formatTokenCount(totalInput))
+			fmt.Printf("  %s %s\n", styleLabel.Render("output:"), formatTokenCount(totalOutput))
+			if totalCacheRead > 0 {
+				fmt.Printf("  %s %s\n", styleLabel.Render("cache read:"), formatTokenCount(totalCacheRead))
+			}
+			if totalCacheWrite > 0 {
+				fmt.Printf("  %s %s\n", styleLabel.Render("cache write:"), formatTokenCount(totalCacheWrite))
+			}
+			if totalCost > 0 {
+				fmt.Printf("  %s %s\n", styleLabel.Render("est. cost:"), formatCost(totalCost))
+			}
+		} else {
+			fmt.Println(styleDim.Render("  no token data"))
+		}
+	}
+}
+
+// ---------- legacy per-session detail (kept for --doomloops/denials/asks) ----------
 
 // sessionMetrics holds aggregated metrics for a single opencode session.
 type sessionMetrics struct {
