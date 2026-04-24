@@ -1442,6 +1442,92 @@ func TestRun_SeedsRootAgentNameAtSpawnTime(t *testing.T) {
 	}
 }
 
+// ── SidecarPID persistence after poll ────────────────────────────────────────
+
+// TestPollAgents_SidecarPIDFilesNotRemovedAfterCompletion verifies that after
+// pollAgents returns (all agents finished), the sidecar PID files for each
+// review-agent session still exist on disk.
+//
+// This is a direct regression test for #816: Run() used to call KillSidecar on
+// each live session after pollAgents returned, removing the PID file and tearing
+// down the container. The fix deletes that loop, so PID files must persist.
+//
+// The test uses PollAgentsForTest with pre-created fake PID files. If KillSidecar
+// were called, it would read the file, fail the PID validity check (fake value),
+// and remove the file regardless — so the presence of the file after poll is a
+// reliable proxy for "KillSidecar was NOT called".
+func TestPollAgents_SidecarPIDFilesNotRemovedAfterCompletion(t *testing.T) {
+	// Redirect sidecar state dir to a temp directory so PID files don't
+	// interfere with the real prism state.
+	stateDir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateDir)
+
+	ctx := context.Background()
+	d := openTestDB(t)
+
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-security", OpencodeName: "review-security"},
+		{Name: "review-qa", OpencodeName: "review-qa"},
+		{Name: "review-context", OpencodeName: "review-context"},
+	}
+	sessions := []string{
+		"test@parent~review-1-review-goal",
+		"test@parent~review-1-review-code",
+		"test@parent~review-1-review-security",
+		"test@parent~review-1-review-qa",
+		"test@parent~review-1-review-context",
+	}
+
+	// Register a group and seed all agents as finished.
+	groupID, err := d.RegisterGroup("test@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+	}
+
+	// Create a fake PID file for each session. The content is "0" — not a live
+	// PID, but enough to create the file. KillSidecar would remove it even for
+	// an invalid PID, so if files remain after poll we know KillSidecar was not called.
+	pidDir := filepath.Join(stateDir, "prism", "run")
+	if err := os.MkdirAll(pidDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", pidDir, err)
+	}
+	pidPaths := make([]string, len(sessions))
+	for i, sess := range sessions {
+		pidPath := filepath.Join(pidDir, sess+"-sidecar.pid")
+		if err := os.WriteFile(pidPath, []byte("0\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q): %v", pidPath, err)
+		}
+		pidPaths[i] = pidPath
+	}
+
+	// Run pollAgents — all agents are already finished so this returns immediately.
+	spawnTimes := make([]time.Time, len(agents))
+	for i := range spawnTimes {
+		spawnTimes[i] = time.Now()
+	}
+	_, err = review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, nil, groupID)
+	if err != nil {
+		t.Fatalf("PollAgentsForTest: %v", err)
+	}
+
+	// All PID files must still exist — KillSidecar was not called.
+	for i, pidPath := range pidPaths {
+		if _, err := os.Stat(pidPath); os.IsNotExist(err) {
+			t.Errorf("sidecar PID file for session %q was removed after poll (KillSidecar must NOT be called after pollAgents returns)", sessions[i])
+		}
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // linesContain returns true if any of the given lines contains sub.
