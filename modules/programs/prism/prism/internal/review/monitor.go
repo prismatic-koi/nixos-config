@@ -58,6 +58,11 @@ type MonitorOpts struct {
 	// Timeout is the maximum time to wait for the group to complete. Zero means
 	// no timeout (monitor runs until the group is complete).
 	Timeout time.Duration
+	// SizeBudget is the maximum inline size (bytes) for full per-agent findings.
+	// When the total findings exceed this budget they are written to a temp file
+	// and a pointer is included inline. Zero uses the default (20 KB).
+	// Can also be overridden via the PRISM_REVIEW_SIZE_BUDGET environment variable.
+	SizeBudget int
 }
 
 // defaultPollInterval is how often the monitor polls GroupCompleted.
@@ -143,15 +148,16 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Build AgentResult slice, handling "missing" sessions (row deleted mid-review).
 	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData)
 
-	// Format the delivery message.
-	output, allPassed := FormatResults(results, opts.PRNumber)
+	// Format the delivery message. Pass round and sizeBudget so that
+	// overflow-to-file is handled when the total findings exceed the budget.
+	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, opts.SizeBudget)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
 
 	// Deliver to worker via prism prompt with bounded retry.
 	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath)
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
-		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", opts.PRNumber, opts.Round)
+		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(opts.PRNumber), opts.Round)
 		fmt.Fprintf(os.Stderr, "[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
 		writeErr := os.WriteFile(fallbackPath, []byte(deliveryText), 0o644)
 		if writeErr != nil {
@@ -425,7 +431,7 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 	// Detach the process: use setsid so it survives the parent process exiting.
 	detachProcess(cmd)
 	// Redirect stdout/stderr to log file for diagnostics.
-	logPath := fmt.Sprintf("/tmp/prism-monitor-review-%s-round-%d.log", opts.PRNumber, opts.Round)
+	logPath := fmt.Sprintf("/tmp/prism-monitor-review-%s-round-%d.log", sanitisePRNumber(opts.PRNumber), opts.Round)
 	logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if logErr == nil {
 		cmd.Stdout = logFile
@@ -515,9 +521,10 @@ func ReviewRoundForGroup(members []db.Status) int {
 }
 
 // WriteFallbackResult writes the review result to the standard fallback file
-// when delivery fails. Exported for testing.
+// when delivery fails. prNumber is sanitised to prevent path traversal.
+// Exported for testing.
 func WriteFallbackResult(prNumber string, round int, content string) (string, error) {
-	path := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", prNumber, round)
+	path := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", fmt.Errorf("write fallback result: %w", err)
 	}
@@ -540,8 +547,9 @@ func LoadMonitorOptsFromFile(path string) (MonitorOpts, error) {
 }
 
 // fallbackFilePath returns the standard fallback result file path.
+// prNumber is sanitised to prevent path traversal.
 func fallbackFilePath(prNumber string, round int) string {
-	return filepath.Join("/tmp", fmt.Sprintf("prism-review-%s-round-%d-result.md", prNumber, round))
+	return filepath.Join("/tmp", fmt.Sprintf("prism-review-%s-round-%d-result.md", sanitisePRNumber(prNumber), round))
 }
 
 // BuildMonitorResultsForTest is an exported wrapper around buildMonitorResults

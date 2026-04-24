@@ -392,7 +392,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("sidecar: container health check: %w", err)
 		}
-		log.Printf("[timing] WaitHealthy: %s", time.Since(t0).Round(time.Millisecond))
+		healthyAt := time.Now()
+		log.Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
 		log.Printf("sidecar: container %q is healthy", mgr.Name())
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
@@ -417,9 +418,12 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
 		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
+			log.Printf("[timing] CreateSession start: %s after WaitHealthy", time.Since(healthyAt).Round(time.Millisecond))
 			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
+			} else {
+				log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
 			}
 			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {

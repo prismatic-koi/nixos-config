@@ -73,18 +73,46 @@ delivered to you via a follow-up `prism prompt` when all agents complete.
 
 ### Handling review results
 
-When the review-complete prompt arrives:
+`prism review` returns full reviewer output for each agent: verdict, summary,
+blocking issues, and non-blocking observations. The review-complete prompt
+includes a one-line summary header followed by a `## Per-agent findings` section
+with the full output.
+
+When findings exceed the inline budget (default 20 KB), a file pointer appears:
+
+```
+Full findings: `/tmp/prism-review-<pr>-round-<N>.md` (N KB) — read with `cat` or `rg` as needed.
+```
+
+Read the file with `cat /tmp/prism-review-<pr>-round-<N>.md` to see the full
+per-agent findings when the pointer is present.
 
 **ALL 5 must pass** for the review to pass.
 
-If ANY agent returns `<verdict>FAIL</verdict>`:
+**On FAIL:**
 
-1. Read each agent's `<blocking_issues>` carefully
-2. Fix every blocking issue identified
-3. Commit and push your fixes
+1. Read each agent's `<blocking_issues>` carefully — they are mandatory.
+2. Fix every blocking issue identified.
+3. Commit and push your fixes.
 4. Re-run `prism review <pr>` — not just the failed agents (a fix in one area
    can create issues in another, so the full set must re-run every cycle).
    Use `prism review <pr> --only review-goal,review-code` for targeted reruns.
+5. Non-blocking observations on a failed round MAY also be actioned alongside
+   the mandatory fix — the worker decides what to include.
+
+**On PASS:**
+
+Non-blocking observations MAY be actioned if they represent a genuine
+improvement. You are **not required** to action them — shipping the PR is not
+gated on non-blocking observations.
+
+Prefer actioning observations that:
+- Align the change with repo conventions already present in sibling files
+- Add defence-in-depth at low cost (permissions blocks, input validation)
+- Would otherwise require a dedicated follow-up PR
+
+Avoid cosmetic bikeshedding that invites another full review round for no
+substantive gain. When in doubt, ship the PR as-is — review rounds aren't free.
 
 ### Fallback: Task-call subagents
 
