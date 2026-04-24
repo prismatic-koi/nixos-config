@@ -3913,16 +3913,21 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 		endedAt     *int64
 		wantEnded   bool // whether we expect the migration to set ended_at
 	}{
-		// Legacy doubled-review with number: should be matched by %~review-%~review%
+		// Legacy doubled-review with number: matched by %~review-%~review%
 		{"nixos-config@fix-tmux~review-1-review~review-1-review", 0, noEnded, true},
-		// Legacy back-to-back ~review~review: should be matched by %~review~review%
+		// Legacy back-to-back ~review~review: matched by %~review~review%
 		{"nixos-config@fix-tmux~review-1~review", 0, noEnded, true},
 		// Another back-to-back variant
 		{"nixos-config@fix-tmux~review-3~review", 0, noEnded, true},
 		// Variant with number in both positions
 		{"nixos-config@fix-tmux~review-4~review~review-1~review", 0, noEnded, true},
+		// Bare review suffix with no role (listed first in issue #826 example output):
+		// matched by %~review-%-review
+		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded, true},
 
 		// *** MUST NOT be matched: current valid shape <parent>~review-<N>-review-<role> ***
+		// These end in "-<role>" (non-empty after "-review-"), so the third LIKE
+		// pattern (%~review-%-review) does NOT match them.
 		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded, false},
 		{"nixos-config@fix-tmux~review-1-review-goal", 0, noEnded, false},
 		{"nixos-config@fix-tmux~review-3-review-security", 0, noEnded, false},
@@ -4036,8 +4041,10 @@ func TestMigration_V12ToV13_AlreadyEndedUntouched(t *testing.T) {
 func TestMigration_V12ToV13_RecentLastSeenUntouched(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v12_recent.db")
 
-	// last_seen = now (well within the 7-day window)
-	recentLastSeen := time.Now().Unix()
+	// last_seen in Unix milliseconds (the unit used throughout the codebase).
+	// A recent value is well above the 7-day threshold
+	// ((unixepoch('now') - 604800) * 1000), so the age guard must NOT fire.
+	recentLastSeen := time.Now().UnixMilli()
 
 	rows := []struct {
 		sessionName string
@@ -4154,7 +4161,9 @@ func TestMigration_V12ToV13_PostMigrationQueryReturnsZero(t *testing.T) {
 		{"nixos-config@fix-tmux~review-1-review~review-1-review", 0, noEnded},
 		{"nixos-config@fix-tmux~review-1~review", 0, noEnded},
 		{"nixos-config@fix-tmux~review-3~review", 0, noEnded},
-		// A current valid shape — should NOT be counted.
+		// Bare review suffix (no role) — first example in issue #826.
+		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded},
+		// A current valid shape — should NOT be counted by this query.
 		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded},
 	}
 	seedV12DB(t, dbPath, rows)
