@@ -356,6 +356,7 @@
           If no review-complete prompt arrives within 30 minutes, investigate with `prism checkin <session>~review-<N>-review-goal`.
           After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
           Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response) as a fallback when `prism review` is unavailable.
+          **This fallback is for worker and coordinator agents only. Review agents must never follow it — they must never spawn further review sessions of any kind.**
 
         ## Search Scope
 
@@ -882,6 +883,109 @@
         "gh run list *" = "allow";
       };
 
+      # Shared deny-by-default bash base for all *host* review agents.
+      # Mirrors containerReviewBaseBashCommands but for bwrap/host-mode sessions:
+      # same deny-all default, same read-only allowlist, and explicit denies for
+      # prism review / prism spawn recursion prevention.
+      # review-qa and review-context extend this with their extra commands
+      # (same pattern as the container variants above).
+      hostReviewBashCommands = {
+        # Default: deny everything not explicitly allowed
+        "*" = "deny";
+        # prism review/spawn recursion prevention (belt-and-suspenders over deny-all)
+        "prism review" = "deny";
+        "prism review *" = "deny";
+        "prism spawn" = "deny";
+        "prism spawn *" = "deny";
+        # Standard read-only file/text operations (mirrors readOnlyBashCommands)
+        "cat *" = "allow";
+        "head *" = "allow";
+        "less *" = "allow";
+        "more *" = "allow";
+        "strings *" = "allow";
+        "tail *" = "allow";
+        "file *" = "allow";
+        "find *" = "allow";
+        "ls *" = "allow";
+        "tree *" = "allow";
+        "awk *" = "allow";
+        "comm *" = "allow";
+        "cut *" = "allow";
+        "diff *" = "allow";
+        "grep *" = "allow";
+        "rg *" = "allow";
+        "sed *" = "allow";
+        "sort *" = "allow";
+        "uniq *" = "allow";
+        "wc *" = "allow";
+        "xargs *" = "allow";
+        "date *" = "allow";
+        "env *" = "allow";
+        "hostname *" = "allow";
+        "id *" = "allow";
+        "printenv *" = "allow";
+        "pwd *" = "allow";
+        "uname *" = "allow";
+        "whoami *" = "allow";
+        "jq *" = "allow";
+        "yq *" = "allow";
+        "yq eval *" = "allow";
+        "yq eval*" = "allow";
+        "basename *" = "allow";
+        "basename*" = "allow";
+        "command *" = "allow";
+        "command*" = "allow";
+        "dirname *" = "allow";
+        "dirname*" = "allow";
+        "echo *" = "allow";
+        "echo*" = "allow";
+        "printf *" = "allow";
+        "printf*" = "allow";
+        "sleep *" = "allow";
+        "sleep*" = "allow";
+        "type *" = "allow";
+        "type*" = "allow";
+        "which *" = "allow";
+        "which*" = "allow";
+        # git read-only operations (no push)
+        "git log *" = "allow";
+        "git diff *" = "allow";
+        "git show *" = "allow";
+        "git status" = "allow";
+        "git status *" = "allow";
+        "git branch" = "allow";
+        "git branch *" = "allow";
+        "git remote" = "allow";
+        "git remote *" = "allow";
+        "git fetch *" = "allow";
+        # prism read-only introspection
+        "prism checkin" = "allow";
+        "prism checkin *" = "allow";
+        "prism list-sessions" = "allow";
+      };
+
+      # review-qa host: adds test-runner commands on top of the read-only base.
+      hostReviewQaBashCommands = hostReviewBashCommands // {
+        "go test *" = "allow";
+        "go build *" = "allow";
+        "go vet *" = "allow";
+        "nix build *" = "allow";
+        "nix flake check *" = "allow";
+      };
+
+      # review-context host: adds gh issue/PR read commands on top of the base.
+      hostReviewContextBashCommands = hostReviewBashCommands // {
+        "gh issue view *" = "allow";
+        "gh issue list *" = "allow";
+        "gh pr view *" = "allow";
+        "gh pr list *" = "allow";
+        "gh pr diff *" = "allow";
+        "gh pr checks *" = "allow";
+        "gh repo view *" = "allow";
+        "gh run view *" = "allow";
+        "gh run list *" = "allow";
+      };
+
       # Shared hardened permission block for all per-agent review containers.
       # Write operations are denied (belt-and-braces: worktree is mounted read-only).
       containerReviewPermission = bashCmds: {
@@ -1148,13 +1252,121 @@
                       // tmuxDenyCommands;
                     };
                   };
+                  # build agent: full write access (matches container build agent) but
+                  # prism review is denied — belt-and-suspenders against recursive review
+                  # explosions from the default fallback agent (#1002).
+                  build = {
+                    description = "Implementation agent with full write access";
+                    mode = "primary";
+                    color = config.theme.red;
+                    permission = {
+                      edit = "allow";
+                      webfetch = "allow";
+                      # Atlassian MCP permissions — same ask set as host worker
+                      "atlasian_*" = "ask";
+                      "atlasian_atlassianUserInfo" = "allow";
+                      "atlasian_get*" = "allow";
+                      "atlasian_lookup*" = "allow";
+                      "atlasian_search*" = "allow";
+                      "atlasian_fetch" = "allow";
+                      "atlasian_fetchAtlassian" = "allow";
+                      "atlasian_create*" = "ask";
+                      "atlasian_edit*" = "ask";
+                      "atlasian_update*" = "ask";
+                      "atlasian_add*" = "ask";
+                      "atlasian_transition*" = "ask";
+                      bash = {
+                        # default for any command not listed is ask (MUST be first - last match wins)
+                        "*" = "ask";
+                      }
+                      // readOnlyBashCommands
+                      // writeBashCommands
+                      // {
+                        # Belt-and-suspenders: explicitly deny PR merge and agent spawning
+                        "gh pr merge" = "deny";
+                        "gh pr merge *" = "deny";
+                        "prism spawn" = "deny";
+                        "prism spawn *" = "deny";
+                        "prism pr" = "deny";
+                        "prism pr *" = "deny";
+                        # prism review denied — recursive review spawning caused OOM (#1002)
+                        "prism review" = "deny";
+                        "prism review *" = "deny";
+                      }
+                      // tmuxDenyCommands;
+                    };
+                  };
                 }
                 // {
-                  review-goal = { };
-                  review-code = { };
-                  review-security = { };
-                  review-qa = { };
-                  review-context = { };
+                  # Hardened host review agent blocks — deny-by-default bash, Task tool
+                  # disabled, prism review/spawn explicitly denied to prevent recursive
+                  # session explosions and OOM (#1002). Mirrors makeReviewAgentBlob /
+                  # containerReviewBaseBashCommands for bwrap/host-mode sessions.
+                  review-goal = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./review-prompts/review-goal.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostReviewBashCommands;
+                    };
+                  };
+                  review-code = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./review-prompts/review-code.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostReviewBashCommands;
+                    };
+                  };
+                  review-security = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./review-prompts/review-security.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostReviewBashCommands;
+                    };
+                  };
+                  review-qa = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./review-prompts/review-qa.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostReviewQaBashCommands;
+                    };
+                  };
+                  review-context = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./review-prompts/review-context.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostReviewContextBashCommands;
+                    };
+                  };
                 }
               );
               mcp = {
