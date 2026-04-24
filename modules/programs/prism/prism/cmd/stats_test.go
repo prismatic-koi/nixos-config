@@ -45,7 +45,7 @@ func writeStatsEvent(t *testing.T, d *db.DB, session, typ, payload string, ts ti
 	}
 }
 
-// writeStatsEventWithSID writes an event with an explicit opencode_sid.
+// writeStatsEventWithSID writes an event with an explicit harness_session_id.
 func writeStatsEventWithSID(t *testing.T, d *db.DB, session, sid, typ, payload string, ts time.Time) {
 	t.Helper()
 	e := db.Event{
@@ -545,7 +545,7 @@ func TestRunStatsSession_SingleSessionUnchanged(t *testing.T) {
 }
 
 // TestRunStatsSession_NullSidLegacySentinel verifies that events with NULL
-// opencode_sid are grouped under the legacy sentinel and displayed as "(legacy)".
+// harness_session_id are grouped under the legacy sentinel and displayed as "(legacy)".
 func TestRunStatsSession_NullSidLegacySentinel(t *testing.T) {
 	d := openStatsTestDB(t)
 	const session = "testrepo@main"
@@ -555,7 +555,7 @@ func TestRunStatsSession_NullSidLegacySentinel(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	// Write events with NULL opencode_sid (no SID — uses writeStatsEvent which doesn't set SID).
+	// Write events with NULL harness_session_id (no SID — uses writeStatsEvent which doesn't set SID).
 	writeStatsEvent(t, d, session, "msg_assistant",
 		`{"messageId":"msg-old","text":"old reply","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":500,"outputTokens":200,"durationMs":3000}`,
 		base)
@@ -586,7 +586,7 @@ func TestRunStatsSession_NullSidLegacySentinel(t *testing.T) {
 }
 
 // TestRunStatsSession_AllNullSidSingleLegacy verifies that a session where ALL
-// events have NULL opencode_sid renders as a detailed block labelled "(legacy)".
+// events have NULL harness_session_id renders as a detailed block labelled "(legacy)".
 func TestRunStatsSession_AllNullSidSingleLegacy(t *testing.T) {
 	d := openStatsTestDB(t)
 	const session = "testrepo@old"
@@ -596,7 +596,7 @@ func TestRunStatsSession_AllNullSidSingleLegacy(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	// All events have NULL opencode_sid.
+	// All events have NULL harness_session_id.
 	writeStatsEvent(t, d, session, "msg_assistant",
 		`{"messageId":"msg-1","text":"reply","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":500,"outputTokens":200,"durationMs":3000}`,
 		base)
@@ -658,8 +658,8 @@ func TestRunStatsSession_DetailFlag(t *testing.T) {
 	}
 }
 
-// TestGroupEventsByOpencodeSID verifies event grouping by opencode_sid.
-func TestGroupEventsByOpencodeSID(t *testing.T) {
+// TestGroupEventsByHarnessSessionID verifies event grouping by harness_session_id.
+func TestGroupEventsByHarnessSessionID(t *testing.T) {
 	sid1 := "ses_aaa"
 	sid2 := "ses_bbb"
 
@@ -670,7 +670,7 @@ func TestGroupEventsByOpencodeSID(t *testing.T) {
 		{ID: "4", SessionName: "s", Type: "msg_assistant", OpencodeSID: &sid1, Payload: `{}`, CreatedAt: time.Now()}, // same as id=1
 	}
 
-	grouped, order := groupEventsByOpencodeSID(events)
+	grouped, order := groupEventsByHarnessSessionID(events)
 
 	if len(order) != 3 {
 		t.Errorf("expected 3 groups (sid1, sid2, sentinel), got %d: %v", len(order), order)
@@ -755,8 +755,8 @@ func TestCollectMetrics_NullSidLegacy(t *testing.T) {
 	if !m.isLegacy() {
 		t.Errorf("expected m.isLegacy() == true for legacySentinel key")
 	}
-	if m.OpencodeSID != legacySentinel {
-		t.Errorf("OpencodeSID should be legacySentinel %q, got %q", legacySentinel, m.OpencodeSID)
+	if m.HarnessSessionID != legacySentinel {
+		t.Errorf("HarnessSessionID should be legacySentinel %q, got %q", legacySentinel, m.HarnessSessionID)
 	}
 }
 
@@ -1165,10 +1165,10 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 	}
 }
 
-// TestRunStatsModel_SessionCountByOpencodeSID verifies that sessions are counted
-// by opencode_sid (not session_name) so that multi-session tmux sessions are
+// TestRunStatsModel_SessionCountByHarnessSessionID verifies that sessions are counted
+// by harness_session_id (not session_name) so that multi-session tmux sessions are
 // counted correctly.
-func TestRunStatsModel_SessionCountByOpencodeSID(t *testing.T) {
+func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
 	sid1 := "ses_opencode_aaa"
 	sid2 := "ses_opencode_bbb"
 	sid3 := "ses_opencode_ccc"
@@ -1193,16 +1193,16 @@ func TestRunStatsModel_SessionCountByOpencodeSID(t *testing.T) {
 		t.Fatal("missing entry for anthropic/claude-sonnet-4-6")
 	}
 
-	// Should count 3 sessions (one per opencode_sid), NOT 1 (session_name).
+	// Should count 3 sessions (one per harness_session_id), NOT 1 (session_name).
 	if len(entry.Sessions) != 3 {
 		t.Errorf("expected 3 distinct opencode sessions, got %d", len(entry.Sessions))
 	}
 }
 
-// TestRunStatsModel_NullSidFallbackSessionName verifies that NULL opencode_sid
+// TestRunStatsModel_NullSidFallbackSessionName verifies that NULL harness_session_id
 // events fall back to counting by session_name as a legacy bucket.
 func TestRunStatsModel_NullSidFallbackSessionName(t *testing.T) {
-	// Two different sessions, both with NULL opencode_sid, same model.
+	// Two different sessions, both with NULL harness_session_id, same model.
 	events := []db.Event{
 		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", OpencodeSID: nil,
 			Payload:   `{"messageId":"m1","text":"r","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":100,"outputTokens":50}`,

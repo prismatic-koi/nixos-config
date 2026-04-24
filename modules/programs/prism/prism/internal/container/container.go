@@ -157,9 +157,11 @@ type Config struct {
 	// HostAPISockPath is the absolute host path to the sidecar's host-API Unix socket.
 	// When non-empty and HostAPITCPPort is zero, the socket's parent directory is
 	// bind-mounted into the container at /var/run/prism-host and PRISM_HOST_API is set
-	// to unix:///var/run/prism-host/<sockfilename> so that prism CLI commands inside
-	// the container can proxy tmux operations to the host sidecar. On Darwin this field
-	// is still set but HostAPITCPPort takes precedence over the Unix socket.
+	// to unix:///var/run/prism-host/<sockfilename>. The socket path uses a per-session
+	// subdirectory (run/<sessionName>/hostapi.sock) so that each container sees only
+	// its own session's socket directory — not the shared run/ directory containing all
+	// sessions' sockets (security fix #960). On Darwin this field is still set but
+	// HostAPITCPPort takes precedence over the Unix socket.
 	HostAPISockPath string
 
 	// HostAPITCPPort is the host-side TCP port allocated by the sidecar for the
@@ -933,6 +935,25 @@ func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 		errs = append(errs, err.Error())
 	}
 
+	// Per-session host-API socket directory (both podman and bwrap, security fix #960).
+	// Each session places its socket in its own subdirectory
+	// (~/.local/state/prism/run/<sessionName>/hostapi.sock) instead of the
+	// shared run/ directory. The directory must be pre-created here so it
+	// exists before the sandboxed process starts:
+	//   - podman: directory must pre-exist before "podman run" evaluates the
+	//     bind-mount source; the sidecar creates the socket inside it later.
+	//   - bwrap: directory must pre-exist before the sidecar calls
+	//     net.Listen("unix", sockPath); bwrap is exec'd after.
+	// Using 0o700 (owner-only) so other users on the host cannot list or
+	// access this session's socket directory.
+	if m.cfg.HostAPISockPath != "" {
+		sockDir := filepath.Dir(m.cfg.HostAPISockPath)
+		if err := os.MkdirAll(sockDir, 0o700); err != nil {
+			log.Printf("container: failed to create host-API socket dir %q: %v", sockDir, err)
+			errs = append(errs, err.Error())
+		}
+	}
+
 	if len(errs) > 1 {
 		return fmt.Errorf("%d directories could not be created", len(errs))
 	}
@@ -1182,8 +1203,9 @@ func (m *Manager) buildRunArgs() []string {
 		// statfs on a Unix socket through virtiofs returns ENOTSUP, causing
 		// podman to reject the mount. Mounting the directory avoids the
 		// socket-level statfs and lets the container reach the socket via
-		// the live directory mount — the same pattern used for the host-API
-		// socket (see #611 / #612).
+		// the live directory mount. Unlike the host-API socket (which uses a
+		// per-session directory mount for isolation — see #960), the Nix daemon
+		// socket has no cross-session exposure concern and is mounted directly.
 		"--volume", "/nix/var/nix/daemon-socket:/nix/var/nix/daemon-socket",
 		"--env", "NIX_CONFIG=store = daemon",
 
@@ -1225,16 +1247,25 @@ func (m *Manager) buildRunArgs() []string {
 	// (192.168.127.254, the gvproxy bridge IP) — no --publish flag is needed
 	// because this is container→host outbound traffic, not inbound port forwarding.
 	//
-	// On Linux (cfg.HostAPITCPPort == 0): the Unix socket directory is mounted
-	// and PRISM_HOST_API is set to the unix:// path (existing behaviour).
+	// On Linux (cfg.HostAPITCPPort == 0): the session's own per-session socket
+	// directory is mounted (not the entire run/ directory). Each session places its
+	// socket at run/<sessionName>/hostapi.sock, so mounting only that directory
+	// prevents sandboxed agents from accessing other sessions' sockets (security fix
+	// #960). The directory-level mount (rather than a file mount) is required because
+	// the socket file is created by the sidecar *after* the container becomes healthy
+	// — the directory must pre-exist at podman run time so the bind-mount succeeds,
+	// and the socket then appears inside it once the sidecar calls net.Listen("unix",
+	// sockPath). The directory is pre-created by prepareVolumeDirs before Create().
 	if cfg.HostAPITCPPort != 0 {
 		args = append(args,
 			"--env", fmt.Sprintf("PRISM_HOST_API=http://host.containers.internal:%d", cfg.HostAPITCPPort),
 		)
 	} else if cfg.HostAPISockPath != "" {
+		sockDir := filepath.Dir(cfg.HostAPISockPath)
+		sockBase := filepath.Base(cfg.HostAPISockPath)
 		args = append(args,
-			"--volume", filepath.Dir(cfg.HostAPISockPath)+":/var/run/prism-host:Z",
-			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+filepath.Base(cfg.HostAPISockPath),
+			"--volume", sockDir+":/var/run/prism-host:Z",
+			"--env", "PRISM_HOST_API=unix:///var/run/prism-host/"+sockBase,
 		)
 	}
 
