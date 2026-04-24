@@ -300,7 +300,8 @@ func TestSidecarHostAPIPath_DefaultXDG(t *testing.T) {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature-hostapi.sock")
+	// Per-session subdirectory format (security fix #960): run/<session>/hostapi.sock
+	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature", "hostapi.sock")
 	if got != want {
 		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
 	}
@@ -315,7 +316,8 @@ func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	want := filepath.Join(tmp, "prism", "run", "myrepo@main-hostapi.sock")
+	// Per-session subdirectory format (security fix #960): run/<session>/hostapi.sock
+	want := filepath.Join(tmp, "prism", "run", "myrepo@main", "hostapi.sock")
 	if got != want {
 		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
 	}

@@ -718,11 +718,14 @@ func removeContainerIfExists(sessionName string) {
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitconfig-"+name))
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-allowed-signers-"+name))
 
-	// Clean up the host-API Unix socket file created by the sidecar. The
-	// sidecar's own shutdown path would normally remove it, but cleanup runs
-	// after KillSidecar so we cannot rely on that — remove it directly.
+	// Clean up the host-API Unix socket and its per-session directory. The
+	// sidecar's own shutdown path would normally remove these, but cleanup runs
+	// after KillSidecar so we cannot rely on that — remove them directly.
+	// The per-session directory (run/<session>/) was introduced by security fix
+	// #960 to isolate sockets; removing it here prevents accumulated empty dirs.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
+		_ = os.Remove(filepath.Dir(sockPath)) // remove now-empty per-session dir
 	}
 }
 

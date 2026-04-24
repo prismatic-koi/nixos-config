@@ -49,8 +49,8 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version: got %d, want 14", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -786,8 +786,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -861,8 +861,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1362,8 +1362,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1428,8 +1428,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1498,8 +1498,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1593,8 +1593,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1686,8 +1686,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2271,8 +2271,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2360,8 +2360,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -3963,8 +3963,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 13 {
-		t.Errorf("schema_version after migration: got %d, want 13", version)
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
 	}
 
 	// Check each row.
@@ -4140,6 +4140,450 @@ func TestMigration_V12ToV13_Idempotent(t *testing.T) {
 	}
 	if s2Valid.EndedAt != nil {
 		t.Errorf("second pass: valid-shape row incorrectly ended (ended_at = %v)", s2Valid.EndedAt)
+	}
+}
+
+// ── WriteEvent last_seen tests (issue #824) ───────────────────────────────────
+
+// TestWriteEvent_BumpsLastSeen verifies that WriteEvent updates
+// agent_status.last_seen for the owning session to the event's created_at
+// value (AC from #824).
+func TestWriteEvent_BumpsLastSeen(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create a status row — last_seen is set to time.Now() by UpsertStatus.
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Capture the initial last_seen.
+	s0, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (initial): %v", err)
+	}
+	initialLastSeen := s0.LastSeen
+
+	// Write an event with a created_at that is strictly in the future relative
+	// to the initial last_seen. Use a fixed offset so the assertion is stable.
+	eventTime := initialLastSeen.Add(5 * time.Second)
+	e := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/code/repo/main",
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   eventTime,
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	s1, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (after WriteEvent): %v", err)
+	}
+
+	// last_seen must have been bumped to the event's created_at (within
+	// millisecond rounding — both are stored as UnixMilli).
+	wantMs := eventTime.UnixMilli()
+	gotMs := s1.LastSeen.UnixMilli()
+	if gotMs != wantMs {
+		t.Errorf("LastSeen after WriteEvent: got %d ms, want %d ms (event created_at)",
+			gotMs, wantMs)
+	}
+}
+
+// TestWriteEvent_LastSeen_MaxGuard verifies that writing an event with a
+// created_at OLDER than the current last_seen does NOT move last_seen backward
+// (MAX semantics from issue #824).
+func TestWriteEvent_LastSeen_MaxGuard(t *testing.T) {
+	d := openTestDB(t)
+
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Read the current last_seen so we can build a definitely-older timestamp.
+	s0, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (initial): %v", err)
+	}
+	currentLastSeen := s0.LastSeen
+
+	// Write an event with created_at 10 seconds in the past.
+	oldTime := currentLastSeen.Add(-10 * time.Second)
+	e := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/code/repo/main",
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   oldTime,
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent (old event): %v", err)
+	}
+
+	s1, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (after WriteEvent old): %v", err)
+	}
+
+	// last_seen must not have gone backward.
+	if s1.LastSeen.UnixMilli() < currentLastSeen.UnixMilli() {
+		t.Errorf("LastSeen moved backward: was %d ms, now %d ms (old event must not decrease last_seen)",
+			currentLastSeen.UnixMilli(), s1.LastSeen.UnixMilli())
+	}
+}
+
+// TestWriteEvent_UnknownSession_NoError verifies the edge-case AC from #824:
+// writing an event for a session_name that has no agent_status row does not
+// produce an error — the event is still recorded.
+func TestWriteEvent_UnknownSession_NoError(t *testing.T) {
+	d := openTestDB(t)
+
+	// No UpsertStatus call — the session does not exist in agent_status.
+	e := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@nonexistent",
+		Repo:        "repo",
+		Worktree:    "/code/repo/main",
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   time.Now(),
+	}
+	if err := d.WriteEvent(e); err != nil {
+		t.Fatalf("WriteEvent for unknown session: %v (want nil)", err)
+	}
+
+	// The event must be retrievable.
+	events, err := d.QueryEvents("repo@nonexistent", 10, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QueryEvents: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count: got %d, want 1", len(events))
+	}
+	if events[0].ID != e.ID {
+		t.Errorf("event ID: got %q, want %q", events[0].ID, e.ID)
+	}
+}
+
+// TestUpsertStatus_SetsLastSeenOnInsert verifies that a newly created
+// agent_status row has a non-zero last_seen set to approximately now (#824 AC).
+func TestUpsertStatus_SetsLastSeenOnInsert(t *testing.T) {
+	d := openTestDB(t)
+
+	before := time.Now().Add(-time.Second) // give 1s slack for slow systems
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	after := time.Now().Add(time.Second)
+
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s == nil {
+		t.Fatal("CurrentStatus: got nil")
+	}
+
+	if s.LastSeen.IsZero() {
+		t.Error("LastSeen: got zero, want non-zero timestamp")
+	}
+	if s.LastSeen.Before(before) {
+		t.Errorf("LastSeen (%v) is before expected window start (%v)", s.LastSeen, before)
+	}
+	if s.LastSeen.After(after) {
+		t.Errorf("LastSeen (%v) is after expected window end (%v)", s.LastSeen, after)
+	}
+}
+
+// TestMigration_V13ToV14_BackfillsLastSeen verifies the one-shot backfill
+// migration (v13→v14): agent_status rows with last_seen=0 are populated from
+// MAX(agent_events.created_at) for the owning session, while rows that already
+// have a real last_seen are left untouched (#824 AC).
+func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v13_backfill.db")
+
+	// Seed a v13 database with:
+	//   - "repo@stale"  — last_seen=0, has agent_events → should be backfilled
+	//   - "repo@noevts" — last_seen=0, no agent_events  → should stay 0
+	//   - "repo@live"   — last_seen=already_set         → must not be overwritten
+	const alreadySet = int64(9_000_000_000_000) // ms, some past date
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		INSERT INTO schema_version (version) VALUES (13);
+
+		INSERT INTO agent_status (session_name, repo, worktree, state, last_seen)
+		  VALUES ('repo@stale',  'repo', '/wt', 'active', 0);
+		INSERT INTO agent_status (session_name, repo, worktree, state, last_seen)
+		  VALUES ('repo@noevts', 'repo', '/wt', 'active', 0);
+		INSERT INTO agent_status (session_name, repo, worktree, state, last_seen)
+		  VALUES ('repo@live',   'repo', '/wt', 'active', 9000000000000);
+
+		-- Two events for repo@stale, different timestamps.
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
+		  VALUES ('evt-stale-1', 'repo@stale', 'repo', '/wt', 'state_change', '{}', 1000);
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
+		  VALUES ('evt-stale-2', 'repo@stale', 'repo', '/wt', 'state_change', '{}', 5000);
+		-- No events for repo@noevts.
+		-- No events for repo@live (its last_seen is already set).
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v13 db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v13 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must advance to 14.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 14 {
+		t.Errorf("schema_version after migration: got %d, want 14", version)
+	}
+
+	// repo@stale: last_seen must be MAX(created_at) = 5000.
+	stale, err := d.CurrentStatus("repo@stale")
+	if err != nil {
+		t.Fatalf("CurrentStatus(repo@stale): %v", err)
+	}
+	if stale == nil {
+		t.Fatal("CurrentStatus(repo@stale): got nil")
+	}
+	if stale.LastSeen.UnixMilli() != 5000 {
+		t.Errorf("repo@stale last_seen: got %d ms, want 5000 (MAX of events)", stale.LastSeen.UnixMilli())
+	}
+
+	// repo@noevts: last_seen stays 0 (COALESCE returns 0 for NULL subquery result).
+	noevts, err := d.CurrentStatus("repo@noevts")
+	if err != nil {
+		t.Fatalf("CurrentStatus(repo@noevts): %v", err)
+	}
+	if noevts == nil {
+		t.Fatal("CurrentStatus(repo@noevts): got nil")
+	}
+	if noevts.LastSeen.UnixMilli() != 0 {
+		t.Errorf("repo@noevts last_seen: got %d ms, want 0 (no events)", noevts.LastSeen.UnixMilli())
+	}
+
+	// repo@live: last_seen must not be overwritten (already had a non-zero value).
+	live, err := d.CurrentStatus("repo@live")
+	if err != nil {
+		t.Fatalf("CurrentStatus(repo@live): %v", err)
+	}
+	if live == nil {
+		t.Fatal("CurrentStatus(repo@live): got nil")
+	}
+	if live.LastSeen.UnixMilli() != alreadySet {
+		t.Errorf("repo@live last_seen: got %d ms, want %d ms (must not overwrite existing value)", live.LastSeen.UnixMilli(), alreadySet)
+	}
+}
+
+// TestMigration_V13ToV14_Idempotent verifies that running the v13→v14 backfill
+// a second time (by opening an already-migrated DB) does not overwrite
+// last_seen values that were set by the first migration pass (#824 AC:
+// idempotent backfill).
+func TestMigration_V13ToV14_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v13_backfill_idempotent.db")
+
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		INSERT INTO schema_version (version) VALUES (13);
+		INSERT INTO agent_status (session_name, repo, worktree, state, last_seen)
+		  VALUES ('repo@stale', 'repo', '/wt', 'active', 0);
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
+		  VALUES ('evt-1', 'repo@stale', 'repo', '/wt', 'state_change', '{}', 7777);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v13 db: %v", err)
+	}
+
+	// First open: applies the backfill.
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	s1, err := d1.CurrentStatus("repo@stale")
+	if err != nil {
+		t.Fatalf("first CurrentStatus: %v", err)
+	}
+	if s1 == nil || s1.LastSeen.UnixMilli() != 7777 {
+		t.Fatalf("first pass: expected last_seen=7777, got %v", s1)
+	}
+	d1.Close()
+
+	// Second open: migration is at v14; the backfill WHERE guard means rows with
+	// last_seen != 0 are not touched.
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	s2, err := d2.CurrentStatus("repo@stale")
+	if err != nil {
+		t.Fatalf("second CurrentStatus: %v", err)
+	}
+	if s2 == nil || s2.LastSeen.UnixMilli() != 7777 {
+		t.Errorf("second pass: last_seen changed (want 7777, got %v); backfill is not idempotent", s2.LastSeen.UnixMilli())
+	}
+}
+
+// TestLastSeen_ActivityQuery verifies the functional AC from #824: a query
+//
+//	SELECT session_name FROM agent_status WHERE last_seen >= unixepoch('now', '-1 day') * 1000
+//
+// returns only sessions that have had recent event activity.
+func TestLastSeen_ActivityQuery(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create two sessions.
+	if err := d.UpsertStatus("repo@recent", "repo", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus recent: %v", err)
+	}
+	if err := d.UpsertStatus("repo@old", "repo", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus old: %v", err)
+	}
+
+	// Force repo@old's last_seen to a timestamp more than 24h ago via SQL directly,
+	// so that the query below can discriminate. Use a timestamp 2 days in the past.
+	twoDaysAgo := time.Now().Add(-48 * time.Hour).UnixMilli()
+	if err := d.QueryRow(
+		"UPDATE agent_status SET last_seen = ? WHERE session_name = 'repo@old' RETURNING 1",
+		twoDaysAgo,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("force-set old last_seen: %v", err)
+	}
+
+	// Write a recent event for repo@recent to bump its last_seen.
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "repo@recent",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent recent: %v", err)
+	}
+
+	// Check that only 'repo@recent' qualifies for the last-24h query from #824.
+	// last_seen is stored in milliseconds; unixepoch() returns seconds.
+	var recentCount, oldCount int
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM agent_status WHERE last_seen >= (unixepoch('now') - 86400) * 1000 AND session_name = 'repo@recent'",
+	).Scan(&recentCount); err != nil {
+		t.Fatalf("count recent: %v", err)
+	}
+	if err := d.QueryRow(
+		"SELECT COUNT(*) FROM agent_status WHERE last_seen >= (unixepoch('now') - 86400) * 1000 AND session_name = 'repo@old'",
+	).Scan(&oldCount); err != nil {
+		t.Fatalf("count old: %v", err)
+	}
+
+	if recentCount != 1 {
+		t.Errorf("repo@recent should appear in last-24h query: got count %d, want 1", recentCount)
+	}
+	if oldCount != 0 {
+		t.Errorf("repo@old should NOT appear in last-24h query: got count %d, want 0", oldCount)
 	}
 }
 

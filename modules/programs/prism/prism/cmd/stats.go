@@ -34,7 +34,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
-// legacySentinel is the key used to group events that have a NULL opencode_sid.
+// legacySentinel is the key used to group events that have a NULL harness_session_id.
 // These are pre-sidecar "legacy" events that predate opencode session tracking.
 const legacySentinel = ""
 
@@ -161,7 +161,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 // sessionMetrics holds aggregated metrics for a single opencode session.
 type sessionMetrics struct {
 	SessionName string
-	OpencodeSID string // empty string = legacy sentinel (NULL opencode_sid)
+	HarnessSessionID string // empty string = legacy sentinel (NULL harness_session_id)
 	AgentName   string
 	ModelID     string
 	State       string
@@ -258,19 +258,19 @@ func (m *sessionMetrics) totalToolCalls() int {
 // isLegacy reports whether this sessionMetrics represents the legacy NULL-sid
 // sentinel group.
 func (m *sessionMetrics) isLegacy() bool {
-	return m.OpencodeSID == legacySentinel
+	return m.HarnessSessionID == legacySentinel
 }
 
 // collectMetrics builds a sessionMetrics from a slice of events that all belong
-// to the same opencode session (or the legacy sentinel group). The opencodeSID
+// to the same harness session (or the legacy sentinel group). The harnessSessionID
 // parameter is the key used for this group (legacySentinel for NULL-sid events).
 //
 // The model field is set to the coordinator/root agent's model if one is present
 // (agent field == "coordinator"), falling back to the most-frequently-seen model.
 // This gives a more meaningful "session model" than first-seen.
-func collectMetrics(events []db.Event, opencodeSID string) *sessionMetrics {
+func collectMetrics(events []db.Event, harnessSessionID string) *sessionMetrics {
 	m := &sessionMetrics{
-		OpencodeSID:   opencodeSID,
+		HarnessSessionID: harnessSessionID,
 		ToolCalls:     make(map[string]int),
 		ToolDurations: make(map[string][]time.Duration),
 	}
@@ -368,11 +368,11 @@ func collectMetrics(events []db.Event, opencodeSID string) *sessionMetrics {
 	return m
 }
 
-// groupEventsByOpencodeSID partitions events by opencode_sid, preserving
+// groupEventsByHarnessSessionID partitions events by harness_session_id, preserving
 // insertion order for the first occurrence of each key.
-// Events with a NULL opencode_sid are grouped under legacySentinel ("").
+// Events with a NULL harness_session_id are grouped under legacySentinel ("").
 // Returns the grouped map and the ordered list of keys.
-func groupEventsByOpencodeSID(events []db.Event) (map[string][]db.Event, []string) {
+func groupEventsByHarnessSessionID(events []db.Event) (map[string][]db.Event, []string) {
 	grouped := make(map[string][]db.Event)
 	var order []string
 
@@ -416,8 +416,8 @@ func runStatsSession(session string, detail bool) error {
 		return nil
 	}
 
-	// Group events by opencode_sid.
-	grouped, order := groupEventsByOpencodeSID(events)
+	// Group events by harness_session_id.
+	grouped, order := groupEventsByHarnessSessionID(events)
 
 	// Build a sessionMetrics per opencode session.
 	var allMetrics []*sessionMetrics
@@ -688,7 +688,7 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 					m.ModelID = "(legacy)"
 				}
 			} else {
-				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render(m.OpencodeSID))
+				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render(m.HarnessSessionID))
 			}
 			fmt.Println()
 			renderSessionDetail(m)
@@ -810,7 +810,7 @@ func runStatsSummary() error {
 	var rows []summaryRow
 	for _, s := range statuses {
 		events, _ := d.AllSessionEvents(s.SessionName)
-		grouped, order := groupEventsByOpencodeSID(events)
+		grouped, order := groupEventsByHarnessSessionID(events)
 		// For the summary table, accumulate tokens, cost, and duration across
 		// all opencode sessions within the tmux session. Cost is summed per-session
 		// (each session uses its own model's pricing) rather than applying a single
@@ -933,7 +933,7 @@ func runStatsHistorical(days int) error {
 	for session, evts := range bySession {
 		totalSessions++
 		// Sum across all opencode sessions within this tmux session.
-		grouped, order := groupEventsByOpencodeSID(evts)
+		grouped, order := groupEventsByHarnessSessionID(evts)
 		// Hoist status lookup outside the inner loop to avoid N+1 queries when
 		// multiple opencode SID groups have no model data.
 		st, _ := d.CurrentStatus(session)
@@ -1511,9 +1511,9 @@ func splitModel(modelID string) (provider, model string) {
 // per-model metrics. Turns with durationMs == 0 are excluded from latency and
 // throughput calculations.
 //
-// Sessions are counted by distinct opencode_sid (not session_name) so that
+// Sessions are counted by distinct harness_session_id (not session_name) so that
 // long-lived tmux sessions with multiple opencode sessions are counted correctly.
-// Events with a NULL opencode_sid are counted as distinct sessions only if the
+// Events with a NULL harness_session_id are counted as distinct sessions only if the
 // session_name is distinct — they're bucketed by session_name as a fallback.
 func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 	metrics := make(map[string]*modelMetrics)
@@ -1546,7 +1546,7 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 
 		m.Turns++
 
-		// Count sessions by opencode_sid when available; fall back to session_name
+		// Count sessions by harness_session_id when available; fall back to session_name
 		// for NULL-sid (legacy) events so they still contribute a session count.
 		if e.OpencodeSID != nil && *e.OpencodeSID != "" {
 			m.Sessions[*e.OpencodeSID] = struct{}{}

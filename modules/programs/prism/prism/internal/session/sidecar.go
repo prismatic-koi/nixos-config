@@ -67,16 +67,20 @@ func SidecarPIDPath(sessionName string) (string, error) {
 }
 
 // SidecarHostAPIPath returns the Unix socket path for the session's host-API server.
-// The sidecar creates this socket; the container mounts its parent directory at
-// /var/run/prism-host and accesses the socket at /var/run/prism-host/<sockfilename>.
+// Each session gets its own subdirectory under run/ so that the podman container can
+// mount only that directory — providing socket isolation without exposing other
+// sessions' sockets (security fix #960). The subdirectory is pre-created by
+// container.prepareVolumeDirs before podman run, so the directory already exists
+// when podman evaluates the bind-mount, even though the socket file inside it is
+// created later by the sidecar (after the container becomes healthy).
 //
-// Socket path: $XDG_STATE_HOME/prism/run/<session>-hostapi.sock
+// Socket path: $XDG_STATE_HOME/prism/run/<session>/hostapi.sock
 func SidecarHostAPIPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "run", sessionName+"-hostapi.sock"), nil
+	return filepath.Join(base, "run", sessionName, "hostapi.sock"), nil
 }
 
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the
