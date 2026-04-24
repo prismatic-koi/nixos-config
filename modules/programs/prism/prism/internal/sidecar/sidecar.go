@@ -1377,11 +1377,11 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 			if part.Tool == "bash" {
 				if cmd := extractBashCommand(part.State.Input); isHighImpactCommand(cmd) {
 					s.writeEvent("audit", map[string]any{
-						"tool":        "bash",
-						"command":     cmd,
-						"sessionName": s.cfg.SessionName,
-						"opencodeSID": s.opencodeSID,
-						"messageId":   part.MessageID,
+						"tool":             "bash",
+						"command":          cmd,
+						"sessionName":      s.cfg.SessionName,
+						"harnessSessionID": s.opencodeSID,
+						"messageId":        part.MessageID,
 					}, nil)
 					log.Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
 				}
@@ -1517,14 +1517,14 @@ func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string)
 	}
 
 	e := db.Event{
-		ID:          uuid.New().String(),
-		SessionName: s.cfg.SessionName,
-		Repo:        s.cfg.Repo,
-		Worktree:    s.cfg.Worktree,
-		OpencodeSID: sid,
-		Type:        eventType,
-		Payload:     string(data),
-		CreatedAt:   s.cfg.Clock.Now(),
+		ID:               uuid.New().String(),
+		SessionName:      s.cfg.SessionName,
+		Repo:             s.cfg.Repo,
+		Worktree:         s.cfg.Worktree,
+		HarnessSessionID: sid,
+		Type:             eventType,
+		Payload:          string(data),
+		CreatedAt:        s.cfg.Clock.Now(),
 	}
 	if err := s.cfg.DB.WriteEvent(e); err != nil {
 		log.Printf("sidecar: WriteEvent(%s) failed: %v", eventType, err)

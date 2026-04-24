@@ -49,8 +49,8 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version: got %d, want 15", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -983,8 +983,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1058,8 +1058,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1559,8 +1559,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1625,8 +1625,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1695,8 +1695,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1790,8 +1790,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1883,8 +1883,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2468,8 +2468,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2557,8 +2557,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -4160,8 +4160,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// Check each row.
@@ -4583,13 +4583,13 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must advance to 14.
+	// Schema version must advance to 15.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 14 {
-		t.Errorf("schema_version after migration: got %d, want 14", version)
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4706,7 +4706,7 @@ func TestMigration_V13ToV14_Idempotent(t *testing.T) {
 	}
 	d1.Close()
 
-	// Second open: migration is at v14; the backfill WHERE guard means rows with
+	// Second open: migration is at v15; the backfill WHERE guard means rows with
 	// last_seen != 0 are not touched.
 	d2, err := db.Open(dbPath)
 	if err != nil {
@@ -4781,6 +4781,152 @@ func TestLastSeen_ActivityQuery(t *testing.T) {
 	}
 	if oldCount != 0 {
 		t.Errorf("repo@old should NOT appear in last-24h query: got count %d, want 0", oldCount)
+	}
+}
+
+// TestMigration_V14ToV15_RenamesColumn verifies the v14→v15 migration:
+// agent_events.opencode_sid is renamed to harness_session_id, existing
+// non-NULL values are preserved under the new name, and the migration is
+// idempotent (running it twice does not error or corrupt data).
+func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v14_rename.db")
+
+	// Seed a v14 database: agent_events still has opencode_sid, not harness_session_id.
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	sid := "ses_abc123"
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		INSERT INTO schema_version (version) VALUES (14);
+
+		-- One event with a non-NULL opencode_sid, one with NULL.
+		INSERT INTO agent_events (id, session_name, repo, worktree, opencode_sid, type, payload, created_at)
+		  VALUES ('evt-1', 'repo@main', 'repo', '/wt', 'ses_abc123', 'state_change', '{}', 1000);
+		INSERT INTO agent_events (id, session_name, repo, worktree, opencode_sid, type, payload, created_at)
+		  VALUES ('evt-2', 'repo@main', 'repo', '/wt', NULL, 'state_change', '{}', 2000);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v14 db: %v", err)
+	}
+
+	// First open: applies v14→v15 migration.
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v14 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must advance to 15.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 15 {
+		t.Errorf("schema_version after migration: got %d, want 15", version)
+	}
+
+	// harness_session_id column must now exist in agent_events.
+	var hsiExists int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'harness_session_id'`,
+	).Scan(&hsiExists); err != nil {
+		t.Fatalf("pragma_table_info harness_session_id: %v", err)
+	}
+	if hsiExists == 0 {
+		t.Error("harness_session_id column does not exist in agent_events after migration")
+	}
+
+	// opencode_sid column must no longer exist.
+	var oldColExists int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'opencode_sid'`,
+	).Scan(&oldColExists); err != nil {
+		t.Fatalf("pragma_table_info opencode_sid: %v", err)
+	}
+	if oldColExists != 0 {
+		t.Error("opencode_sid column still exists in agent_events after migration")
+	}
+
+	// Non-NULL value is preserved: evt-1 must have harness_session_id = sid.
+	var got *string
+	if err := d.QueryRow(
+		`SELECT harness_session_id FROM agent_events WHERE id = 'evt-1'`,
+	).Scan(&got); err != nil {
+		t.Fatalf("read evt-1 harness_session_id: %v", err)
+	}
+	if got == nil || *got != sid {
+		t.Errorf("evt-1 harness_session_id: got %v, want %q", got, sid)
+	}
+
+	// NULL value is preserved: evt-2 must have harness_session_id = NULL.
+	var gotNull *string
+	if err := d.QueryRow(
+		`SELECT harness_session_id FROM agent_events WHERE id = 'evt-2'`,
+	).Scan(&gotNull); err != nil {
+		t.Fatalf("read evt-2 harness_session_id: %v", err)
+	}
+	if gotNull != nil {
+		t.Errorf("evt-2 harness_session_id: got %v, want nil", gotNull)
+	}
+
+	// Idempotency: opening the same (now v15) DB a second time must not error.
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open on already-migrated db: %v", err)
+	}
+	defer d2.Close()
+
+	// harness_session_id value must still be intact after second open.
+	var got2 *string
+	if err := d2.QueryRow(
+		`SELECT harness_session_id FROM agent_events WHERE id = 'evt-1'`,
+	).Scan(&got2); err != nil {
+		t.Fatalf("read evt-1 after second open: %v", err)
+	}
+	if got2 == nil || *got2 != sid {
+		t.Errorf("evt-1 after second open: got %v, want %q", got2, sid)
 	}
 }
 

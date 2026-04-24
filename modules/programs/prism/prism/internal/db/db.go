@@ -44,14 +44,14 @@ func (d *DB) QueryRow(query string, args ...any) *sql.Row {
 
 // Event represents a row in the agent_events table.
 type Event struct {
-	ID          string
-	SessionName string
-	Repo        string
-	Worktree    string
-	OpencodeSID *string
-	Type        string
-	Payload     string // raw JSON
-	CreatedAt   time.Time
+	ID                string
+	SessionName       string
+	Repo              string
+	Worktree          string
+	HarnessSessionID  *string
+	Type              string
+	Payload           string // raw JSON
+	CreatedAt         time.Time
 }
 
 // Status represents a row in the agent_status table.
@@ -109,14 +109,14 @@ type BusMessage struct {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS agent_events (
-  id           TEXT PRIMARY KEY,
-  session_name TEXT NOT NULL,
-  repo         TEXT NOT NULL,
-  worktree     TEXT NOT NULL,
-  opencode_sid TEXT,
-  type         TEXT NOT NULL,
-  payload      TEXT NOT NULL,
-  created_at   INTEGER NOT NULL
+  id                 TEXT PRIMARY KEY,
+  session_name       TEXT NOT NULL,
+  repo               TEXT NOT NULL,
+  worktree           TEXT NOT NULL,
+  harness_session_id TEXT,
+  type               TEXT NOT NULL,
+  payload            TEXT NOT NULL,
+  created_at         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
@@ -203,6 +203,11 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // sessions that already have a non-zero last_seen are left untouched. Rows with
 // no matching agent_events remain at 0 (COALESCE preserves the NOT NULL
 // constraint). This fixes the gap described in issue #824 for pre-existing rows.
+// v14→v15 renames the agent_events.opencode_sid column to harness_session_id
+// to match the harness-agnostic naming convention used on agent_status. SQLite
+// supports ALTER TABLE ... RENAME COLUMN ... since 3.25 (2018). The migration
+// is idempotent: it checks whether opencode_sid still exists before acting, so
+// running it twice against an already-migrated DB is safe.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -245,10 +250,11 @@ func Open(path string) (*DB, error) {
 	}
 
 	// Set schema_version=11 if the table is empty. Fresh databases have all
-	// current columns from the schema above. The v11→v12, v12→v13, and
-	// v13→v14 migrations run immediately below; on a fresh DB they are
-	// effectively no-ops (the index already exists and there are no rows to
-	// backfill), so starting at 11 rather than 14 is safe.
+	// current columns from the schema above. The v11→v12, v12→v13, v13→v14,
+	// and v14→v15 migrations run immediately below; on a fresh DB they are
+	// effectively no-ops (the index already exists, there are no rows to
+	// backfill, and the column is already named harness_session_id), so
+	// starting at 11 rather than 15 is safe.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -606,6 +612,37 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 14
+	}
+	if version == 14 {
+		// Migration v14 → v15: rename agent_events.opencode_sid to
+		// harness_session_id to match the harness-agnostic naming convention
+		// already used on agent_status. SQLite supports ALTER TABLE ... RENAME
+		// COLUMN ... since 3.25 (2018); the modernc.org/sqlite driver embeds a
+		// recent enough SQLite version.
+		//
+		// Idempotency: the migration first checks whether the opencode_sid column
+		// still exists using pragma_table_info. If the column is already named
+		// harness_session_id (i.e. the migration ran before), the RENAME is
+		// skipped and only the schema_version bump is applied. This makes it safe
+		// to run twice against the same database without error.
+		var colExists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'opencode_sid'`,
+		).Scan(&colExists); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v14→v15: check column: %w", err)
+		}
+		if colExists > 0 {
+			if _, err := conn.Exec(`ALTER TABLE agent_events RENAME COLUMN opencode_sid TO harness_session_id`); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v14→v15: rename column: %w", err)
+			}
+		}
+		if _, err := conn.Exec("UPDATE schema_version SET version = 15"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v14→v15: bump version: %w", err)
+		}
+		version = 15
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1138,9 +1175,9 @@ func (d *DB) WriteEvent(e Event) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	const insertQ = `
-INSERT INTO agent_events (id, session_name, repo, worktree, opencode_sid, type, payload, created_at)
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.OpencodeSID, e.Type, e.Payload, createdAt); err != nil {
+	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt); err != nil {
 		return fmt.Errorf("db: write event: insert: %w", err)
 	}
 
@@ -1234,7 +1271,7 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 		reverseResult = true
 	}
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
 		where + " ORDER BY created_at " + orderDir
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
@@ -1250,7 +1287,7 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1302,7 +1339,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 		conditions = append(conditions, "type IN ("+strings.Join(typePlaceholders, ",")+")")
 	}
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
 		" WHERE " + strings.Join(conditions, " AND ") +
 		" ORDER BY created_at ASC"
 
@@ -1316,7 +1353,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1391,7 +1428,7 @@ func (d *DB) AllSessionEvents(sessionName string) ([]Event, error) {
 // (Unix milliseconds), ordered by created_at ASC. Used by `prism stats --days`.
 func (d *DB) EventsSince(sinceMs int64) ([]Event, error) {
 	const q = `
-SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at
+SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at
 FROM agent_events
 WHERE created_at >= ?
 ORDER BY created_at ASC`
@@ -1405,7 +1442,7 @@ ORDER BY created_at ASC`
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1616,7 +1653,7 @@ func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, er
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
 		where + " ORDER BY created_at DESC"
 
 	rows, err := d.conn.Query(q, args...)
@@ -1629,7 +1666,7 @@ func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, er
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan doom loop event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1662,7 +1699,7 @@ func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64)
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
 		where + " ORDER BY created_at ASC"
 
 	rows, err := d.conn.Query(q, args...)
@@ -1675,7 +1712,7 @@ func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64)
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan permission event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1720,7 +1757,7 @@ func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string,
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, opencode_sid, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
 		where + " ORDER BY created_at DESC"
 
 	if limit > 0 {
@@ -1740,7 +1777,7 @@ func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string,
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.OpencodeSID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("db: scan audit event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
