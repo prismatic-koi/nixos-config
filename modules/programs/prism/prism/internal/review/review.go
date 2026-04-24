@@ -591,10 +591,8 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress, groupID)
 
 	// Sessions persist — do NOT kill them here. The user can re-read them later.
-	// Sidecar processes are cleaned up since the agents have finished.
-	for _, agentSession := range liveSessions {
-		session.KillSidecar(agentSession)
-	}
+	// Containers, tmux sessions, and sidecars remain alive until prism cleanup
+	// is invoked on the parent, which cascades via KillReviewSessionsForParent.
 
 	// Merge live results with spawn-failure results, preserving original agent order.
 	results := make([]AgentResult, len(agents))
