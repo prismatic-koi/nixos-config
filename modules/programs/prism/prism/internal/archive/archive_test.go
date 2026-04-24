@@ -3,6 +3,7 @@ package archive
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -582,6 +583,68 @@ func TestResolveStorageRootUnknown(t *testing.T) {
 	_, err := resolveStorageRoot("docker", "nixos-config@main")
 	if err == nil {
 		t.Fatal("resolveStorageRoot with unknown mode: expected error, got nil")
+	}
+}
+
+// TestRunRepoTraversalRejected verifies that a p.Repo containing path traversal
+// components is rejected before any filesystem operations.
+func TestRunRepoTraversalRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+	storageRoot := filepath.Join(tmpDir, "storage")
+
+	cases := []string{
+		"../../evil",
+		"../up",
+		"..",
+		"good/sub", // slash inside repo name is also invalid
+	}
+
+	for _, repo := range cases {
+		p := baseParams(archiveRoot, storageRoot)
+		p.Repo = repo
+		p.InstanceID = "aaaa1111-1111-1111-1111-111111111111"
+
+		_, err := Run(p)
+		if err == nil {
+			t.Errorf("Run() with repo=%q succeeded, want error", repo)
+		}
+	}
+}
+
+// TestToolOutputIDValidation verifies that toolOutputIDsFromPart rejects
+// asset values containing path traversal sequences.
+func TestToolOutputIDValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cases := []struct {
+		partContent string
+		wantIDs     []string
+	}{
+		// Normal tool part.
+		{`{"type":"tool","asset":"tool_abc123"}`, []string{"tool_abc123"}},
+		// Traversal attempt — must be rejected.
+		{`{"type":"tool","asset":"tool_/../../etc/shadow"}`, nil},
+		{`{"type":"tool","asset":"tool_../secret"}`, nil},
+		// Wrong prefix — ignored.
+		{`{"type":"tool","asset":"output_abc"}`, nil},
+		// Wrong type — ignored.
+		{`{"type":"text","asset":"tool_abc"}`, nil},
+	}
+
+	for i, tc := range cases {
+		partPath := filepath.Join(tmpDir, fmt.Sprintf("prt_%02d.json", i))
+		mustWriteFile(t, partPath, tc.partContent)
+		got := toolOutputIDsFromPart(partPath)
+		if len(got) != len(tc.wantIDs) {
+			t.Errorf("case %d (%s): got %v, want %v", i, tc.partContent, got, tc.wantIDs)
+			continue
+		}
+		for j := range got {
+			if got[j] != tc.wantIDs[j] {
+				t.Errorf("case %d: got[%d] = %q, want %q", i, j, got[j], tc.wantIDs[j])
+			}
+		}
 	}
 }
 

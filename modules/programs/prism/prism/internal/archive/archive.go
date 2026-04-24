@@ -106,7 +106,8 @@ type Params struct {
 // error the temp directory is removed and Run returns a non-nil error.
 //
 // Idempotency: if the target archive directory already exists when Run is
-// called, Run returns a non-nil error and leaves the existing directory intact.
+// called, Run returns archive.ErrAlreadyExists and leaves the existing
+// directory intact.
 //
 // Sessions with no HarnessSessionID (opencode failed to start) still produce
 // an archive directory containing manifest.json and an empty raw/ directory.
@@ -116,11 +117,25 @@ func Run(p Params) (archivePath string, err error) {
 		return "", err
 	}
 
+	// Validate p.Repo to prevent path traversal: it must not contain any
+	// path separator or resolve outside archiveRoot. A repo name like
+	// "../../evil" would otherwise escape the archive root via filepath.Join.
+	cleanRepo := filepath.Clean(p.Repo)
+	if cleanRepo != p.Repo || strings.ContainsRune(p.Repo, os.PathSeparator) || p.Repo == ".." {
+		return "", fmt.Errorf("archive: invalid repo name %q (must not contain path separators or be '..')", p.Repo)
+	}
+
 	// Build the final archive directory path: <archiveRoot>/<repo>/<startedAtISO>_<instanceID>/
 	dirName := p.StartedAt.UTC().Format("20060102T150405Z") + "_" + p.InstanceID
 	repoDir := filepath.Join(archiveRoot, p.Repo)
 	finalDir := filepath.Join(repoDir, dirName)
 	tmpDir := filepath.Join(repoDir, ".tmp-"+p.InstanceID)
+
+	// Secondary containment check: repoDir must be a direct child of archiveRoot
+	// (guards against any edge case not caught by the string checks above).
+	if filepath.Dir(repoDir) != filepath.Clean(archiveRoot) {
+		return "", fmt.Errorf("archive: repo dir %q is not a direct child of archive root %q", repoDir, archiveRoot)
+	}
 
 	// Check whether target already exists before touching anything.
 	if _, statErr := os.Stat(finalDir); statErr == nil {
@@ -215,6 +230,14 @@ func resolvePaths(p Params) (archiveRoot, storageRoot string, err error) {
 //   - host / bwrap: $HOME/.local/share/opencode/storage
 //   - podman: $HOME/.local/share/opencode/prism-sessions/<containerName>/storage
 //   - unknown / empty: returns an error
+//
+// bwrap note: bwrap sessions bind-mount the *shared* ~/.local/share/opencode/
+// directory (not a per-session sub-dir); see internal/container/bwrap.go.
+// The per-session isolation used by the podman path (Darwin virtiofs WAL-mode
+// workaround) does not apply to bwrap. The shared root is correct here because
+// copySessionFiles scopes its reads to the specific harness_session_id, so only
+// files belonging to this session are copied even when the storage pool
+// contains concurrent bwrap sessions.
 func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -367,16 +390,18 @@ func findSessionFile(harnessSessionID, storageRoot string) (path, projectID stri
 }
 
 // copyDirFlat copies all regular files in srcDir into dstDir (created if
-// absent). Subdirectories within srcDir are ignored. If srcDir does not exist
-// or is empty, a (possibly empty) dstDir is still created and nil is returned.
+// absent). Subdirectories within srcDir are ignored. If srcDir does not exist,
+// a (possibly empty) dstDir is still created and nil is returned. A real I/O
+// error (e.g. permission denied) reading srcDir is returned to the caller.
 func copyDirFlat(srcDir, dstDir string) error {
 	if mkErr := os.MkdirAll(dstDir, archiveDirMode); mkErr != nil {
 		return fmt.Errorf("create %s: %w", dstDir, mkErr)
 	}
 	entries, err := listDirEntries(srcDir)
 	if err != nil {
-		// srcDir missing → treat as empty.
-		return nil
+		// listDirEntries returns nil for os.IsNotExist; any remaining error is
+		// a real I/O failure (e.g. EACCES) that we propagate.
+		return fmt.Errorf("read %s: %w", srcDir, err)
 	}
 	for _, name := range entries {
 		src := filepath.Join(srcDir, name)
@@ -430,6 +455,10 @@ func copyFile(src, dst string) error {
 // toolOutputIDsFromPart parses the part JSON at path and returns any
 // tool-output file IDs referenced (e.g. "tool_<ulid>"). Returns nil on any
 // parse error (best-effort; caller handles missing tool-output gracefully).
+//
+// The returned IDs are validated to be plain file names (no path separator,
+// no ".." components) to prevent path traversal when used in filepath.Join.
+// Any crafted asset value containing "/" or ".." is silently dropped.
 func toolOutputIDsFromPart(path string) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -446,10 +475,18 @@ func toolOutputIDsFromPart(path string) []string {
 		return nil
 	}
 
-	if part.Type == "tool" && strings.HasPrefix(part.Asset, "tool_") {
-		return []string{part.Asset}
+	if part.Type != "tool" || !strings.HasPrefix(part.Asset, "tool_") {
+		return nil
 	}
-	return nil
+
+	// Validate: toolID must be a plain filename with no path separators or
+	// ".." to prevent traversal outside the tool-output directory.
+	toolID := part.Asset
+	if toolID != filepath.Base(toolID) || strings.ContainsRune(toolID, os.PathSeparator) {
+		return nil
+	}
+
+	return []string{toolID}
 }
 
 // manifest is the JSON structure written to manifest.json.
