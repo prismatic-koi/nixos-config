@@ -158,6 +158,10 @@ type Config struct {
 	PrismBinaryPath string
 }
 
+// seenUnknownCap is the maximum number of unique unknown event types tracked
+// in seenUnknown before the cap-reached message fires and tracking stops.
+const seenUnknownCap = 50
+
 // Sidecar is the core event processor. It consumes events from the agent
 // runtime's event stream (via the Harness interface) and drives state
 // transitions in the prism DB.
@@ -237,6 +241,20 @@ type Sidecar struct {
 	// false resumes caused by the post-error session.updated churn that opencode
 	// emits in the same millisecond as session.error. Protected by s.mu.
 	lastErrorAt time.Time
+	// spawnTime records when the sidecar Run() began; used to compute elapsed
+	// time for the "first event received" log line (Gap 1b).
+	// Set at the top of Run(), read under s.mu in HandleEvent.
+	spawnTime time.Time
+	// firstEventLogged is set to true after the "first event received" log
+	// line has been emitted. Prevents duplicate lines on reconnect.
+	// Protected by s.mu.
+	firstEventLogged bool
+	// seenUnknown tracks event types that have hit the default switch case
+	// and been logged once. Capped at seenUnknownCap entries. Protected by s.mu.
+	seenUnknown map[string]bool
+	// seenUnknownCapReached is set to true when seenUnknown reaches seenUnknownCap.
+	// Prevents repeated "cap reached" log lines. Protected by s.mu.
+	seenUnknownCapReached bool
 }
 
 // New creates a Sidecar with the given configuration.
@@ -258,6 +276,7 @@ func New(cfg Config) *Sidecar {
 		textByMessage:   make(map[string]string),
 		msgCreatedAtMs:  make(map[string]float64),
 		ttftByMessage:   make(map[string]int64),
+		seenUnknown:     make(map[string]bool),
 	}
 	// Pre-set rootAgent from the configured agent role so that subagent user
 	// messages (which have a non-empty agent field in SSE events) do not
@@ -284,6 +303,11 @@ type containerMgr struct {
 // health-checks the podman container before subscribing to the SSE stream.
 // The container is stopped and removed by Shutdown().
 func (s *Sidecar) Run(ctx context.Context) error {
+	// Record spawn time for "first event received" log line (Gap 1b).
+	s.mu.Lock()
+	s.spawnTime = time.Now()
+	s.mu.Unlock()
+
 	// Container mode: create and health-check the container before connecting.
 	if s.cfg.Container != nil {
 		sessionStart := time.Now()
@@ -525,6 +549,13 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 
 	log.Printf("sidecar: event: %s", eventType)
 
+	// Gap 1b: log the first event received from opencode (once per session).
+	if !s.firstEventLogged {
+		s.firstEventLogged = true
+		elapsed := time.Since(s.spawnTime)
+		log.Printf("sidecar: first event received from opencode (%s after spawn)", elapsed.Round(time.Millisecond))
+	}
+
 	switch eventType {
 	case "server.connected":
 		s.handleServerConnected()
@@ -557,6 +588,19 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		s.handleMessageUpdated(evt)
 	case "message.part.updated":
 		s.handleMessagePartUpdated(evt)
+	default:
+		// Gap 6: log unknown event types once per unique type.
+		if !s.seenUnknown[eventType] {
+			if len(s.seenUnknown) >= seenUnknownCap {
+				if !s.seenUnknownCapReached {
+					s.seenUnknownCapReached = true
+					log.Printf("sidecar: unknown-event log cap reached")
+				}
+			} else {
+				s.seenUnknown[eventType] = true
+				log.Printf("sidecar: event: %s (unhandled — opencode may have added a new event type)", eventType)
+			}
+		}
 	}
 }
 
@@ -619,6 +663,7 @@ func (s *Sidecar) Shutdown() {
 	if s.lastState != agent.StateFinished &&
 		s.lastState != agent.StateDeleted &&
 		s.lastState != agent.StateInterrupted {
+		log.Printf("sidecar: transition -> interrupted (cause=sigterm)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	}
@@ -653,6 +698,7 @@ func (s *Sidecar) handleServerConnected() {
 			return
 		}
 		log.Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
+		log.Printf("sidecar: transition -> finished (cause=recovery_timer)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
@@ -690,6 +736,7 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		// StateError; without this, an immediate session.updated would bypass the
 		// debounce guard and false-resume.
 		s.lastErrorAt = s.cfg.Clock.Now()
+		log.Printf("sidecar: transition -> error (cause=error_finish)")
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 	}
@@ -720,6 +767,7 @@ func (s *Sidecar) handleSessionIdle() {
 		// If the user manually denied a permission, write interrupted not finished.
 		if s.manualDenial {
 			s.manualDenial = false
+			log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 			s.upsertState(agent.StateInterrupted, nil, nil)
 			s.writeStateChange(agent.StateInterrupted)
 			return
@@ -731,6 +779,7 @@ func (s *Sidecar) handleSessionIdle() {
 			return
 		}
 
+		log.Printf("sidecar: transition -> finished (cause=idle_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
@@ -857,7 +906,8 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 	var payload struct {
 		Properties struct {
 			Error *struct {
-				Name string `json:"name"`
+				Name    string `json:"name"`
+				Message string `json:"message"`
 			} `json:"error"`
 		} `json:"properties"`
 	}
@@ -867,14 +917,27 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 	}
 
 	errorName := ""
+	errorMessage := ""
 	if payload.Properties.Error != nil {
 		errorName = payload.Properties.Error.Name
+		errorMessage = payload.Properties.Error.Message
+	}
+
+	// Gap 2: log the error name and truncated message.
+	// MessageAbortedError is visually distinguishable — it is a known/expected
+	// condition (user pressed Escape/Ctrl-C) whereas other errors are unexpected.
+	truncatedMsg := truncate(errorMessage, 200)
+	if errorName == "MessageAbortedError" {
+		log.Printf("sidecar: session.error: name=%q message=%s [MessageAbortedError — user-initiated]", errorName, truncatedMsg)
+	} else {
+		log.Printf("sidecar: session.error: name=%q message=%s", errorName, truncatedMsg)
 	}
 
 	if errorName == "MessageAbortedError" {
 		// User pressed Escape/Ctrl-C — record as interrupted.
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
+		log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	} else {
@@ -884,6 +947,7 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		// post-error session.updated churn that opencode emits in the same
 		// millisecond as session.error (see ErrorResumeDebounce).
 		s.lastErrorAt = s.cfg.Clock.Now()
+		log.Printf("sidecar: transition -> error (cause=error_finish)")
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
@@ -1111,6 +1175,15 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		// here ensures the session always reaches finished even when no
 		// second idle event is emitted (#538).
 		if agentName != "" && agentName == s.rootAgent {
+			// Gap 4: emit assistant turn summary before the internal state lines.
+			isRoot := agentName == s.rootAgent
+			totalTokens := 0
+			if info.Tokens != nil {
+				totalTokens = info.Tokens.Input + info.Tokens.Output
+			}
+			log.Printf("sidecar: assistant turn complete (agent=%s root=%t model=%s messageId=%s tokens=%d)",
+				agentName, isRoot, model, info.ID, totalTokens)
+
 			log.Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
 
@@ -1147,6 +1220,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 
 				if s.manualDenial {
 					s.manualDenial = false
+					log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 					s.upsertState(agent.StateInterrupted, nil, nil)
 					s.writeStateChange(agent.StateInterrupted)
 					return
@@ -1157,6 +1231,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 					return
 				}
 
+				log.Printf("sidecar: transition -> finished (cause=root_agent_idle_debounce)")
 				s.upsertState(agent.StateFinished, nil, nil)
 				s.writeStateChange(agent.StateFinished)
 				go s.notifyCoordinator()
@@ -1310,6 +1385,15 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 					log.Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
 				}
 			}
+		} else if part.State != nil && part.State.Status == "error" {
+			// Gap 5: log tool call failures and write a tool_error DB event.
+			errStr := truncate(fmt.Sprintf("%v", part.State.Output), 200)
+			log.Printf("sidecar: tool call failed (tool=%s messageId=%s err=%s)", part.Tool, part.MessageID, errStr)
+			s.writeEvent("tool_error", map[string]string{
+				"tool":      part.Tool,
+				"err":       errStr,
+				"messageId": part.MessageID,
+			}, nil)
 		}
 
 	case "reasoning":

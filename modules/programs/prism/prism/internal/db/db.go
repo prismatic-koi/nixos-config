@@ -197,6 +197,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // zero, or older than 7 days are touched. The 7-day threshold is also expressed
 // in milliseconds ((unixepoch('now') - 604800) * 1000) to match the column unit.
 // Rows already with ended_at set are left alone (idempotent).
+// v13→v14 is a one-shot backfill that populates agent_status.last_seen from
+// MAX(agent_events.created_at) for sessions where last_seen IS NULL or 0 (i.e.
+// the column was never populated by a live WriteEvent call). It is idempotent:
+// sessions that already have a non-zero last_seen are left untouched. Rows with
+// no matching agent_events remain at 0 (COALESCE preserves the NOT NULL
+// constraint). This fixes the gap described in issue #824 for pre-existing rows.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -239,8 +245,10 @@ func Open(path string) (*DB, error) {
 	}
 
 	// Set schema_version=11 if the table is empty. Fresh databases have all
-	// current columns from the schema above. The v11→v12 migration (partial
-	// unique index for coordinator-per-repo) runs immediately below.
+	// current columns from the schema above. The v11→v12, v12→v13, and
+	// v13→v14 migrations run immediately below; on a fresh DB they are
+	// effectively no-ops (the index already exists and there are no rows to
+	// backfill), so starting at 11 rather than 14 is safe.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -572,6 +580,32 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 13
+	}
+	if version == 13 {
+		// Migration v13 → v14: one-shot backfill of agent_status.last_seen for
+		// rows where last_seen is NULL or 0 (column was never populated by a live
+		// WriteEvent call). We set last_seen = MAX(agent_events.created_at) for
+		// the owning session. The WHERE guard (last_seen IS NULL OR last_seen = 0)
+		// makes this idempotent — sessions that already have a real last_seen
+		// value are left untouched. Rows with no matching agent_events get NULL
+		// from the subquery; COALESCE(..., 0) keeps them at 0 so the NOT NULL
+		// constraint is satisfied.
+		migrations := []string{
+			`UPDATE agent_status
+			   SET last_seen = COALESCE(
+			         (SELECT MAX(created_at) FROM agent_events
+			           WHERE agent_events.session_name = agent_status.session_name),
+			         0)
+			 WHERE last_seen IS NULL OR last_seen = 0`,
+			"UPDATE schema_version SET version = 14",
+		}
+		for _, m := range migrations {
+			if _, err := conn.Exec(m); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v13→v14: %w", err)
+			}
+		}
+		version = 14
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1064,18 +1098,43 @@ func (d *DB) RefreshWorktree(sessionName, repo, worktree string) error {
 	return nil
 }
 
-// WriteEvent inserts an event row into agent_events.
+// WriteEvent inserts an event row into agent_events and, when a matching
+// agent_status row exists for e.SessionName, bumps last_seen to
+// MAX(last_seen, e.CreatedAt) in the same transaction. Writing an event for
+// an unknown session_name (no agent_status row) is not an error — the event
+// is still recorded and no last_seen update is attempted.
 func (d *DB) WriteEvent(e Event) error {
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
 	createdAt := e.CreatedAt.UnixMilli()
-	const q = `
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: write event: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	const insertQ = `
 INSERT INTO agent_events (id, session_name, repo, worktree, opencode_sid, type, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := d.conn.Exec(q, e.ID, e.SessionName, e.Repo, e.Worktree, e.OpencodeSID, e.Type, e.Payload, createdAt)
-	if err != nil {
-		return fmt.Errorf("db: write event: %w", err)
+	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.OpencodeSID, e.Type, e.Payload, createdAt); err != nil {
+		return fmt.Errorf("db: write event: insert: %w", err)
+	}
+
+	// Bump last_seen only when a matching agent_status row exists. The MAX
+	// guard ensures we never move last_seen backward (e.g. for out-of-order
+	// event replays or backfill writes with old timestamps).
+	const updateQ = `
+UPDATE agent_status
+   SET last_seen = MAX(last_seen, ?)
+ WHERE session_name = ?`
+	if _, err := tx.Exec(updateQ, createdAt, e.SessionName); err != nil {
+		return fmt.Errorf("db: write event: update last_seen: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: write event: commit: %w", err)
 	}
 	return nil
 }
