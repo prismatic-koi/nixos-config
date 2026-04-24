@@ -566,6 +566,12 @@ type Opts struct {
 	// included inline. Zero uses the default (20 KB). Can also be overridden
 	// via the PRISM_REVIEW_SIZE_BUDGET environment variable.
 	SizeBudget int
+	// IsolationMode is the resolved isolation mode to use when spawning review
+	// agent sessions. Valid values: "podman", "bwrap", "host". When set, it is
+	// forwarded to session.SpawnOpts.IsolationMode for every spawned agent.
+	// When empty, spawnAgentOnlyLayout will call cfg.EffectiveIsolationMode()
+	// to resolve the machine default rather than silently falling back to host.
+	IsolationMode string
 }
 
 // FormatAgentDisplayName converts an agent name like "review-goal" to a
@@ -700,6 +706,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			ConfigContent:    agentConfigContent,
 			Layout:           session.LayoutAgentOnly,
 			ContainerMode:    opts.ContainerMode,
+			IsolationMode:    opts.IsolationMode,
 			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
@@ -903,6 +910,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			ConfigContent:    agentConfigContent,
 			Layout:           session.LayoutAgentOnly,
 			ContainerMode:    opts.ContainerMode,
+			IsolationMode:    opts.IsolationMode,
 			PluginHostPath:   opts.PluginHostPath,
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
