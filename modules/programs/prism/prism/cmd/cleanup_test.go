@@ -92,6 +92,10 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 // Runs without tmux, so it exercises only the DB-update path.
 func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
+	// path does not reach the live tmux server. The test only verifies DB
+	// side-effects, so a stub that always exits 0 is correct.
+	withNoopTmux(t)
 	// Seed a temp DB.
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
@@ -138,6 +142,10 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 // headlessCleanup warns and continues rather than returning an error.
 func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
+	// path does not reach the live tmux server. The test only verifies DB
+	// side-effects and git error handling.
+	withNoopTmux(t)
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not found in PATH — skipping integration test")
 	}
@@ -513,6 +521,10 @@ func TestCleanupYes_DefaultBranch(t *testing.T) {
 // Runs without tmux, so it exercises only the DB-update path.
 func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCloseSession's scratchpad-ensure
+	// path does not reach the live tmux server. The test only verifies DB
+	// side-effects, so a stub that always exits 0 is correct.
+	withNoopTmux(t)
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {
@@ -552,6 +564,9 @@ func TestHeadlessCloseSession_NonWorktree_MarksEnded(t *testing.T) {
 // exits 0 even when no DB row exists for the session (never recorded).
 func TestHeadlessCloseSession_NonWorktree_NoDB(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCloseSession's scratchpad-ensure
+	// path does not reach the live tmux server.
+	withNoopTmux(t)
 	// Point openDB at an empty temp DB (no row for the session).
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
@@ -756,6 +771,11 @@ func TestIsCoordinatorFromDB(t *testing.T) {
 // headlessCloseSession directly — it does not exercise cleanupCmd routing.
 func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
+	// Redirect TmuxBin to a no-op so headlessCloseSession's scratchpad-ensure
+	// path does not reach the live tmux server. The test verifies DB-update
+	// behaviour when the tmux session is absent; tmux isolation is necessary
+	// but not the focus of this test.
+	withNoopTmux(t)
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {

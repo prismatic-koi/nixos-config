@@ -149,6 +149,65 @@ func withCmdServer(t *testing.T, s *cmdTestServer) {
 	t.Cleanup(func() { tmux.TmuxBin = orig })
 }
 
+// withNoopTmux redirects tmux.TmuxBin to a stub that accepts any arguments
+// and exits 0 without contacting any real tmux server. The stub returns exit 0
+// for all commands — including has-session — so callers see every session as
+// "already existing" and skip session creation. Use this for tests that call
+// code paths which invoke tmux (e.g. headlessCleanup) but do not actually need
+// a tmux server to be present — only the non-tmux side effects (DB writes,
+// return values) are under test.
+//
+// Only call this from non-parallel tests — TmuxBin is a package-level global.
+func withNoopTmux(t *testing.T) {
+	t.Helper()
+	wrapperPath := t.TempDir() + "/tmux"
+	// The stub exits 0 for every invocation, returning empty output.
+	// Commands like has-session will return 0 (session "exists"), which
+	// prevents code that calls HasSession before NewSessionDetached from
+	// creating new sessions.
+	script := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write noop tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+}
+
+// withSpyTmux redirects tmux.TmuxBin to a stub that records all invocations
+// and allows controlling per-command exit codes. By default every command exits
+// 0 EXCEPT has-session which exits 1 (session does not exist), allowing code
+// that checks HasSession before calling NewSessionDetached to proceed with
+// session creation without touching a real tmux server.
+//
+// Returns the path to the log file where each invocation's arguments are written
+// (one argument per line, invocations separated by a blank line).
+//
+// Only call this from non-parallel tests — TmuxBin is a package-level global.
+func withSpyTmux(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	logFile := dir + "/tmux-args"
+	wrapperPath := dir + "/tmux"
+	// has-session exits 1 (not found); all other commands exit 0 (success).
+	// This lets code that checks HasSession fall through to session creation
+	// while keeping all tmux operations isolated from any real server.
+	script := "#!/bin/sh\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + logFile + "; done\n" +
+		"printf '\\n' >> " + logFile + "\n" +
+		"case \"$1\" in\n" +
+		"  has-session) exit 1 ;;\n" +
+		"  *) exit 0 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write spy tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+	return logFile
+}
+
 // randCmdHex returns n random bytes as a hex string using crypto/rand.
 func randCmdHex(n int) string {
 	b := make([]byte, n)
