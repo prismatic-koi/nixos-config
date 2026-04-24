@@ -887,14 +887,29 @@ WHERE session_name = ?
 }
 
 // SetEnded marks the session as ended by setting ended_at to now.
+// It also cascades the ended_at to any child review-agent rows whose
+// session_name matches the pattern "<sessionName>~review-%", setting
+// ended_at only on rows where it is not already set (idempotent).
+// Both the parent and child updates are performed in a single transaction.
 func (d *DB) SetEnded(sessionName string) error {
 	now := time.Now().UnixMilli()
-	_, err := d.conn.Exec(
-		"UPDATE agent_status SET ended_at = ? WHERE session_name = ?",
-		now, sessionName,
-	)
+	tx, err := d.conn.Begin()
 	if err != nil {
+		return fmt.Errorf("db: set ended: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	const q = `
+UPDATE agent_status
+SET    ended_at = ?
+WHERE  (session_name = ? OR session_name LIKE ? || '~review-%')
+  AND  ended_at IS NULL`
+	if _, err := tx.Exec(q, now, sessionName, sessionName); err != nil {
 		return fmt.Errorf("db: set ended: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: set ended: commit: %w", err)
 	}
 	return nil
 }

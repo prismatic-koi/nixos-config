@@ -201,6 +201,149 @@ func TestSetEnded(t *testing.T) {
 	}
 }
 
+// TestSetEnded_CascadesToReviewChildren verifies that SetEnded on a parent
+// session also ends all child review-agent rows matching <parent>~review-%,
+// while leaving unrelated rows untouched. It also asserts the idempotency
+// guarantee: children with ended_at already set are not re-touched.
+func TestSetEnded_CascadesToReviewChildren(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat"
+
+	// Child rows that should be cascaded.
+	children := []string{
+		parent + "~review-1-review-goal",
+		parent + "~review-1-review-code",
+		parent + "~review-1-review-security",
+		parent + "~review-2-review-qa",
+		parent + "~review-2-review-context",
+	}
+
+	// A child that already has ended_at set — must not be re-touched.
+	alreadyEndedChild := parent + "~review-1-review-qa"
+
+	// An unrelated session that must not be affected.
+	unrelated := "other-repo@main"
+
+	// Another session whose name starts similarly but does NOT match the
+	// ~review- pattern — must not be affected.
+	notReview := "nixos-config@feat-other"
+
+	// Insert the parent row.
+	if err := d.UpsertStatus(parent, "nixos-config", "/wt/feat", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+
+	// Insert child rows (active).
+	for _, c := range children {
+		if err := d.UpsertStatus(c, "nixos-config", "/wt/feat", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus child %q: %v", c, err)
+		}
+	}
+
+	// Insert the already-ended child row.
+	if err := d.UpsertStatus(alreadyEndedChild, "nixos-config", "/wt/feat", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus alreadyEndedChild: %v", err)
+	}
+	if err := d.SetEnded(alreadyEndedChild); err != nil {
+		t.Fatalf("SetEnded alreadyEndedChild (pre-condition): %v", err)
+	}
+	// Record the ended_at value so we can assert it was not changed.
+	preStatus, err := d.CurrentStatus(alreadyEndedChild)
+	if err != nil || preStatus == nil || preStatus.EndedAt == nil {
+		t.Fatalf("pre-condition: alreadyEndedChild must have ended_at set")
+	}
+	preEndedAt := *preStatus.EndedAt
+
+	// Insert the unrelated session.
+	if err := d.UpsertStatus(unrelated, "other-repo", "/wt/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus unrelated: %v", err)
+	}
+
+	// Insert the not-review session (shares the same prefix but no ~review-).
+	if err := d.UpsertStatus(notReview, "nixos-config", "/wt/feat-other", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus notReview: %v", err)
+	}
+
+	// Call SetEnded on the parent.
+	if err := d.SetEnded(parent); err != nil {
+		t.Fatalf("SetEnded parent: %v", err)
+	}
+
+	// Parent must be ended.
+	s, err := d.CurrentStatus(parent)
+	if err != nil || s == nil {
+		t.Fatalf("CurrentStatus parent: %v", err)
+	}
+	if s.EndedAt == nil {
+		t.Error("parent: EndedAt is nil, want non-nil")
+	}
+
+	// All children must be ended.
+	for _, c := range children {
+		sc, err := d.CurrentStatus(c)
+		if err != nil || sc == nil {
+			t.Fatalf("CurrentStatus child %q: %v", c, err)
+		}
+		if sc.EndedAt == nil {
+			t.Errorf("child %q: EndedAt is nil, want non-nil", c)
+		}
+	}
+
+	// The already-ended child must still be ended, with the same timestamp
+	// (not re-touched by the cascade).
+	postStatus, err := d.CurrentStatus(alreadyEndedChild)
+	if err != nil || postStatus == nil {
+		t.Fatalf("CurrentStatus alreadyEndedChild post: %v", err)
+	}
+	if postStatus.EndedAt == nil {
+		t.Error("alreadyEndedChild: EndedAt became nil after cascade")
+	} else if !(*postStatus.EndedAt).Equal(preEndedAt) {
+		t.Errorf("alreadyEndedChild: ended_at changed: got %v, want %v", *postStatus.EndedAt, preEndedAt)
+	}
+
+	// Unrelated session must not be ended.
+	su, err := d.CurrentStatus(unrelated)
+	if err != nil || su == nil {
+		t.Fatalf("CurrentStatus unrelated: %v", err)
+	}
+	if su.EndedAt != nil {
+		t.Errorf("unrelated session: EndedAt is non-nil, want nil")
+	}
+
+	// Not-review session (shares prefix but no ~review-) must not be ended.
+	sn, err := d.CurrentStatus(notReview)
+	if err != nil || sn == nil {
+		t.Fatalf("CurrentStatus notReview: %v", err)
+	}
+	if sn.EndedAt != nil {
+		t.Errorf("notReview session: EndedAt is non-nil, want nil")
+	}
+}
+
+// TestSetEnded_NoChildrenIsNoop verifies that SetEnded on a session with no
+// review children still works correctly (no regression for the common case).
+func TestSetEnded_NoChildrenIsNoop(t *testing.T) {
+	d := openTestDB(t)
+
+	session := "myrepo@feat"
+	if err := d.UpsertStatus(session, "myrepo", "/wt/feat", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	if err := d.SetEnded(session); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	s, err := d.CurrentStatus(session)
+	if err != nil || s == nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.EndedAt == nil {
+		t.Error("EndedAt: got nil, want non-nil")
+	}
+}
+
 // TestAllActiveStatus_ExcludesEnded verifies that ended sessions are not returned.
 func TestAllActiveStatus_ExcludesEnded(t *testing.T) {
 	d := openTestDB(t)
