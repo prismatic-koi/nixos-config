@@ -463,6 +463,10 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
 	// isolated temp dir rather than the production ~/.local/state/prism/.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// PRISM_CMD_TEST_STUB=1 makes the test binary exit immediately when
+	// re-invoked as a sidecar subprocess, preventing it from calling tmux
+	// commands (e.g. has-session scratchpad) against the live tmux server.
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
@@ -918,6 +922,16 @@ func TestCircuitBreaker_NFailures_SessionSkipped(t *testing.T) {
 // fail, but we want to confirm it does NOT return restoreOutcomeCircuitOpen.
 func TestCircuitBreaker_NMinusOneFailures_SessionRestored(t *testing.T) {
 	const threshold = 3
+	// Redirect TmuxBin to a spy that exits 1 for has-session (session absent)
+	// and 0 for all other commands. This prevents real session creation while
+	// allowing the circuit-breaker code path to run normally.
+	withSpyTmux(t)
+	// Isolate session.openDB() calls (from setupFullLayout) from the live DB.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// PRISM_CMD_TEST_STUB=1 makes the test binary exit immediately when
+	// re-invoked as a sidecar subprocess, preventing it from calling tmux
+	// commands against the live server.
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
@@ -943,6 +957,11 @@ func TestCircuitBreaker_NMinusOneFailures_SessionRestored(t *testing.T) {
 // the circuit breaker (only 1 consecutive failure since the last success).
 func TestCircuitBreaker_SuccessBetweenFailures_Restored(t *testing.T) {
 	const threshold = 3
+	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
+	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
+	withSpyTmux(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
@@ -968,6 +987,11 @@ func TestCircuitBreaker_SuccessBetweenFailures_Restored(t *testing.T) {
 // recorded sidecar history is always restored (zero failures).
 func TestCircuitBreaker_NoHistory_Restored(t *testing.T) {
 	const threshold = 3
+	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
+	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
+	withSpyTmux(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
@@ -989,6 +1013,11 @@ func TestCircuitBreaker_NoHistory_Restored(t *testing.T) {
 // marked ended and the restore must not return a circuit-open outcome.
 func TestCircuitBreaker_QueryError_FallsThrough(t *testing.T) {
 	const threshold = 3
+	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
+	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
+	withSpyTmux(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_CMD_TEST_STUB", "1")
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
