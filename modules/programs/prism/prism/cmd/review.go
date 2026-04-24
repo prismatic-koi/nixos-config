@@ -103,19 +103,24 @@ func runReview(cmd *cobra.Command, args []string) error {
 		agents = allAgents
 	}
 
-	// Concurrency cap check: BEFORE any container-creation side effects.
+	// Concurrency cap checks: BEFORE any container-creation side effects.
 	// We check inside the container-mode guard below (PRISM_HOST_API set
 	// means we're already inside a container; the host sidecar handles the cap
-	// for the actual spawn). Only apply the check on the host path.
+	// for the actual spawn). Only apply the checks on the host path.
 	// Load cfg now for the cap check; it is re-used below for ContainerMode.
 	cfg := config.Load()
 	isoMode := cfg.EffectiveIsolationMode()
-	// bwrap sessions are plain host processes — only podman triggers the cap.
+	// bwrap sessions are plain host processes — only podman triggers the container cap.
 	conCapped := isoMode == config.IsolationPodman
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL == "" {
-		// Running on host — check the cap before spawning review containers.
+		// Running on host — check the caps before spawning review sessions.
 		if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {
 			return err
+		}
+		if isoMode == config.IsolationBwrap {
+			if err := checkBwrapConcurrencyCap(cmd, "review"); err != nil {
+				return err
+			}
 		}
 	}
 

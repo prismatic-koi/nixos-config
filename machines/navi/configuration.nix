@@ -29,6 +29,7 @@
       prism = {
         opencode.provider = "anthropic";
         agent.isolation.default = "bwrap";
+        bwrapConcurrencyCap = 50;
       };
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;

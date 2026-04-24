@@ -57,6 +57,7 @@ let
     ssh_signing_key_name = config.nx.programs.prism.sshSigningKeyName;
     restore_stagger_delay_ms = config.nx.programs.prism.restoreStaggerDelayMs;
     sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
+    bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
   };
 in
 {
@@ -103,6 +104,17 @@ in
         `prism restore` to skip re-spawning a session. 0 means use the
         compiled-in default (3). Set to a negative value to disable the
         circuit breaker entirely.
+      '';
+    };
+
+    nx.programs.prism.bwrapConcurrencyCap = lib.mkOption {
+      type = lib.types.int;
+      default = 20;
+      description = ''
+        Maximum number of concurrent bwrap sessions (agent_status rows with
+        ended_at IS NULL AND isolation_mode = 'bwrap') before new bwrap spawns
+        are refused. 0 means uncapped. Default of 20 is conservative enough for
+        any machine without an explicit per-machine override.
       '';
     };
   };

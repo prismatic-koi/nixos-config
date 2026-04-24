@@ -103,6 +103,13 @@ type Config struct {
 	// session. Zero means use the compiled-in default (3).
 	SidecarCircuitBreakerThreshold int `json:"sidecar_circuit_breaker_threshold"`
 
+	// BwrapConcurrencyCap is the maximum number of active bwrap sessions
+	// (agent_status rows with ended_at IS NULL AND isolation_mode = 'bwrap')
+	// before new bwrap spawns are refused. Zero means uncapped (not "cap of
+	// zero"). The default of 20 is conservative enough for any machine without
+	// an explicit per-machine override.
+	BwrapConcurrencyCap int `json:"bwrap_concurrency_cap"`
+
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
@@ -131,30 +138,39 @@ type parsedConfig struct {
 	SshSigningKeyName              string    `json:"ssh_signing_key_name"`
 	RestoreStaggerDelayMs          *int      `json:"restore_stagger_delay_ms"`
 	SidecarCircuitBreakerThreshold *int      `json:"sidecar_circuit_breaker_threshold"`
+	BwrapConcurrencyCap            *int      `json:"bwrap_concurrency_cap"`
 	WorktreeExclude                *[]string `json:"worktree_exclude"`
 	ProjectLocations               *[]string `json:"project_locations"`
 	ProjectSpecific                *[]string `json:"project_specific"`
 }
 
+// DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
+// concurrent bwrap sessions. A value of 20 is conservative enough for any
+// machine without an explicit override. The cap can be raised per-machine
+// via the Nix bwrapConcurrencyCap option (written to config.json).
+// Zero means uncapped.
+const DefaultBwrapConcurrencyCap = 20
+
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
 	return Config{
-		ColorPrimary:      "#d4be98",
-		ColorSecondary:    "#a89984",
-		ColorPurple:       "#d3869b",
-		ColorYellow:       "#d8a657",
-		ColorGreen:        "#a9b665",
-		ColorBlue:         "#7daea3",
-		ColorRed:          "#ea6962",
-		ColorForeground:   "#d3c6aa",
-		ColorBg0:          "#2d353b",
-		KittyBin:          "kitty",
-		SshAccessKeyName:  "prismatic-koi-ed25519",
-		SshSigningKeyName: "prismatic-koi-ed25519-signingkey",
-		WorktreeExclude:   []string{"obsidian"},
-		ProjectLocations:  []string{"~/code"},
-		ProjectSpecific:   []string{"~/documents/obsidian"},
+		ColorPrimary:        "#d4be98",
+		ColorSecondary:      "#a89984",
+		ColorPurple:         "#d3869b",
+		ColorYellow:         "#d8a657",
+		ColorGreen:          "#a9b665",
+		ColorBlue:           "#7daea3",
+		ColorRed:            "#ea6962",
+		ColorForeground:     "#d3c6aa",
+		ColorBg0:            "#2d353b",
+		KittyBin:            "kitty",
+		SshAccessKeyName:    "prismatic-koi-ed25519",
+		SshSigningKeyName:   "prismatic-koi-ed25519-signingkey",
+		BwrapConcurrencyCap: DefaultBwrapConcurrencyCap,
+		WorktreeExclude:     []string{"obsidian"},
+		ProjectLocations:    []string{"~/code"},
+		ProjectSpecific:     []string{"~/documents/obsidian"},
 	}
 }
 
@@ -267,6 +283,9 @@ func load() Config {
 	}
 	if parsed.SidecarCircuitBreakerThreshold != nil {
 		cfg.SidecarCircuitBreakerThreshold = *parsed.SidecarCircuitBreakerThreshold
+	}
+	if parsed.BwrapConcurrencyCap != nil {
+		cfg.BwrapConcurrencyCap = *parsed.BwrapConcurrencyCap
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil
