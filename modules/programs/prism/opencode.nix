@@ -1303,6 +1303,7 @@
                   # session explosions and OOM (#1002). Mirrors makeReviewAgentBlob /
                   # containerReviewBaseBashCommands for bwrap/host-mode sessions.
                   review-goal = {
+                    mode = "primary";
                     prompt = builtins.readFile ./review-prompts/review-goal.md;
                     tools = {
                       task = false;
@@ -1315,6 +1316,7 @@
                     };
                   };
                   review-code = {
+                    mode = "primary";
                     prompt = builtins.readFile ./review-prompts/review-code.md;
                     tools = {
                       task = false;
@@ -1327,6 +1329,7 @@
                     };
                   };
                   review-security = {
+                    mode = "primary";
                     prompt = builtins.readFile ./review-prompts/review-security.md;
                     tools = {
                       task = false;
@@ -1339,6 +1342,7 @@
                     };
                   };
                   review-qa = {
+                    mode = "primary";
                     prompt = builtins.readFile ./review-prompts/review-qa.md;
                     tools = {
                       task = false;
@@ -1351,6 +1355,7 @@
                     };
                   };
                   review-context = {
+                    mode = "primary";
                     prompt = builtins.readFile ./review-prompts/review-context.md;
                     tools = {
                       task = false;
