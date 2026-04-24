@@ -6691,7 +6691,8 @@ func TestHostAPI_Review_MissingPRNumber(t *testing.T) {
 }
 
 // TestHostAPI_Review_PassesArgsToReview verifies that /review delegates to
-// `prism review` with the correct arguments and returns the output.
+// `prism review` with the correct arguments and streams the output followed
+// by the ReviewSentinelPassed sentinel.
 func TestHostAPI_Review_PassesArgsToReview(t *testing.T) {
 	d := openTestDB(t)
 
@@ -6724,13 +6725,14 @@ exit 0
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
-	var respBody map[string]any
-	decodeJSONBody(t, rr, &respBody)
-	if respBody["passed"] != true {
-		t.Errorf("passed = %v, want true", respBody["passed"])
+	// The response is a plain-text stream: output lines followed by the
+	// ReviewSentinelPassed terminal line.
+	body := rr.Body.String()
+	if !strings.Contains(body, "passed") {
+		t.Errorf("body %q should contain 'passed'", body)
 	}
-	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "passed") {
-		t.Errorf("output %q should contain 'passed'", respBody["output"])
+	if !strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q should contain ReviewSentinelPassed %q", body, ReviewSentinelPassed)
 	}
 
 	capturedArgs, err := os.ReadFile(argsFile)
@@ -6787,10 +6789,8 @@ exit 0
 }
 
 // TestHostAPI_Review_AckReturnedOnSuccess verifies that when `prism review`
-// exits 0 with an ack message (async model), the response has passed=true
-// and the ack output is included. In the async model, prism review never
-// exits non-zero for agent failures — results are delivered later via
-// prism prompt.
+// exits 0 with an ack message (async model), the streaming response body
+// contains the ack lines followed by ReviewSentinelPassed.
 func TestHostAPI_Review_AckReturnedOnSuccess(t *testing.T) {
 	d := openTestDB(t)
 
@@ -6823,26 +6823,38 @@ exit 0
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
-	var respBody map[string]any
-	decodeJSONBody(t, rr, &respBody)
-	// Async reviews always return passed=true at the ack phase.
-	if respBody["passed"] != true {
-		t.Errorf("passed = %v, want true (async ack is always passed=true)", respBody["passed"])
+	// The response is a plain-text stream: ack lines then ReviewSentinelPassed.
+	body := rr.Body.String()
+	if !strings.Contains(body, "Review in progress") {
+		t.Errorf("body %q should contain 'Review in progress' ack message", body)
 	}
-	if !strings.Contains(fmt.Sprintf("%v", respBody["output"]), "Review in progress") {
-		t.Errorf("output %q should contain 'Review in progress' ack message", respBody["output"])
+	if !strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q should contain ReviewSentinelPassed %q", body, ReviewSentinelPassed)
+	}
+	// The sentinel must NOT appear as a regular progress line in the middle.
+	if strings.Contains(body, ReviewSentinelFailed) {
+		t.Errorf("body %q should not contain ReviewSentinelFailed when subprocess exits 0", body)
 	}
 }
 
-// TestHostAPI_Review_InfraFailureReturns500 verifies that when `prism review`
-// exits non-zero with no output, the response is HTTP 500 (infra failure) with
-// a generic error message (stderr is not exposed to the caller).
-func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
+// TestHostAPI_Review_InfraFailureStreamsSentinelFailed verifies that when
+// `prism review` exits non-zero, the streaming response body contains
+// ReviewSentinelFailed (not ReviewSentinelPassed), and stderr is NOT
+// reflected in the response body (security: avoid leaking internal paths or
+// credentials to container callers).
+//
+// Note: because HTTP headers are written before streaming begins (HTTP 200
+// is sent as soon as the subprocess starts), the status code is always 200
+// for subprocess failures that occur after startup. The client (proxyReviewAsync)
+// detects the failure via the sentinel line rather than the HTTP status code.
+// A genuine start failure (e.g. binary not found) still returns HTTP 500
+// before any data is written — see TestHostAPI_Review_StartFailureReturns500.
+func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 	d := openTestDB(t)
 
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
 	// Exit non-zero with no stdout; emit sensitive text on stderr to verify
-	// it is NOT reflected in the HTTP response.
+	// it is NOT reflected in the HTTP response body.
 	stubScript := "#!/bin/sh\necho 'sensitive: /internal/path/secret' >&2\nexit 2\n"
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
@@ -6862,18 +6874,55 @@ func TestHostAPI_Review_InfraFailureReturns500(t *testing.T) {
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"999"}`)
+	// HTTP 200 is sent as soon as streaming starts; failures are signalled
+	// via the sentinel, not via the HTTP status code.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (failures signalled via sentinel); body = %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// The failed sentinel must be present.
+	if !strings.Contains(body, ReviewSentinelFailed) {
+		t.Errorf("body %q should contain ReviewSentinelFailed %q", body, ReviewSentinelFailed)
+	}
+	// The passed sentinel must NOT be present.
+	if strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q should not contain ReviewSentinelPassed when subprocess exits non-zero", body)
+	}
+	// Stderr must not be reflected in the response body (security: avoid
+	// leaking internal paths or credentials to container callers).
+	if strings.Contains(body, "sensitive") || strings.Contains(body, "secret") {
+		t.Errorf("response body should not include subprocess stderr; got %q", body)
+	}
+}
+
+// TestHostAPI_Review_StartFailureReturns500 verifies that when the review
+// subprocess cannot be started (e.g. binary not found or not executable),
+// the response is HTTP 500 before any data is written.
+func TestHostAPI_Review_StartFailureReturns500(t *testing.T) {
+	d := openTestDB(t)
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: "/nonexistent/prism-binary",
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"42"}`)
 	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 for infra failure (no output); body = %s", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want 500 when binary not found; body = %s", rr.Code, rr.Body.String())
 	}
 	var errResp map[string]string
 	decodeJSONBody(t, rr, &errResp)
 	if errResp["error"] == "" {
 		t.Error("expected error field in 500 response")
-	}
-	// Stderr must not be reflected in the HTTP response (security: avoid leaking
-	// internal paths or credentials to container callers).
-	if strings.Contains(errResp["error"], "sensitive") || strings.Contains(errResp["error"], "secret") {
-		t.Errorf("HTTP 500 response should not include subprocess stderr; got %q", errResp["error"])
 	}
 }
 
@@ -6961,6 +7010,124 @@ exit 0
 	got := strings.TrimSpace(string(capturedEnv))
 	if got != "nixos-config@741-fix" {
 		t.Errorf("PRISM_SESSION_NAME = %q, want %q (must be injected by sidecar)", got, "nixos-config@741-fix")
+	}
+}
+
+// TestHostAPI_Review_StreamsLinesAsEmitted verifies that the /review endpoint
+// streams subprocess stdout line-by-line to the HTTP response body, with the
+// ReviewSentinelPassed appended after a successful exit. This is the core
+// behaviour required by issue #815: each progress line must appear in the
+// response as it is emitted, not buffered until the subprocess exits.
+//
+// The stub writes two lines then exits 0. The test reads the full response
+// body and checks that both lines appear before the sentinel.
+func TestHostAPI_Review_StreamsLinesAsEmitted(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub emits two distinct lines then exits 0.
+	stubScript := `#!/bin/sh
+echo "Review-Goal started"
+echo "Review-Code started"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"815"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+
+	// Both progress lines must appear in the body.
+	if !strings.Contains(body, "Review-Goal started") {
+		t.Errorf("body %q should contain 'Review-Goal started'", body)
+	}
+	if !strings.Contains(body, "Review-Code started") {
+		t.Errorf("body %q should contain 'Review-Code started'", body)
+	}
+
+	// ReviewSentinelPassed must be the last non-empty line in the body.
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lastLine := lines[len(lines)-1]
+	if lastLine != ReviewSentinelPassed {
+		t.Errorf("last line of body = %q, want ReviewSentinelPassed %q", lastLine, ReviewSentinelPassed)
+	}
+
+	// ReviewSentinelFailed must NOT appear anywhere.
+	if strings.Contains(body, ReviewSentinelFailed) {
+		t.Errorf("body %q must not contain ReviewSentinelFailed for exit-0 subprocess", body)
+	}
+}
+
+// TestHostAPI_Review_StreamsSentinelFailedOnNonZeroExit verifies that when the
+// subprocess exits non-zero, ReviewSentinelFailed is the last line in the
+// response body and ReviewSentinelPassed is absent.
+func TestHostAPI_Review_StreamsSentinelFailedOnNonZeroExit(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes one line then exits non-zero.
+	stubScript := `#!/bin/sh
+echo "Review-Goal started"
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"815"}`)
+	// HTTP 200 is returned because streaming starts before the subprocess exits.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (failures signalled via sentinel); body = %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+
+	// The progress line must appear.
+	if !strings.Contains(body, "Review-Goal started") {
+		t.Errorf("body %q should contain 'Review-Goal started'", body)
+	}
+
+	// ReviewSentinelFailed must be the last non-empty line.
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lastLine := lines[len(lines)-1]
+	if lastLine != ReviewSentinelFailed {
+		t.Errorf("last line of body = %q, want ReviewSentinelFailed %q", lastLine, ReviewSentinelFailed)
+	}
+
+	// ReviewSentinelPassed must NOT appear.
+	if strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q must not contain ReviewSentinelPassed when subprocess exits non-zero", body)
 	}
 }
 
