@@ -253,7 +253,7 @@ func TestRunStatsDetail_ByFullUUID(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "/archive/path")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail(iid, false, false); err != nil {
+		if err := runStatsDetail(iid, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -283,7 +283,7 @@ func TestRunStatsDetail_BySessionName(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail("testrepo@main", false, false); err != nil {
+		if err := runStatsDetail("testrepo@main", false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -305,7 +305,7 @@ func TestRunStatsDetail_ByUUIDPrefix(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		// Use first 8 chars as prefix.
-		if err := runStatsDetail("aaaabbbb", false, false); err != nil {
+		if err := runStatsDetail("aaaabbbb", false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -328,7 +328,7 @@ func TestRunStatsDetail_AmbiguousPrefix(t *testing.T) {
 	insertTestSession(t, d, iid2, "s2@main", "r2", "/code/r2", "opencode",
 		base.Add(-1*time.Hour), base, "finished", "")
 
-	err := runStatsDetail("aaaabbbb", false, false)
+	err := runStatsDetail("aaaabbbb", false)
 	if err == nil {
 		t.Fatal("expected error for ambiguous prefix, got nil")
 	}
@@ -341,7 +341,7 @@ func TestRunStatsDetail_AmbiguousPrefix(t *testing.T) {
 func TestRunStatsDetail_Unknown(t *testing.T) {
 	_ = openIncarnationTestDB(t)
 
-	err := runStatsDetail("totally-unknown-session", false, false)
+	err := runStatsDetail("totally-unknown-session", false)
 	if err == nil {
 		t.Fatal("expected error for unknown arg, got nil")
 	}
@@ -359,7 +359,7 @@ func TestRunStatsDetail_NotYetArchived(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail(iid, false, false); err != nil {
+		if err := runStatsDetail(iid, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})

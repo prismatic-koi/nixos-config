@@ -28,7 +28,7 @@ func TestRunArchive_ByInstanceID(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "/archive/testrepo/path")
 
 	out := captureStdout(t, func() {
-		if err := printArchivePath(d, iid, true, false); err != nil {
+		if err := printArchivePath(d, iid, true); err != nil {
 			t.Errorf("printArchivePath: %v", err)
 		}
 	})
@@ -53,7 +53,7 @@ func TestRunArchive_BySessionName(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "/archive/new")
 
 	out := captureStdout(t, func() {
-		if err := printArchivePath(d, "testrepo@main", false, false); err != nil {
+		if err := printArchivePath(d, "testrepo@main", false); err != nil {
 			t.Errorf("printArchivePath: %v", err)
 		}
 	})
@@ -76,7 +76,7 @@ func TestRunArchive_NullArchivePath(t *testing.T) {
 	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
 		base.Add(-1*time.Hour), base, "finished", "")
 
-	err := printArchivePath(d, iid, true, false)
+	err := printArchivePath(d, iid, true)
 	if err == nil {
 		t.Fatal("expected error for NULL archive_path, got nil")
 	}
@@ -90,7 +90,7 @@ func TestRunArchive_UnknownID(t *testing.T) {
 	d := openIncarnationTestDB(t)
 
 	unknownID := uuid.New().String()
-	err := printArchivePath(d, unknownID, true, false)
+	err := printArchivePath(d, unknownID, true)
 	if err == nil {
 		t.Fatal("expected error for unknown instance_id, got nil")
 	}

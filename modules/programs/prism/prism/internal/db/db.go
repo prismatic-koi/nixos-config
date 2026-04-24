@@ -2596,8 +2596,11 @@ func (d *DB) SessionByInstanceID(instanceID string) (*Session, error) {
 
 // SessionsByInstanceIDPrefix returns all sessions rows whose instance_id starts
 // with the given prefix. Used for short-form UUID lookup.
+// The prefix is escaped for SQL LIKE metacharacters (`%`, `_`, `\`) so that
+// literal characters in the prefix are matched exactly, not as wildcards.
 func (d *DB) SessionsByInstanceIDPrefix(prefix string) ([]Session, error) {
-	return d.querySessions(sessionsSelectCols+` WHERE instance_id LIKE ? ORDER BY started_at DESC`, prefix+"%")
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	return d.querySessions(sessionsSelectCols+` WHERE instance_id LIKE ? ESCAPE '\' ORDER BY started_at DESC`, escaped+"%")
 }
 
 // MostRecentSessionForName returns the most recent sessions row whose
@@ -2620,31 +2623,8 @@ func (d *DB) SessionsByName(name string) ([]Session, error) {
 	return d.querySessions(sessionsSelectCols+` WHERE session_name = ? ORDER BY started_at DESC`, name)
 }
 
-// SessionTokenTotals returns the sum of input+output tokens from agent_events
-// for the given instance_id. Only events with a non-NULL instance_id matching
-// instanceID are counted (pre-migration NULL rows are excluded).
-// Returns (inputTokens, outputTokens, totalCost, error).
-func (d *DB) SessionTokenTotals(instanceID string) (inputTokens, outputTokens int, totalCost float64, err error) {
-	const q = `
-SELECT COALESCE(SUM(JSON_EXTRACT(payload, '$.inputTokens')), 0),
-       COALESCE(SUM(JSON_EXTRACT(payload, '$.outputTokens')), 0),
-       COALESCE(SUM(JSON_EXTRACT(payload, '$.cacheReadTokens')), 0),
-       COALESCE(SUM(JSON_EXTRACT(payload, '$.cacheWriteTokens')), 0)
-  FROM agent_events
- WHERE instance_id = ?
-   AND type = 'msg_assistant'`
-	var input, output, cacheRead, cacheWrite int
-	if scanErr := d.conn.QueryRow(q, instanceID).Scan(&input, &output, &cacheRead, &cacheWrite); scanErr != nil {
-		return 0, 0, 0, fmt.Errorf("db: session token totals: %w", scanErr)
-	}
-	return input, output, 0, nil
-}
-
-// SessionTokensAndCostPerTurn returns (inputTokens, outputTokens, cacheRead,
-// cacheWrite, eventCost) as separate per-turn slices for the given instance_id,
-// along with the model seen on each turn. The returned slices are parallel —
-// index i corresponds to the same msg_assistant event in all slices. Only events
-// with instance_id = instanceID are returned (NULL rows excluded).
+// TokenTurn holds per-turn token and cost data for a single msg_assistant event.
+// Used by SessionTurnTokens to return per-turn data for cost calculation.
 type TokenTurn struct {
 	Model       string
 	Input       int

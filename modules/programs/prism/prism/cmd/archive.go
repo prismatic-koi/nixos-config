@@ -18,22 +18,23 @@ import (
 )
 
 var archiveCmd = &cobra.Command{
-	Use:   "archive <instance-id|session-name>",
+	Use:   "archive [instance-id|session-name]",
 	Short: "Print the archive path for a session incarnation",
 	Long: `Print sessions.archive_path for the specified incarnation and exit 0.
 
 The argument may be a full 36-character UUID (instance_id), an unambiguous
 UUID prefix, or a session name (resolves to the most recent incarnation).
 
-Use --instance to force UUID lookup even when the argument could also match a
-session name.
+Use --instance <full-uuid> as an alternative to the positional argument when
+you want to force UUID lookup regardless of any session_name that could collide.
+With --instance, the positional argument is optional and ignored if provided.
 
 Use --all with a session name to print one archive_path per line for every
 incarnation of that name, newest first.
 
 Exits non-zero when the incarnation is unknown or archive_path IS NULL
 (session not yet archived).`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: runArchive,
 }
 
@@ -53,9 +54,15 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
-	// --instance flag takes precedence over the positional arg.
+	// --instance flag takes precedence over the positional arg and does not
+	// require one. This is the disambiguator for collisions between an
+	// instance_id and a session_name.
 	if instanceFlag != "" {
-		return printArchivePath(d, instanceFlag, true, false)
+		return printArchivePath(d, instanceFlag, true)
+	}
+
+	if len(args) == 0 {
+		return fmt.Errorf("archive: requires an argument (instance-id or session-name) or --instance <uuid>")
 	}
 
 	arg := args[0]
@@ -67,13 +74,13 @@ func runArchive(cmd *cobra.Command, args []string) error {
 
 	// Disambiguate: full UUID or session name.
 	forceInstance := len(arg) == 36
-	return printArchivePath(d, arg, forceInstance, false)
+	return printArchivePath(d, arg, forceInstance)
 }
 
 // printArchivePath resolves arg to a single sessions row and prints its archive_path.
 // If forceInstance is true, arg is treated as an instance_id (UUID lookup).
 // Returns a non-zero exit code (via error) when archive_path IS NULL.
-func printArchivePath(d *db.DB, arg string, forceInstance bool, silent bool) error {
+func printArchivePath(d *db.DB, arg string, forceInstance bool) error {
 	sess, err := resolveSessionArg(d, arg, forceInstance)
 	if err != nil {
 		return fmt.Errorf("archive: %w", err)

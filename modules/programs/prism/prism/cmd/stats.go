@@ -136,7 +136,6 @@ func parseSinceFlag(since string) (int64, error) {
 
 func runStats(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
-	detail, _ := cmd.Flags().GetBool("detail")
 	doomloops, _ := cmd.Flags().GetBool("doomloops")
 	denials, _ := cmd.Flags().GetBool("denials")
 	asks, _ := cmd.Flags().GetBool("asks")
@@ -191,7 +190,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 	// With an argument: detail view for a specific incarnation or session name.
 	if len(args) == 1 {
-		return runStatsDetail(args[0], forceInstance, detail)
+		return runStatsDetail(args[0], forceInstance)
 	}
 
 	// No argument: per-incarnation summary table.
@@ -348,7 +347,7 @@ func computeTurnCost(t db.TokenTurn) float64 {
 // runStatsDetail resolves an argument to a specific sessions row and renders
 // detail for it. The argument may be a full UUID, a UUID prefix (when
 // unambiguous), or a session name.
-func runStatsDetail(arg string, forceInstance bool, detail bool) error {
+func runStatsDetail(arg string, forceInstance bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
