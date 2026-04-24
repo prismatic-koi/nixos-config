@@ -1599,15 +1599,16 @@ func samplePRContext() *review.PRContext {
 }
 
 // TestBuildReviewPrompt_ContainsPRUnderReviewSection verifies that the prompt
-// contains a "## PR under review" section with key metadata fields, including
-// the worktree path (read-only) bullet required by review-qa to avoid
-// re-discovering the branch checkout location.
+// contains a context section with key metadata fields, including the worktree
+// path (read-only) bullet required by review-qa to avoid re-discovering the
+// branch checkout location.
 func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
 	required := []string{
-		"## PR under review",
+		"## Context for your review",
+		"### PR metadata",
 		"PR #819",
 		"inject-pr-context-into-review",             // head branch
 		"abc1234567890abcdef1234567890abcdef123456", // head SHA
@@ -1617,6 +1618,12 @@ func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
 		// Worktree bullet: eliminates review-qa's "can I check out the branch?" hesitation.
 		"/workspace/worktrees/inject-pr-context-into-review", // worktree path
 		"(read-only)", // read-only annotation
+		// Tool-preference guidance.
+		"Prefer native git",
+		// Recent commits section.
+		"### Recent commits",
+		// Linked issues section.
+		"### Linked issues",
 	}
 	for _, s := range required {
 		if !findSubstring(prompt, s) {
@@ -1626,13 +1633,13 @@ func TestBuildReviewPrompt_ContainsPRUnderReviewSection(t *testing.T) {
 }
 
 // TestBuildReviewPrompt_ContainsPRBodySection verifies that the prompt
-// contains a "## PR body" section with the PR body text.
+// contains a "### PR body" section with the PR body text.
 func TestBuildReviewPrompt_ContainsPRBodySection(t *testing.T) {
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
-	if !findSubstring(prompt, "## PR body") {
-		t.Errorf("prompt missing '## PR body' section\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "### PR body") {
+		t.Errorf("prompt missing '### PR body' section\nprompt:\n%s", prompt)
 	}
 	// The body content should be present (blockquote-wrapped).
 	if !findSubstring(prompt, "Fixes issue #819") {
@@ -1641,14 +1648,14 @@ func TestBuildReviewPrompt_ContainsPRBodySection(t *testing.T) {
 }
 
 // TestBuildReviewPrompt_EmptyBody verifies that when the PR body is empty,
-// the "## PR body" section is still emitted with a "(no body)" placeholder.
+// the "### PR body" section is still emitted with a "(no body)" placeholder.
 func TestBuildReviewPrompt_EmptyBody(t *testing.T) {
 	ctx := samplePRContext()
 	ctx.Body = ""
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
-	if !findSubstring(prompt, "## PR body") {
-		t.Errorf("prompt missing '## PR body' section even for empty body\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "### PR body") {
+		t.Errorf("prompt missing '### PR body' section even for empty body\nprompt:\n%s", prompt)
 	}
 	if !findSubstring(prompt, "(no body)") {
 		t.Errorf("prompt missing '(no body)' placeholder for empty body\nprompt:\n%s", prompt)
@@ -1656,13 +1663,13 @@ func TestBuildReviewPrompt_EmptyBody(t *testing.T) {
 }
 
 // TestBuildReviewPrompt_ContainsFullDiffSection verifies that the prompt
-// contains a "## Full diff" section with the diff in a ```diff code fence.
+// contains a "### Diff" section with the diff in a ```diff code fence.
 func TestBuildReviewPrompt_ContainsFullDiffSection(t *testing.T) {
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
-	if !findSubstring(prompt, "## Full diff") {
-		t.Errorf("prompt missing '## Full diff' section\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "### Diff") {
+		t.Errorf("prompt missing '### Diff' section\nprompt:\n%s", prompt)
 	}
 	if !findSubstring(prompt, "```diff") {
 		t.Errorf("prompt missing ```diff code fence\nprompt:\n%s", prompt)
@@ -1678,12 +1685,12 @@ func TestBuildReviewPrompt_ContextBeforeRoleSeparator(t *testing.T) {
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
-	prUnderReviewIdx := findLineIndex(prompt, "## PR under review")
+	contextHeaderIdx := findLineIndex(prompt, "## Context for your review")
 	separatorIdx := findLineIndex(prompt, "---")
 	roleNoteIdx := findLineIndex(prompt, "Your role-specific instructions follow below.")
 
-	if prUnderReviewIdx < 0 {
-		t.Fatalf("prompt missing '## PR under review'\nprompt:\n%s", prompt)
+	if contextHeaderIdx < 0 {
+		t.Fatalf("prompt missing '## Context for your review'\nprompt:\n%s", prompt)
 	}
 	if separatorIdx < 0 {
 		t.Fatalf("prompt missing separator '---'\nprompt:\n%s", prompt)
@@ -1691,8 +1698,8 @@ func TestBuildReviewPrompt_ContextBeforeRoleSeparator(t *testing.T) {
 	if roleNoteIdx < 0 {
 		t.Fatalf("prompt missing role note\nprompt:\n%s", prompt)
 	}
-	if prUnderReviewIdx >= separatorIdx {
-		t.Errorf("'## PR under review' (line %d) should appear before '---' (line %d)", prUnderReviewIdx, separatorIdx)
+	if contextHeaderIdx >= separatorIdx {
+		t.Errorf("'## Context for your review' (line %d) should appear before '---' (line %d)", contextHeaderIdx, separatorIdx)
 	}
 }
 
@@ -1705,11 +1712,11 @@ func TestBuildReviewPrompt_FallbackWhenNilContext(t *testing.T) {
 		t.Errorf("fallback prompt should contain PR number '819'\nprompt:\n%s", prompt)
 	}
 	// Must NOT contain the rich context sections.
-	if findSubstring(prompt, "## PR under review") {
-		t.Errorf("fallback prompt should not contain '## PR under review'\nprompt:\n%s", prompt)
+	if findSubstring(prompt, "## Context for your review") {
+		t.Errorf("fallback prompt should not contain '## Context for your review'\nprompt:\n%s", prompt)
 	}
-	if findSubstring(prompt, "## Full diff") {
-		t.Errorf("fallback prompt should not contain '## Full diff'\nprompt:\n%s", prompt)
+	if findSubstring(prompt, "### Diff") {
+		t.Errorf("fallback prompt should not contain '### Diff'\nprompt:\n%s", prompt)
 	}
 }
 
@@ -1725,7 +1732,7 @@ func TestBuildReviewPrompt_FallbackWhenFetchFailed(t *testing.T) {
 	if !findSubstring(prompt, "819") {
 		t.Errorf("fallback prompt should contain PR number '819'\nprompt:\n%s", prompt)
 	}
-	if findSubstring(prompt, "## PR under review") {
+	if findSubstring(prompt, "## Context for your review") {
 		t.Errorf("fallback prompt should not contain rich context when FetchFailed=true\nprompt:\n%s", prompt)
 	}
 }
@@ -1754,11 +1761,11 @@ func TestBuildReviewPrompt_SpecialCharsInTitle(t *testing.T) {
 	prompt := review.BuildReviewPromptForTest("819", ctx)
 
 	// The prompt should still contain both main sections.
-	if !findSubstring(prompt, "## PR under review") {
-		t.Errorf("prompt missing '## PR under review' with special-char title\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "## Context for your review") {
+		t.Errorf("prompt missing '## Context for your review' with special-char title\nprompt:\n%s", prompt)
 	}
-	if !findSubstring(prompt, "## Full diff") {
-		t.Errorf("prompt missing '## Full diff' with special-char title\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "### Diff") {
+		t.Errorf("prompt missing '### Diff' with special-char title\nprompt:\n%s", prompt)
 	}
 }
 
@@ -2558,5 +2565,358 @@ func TestRunAsync_DuplicateInProgress(t *testing.T) {
 	}
 	if !findSubstring(runErr.Error(), "in progress") && !findSubstring(runErr.Error(), "already") {
 		t.Errorf("error should mention 'in progress' or 'already': %v", runErr)
+	}
+}
+
+// ── ParseLinkedIssues ─────────────────────────────────────────────────────────
+
+// TestParseLinkedIssues_Closes verifies that "Closes #N" references are extracted.
+func TestParseLinkedIssues_Closes(t *testing.T) {
+	body := "This PR fixes the bug.\n\nCloses #123"
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 1 || issues[0] != "123" {
+		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"123\"]", body, issues)
+	}
+}
+
+// TestParseLinkedIssues_Refs verifies that "Refs #N" references are extracted.
+func TestParseLinkedIssues_Refs(t *testing.T) {
+	body := "Refs #456 for context."
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 1 || issues[0] != "456" {
+		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"456\"]", body, issues)
+	}
+}
+
+// TestParseLinkedIssues_Fixes verifies that "Fixes #N" references are extracted.
+func TestParseLinkedIssues_Fixes(t *testing.T) {
+	body := "Fixes #789"
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 1 || issues[0] != "789" {
+		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"789\"]", body, issues)
+	}
+}
+
+// TestParseLinkedIssues_References verifies that "References #N" references are extracted.
+func TestParseLinkedIssues_References(t *testing.T) {
+	body := "References #101"
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 1 || issues[0] != "101" {
+		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"101\"]", body, issues)
+	}
+}
+
+// TestParseLinkedIssues_MultipleIssues verifies that multiple issue references
+// are all extracted (Closes #N, Refs #M).
+func TestParseLinkedIssues_MultipleIssues(t *testing.T) {
+	body := "Closes #100\n\nAlso Refs #200 for background."
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 2 {
+		t.Fatalf("ParseLinkedIssues: got %v, want [\"100\", \"200\"]", issues)
+	}
+	if issues[0] != "100" || issues[1] != "200" {
+		t.Errorf("ParseLinkedIssues: got %v, want [\"100\", \"200\"]", issues)
+	}
+}
+
+// TestParseLinkedIssues_Deduplicated verifies that duplicate issue references
+// are deduplicated (same issue referenced multiple times).
+func TestParseLinkedIssues_Deduplicated(t *testing.T) {
+	body := "Closes #42\nAlso Closes #42 (duplicate)"
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 1 || issues[0] != "42" {
+		t.Errorf("ParseLinkedIssues: duplicate not deduplicated, got %v", issues)
+	}
+}
+
+// TestParseLinkedIssues_CaseInsensitive verifies that matching is case-insensitive.
+func TestParseLinkedIssues_CaseInsensitive(t *testing.T) {
+	body := "CLOSES #55\nfixes #66"
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 2 {
+		t.Fatalf("ParseLinkedIssues case-insensitive: got %v, want [\"55\", \"66\"]", issues)
+	}
+}
+
+// TestParseLinkedIssues_NoIssues verifies that a body with no linked issues
+// returns an empty slice.
+func TestParseLinkedIssues_NoIssues(t *testing.T) {
+	body := "This PR adds a feature. No issue references."
+	issues := review.ParseLinkedIssuesForTest(body)
+	if len(issues) != 0 {
+		t.Errorf("ParseLinkedIssues: got %v, want empty slice", issues)
+	}
+}
+
+// TestParseLinkedIssues_EmptyBody verifies that an empty body returns an empty slice.
+func TestParseLinkedIssues_EmptyBody(t *testing.T) {
+	issues := review.ParseLinkedIssuesForTest("")
+	if len(issues) != 0 {
+		t.Errorf("ParseLinkedIssues(empty): got %v, want empty slice", issues)
+	}
+}
+
+// ── DiffFilePath ──────────────────────────────────────────────────────────────
+
+// TestDiffFilePath_Format verifies that the diff file path follows the expected
+// naming convention: /tmp/prism-review-<pr>-round-<N>.diff
+func TestDiffFilePath_Format(t *testing.T) {
+	cases := []struct {
+		pr    string
+		round int
+		want  string
+	}{
+		{"819", 1, "/tmp/prism-review-819-round-1.diff"},
+		{"855", 2, "/tmp/prism-review-855-round-2.diff"},
+		{"1", 10, "/tmp/prism-review-1-round-10.diff"},
+	}
+	for _, tc := range cases {
+		got := review.DiffFilePathForTest(tc.pr, tc.round)
+		if got != tc.want {
+			t.Errorf("DiffFilePath(%q, %d) = %q, want %q", tc.pr, tc.round, got, tc.want)
+		}
+	}
+}
+
+// TestDiffFilePath_RoundCollision verifies that different rounds produce
+// different file paths (no collision between concurrent review rounds).
+func TestDiffFilePath_RoundCollision(t *testing.T) {
+	pr := "855"
+	path1 := review.DiffFilePathForTest(pr, 1)
+	path2 := review.DiffFilePathForTest(pr, 2)
+	if path1 == path2 {
+		t.Errorf("DiffFilePath: round 1 and round 2 produce the same path: %q", path1)
+	}
+}
+
+// TestDiffFilePath_DifferentPRsCollision verifies that different PRs produce
+// different file paths (no collision between concurrent reviews of different PRs).
+func TestDiffFilePath_DifferentPRsCollision(t *testing.T) {
+	path1 := review.DiffFilePathForTest("819", 1)
+	path2 := review.DiffFilePathForTest("855", 1)
+	if path1 == path2 {
+		t.Errorf("DiffFilePath: PR 819 and PR 855 produce the same path: %q", path1)
+	}
+}
+
+// TestDiffFilePath_ZeroRound verifies that round=0 defaults to 1.
+func TestDiffFilePath_ZeroRound(t *testing.T) {
+	got := review.DiffFilePathForTest("819", 0)
+	want := "/tmp/prism-review-819-round-1.diff"
+	if got != want {
+		t.Errorf("DiffFilePath(%q, 0) = %q, want %q (round 0 should default to 1)", "819", got, want)
+	}
+}
+
+// ── Inline vs file threshold ──────────────────────────────────────────────────
+
+// TestBuildReviewPrompt_SmallDiffInlined verifies that a small diff (below the
+// inline threshold) is embedded directly in the agent prompt.
+func TestBuildReviewPrompt_SmallDiffInlined(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Diff = "diff --git a/foo.go b/foo.go\n+added line\n"
+	ctx.DiffFilePath = "" // small diff — no file path
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	// Small diff must be inlined in a ```diff fence.
+	if !findSubstring(prompt, "```diff") {
+		t.Errorf("small diff prompt missing ```diff fence\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "diff --git a/foo.go b/foo.go") {
+		t.Errorf("small diff prompt missing diff content\nprompt:\n%s", prompt)
+	}
+	// Must NOT have a "file has been saved to" message.
+	if findSubstring(prompt, "has been saved to") {
+		t.Errorf("small diff prompt should not mention a saved file\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_LargeDiffFilePointer verifies that when DiffFilePath is
+// set (large diff), the prompt contains a file-path pointer and guidance for
+// querying the diff — not an inline code fence.
+func TestBuildReviewPrompt_LargeDiffFilePointer(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.Diff = ""        // large diff is NOT inlined
+	ctx.DiffLines = 1200 // simulated count
+	ctx.DiffBytes = 80 * 1024
+	ctx.DiffFilePath = "/tmp/prism-review-819-round-1.diff"
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	// Must contain the file path.
+	if !findSubstring(prompt, "/tmp/prism-review-819-round-1.diff") {
+		t.Errorf("large diff prompt missing file path\nprompt:\n%s", prompt)
+	}
+	// Must contain the guidance to use git diff / rg.
+	if !findSubstring(prompt, "git diff --stat") {
+		t.Errorf("large diff prompt missing git diff guidance\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "rg") {
+		t.Errorf("large diff prompt missing rg guidance\nprompt:\n%s", prompt)
+	}
+	// Must NOT contain an inline ```diff fence.
+	if findSubstring(prompt, "```diff") {
+		t.Errorf("large diff prompt should not contain an inline ```diff fence\nprompt:\n%s", prompt)
+	}
+}
+
+// ── Linked issues in prompt ───────────────────────────────────────────────────
+
+// TestBuildReviewPrompt_LinkedIssuesSection verifies that when LinkedIssues is
+// populated, the prompt contains the "### Linked issues" section with each
+// issue's content.
+func TestBuildReviewPrompt_LinkedIssuesSection(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.LinkedIssues = map[string]string{
+		"123": "title:\tFix the bug\nstate:\tOPEN\n",
+		"456": "title:\tAdd feature\nstate:\tCLOSED\n",
+	}
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "### Linked issues") {
+		t.Errorf("prompt missing '### Linked issues' section\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "#### Issue #123") {
+		t.Errorf("prompt missing '#### Issue #123'\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "Fix the bug") {
+		t.Errorf("prompt missing issue #123 content\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "#### Issue #456") {
+		t.Errorf("prompt missing '#### Issue #456'\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "Add feature") {
+		t.Errorf("prompt missing issue #456 content\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_LinkedIssuesFetchFailure verifies that when a linked
+// issue could not be fetched, the prompt contains a clear failure marker
+// rather than crashing or omitting the issue entirely.
+func TestBuildReviewPrompt_LinkedIssuesFetchFailure(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.LinkedIssues = map[string]string{
+		"999": "[issue #999 could not be fetched: exit status 1: HTTP 404]",
+	}
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "### Linked issues") {
+		t.Errorf("prompt missing '### Linked issues' section on fetch failure\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "#### Issue #999") {
+		t.Errorf("prompt missing issue section even for unfetchable issue\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "could not be fetched") {
+		t.Errorf("prompt missing failure marker for unfetchable issue\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_NoLinkedIssues verifies that when no linked issues are
+// found, the prompt shows "(no linked issues found)" rather than an empty section.
+func TestBuildReviewPrompt_NoLinkedIssues(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.LinkedIssues = nil
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "### Linked issues") {
+		t.Errorf("prompt missing '### Linked issues' section\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "no linked issues found") {
+		t.Errorf("prompt missing '(no linked issues found)' placeholder\nprompt:\n%s", prompt)
+	}
+}
+
+// ── Git log in prompt ─────────────────────────────────────────────────────────
+
+// TestBuildReviewPrompt_GitLogSections verifies that the prompt contains the
+// "### Recent commits" and "### This branch vs origin/<base>" sections with
+// the git log output when provided.
+func TestBuildReviewPrompt_GitLogSections(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.RecentCommits = "abc1234 fix: handle nil pointer\ndef5678 feat: add new feature\n"
+	ctx.BranchCommits = "abc1234 fix: handle nil pointer\n"
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "### Recent commits") {
+		t.Errorf("prompt missing '### Recent commits' section\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "fix: handle nil pointer") {
+		t.Errorf("prompt missing recent commit text\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "### This branch vs origin/main") {
+		t.Errorf("prompt missing branch commits section\nprompt:\n%s", prompt)
+	}
+}
+
+// TestBuildReviewPrompt_GitLogUnavailable verifies that the prompt handles
+// missing git log output gracefully with a "(not available)" placeholder.
+func TestBuildReviewPrompt_GitLogUnavailable(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.RecentCommits = ""
+	ctx.BranchCommits = ""
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "### Recent commits") {
+		t.Errorf("prompt missing '### Recent commits' section even when unavailable\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "(not available)") {
+		t.Errorf("prompt missing '(not available)' placeholder for git log\nprompt:\n%s", prompt)
+	}
+}
+
+// ── Tool preference guidance ──────────────────────────────────────────────────
+
+// TestBuildReviewPrompt_ToolPreferenceGuidance verifies that the prompt contains
+// the tool-preference guidance directing agents to prefer native git over gh.
+func TestBuildReviewPrompt_ToolPreferenceGuidance(t *testing.T) {
+	ctx := samplePRContext()
+	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	if !findSubstring(prompt, "Prefer native git") {
+		t.Errorf("prompt missing tool-preference guidance ('Prefer native git')\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "git show") {
+		t.Errorf("prompt missing 'git show' in tool-preference guidance\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "git diff") {
+		t.Errorf("prompt missing 'git diff' in tool-preference guidance\nprompt:\n%s", prompt)
+	}
+	if !findSubstring(prompt, "git log") {
+		t.Errorf("prompt missing 'git log' in tool-preference guidance\nprompt:\n%s", prompt)
+	}
+}
+
+// ── FetchPRContextWithOpts ────────────────────────────────────────────────────
+// These tests exercise FetchPRContextWithOpts in isolation by mocking gh and git.
+
+// TestFetchPRContextWithOpts_InlineThresholdDefault verifies that the default
+// inline threshold constants are DiffInlineMaxLines=500 and DiffInlineMaxBytes=20KB.
+func TestFetchPRContextWithOpts_InlineThresholdDefault(t *testing.T) {
+	if review.DiffInlineMaxLines != 500 {
+		t.Errorf("DiffInlineMaxLines = %d, want 500", review.DiffInlineMaxLines)
+	}
+	if review.DiffInlineMaxBytes != 20*1024 {
+		t.Errorf("DiffInlineMaxBytes = %d, want %d", review.DiffInlineMaxBytes, 20*1024)
+	}
+}
+
+// TestBuildReviewPrompt_AllFiveAgentsGetSameContextWithLinkedIssues verifies
+// that five calls to BuildReviewPromptForTest with a PRContext that includes
+// linked issues all produce identical prompts.
+func TestBuildReviewPrompt_AllFiveAgentsGetSameContextWithLinkedIssues(t *testing.T) {
+	ctx := samplePRContext()
+	ctx.LinkedIssues = map[string]string{
+		"855": "title:\tinject shared context\nstate:\tOPEN\n",
+	}
+	ctx.RecentCommits = "abc fix: something\n"
+	ctx.BranchCommits = "abc fix: something\n"
+
+	prompts := make([]string, 5)
+	for i := range prompts {
+		prompts[i] = review.BuildReviewPromptForTest("819", ctx)
+	}
+	for i := 1; i < len(prompts); i++ {
+		if prompts[i] != prompts[0] {
+			t.Errorf("prompt[%d] differs from prompt[0]; all agents must receive identical context", i)
+		}
 	}
 }
