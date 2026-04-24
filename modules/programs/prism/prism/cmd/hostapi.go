@@ -5,7 +5,8 @@ package cmd
 // When PRISM_HOST_API is set, prism commands running inside a container
 // cannot reach tmux directly. Instead they POST their operation to the host
 // sidecar over the Unix socket accessible inside the container at
-// /var/run/prism-host/<sockfilename> (the parent directory is bind-mounted by A-2).
+// /var/run/prism-host/<sockfilename> (the session's own per-session directory
+// is bind-mounted by A-2, providing socket isolation between sessions — #960).
 //
 // The host sidecar (A-1) listens on that socket and executes the real tmux
 // operations on the host side.

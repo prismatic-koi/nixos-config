@@ -435,6 +435,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// regardless of platform. On Darwin the container uses TCP
 		// (HostAPITCPPort), but the Unix socket is still available for
 		// host-side tooling.
+		// For bwrap mode, the per-session socket directory may not yet exist —
+		// prepareVolumeDirs runs in agent-run (after the sidecar starts). Create it
+		// here so net.Listen succeeds. For podman, prepareVolumeDirs already ran
+		// inside mgr.Create(), so this is a no-op.
+		if err := os.MkdirAll(filepath.Dir(s.cfg.HostAPISockPath), 0o700); err != nil {
+			log.Printf("sidecar: host-API socket dir: %v", err)
+		}
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 		if listenErr != nil {
@@ -587,6 +594,10 @@ func (s *Sidecar) Shutdown() {
 	}
 	if ln != nil {
 		_ = os.Remove(s.cfg.HostAPISockPath)
+		// Also remove the per-session socket directory introduced by security
+		// fix #960. os.Remove only succeeds when the directory is empty (which
+		// it will be after the socket file is removed), so this is safe.
+		_ = os.Remove(filepath.Dir(s.cfg.HostAPISockPath))
 	}
 	// Close the TCP host-API listener/server (Darwin only). Idempotent when
 	// the listener was never started (both are nil on Linux or when container
