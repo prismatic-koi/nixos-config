@@ -220,6 +220,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
 		if d, err := openDB(); err == nil {
+			// Stop and remove child review-agent containers BEFORE removing their
+			// DB rows — so a failed stop still has a record to retry against.
+			stopAndRemoveChildContainers(d, m.session)
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
 			review.CleanupReviewSessionsForParent(d, m.session)
@@ -478,6 +481,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
+		// Stop and remove child review-agent containers BEFORE removing their
+		// DB rows — so a failed stop still has a record to retry against.
+		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
@@ -575,6 +581,9 @@ func headlessCloseSession(session string) error {
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
+		// Stop and remove child review-agent containers BEFORE removing their
+		// DB rows — so a failed stop still has a record to retry against.
+		stopAndRemoveChildContainers(d, session)
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
@@ -673,6 +682,77 @@ func hostModeFromDB(d *db.DB, sessionName string) bool {
 		return false
 	}
 	return status.HostMode
+}
+
+// stopAndRemoveChildContainers stops and removes podman containers for all
+// review-agent child sessions of the given parent.
+//
+// Child sessions are enumerated via the DB's GroupMembersForParent (preferred)
+// with a name-prefix fallback for pre-migration rows where group_id is not set.
+// For each child the container is stopped (5-second grace) and force-removed.
+//
+// This function is intentionally non-fatal: a failure to stop or remove a
+// single child container is logged as a warning and does not prevent cleanup of
+// the remaining children. Container teardown runs here — before the caller
+// removes the child's DB row — so that a failed stop still has a DB record to
+// retry against.
+//
+// Parents with no review-agent children are handled gracefully: the function
+// returns immediately without issuing any podman commands.
+func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
+	prefix := parentSession + "~review-"
+
+	// Collect child session names. Prefer DB-backed group membership, fall
+	// back to name-prefix scan for pre-migration rows.
+	var childNames []string
+	if members, err := d.GroupMembersForParent(parentSession); err == nil && len(members) > 0 {
+		for _, m := range members {
+			childNames = append(childNames, m.SessionName)
+		}
+	} else {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: DB group lookup for %q: %v — using name-prefix fallback\n", parentSession, err)
+		}
+		// Fallback: scan all rows with the review prefix.
+		rows, scanErr := d.AllStatusesWithPrefix(prefix)
+		if scanErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: AllStatusesWithPrefix for %q: %v — skipping child container teardown\n", parentSession, scanErr)
+			return
+		}
+		for _, row := range rows {
+			childNames = append(childNames, row.SessionName)
+		}
+	}
+
+	// No children — fast path (most non-reviewed sessions).
+	if len(childNames) == 0 {
+		return
+	}
+
+	for _, childSession := range childNames {
+		name := container.NameForSession(childSession)
+
+		// Stop (5-second grace). Independent context so a slow stop doesn't
+		// starve the rm --force that follows.
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		stopCmd := exec.CommandContext(stopCtx, "podman", "stop", "--time", "5", name)
+		if out, err := stopCmd.CombinedOutput(); err != nil {
+			if !container.IsNoSuchContainerError(string(out)) {
+				fmt.Fprintf(os.Stderr, "[prism] warning: stop review container %q (child of %q): %v — continuing\n", name, parentSession, err)
+			}
+		}
+		stopCancel()
+
+		// Force-remove. Independent context ensures this always runs.
+		rmCtx, rmCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		rmCmd := exec.CommandContext(rmCtx, "podman", "rm", "--force", name)
+		if out, err := rmCmd.CombinedOutput(); err != nil {
+			if !container.IsNoSuchContainerError(string(out)) {
+				fmt.Fprintf(os.Stderr, "[prism] warning: rm review container %q (child of %q): %v — continuing\n", name, parentSession, err)
+			}
+		}
+		rmCancel()
+	}
 }
 
 // removeContainerIfExists stops and removes any podman container for the given
