@@ -12,6 +12,7 @@ package cmd
 // operations on the host side.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,6 +26,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 // newHostAPIClient returns an *http.Client that dials sockPath over a Unix
@@ -220,22 +223,24 @@ func proxyPrompt(apiURL, session, prompt string) error {
 	}, nil)
 }
 
-// reviewHostAPIResponse holds the response from the host-API /review endpoint.
-// For the async path, only Output is populated (Passed is always true because
-// the review has not yet completed when the ack is returned).
-type reviewHostAPIResponse struct {
-	Output string `json:"output"`
-	Passed bool   `json:"passed"`
-}
-
 // proxyReviewAsync proxies an async review request to the host-API sidecar
 // when running inside a container (PRISM_HOST_API is set). It sends POST /review
 // to the sidecar, which runs `prism review` on the host where tmux is available,
-// and returns immediately with the async acknowledgement.
+// streams each output line to os.Stdout as it arrives, and returns once the
+// subprocess completes (signalled by a sentinel line in the response body).
 //
 // prNumber is the PR number to review (e.g. "123"). agents is an optional
 // list of agent names for --only filtering. timeout is an optional duration
-// string (e.g. "10m"). Returns the acknowledgement text and any error.
+// string (e.g. "10m"). Returns an error if the host-side subprocess failed or
+// the connection was lost mid-stream.
+//
+// The response from the sidecar /review endpoint is a plain-text chunked stream
+// terminated by one of two sentinel lines:
+//
+//	sidecar.ReviewSentinelPassed — subprocess exited 0
+//	sidecar.ReviewSentinelFailed — subprocess exited non-zero
+//
+// This function consumes the sentinel and does NOT print it to stdout.
 func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) (string, error) {
 	// Build request body.
 	body := map[string]any{
@@ -248,16 +253,26 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 		body["timeout"] = timeout
 	}
 
-	// Async reviews return quickly (just spawning + ack), so 30 s is plenty.
-	const clientTimeout = 30 * time.Second
+	// The sidecar streams output as it arrives and closes the response body
+	// when the sentinel is written, so we need a longer timeout than the 30 s
+	// that sufficed for the old buffered path. Use 60 s — the spawn phase
+	// (the only non-trivial work in async prism review) completes well within
+	// that window even on a slow host.
+	const clientTimeout = 60 * time.Second
 
-	// Build a custom client.
+	// Build a custom client without a read timeout so the streaming response
+	// body can remain open for the full duration of the subprocess.
 	var (
 		client *http.Client
 		reqURL string
 	)
 	if strings.HasPrefix(apiURL, "http://") {
-		client = &http.Client{Timeout: clientTimeout}
+		// TCP path: use a transport with no read deadline on the connection.
+		// We set Timeout:0 on the client and rely on the context deadline instead.
+		client = &http.Client{
+			Transport: &http.Transport{},
+			Timeout:   0, // no global timeout; context deadline governs
+		}
 		reqURL = apiURL + "/review"
 	} else {
 		sockPath, parseErr := parseUnixSocketURL(apiURL)
@@ -275,7 +290,7 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 					return conn, nil
 				},
 			},
-			Timeout: clientTimeout,
+			Timeout: 0, // no global timeout; context deadline governs
 		}
 		reqURL = "http://prism-hostapi/review"
 	}
@@ -285,7 +300,11 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 		return "", fmt.Errorf("proxyReviewAsync: marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	// Attach a context deadline so the request cannot hang indefinitely.
+	ctx, cancel := context.WithTimeout(context.Background(), clientTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", fmt.Errorf("proxyReviewAsync: build request: %w", err)
 	}
@@ -295,12 +314,70 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 	if err != nil {
 		return "", fmt.Errorf("host-API /review: %w", err)
 	}
+	defer resp.Body.Close()
 
-	var reviewResp reviewHostAPIResponse
-	if err := readHostAPIResponse("/review", resp, &reviewResp); err != nil {
-		return "", err
+	if resp.StatusCode >= 400 {
+		// Error responses from the sidecar are still JSON (written before the
+		// streaming body begins), so read and surface the error field.
+		respBody, _ := io.ReadAll(resp.Body)
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if jsonErr := json.Unmarshal(respBody, &errResp); jsonErr == nil && errResp.Error != "" {
+			return "", fmt.Errorf("host-API /review: %s", errResp.Error)
+		}
+		return "", fmt.Errorf("host-API /review: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
-	return reviewResp.Output, nil
+
+	// Read the streaming response line-by-line. Each line is printed to stdout
+	// immediately so the worker sees progress as it is emitted. The final line
+	// is a sentinel that we consume but do not print.
+	scanner := bufio.NewScanner(resp.Body)
+	// Allow lines up to 1 MiB to handle very long output without truncation.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+
+	var (
+		sentinelSeen bool
+		passed       bool
+		outputBuf    strings.Builder
+	)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch line {
+		case sidecar.ReviewSentinelPassed:
+			sentinelSeen = true
+			passed = true
+		case sidecar.ReviewSentinelFailed:
+			sentinelSeen = true
+			passed = false
+		default:
+			// Regular output line — print to stdout immediately and buffer for
+			// the caller so it can be used in the return value if needed.
+			fmt.Fprintln(os.Stdout, line)
+			outputBuf.WriteString(line)
+			outputBuf.WriteByte('\n')
+		}
+		// Stop after consuming the sentinel.
+		if sentinelSeen {
+			break
+		}
+	}
+
+	if scanErr := scanner.Err(); scanErr != nil {
+		return outputBuf.String(), fmt.Errorf("host-API /review: read stream: %w", scanErr)
+	}
+
+	if !sentinelSeen {
+		// The stream ended without a sentinel — the subprocess died mid-stream
+		// or the connection was lost. Surface this as a clear error.
+		return outputBuf.String(), fmt.Errorf("host-API /review: stream ended without completion sentinel (subprocess may have crashed)")
+	}
+
+	if !passed {
+		return outputBuf.String(), fmt.Errorf("host-API /review: review process failed — check host logs for details")
+	}
+
+	return outputBuf.String(), nil
 }
 
 // proxyLogsFromHostAPI proxies a GET /logs request to the host-API server and

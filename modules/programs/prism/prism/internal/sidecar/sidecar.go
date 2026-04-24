@@ -20,6 +20,7 @@
 package sidecar
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -2896,29 +2897,75 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		env := append(os.Environ(), "PRISM_SESSION_NAME="+s.cfg.SessionName)
 		cmd.Env = env
 
-		// Capture stdout (the ack message); stderr is logged server-side only.
-		out, err := cmd.Output()
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				if len(exitErr.Stderr) > 0 {
-					log.Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(string(exitErr.Stderr)))
-				}
-			}
-			// Async review should never exit non-zero for agent failures
-			// (those are delivered later via prism prompt). Treat any non-zero
-			// exit as an infrastructure failure.
-			if output := strings.TrimRight(string(out), "\n"); output == "" {
-				log.Printf("sidecar: host-API /review: review process failed: %v", err)
-				writeError(w, http.StatusInternalServerError, "review process failed — check host logs for details")
-				return
-			}
+		// Capture stderr separately so we can log it on failure.
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
+
+		// Obtain the subprocess stdout as a pipe so we can stream it to the
+		// HTTP client line-by-line as it arrives, rather than buffering the
+		// entire output with cmd.Output(). This ensures that progress lines
+		// ("Review-Goal started", etc.) reach the container-mode worker within
+		// 2 s of emission rather than all arriving at once at the end.
+		stdoutPipe, pipeErr := cmd.StdoutPipe()
+		if pipeErr != nil {
+			writeError(w, http.StatusInternalServerError, "review: stdout pipe: "+pipeErr.Error())
+			return
 		}
 
-		output := strings.TrimRight(string(out), "\n")
-		writeJSON(w, http.StatusOK, map[string]any{
-			"output": output,
-			"passed": true, // always true for async ack (results delivered separately)
-		})
+		if startErr := cmd.Start(); startErr != nil {
+			writeError(w, http.StatusInternalServerError, "review: start: "+startErr.Error())
+			return
+		}
+
+		// Stream subprocess stdout to the HTTP response line-by-line.
+		// We use Transfer-Encoding: chunked (the default for HTTP/1.1 when no
+		// Content-Length is set) and flush after every line so the client
+		// receives each progress line immediately.
+		//
+		// The response body is a plain text stream terminated by one of two
+		// sentinel lines that the client consumes but does not print:
+		//
+		//   __PRISM_REVIEW_PASSED__   — subprocess exited 0
+		//   __PRISM_REVIEW_FAILED__   — subprocess exited non-zero
+		//
+		// The sentinel conveys pass/fail status through the streaming body so
+		// that proxyReviewAsync() can return an appropriate error without
+		// needing a JSON wrapper around the stream.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, canFlush := w.(http.Flusher)
+
+		scanner := bufio.NewScanner(stdoutPipe)
+		// Allow lines up to 1 MiB to handle very long output without truncation.
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			_, _ = fmt.Fprintln(w, line)
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		// scanner.Err() is checked implicitly — if the pipe closed cleanly it
+		// returns nil; errors are logged below after cmd.Wait().
+
+		waitErr := cmd.Wait()
+		if stderrBuf.Len() > 0 {
+			log.Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(stderrBuf.String()))
+		}
+
+		// Write pass/fail sentinel. The client (proxyReviewAsync) consumes
+		// this line and does not print it to its own stdout.
+		if waitErr != nil {
+			log.Printf("sidecar: host-API /review: review process failed: %v", waitErr)
+			_, _ = fmt.Fprintln(w, ReviewSentinelFailed)
+		} else {
+			_, _ = fmt.Fprintln(w, ReviewSentinelPassed)
+		}
+		if canFlush {
+			flusher.Flush()
+		}
 	})
 
 	// POST /cleanup
@@ -3036,6 +3083,18 @@ func (s *Sidecar) worktreePathForSession(sessionName string) (string, error) {
 	}
 	return status.Worktree, nil
 }
+
+// ReviewSentinelPassed and ReviewSentinelFailed are the terminal lines written
+// by the /review handler after the subprocess exits. They convey pass/fail
+// status through the streaming response body so that proxyReviewAsync() can
+// determine the exit status without needing a JSON wrapper.
+//
+// The client (cmd/hostapi.go proxyReviewAsync) consumes whichever sentinel
+// arrives and does not echo it to the worker's stdout.
+const (
+	ReviewSentinelPassed = "__PRISM_REVIEW_PASSED__"
+	ReviewSentinelFailed = "__PRISM_REVIEW_FAILED__"
+)
 
 // reviewAgentAllowlist is the set of valid review agent names accepted by the
 // /review host-API endpoint. These match the names in review.Agents().

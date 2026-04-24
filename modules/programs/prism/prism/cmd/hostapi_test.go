@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 // mockUnixServer starts a minimal HTTP server on a fresh Unix socket and
@@ -869,5 +871,187 @@ func TestProxyToHostAPI_TCPScheme_ErrorResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tcp server error") {
 		t.Errorf("error %q does not contain expected message", err.Error())
+	}
+}
+
+// ── proxyReviewAsync streaming tests (issue #815) ─────────────────────────────
+
+// TestProxyReviewAsync_LinesArrivedProgressively verifies that output lines
+// produced by the sidecar /review endpoint are printed to stdout as they arrive
+// (AC: lines produced by subprocess arrive in response body as emitted).
+//
+// The mock server writes lines one at a time with a short delay between them,
+// then appends the passed sentinel. proxyReviewAsync must print each line to
+// stdout and must not print the sentinel itself.
+func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
+	const (
+		line1 = "Review-Goal started"
+		line2 = "Review-Code started"
+		line3 = "Review-Goal finished in 1.2s"
+	)
+
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Verify the request path and method.
+		if r.URL.Path != "/review" || r.Method != "POST" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Stream response: write lines, flush between each, then sentinel.
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flusher", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		for _, line := range []string{line1, line2, line3} {
+			_, _ = w.Write([]byte(line + "\n"))
+			flusher.Flush()
+		}
+		_, _ = w.Write([]byte(sidecar.ReviewSentinelPassed + "\n"))
+		flusher.Flush()
+	})
+
+	var stdout string
+	var callErr error
+	stdout = captureStdout(t, func() {
+		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "")
+	})
+
+	if callErr != nil {
+		t.Fatalf("proxyReviewAsync: unexpected error: %v", callErr)
+	}
+
+	// All three progress lines must appear in stdout.
+	for _, want := range []string{line1, line2, line3} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout %q does not contain expected line %q", stdout, want)
+		}
+	}
+
+	// The sentinel must NOT appear in stdout.
+	if strings.Contains(stdout, sidecar.ReviewSentinelPassed) {
+		t.Errorf("stdout %q must not contain the passed sentinel", stdout)
+	}
+	if strings.Contains(stdout, sidecar.ReviewSentinelFailed) {
+		t.Errorf("stdout %q must not contain the failed sentinel", stdout)
+	}
+}
+
+// TestProxyReviewAsync_SentinelConsumedNotEchoed verifies that proxyReviewAsync
+// consumes the sentinel line and does NOT echo it to stdout (AC: sentinel marker
+// is NOT printed to the worker's stdout).
+func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Review-Goal started\n"))
+		_, _ = w.Write([]byte(sidecar.ReviewSentinelPassed + "\n"))
+	})
+
+	var stdout string
+	var callErr error
+	stdout = captureStdout(t, func() {
+		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "")
+	})
+
+	if callErr != nil {
+		t.Fatalf("proxyReviewAsync: unexpected error: %v", callErr)
+	}
+
+	// Sentinel must NOT be in stdout.
+	if strings.Contains(stdout, sidecar.ReviewSentinelPassed) {
+		t.Errorf("stdout %q must not contain the passed sentinel", stdout)
+	}
+
+	// The regular line must be in stdout.
+	if !strings.Contains(stdout, "Review-Goal started") {
+		t.Errorf("stdout %q should contain 'Review-Goal started'", stdout)
+	}
+}
+
+// TestProxyReviewAsync_FailedSentinelProducesError verifies that when the sidecar
+// writes ReviewSentinelFailed (exit-1 subprocess), proxyReviewAsync returns a
+// non-nil error and the output lines before the sentinel are still printed
+// (AC: exit-1 subprocess produces non-zero exit and correct output).
+func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
+	const progressLine = "Review-Goal started"
+
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(progressLine + "\n"))
+		_, _ = w.Write([]byte(sidecar.ReviewSentinelFailed + "\n"))
+	})
+
+	var stdout string
+	var callErr error
+	stdout = captureStdout(t, func() {
+		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "")
+	})
+
+	// proxyReviewAsync must return a non-nil error when sentinel says failed.
+	if callErr == nil {
+		t.Fatal("expected non-nil error when server sends ReviewSentinelFailed")
+	}
+
+	// The progress line before the sentinel must have been printed to stdout.
+	if !strings.Contains(stdout, progressLine) {
+		t.Errorf("stdout %q should contain progress line %q emitted before sentinel", stdout, progressLine)
+	}
+
+	// Neither sentinel must appear in stdout.
+	if strings.Contains(stdout, sidecar.ReviewSentinelFailed) {
+		t.Errorf("stdout %q must not contain the failed sentinel", stdout)
+	}
+	if strings.Contains(stdout, sidecar.ReviewSentinelPassed) {
+		t.Errorf("stdout %q must not contain the passed sentinel", stdout)
+	}
+}
+
+// TestProxyReviewAsync_MidStreamDisconnectReportsError verifies that if the
+// server closes the connection without writing a sentinel (subprocess died
+// mid-stream), proxyReviewAsync returns a clear error rather than hanging
+// (AC: edge-case — if host-side subprocess dies mid-stream, worker's invocation
+// reports a clear error).
+func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Write some output then close without sentinel.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Review-Goal started\n"))
+		// Close the connection abruptly by returning without writing the sentinel.
+	})
+
+	var callErr error
+	_ = captureStdout(t, func() {
+		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "")
+	})
+
+	if callErr == nil {
+		t.Fatal("expected non-nil error when stream ends without sentinel")
+	}
+	if !strings.Contains(callErr.Error(), "sentinel") {
+		t.Errorf("error %q should mention 'sentinel'", callErr.Error())
+	}
+}
+
+// TestProxyReviewAsync_HTTP500BeforeStreamReturnsError verifies that an HTTP 500
+// response (e.g. sidecar validation failure before streaming starts) is surfaced
+// as a clear error by proxyReviewAsync.
+func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"review process failed — check host logs for details"}`))
+	})
+
+	var callErr error
+	_ = captureStdout(t, func() {
+		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "")
+	})
+
+	if callErr == nil {
+		t.Fatal("expected non-nil error for HTTP 500 response")
+	}
+	if !strings.Contains(callErr.Error(), "review process failed") {
+		t.Errorf("error %q should mention 'review process failed'", callErr.Error())
 	}
 }
