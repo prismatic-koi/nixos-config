@@ -560,6 +560,12 @@ type Opts struct {
 	// agents are productive from turn 1. When nil or FetchFailed is true, a
 	// minimal fallback prompt is used instead.
 	PRCtx *PRContext
+	// SizeBudget is the maximum inline size (bytes) for full per-agent findings
+	// in the formatted output. When the total findings exceed this budget they
+	// are written to /tmp/prism-review-<pr>-round-<N>.md and a pointer is
+	// included inline. Zero uses the default (20 KB). Can also be overridden
+	// via the PRISM_REVIEW_SIZE_BUDGET environment variable.
+	SizeBudget int
 }
 
 // FormatAgentDisplayName converts an agent name like "review-goal" to a
@@ -950,6 +956,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		AgentSessions: liveSessions,
 		DBPath:        dbPath,
 		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
+		SizeBudget:    opts.SizeBudget,
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.
@@ -1529,38 +1536,122 @@ func cleanupAgentSession(d *db.DB, agentSession string) {
 	_ = d.PurgeBusMessages(agentSession)
 }
 
+// DefaultFindingsSizeBudget is the default maximum inline size (in bytes) for
+// full per-agent findings. When the total findings exceed this budget, they are
+// written to a file and a pointer is included instead.
+const DefaultFindingsSizeBudget = 20 * 1024 // 20 KB
+
+// FindingsSizeBudgetEnvVar is the environment variable that overrides the
+// default findings size budget. Set to an integer byte count (e.g. "10240").
+const FindingsSizeBudgetEnvVar = "PRISM_REVIEW_SIZE_BUDGET"
+
+// FindingsFilePath returns the path where full findings are written when the
+// size budget is exceeded. prNumber and round identify the review run.
+func FindingsFilePath(prNumber string, round int) string {
+	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.md", prNumber, round)
+}
+
+// resolveSizeBudget returns the effective size budget. sizeBudget ≤ 0 means use
+// the default (or the env-var override, if set).
+func resolveSizeBudget(sizeBudget int) int {
+	if sizeBudget > 0 {
+		return sizeBudget
+	}
+	if v := os.Getenv(FindingsSizeBudgetEnvVar); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return DefaultFindingsSizeBudget
+}
+
 // FormatResults formats the aggregated results as a human-readable report.
+// It always includes a one-line-per-agent summary header for terse scanning,
+// followed by full per-agent findings (verdict, summary, blocking issues, and
+// non-blocking observations).
+//
+// When total output exceeds sizeBudget bytes (default 20 KB when ≤ 0), the
+// full findings are written to /tmp/prism-review-<pr>-round-<round>.md and the
+// inline output contains only summaries + blocking issues with a file pointer.
+// Pass round=0 to omit the file-overflow path (used in unit tests).
+//
 // Returns the formatted string and a boolean indicating whether all passed.
-func FormatResults(results []AgentResult, prNumber string) (string, bool) {
-	var sb strings.Builder
+func FormatResults(results []AgentResult, prNumber string, round int, sizeBudget int) (string, bool) {
+	budget := resolveSizeBudget(sizeBudget)
+
+	var header strings.Builder
+	var findings strings.Builder
 	allPassed := true
 	var failed []string
 
 	for _, r := range results {
+		// ── Summary header line ──────────────────────────────────────────
 		if r.Passed {
-			sb.WriteString(fmt.Sprintf("✓ %-20s passed\n", r.Agent.Name))
+			header.WriteString(fmt.Sprintf("✓ %-20s passed\n", r.Agent.Name))
 		} else {
 			allPassed = false
 			failed = append(failed, r.Agent.Name)
 			if r.IsError {
-				sb.WriteString(fmt.Sprintf("✗ %-20s %s\n", r.Agent.Name, r.Output))
+				header.WriteString(fmt.Sprintf("✗ %-20s error\n", r.Agent.Name))
 			} else {
-				// Content failure: include the output.
-				sb.WriteString(fmt.Sprintf("✗ %-20s\n", r.Agent.Name))
-				// Indent the output.
-				for _, line := range strings.Split(r.Output, "\n") {
-					sb.WriteString("  " + line + "\n")
-				}
+				header.WriteString(fmt.Sprintf("✗ %-20s failed\n", r.Agent.Name))
+			}
+		}
+
+		// ── Full per-agent findings ──────────────────────────────────────
+		findings.WriteString(fmt.Sprintf("\n### %s\n\n", r.Agent.Name))
+		if r.Passed {
+			findings.WriteString("**Verdict:** PASS\n\n")
+		} else if r.IsError {
+			findings.WriteString("**Verdict:** ERROR\n\n")
+		} else {
+			findings.WriteString("**Verdict:** FAIL\n\n")
+		}
+		if r.Output != "" {
+			findings.WriteString(r.Output)
+			if !strings.HasSuffix(r.Output, "\n") {
+				findings.WriteString("\n")
 			}
 		}
 	}
 
 	if !allPassed {
-		sb.WriteString(fmt.Sprintf("\n%d agent(s) failed. Retry: prism review %s --only %s\n",
+		header.WriteString(fmt.Sprintf("\n%d agent(s) failed. Retry: prism review %s --only %s\n",
 			len(failed), prNumber, strings.Join(failed, ",")))
 	}
 
-	return sb.String(), allPassed
+	findingsStr := findings.String()
+	headerStr := header.String()
+
+	// ── Size budget check ────────────────────────────────────────────────
+	totalSize := len(headerStr) + len(findingsStr)
+	if round > 0 && totalSize > budget {
+		// Overflow: write full findings to file and inline a pointer.
+		filePath := FindingsFilePath(prNumber, round)
+		fullContent := headerStr + "\n## Per-agent findings\n" + findingsStr
+		writeErr := os.WriteFile(filePath, []byte(fullContent), 0o644)
+
+		var result strings.Builder
+		result.WriteString(headerStr)
+		if writeErr == nil {
+			result.WriteString(fmt.Sprintf(
+				"\nFull findings: `%s` (%d KB) — read with `cat` or `rg` as needed.\n",
+				filePath, totalSize/1024,
+			))
+		} else {
+			// File write failed — inline the findings anyway rather than losing them.
+			result.WriteString("\n## Per-agent findings\n")
+			result.WriteString(findingsStr)
+		}
+		return result.String(), allPassed
+	}
+
+	// Findings fit within budget — inline them.
+	var result strings.Builder
+	result.WriteString(headerStr)
+	result.WriteString("\n## Per-agent findings\n")
+	result.WriteString(findingsStr)
+	return result.String(), allPassed
 }
 
 // LookupParentSession looks up the parent session from the environment or DB.

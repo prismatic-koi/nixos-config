@@ -56,6 +56,7 @@ func init() {
 	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
+	reviewCmd.Flags().Int("size-budget", 0, "Max inline size (bytes) for full per-agent findings before overflow-to-file (default 20480; overridden by PRISM_REVIEW_SIZE_BUDGET env var)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -78,6 +79,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	onlyFlag, _ := cmd.Flags().GetString("only")
 	onlyChanged := cmd.Flags().Changed("only")
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
+	sizeBudgetFlag, _ := cmd.Flags().GetInt("size-budget")
 
 	// Resolve the full agent list and apply --only filtering up-front.
 	// This is done before the container-mode branch so that validation
@@ -244,6 +246,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
 		RuntimeEnvVars: h.RuntimeEnv(),
+		SizeBudget:     sizeBudgetFlag,
 	}
 
 	// Load profiles for container mode — passed through to review.RunAsync so
