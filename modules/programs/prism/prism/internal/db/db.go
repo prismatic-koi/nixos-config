@@ -2,8 +2,8 @@
 //
 // The database is located at $XDG_STATE_HOME/prism/prism.db, falling back to
 // $HOME/.local/state/prism/prism.db. All tables (agent_events, agent_status,
-// bus_messages, session_groups, schema_version) are created on Open if they do
-// not already exist.
+// bus_messages, session_groups, sessions, schema_version) are created on Open
+// if they do not already exist.
 package db
 
 import (
@@ -49,6 +49,10 @@ type Event struct {
 	Repo              string
 	Worktree          string
 	HarnessSessionID  *string
+	// InstanceID links this event to a row in the sessions table.
+	// NULL for legacy events and for call sites that do not have a known
+	// instance_id (e.g. the pane-died hook before a session_start row exists).
+	InstanceID        *string
 	Type              string
 	Payload           string // raw JSON
 	CreatedAt         time.Time
@@ -116,10 +120,30 @@ CREATE TABLE IF NOT EXISTS agent_events (
   harness_session_id TEXT,
   type               TEXT NOT NULL,
   payload            TEXT NOT NULL,
-  created_at         INTEGER NOT NULL
+  created_at         INTEGER NOT NULL,
+  instance_id        TEXT REFERENCES sessions(instance_id)
 );
 CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  instance_id         TEXT PRIMARY KEY,
+  session_name        TEXT NOT NULL,
+  agent_role          TEXT,
+  root_agent_name     TEXT,
+  repo                TEXT NOT NULL,
+  worktree            TEXT NOT NULL,
+  harness             TEXT NOT NULL,
+  harness_session_id  TEXT,
+  group_id            TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+  started_at          INTEGER NOT NULL,
+  ended_at            INTEGER,
+  end_state           TEXT,
+  archive_path        TEXT,
+  prism_version       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS session_groups (
   group_id       TEXT PRIMARY KEY,
@@ -208,6 +232,14 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // supports ALTER TABLE ... RENAME COLUMN ... since 3.25 (2018). The migration
 // is idempotent: it checks whether opencode_sid still exists before acting, so
 // running it twice against an already-migrated DB is safe.
+// v15→v16 introduces the sessions table (immutable-per-incarnation, keyed by
+// instance_id) and adds a nullable instance_id TEXT column to agent_events
+// (FK to sessions.instance_id). It also backfills one sessions row per
+// currently-live agent_status row (ended_at IS NULL AND instance_id IS NOT NULL
+// AND instance_id != '') so in-flight sessions are queryable immediately after
+// migration. Rows with empty instance_id are skipped (a warning is printed).
+// This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
+// guard (pragma_table_info check) make it safe to run on an already-migrated DB.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -643,6 +675,129 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v14→v15: bump version: %w", err)
 		}
 		version = 15
+	}
+	if version == 15 {
+		// Migration v15 → v16: introduce the sessions table (immutable per
+		// incarnation, keyed by instance_id) and add instance_id TEXT to
+		// agent_events. Also backfill one sessions row per live agent_status row
+		// so in-flight sessions are queryable immediately post-migration.
+		//
+		// Idempotency:
+		//  - CREATE TABLE IF NOT EXISTS is always safe.
+		//  - The ALTER TABLE is guarded by a pragma_table_info check (same
+		//    pattern as v14→v15) so running twice is harmless.
+		//  - The backfill INSERT uses INSERT OR IGNORE so duplicate instance_ids
+		//    do not fail.
+		//
+		// FK ordering: sessions.group_id → session_groups, which must already
+		// exist (created in the declarative schema block and in v8→v9). When FK
+		// enforcement is ON this would fail if session_groups didn't exist, but
+		// the migration runs after the schema block so it is always present.
+		steps := []string{
+			`CREATE TABLE IF NOT EXISTS sessions (
+			  instance_id         TEXT PRIMARY KEY,
+			  session_name        TEXT NOT NULL,
+			  agent_role          TEXT,
+			  root_agent_name     TEXT,
+			  repo                TEXT NOT NULL,
+			  worktree            TEXT NOT NULL,
+			  harness             TEXT NOT NULL,
+			  harness_session_id  TEXT,
+			  group_id            TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+			  started_at          INTEGER NOT NULL,
+			  ended_at            INTEGER,
+			  end_state           TEXT,
+			  archive_path        TEXT,
+			  prism_version       TEXT
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC)`,
+		}
+		for _, s := range steps {
+			if _, err := conn.Exec(s); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v15→v16: create sessions: %w", err)
+			}
+		}
+
+		// Add instance_id to agent_events if it doesn't exist yet.
+		var aeColExists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'instance_id'`,
+		).Scan(&aeColExists); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v15→v16: check agent_events.instance_id: %w", err)
+		}
+		if aeColExists == 0 {
+			if _, err := conn.Exec(`ALTER TABLE agent_events ADD COLUMN instance_id TEXT REFERENCES sessions(instance_id)`); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v15→v16: add agent_events.instance_id: %w", err)
+			}
+		}
+
+		// Backfill sessions from currently-live agent_status rows. A "live" row
+		// is one where ended_at IS NULL and instance_id is non-empty. Rows with
+		// empty or NULL instance_id are skipped (a warning is emitted). We use
+		// the current time as started_at since the real start time is not stored.
+		// INSERT OR IGNORE makes this idempotent.
+		backfillRows, err := conn.Query(`
+			SELECT session_name, instance_id, repo, worktree,
+			       COALESCE(harness, 'opencode'),
+			       harness_session_id, group_id, root_agent_name
+			  FROM agent_status
+			 WHERE ended_at IS NULL
+			   AND instance_id IS NOT NULL
+			   AND instance_id != ''`)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v15→v16: query live sessions: %w", err)
+		}
+		type backfillRow struct {
+			sessionName      string
+			instanceID       string
+			repo             string
+			worktree         string
+			harness          string
+			harnessSessionID *string
+			groupID          *string
+			rootAgentName    *string
+		}
+		var rows []backfillRow
+		for backfillRows.Next() {
+			var r backfillRow
+			if err := backfillRows.Scan(&r.sessionName, &r.instanceID, &r.repo, &r.worktree,
+				&r.harness, &r.harnessSessionID, &r.groupID, &r.rootAgentName); err != nil {
+				backfillRows.Close()
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v15→v16: scan live session: %w", err)
+			}
+			rows = append(rows, r)
+		}
+		backfillRows.Close()
+		if err := backfillRows.Err(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v15→v16: iterate live sessions: %w", err)
+		}
+		nowMs := time.Now().UnixMilli()
+		for _, r := range rows {
+			if _, err := conn.Exec(`
+				INSERT OR IGNORE INTO sessions
+				  (instance_id, session_name, repo, worktree, harness,
+				   harness_session_id, group_id, root_agent_name, started_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				r.instanceID, r.sessionName, r.repo, r.worktree, r.harness,
+				r.harnessSessionID, r.groupID, r.rootAgentName, nowMs,
+			); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v15→v16: backfill sessions for %q: %w", r.sessionName, err)
+			}
+		}
+
+		if _, err := conn.Exec("UPDATE schema_version SET version = 16"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v15→v16: bump version: %w", err)
+		}
+		version = 16
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1175,9 +1330,9 @@ func (d *DB) WriteEvent(e Event) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	const insertQ = `
-INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt); err != nil {
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID); err != nil {
 		return fmt.Errorf("db: write event: insert: %w", err)
 	}
 
@@ -1271,7 +1426,7 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 		reverseResult = true
 	}
 
-	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
 		where + " ORDER BY created_at " + orderDir
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
@@ -1287,7 +1442,7 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1339,7 +1494,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 		conditions = append(conditions, "type IN ("+strings.Join(typePlaceholders, ",")+")")
 	}
 
-	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
 		" WHERE " + strings.Join(conditions, " AND ") +
 		" ORDER BY created_at ASC"
 
@@ -1353,7 +1508,7 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1428,7 +1583,7 @@ func (d *DB) AllSessionEvents(sessionName string) ([]Event, error) {
 // (Unix milliseconds), ordered by created_at ASC. Used by `prism stats --days`.
 func (d *DB) EventsSince(sinceMs int64) ([]Event, error) {
 	const q = `
-SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at
+SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id
 FROM agent_events
 WHERE created_at >= ?
 ORDER BY created_at ASC`
@@ -1442,7 +1597,7 @@ ORDER BY created_at ASC`
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1464,6 +1619,76 @@ func (d *DB) WaitingCount() (int, error) {
 		return 0, fmt.Errorf("db: waiting count: %w", err)
 	}
 	return n, nil
+}
+
+// Session represents a row in the sessions table.
+// Each row is immutable per incarnation: it is inserted on session start
+// and updated only on session cleanup (ended_at, end_state).
+type Session struct {
+	InstanceID       string
+	SessionName      string
+	AgentRole        *string
+	RootAgentName    *string
+	Repo             string
+	Worktree         string
+	Harness          string
+	HarnessSessionID *string
+	GroupID          *string
+	StartedAt        time.Time
+	EndedAt          *time.Time
+	EndState         *string
+	ArchivePath      *string
+	PrismVersion     *string
+}
+
+// InsertSession inserts a new row into the sessions table for the given
+// incarnation. Called from the tmux-session-start handler immediately after
+// the instance_id is minted (or confirmed) for the session.
+//
+// Fields not yet known at session-start time (ended_at, end_state,
+// archive_path) are stored as NULL. The harness field defaults to "opencode"
+// when empty. Inserting a duplicate instance_id is a no-op (INSERT OR IGNORE).
+func (d *DB) InsertSession(s Session) error {
+	if s.Harness == "" {
+		s.Harness = "opencode"
+	}
+	startedAt := s.StartedAt.UnixMilli()
+	if startedAt == 0 {
+		startedAt = time.Now().UnixMilli()
+	}
+	const q = `
+INSERT OR IGNORE INTO sessions
+  (instance_id, session_name, agent_role, root_agent_name, repo, worktree,
+   harness, harness_session_id, group_id, started_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := d.conn.Exec(q,
+		s.InstanceID, s.SessionName, s.AgentRole, s.RootAgentName,
+		s.Repo, s.Worktree, s.Harness, s.HarnessSessionID, s.GroupID,
+		startedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("db: insert session: %w", err)
+	}
+	return nil
+}
+
+// UpdateSessionEnded sets ended_at and end_state on the sessions row for
+// instanceID. Called during prism cleanup to record when and how the session
+// ended. archive_path remains NULL in this PR (populated in #997).
+//
+// It is a no-op when no row exists for instanceID (returns nil).
+func (d *DB) UpdateSessionEnded(instanceID, endState string) error {
+	now := time.Now().UnixMilli()
+	const q = `
+UPDATE sessions
+   SET ended_at  = ?,
+       end_state = ?
+ WHERE instance_id = ?`
+	_, err := d.conn.Exec(q, now, endState, instanceID)
+	if err != nil {
+		return fmt.Errorf("db: update session ended: %w", err)
+	}
+	return nil
 }
 
 // SetInstanceID writes a UUID instance_id to the agent_status row for
@@ -1653,7 +1878,7 @@ func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, er
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
 		where + " ORDER BY created_at DESC"
 
 	rows, err := d.conn.Query(q, args...)
@@ -1666,7 +1891,7 @@ func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, er
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan doom loop event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1699,7 +1924,7 @@ func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64)
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
 		where + " ORDER BY created_at ASC"
 
 	rows, err := d.conn.Query(q, args...)
@@ -1712,7 +1937,7 @@ func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64)
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan permission event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)
@@ -1757,7 +1982,7 @@ func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string,
 
 	where := " WHERE " + strings.Join(conditions, " AND ")
 
-	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at FROM agent_events" +
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
 		where + " ORDER BY created_at DESC"
 
 	if limit > 0 {
@@ -1777,7 +2002,7 @@ func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string,
 	for rows.Next() {
 		var e Event
 		var createdAt int64
-		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
 			return nil, fmt.Errorf("db: scan audit event: %w", err)
 		}
 		e.CreatedAt = time.UnixMilli(createdAt)

@@ -1520,12 +1520,19 @@ func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string)
 		sid = &s.opencodeSID
 	}
 
+	var instanceIDPtr *string
+	if s.cfg.InstanceID != "" {
+		iid := s.cfg.InstanceID
+		instanceIDPtr = &iid
+	}
+
 	e := db.Event{
 		ID:               uuid.New().String(),
 		SessionName:      s.cfg.SessionName,
 		Repo:             s.cfg.Repo,
 		Worktree:         s.cfg.Worktree,
 		HarnessSessionID: sid,
+		InstanceID:       instanceIDPtr,
 		Type:             eventType,
 		Payload:          string(data),
 		CreatedAt:        s.cfg.Clock.Now(),

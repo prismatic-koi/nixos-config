@@ -122,11 +122,19 @@ var eventStateChangeCmd = &cobra.Command{
 			return fmt.Errorf("event state-change: upsert status: %w", err)
 		}
 
+		// Carry instance_id forward on every event so it's linked to the
+		// sessions table. Look up after the upsert so we see the freshest value.
+		var instanceIDPtr *string
+		if sc, scErr := d.CurrentStatus(session); scErr == nil && sc != nil && sc.InstanceID != nil {
+			instanceIDPtr = sc.InstanceID
+		}
+
 		e := db.Event{
 			ID:          uuid.New().String(),
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  instanceIDPtr,
 			Type:        "state_change",
 			Payload:     fmt.Sprintf(`{"state":%q}`, state),
 			CreatedAt:   time.Now(),
@@ -210,6 +218,7 @@ var eventPaneDiedCmd = &cobra.Command{
 			SessionName: session,
 			Repo:        s.Repo,
 			Worktree:    s.Worktree,
+			InstanceID:  s.InstanceID,
 			Type:        "state_change",
 			Payload:     fmt.Sprintf(`{"state":%q}`, string(agent.StateInterrupted)),
 			CreatedAt:   time.Now(),
@@ -274,13 +283,50 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		// the DB remain in sync. For standalone invocations (tmux hook, restore
 		// path) where no instance_id has been pre-written, generate a fresh UUID.
 		var instanceID string
-		if existing, stErr := d.CurrentStatus(session); stErr == nil && existing != nil && existing.InstanceID != nil {
-			instanceID = *existing.InstanceID
+		currentStatus, stErr := d.CurrentStatus(session)
+		if stErr == nil && currentStatus != nil && currentStatus.InstanceID != nil {
+			instanceID = *currentStatus.InstanceID
 		} else {
 			instanceID = uuid.New().String()
 			if err := d.SetInstanceID(session, instanceID); err != nil {
 				// Non-fatal: instance isolation degrades gracefully.
 				fmt.Fprintf(os.Stderr, "prism event tmux-session-start: set instance_id: %v\n", err)
+			}
+		}
+
+		// Insert a row into the sessions table for this incarnation. This is
+		// idempotent (INSERT OR IGNORE) so a double-call is harmless.
+		{
+			var harnessSessionID *string
+			var groupID *string
+			var rootAgentName *string
+			if currentStatus != nil {
+				harnessSessionID = currentStatus.HarnessSessionID
+				groupID = currentStatus.GroupID
+				rootAgentName = currentStatus.RootAgentName
+			}
+			harness := "opencode"
+			if currentStatus != nil && currentStatus.Harness != nil {
+				harness = *currentStatus.Harness
+			}
+			var agentRolePtr *string
+			if agentRole != "" {
+				agentRolePtr = &agentRole
+			}
+			sessRow := db.Session{
+				InstanceID:       instanceID,
+				SessionName:      session,
+				AgentRole:        agentRolePtr,
+				RootAgentName:    rootAgentName,
+				Repo:             repo,
+				Worktree:         worktree,
+				Harness:          harness,
+				HarnessSessionID: harnessSessionID,
+				GroupID:          groupID,
+			}
+			if err := d.InsertSession(sessRow); err != nil {
+				// Non-fatal: session table is new infrastructure; log and continue.
+				fmt.Fprintf(os.Stderr, "prism event tmux-session-start: insert session: %v\n", err)
 			}
 		}
 
@@ -291,11 +337,13 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: purge stale instance messages: %v\n", err)
 		}
 
+		instanceIDPtr := &instanceID
 		e := db.Event{
 			ID:          uuid.New().String(),
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  instanceIDPtr,
 			Type:        "tmux_session_start",
 			Payload:     `{}`,
 			CreatedAt:   time.Now(),
@@ -386,6 +434,7 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		_ = os.Remove(sentinel) // ignore error — file may not exist
 
 		// Write the end event using the known repo/worktree from the status row.
+		// Capture instance_id before it is cleared by ClearInstanceID above.
 		repo := s.Repo
 		worktree := s.Worktree
 
@@ -394,6 +443,7 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  s.InstanceID,
 			Type:        "tmux_session_end",
 			Payload:     `{}`,
 			CreatedAt:   time.Now(),
@@ -428,9 +478,11 @@ var eventCompactionCmd = &cobra.Command{
 
 		repo := ""
 		worktree := ""
+		var instanceIDPtr *string
 		if s != nil {
 			repo = s.Repo
 			worktree = s.Worktree
+			instanceIDPtr = s.InstanceID
 		}
 
 		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateCompacting), nil, nil); err != nil {
@@ -442,6 +494,7 @@ var eventCompactionCmd = &cobra.Command{
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  instanceIDPtr,
 			Type:        "compaction",
 			Payload:     `{}`,
 			CreatedAt:   time.Now(),
@@ -477,9 +530,11 @@ var eventErrorCmd = &cobra.Command{
 
 		repo := ""
 		worktree := ""
+		var instanceIDPtr *string
 		if s != nil {
 			repo = s.Repo
 			worktree = s.Worktree
+			instanceIDPtr = s.InstanceID
 		}
 
 		if err := d.UpsertStatus(session, repo, worktree, string(agent.StateError), nil, nil); err != nil {
@@ -492,6 +547,7 @@ var eventErrorCmd = &cobra.Command{
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  instanceIDPtr,
 			Type:        "error",
 			Payload:     payload,
 			CreatedAt:   time.Now(),
@@ -535,9 +591,11 @@ the plugin; this command only writes the event.`,
 
 		repo := ""
 		worktree := ""
+		var instanceIDPtr *string
 		if s != nil {
 			repo = s.Repo
 			worktree = s.Worktree
+			instanceIDPtr = s.InstanceID
 		}
 
 		now := time.Now()
@@ -547,6 +605,7 @@ the plugin; this command only writes the event.`,
 			SessionName: session,
 			Repo:        repo,
 			Worktree:    worktree,
+			InstanceID:  instanceIDPtr,
 			Type:        "doom_loop_detected",
 			Payload:     payload,
 			CreatedAt:   now,
