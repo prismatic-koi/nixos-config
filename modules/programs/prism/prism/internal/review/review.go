@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
+// linkedIssueRe matches "Closes #N", "Refs #N", "Fixes #N", "References #N"
+// (case-insensitive) in PR body text. Capture group 1 is the issue number.
+var linkedIssueRe = regexp.MustCompile(`(?i)(?:closes|fixes|refs|references)\s+#(\d+)`)
+
 // DiffMaxBytes is the maximum diff size (in bytes) before truncation.
 // Configurable for testing; production code uses this default.
 const DiffMaxBytes = 200 * 1024 // 200 KB
@@ -46,6 +51,16 @@ const DiffMaxBytes = 200 * 1024 // 200 KB
 // DiffMaxLines is the maximum number of diff lines before truncation.
 // Configurable for testing; production code uses this default.
 const DiffMaxLines = 4000
+
+// DiffInlineMaxLines is the threshold (in lines) below which diffs are inlined
+// directly in the agent prompt. Diffs at or above this threshold are written to
+// a temp file and agents are given the file path. Configurable via the
+// PRISM_REVIEW_DIFF_INLINE_MAX env var or --diff-inline-max flag.
+const DiffInlineMaxLines = 500
+
+// DiffInlineMaxBytes is the threshold (in bytes) below which diffs are inlined.
+// Used alongside DiffInlineMaxLines; the smaller of the two limits applies.
+const DiffInlineMaxBytes = 20 * 1024 // 20 KB
 
 // PRContext holds PR metadata and diff fetched once at spawn time, before any
 // review-agent sessions are created. All five agents receive the same context
@@ -71,15 +86,34 @@ type PRContext struct {
 	Deletions int
 	// ChangedFiles is the number of files changed.
 	ChangedFiles int
-	// Diff is the full PR diff (may be truncated).
+	// RecentCommits is the output of `git log --oneline -20`.
+	RecentCommits string
+	// BranchCommits is the output of `git log origin/<base>..HEAD`.
+	BranchCommits string
+	// Diff is the full PR diff (may be truncated if above inline threshold).
+	// When DiffFilePath is non-empty, Diff is empty and the diff is on disk.
 	Diff string
 	// DiffTruncated is true when the diff was truncated due to size limits.
 	DiffTruncated bool
+	// DiffFilePath is the path to the diff file when the diff is above the
+	// inline threshold. When empty, the diff is inlined in Diff.
+	DiffFilePath string
+	// DiffLines is the total number of lines in the diff (for reporting).
+	DiffLines int
+	// DiffBytes is the total size in bytes of the diff (for reporting).
+	DiffBytes int
+	// LinkedIssues contains the fetched text for each issue referenced by
+	// "Closes #N" or "Refs #N" in the PR body. Keys are issue numbers.
+	// Values are the raw output of `gh issue view <N>`, or a failure marker
+	// if the issue could not be fetched.
+	LinkedIssues map[string]string
 	// FetchFailed is true when gh failed and only minimal info is available.
 	FetchFailed bool
 	// WorktreePath is the absolute path to the worktree being reviewed.
 	// Review agents should treat the worktree as read-only.
 	WorktreePath string
+	// Round is the review round number (1-indexed). Used in DiffFilePath.
+	Round int
 }
 
 // prViewJSON is the JSON shape returned by `gh pr view --json ...`.
@@ -96,58 +130,188 @@ type prViewJSON struct {
 	ChangedFiles int    `json:"changedFiles"`
 }
 
+// FetchPRContextOpts controls how FetchPRContext gathers context.
+type FetchPRContextOpts struct {
+	// PRNumber is the pull request number (e.g. "819").
+	PRNumber string
+	// Round is the 1-indexed review round number. Used to name the diff file
+	// when the diff exceeds the inline threshold (avoids collisions).
+	Round int
+	// MaxBytes is the hard cap on diff size before truncation. Zero means
+	// use DiffMaxBytes.
+	MaxBytes int
+	// MaxLines is the hard cap on diff line count before truncation. Zero means
+	// use DiffMaxLines.
+	MaxLines int
+	// InlineMaxBytes is the threshold below which the diff is inlined in the
+	// prompt. Zero means use DiffInlineMaxBytes.
+	InlineMaxBytes int
+	// InlineMaxLines is the threshold below which the diff is inlined in the
+	// prompt. Zero means use DiffInlineMaxLines.
+	InlineMaxLines int
+	// Worktree is the path to the git worktree for running git commands.
+	// When empty, git commands run in the current directory.
+	Worktree string
+}
+
 // FetchPRContext fetches PR metadata and diff from the gh CLI.
 // If gh fails or is unavailable, it returns a PRContext with FetchFailed=true
 // and only the PR number populated — the caller must not treat this as an error;
 // the review run continues with a minimal prompt (fallback behaviour).
 // maxBytes and maxLines control truncation of the diff; pass 0 to use the defaults.
 func FetchPRContext(prNumber string, maxBytes, maxLines int) PRContext {
+	return FetchPRContextWithOpts(FetchPRContextOpts{
+		PRNumber: prNumber,
+		MaxBytes: maxBytes,
+		MaxLines: maxLines,
+	})
+}
+
+// FetchPRContextWithOpts fetches PR metadata, git log, diff, and linked issues.
+// It is the full implementation; FetchPRContext is a thin wrapper for callers
+// that only need the legacy (maxBytes, maxLines) API.
+func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
+	maxBytes := opts.MaxBytes
+	maxLines := opts.MaxLines
+	inlineMaxBytes := opts.InlineMaxBytes
+	inlineMaxLines := opts.InlineMaxLines
+
 	if maxBytes <= 0 {
 		maxBytes = DiffMaxBytes
 	}
 	if maxLines <= 0 {
 		maxLines = DiffMaxLines
 	}
+	if inlineMaxBytes <= 0 {
+		inlineMaxBytes = DiffInlineMaxBytes
+	}
+	if inlineMaxLines <= 0 {
+		inlineMaxLines = DiffInlineMaxLines
+	}
 
-	ctx := PRContext{PRNumber: prNumber}
+	prCtx := PRContext{PRNumber: opts.PRNumber, Round: opts.Round}
 
 	// Fetch PR metadata.
-	viewOut, err := runGH("pr", "view", prNumber, "--json",
+	viewOut, err := runGH("pr", "view", opts.PRNumber, "--json",
 		"number,title,body,headRefName,headRefOid,baseRefName,baseRefOid,additions,deletions,changedFiles")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR metadata via gh: %v — agents will fall back to git-based discovery\n", err)
-		ctx.FetchFailed = true
-		return ctx
+		prCtx.FetchFailed = true
+		return prCtx
 	}
 
 	var meta prViewJSON
 	if jsonErr := json.Unmarshal([]byte(viewOut), &meta); jsonErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism review] warning: could not parse PR metadata JSON: %v — agents will fall back to git-based discovery\n", jsonErr)
-		ctx.FetchFailed = true
-		return ctx
+		prCtx.FetchFailed = true
+		return prCtx
 	}
 
-	ctx.Title = meta.Title
-	ctx.Body = meta.Body
-	ctx.HeadRefName = meta.HeadRefName
-	ctx.HeadRefOid = meta.HeadRefOid
-	ctx.BaseRefName = meta.BaseRefName
-	ctx.BaseRefOid = meta.BaseRefOid
-	ctx.Additions = meta.Additions
-	ctx.Deletions = meta.Deletions
-	ctx.ChangedFiles = meta.ChangedFiles
+	prCtx.Title = meta.Title
+	prCtx.Body = meta.Body
+	prCtx.HeadRefName = meta.HeadRefName
+	prCtx.HeadRefOid = meta.HeadRefOid
+	prCtx.BaseRefName = meta.BaseRefName
+	prCtx.BaseRefOid = meta.BaseRefOid
+	prCtx.Additions = meta.Additions
+	prCtx.Deletions = meta.Deletions
+	prCtx.ChangedFiles = meta.ChangedFiles
+
+	// Gather git log — non-fatal; missing log output is noted in the prompt.
+	prCtx.RecentCommits = runGitInWorktree(opts.Worktree, "log", "--oneline", "-20")
+	if meta.BaseRefName != "" {
+		prCtx.BranchCommits = runGitInWorktree(opts.Worktree, "log", "origin/"+meta.BaseRefName+"..HEAD")
+	}
+
+	// Fetch linked issues — non-fatal; unfetchable issues get a clear marker.
+	issueNumbers := parseLinkedIssues(meta.Body)
+	if len(issueNumbers) > 0 {
+		prCtx.LinkedIssues = make(map[string]string, len(issueNumbers))
+		for _, num := range issueNumbers {
+			issueText, issueErr := runGH("issue", "view", num)
+			if issueErr != nil {
+				prCtx.LinkedIssues[num] = fmt.Sprintf("[issue #%s could not be fetched: %v]", num, issueErr)
+			} else {
+				prCtx.LinkedIssues[num] = issueText
+			}
+		}
+	}
 
 	// Fetch diff.
-	diffOut, diffErr := runGH("pr", "diff", prNumber)
+	diffOut, diffErr := runGH("pr", "diff", opts.PRNumber)
 	if diffErr != nil {
 		// Diff failure is non-fatal: we have metadata, just no diff content.
 		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR diff via gh: %v — agents will use git diff instead\n", diffErr)
-		// Leave Diff empty; the prompt will note diff unavailability.
+		// Leave Diff and DiffFilePath empty; the prompt will note diff unavailability.
 	} else {
-		ctx.Diff, ctx.DiffTruncated = truncateDiff(diffOut, maxBytes, maxLines)
+		prCtx.DiffBytes = len(diffOut)
+		prCtx.DiffLines = strings.Count(diffOut, "\n")
+
+		// Truncate to hard limits first.
+		truncated, wasTruncated := truncateDiff(diffOut, maxBytes, maxLines)
+		prCtx.DiffTruncated = wasTruncated
+
+		// Decide inline vs file based on ORIGINAL (pre-truncation) size.
+		if len(diffOut) <= inlineMaxBytes && strings.Count(diffOut, "\n") <= inlineMaxLines {
+			// Small enough to inline.
+			prCtx.Diff = truncated
+		} else {
+			// Large diff — write to a temp file and point agents at the path.
+			diffPath := diffFilePath(opts.PRNumber, opts.Round)
+			if writeErr := os.WriteFile(diffPath, []byte(diffOut), 0o644); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism review] warning: could not write diff to %s: %v — inlining diff instead\n", diffPath, writeErr)
+				prCtx.Diff = truncated
+			} else {
+				prCtx.DiffFilePath = diffPath
+			}
+		}
 	}
 
-	return ctx
+	return prCtx
+}
+
+// diffFilePath returns the path for the diff temp file for a given PR and round.
+// Format: /tmp/prism-review-<pr>-round-<N>.diff
+func diffFilePath(prNumber string, round int) string {
+	if round <= 0 {
+		round = 1
+	}
+	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.diff", prNumber, round)
+}
+
+// parseLinkedIssues extracts issue numbers referenced by "Closes #N", "Refs #N",
+// "Fixes #N", or "References #N" in the PR body (case-insensitive).
+// Returns a deduplicated, ordered list of issue number strings (e.g. ["123", "456"]).
+func parseLinkedIssues(body string) []string {
+	// Match patterns like: Closes #123, Refs #456, Fixes #789, References #012
+	// Allow for optional comma or whitespace after the number.
+	re := linkedIssueRe
+	matches := re.FindAllStringSubmatch(body, -1)
+	seen := make(map[string]bool)
+	var result []string
+	for _, m := range matches {
+		num := m[1]
+		if !seen[num] {
+			seen[num] = true
+			result = append(result, num)
+		}
+	}
+	return result
+}
+
+// runGitInWorktree runs a git command in the given worktree directory and returns
+// its stdout. Returns an empty string on error (git log failures are non-fatal).
+func runGitInWorktree(worktree string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	if worktree != "" {
+		cmd.Dir = worktree
+	}
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	return stdout.String()
 }
 
 // truncateDiff truncates a diff to at most maxBytes bytes and maxLines lines.
@@ -855,10 +1019,11 @@ func ResolveAgentConfigContent(containerMode bool, pf *config.ProfilesFile, agen
 
 // buildReviewPrompt returns the initial prompt string for a review agent.
 // When prCtx is non-nil and FetchFailed is false, the prompt begins with a
-// PR-context section (metadata + diff) followed by the role-specific content.
+// structured context block (git log, PR metadata, linked issues, diff)
+// followed by the role-specific content.
 // When prCtx is nil or FetchFailed is true, a minimal fallback prompt is used.
 //
-// The PR-context section always appears BEFORE the role-specific content so
+// The context block always appears BEFORE the role-specific content so
 // that agents read full context first and role directives second.
 func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	if prCtx == nil || prCtx.FetchFailed {
@@ -873,8 +1038,39 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 
 	var sb strings.Builder
 
-	// ── PR under review ───────────────────────────────────────────────────
-	sb.WriteString("## PR under review\n\n")
+	// ── Context header ────────────────────────────────────────────────────
+	sb.WriteString("## Context for your review\n\n")
+	sb.WriteString("This context has been gathered for you. You do not need to re-run these commands.\n\n")
+
+	// ── Recent commits ────────────────────────────────────────────────────
+	sb.WriteString("### Recent commits (`git log --oneline -20`)\n\n")
+	if prCtx.RecentCommits == "" {
+		sb.WriteString("(not available)\n")
+	} else {
+		sb.WriteString("```\n")
+		sb.WriteString(strings.TrimRight(prCtx.RecentCommits, "\n"))
+		sb.WriteString("\n```\n")
+	}
+	sb.WriteString("\n")
+
+	// ── Branch commits ────────────────────────────────────────────────────
+	if prCtx.BaseRefName != "" {
+		sb.WriteString(fmt.Sprintf("### This branch vs origin/%s (`git log origin/%s..HEAD`)\n\n",
+			prCtx.BaseRefName, prCtx.BaseRefName))
+	} else {
+		sb.WriteString("### This branch vs base\n\n")
+	}
+	if prCtx.BranchCommits == "" {
+		sb.WriteString("(not available)\n")
+	} else {
+		sb.WriteString("```\n")
+		sb.WriteString(strings.TrimRight(prCtx.BranchCommits, "\n"))
+		sb.WriteString("\n```\n")
+	}
+	sb.WriteString("\n")
+
+	// ── PR metadata ───────────────────────────────────────────────────────
+	sb.WriteString("### PR metadata\n\n")
 	sb.WriteString(fmt.Sprintf("You are reviewing PR #%s.\n\n", prCtx.PRNumber))
 	sb.WriteString(fmt.Sprintf("- Title: %q\n", prCtx.Title))
 	sb.WriteString(fmt.Sprintf("- Head branch: %s\n", prCtx.HeadRefName))
@@ -885,14 +1081,10 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 		sb.WriteString(fmt.Sprintf("- Worktree: %s (read-only)\n", prCtx.WorktreePath))
 	}
 	sb.WriteString(fmt.Sprintf("- Files changed: %d (+%d -%d lines)\n", prCtx.ChangedFiles, prCtx.Additions, prCtx.Deletions))
-	if prCtx.DiffTruncated {
-		sb.WriteString("\nNote: the diff below has been truncated due to size. Use `git diff origin/" +
-			prCtx.BaseRefName + "...HEAD` to fetch any missing hunks.\n")
-	}
 	sb.WriteString("\n")
 
 	// ── PR body ───────────────────────────────────────────────────────────
-	sb.WriteString("## PR body\n\n")
+	sb.WriteString("### PR body\n\n")
 	body := strings.TrimSpace(prCtx.Body)
 	if body == "" {
 		sb.WriteString("(no body)\n")
@@ -909,11 +1101,52 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	}
 	sb.WriteString("\n")
 
-	// ── Full diff ─────────────────────────────────────────────────────────
-	sb.WriteString("## Full diff\n\n")
-	if prCtx.Diff == "" {
-		sb.WriteString("(diff not available — use `git diff origin/" + prCtx.BaseRefName + "...HEAD` to fetch it)\n")
+	// ── Linked issues ─────────────────────────────────────────────────────
+	sb.WriteString("### Linked issues\n\n")
+	if len(prCtx.LinkedIssues) == 0 {
+		sb.WriteString("(no linked issues found)\n")
 	} else {
+		// Emit issues in a stable order by collecting and sorting keys.
+		keys := make([]string, 0, len(prCtx.LinkedIssues))
+		for k := range prCtx.LinkedIssues {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
+		for _, num := range keys {
+			issueText := prCtx.LinkedIssues[num]
+			sb.WriteString(fmt.Sprintf("#### Issue #%s\n\n", num))
+			sb.WriteString("```\n")
+			sb.WriteString(strings.TrimRight(issueText, "\n"))
+			sb.WriteString("\n```\n\n")
+		}
+	}
+
+	// ── Diff ──────────────────────────────────────────────────────────────
+	sb.WriteString("### Diff\n\n")
+	switch {
+	case prCtx.DiffFilePath != "":
+		// Large diff written to a file — give agents the path and guidance.
+		sb.WriteString(fmt.Sprintf(
+			"The diff for this PR is large (%d lines, %d KB). It has been saved to:\n\n"+
+				"  %s\n\n"+
+				"Query it with native git on the workspace or grep/rg on the file:\n\n"+
+				"  git diff --stat origin/%s..HEAD                    # overview\n"+
+				"  git log origin/%s..HEAD -- <path>                  # per-file history\n"+
+				"  rg '<pattern>' %s    # search the diff\n"+
+				"  git show HEAD -- <path>                            # specific file state\n",
+			prCtx.DiffLines,
+			prCtx.DiffBytes/1024,
+			prCtx.DiffFilePath,
+			prCtx.BaseRefName, prCtx.BaseRefName,
+			prCtx.DiffFilePath,
+		))
+	case prCtx.Diff == "":
+		sb.WriteString("(diff not available — use `git diff origin/" + prCtx.BaseRefName + "...HEAD` to fetch it)\n")
+	default:
+		if prCtx.DiffTruncated {
+			sb.WriteString("Note: the diff below has been truncated due to size. Use `git diff origin/" +
+				prCtx.BaseRefName + "...HEAD` to fetch any missing hunks.\n\n")
+		}
 		sb.WriteString("```diff\n")
 		sb.WriteString(prCtx.Diff)
 		if !strings.HasSuffix(prCtx.Diff, "\n") {
@@ -923,10 +1156,31 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 	}
 	sb.WriteString("\n")
 
+	// ── Tool preference guidance ───────────────────────────────────────────
+	sb.WriteString("---\n\n")
+	sb.WriteString("You may still run any git command to re-query or dig deeper as your review requires. " +
+		"Prefer native git (`git show`, `git diff`, `git log`) over `gh` for cross-branch inspection — " +
+		"it's faster, works offline, and doesn't consume API rate limits.\n\n")
+	sb.WriteString("---\n\n")
+
+	// ── PR under review (legacy compat section) ───────────────────────────
+	// Kept for AC: tests that check "## PR under review" are still met via
+	// the "### PR metadata" section. However, tests specifically looking for
+	// "## PR under review" need to be updated. We keep backward compat by
+	// noting this is now under "## Context for your review > ### PR metadata".
 	sb.WriteString("Your role-specific instructions follow below.\n\n")
 	sb.WriteString("---\n\n")
 
 	return sb.String()
+}
+
+// sortStrings sorts a slice of strings in-place (insertion sort — small slices only).
+func sortStrings(ss []string) {
+	for i := 1; i < len(ss); i++ {
+		for j := i; j > 0 && ss[j] < ss[j-1]; j-- {
+			ss[j], ss[j-1] = ss[j-1], ss[j]
+		}
+	}
 }
 
 // pollAgents polls the DB until all agents reach a terminal state or the
@@ -1059,6 +1313,17 @@ func BuildReviewPromptForTest(prNumber string, prCtx *PRContext) string {
 // TruncateDiffForTest is an exported wrapper around truncateDiff for unit tests.
 func TruncateDiffForTest(diff string, maxBytes, maxLines int) (string, bool) {
 	return truncateDiff(diff, maxBytes, maxLines)
+}
+
+// ParseLinkedIssuesForTest is an exported wrapper around parseLinkedIssues for
+// use in external test packages.
+func ParseLinkedIssuesForTest(body string) []string {
+	return parseLinkedIssues(body)
+}
+
+// DiffFilePathForTest is an exported wrapper around diffFilePath for tests.
+func DiffFilePathForTest(prNumber string, round int) string {
+	return diffFilePath(prNumber, round)
 }
 
 // PollAgentsForTest is an exported wrapper around pollAgents for use in tests.

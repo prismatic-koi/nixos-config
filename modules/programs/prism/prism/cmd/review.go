@@ -20,6 +20,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,8 @@ func init() {
 	reviewCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait per agent")
 	reviewCmd.Flags().String("only", "", "Comma-separated list of agent names to run (e.g. review-goal,review-code)")
 	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	reviewCmd.Flags().Int("diff-inline-max", 0,
+		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -74,6 +77,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 	onlyFlag, _ := cmd.Flags().GetString("only")
 	onlyChanged := cmd.Flags().Changed("only")
+	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
 
 	// Resolve the full agent list and apply --only filtering up-front.
 	// This is done before the container-mode branch so that validation
@@ -190,12 +194,40 @@ func runReview(cmd *cobra.Command, args []string) error {
 		_ = os.Stdout.Sync()
 	}
 
+	// Resolve the inline-max threshold from flag → env var → default.
+	// PRISM_REVIEW_DIFF_INLINE_MAX overrides the compiled-in default.
+	// The --diff-inline-max flag takes precedence over the env var.
+	inlineMaxLines := diffInlineMaxFlag
+	if inlineMaxLines <= 0 {
+		if envVal := os.Getenv("PRISM_REVIEW_DIFF_INLINE_MAX"); envVal != "" {
+			if n, err := strconv.Atoi(envVal); err == nil && n > 0 {
+				inlineMaxLines = n
+			}
+		}
+	}
+
 	// Fetch PR context once before spawning any review-agent sessions.
-	// FetchPRContext handles gh failures gracefully — a failed fetch logs a
+	// FetchPRContextWithOpts handles gh failures gracefully — a failed fetch logs a
 	// warning and returns a PRContext with FetchFailed=true. The review run
 	// continues in either case; agents fall back to git-based discovery when
 	// the context is absent.
-	prCtx := review.FetchPRContext(prNumber, 0, 0)
+	//
+	// The round number is determined here (pre-spawn) so the diff file path
+	// is deterministic and matches the round that will be created below.
+	// We open a separate DB handle just to peek at the round number —
+	// RunAsync will open its own handle when it actually registers the group.
+	prCtxRound := 1
+	if dRound, dErr := openDB(); dErr == nil {
+		prCtxRound = review.NextRoundNumber(dRound, parentSession)
+		dRound.Close()
+	}
+
+	prCtx := review.FetchPRContextWithOpts(review.FetchPRContextOpts{
+		PRNumber:       prNumber,
+		Round:          prCtxRound,
+		InlineMaxLines: inlineMaxLines,
+		Worktree:       worktree,
+	})
 
 	// Build run options.
 	effectiveContainerMode := isoMode == config.IsolationPodman
