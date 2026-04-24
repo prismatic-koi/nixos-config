@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/archive"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
@@ -233,10 +235,20 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
 			}
 			instanceIDForSessions := instanceIDFromStatus(d, m.session)
+			isolationMode := isolationModeFromDB(d, m.session)
 			_ = d.SetEnded(m.session)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
+				}
+				// Archive the session storage after recording the end state.
+				if archiveErr := runSessionArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
+					if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+						_ = d.PurgeBusMessages(m.session)
+						d.Close()
+						return cleanupDoneMsg{archiveErr}
+					}
+					// Other archive errors are non-fatal — cleanup continues.
 				}
 			}
 			_ = d.PurgeBusMessages(m.session)
@@ -499,12 +511,23 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
 		}
-		// Capture instance_id before SetEnded clears the row's lifecycle fields.
+		// Capture instance_id and isolation_mode before SetEnded clears the
+		// row's lifecycle fields.
 		instanceIDForSessions := instanceIDFromStatus(d, session)
+		isolationMode := isolationModeFromDB(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
+			}
+			// Archive the session storage after recording the end state.
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
 			}
 		}
 		_ = d.PurgeBusMessages(session)
@@ -551,10 +574,20 @@ func closeSession(session string) error {
 			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
+		isolationMode := isolationModeFromDB(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
+			}
+			// Archive the session storage after recording the end state.
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
 			}
 		}
 		_ = d.PurgeBusMessages(session)
@@ -613,10 +646,20 @@ func headlessCloseSession(session string) error {
 			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
+		isolationMode := isolationModeFromDB(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
+			}
+			// Archive the session storage after recording the end state.
+			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
+				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+					_ = d.PurgeBusMessages(session)
+					d.Close()
+					return archiveErr
+				}
+				// Other archive errors are non-fatal — cleanup continues.
 			}
 		}
 		_ = d.PurgeBusMessages(session)
@@ -692,6 +735,97 @@ func worktreePathFromSession(session string) string {
 	return ""
 }
 
+// runSessionArchive performs the opencode-storage copy for the session identified by
+// instanceID using the already-open DB d and the agent_status isolation mode
+// from statusIsolationMode. It is called after UpdateSessionEnded so the
+// sessions row has ended_at and end_state populated.
+//
+// On success it calls UpdateSessionArchivePath to record the archive directory
+// path in the DB.
+//
+// Return value: the error from archive.Run, or nil on success. The caller is
+// responsible for deciding whether the error should be fatal:
+//   - archive.ErrAlreadyExists should be propagated — the AC requires cleanup
+//     to exit non-zero when the archive directory already exists on a re-run.
+//   - Other errors are treated as non-fatal (logged + cleanup continues).
+//
+// Sessions with unknown or unsupported isolation modes log a clear warning and
+// are skipped (AC: edge-case — unknown isolation mode); returns nil.
+func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
+	if instanceID == "" {
+		// No instance_id — nothing to archive.
+		return nil
+	}
+
+	// Validate isolation mode before doing any work.
+	switch statusIsolationMode {
+	case "host", "bwrap", "podman":
+		// OK — supported modes.
+	default:
+		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — unsupported isolation mode %q\n",
+			sessionName, statusIsolationMode)
+		return nil
+	}
+
+	// Fetch the full sessions row (has ended_at/end_state set by caller).
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
+		return nil
+	}
+	if sess == nil {
+		// No sessions row — pre-migration or session that never inserted.
+		fmt.Fprintf(os.Stderr, "[prism] archive: no sessions row for instance_id %q — skipping archive\n", instanceID)
+		return nil
+	}
+
+	// Build archive params from DB fields.
+	params := archive.Params{
+		InstanceID:     sess.InstanceID,
+		SessionName:    sess.SessionName,
+		Harness:        sess.Harness,
+		Repo:           sess.Repo,
+		Worktree:       sess.Worktree,
+		StartedAt:      sess.StartedAt,
+		EndedAt:        time.Now(), // EndedAt was just set in DB; use now as fallback
+		IsolationMode:  statusIsolationMode,
+		PrismVersion:   archive.PrismGitSHA(),
+		HarnessVersion: archive.HarnessVersion(),
+	}
+	if sess.AgentRole != nil {
+		params.AgentRole = *sess.AgentRole
+	}
+	if sess.RootAgentName != nil {
+		params.RootAgentName = *sess.RootAgentName
+	}
+	if sess.HarnessSessionID != nil {
+		params.HarnessSessionID = *sess.HarnessSessionID
+	}
+	if sess.GroupID != nil {
+		params.GroupID = *sess.GroupID
+	}
+	if sess.EndedAt != nil {
+		params.EndedAt = *sess.EndedAt
+	}
+	if sess.EndState != nil {
+		params.EndState = *sess.EndState
+	}
+	if sess.PrismVersion != nil {
+		params.PrismVersion = *sess.PrismVersion
+	}
+
+	archivePath, archiveErr := archive.Run(params)
+	if archiveErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: copy failed for session %q: %v\n", sessionName, archiveErr)
+		return archiveErr
+	}
+
+	if updErr := d.UpdateSessionArchivePath(instanceID, archivePath); updErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
+	}
+	return nil
+}
+
 func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
@@ -719,6 +853,17 @@ func hostModeFromDB(d *db.DB, sessionName string) bool {
 		return false
 	}
 	return status.HostMode
+}
+
+// isolationModeFromDB queries the already-open database d and returns the
+// effective isolation mode for sessionName using Status.EffectiveIsolationMode.
+// Returns "" when the row is missing or on any error.
+func isolationModeFromDB(d *db.DB, sessionName string) string {
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil {
+		return ""
+	}
+	return status.EffectiveIsolationMode()
 }
 
 // stopAndRemoveChildContainers stops and removes podman containers for all

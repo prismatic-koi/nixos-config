@@ -1691,6 +1691,18 @@ UPDATE sessions
 	return nil
 }
 
+// UpdateSessionArchivePath sets archive_path on the sessions row for
+// instanceID. Called during prism cleanup after the archive copy completes
+// successfully. It is a no-op when no row exists for instanceID (returns nil).
+func (d *DB) UpdateSessionArchivePath(instanceID, archivePath string) error {
+	const q = `UPDATE sessions SET archive_path = ? WHERE instance_id = ?`
+	_, err := d.conn.Exec(q, archivePath, instanceID)
+	if err != nil {
+		return fmt.Errorf("db: update session archive path: %w", err)
+	}
+	return nil
+}
+
 // SetInstanceID writes a UUID instance_id to the agent_status row for
 // sessionName. Called on tmux-session-start to uniquely identify this session
 // incarnation.
