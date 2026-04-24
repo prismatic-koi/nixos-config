@@ -3,6 +3,11 @@ package cmd
 // prism list-sessions — print agent sessions (from DB) in a human-readable
 // table. By default shows only sessions for the current repo. Use --all / -A
 // to list sessions across all repos.
+//
+// Sessions are sorted using db.ParentSessionFor — the single source of truth
+// for parent attribution shared with the dashboard. Depth-2 review sessions
+// appear immediately after their parent branch in the output, matching the
+// parent-child nesting shown by the dashboard TUI.
 
 import (
 	"encoding/json"
@@ -65,7 +70,12 @@ var listSessionsCmd = &cobra.Command{
 			return fmt.Errorf("list-sessions: query db: %w", err)
 		}
 
-		return renderSessionTable(ss)
+		// Fetch group parents to apply the same parent-attribution source of
+		// truth as the dashboard (db.ParentSessionFor via AllGroupParents).
+		// Non-fatal: if unavailable, sort falls back to the name heuristic.
+		groupParents, _ := d.AllGroupParents()
+
+		return renderSessionTable(ss, groupParents)
 	},
 }
 
@@ -86,7 +96,12 @@ func displayHarness(h *string) string {
 // renderSessionTable renders a []db.Status as a sorted SESSION/STATE/PORT/HARNESS/TITLE
 // table to stdout. Both the direct DB path and the host-API proxy path use
 // this shared renderer.
-func renderSessionTable(ss []db.Status) error {
+//
+// groupParents is a map of group_id → parent_session from db.AllGroupParents.
+// It is used to sort depth-2 review sessions immediately after their parent
+// branch — the same parent-attribution logic used by the dashboard. When nil
+// (e.g. the host-API proxy path), the sort falls back to name heuristic.
+func renderSessionTable(ss []db.Status, groupParents map[string]string) error {
 	type row struct {
 		name    string
 		state   string
@@ -108,11 +123,84 @@ func renderSessionTable(ss []db.Status) error {
 		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title})
 	}
 
-	// Sort rows alphabetically by session name for stable, predictable output.
+	// Sort rows using the same parent-attribution logic as the dashboard's
+	// SortDisplayed: depth-2 review sessions sort immediately after their
+	// parent branch. The sort key is derived from db.ParentSessionFor
+	// (backing both views), with a name-heuristic fallback for pre-migration
+	// rows where group_id is not set.
+	//
+	// Key structure (mirrors dashboard.SortDisplayed):
+	//   - Plain sessions (no @): "repo\x00<name>"
+	//   - @main sessions:        "repo\x00repo@main"
+	//   - Branch sessions:       "repo\x01<branch>\x00"
+	//   - Depth-2 child of @main:  "repo\x00repo@main\x01<label>"
+	//   - Depth-2 child of @branch: "repo\x01<parent-branch>\x00<label>"
+	listSessionKey := func(name string, groupID *string) string {
+		atIdx := strings.Index(name, "@")
+		if atIdx < 0 {
+			// Plain session (no @).
+			repo := name
+			return repo + "\x00" + name
+		}
+		repo := name[:atIdx]
+		branch := name[atIdx:] // includes "@"
+
+		if branch == "@main" {
+			return repo + "\x00" + name
+		}
+
+		// Resolve parent: prefer DB-backed group_id → parent_session; fall back to name heuristic.
+		parentBranch := ""
+		if groupID != nil && groupParents != nil {
+			if parent, ok := groupParents[*groupID]; ok && parent != "" {
+				// parent is e.g. "nixos-config@main" or "nixos-config@feature"
+				if idx := strings.Index(parent, "@"); idx >= 0 {
+					parentBranch = parent[idx:] // e.g. "@main"
+				}
+			}
+		}
+		// Name-heuristic fallback for pre-migration rows.
+		if parentBranch == "" {
+			inner := branch[1:] // strip leading "@"
+			if tildeIdx := strings.Index(inner, "~"); tildeIdx >= 0 {
+				// Depth-2 session.
+				parentBranch = "@" + inner[:tildeIdx]
+			}
+		}
+
+		if parentBranch != "" {
+			// Depth-2 session: sort immediately after parent branch.
+			label := ""
+			inner := branch[1:] // strip "@"
+			if tildeIdx := strings.Index(inner, "~"); tildeIdx >= 0 {
+				label = inner[tildeIdx:] // e.g. "~review-1-review-goal"
+			}
+			if parentBranch == "@main" {
+				parentName := repo + "@main"
+				return repo + "\x00" + parentName + "\x01" + label
+			}
+			return repo + "\x01" + parentBranch + "\x00" + label
+		}
+
+		// Regular depth-1 branch session.
+		return repo + "\x01" + branch + "\x00"
+	}
+
+	// Build an index of session_name → group_id for the sort key helper.
+	// The Status slice already carries the group_id; we map by name for O(1) lookup.
+	type nameAndGID struct {
+		groupID *string
+	}
+	gidByName := make(map[string]*string, len(ss))
+	for i := range ss {
+		gidByName[ss[i].SessionName] = ss[i].GroupID
+	}
+
 	for i := 1; i < len(rows); i++ {
 		key := rows[i]
+		keyStr := listSessionKey(key.name, gidByName[key.name])
 		j := i - 1
-		for j >= 0 && rows[j].name > key.name {
+		for j >= 0 && listSessionKey(rows[j].name, gidByName[rows[j].name]) > keyStr {
 			rows[j+1] = rows[j]
 			j--
 		}
@@ -171,5 +259,7 @@ func proxyListSessionsAndRender(apiURL string, showAll bool) error {
 		return fmt.Errorf("list-sessions proxy: unmarshal response: %w", err)
 	}
 
-	return renderSessionTable(ss)
+	// Proxy path has no DB access; pass nil groupParents so renderSessionTable
+	// falls back to name heuristic for parent attribution.
+	return renderSessionTable(ss, nil)
 }
