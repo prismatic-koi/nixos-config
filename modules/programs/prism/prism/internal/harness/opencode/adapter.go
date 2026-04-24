@@ -163,6 +163,23 @@ type sessionEntry struct {
 	} `json:"time"`
 }
 
+// createSessionPerAttemptTimeout is the HTTP client timeout for each individual
+// GET /session attempt. This is intentionally short so that a hung opencode
+// process (one that has bound the HTTP port but not yet initialised its session
+// layer) times out quickly and the retry loop can try again rather than burning
+// the entire available window on a single unresponsive attempt.
+const createSessionPerAttemptTimeout = 5 * time.Second
+
+// createSessionMaxAttempts is the maximum number of GET /session attempts
+// before CreateSession gives up. With createSessionPerAttemptTimeout and
+// createSessionRetryInterval, the effective ceiling is approximately
+// maxAttempts*(perAttemptTimeout+retryInterval) ≈ 44s.
+const createSessionMaxAttempts = 8
+
+// createSessionRetryInterval is the fixed pause between consecutive
+// GET /session attempts on transport-level failures.
+const createSessionRetryInterval = 500 * time.Millisecond
+
 // CreateSession retrieves the existing opencode session via GET /session and
 // returns its ID. The session ID is also stored in the adapter so that
 // subsequent prism prompt delivery (via DeliverPrompt / the host-API relay)
@@ -175,28 +192,48 @@ type sessionEntry struct {
 // was already sent via CLI. We use GET /session rather than POST /session
 // because POST would create a redundant second session.
 //
-// If GET /session returns an empty list (opencode hasn't finished initialising
-// yet at the health-check boundary), this method retries for up to 5s.
+// GET /session is retried up to createSessionMaxAttempts times with a
+// createSessionPerAttemptTimeout per-attempt timeout to survive opencode's
+// two-phase startup: /global/health responds as soon as the HTTP port is bound,
+// but /session is only ready after opencode has finished its full initialisation
+// sequence (plugin loading, MCP proxy init, session creation). Under CPU
+// contention a single long request can time out at the transport level before
+// opencode is ready; short per-attempt timeouts with retries ride out the lag.
+//
+// If GET /session returns an empty list (opencode hasn't finished creating its
+// initial session yet), this method retries for up to 5s with a shorter poll
+// interval so the caller is not delayed on the fast path.
 //
 // It satisfies the harness.Harness interface.
 func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 	url := a.opencodeURL + "/session"
+	sessionStart := time.Now()
 
-	// Retry for up to 5 seconds in case opencode hasn't created its initial
-	// session yet right at the health-check boundary.
-	const maxWait = 5 * time.Second
-	const retryInterval = 200 * time.Millisecond
-	deadline := time.Now().Add(maxWait)
+	// perAttemptClient uses a short timeout so that a hung opencode process
+	// (port bound but not yet session-ready) fails quickly, allowing the retry
+	// loop to make another attempt rather than blocking for the full 20s shared
+	// client timeout.
+	perAttemptClient := &http.Client{Timeout: createSessionPerAttemptTimeout}
 
-	for {
+	var lastErr error
+	for attempt := 1; attempt <= createSessionMaxAttempts; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return "", fmt.Errorf("opencode: GET /session request: %w", err)
 		}
 
-		resp, err := a.httpClient.Do(req)
+		resp, err := perAttemptClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("opencode: GET /session: %w", err)
+			lastErr = err
+			log.Printf("sidecar: GET /session attempt %d/%d: %v", attempt, createSessionMaxAttempts, err)
+			if attempt < createSessionMaxAttempts {
+				select {
+				case <-ctx.Done():
+					return "", ctx.Err()
+				case <-time.After(createSessionRetryInterval):
+				}
+			}
+			continue
 		}
 
 		var sessions []sessionEntry
@@ -222,7 +259,8 @@ func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 					}
 				}
 			}
-			log.Printf("opencode: CreateSession: retrieved existing session %q from GET /session (%d session(s))", best.ID, len(sessions))
+			elapsed := time.Since(sessionStart).Round(time.Millisecond)
+			log.Printf("opencode: CreateSession: retrieved existing session %q from GET /session (%d session(s)) [%s after CreateSession start]", best.ID, len(sessions), elapsed)
 
 			a.mu.Lock()
 			a.sessionID = best.ID
@@ -231,18 +269,85 @@ func (a *Adapter) CreateSession(ctx context.Context) (string, error) {
 			return best.ID, nil
 		}
 
-		// Empty list — opencode may not have created its initial session yet.
-		if time.Now().After(deadline) {
-			return "", fmt.Errorf("opencode: GET /session: no sessions available after %s", maxWait)
-		}
-		log.Printf("opencode: CreateSession: GET /session returned empty list — retrying in %s", retryInterval)
+		// Empty list — opencode has responded but hasn't created its initial
+		// session yet (a narrow window between health-check passing and the
+		// first session being written). Poll with a short interval for up to
+		// 5s before giving up.
+		const emptyListMaxWait = 5 * time.Second
+		const emptyListInterval = 200 * time.Millisecond
+		emptyDeadline := time.Now().Add(emptyListMaxWait)
+		log.Printf("opencode: CreateSession: GET /session returned empty list — retrying in %s", emptyListInterval)
+		for {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(emptyListInterval):
+			}
 
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(retryInterval):
+			req2, err2 := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err2 != nil {
+				return "", fmt.Errorf("opencode: GET /session request: %w", err2)
+			}
+			resp2, err2 := perAttemptClient.Do(req2)
+			if err2 != nil {
+				// Transport error during empty-list poll — treat as a fresh
+				// transport failure and let the outer retry loop handle it.
+				lastErr = err2
+				log.Printf("sidecar: GET /session attempt %d/%d: %v", attempt, createSessionMaxAttempts, err2)
+				break
+			}
+
+			var sessions2 []sessionEntry
+			decodeErr2 := json.NewDecoder(resp2.Body).Decode(&sessions2)
+			_ = resp2.Body.Close()
+
+			if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
+				return "", fmt.Errorf("opencode: GET /session: http status %d", resp2.StatusCode)
+			}
+			if decodeErr2 != nil {
+				return "", fmt.Errorf("opencode: decode GET /session response: %w", decodeErr2)
+			}
+
+			if len(sessions2) > 0 {
+				best := sessions2[0]
+				for _, s := range sessions2[1:] {
+					if s.Time != nil && s.Time.Updated != nil {
+						if best.Time == nil || best.Time.Updated == nil || *s.Time.Updated > *best.Time.Updated {
+							best = s
+						}
+					}
+				}
+				elapsed := time.Since(sessionStart).Round(time.Millisecond)
+				log.Printf("opencode: CreateSession: retrieved existing session %q from GET /session (%d session(s)) [%s after CreateSession start]", best.ID, len(sessions2), elapsed)
+
+				a.mu.Lock()
+				a.sessionID = best.ID
+				a.mu.Unlock()
+
+				return best.ID, nil
+			}
+
+			if time.Now().After(emptyDeadline) {
+				return "", fmt.Errorf("opencode: GET /session: no sessions available after %s", emptyListMaxWait)
+			}
+			log.Printf("opencode: CreateSession: GET /session returned empty list — retrying in %s", emptyListInterval)
+		}
+
+		// Transport error broke out of the empty-list loop; sleep before next attempt.
+		if attempt < createSessionMaxAttempts {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(createSessionRetryInterval):
+			}
 		}
 	}
+
+	log.Printf("sidecar: GET /session failed after %d attempts", createSessionMaxAttempts)
+	if lastErr != nil {
+		return "", fmt.Errorf("opencode: GET /session failed after %d attempts: %w", createSessionMaxAttempts, lastErr)
+	}
+	return "", fmt.Errorf("opencode: GET /session failed after %d attempts", createSessionMaxAttempts)
 }
 
 // SessionID returns the most recently created session ID (set by CreateSession).
