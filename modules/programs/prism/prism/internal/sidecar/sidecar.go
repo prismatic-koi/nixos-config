@@ -2822,11 +2822,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// pr_number must be a numeric string (e.g. "123"). Non-numeric values are rejected.
 	// agents is optional (empty = full set resolved by prism review on host).
 	// timeout is optional (default: 10m).
-	// Response: {"output":"<ack-text>"} | {"error":"..."}
 	//
-	// The review is async: prism review spawns agents, registers a group, starts
-	// a monitor process, and returns immediately with an acknowledgement message.
-	// The response output field contains the ack text (not the final review results).
+	// Response: plain-text chunked stream (Transfer-Encoding: chunked).
+	//   - Each line of subprocess stdout is written to the response body and
+	//     flushed immediately via http.Flusher as it is emitted.
+	//   - After the subprocess exits, a sentinel line is appended:
+	//       ReviewSentinelPassed ("__PRISM_REVIEW_PASSED__") on exit 0
+	//       ReviewSentinelFailed ("__PRISM_REVIEW_FAILED__") on non-zero exit
+	//   - Before streaming begins, validation failures are returned as JSON
+	//     {"error":"..."} with the appropriate 4xx or 5xx status code.
+	//   - If the subprocess cannot be started, HTTP 500 is returned before
+	//     any streaming begins.
+	//
+	// The review is async: `prism review` spawns agents, registers a group,
+	// starts a background monitor process, and exits quickly with an ack
+	// message. The ack text (streamed line-by-line) is NOT the review result —
+	// results are delivered later to the worker session via `prism prompt`.
 	//
 	// This endpoint is called by workers running inside containers that cannot
 	// reach tmux directly. The sidecar runs on the host where tmux is available,
@@ -2882,8 +2893,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		log.Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
 
-		// Async review: prism review returns quickly (just spawning + ack).
-		// Use a short exec deadline — 30 seconds is more than enough.
+		// Async review: `prism review` spawns agents and a monitor, then exits
+		// quickly (well under 30 s in practice). We stream its stdout as it
+		// runs and write the sentinel after cmd.Wait(). The 30 s exec deadline
+		// is the binding constraint — the client-side context (60 s) is set
+		// wider to include connection overhead on top of this.
 		const execTimeout = 30 * time.Second
 
 		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
