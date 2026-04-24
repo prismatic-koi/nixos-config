@@ -2478,3 +2478,191 @@ FROM agent_status
 WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
 	return d.queryStatuses(q, parentSession)
 }
+
+// scanSession scans a sessions row from the given scanner into a Session value.
+func scanSession(s scanner) (*Session, error) {
+	var sess Session
+	var startedAt int64
+	var endedAt sql.NullInt64
+	var agentRole sql.NullString
+	var rootAgentName sql.NullString
+	var harnessSessionID sql.NullString
+	var groupID sql.NullString
+	var endState sql.NullString
+	var archivePath sql.NullString
+	var prismVersion sql.NullString
+
+	err := s.Scan(
+		&sess.InstanceID, &sess.SessionName, &agentRole, &rootAgentName,
+		&sess.Repo, &sess.Worktree, &sess.Harness, &harnessSessionID, &groupID,
+		&startedAt, &endedAt, &endState, &archivePath, &prismVersion,
+	)
+	if err != nil {
+		return nil, err
+	}
+	sess.StartedAt = time.UnixMilli(startedAt)
+	if endedAt.Valid {
+		t := time.UnixMilli(endedAt.Int64)
+		sess.EndedAt = &t
+	}
+	if agentRole.Valid {
+		sess.AgentRole = &agentRole.String
+	}
+	if rootAgentName.Valid {
+		sess.RootAgentName = &rootAgentName.String
+	}
+	if harnessSessionID.Valid {
+		sess.HarnessSessionID = &harnessSessionID.String
+	}
+	if groupID.Valid {
+		sess.GroupID = &groupID.String
+	}
+	if endState.Valid {
+		sess.EndState = &endState.String
+	}
+	if archivePath.Valid {
+		sess.ArchivePath = &archivePath.String
+	}
+	if prismVersion.Valid {
+		sess.PrismVersion = &prismVersion.String
+	}
+	return &sess, nil
+}
+
+const sessionsSelectCols = `
+SELECT instance_id, session_name, agent_role, root_agent_name,
+       repo, worktree, harness, harness_session_id, group_id,
+       started_at, ended_at, end_state, archive_path, prism_version
+  FROM sessions`
+
+// querySessions is a helper that runs a SELECT on sessions and scans rows.
+func (d *DB) querySessions(q string, args ...any) ([]Session, error) {
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("db: scan session: %w", err)
+		}
+		sessions = append(sessions, *sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+// AllSessions returns all rows in the sessions table, ordered by started_at DESC.
+func (d *DB) AllSessions() ([]Session, error) {
+	return d.querySessions(sessionsSelectCols + ` ORDER BY started_at DESC`)
+}
+
+// SessionsForRepo returns all sessions rows for the given repo, ordered by
+// started_at DESC.
+func (d *DB) SessionsForRepo(repo string) ([]Session, error) {
+	return d.querySessions(sessionsSelectCols+` WHERE repo = ? ORDER BY started_at DESC`, repo)
+}
+
+// SessionsSince returns all sessions rows where started_at >= sinceMs (Unix
+// milliseconds), ordered by started_at DESC.
+func (d *DB) SessionsSince(sinceMs int64) ([]Session, error) {
+	return d.querySessions(sessionsSelectCols+` WHERE started_at >= ? ORDER BY started_at DESC`, sinceMs)
+}
+
+// SessionsForRepoSince returns all sessions rows for repo where started_at >=
+// sinceMs, ordered by started_at DESC.
+func (d *DB) SessionsForRepoSince(repo string, sinceMs int64) ([]Session, error) {
+	return d.querySessions(sessionsSelectCols+` WHERE repo = ? AND started_at >= ? ORDER BY started_at DESC`, repo, sinceMs)
+}
+
+// SessionByInstanceID returns the sessions row with the given instance_id, or
+// nil when not found.
+func (d *DB) SessionByInstanceID(instanceID string) (*Session, error) {
+	row := d.conn.QueryRow(sessionsSelectCols+` WHERE instance_id = ?`, instanceID)
+	sess, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: session by instance_id: %w", err)
+	}
+	return sess, nil
+}
+
+// SessionsByInstanceIDPrefix returns all sessions rows whose instance_id starts
+// with the given prefix. Used for short-form UUID lookup.
+// The prefix is escaped for SQL LIKE metacharacters (`%`, `_`, `\`) so that
+// literal characters in the prefix are matched exactly, not as wildcards.
+func (d *DB) SessionsByInstanceIDPrefix(prefix string) ([]Session, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	return d.querySessions(sessionsSelectCols+` WHERE instance_id LIKE ? ESCAPE '\' ORDER BY started_at DESC`, escaped+"%")
+}
+
+// MostRecentSessionForName returns the most recent sessions row whose
+// session_name equals name (ordered by started_at DESC, take first), or nil.
+func (d *DB) MostRecentSessionForName(name string) (*Session, error) {
+	row := d.conn.QueryRow(sessionsSelectCols+` WHERE session_name = ? ORDER BY started_at DESC LIMIT 1`, name)
+	sess, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: most recent session for name: %w", err)
+	}
+	return sess, nil
+}
+
+// SessionsByName returns all sessions rows where session_name = name, ordered
+// by started_at DESC.
+func (d *DB) SessionsByName(name string) ([]Session, error) {
+	return d.querySessions(sessionsSelectCols+` WHERE session_name = ? ORDER BY started_at DESC`, name)
+}
+
+// TokenTurn holds per-turn token and cost data for a single msg_assistant event.
+// Used by SessionTurnTokens to return per-turn data for cost calculation.
+type TokenTurn struct {
+	Model       string
+	Input       int
+	Output      int
+	CacheRead   int
+	CacheWrite  int
+	EventCost   float64
+}
+
+// SessionTurnTokens returns per-turn token data for the given instance_id.
+func (d *DB) SessionTurnTokens(instanceID string) ([]TokenTurn, error) {
+	const q = `
+SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
+       COALESCE(JSON_EXTRACT(payload, '$.inputTokens'), 0),
+       COALESCE(JSON_EXTRACT(payload, '$.outputTokens'), 0),
+       COALESCE(JSON_EXTRACT(payload, '$.cacheReadTokens'), 0),
+       COALESCE(JSON_EXTRACT(payload, '$.cacheWriteTokens'), 0),
+       COALESCE(JSON_EXTRACT(payload, '$.cost'), 0.0)
+  FROM agent_events
+ WHERE instance_id = ?
+   AND type = 'msg_assistant'
+ ORDER BY created_at ASC`
+	rows, err := d.conn.Query(q, instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("db: session turn tokens: %w", err)
+	}
+	defer rows.Close()
+
+	var turns []TokenTurn
+	for rows.Next() {
+		var t TokenTurn
+		if scanErr := rows.Scan(&t.Model, &t.Input, &t.Output, &t.CacheRead, &t.CacheWrite, &t.EventCost); scanErr != nil {
+			return nil, fmt.Errorf("db: session turn tokens: scan: %w", scanErr)
+		}
+		turns = append(turns, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: session turn tokens: iterate: %w", err)
+	}
+	return turns, nil
+}
