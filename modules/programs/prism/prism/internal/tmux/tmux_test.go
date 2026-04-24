@@ -189,6 +189,7 @@ func TestListClients_Direct(t *testing.T) {
 //   - clientB would be switched (stamp points to it)
 //   - clientA would be left behind
 func TestTwoClientsGlobalStampIsolation_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -236,6 +237,7 @@ func TestTwoClientsGlobalStampIsolation_Direct(t *testing.T) {
 // This test uses t.Log only (no t.Error) to serve as living documentation
 // of the incorrect behaviour without gate-keeping the build.
 func TestTwoClientsCallerClientBug_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -278,6 +280,7 @@ func TestTwoClientsCallerClientBug_Direct(t *testing.T) {
 // headless cleanup client-iteration logic only redirects clients that are
 // viewing the target session, leaving others unaffected.
 func TestHeadlessCleanupRedirectsOnlyTargetClients_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -328,6 +331,7 @@ func TestHeadlessCleanupRedirectsOnlyTargetClients_Direct(t *testing.T) {
 // by deliberately poisoning the global stamp with clientB, then performing a
 // switch using clientA's name directly.
 func TestSwitchUsesCurrentClient_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -581,6 +585,7 @@ func TestAPI_ListClients(t *testing.T) {
 // per-client correct with three simultaneous clients, which is the primitive
 // relied on by the model-layer tests (TestPersistentModelEnterMultiClient, etc.).
 func TestThreeClientsDirectSwitch_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -655,6 +660,7 @@ func TestThreeClientsDirectSwitch_Direct(t *testing.T) {
 // the three-client scenario, extending the two-client coverage in
 // TestHeadlessCleanupRedirectsOnlyTargetClients_Direct.
 func TestCleanupRedirectMultiClient_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -886,6 +892,7 @@ func TestNewWindow_EnvVar_EqualInValue(t *testing.T) {
 // to its own dedicated target. After both complete, each client must be on its
 // intended destination.
 func TestSwitchClientRaceCondition_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -933,6 +940,7 @@ func TestSwitchClientRaceCondition_Direct(t *testing.T) {
 //
 // See TestTwoClientsGlobalStampIsolation_Direct for the parallel-safe version.
 func TestAPI_TwoClientsGlobalStampIsolation(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newServer(t)
 	withServer(t, s)
 
