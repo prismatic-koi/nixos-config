@@ -43,7 +43,6 @@ package cmd
 //	--session <name>   prism session name (e.g. "nixos-config@feature")
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,6 +57,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -112,9 +112,13 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("prism agent-run: bwrap isolation requires Linux; current platform is %s", runtime.GOOS)
 		}
 	case config.IsolationSandboxExec:
-		// The platform guard in spawn.go ensures this is only reached on Darwin.
-		// The full sandbox-exec implementation is tracked in issue #1016.
-		return errors.New("sandbox-exec mode: not yet implemented (issue #1016)")
+		// Fail fast on non-Darwin: sandbox-exec is macOS-only.
+		// The platform guard in spawn.go also catches this at spawn time;
+		// belt-and-braces guard for direct invocations of agent-run.
+		if runtime.GOOS != "darwin" {
+			return fmt.Errorf("prism agent-run: sandbox-exec isolation requires macOS (Darwin); current platform is %s", runtime.GOOS)
+		}
+		return runAgentRunSandboxExec(sessionName, status)
 	default:
 		return fmt.Errorf("agent-run: session %q has isolation mode %q; this command is only for bwrap and sandbox-exec sessions", sessionName, isoMode)
 	}
@@ -424,34 +428,12 @@ func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}, onWinch fun
 // Everything else — including PRISM_GITHUB_TOKEN_*, GITHUB_TOKEN,
 // GITHUB_PACKAGES_TOKEN, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, and any
 // other secret a prism coordinator might export — is dropped.
+//
+// The implementation is a thin alias over container.MinimalIsolatedExecEnv
+// (the same logic is reused by the sandbox-exec path, see #1016). Both call
+// sites share a single helper because the filter is identical across modes.
 func minimalBwrapExecEnv(hostEnv []string) []string {
-	allow := map[string]bool{
-		"PATH":      true,
-		"HOME":      true,
-		"USER":      true,
-		"LOGNAME":   true,
-		"TERM":      true,
-		"COLORTERM": true,
-		"LANG":      true,
-		"LC_ALL":    true,
-	}
-	out := make([]string, 0, len(allow))
-	for _, kv := range hostEnv {
-		eq := -1
-		for i := 0; i < len(kv); i++ {
-			if kv[i] == '=' {
-				eq = i
-				break
-			}
-		}
-		if eq <= 0 {
-			continue
-		}
-		if allow[kv[:eq]] {
-			out = append(out, kv)
-		}
-	}
-	return out
+	return container.MinimalIsolatedExecEnv(hostEnv)
 }
 
 // applyInitialPromptEnvVar reads PRISM_INITIAL_PROMPT from the process
@@ -463,6 +445,133 @@ func applyInitialPromptEnvVar(cfg *container.Config) {
 	if initialPrompt := os.Getenv("PRISM_INITIAL_PROMPT"); initialPrompt != "" {
 		cfg.InitialPrompt = initialPrompt
 	}
+}
+
+// validateSandboxExecArgs checks that the args returned by
+// Manager.PrepareSandboxExec have the expected shape and that the profile
+// path on disk is readable. It exists as a separate function so the
+// edge-case AC ("missing/unreadable profile-temp path returns a clear error
+// and does not exec") can be unit-tested without needing a Darwin host or
+// real /usr/bin/sandbox-exec binary.
+//
+// Returned errors are wrapped with the `agent-run:` prefix used by the
+// surrounding command so they appear coherently in the agent-run log.
+func validateSandboxExecArgs(args []string) error {
+	if len(args) < 4 || args[0] != "sandbox-exec" || args[1] != "-f" {
+		return fmt.Errorf("agent-run: sandbox-exec args have unexpected shape (len=%d): %v", len(args), args)
+	}
+	profilePath := args[2]
+	if profilePath == "" {
+		return fmt.Errorf("agent-run: sandbox-exec profile path is empty")
+	}
+	if _, statErr := os.Stat(profilePath); statErr != nil {
+		return fmt.Errorf("agent-run: sandbox-exec profile %s is missing or unreadable: %w", profilePath, statErr)
+	}
+	return nil
+}
+
+// runAgentRunSandboxExec is the sandbox-exec equivalent of the bwrap dispatch
+// path above. It reconstructs the container.Config from the session's DB
+// status, calls Manager.PrepareSandboxExec to materialise the SBPL profile,
+// and then replaces this process with sandbox-exec via syscall.Exec — the
+// same lifecycle pattern bwrap once used (the bwrap path now uses a
+// supervised child for PTY/signal handling; the minimal sandbox-exec path
+// retains the original syscall.Exec model per #1016).
+//
+// Per the AC in #1016, this function:
+//
+//   - calls PrepareSandboxExec() to write the profile and build the args.
+//   - re-stats the profile-temp path before exec'ing; if it is missing or
+//     unreadable, returns a clear error and does NOT exec.
+//   - filters the env via container.MinimalIsolatedExecEnv so the same
+//     allow-list as bwrap (PATH, HOME, USER, LOGNAME, TERM, COLORTERM, LANG,
+//     LC_ALL) is the only thing the sandbox-exec process inherits.
+//   - syscall.Exec("/usr/bin/sandbox-exec", args, env).
+//
+// PR 4 (#1018) replaces this with a supervised child + lifecycle hardening.
+func runAgentRunSandboxExec(sessionName string, status *db.Status) error {
+	// Load prism config for git identity and SSH key names. Mirrors the
+	// bwrap path so future PRs in this design can extend the Manager.Config
+	// uniformly (staging HOME, credentials, caches in #1017).
+	cfg := config.Load()
+
+	worktree := status.Worktree
+	if worktree == "" {
+		return fmt.Errorf("agent-run: session %q has no recorded worktree", sessionName)
+	}
+	bareRoot := git.BareRoot(worktree)
+	var worktreeGitDir string
+	if bareRoot != "" {
+		worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
+	}
+
+	port := 0
+	if status.HarnessPort != nil {
+		port = *status.HarnessPort
+	}
+
+	agentRole := ""
+	if status.RootAgentName != nil {
+		agentRole = *status.RootAgentName
+	}
+	if agentRole == "" {
+		agentRole = session.DefaultAgent(worktree, "")
+	}
+
+	hostAPISockPath := ""
+	if sockPath, sockErr := session.SidecarHostAPIPath(sessionName); sockErr == nil {
+		hostAPISockPath = sockPath
+	}
+
+	var agentEnvVars map[string]string
+	if pf, pfErr := config.LoadProfiles(); pfErr == nil && pf != nil {
+		agentEnvVars = pf.AgentEnvVars
+	}
+
+	agentRunHarness := opencode.New("", nil, "", "")
+	ctrCfg := container.Config{
+		SessionName:       sessionName,
+		Worktree:          worktree,
+		BareRoot:          bareRoot,
+		WorktreeGitDir:    worktreeGitDir,
+		AllocatedPort:     port,
+		AgentRole:         agentRole,
+		GitUserName:       cfg.GitUserName,
+		GitUserEmail:      cfg.GitUserEmail,
+		SshAccessKeyName:  cfg.SshAccessKeyName,
+		SshSigningKeyName: cfg.SshSigningKeyName,
+		HostAPISockPath:   hostAPISockPath,
+		RuntimeEnv:        agentRunHarness.RuntimeEnv(),
+		AgentEnvVars:      agentEnvVars,
+	}
+
+	applyInitialPromptEnvVar(&ctrCfg)
+
+	m := container.New(ctrCfg)
+
+	args, err := m.PrepareSandboxExec()
+	if err != nil {
+		return fmt.Errorf("agent-run: prepare sandbox-exec args: %w", err)
+	}
+
+	if err := validateSandboxExecArgs(args); err != nil {
+		return err
+	}
+
+	// Filter the env passed to sandbox-exec through the same allow-list as
+	// bwrap (PATH, HOME, USER, LOGNAME, TERM, COLORTERM, LANG, LC_ALL). This
+	// is the only line of defence in this PR against host-shell secrets
+	// reaching the sandbox interior — the minimal profile does not yet
+	// rebuild the env via setenv equivalents (#1017 is where staging HOME
+	// and friends land).
+	env := container.MinimalIsolatedExecEnv(os.Environ())
+
+	const sandboxExecBinary = "/usr/bin/sandbox-exec"
+	if execErr := syscall.Exec(sandboxExecBinary, args, env); execErr != nil {
+		return fmt.Errorf("agent-run: exec %s: %w", sandboxExecBinary, execErr)
+	}
+	// Unreachable: syscall.Exec only returns on error.
+	return nil
 }
 
 // findBwrap locates the bwrap binary on PATH or in well-known Nix store paths.

@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -447,3 +448,84 @@ func containsAt(s, substr string) bool {
 	}
 	return false
 }
+
+// ── validateSandboxExecArgs ─────────────────────────────────────────────────
+
+// TestValidateSandboxExecArgs_OK verifies that args produced by
+// Manager.PrepareSandboxExec pass validation when the on-disk profile is
+// present.
+func TestValidateSandboxExecArgs_OK(t *testing.T) {
+	m := container.New(container.Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14010,
+	})
+	t.Cleanup(func() {
+		// PrepareSandboxExec writes the profile to a temp file; remove it
+		// after the test so we don't leak across runs.
+		_ = os.Remove(filepath.Join(os.TempDir(), "prism-sandbox-exec-profile-"+m.Name()+".sb"))
+	})
+
+	args, err := m.PrepareSandboxExec()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExec: %v", err)
+	}
+
+	if err := validateSandboxExecArgs(args); err != nil {
+		t.Errorf("validateSandboxExecArgs(%v) = %v, want nil", args, err)
+	}
+}
+
+// TestValidateSandboxExecArgs_MissingProfile verifies the edge-case AC:
+// when the profile-temp file is missing or unreadable, validation returns a
+// clear error containing the path and the underlying stat error.
+func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
+	m := container.New(container.Config{
+		SessionName:   "repo@gone",
+		AllocatedPort: 14011,
+	})
+	args, err := m.PrepareSandboxExec()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExec: %v", err)
+	}
+	profilePath := args[2]
+	t.Cleanup(func() { _ = os.Remove(profilePath) })
+
+	// Simulate a missing/unreadable profile-temp file.
+	if err := os.Remove(profilePath); err != nil {
+		t.Fatalf("Remove profile: %v", err)
+	}
+
+	got := validateSandboxExecArgs(args)
+	if got == nil {
+		t.Fatalf("validateSandboxExecArgs with missing profile = nil, want error")
+	}
+	gotMsg := got.Error()
+	if !contains(gotMsg, "missing or unreadable") {
+		t.Errorf("error message %q must mention 'missing or unreadable'", gotMsg)
+	}
+	if !contains(gotMsg, profilePath) {
+		t.Errorf("error message %q must contain the profile path %q", gotMsg, profilePath)
+	}
+}
+
+// TestValidateSandboxExecArgs_BadShape verifies that args without the
+// expected leading ["sandbox-exec", "-f", <path>, ...] shape are rejected.
+func TestValidateSandboxExecArgs_BadShape(t *testing.T) {
+	cases := [][]string{
+		nil,
+		{},
+		{"sandbox-exec"},
+		{"sandbox-exec", "-f"},
+		{"sandbox-exec", "-f", "/tmp/x"},                  // missing harness
+		{"sandbox-exec", "WRONG", "/tmp/x", "opencode"},   // wrong flag
+		{"NOT-SANDBOX", "-f", "/tmp/x", "opencode"},       // wrong argv[0]
+	}
+	for i, args := range cases {
+		err := validateSandboxExecArgs(args)
+		if err == nil {
+			t.Errorf("case %d: validateSandboxExecArgs(%v) = nil, want error", i, args)
+		}
+	}
+}
+
+

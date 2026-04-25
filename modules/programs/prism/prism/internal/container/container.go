@@ -322,6 +322,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
+	_ = os.Remove(m.sandboxExecProfilePath())
 
 	// Check the container's instance label when we have our own InstanceID.
 	// This detects ownership mismatches where a container from a previous
@@ -824,6 +825,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
+	_ = os.Remove(m.sandboxExecProfilePath())
 
 	log.Printf("container: %q removed", m.name)
 }
@@ -876,6 +878,28 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 	// Build the bwrap args.
 	b := &bwrapIsolator{name: m.name}
 	return b.BuildArgs(m), nil
+}
+
+// PrepareSandboxExec writes the SBPL profile for this session to a temp file
+// under the per-session state dir and returns the complete sandbox-exec
+// argument list via sandboxExecIsolator.BuildArgs.
+//
+// Call this from "prism agent-run" in the tmux pane for sandbox-exec mode.
+// The returned args slice is suitable for passing directly to
+// syscall.Exec("/usr/bin/sandbox-exec", args, env). The first element of
+// args is "sandbox-exec" itself (which becomes argv[0] under syscall.Exec).
+//
+// This PR (#1016) is the minimal read-only launch — no SSH config,
+// gitconfig, or opencode.json temp files are written here. Staging HOME,
+// credentials, caches, and write paths come in PR 3 (#1017); concurrency
+// cap and lifecycle hardening come in PR 4 (#1018).
+func (m *Manager) PrepareSandboxExec() ([]string, error) {
+	if _, err := writeProfile(m); err != nil {
+		return nil, err
+	}
+
+	s := &sandboxExecIsolator{name: m.name}
+	return s.BuildArgs(m), nil
 }
 
 // prepareVolumeDirs eagerly creates host directories that buildRunArgs() will
