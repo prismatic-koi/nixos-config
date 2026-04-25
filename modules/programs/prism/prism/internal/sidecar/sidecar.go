@@ -696,7 +696,11 @@ func (s *Sidecar) Shutdown() {
 
 	if s.lastState != agent.StateFinished &&
 		s.lastState != agent.StateDeleted &&
-		s.lastState != agent.StateInterrupted {
+		s.lastState != agent.StateInterrupted &&
+		s.lastState != agent.StateError {
+		// Note: StateError is excluded because writeStartupError may have already
+		// written it before Run() returned on the startup-failure path. Overwriting
+		// error with interrupted here would clobber the correct terminal state.
 		log.Printf("sidecar: transition -> interrupted (cause=sigterm)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
@@ -1674,8 +1678,11 @@ func isReviewAgentSession(sessionName string, d *db.DB) bool {
 
 // writeStartupError writes StateError to the DB and, when this session is a
 // review agent, sends a notification to the parent worker session. It must be
-// called WITHOUT s.mu held (it acquires the mutex internally via upsertState,
-// and the notification goroutine also runs without the lock).
+// called WITHOUT s.mu held — it acquires s.mu itself to call upsertState and
+// writeStateChange (which require the lock), then releases it before launching
+// the notification goroutine. upsertState's own doc says "called with s.mu held"
+// — that contract is satisfied here because writeStartupError holds the lock for
+// the entire upsertState + writeStateChange block.
 //
 // This is the Gap 1 + Gap 2 fix for startup failures (WaitHealthy timeout,
 // CreateSession failure). Calling it ensures:

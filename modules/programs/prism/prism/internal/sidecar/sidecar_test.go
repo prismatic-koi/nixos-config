@@ -8103,6 +8103,31 @@ func TestWriteStartupError_NormalFinish_NotSuppressed(t *testing.T) {
 	}
 }
 
+// TestShutdown_DoesNotOverrideError verifies that Shutdown() does not overwrite
+// a StateError that was written by writeStartupError — the narrow-window race
+// where SIGTERM arrives after writeStartupError sets lastState=StateError but
+// before Run() returns.
+func TestShutdown_DoesNotOverrideError(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Simulate writeStartupError having already run: set lastState to StateError
+	// as writeStartupError would do.
+	sc.mu.Lock()
+	sc.lastState = agent.StateError
+	sc.mu.Unlock()
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "error", nil, nil)
+
+	// Shutdown() must not overwrite the error state.
+	sc.Shutdown()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after Shutdown on error, want %q (Shutdown must not clobber startup-failure error)", state, agent.StateError)
+	}
+}
+
 // TestReviewAgentParentSession verifies the reviewAgentParentSession helper
 // correctly derives the parent session name from various review-agent session
 // name shapes.
