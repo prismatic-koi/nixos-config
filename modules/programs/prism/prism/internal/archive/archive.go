@@ -89,6 +89,12 @@ type Params struct {
 	PrismVersion string
 	// IsolationMode is "podman", "bwrap", or "host".
 	IsolationMode string
+	// AgentRunLogPath is the absolute path to the bwrap harness log file
+	// (~/.local/state/prism/run/<session>/agent-run.log). When non-empty and the
+	// file exists, it is copied into the archive as agent-run.log. Missing files
+	// are silently skipped — bwrap sessions that never reached agent-run will not
+	// have this file.
+	AgentRunLogPath string
 	// StorageRoot overrides the host opencode storage root. When empty the
 	// default (~/.local/share/opencode/storage) is used. Tests inject this to
 	// point at a temp dir.
@@ -177,6 +183,18 @@ func Run(p Params) (archivePath string, err error) {
 	if p.HarnessSessionID != "" {
 		if copyErr := copySessionFiles(p.HarnessSessionID, storageRoot, rawDir); copyErr != nil {
 			return "", copyErr
+		}
+	}
+
+	// Copy the agent-run log (bwrap harness stdout/stderr) when it exists.
+	// Missing files are silently skipped — bwrap sessions that never reached
+	// agent-run will not have this file, and non-bwrap sessions never create it.
+	if p.AgentRunLogPath != "" {
+		if _, statErr := os.Stat(p.AgentRunLogPath); statErr == nil {
+			dst := filepath.Join(tmpDir, "agent-run.log")
+			if copyErr := copyFile(p.AgentRunLogPath, dst); copyErr != nil {
+				return "", fmt.Errorf("archive: copy agent-run log: %w", copyErr)
+			}
 		}
 	}
 

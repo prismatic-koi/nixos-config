@@ -4,14 +4,18 @@ package cmd
 //
 // Usage:
 //
-//	prism logs <session>             print the full sidecar log to stdout
-//	prism logs <session> --tail N    print only the last N lines
-//	prism logs <session> --follow    stream new lines as they arrive
-//	prism logs <session> -f          alias for --follow
+//	prism logs <session>                    print the full sidecar log to stdout
+//	prism logs <session> --tail N           print only the last N lines
+//	prism logs <session> --follow           stream new lines as they arrive
+//	prism logs <session> -f                 alias for --follow
+//	prism logs <session> --agent-run        print the agent-run log (bwrap stdout/stderr)
+//	prism logs <session> --agent-run --tail N   last N lines of agent-run log
+//	prism logs <session> --agent-run -f     follow agent-run log
 //
-// The output is the raw sidecar log file and can be piped to grep:
+// The output is the raw log file and can be piped to grep:
 //
 //	prism logs nixos-config@main | grep '[timing]'
+//	prism logs nixos-config@feat --agent-run | grep 'error'
 //
 // Works identically from the host or inside a coordinator container:
 // when PRISM_HOST_API is set, the log is fetched via GET /logs on the
@@ -44,6 +48,12 @@ and can be piped to grep for filtering:
 
   prism logs nixos-config@main | grep '[timing]'
 
+Use --agent-run to read the bwrap harness log instead (captures bwrap and
+opencode stdout/stderr for the lifetime of the session):
+
+  prism logs nixos-config@feat --agent-run
+  prism logs nixos-config@feat --agent-run --follow
+
 Works identically from the host or inside a coordinator container — in
 container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).`,
 	Args:         cobra.ExactArgs(1),
@@ -54,6 +64,7 @@ container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).
 func init() {
 	logsCmd.Flags().Int("tail", 0, "Number of lines to show from the end of the log; 0 prints nothing (omit flag to show all)")
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
+	logsCmd.Flags().Bool("agent-run", false, "Read the agent-run log (bwrap harness stdout/stderr) instead of the sidecar log")
 	rootCmd.AddCommand(logsCmd)
 }
 
@@ -63,6 +74,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	tailN, _ := cmd.Flags().GetInt("tail")
 	follow, _ := cmd.Flags().GetBool("follow")
 	tailSet := cmd.Flags().Changed("tail")
+	agentRun, _ := cmd.Flags().GetBool("agent-run")
 
 	if tailSet && follow {
 		return fmt.Errorf("--tail and --follow are mutually exclusive")
@@ -74,16 +86,28 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	// Container proxy path: delegate to the host-API sidecar.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, os.Stdout)
+		return proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, agentRun, os.Stdout)
 	}
 
-	// Host path: resolve the sidecar log file.
-	logPath, err := session.SidecarLogPath(sessionName)
-	if err != nil {
-		return fmt.Errorf("resolve log path: %w", err)
+	// Host path: resolve the appropriate log file.
+	var logPath string
+	var err error
+	if agentRun {
+		logPath, err = session.AgentRunLogPath(sessionName)
+		if err != nil {
+			return fmt.Errorf("resolve agent-run log path: %w", err)
+		}
+	} else {
+		logPath, err = session.SidecarLogPath(sessionName)
+		if err != nil {
+			return fmt.Errorf("resolve log path: %w", err)
+		}
 	}
 
 	if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
+		if agentRun {
+			return fmt.Errorf("no agent-run log file found for session %q", sessionName)
+		}
 		return fmt.Errorf("no log file found for session %q", sessionName)
 	}
 

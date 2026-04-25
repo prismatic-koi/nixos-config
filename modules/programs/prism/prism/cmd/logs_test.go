@@ -229,7 +229,7 @@ func TestProxyLogsFromHostAPI_SendsCorrectQueryParams(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 5, true, false, &buf)
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 5, true, false, false, &buf)
 	if err != nil {
 		t.Fatalf("proxyLogsFromHostAPI: %v", err)
 	}
@@ -246,6 +246,9 @@ func TestProxyLogsFromHostAPI_SendsCorrectQueryParams(t *testing.T) {
 	}
 	if strings.Contains(capturedQuery, "follow") {
 		t.Errorf("query %q should not contain follow (not set)", capturedQuery)
+	}
+	if strings.Contains(capturedQuery, "source") {
+		t.Errorf("query %q should not contain source when agentRun=false", capturedQuery)
 	}
 
 	got := buf.String()
@@ -266,7 +269,7 @@ func TestProxyLogsFromHostAPI_NoTailParam(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 0, false, false, &buf)
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 0, false, false, false, &buf)
 	if err != nil {
 		t.Fatalf("proxyLogsFromHostAPI: %v", err)
 	}
@@ -287,7 +290,7 @@ func TestProxyLogsFromHostAPI_Returns404AsError(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@nonexistent", 0, false, false, &buf)
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@nonexistent", 0, false, false, false, &buf)
 	if err == nil {
 		t.Fatal("expected non-nil error for 404 response")
 	}
@@ -309,13 +312,40 @@ func TestProxyLogsFromHostAPI_FollowSendsFollowParam(t *testing.T) {
 
 	var buf bytes.Buffer
 	// follow=true but server immediately closes: should not block.
-	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 0, false, true, &buf)
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 0, false, true, false, &buf)
 	if err != nil {
 		t.Fatalf("proxyLogsFromHostAPI: %v", err)
 	}
 
 	if !strings.Contains(capturedQuery, "follow=true") {
 		t.Errorf("query %q should contain follow=true", capturedQuery)
+	}
+}
+
+// TestProxyLogsFromHostAPI_AgentRunSendsSourceParam verifies that agentRun=true
+// adds source=agent-run to the query.
+func TestProxyLogsFromHostAPI_AgentRunSendsSourceParam(t *testing.T) {
+	var capturedQuery string
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("bwrap startup output\n"))
+	})
+
+	var buf bytes.Buffer
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@feat", 0, false, false, true, &buf)
+	if err != nil {
+		t.Fatalf("proxyLogsFromHostAPI: %v", err)
+	}
+
+	if !strings.Contains(capturedQuery, "source=agent-run") {
+		t.Errorf("query %q should contain source=agent-run when agentRun=true", capturedQuery)
+	}
+
+	got := buf.String()
+	if got != "bwrap startup output\n" {
+		t.Errorf("body = %q, want log content", got)
 	}
 }
 
