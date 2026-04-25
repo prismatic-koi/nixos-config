@@ -7131,6 +7131,118 @@ exit 1
 	}
 }
 
+// TestHostAPI_Review_CWDSetToWorktree verifies that the /review handler sets
+// cmd.Dir to the calling session's worktree path (from agent_status.worktree).
+// This anchors `prism review` to the correct git repository so that gh and git
+// commands succeed and PR metadata is injected into review-agent prompts
+// (rather than falling back to degraded per-agent discovery). See issue #1021.
+func TestHostAPI_Review_CWDSetToWorktree(t *testing.T) {
+	d := openTestDB(t)
+
+	// Create a real temp directory to use as the worktree.
+	// The handler validates that the directory exists (os.Stat), so we need a
+	// real path — not a placeholder string.
+	worktreeDir := t.TempDir()
+
+	// Seed the session with the temp dir as its worktree path.
+	if err := d.UpsertStatus("myrepo@feature", "myrepo", worktreeDir, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	cwdFile := filepath.Join(t.TempDir(), "captured-cwd")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub writes its own CWD to cwdFile so the test can inspect it.
+	stubScript := `#!/bin/sh
+pwd > ` + cwdFile + `
+echo "✓ review               passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "myrepo@feature",
+		Repo:            "myrepo",
+		Worktree:        worktreeDir,
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1021"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedCWD, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatalf("read captured CWD: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedCWD))
+	if got != worktreeDir {
+		t.Errorf("subprocess CWD = %q, want %q (must be set to session worktree)", got, worktreeDir)
+	}
+}
+
+// TestHostAPI_Review_CWDFallbackWhenWorktreeMissing verifies that when the
+// calling session has a worktree path in the DB that no longer exists on disk,
+// the /review handler logs a warning and proceeds with the default CWD rather
+// than returning an error. The fallback path must still produce a valid
+// response (sentinel present), and must NOT set cmd.Dir to the missing path
+// (which would cause exec.Command to fail with "no such file or directory").
+// See issue #1021 (edge-case AC).
+func TestHostAPI_Review_CWDFallbackWhenWorktreeMissing(t *testing.T) {
+	d := openTestDB(t)
+
+	// Use a path that is guaranteed not to exist.
+	missingWorktree := filepath.Join(t.TempDir(), "nonexistent-worktree-dir")
+
+	// Seed the session with the non-existent worktree.
+	if err := d.UpsertStatus("myrepo@feature", "myrepo", missingWorktree, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Stub just exits 0. If cmd.Dir were set to the missing path, cmd.Start()
+	// would fail and the handler would return 500 before streaming begins —
+	// that would cause rr.Code == 500, which this test checks against.
+	stubScript := "#!/bin/sh\necho '✓ review               passed'\nexit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "myrepo@feature",
+		Repo:            "myrepo",
+		Worktree:        missingWorktree,
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1021"}`)
+	// Handler must succeed (fallback CWD) — NOT return 500.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (fallback when worktree missing); body = %s",
+			rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q should contain ReviewSentinelPassed %q (fallback path must still complete)", body, ReviewSentinelPassed)
+	}
+}
+
 // ── buildNotifyPromptBody tests (issue #848) ────────────────────────────────
 
 // TestBuildNotifyPromptBody_OmitsAgentField verifies that the outgoing

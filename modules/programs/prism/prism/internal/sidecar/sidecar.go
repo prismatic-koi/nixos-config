@@ -3124,6 +3124,32 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 
+		// Anchor the subprocess CWD to the calling session's worktree so that
+		// `prism review` can run `gh` and `git` commands against the correct
+		// repository. Without this, the subprocess inherits the sidecar's CWD
+		// (typically the tmux session-start directory), which may not be a git
+		// repository — producing the "not a git repository" warning and causing
+		// prism review to fall back to degraded per-agent git discovery.
+		//
+		// Lookup order:
+		//   1. DB: agent_status.worktree for this session.
+		//   2. Existence check: verify the directory is reachable on disk
+		//      (defence in depth — the path is from the trusted DB but the
+		//      worktree may have been cleaned up since the row was written).
+		//   3. Fallback: log and proceed with default CWD when the lookup
+		//      fails or the directory no longer exists, so that the existing
+		//      degraded-context path keeps working rather than hard-failing.
+		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
+			log.Printf("sidecar: host-API /review: worktree lookup failed (DB error): %v — using default CWD", dbErr)
+		} else if status == nil || status.Worktree == "" {
+			log.Printf("sidecar: host-API /review: worktree not set for session %q — using default CWD", s.cfg.SessionName)
+		} else if _, statErr := os.Stat(status.Worktree); statErr != nil {
+			log.Printf("sidecar: host-API /review: worktree %q is not accessible: %v — using default CWD", status.Worktree, statErr)
+		} else {
+			cmd.Dir = status.Worktree
+			log.Printf("sidecar: host-API /review: subprocess CWD set to worktree %q", status.Worktree)
+		}
+
 		// Build the subprocess environment:
 		// PRISM_SESSION_NAME: so review.LookupParentSession() resolves the
 		// parent session correctly. The sidecar daemon is not inside tmux,
