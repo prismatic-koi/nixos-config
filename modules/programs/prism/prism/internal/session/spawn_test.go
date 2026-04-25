@@ -359,6 +359,99 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt verifies that when
+// opts.Prompt is non-empty, spawnAgentOnlyLayout sets PRISM_INITIAL_PROMPT in
+// the agent pane's tmux environment via a -e flag on tmux new-window. This is
+// the regression test for #1042: review agents in bwrap mode must receive
+// their initial prompt via the PRISM_INITIAL_PROMPT env var, since the bwrap
+// path reads it in agent-run and appends --prompt to the opencode invocation.
+func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@branch~review-1-review-code"
+	const prompt = "review this PR"
+	opts := SpawnOpts{
+		SessionName: sessionName,
+		Repo:        "myrepo",
+		Worktree:    "/worktrees/myrepo-branch",
+		AgentRole:   "review-code",
+		Prompt:      prompt,
+		Layout:      LayoutAgentOnly,
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+
+	args := readSpyArgs(argsFile)
+	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT=" + prompt}) {
+		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT=%s] — review agents in bwrap mode will start with no initial prompt (#1042)", args, prompt)
+	}
+}
+
+// TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt verifies that when
+// opts.Prompt is empty, spawnAgentOnlyLayout does NOT set
+// PRISM_INITIAL_PROMPT in the tmux pane environment. An empty-string -e entry
+// would override an inherited value, which is not the desired behaviour.
+func TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@branch~review-1-review-code-noprompt"
+	opts := SpawnOpts{
+		SessionName: sessionName,
+		Repo:        "myrepo",
+		Worktree:    "/worktrees/myrepo-branch",
+		AgentRole:   "review-code",
+		// Prompt intentionally left empty.
+		Layout: LayoutAgentOnly,
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+
+	args := readSpyArgs(argsFile)
+	for i, a := range args {
+		if a == "-e" {
+			next := ""
+			if i+1 < len(args) {
+				next = args[i+1]
+			}
+			if strings.HasPrefix(next, "PRISM_INITIAL_PROMPT=") {
+				t.Errorf("tmux args %v contain -e PRISM_INITIAL_PROMPT=… when Prompt was empty; an empty entry would override an inherited value", args)
+				break
+			}
+		}
+	}
+}
+
+// TestSpawnAgentPaneEnvVars verifies the helper directly: with a non-empty
+// prompt it returns the PRISM_INITIAL_PROMPT entry; with an empty prompt it
+// returns nil (not an empty map and not an empty-string entry).
+func TestSpawnAgentPaneEnvVars(t *testing.T) {
+	t.Run("with prompt", func(t *testing.T) {
+		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "hello"})
+		if got == nil {
+			t.Fatal("got nil, want non-nil map")
+		}
+		if v, ok := got["PRISM_INITIAL_PROMPT"]; !ok || v != "hello" {
+			t.Errorf("PRISM_INITIAL_PROMPT = %q, want %q", v, "hello")
+		}
+	})
+	t.Run("empty prompt", func(t *testing.T) {
+		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: ""})
+		if got != nil {
+			t.Errorf("got %v, want nil (an empty entry would override an inherited value)", got)
+		}
+	})
+}
+
 // TestSpawnSession_UnsupportedLayout_ReturnsError verifies that Layout values
 // outside the supported set (LayoutFull / LayoutAgentOnly) surface a clear
 // error rather than silently falling through.

@@ -245,6 +245,24 @@ func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 	return Create(opts.SessionName, opts.Worktree, createOpts)
 }
 
+// spawnAgentPaneEnvVars builds the env-var map for the LayoutAgentOnly agent
+// tmux pane. It mirrors session.agentPaneEnvVars but takes SpawnOpts directly,
+// since the two layout paths use different opts structs.
+//
+// When opts.Prompt is non-empty, PRISM_INITIAL_PROMPT is included so that
+// "prism agent-run" can read it and populate container.Config.InitialPrompt,
+// activating bwrap's --prompt CLI-append path. Returns nil when no env vars
+// are needed, producing no -e flags in tmux (an empty-string entry would
+// override an inherited value, which is not the desired behaviour).
+func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
+	if opts.Prompt == "" {
+		return nil
+	}
+	return map[string]string{
+		"PRISM_INITIAL_PROMPT": opts.Prompt,
+	}
+}
+
 // spawnAgentOnlyLayout creates a 2-window tmux session for a review-style
 // agent: window 0 is a bare shell, window 1 runs the agent command. The
 // sidecar is started directly (it is owned by the session, not by a tmux
@@ -359,7 +377,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	if err := tmux.NewSessionDetached(opts.SessionName, opts.Worktree); err != nil {
 		return fmt.Errorf("spawn session: new tmux session %q: %w", opts.SessionName, err)
 	}
-	if err := tmux.NewWindow(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, nil); err != nil {
+	if err := tmux.NewWindow(opts.SessionName, 1, "agent", opts.Worktree, agentCmd, spawnAgentPaneEnvVars(opts)); err != nil {
 		return fmt.Errorf("spawn session: new agent window for %q: %w", opts.SessionName, err)
 	}
 	_ = tmux.SelectWindow(opts.SessionName, 1)
