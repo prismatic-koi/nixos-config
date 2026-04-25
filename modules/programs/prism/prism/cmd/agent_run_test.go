@@ -5,12 +5,15 @@ package cmd
 // Covers:
 //   - applyInitialPromptEnvVar: reads PRISM_INITIAL_PROMPT and populates Config
 //   - minimalBwrapExecEnv: filters the host env to a minimal allow-list
-//   - forwardSignalsToBwrap: delivers SIGTERM/SIGINT/SIGHUP to the child group
+//   - forwardSignalsToBwrap: delivers SIGTERM/SIGINT/SIGHUP/SIGWINCH to the child group
+//   - openPTY / getWinsize / setWinsize: PTY pair creation and window-size ioctls
+//   - teePTYMaster: copies master PTY output to pane and log file
 
 import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -172,7 +175,7 @@ func TestForwardSignalsToBwrap_SIGTERMReachesChild(t *testing.T) {
 	}
 
 	doneCh := make(chan struct{})
-	go forwardSignalsToBwrap(cmd.Process, doneCh)
+	go forwardSignalsToBwrap(cmd.Process, doneCh, nil)
 
 	// Send SIGTERM to agent-run's own process (us). forwardSignalsToBwrap
 	// should forward it to the child process group.
@@ -221,7 +224,7 @@ func TestForwardSignalsToBwrap_ExitsWhenDoneClosed(t *testing.T) {
 	// must exit cleanly when doneCh is closed).
 	finished := make(chan struct{})
 	go func() {
-		forwardSignalsToBwrap(nil, doneCh)
+		forwardSignalsToBwrap(nil, doneCh, nil)
 		close(finished)
 	}()
 
@@ -380,6 +383,53 @@ func TestAgentRunLog_TeeCapture(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o600 {
 		t.Errorf("log file mode = %o, want 0600", fi.Mode().Perm())
+	}
+}
+
+// ── teePipe ──────────────────────────────────────────────────────────────────
+
+// TestTeePipe_CopiesOutput verifies that teePipe copies bytes from the reader
+// to both the primary and secondary writers.
+func TestTeePipe_CopiesOutput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	const msg = "hello from bwrap\n"
+	go func() {
+		_, _ = w.Write([]byte(msg))
+		w.Close()
+	}()
+
+	var primary, secondary strings.Builder
+	teePipe(r, &primary, &secondary)
+	r.Close()
+
+	if !strings.Contains(primary.String(), "hello from bwrap") {
+		t.Errorf("primary = %q, want to contain %q", primary.String(), msg)
+	}
+	if !strings.Contains(secondary.String(), "hello from bwrap") {
+		t.Errorf("secondary = %q, want to contain %q", secondary.String(), msg)
+	}
+}
+
+// TestTeePipe_NilSecondary verifies teePipe works with a nil secondary writer.
+func TestTeePipe_NilSecondary(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	const msg = "only primary\n"
+	go func() {
+		_, _ = w.Write([]byte(msg))
+		w.Close()
+	}()
+	var primary strings.Builder
+	teePipe(r, &primary, nil) // must not panic
+	r.Close()
+	if !strings.Contains(primary.String(), "only primary") {
+		t.Errorf("primary = %q, want to contain %q", primary.String(), msg)
 	}
 }
 
