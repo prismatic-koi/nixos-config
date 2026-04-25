@@ -479,11 +479,11 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		return
 	}
 
-	if prInfoVal.State == "CLOSED" && !prInfoVal.Merged {
+	if prInfoVal.State == "CLOSED" && !prInfoVal.isMerged() {
 		fw.watcher.failAndNotify(head, "PR was closed without merging")
 		return
 	}
-	if prInfoVal.State == "MERGED" || prInfoVal.Merged {
+	if prInfoVal.State == "MERGED" || prInfoVal.isMerged() {
 		fw.watcher.succeedAndNotify(ctx, head)
 		return
 	}
@@ -888,7 +888,7 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 
 	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
 		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "CLOSED", Merged: false}, nil
+			return &prInfo{State: "CLOSED", MergedAt: nil}, nil
 		},
 		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
 		func(_ context.Context, pr int) error { return nil },
@@ -1131,4 +1131,70 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 	}
 
 	_ = os.Getenv // avoid unused import
+}
+
+// TestPRInfoJSONFields_NoMergedField guards against regressing to the
+// (invalid) "merged" field. `gh pr view` rejects unknown JSON fields with a
+// non-zero exit, which silently broke the entire merge-queue watcher between
+// #1014 and the fix for this regression. The canonical merge-detection field
+// is `mergedAt` (a nullable timestamp string).
+func TestPRInfoJSONFields_NoMergedField(t *testing.T) {
+	fields := strings.Split(prInfoJSONFields, ",")
+	for _, f := range fields {
+		if f == "merged" {
+			t.Errorf("prInfoJSONFields contains invalid 'merged' field; gh pr view will reject it. Got: %q", prInfoJSONFields)
+		}
+	}
+	hasMergedAt := false
+	for _, f := range fields {
+		if f == "mergedAt" {
+			hasMergedAt = true
+		}
+	}
+	if !hasMergedAt {
+		t.Errorf("prInfoJSONFields must include 'mergedAt' to detect merged state. Got: %q", prInfoJSONFields)
+	}
+}
+
+// TestPRInfo_IsMerged verifies the merged-detection logic against the three
+// states the watcher cares about: a non-empty mergedAt timestamp (merged), a
+// nil mergedAt pointer (not merged), and an empty-string mergedAt (also not
+// merged — a defensive case in case `gh` ever emits "" instead of null).
+func TestPRInfo_IsMerged(t *testing.T) {
+	mergedTime := "2026-04-26T10:09:40Z"
+	emptyStr := ""
+
+	cases := []struct {
+		name     string
+		info     prInfo
+		wantMerged bool
+	}{
+		{
+			name:       "MergedAt set to ISO timestamp",
+			info:       prInfo{State: "MERGED", MergedAt: &mergedTime},
+			wantMerged: true,
+		},
+		{
+			name:       "MergedAt is nil pointer (PR open or closed without merge)",
+			info:       prInfo{State: "OPEN", MergedAt: nil},
+			wantMerged: false,
+		},
+		{
+			name:       "MergedAt points to empty string (defensive)",
+			info:       prInfo{State: "OPEN", MergedAt: &emptyStr},
+			wantMerged: false,
+		},
+		{
+			name:       "CLOSED + nil MergedAt = closed without merging",
+			info:       prInfo{State: "CLOSED", MergedAt: nil},
+			wantMerged: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.info.isMerged(); got != tc.wantMerged {
+				t.Errorf("isMerged() = %v, want %v", got, tc.wantMerged)
+			}
+		})
+	}
 }
