@@ -45,6 +45,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/mergequeue"
 	session "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -256,6 +257,11 @@ type Sidecar struct {
 	// seenUnknownCapReached is set to true when seenUnknown reaches seenUnknownCap.
 	// Prevents repeated "cap reached" log lines. Protected by s.mu.
 	seenUnknownCapReached bool
+
+	// mergeWatcherCancel cancels the merge-watcher goroutine context. Set in
+	// Run() when this is a coordinator session (AgentRole == "coordinator").
+	// Protected by mu; nil when no watcher is running.
+	mergeWatcherCancel context.CancelFunc
 }
 
 // New creates a Sidecar with the given configuration.
@@ -541,6 +547,28 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
+	// Start the merge-queue watcher for coordinator sessions. The watcher polls
+	// the pending_merges head on a 45s ticker and drives PRs through the merge
+	// lifecycle. It is started only when:
+	//   - AgentRole is "coordinator" (explicit), OR
+	//   - SessionName ends with "@main" (legacy heuristic).
+	// The watcher context is stored so Shutdown() can cancel it before the
+	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
+	// a terminal transition after AbandonWatchingMerges clears the rows).
+	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
+		if s.cfg.InstanceID != "" {
+			watcherCtx, watcherCancel := context.WithCancel(ctx)
+			s.mu.Lock()
+			s.mergeWatcherCancel = watcherCancel
+			s.mu.Unlock()
+			watcher := mergequeue.New(s.cfg.DB, s.cfg.InstanceID, s.cfg.SessionName, s.cfg.HTTPClient)
+			go watcher.Run(watcherCtx)
+			log.Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
+		} else {
+			log.Printf("sidecar: merge-queue watcher NOT started — no instance_id")
+		}
+	}
+
 	ch, err := s.harness.Subscribe(ctx)
 	if err != nil {
 		return fmt.Errorf("sidecar: connect to SSE stream: %w", err)
@@ -641,13 +669,34 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 // Shutdown writes the interrupted state if the session is not already in a
 // terminal state, cancels any pending idle timer, and stops/removes the
 // container (if running in container mode). Called on SIGINT/SIGTERM.
+//
+// For coordinator sessions, Shutdown also cancels the merge-queue watcher and
+// transitions all watching pending_merges rows to 'abandoned' so that the next
+// coordinator session starts clean.
 func (s *Sidecar) Shutdown() {
 	s.mu.Lock()
 	// Mark shutdown before releasing the lock so that Run()'s OnReady guard
 	// sees shuttingDown=true even if it races with Shutdown() (AC-16).
 	s.shuttingDown = true
 	ctr := s.container
+	watcherCancel := s.mergeWatcherCancel
+	s.mergeWatcherCancel = nil
 	s.mu.Unlock()
+
+	// Cancel the merge-queue watcher first (before the SQL below) to prevent
+	// a race where the watcher fires a state transition after the abandon SQL.
+	if watcherCancel != nil {
+		watcherCancel()
+	}
+
+	// Abandon all watching merge rows for this coordinator incarnation.
+	if s.cfg.InstanceID != "" {
+		if err := s.cfg.DB.AbandonWatchingMerges(s.cfg.InstanceID); err != nil {
+			log.Printf("sidecar: AbandonWatchingMerges: %v", err)
+		} else {
+			log.Printf("sidecar: watching merge rows abandoned (instance=%s)", s.cfg.InstanceID)
+		}
+	}
 
 	// Stop and remove the container before writing state — this ensures
 	// cleanup happens even if SIGTERM arrives during health-check (AC-16).
@@ -2159,6 +2208,7 @@ var highImpactPrefixes = []string{
 	"prism spawn",
 	"prism cleanup",
 	"prism prompt",
+	"prism merge",
 }
 
 // isHighImpactCommand reports whether cmd matches any high-impact prefix.
