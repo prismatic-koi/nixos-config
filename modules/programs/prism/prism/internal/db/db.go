@@ -240,6 +240,10 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // migration. Rows with empty instance_id are skipped (a warning is printed).
 // This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
 // guard (pragma_table_info check) make it safe to run on an already-migrated DB.
+// v16→v17 is a no-op bridge that reserves the slot occupied by PR #1014
+// (local serial merge queue / pending_merges table). When #1014 lands first
+// the DB already arrives at v17 and this block is skipped; when this PR lands
+// first the bridge bumps the version so the v17→v18 block below is reachable.
 // v17→v18 is a one-shot backfill that fixes sessions rows whose started_at was
 // persisted as -62135596800000 (Go's zero time.Time{} marshalled via UnixMilli)
 // due to a wrong zero-value guard in InsertSession. For each such row it sets
@@ -806,6 +810,20 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v15→v16: bump version: %w", err)
 		}
 		version = 16
+	}
+
+	if version == 16 {
+		// Migration v16 → v17: no-op bridge. This slot is occupied by PR #1014
+		// (local serial merge queue / pending_merges table). When #1014 lands
+		// before this PR, the DB arrives here already at v17 and this block is
+		// skipped. When this PR lands first (or standalone), this bridge bumps
+		// the schema to v17 so the v17→v18 backfill block below is always
+		// reachable regardless of merge order.
+		if _, err := conn.Exec("UPDATE schema_version SET version = 17"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v16→v17: bump version: %w", err)
+		}
+		version = 17
 	}
 
 	if version == 17 {
