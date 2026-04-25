@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1829,5 +1830,75 @@ func TestRunStatsModel_TtftAbsentInOldRows(t *testing.T) {
 
 	if !strings.Contains(out, "TTFT p50") {
 		t.Errorf("output missing 'TTFT p50' column header\ngot:\n%s", out)
+	}
+}
+
+// ── formatDurationLong edge cases (issue #1010) ───────────────────────────────
+
+// TestFormatDurationLong_SaturatedDuration verifies that MaxInt64 (and values
+// close to it) are rendered as "—" rather than "2562047h 47m".
+func TestFormatDurationLong_SaturatedDuration(t *testing.T) {
+	cases := []struct {
+		name string
+		d    time.Duration
+	}{
+		{"MaxInt64", time.Duration(math.MaxInt64)},
+		{"MaxInt64/2", time.Duration(math.MaxInt64 / 2)},
+		{"MaxInt64/2+1", time.Duration(math.MaxInt64/2 + 1)},
+		{"very large duration", time.Duration(math.MaxInt64 - 1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatDurationLong(tc.d)
+			if got != "—" {
+				t.Errorf("formatDurationLong(%v) = %q, want \"—\"", tc.d, got)
+			}
+		})
+	}
+}
+
+// TestFormatDurationLong_NegativeAndZero verifies that zero and negative
+// durations are rendered as "—".
+func TestFormatDurationLong_NegativeAndZero(t *testing.T) {
+	cases := []struct {
+		name string
+		d    time.Duration
+	}{
+		{"zero", 0},
+		{"negative 1ns", -1},
+		{"negative 1h", -time.Hour},
+		{"large negative", time.Duration(math.MinInt64)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatDurationLong(tc.d)
+			if got != "—" {
+				t.Errorf("formatDurationLong(%v) = %q, want \"—\"", tc.d, got)
+			}
+		})
+	}
+}
+
+// TestFormatDurationLong_ValidDurations verifies that ordinary (non-pathological)
+// durations are formatted correctly, exactly as before this change.
+func TestFormatDurationLong_ValidDurations(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{500 * time.Millisecond, "<1s"},
+		{1 * time.Second, "1s"},
+		{90 * time.Second, "1m 30s"},
+		{2*time.Hour + 3*time.Minute, "2h 3m"},
+		{30 * time.Minute, "30m 0s"},
+		{1*time.Hour + 1*time.Minute + 1*time.Second, "1h 1m"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			got := formatDurationLong(tc.d)
+			if got != tc.want {
+				t.Errorf("formatDurationLong(%v) = %q, want %q", tc.d, got, tc.want)
+			}
+		})
 	}
 }

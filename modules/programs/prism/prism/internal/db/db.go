@@ -240,6 +240,18 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // migration. Rows with empty instance_id are skipped (a warning is printed).
 // This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
 // guard (pragma_table_info check) make it safe to run on an already-migrated DB.
+// v16→v17 is a no-op bridge that reserves the slot occupied by PR #1014
+// (local serial merge queue / pending_merges table). When #1014 lands first
+// the DB already arrives at v17 and this block is skipped; when this PR lands
+// first the bridge bumps the version so the v17→v18 block below is reachable.
+// v17→v18 is a one-shot backfill that fixes sessions rows whose started_at was
+// persisted as -62135596800000 (Go's zero time.Time{} marshalled via UnixMilli)
+// due to a wrong zero-value guard in InsertSession. For each such row it sets
+// started_at to MIN(agent_events.created_at) for the matching instance_id.
+// Rows with no matching agent_events are left unchanged (they display as "—"
+// via the formatDurationLong defence-in-depth fallback). The migration is
+// idempotent: a second run finds no rows with negative started_at and is a
+// no-op. Fresh databases have no such rows so the migration is trivially safe.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -798,6 +810,81 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v15→v16: bump version: %w", err)
 		}
 		version = 16
+	}
+
+	if version == 16 {
+		// Migration v16 → v17: no-op bridge. This slot is occupied by PR #1014
+		// (local serial merge queue / pending_merges table). When #1014 lands
+		// before this PR, the DB arrives here already at v17 and this block is
+		// skipped. When this PR lands first (or standalone), this bridge bumps
+		// the schema to v17 so the v17→v18 backfill block below is always
+		// reachable regardless of merge order.
+		if _, err := conn.Exec("UPDATE schema_version SET version = 17"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v16→v17: bump version: %w", err)
+		}
+		version = 17
+	}
+
+	if version == 17 {
+		// Migration v17 → v18: backfill sessions rows whose started_at was
+		// persisted as -62135596800000 (Go's zero time.Time{} marshalled via
+		// UnixMilli). For each broken row, use MIN(agent_events.created_at)
+		// for the matching instance_id as a best-effort recovery. Rows with
+		// no matching events are left unchanged.
+		//
+		// Idempotency: the WHERE clause filters on started_at < 0, so rows
+		// already fixed by a previous run (or rows on a fresh DB) are not
+		// touched.
+
+		// Collect broken instance_ids.
+		brokenRows, err := conn.Query(`
+			SELECT instance_id FROM sessions WHERE started_at < 0`)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v17→v18: query broken sessions: %w", err)
+		}
+		var brokenIDs []string
+		for brokenRows.Next() {
+			var iid string
+			if err := brokenRows.Scan(&iid); err != nil {
+				brokenRows.Close()
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v17→v18: scan broken session: %w", err)
+			}
+			brokenIDs = append(brokenIDs, iid)
+		}
+		brokenRows.Close()
+		if err := brokenRows.Err(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v17→v18: iterate broken sessions: %w", err)
+		}
+
+		for _, iid := range brokenIDs {
+			var minTs *int64
+			if err := conn.QueryRow(`
+				SELECT MIN(created_at) FROM agent_events WHERE instance_id = ?`, iid,
+			).Scan(&minTs); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v17→v18: min timestamp for %q: %w", iid, err)
+			}
+			if minTs == nil || *minTs <= 0 {
+				// No usable events — leave the row unchanged.
+				continue
+			}
+			if _, err := conn.Exec(`
+				UPDATE sessions SET started_at = ? WHERE instance_id = ?`, *minTs, iid,
+			); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v17→v18: update started_at for %q: %w", iid, err)
+			}
+		}
+
+		if _, err := conn.Exec("UPDATE schema_version SET version = 18"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v17→v18: bump version: %w", err)
+		}
+		version = 18
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -1677,10 +1764,10 @@ func (d *DB) InsertSession(s Session) error {
 	if s.Harness == "" {
 		s.Harness = "opencode"
 	}
-	startedAt := s.StartedAt.UnixMilli()
-	if startedAt == 0 {
-		startedAt = time.Now().UnixMilli()
+	if s.StartedAt.IsZero() {
+		s.StartedAt = time.Now()
 	}
+	startedAt := s.StartedAt.UnixMilli()
 	const q = `
 INSERT OR IGNORE INTO sessions
   (instance_id, session_name, agent_role, root_agent_name, repo, worktree,

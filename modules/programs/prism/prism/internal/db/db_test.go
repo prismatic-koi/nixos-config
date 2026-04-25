@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=16 (migrations are applied on Open).
+	// Verify schema_version=18 (all migrations applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version: got %d, want 18", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -983,8 +983,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1058,8 +1058,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1559,8 +1559,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1625,8 +1625,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1695,8 +1695,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1790,8 +1790,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1883,8 +1883,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2468,8 +2468,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2557,8 +2557,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// isolation_mode column must exist (NULL for pre-migration rows).
@@ -4160,8 +4160,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// Check each row.
@@ -4588,8 +4588,8 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4863,8 +4863,8 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -5079,13 +5079,13 @@ func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must advance to 16.
+	// Schema version must advance to 18 (v15→v16 + v16→v17 bridge + v17→v18 all applied).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after migration: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
 	}
 
 	// sessions table must exist.
@@ -5238,8 +5238,8 @@ func TestMigration_V15ToV16_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 16 {
-		t.Errorf("schema_version after second open: got %d, want 16", version)
+	if version != 18 {
+		t.Errorf("schema_version after second open: got %d, want 18", version)
 	}
 }
 
@@ -5586,5 +5586,280 @@ func TestSessionsFK_OnDeleteSetNull(t *testing.T) {
 	}
 	if sessName != "repo@main" {
 		t.Errorf("session_name after group deletion: got %q, want %q", sessName, "repo@main")
+	}
+}
+
+// ── InsertSession zero-value guard (issue #1010) ──────────────────────────────
+
+// TestInsertSession_ZeroStartedAt verifies that InsertSession with a zero
+// time.Time{} StartedAt writes a current unix-ms timestamp (not -62135596800000
+// which is what time.Time{}.UnixMilli() returns).
+func TestInsertSession_ZeroStartedAt(t *testing.T) {
+	d := openTestDB(t)
+
+	before := time.Now().UnixMilli()
+
+	iid := uuid.New().String()
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+		// StartedAt intentionally left as zero time.Time{}
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	after := time.Now().UnixMilli()
+
+	var startedAt int64
+	if err := d.QueryRow("SELECT started_at FROM sessions WHERE instance_id = ?", iid).Scan(&startedAt); err != nil {
+		t.Fatalf("query started_at: %v", err)
+	}
+
+	// Must not be the zero-time sentinel.
+	const zeroTimeMs = -62135596800000
+	if startedAt == zeroTimeMs {
+		t.Errorf("started_at: got zero-time sentinel %d, want current time", zeroTimeMs)
+	}
+	// Must be positive (a real unix-ms timestamp).
+	if startedAt <= 0 {
+		t.Errorf("started_at: got %d, want positive unix-ms timestamp", startedAt)
+	}
+	// Must be within the window around the test execution.
+	if startedAt < before || startedAt > after {
+		t.Errorf("started_at: got %d, want in [%d, %d]", startedAt, before, after)
+	}
+}
+
+// TestInsertSession_ExplicitStartedAt verifies that InsertSession with a
+// non-zero StartedAt preserves that exact value.
+func TestInsertSession_ExplicitStartedAt(t *testing.T) {
+	d := openTestDB(t)
+
+	want := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+
+	iid := uuid.New().String()
+	sess := db.Session{
+		InstanceID:  iid,
+		SessionName: "repo@main",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "opencode",
+		StartedAt:   want,
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	var startedAt int64
+	if err := d.QueryRow("SELECT started_at FROM sessions WHERE instance_id = ?", iid).Scan(&startedAt); err != nil {
+		t.Fatalf("query started_at: %v", err)
+	}
+
+	if startedAt != want.UnixMilli() {
+		t.Errorf("started_at: got %d, want %d (%s)", startedAt, want.UnixMilli(), want)
+	}
+}
+
+// ── Migration v17→v18 (issue #1010) ──────────────────────────────────────────
+
+// seedV17DB creates a raw SQLite database at dbPath seeded at schema_version=17.
+// It inserts two sessions rows with broken started_at (-62135596800000):
+//   - iid-has-events: has agent_events rows → migration should fix its started_at
+//   - iid-no-events:  has no agent_events  → migration should leave it unchanged
+//
+// It also inserts one session with a valid started_at to confirm it is untouched.
+func seedV17DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v16 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	const zeroTimeMs = -62135596800000
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+
+		INSERT INTO schema_version (version) VALUES (17);
+
+		-- Broken row: started_at is the zero-time sentinel; has events.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-has-events', 'repo@main', 'repo', '/code/repo/main', 'opencode', -62135596800000);
+
+		-- Broken row: started_at is the zero-time sentinel; no matching events.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-no-events', 'repo@other', 'repo', '/code/repo/other', 'opencode', -62135596800000);
+
+		-- Valid row: started_at is already correct; must not be touched.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-good', 'repo@good', 'repo', '/code/repo/good', 'opencode', 1700000000000);
+
+		-- Events for iid-has-events; min created_at = 1600000000000.
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id)
+		  VALUES ('evt-1', 'repo@main', 'repo', '/code/repo/main', 'state_change', '{}', 1600000000000, 'iid-has-events');
+		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id)
+		  VALUES ('evt-2', 'repo@main', 'repo', '/code/repo/main', 'state_change', '{}', 1600000099999, 'iid-has-events');
+	`)
+	if err != nil {
+		t.Fatalf("seed v16 db: %v", err)
+	}
+}
+
+// TestMigration_V17ToV18_BackfillsStartedAt verifies that the v17→v18
+// migration updates sessions rows with negative started_at to the minimum
+// agent_events.created_at for the matching instance_id.
+func TestMigration_V17ToV18_BackfillsStartedAt(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v17_backfill.db")
+	seedV17DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v17 db: %v", err)
+	}
+	defer d.Close()
+
+	// Schema version must advance to 18.
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 18 {
+		t.Errorf("schema_version after migration: got %d, want 18", version)
+	}
+
+	// iid-has-events: started_at must be updated to 1600000000000 (min event ts).
+	var startedAtHasEvents int64
+	if err := d.QueryRow("SELECT started_at FROM sessions WHERE instance_id = 'iid-has-events'").Scan(&startedAtHasEvents); err != nil {
+		t.Fatalf("query iid-has-events: %v", err)
+	}
+	if startedAtHasEvents != 1600000000000 {
+		t.Errorf("iid-has-events started_at: got %d, want 1600000000000", startedAtHasEvents)
+	}
+
+	// iid-no-events: started_at must remain unchanged (no events → left alone).
+	var startedAtNoEvents int64
+	if err := d.QueryRow("SELECT started_at FROM sessions WHERE instance_id = 'iid-no-events'").Scan(&startedAtNoEvents); err != nil {
+		t.Fatalf("query iid-no-events: %v", err)
+	}
+	const zeroTimeMs = int64(-62135596800000)
+	if startedAtNoEvents != zeroTimeMs {
+		t.Errorf("iid-no-events started_at: got %d, want %d (unchanged)", startedAtNoEvents, zeroTimeMs)
+	}
+
+	// iid-good: started_at must not be touched.
+	var startedAtGood int64
+	if err := d.QueryRow("SELECT started_at FROM sessions WHERE instance_id = 'iid-good'").Scan(&startedAtGood); err != nil {
+		t.Fatalf("query iid-good: %v", err)
+	}
+	if startedAtGood != 1700000000000 {
+		t.Errorf("iid-good started_at: got %d, want 1700000000000 (untouched)", startedAtGood)
+	}
+}
+
+// TestMigration_V17ToV18_Idempotent verifies that running the v17→v18
+// migration twice (by opening the same DB after it is already at v18) is a
+// no-op: no panic, no error, and started_at values are unchanged on re-open.
+func TestMigration_V17ToV18_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v17_idem.db")
+	seedV17DB(t, dbPath)
+
+	// First open: applies the migration.
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	// Second open: must be a no-op.
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 18 {
+		t.Errorf("schema_version after second open: got %d, want 18", version)
+	}
+
+	// iid-has-events should still have the corrected timestamp.
+	var startedAt int64
+	if err := d2.QueryRow("SELECT started_at FROM sessions WHERE instance_id = 'iid-has-events'").Scan(&startedAt); err != nil {
+		t.Fatalf("query started_at on second open: %v", err)
+	}
+	if startedAt != 1600000000000 {
+		t.Errorf("started_at after idempotent run: got %d, want 1600000000000", startedAt)
 	}
 }

@@ -1753,11 +1753,13 @@ func formatCost(cost float64) string {
 }
 
 // formatDurationLong formats a duration as "1h 23m", "5m 12s", or "<1s".
+// Returns "—" for durations that are <= 0 or that saturate time.Duration
+// (i.e. >= math.MaxInt64/2), which indicates an unrecoverable zero-time row.
 func formatDurationLong(d time.Duration) string {
+	if d <= 0 || d >= time.Duration(math.MaxInt64/2) {
+		return "—"
+	}
 	if d < time.Second {
-		if d == 0 {
-			return "—"
-		}
 		return "<1s"
 	}
 	hours := int(d.Hours())
