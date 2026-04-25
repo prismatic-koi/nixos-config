@@ -206,8 +206,8 @@ When a queued PR reaches a terminal outcome, the watcher delivers a bus notifica
 
 | Outcome | Notification text |
 |---|---|
-| Merged (with archive path) | `PR #N merged. Archive: <archive_path>. Run \`git pull\` in @main and \`prism cleanup\` the worker session.` |
-| Merged (no archive path yet) | `PR #N merged. Run \`git pull\` in @main and \`prism cleanup\` the worker session.` |
+| Merged (with archive path) | ``PR #N merged. Archive: <archive_path>. Run `git pull` in @main and `prism cleanup` the worker session.`` |
+| Merged (no archive path yet) | ``PR #N merged. Run `git pull` in @main and `prism cleanup` the worker session.`` |
 | Merge conflicts | `PR #N has merge conflicts — worker rebase needed` |
 | CI failure | `PR #N CI failed — needs worker fix` |
 | Closed without merging | `PR #N was closed without merging — removed from queue` |
