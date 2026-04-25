@@ -101,14 +101,15 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("create worktree: %w", err)
 		}
 
-		// In container/bwrap mode, inject the role-specific opencode.json blob
-		// as the harness config env var so it takes precedence (level 6) over any
-		// project-level opencode.jsonc. This mirrors the pattern in spawn.go.
+		// In container/bwrap/sandbox-exec mode, inject the role-specific
+		// opencode.json blob as the harness config env var so it takes precedence
+		// (level 6) over any project-level opencode.jsonc. This mirrors the pattern
+		// in spawn.go.
 		//
-		// This block fires for both podman and bwrap isolation modes. Host-mode
-		// sessions skip it because they run opencode directly with the host's
-		// real ~/.config/opencode/opencode.json via xdg.configFile.
-		sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
+		// This block fires for podman, bwrap, and sandbox-exec isolation modes.
+		// Host-mode sessions skip it because they run opencode directly with the
+		// host's real ~/.config/opencode/opencode.json via xdg.configFile.
+		sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
 		var configContent string
 		if sandboxed {
 			pf, pfErr := config.LoadProfiles()
@@ -143,7 +144,9 @@ var prCmd = &cobra.Command{
 		// Podman mode does NOT need this write — the sidecar's Create() path
 		// already writes the file before the container starts. Host mode does
 		// NOT need this write — it uses ~/.config/opencode/opencode.json
-		// directly via xdg.configFile.
+		// directly via xdg.configFile. sandbox-exec mode does NOT yet use this
+		// path — config delivery for sandbox-exec is deferred to #1016 (no
+		// bwrap-equivalent mount mechanism exists yet).
 		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(tmuxSessionName),

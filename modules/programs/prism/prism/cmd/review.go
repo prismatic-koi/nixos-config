@@ -272,16 +272,17 @@ func runReview(cmd *cobra.Command, args []string) error {
 		SizeBudget:     sizeBudgetFlag,
 	}
 
-	// Load profiles for any sandboxed mode (podman or bwrap) — passed through
-	// to review.RunAsync so each agent receives its own per-agent hardened
-	// opencode.json blob sourced from profiles.json via ContainerConfigForRole.
-	// In podman mode, a missing profiles.json means the per-agent opencode.json
-	// cannot be mounted, causing the container to fall back to the image default
-	// (build agent). In bwrap mode, a missing profiles.json means no per-agent
-	// opencode.json is written to disk, so the bwrap sandbox picks up the host's
-	// ~/.config/opencode/opencode.json (wrong agent identity). Surface this as
-	// an explicit error in both cases rather than silently spawning broken agents.
-	if isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap {
+	// Load profiles for any sandboxed mode (podman, bwrap, or sandbox-exec) —
+	// passed through to review.RunAsync so each agent receives its own per-agent
+	// hardened opencode.json blob sourced from profiles.json via
+	// ContainerConfigForRole. In podman mode, a missing profiles.json means the
+	// per-agent opencode.json cannot be mounted, causing the container to fall
+	// back to the image default (build agent). In bwrap/sandbox-exec mode, a
+	// missing profiles.json means no per-agent opencode.json is written to disk,
+	// so the sandbox picks up the host's ~/.config/opencode/opencode.json (wrong
+	// agent identity). Surface this as an explicit error rather than silently
+	// spawning broken agents.
+	if isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr != nil {
 			return fmt.Errorf("prism review: %s mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", isoMode, pfErr)
