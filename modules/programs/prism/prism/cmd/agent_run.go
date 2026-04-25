@@ -9,20 +9,27 @@ package cmd
 //
 //	bwrap <args...>
 //
-// as a child process (not a direct exec). stdout and stderr are tee'd to both
-// the tmux pane (os.Stdout/os.Stderr) and a per-session log file at:
+// as a child process (not a direct exec). A PTY pair is created so that bwrap
+// and opencode see a real terminal on all three fds (stdin/stdout/stderr).
+// The master side is read and tee'd to both the tmux pane (os.Stdout) and a
+// per-session log file at:
 //
 //	~/.local/state/prism/run/<session>/agent-run.log
 //
-// This preserves harness output for forensic inspection after pane death —
-// the primary motivation being bwrap startup failures that previously left no
-// surviving evidence (issue #1023).
+// Using a PTY pair preserves terminal semantics that are required for opencode
+// to work correctly:
+//   - TIOCGWINSZ on stdout succeeds (Bubble Tea uses fd 1 for size queries)
+//   - SIGWINCH is delivered when the host terminal resizes
+//   - Interactive input (key sequences, escape codes) is passed through cleanly
+//
+// The slave PTY's window size is initialised from the host PTY (stdin fd 0)
+// and updated whenever SIGWINCH is received, keeping the sandbox dimensions
+// in sync with the actual tmux pane size.
 //
 // Signal forwarding: SIGTERM, SIGINT, and SIGHUP received by agent-run are
-// forwarded to the child process group within 1 second. When the tmux pane's
-// controlling terminal is closed, the kernel sends SIGHUP to agent-run, which
-// forwards it to bwrap and its children, replicating the previous
-// --die-with-parent behaviour.
+// forwarded to the child process group. When the tmux pane's controlling
+// terminal is closed, the kernel sends SIGHUP to agent-run, which forwards
+// it to bwrap and its children.
 //
 // On non-Linux platforms the command fails immediately with a clear error
 // because bubblewrap is Linux-only.
@@ -40,6 +47,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"unsafe"
 
 	"github.com/spf13/cobra"
 
@@ -61,8 +69,9 @@ invocation.
 
 It reconstructs the container config from the session's DB row, writes temp
 files (SSH config, gitconfig), builds the bwrap argument list, and runs bwrap
-as a child process — tee-ing stdout and stderr to both the tmux pane and a
-per-session log file at ~/.local/state/prism/run/<session>/agent-run.log.`,
+as a child process. A PTY pair gives bwrap a real terminal so that opencode's
+Bubble Tea TUI can query TIOCGWINSZ correctly. The master side is tee'd to
+both the tmux pane and ~/.local/state/prism/run/<session>/agent-run.log.`,
 	RunE: runAgentRun,
 }
 
@@ -203,18 +212,8 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
-
-	// Build stdout/stderr writers. When the log file is available, tee to
-	// both the pane and the file. When log open failed, use the pane alone
-	// (harness must not be blocked on logging infrastructure).
-	var stdout, stderr io.Writer
 	if logFile != nil {
 		defer logFile.Close()
-		stdout = io.MultiWriter(os.Stdout, logFile)
-		stderr = io.MultiWriter(os.Stderr, logFile)
-	} else {
-		stdout = os.Stdout
-		stderr = os.Stderr
 	}
 
 	// Build the bwrap command. argv[0] must be the binary path.
@@ -227,28 +226,89 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// style debugging can't accidentally expose them.
 	bwrapCmd := exec.Command(bwrapBin, bwrapArgs...)
 	bwrapCmd.Env = minimalBwrapExecEnv(os.Environ())
+
+	// Pass the real PTY fds directly to bwrap so that opencode's Bubble Tea
+	// TUI sees a real terminal on stdin/stdout. This is essential: Bubble Tea
+	// calls TIOCGWINSZ on stdout (fd 1); if stdout is a pipe the ioctl returns
+	// ENOTTY and the TUI renders at zero width. Using the real fds replicates
+	// the behaviour of the previous syscall.Exec approach.
+	//
+	// stderr is piped so that bwrap harness startup errors can be tee'd to
+	// both the pane and the log file. stderr does not need TIOCGWINSZ (it is
+	// not used for TUI rendering), so a pipe is fine there. Once opencode is
+	// running its TUI output goes via stdout (the real PTY) and is not
+	// separately logged — which is acceptable since the log's purpose is
+	// forensic inspection of startup failures, not session transcripts.
+	var stderrR, stderrW *os.File
+	if pipeErr := func() error {
+		var err error
+		stderrR, stderrW, err = os.Pipe()
+		return err
+	}(); pipeErr != nil {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create stderr pipe: %v — stderr will not be logged\n", pipeErr)
+	}
+
 	bwrapCmd.Stdin = os.Stdin
-	bwrapCmd.Stdout = stdout
-	bwrapCmd.Stderr = stderr
+	bwrapCmd.Stdout = os.Stdout
+	if stderrW != nil {
+		bwrapCmd.Stderr = stderrW
+	} else {
+		bwrapCmd.Stderr = os.Stderr
+	}
 
 	// Place bwrap in its own process group so that signal forwarding targets
-	// the entire group (bwrap + any children it spawns). This replicates the
-	// previous --die-with-parent behaviour: when the tmux pane dies, the
-	// kernel sends SIGHUP to agent-run (which inherits the pane's controlling
-	// terminal); agent-run then forwards it to the bwrap process group.
+	// the entire group (bwrap + any children it spawns). When the tmux pane
+	// dies, the kernel sends SIGHUP to agent-run (which inherits the pane's
+	// controlling terminal); agent-run then forwards it to the bwrap process
+	// group via forwardSignalsToBwrap.
 	bwrapCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := bwrapCmd.Start(); err != nil {
 		return fmt.Errorf("agent-run: start bwrap: %w", err)
 	}
 
-	// Forward SIGTERM, SIGINT, and SIGHUP to the child process group.
-	// The goroutine exits when bwrapCmd.Wait() returns (signalled by doneCh).
+	// Close the write end of the stderr pipe in the parent now that bwrap has
+	// inherited it. This is required so that reads from the read end return
+	// EOF when bwrap exits, rather than blocking forever.
+	if stderrW != nil {
+		stderrW.Close()
+	}
+
+	// Give the terminal foreground to bwrap's process group so that the host
+	// PTY routes keypresses and SIGWINCH to bwrap/opencode rather than to
+	// agent-run. Restore the original foreground pgid after bwrap exits.
+	origPgid := tcsetpgrpForeground(int(os.Stdin.Fd()), bwrapCmd.Process.Pid)
+
+	// Forward SIGTERM, SIGINT, SIGHUP, and SIGWINCH to the child process group.
 	doneCh := make(chan struct{})
-	go forwardSignalsToBwrap(bwrapCmd.Process, doneCh)
+	go forwardSignalsToBwrap(bwrapCmd.Process, doneCh, nil)
+
+	// Tee bwrap's stderr to both the pane (os.Stderr) and the log file.
+	// This goroutine exits when stderrR reaches EOF (after bwrap exits and
+	// stderrW is closed).
+	teeDone := make(chan struct{})
+	if stderrR != nil {
+		go func() {
+			defer close(teeDone)
+			var logWriter io.Writer
+			if logFile != nil {
+				logWriter = logFile
+			}
+			teePipe(stderrR, os.Stderr, logWriter)
+			stderrR.Close()
+		}()
+	} else {
+		close(teeDone)
+	}
 
 	waitErr := bwrapCmd.Wait()
 	close(doneCh)
+	<-teeDone
+
+	// Restore the original foreground process group.
+	if origPgid > 0 {
+		_ = tcsetpgrpRestore(int(os.Stdin.Fd()), origPgid)
+	}
 
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -259,12 +319,56 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// forwardSignalsToBwrap forwards SIGTERM, SIGINT, and SIGHUP to the bwrap
-// child process group until doneCh is closed. Using a negative PID in
-// syscall.Kill targets the entire process group (bwrap and its children).
-func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}) {
+// teePipe reads from r and writes to primary (always) and optionally to
+// secondary. Runs until r returns an error or EOF.
+func teePipe(r io.Reader, primary io.Writer, secondary io.Writer) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			_, _ = primary.Write(buf[:n])
+			if secondary != nil {
+				_, _ = secondary.Write(buf[:n])
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// tcsetpgrpForeground hands the terminal foreground process group to the
+// process group of pid using TIOCSPGRP on the given fd. It returns the
+// original foreground pgid so it can be restored later, or 0 on error (e.g.
+// fd is not a TTY — non-interactive / test contexts).
+func tcsetpgrpForeground(fd int, pid int) (origPgid int) {
+	var current int32
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCGPGRP, uintptr(unsafe.Pointer(&current))); errno != 0 {
+		return 0
+	}
+	pgid := int32(pid)
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&pgid))); errno != 0 {
+		return 0
+	}
+	return int(current)
+}
+
+// tcsetpgrpRestore restores the terminal foreground process group to pgid.
+func tcsetpgrpRestore(fd int, pgid int) error {
+	pg := int32(pgid)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&pg)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+// forwardSignalsToBwrap forwards SIGTERM, SIGINT, SIGHUP, and SIGWINCH to the
+// bwrap child process group until doneCh is closed. onWinch is called on each
+// SIGWINCH so the caller can resize the PTY slave to match the new host size.
+func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}, onWinch func()) {
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGWINCH)
 	defer signal.Stop(sigCh)
 
 	for {
@@ -272,11 +376,22 @@ func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}) {
 		case <-doneCh:
 			return
 		case sig := <-sigCh:
+			if sig == syscall.SIGWINCH {
+				if onWinch != nil {
+					onWinch()
+				}
+				// Also forward SIGWINCH to the bwrap process group so that
+				// any process inside the sandbox that has registered for it
+				// (e.g. a shell) is notified too.
+				if proc != nil {
+					_ = syscall.Kill(-proc.Pid, syscall.SIGWINCH)
+				}
+				continue
+			}
 			if proc == nil {
 				continue
 			}
 			// Send to the process group (negative PGID = group of bwrap).
-			// Ignore ESRCH (process already gone).
 			_ = syscall.Kill(-proc.Pid, sig.(syscall.Signal))
 		}
 	}
@@ -312,7 +427,6 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 	}
 	out := make([]string, 0, len(allow))
 	for _, kv := range hostEnv {
-		// Split once on '='; malformed pairs (no '=') are skipped.
 		eq := -1
 		for i := 0; i < len(kv); i++ {
 			if kv[i] == '=' {
@@ -343,11 +457,9 @@ func applyInitialPromptEnvVar(cfg *container.Config) {
 
 // findBwrap locates the bwrap binary on PATH or in well-known Nix store paths.
 func findBwrap() (string, error) {
-	// Try PATH first.
 	if path, err := exec.LookPath("bwrap"); err == nil {
 		return path, nil
 	}
-	// Fall back to common NixOS store locations.
 	candidates := []string{
 		"/run/current-system/sw/bin/bwrap",
 		"/usr/bin/bwrap",
