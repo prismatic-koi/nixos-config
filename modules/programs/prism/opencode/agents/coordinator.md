@@ -114,7 +114,25 @@ one represents a PR that may be blocking the next piece of work.
 
 ## Review gate
 
-When a spawned agent opens a PR:
+There are two distinct situations where review comes up. Handle them differently.
+
+### Case 1: User asks you to review a PR
+
+When the user directly asks you to review a PR (e.g. "can you review PR #42?"),
+**do not call `prism review` yourself**. Instead, spawn a session on the PR
+branch and let that session run the review:
+
+```bash
+prism pr <number> --prompt 'review this PR'
+```
+
+Wait for the finish notification from that spawned session before reporting back
+to the user. The spawned session will run `prism review`, handle any blocking
+issues, and summarise the findings. Your role is to relay the outcome.
+
+### Case 2: Worker has self-reviewed and handed off
+
+When a spawned agent opens a PR and announces completion:
 
 1. **Trust the worker review.** The worker runs `prism review <pr>` (async) —
    it spawns 5 review agents as a group and waits for the review-complete

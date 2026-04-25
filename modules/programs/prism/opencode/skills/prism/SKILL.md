@@ -146,6 +146,13 @@ prism spawn \
 
 ## Running code review
 
+> **Scope:** `prism review` and the Task-call fallback below are for **worker
+> agents and spawned sessions only**. Coordinator agents must never call
+> `prism review` directly. When a user asks a coordinator to review a PR, the
+> coordinator should use `prism pr <number> --prompt 'review this PR'` to spawn
+> a session on the PR branch — that spawned session then runs `prism review`
+> and reports back.
+
 Code review is done with `prism review <pr>`, which is **async**: it spawns 5
 review agents, registers a group, and returns immediately with an
 acknowledgement. Results are delivered to you via a follow-up `prism prompt`
@@ -165,6 +172,9 @@ prism checkin <session>~review-<N>-review-goal
 ```
 
 ### Fallback: Task-call subagents
+
+> **Scope:** This fallback is for **worker and spawned sessions only** — not for
+> coordinators. Coordinator agents must use `prism pr` as described above.
 
 If `prism review` is unavailable, invoke the five subagents **in parallel** —
 all five as Task tool calls in a single response:
