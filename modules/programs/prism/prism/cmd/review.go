@@ -103,26 +103,9 @@ func runReview(cmd *cobra.Command, args []string) error {
 		agents = allAgents
 	}
 
-	// Concurrency cap checks: BEFORE any container-creation side effects.
-	// We check inside the container-mode guard below (PRISM_HOST_API set
-	// means we're already inside a container; the host sidecar handles the cap
-	// for the actual spawn). Only apply the checks on the host path.
-	// Load cfg now for the cap check; it is re-used below for ContainerMode.
+	// Load cfg. It is needed below for ContainerMode / SidecarPluginPath even
+	// when the actual isolation mode is overridden from the DB.
 	cfg := config.Load()
-	isoMode := cfg.EffectiveIsolationMode()
-	// bwrap sessions are plain host processes — only podman triggers the container cap.
-	conCapped := isoMode == config.IsolationPodman
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL == "" {
-		// Running on host — check the caps before spawning review sessions.
-		if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {
-			return err
-		}
-		if isoMode == config.IsolationBwrap {
-			if err := checkBwrapConcurrencyCap(cmd, "review"); err != nil {
-				return err
-			}
-		}
-	}
 
 	// Container-mode detection: when PRISM_HOST_API is set the process is
 	// running inside a container where tmux is not available. Route the review
@@ -169,16 +152,38 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
-	// Override isoMode with the parent session's recorded isolation_mode from
-	// the DB. On navi the machine default (cfg.EffectiveIsolationMode) is
-	// "podman", but worker sessions may run as "bwrap". Using the machine
-	// default would cause prism agent-run to reject the spawned review agents:
-	//   agent-run: session "..~review-1-review-code" has isolation mode
-	//   "podman", not bwrap; this command is only for bwrap sessions
-	// We fall back to cfg.EffectiveIsolationMode() only when the DB lookup
-	// fails or the recorded mode is empty (back-compat with pre-v10 rows).
+	// Resolve the effective isolation mode for spawning review agents.
+	// Priority: parent session's DB-recorded mode > machine default.
+	// Using the machine default (cfg.EffectiveIsolationMode) is wrong on hosts
+	// where the machine default is "podman" but the calling worker session runs
+	// as "bwrap" — prism agent-run rejects review agents spawned with the wrong
+	// mode. resolveParentIsolationMode returns "" only when the DB cannot be
+	// read or the session has no row; the caller falls back to the machine
+	// default in that case.
+	//
+	// resolveParentIsolationMode calls status.EffectiveIsolationMode() which
+	// handles pre-v10 back-compat: when isolation_mode is "" but host_mode is
+	// true, it returns "host"; when both are unset it returns "podman". This
+	// mirrors the restore.go precedent established in PR #882.
+	isoMode := cfg.EffectiveIsolationMode() // machine default; may be overridden below
 	if dbIsoMode := resolveParentIsolationMode(parentSession); dbIsoMode != "" {
 		isoMode = config.IsolationMode(dbIsoMode)
+	}
+
+	// Concurrency cap checks: BEFORE any container-creation side effects.
+	// Both checks run after the DB isolation-mode lookup so that the cap
+	// decisions reflect the session's actual mode rather than the machine
+	// default. The PRISM_HOST_API proxy-out branch above already returned, so
+	// by this point we are guaranteed to be on the host.
+	// bwrap sessions are plain host processes — only podman triggers the container cap.
+	conCapped := isoMode == config.IsolationPodman
+	if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {
+		return err
+	}
+	if isoMode == config.IsolationBwrap {
+		if err := checkBwrapConcurrencyCap(cmd, "review"); err != nil {
+			return err
+		}
 	}
 
 	if len(agents) == 0 {
@@ -332,10 +337,16 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 	return status.Worktree, nil
 }
 
-// resolveParentIsolationMode returns the isolation_mode recorded in the DB for
-// parentSession. It returns "" when the DB cannot be opened, the session has no
-// row, or the isolation_mode field is empty (pre-v10 back-compat rows). The
-// caller falls back to cfg.EffectiveIsolationMode() in the empty-string case.
+// resolveParentIsolationMode returns the effective isolation mode for
+// parentSession by looking it up in the prism DB. It returns "" only when the
+// DB cannot be opened or the session has no row, signalling to the caller that
+// it should fall back to cfg.EffectiveIsolationMode().
+//
+// When a row exists, status.EffectiveIsolationMode() is used rather than
+// status.IsolationMode directly. This handles pre-v10 back-compat rows where
+// isolation_mode is NULL but host_mode is 1 (true): EffectiveIsolationMode
+// returns "host" in that case rather than propagating the empty string.
+// This mirrors the pattern established in restore.go (PR #882).
 func resolveParentIsolationMode(parentSession string) string {
 	d, dbErr := openDB()
 	if dbErr != nil {
@@ -346,7 +357,7 @@ func resolveParentIsolationMode(parentSession string) string {
 	if stErr != nil || status == nil {
 		return ""
 	}
-	return status.IsolationMode
+	return status.EffectiveIsolationMode()
 }
 
 // splitCSV splits a comma-separated string and trims whitespace.

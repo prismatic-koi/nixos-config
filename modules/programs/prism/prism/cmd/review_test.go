@@ -208,21 +208,43 @@ func TestResolveParentIsolationMode_Podman(t *testing.T) {
 	}
 }
 
-// TestResolveParentIsolationMode_EmptyWhenNotRecorded verifies that a session
-// with no isolation_mode recorded (pre-v10 back-compat row) returns "" so that
-// the caller falls back to cfg.EffectiveIsolationMode().
-func TestResolveParentIsolationMode_EmptyWhenNotRecorded(t *testing.T) {
+// TestResolveParentIsolationMode_PreV10HostModeTrue verifies that a pre-v10
+// back-compat row with isolation_mode="" but host_mode=true returns "host" from
+// resolveParentIsolationMode via status.EffectiveIsolationMode(). This is the
+// back-compat behaviour established in PR #882 / restore.go.
+func TestResolveParentIsolationMode_PreV10HostModeTrue(t *testing.T) {
 	d := openReviewTestDB(t)
 
-	const session = "nixos-config@legacy-session"
-	// UpsertStatus does not set isolation_mode — simulates a pre-v10 row.
+	const session = "nixos-config@legacy-host-session"
+	// UpsertStatus leaves isolation_mode NULL. SetHostMode sets host_mode=1.
+	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetHostMode(session, true); err != nil {
+		t.Fatalf("SetHostMode: %v", err)
+	}
+
+	got := resolveParentIsolationMode(session)
+	if got != "host" {
+		t.Errorf("resolveParentIsolationMode for host_mode=true, isolation_mode=NULL = %q, want %q", got, "host")
+	}
+}
+
+// TestResolveParentIsolationMode_PreV10HostModeFalse verifies that a pre-v10
+// back-compat row with isolation_mode="" and host_mode=false returns "podman"
+// (the EffectiveIsolationMode default for legacy container sessions).
+func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const session = "nixos-config@legacy-podman-session"
+	// UpsertStatus leaves both isolation_mode NULL and host_mode=0.
 	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
 	got := resolveParentIsolationMode(session)
-	if got != "" {
-		t.Errorf("resolveParentIsolationMode = %q, want %q (empty string = fallback to cfg)", got, "")
+	if got != "podman" {
+		t.Errorf("resolveParentIsolationMode for host_mode=false, isolation_mode=NULL = %q, want %q", got, "podman")
 	}
 }
 
