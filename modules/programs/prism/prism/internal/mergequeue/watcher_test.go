@@ -1015,6 +1015,25 @@ func TestMigration_V18ToV19_CreatesTable(t *testing.T) {
 	}
 }
 
+// TestMigration_V19ToV20_CreatesSessionIndex verifies that the v19→v20
+// migration creates idx_pending_merges_status_session on
+// (session_name, status, queue_position) to cover MergeQueueHead.
+func TestMigration_V19ToV20_CreatesSessionIndex(t *testing.T) {
+	d := openTestDB(t)
+
+	// idx_pending_merges_status_session must exist after v19→v20.
+	var iname string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_session'").Scan(&iname); err != nil {
+		t.Fatalf("idx_pending_merges_status_session not found after v19→v20 migration: %v", err)
+	}
+
+	// The old instance-keyed index must still exist (used by AbandonWatchingMerges / CancelMerge).
+	var iname2 string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_instance'").Scan(&iname2); err != nil {
+		t.Fatalf("idx_pending_merges_status_instance missing after v19→v20 — should be preserved: %v", err)
+	}
+}
+
 // TestMigration_V18ToV19_Idempotent verifies opening the same DB twice doesn't error.
 func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	dir := t.TempDir()
@@ -1036,8 +1055,8 @@ func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 19 {
-		t.Errorf("schema_version after second open: got %d, want 19", version)
+	if version != 20 {
+		t.Errorf("schema_version after second open: got %d, want 20", version)
 	}
 }
 
