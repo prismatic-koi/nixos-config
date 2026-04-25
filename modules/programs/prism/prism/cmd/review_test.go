@@ -162,6 +162,104 @@ func TestResolveReviewWorktree_EmptyWorktree(t *testing.T) {
 	}
 }
 
+// ── resolveParentIsolationMode tests ──────────────────────────────────────────
+//
+// These tests cover the DB lookup added by issue #1034: prism review must use
+// the parent session's recorded isolation_mode, not the machine-level default
+// from cfg.EffectiveIsolationMode(). On navi the machine default is "podman",
+// but worker sessions run as "bwrap"; using the wrong mode causes agent-run to
+// reject the spawned review agents.
+
+// TestResolveParentIsolationMode_Bwrap verifies that a session recorded as
+// "bwrap" in the DB returns "bwrap" from resolveParentIsolationMode.
+func TestResolveParentIsolationMode_Bwrap(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const session = "nixos-config@fix-review-isolation-mode"
+	if err := d.UpsertStatus(session, "nixos-config", "/worktree/fix", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetIsolationMode(session, "bwrap"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	got := resolveParentIsolationMode(session)
+	if got != "bwrap" {
+		t.Errorf("resolveParentIsolationMode = %q, want %q", got, "bwrap")
+	}
+}
+
+// TestResolveParentIsolationMode_Podman verifies that a session recorded as
+// "podman" in the DB returns "podman" from resolveParentIsolationMode.
+func TestResolveParentIsolationMode_Podman(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const session = "nixos-config@podman-worker"
+	if err := d.UpsertStatus(session, "nixos-config", "/worktree/podman", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetIsolationMode(session, "podman"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	got := resolveParentIsolationMode(session)
+	if got != "podman" {
+		t.Errorf("resolveParentIsolationMode = %q, want %q", got, "podman")
+	}
+}
+
+// TestResolveParentIsolationMode_PreV10HostModeTrue verifies that a pre-v10
+// back-compat row with isolation_mode="" but host_mode=true returns "host" from
+// resolveParentIsolationMode via status.EffectiveIsolationMode(). This is the
+// back-compat behaviour established in PR #882 / restore.go.
+func TestResolveParentIsolationMode_PreV10HostModeTrue(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const session = "nixos-config@legacy-host-session"
+	// UpsertStatus leaves isolation_mode NULL. SetHostMode sets host_mode=1.
+	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetHostMode(session, true); err != nil {
+		t.Fatalf("SetHostMode: %v", err)
+	}
+
+	got := resolveParentIsolationMode(session)
+	if got != "host" {
+		t.Errorf("resolveParentIsolationMode for host_mode=true, isolation_mode=NULL = %q, want %q", got, "host")
+	}
+}
+
+// TestResolveParentIsolationMode_PreV10HostModeFalse verifies that a pre-v10
+// back-compat row with isolation_mode="" and host_mode=false returns "podman"
+// (the EffectiveIsolationMode default for legacy container sessions).
+func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
+	d := openReviewTestDB(t)
+
+	const session = "nixos-config@legacy-podman-session"
+	// UpsertStatus leaves both isolation_mode NULL and host_mode=0.
+	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	got := resolveParentIsolationMode(session)
+	if got != "podman" {
+		t.Errorf("resolveParentIsolationMode for host_mode=false, isolation_mode=NULL = %q, want %q", got, "podman")
+	}
+}
+
+// TestResolveParentIsolationMode_EmptyWhenSessionMissing verifies that when the
+// parent session has no DB row at all, resolveParentIsolationMode returns ""
+// (triggering the cfg.EffectiveIsolationMode() fallback).
+func TestResolveParentIsolationMode_EmptyWhenSessionMissing(t *testing.T) {
+	openReviewTestDB(t) // empty DB
+
+	got := resolveParentIsolationMode("nixos-config@nonexistent")
+	if got != "" {
+		t.Errorf("resolveParentIsolationMode for missing session = %q, want %q", got, "")
+	}
+}
+
 // ── splitCSV tests ────────────────────────────────────────────────────────────
 
 // TestSplitCSV_TrailingComma verifies that a trailing comma produces no empty

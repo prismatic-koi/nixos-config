@@ -311,6 +311,54 @@ func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_AgentOnly_WritesIsolationMode verifies that spawnAgentOnlyLayout
+// writes isolation_mode to agent_status BEFORE the agent window is created.
+// This is the fix for issue #1034: prism agent-run reads isolation_mode from
+// the DB immediately on startup and rejects the session if the mode doesn't
+// match "bwrap". If we write isolation_mode only after tmux.NewWindow, agent-run
+// races and sees NULL → EffectiveIsolationMode() returns "podman" → rejection.
+//
+// We test "bwrap" and "podman" modes to verify the write happens for both.
+func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
+	for _, mode := range []string{"bwrap", "podman"} {
+		mode := mode
+		t.Run(mode, func(t *testing.T) {
+			d, _ := openSpawnTestDB(t)
+			_ = spyTmuxBin(t)
+			t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+			sessionName := "myrepo@branch~review-1-review-code-" + mode
+			containerMode := mode == "podman"
+			opts := SpawnOpts{
+				SessionName:   sessionName,
+				Repo:          "myrepo",
+				Worktree:      "/worktrees/myrepo-branch",
+				AgentRole:     "review-code",
+				Layout:        LayoutAgentOnly,
+				IsolationMode: mode,
+				ContainerMode: containerMode,
+			}
+
+			if err := SpawnSession(d, opts); err != nil {
+				t.Fatalf("SpawnSession(%q): %v", mode, err)
+			}
+
+			st, err := d.CurrentStatus(sessionName)
+			if err != nil {
+				t.Fatalf("CurrentStatus: %v", err)
+			}
+			if st == nil {
+				t.Fatal("CurrentStatus: got nil, want row")
+			}
+			if st.IsolationMode != mode {
+				t.Errorf("isolation_mode = %q, want %q — the DB write must happen before the agent window is created so prism agent-run does not race and see NULL",
+					st.IsolationMode, mode)
+			}
+		})
+	}
+}
+
 // TestSpawnSession_UnsupportedLayout_ReturnsError verifies that Layout values
 // outside the supported set (LayoutFull / LayoutAgentOnly) surface a clear
 // error rather than silently falling through.
