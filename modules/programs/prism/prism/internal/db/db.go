@@ -205,6 +205,7 @@ CREATE TABLE IF NOT EXISTS pending_merges (
   ended_at        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
+CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(session_name, status, queue_position);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -273,6 +274,13 @@ CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(
 // block and the migration produce identical sqlite_master output on a fresh
 // database — fresh databases have the table from the schema block and skip the
 // CREATE silently.
+// v19→v20 adds idx_pending_merges_status_session ON
+// pending_merges(session_name, status, queue_position) to cover the
+// MergeQueueHead query, which was changed from filtering by instance_id to
+// filtering by session_name (#1039). The old index
+// idx_pending_merges_status_instance is preserved (it covers
+// AbandonWatchingMerges and CancelMerge). CREATE INDEX IF NOT EXISTS makes
+// this idempotent.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -315,12 +323,12 @@ func Open(path string) (*DB, error) {
 	}
 
 	// Set schema_version=11 if the table is empty. Fresh databases have all
-	// current columns from the schema above (including pending_merges). The
-	// v11→v12 through v18→v19 migrations run immediately below; on a fresh DB
-	// they are all effectively no-ops (indexes already exist, no rows to
-	// backfill, columns already named correctly, sessions and pending_merges
-	// tables already present from the declarative schema block), so starting
-	// at 11 is safe.
+	// current columns from the schema above (including pending_merges and the
+	// new idx_pending_merges_status_session index). The v11→v12 through
+	// v19→v20 migrations run immediately below; on a fresh DB they are all
+	// effectively no-ops (indexes already exist, no rows to backfill, columns
+	// already named correctly, sessions and pending_merges tables already
+	// present from the declarative schema block), so starting at 11 is safe.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -937,6 +945,25 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 19
+	}
+	if version == 19 {
+		// Migration v19 → v20: add idx_pending_merges_status_session on
+		// pending_merges(session_name, status, queue_position) to cover the
+		// MergeQueueHead query, which was changed to filter by session_name
+		// instead of instance_id (#1039). The old instance-keyed index is
+		// preserved — it is still used by AbandonWatchingMerges and
+		// CancelMerge. CREATE INDEX IF NOT EXISTS makes this idempotent.
+		steps := []string{
+			`CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session ON pending_merges(session_name, status, queue_position)`,
+			`UPDATE schema_version SET version = 20`,
+		}
+		for _, s := range steps {
+			if _, err := conn.Exec(s); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v19→v20: %w", err)
+			}
+		}
+		version = 20
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -2908,18 +2935,25 @@ SELECT pr, session_name, instance_id, queue_position, status, title, error,
 	return m, nil
 }
 
-// MergeQueueHead returns the head of the merge queue for the given instanceID:
-// the watching row with the lowest queue_position. Returns nil when the queue
-// is empty.
-func (d *DB) MergeQueueHead(instanceID string) (*PendingMerge, error) {
+// MergeQueueHead returns the head of the merge queue for the given
+// sessionName: the watching row with the lowest queue_position. Returns nil
+// when the queue is empty.
+//
+// Filtering by session_name rather than instance_id ensures the watcher picks
+// up rows regardless of which instance_id was written at enqueue time (e.g.
+// when prism merge mints a fresh UUID on the fly). Incarnation isolation —
+// preventing stale rows from a previous sidecar from being re-processed — is
+// handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
+// 'abandoned' before the new sidecar starts.
+func (d *DB) MergeQueueHead(sessionName string) (*PendingMerge, error) {
 	const q = `
 SELECT pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
- WHERE instance_id = ? AND status = 'watching'
+ WHERE session_name = ? AND status = 'watching'
  ORDER BY queue_position ASC
  LIMIT 1`
-	row := d.conn.QueryRow(q, instanceID)
+	row := d.conn.QueryRow(q, sessionName)
 	m, err := scanPendingMerge(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

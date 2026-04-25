@@ -85,7 +85,7 @@ func TestEnqueueMerge_FIFO(t *testing.T) {
 	}
 
 	// Head must be the first-inserted row (PR 300).
-	head, err := d.MergeQueueHead(instanceID)
+	head, err := d.MergeQueueHead(session)
 	if err != nil {
 		t.Fatalf("MergeQueueHead: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestAbandonWatchingMerges(t *testing.T) {
 	}
 
 	// Head must now be nil.
-	head, err := d.MergeQueueHead(instanceID)
+	head, err := d.MergeQueueHead(session)
 	if err != nil {
 		t.Fatalf("MergeQueueHead after abandon: %v", err)
 	}
@@ -260,25 +260,74 @@ func TestCancelMerge(t *testing.T) {
 	}
 }
 
-// TestMergeQueueHead_ScopedByInstanceID verifies that MergeQueueHead only
-// returns rows for the given instanceID.
-func TestMergeQueueHead_ScopedByInstanceID(t *testing.T) {
+// TestMergeQueueHead_ScopedBySessionName verifies that MergeQueueHead only
+// returns rows for the given session_name, not for a different session even
+// if that session has its own watching rows. This ensures coordinators don't
+// see each other's queue entries.
+func TestMergeQueueHead_ScopedBySessionName(t *testing.T) {
 	d := openTestDB(t)
-	session := "myrepo@main"
+	sessionA := "repo-a@main"
+	sessionB := "repo-b@main"
 
-	// Enqueue a PR under instance A.
-	if _, err := d.EnqueueMerge(10, session, "inst-A", nil); err != nil {
-		t.Fatalf("EnqueueMerge inst-A: %v", err)
+	// Enqueue a PR under session A (any instance_id).
+	if _, err := d.EnqueueMerge(10, sessionA, "inst-A", nil); err != nil {
+		t.Fatalf("EnqueueMerge sessionA: %v", err)
 	}
 
-	// Head for inst-B must be nil.
-	head, err := d.MergeQueueHead("inst-B")
+	// Head for session B must be nil (different coordinator).
+	head, err := d.MergeQueueHead(sessionB)
 	if err != nil {
-		t.Fatalf("MergeQueueHead inst-B: %v", err)
+		t.Fatalf("MergeQueueHead sessionB: %v", err)
 	}
 	if head != nil {
-		t.Errorf("MergeQueueHead inst-B: got PR %d, want nil", head.PR)
+		t.Errorf("MergeQueueHead sessionB: got PR %d, want nil", head.PR)
 	}
+
+	// Head for session A must return PR 10.
+	headA, err := d.MergeQueueHead(sessionA)
+	if err != nil {
+		t.Fatalf("MergeQueueHead sessionA: %v", err)
+	}
+	if headA == nil {
+		t.Fatal("MergeQueueHead sessionA: got nil, want PR 10")
+	}
+	if headA.PR != 10 {
+		t.Errorf("MergeQueueHead sessionA: got PR %d, want 10", headA.PR)
+	}
+}
+
+// TestMergeQueueHead_AcrossInstanceIDs verifies the core fix: MergeQueueHead
+// returns a row even when the enqueued instance_id differs from the watcher's
+// instance_id. This is the scenario triggered when prism merge mints a fresh
+// UUID that doesn't match the sidecar's startup instance_id.
+func TestMergeQueueHead_AcrossInstanceIDs(t *testing.T) {
+	d := openTestDB(t)
+	session := "myrepo@main"
+	mintedInstanceID := "freshly-minted-uuid"
+	watcherInstanceID := "sidecar-startup-uuid"
+
+	// prism merge enqueues with a freshly-minted instance_id.
+	if _, err := d.EnqueueMerge(42, session, mintedInstanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge with minted ID: %v", err)
+	}
+
+	// The watcher queries by session_name, not instance_id — must find the row.
+	head, err := d.MergeQueueHead(session)
+	if err != nil {
+		t.Fatalf("MergeQueueHead: %v", err)
+	}
+	if head == nil {
+		t.Fatal("MergeQueueHead: got nil — watcher cannot see row enqueued with different instance_id")
+	}
+	if head.PR != 42 {
+		t.Errorf("MergeQueueHead.PR: got %d, want 42", head.PR)
+	}
+	// The row still carries the minted instance_id (no mutation needed).
+	if head.InstanceID != mintedInstanceID {
+		t.Errorf("head.InstanceID: got %q, want %q", head.InstanceID, mintedInstanceID)
+	}
+	// The watcher's own instance_id is irrelevant for queue lookup.
+	_ = watcherInstanceID
 }
 
 // TestMergeQueueForInstance_Filters verifies the filter modes.
@@ -419,7 +468,7 @@ type fakeWatcher struct {
 // processHead is a test-friendly version of tick() that uses injected functions
 // instead of the real gh CLI.
 func (fw *fakeWatcher) processHead(ctx context.Context) {
-	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.instanceID)
+	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.sessionName)
 	if err != nil || head == nil {
 		return
 	}
@@ -875,7 +924,7 @@ func TestWatcher_Cancellation(t *testing.T) {
 	}
 
 	// Head must now be nil (no more watching rows).
-	head, err := d.MergeQueueHead(instanceID)
+	head, err := d.MergeQueueHead(session)
 	if err != nil {
 		t.Fatalf("MergeQueueHead after cancel: %v", err)
 	}
@@ -915,7 +964,7 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	fw.processHead(context.Background())
 
 	// Head should now be PR 20.
-	head, err := d.MergeQueueHead(instanceID)
+	head, err := d.MergeQueueHead(session)
 	if err != nil {
 		t.Fatalf("MergeQueueHead after first tick: %v", err)
 	}
@@ -966,6 +1015,25 @@ func TestMigration_V18ToV19_CreatesTable(t *testing.T) {
 	}
 }
 
+// TestMigration_V19ToV20_CreatesSessionIndex verifies that the v19→v20
+// migration creates idx_pending_merges_status_session on
+// (session_name, status, queue_position) to cover MergeQueueHead.
+func TestMigration_V19ToV20_CreatesSessionIndex(t *testing.T) {
+	d := openTestDB(t)
+
+	// idx_pending_merges_status_session must exist after v19→v20.
+	var iname string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_session'").Scan(&iname); err != nil {
+		t.Fatalf("idx_pending_merges_status_session not found after v19→v20 migration: %v", err)
+	}
+
+	// The old instance-keyed index must still exist (used by AbandonWatchingMerges / CancelMerge).
+	var iname2 string
+	if err := d.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_instance'").Scan(&iname2); err != nil {
+		t.Fatalf("idx_pending_merges_status_instance missing after v19→v20 — should be preserved: %v", err)
+	}
+}
+
 // TestMigration_V18ToV19_Idempotent verifies opening the same DB twice doesn't error.
 func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	dir := t.TempDir()
@@ -987,8 +1055,8 @@ func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 19 {
-		t.Errorf("schema_version after second open: got %d, want 19", version)
+	if version != 20 {
+		t.Errorf("schema_version after second open: got %d, want 20", version)
 	}
 }
 
