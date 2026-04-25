@@ -8655,3 +8655,148 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 		t.Errorf("coordinator POST calls = %d, want >= 1", *promptCalls)
 	}
 }
+
+// TestReviewing_IdleDebounceSuppressed verifies that the idle debounce does NOT
+// transition a worker session to "finished" when the DB state is "reviewing".
+// This is the primary regression test for issue #1033: the worker called
+// `prism review` (which set the DB state to "reviewing"), went idle waiting for
+// the review-complete prompt, and must not emit a premature "has finished"
+// notification to the coordinator.
+func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed a live coordinator with an HTTP server so that if a notification
+	// fires unexpectedly we can detect it via bus_messages.
+	coordSID := "coord-sid-reviewing-test"
+	var notifyCount int
+	var notifyMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		// POST /session/<sid>/prompt_async — count unexpected delivery attempts.
+		notifyMu.Lock()
+		notifyCount++
+		notifyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create worker sidecar.
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Set the worker state to "reviewing" (simulating what RunAsync does after
+	// spawning review agents).
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+
+	// Trigger idle debounce (opencode went idle after the `prism review` tool call returned).
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	// DB state must still be "reviewing" — the idle debounce must be suppressed.
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateReviewing) {
+		t.Errorf("worker state = %q, want %q (idle debounce must be suppressed while reviewing)", state, agent.StateReviewing)
+	}
+
+	// Give a brief window for any async goroutines to complete.
+	time.Sleep(100 * time.Millisecond)
+
+	// No bus messages must have been written to the coordinator.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("worker in reviewing state must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
+	}
+
+	notifyMu.Lock()
+	nc := notifyCount
+	notifyMu.Unlock()
+	if nc != 0 {
+		t.Errorf("coordinator HTTP POST count = %d, want 0 (reviewing state must suppress notification)", nc)
+	}
+}
+
+// TestReviewing_TransitionsToFinishedAfterPromptDelivery verifies the full
+// lifecycle: worker in "reviewing" → review-complete prompt arrives → opencode
+// goes busy (active) → idle debounce fires → finished → coordinator notified.
+//
+// This simulates the happy path for issue #1033:
+//  1. Worker is in "reviewing" state (set by RunAsync).
+//  2. Monitor delivers review-complete prompt; opencode goes busy.
+//  3. session.status{busy} fires → sidecar writes "active" to DB.
+//  4. Worker processes results and goes idle.
+//  5. Idle debounce fires → DB state is "active" (not "reviewing") → finished.
+//  6. Coordinator receives the "has finished" notification.
+func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-reviewing-pass"
+	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Set the worker state to "reviewing".
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+
+	// Step 1: idle debounce fires while in "reviewing" — must be suppressed.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer from session.idle")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateReviewing) {
+		t.Errorf("after suppressed idle: state = %q, want %q", state, agent.StateReviewing)
+	}
+
+	// Step 2: review-complete prompt arrives; opencode goes busy.
+	// session.status{busy} overwrites "reviewing" with "active".
+	worker.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
+		t.Errorf("after busy: state = %q, want %q", state, agent.StateActive)
+	}
+
+	// Step 3: worker processes results and goes idle again.
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer2 := clk.LastTimer()
+	if timer2 == nil {
+		t.Fatal("expected idle timer after second session.idle")
+	}
+	timer2.Fire()
+
+	// Now the DB state must be "finished".
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateFinished) {
+		t.Errorf("after idle debounce: state = %q, want %q", state, agent.StateFinished)
+	}
+
+	// Coordinator must receive the "has finished" notification.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected coordinator notification after reviewing→active→finished, got none")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("notification text = %q, want %q", msg.Text, wantText)
+	}
+}
