@@ -36,6 +36,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -679,16 +680,35 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
 		//
-		// In container mode a missing or empty blob means the container falls
-		// back to the image default (build agent). ResolveAgentConfigContent
-		// surfaces this as an explicit error to prevent silent build-agent spawns.
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
+		// In sandboxed mode (podman or bwrap) a missing or empty blob means the
+		// sandbox falls back to the host config (wrong agent identity).
+		// ResolveAgentConfigContent surfaces this as an explicit error to
+		// prevent silent wrong-agent spawns.
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name)
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
 			}
 			continue
+		}
+
+		// For bwrap sessions, write the opencode.json config file to disk now
+		// so it is present before the agent pane opens. The bwrap harness
+		// checks for file existence (os.Stat) rather than reading ConfigContent
+		// from the session state, so it must be written here at spawn time.
+		// This mirrors the pattern in cmd/spawn.go:334-340 for regular bwrap spawns.
+		// Podman mode does NOT need this write — the sidecar's Create() path
+		// already writes the file before the container starts.
+		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
+			containerName := container.NameForSession(agentSession)
+			if writeErr := container.WriteOpencodeConfig(containerName, agentConfigContent); writeErr != nil {
+				spawnErr[i] = fmt.Errorf("review: write opencode config for bwrap agent %s: %w", ag.Name, writeErr)
+				if opts.OnProgress != nil {
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+				}
+				continue
+			}
 		}
 
 		// Spawn the per-agent session via the shared primitive. SpawnSession
@@ -893,13 +913,27 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
 
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.ContainerMode, opts.ProfilesFile, ag.Name)
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name)
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
 			}
 			continue
+		}
+
+		// For bwrap sessions, write the opencode.json config file to disk now
+		// so it is present before the agent pane opens. Mirrors the pattern in
+		// cmd/spawn.go:334-340 for regular bwrap spawns.
+		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
+			containerName := container.NameForSession(agentSession)
+			if writeErr := container.WriteOpencodeConfig(containerName, agentConfigContent); writeErr != nil {
+				spawnErr[i] = fmt.Errorf("review: write opencode config for bwrap agent %s: %w", ag.Name, writeErr)
+				if opts.OnProgress != nil {
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+				}
+				continue
+			}
 		}
 
 		spawnOpts := session.SpawnOpts{
@@ -1023,13 +1057,13 @@ func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []st
 }
 
 // ResolveAgentConfigContent resolves the per-agent opencode.json config blob
-// for a single agent in container mode. It is factored out of Run so that it
-// can be unit-tested independently of the tmux/DB machinery.
+// for a single agent in sandboxed mode (podman or bwrap). It is factored out
+// of Run so that it can be unit-tested independently of the tmux/DB machinery.
 //
-// Returns ("", nil) in host mode (containerMode=false), because no config
-// injection is needed — opencode is launched directly on the host.
+// Returns ("", nil) in host mode (isolationMode == "host" or ""), because no
+// config injection is needed — opencode is launched directly on the host.
 //
-// In container mode (containerMode=true):
+// In sandboxed mode (isolationMode == "podman" or "bwrap"):
 //   - Returns an error if pf is nil (missing profiles file).
 //   - Returns an error if ContainerConfigForRole returns an error.
 //   - Returns an error if the resolved blob is empty (stale profiles.json).
@@ -1037,12 +1071,13 @@ func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []st
 //
 // Exported so that cmd/review_test.go (and integration tests) can exercise the
 // config-resolution path without needing a live DB or tmux session.
-func ResolveAgentConfigContent(containerMode bool, pf *config.ProfilesFile, agentName string) (string, error) {
-	if !containerMode {
+func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName string) (string, error) {
+	needsConfig := isolationMode == string(config.IsolationPodman) || isolationMode == string(config.IsolationBwrap)
+	if !needsConfig {
 		return "", nil
 	}
 	if pf == nil {
-		return "", fmt.Errorf("review: container mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", agentName)
+		return "", fmt.Errorf("review: %s mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", isolationMode, agentName)
 	}
 	blob, cfgErr := config.ContainerConfigForRole(pf, agentName)
 	if cfgErr != nil {
