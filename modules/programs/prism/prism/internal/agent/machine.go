@@ -14,6 +14,14 @@ import "fmt"
 //   - idle → error: container startup failure (WaitHealthy timeout or CreateSession
 //     failure) before the session became active. The sidecar writes error directly
 //     to avoid relying on the pane-died tmux hook for state cleanup.
+//   - active → reviewing: entered by a worker immediately after calling
+//     `prism review`. The worker remains here until the review-complete prompt
+//     arrives. The coordinator does NOT receive a "has finished" notification
+//     while the worker is in this state.
+//   - reviewing → finished: PASS verdict received; coordinator is notified now.
+//   - reviewing → active: FAIL verdict received; worker returns to active to
+//     fix blocking issues and re-run the review.
+//   - reviewing → interrupted: pane-died or SIGTERM while awaiting review results.
 //   - finished → interrupted: explicitly allowed for the pane-died hook when the
 //     pane exits with a non-zero code — a crash overrides a cleanly-written
 //     "finished" (see UpsertStatusInterruptedOverrideFinished).
@@ -41,6 +49,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateInterrupted: true,
 		StateError:       true,
 		StateCompacting:  true,
+		StateReviewing:   true, // prism review called — awaiting review results
 		StateDeleted:     true,
 	},
 	StateWaiting: {
@@ -59,6 +68,15 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateActive:      true,
 		StateInterrupted: true,
 		StateFinished:    true,
+		StateDeleted:     true,
+	},
+	// reviewing→finished: PASS verdict received; coordinator notified now.
+	// reviewing→active: FAIL verdict received; worker resumes to fix issues.
+	// reviewing→interrupted: pane-died or SIGTERM while awaiting results.
+	StateReviewing: {
+		StateFinished:    true,
+		StateActive:      true,
+		StateInterrupted: true,
 		StateDeleted:     true,
 	},
 	// finished→interrupted: non-zero pane exit overrides a clean finish.

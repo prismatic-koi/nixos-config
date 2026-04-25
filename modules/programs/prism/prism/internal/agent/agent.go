@@ -19,4 +19,12 @@ const (
 	StateIdle        AgentState = "idle"
 	StateInterrupted AgentState = "interrupted"
 	StateDeleted     AgentState = "deleted"
+	// StateReviewing is a non-terminal state entered by a worker session
+	// immediately after calling `prism review`. The worker stays in this state
+	// until the review-complete prompt is received and resolved:
+	//   - PASS verdict → transitions to finished (coordinator notified).
+	//   - FAIL verdict → transitions back to active (worker fixes issues).
+	// The coordinator must not receive a "has finished" notification while the
+	// worker is in the reviewing state.
+	StateReviewing AgentState = "reviewing"
 )
