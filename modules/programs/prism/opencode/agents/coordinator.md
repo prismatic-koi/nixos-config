@@ -136,12 +136,26 @@ When a spawned agent opens a PR:
 
 ## Merge and cleanup
 
-Once the sense-check passes, merge the PR and sync main before cleaning up:
+Once the sense-check passes, enqueue the PR in the merge queue and continue with other work. The queue handles CI waits, rebases, and the merge itself; you act on the bus notification when the merge lands or fails.
 
-1. Wait for CI checks to finish before merging. An `IN_PROGRESS` status means come back later when the finish notification arrives — do not retry in a loop.
+1. `prism merge <number>` — enqueue. Returns within ~2 seconds. Continue with other coordinator work while the queue progresses.
+2. When a merge-queue notification arrives via the bus, action it as a high-priority todo (same handling as a worker finished-notification):
+   - **`PR #N merged...`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`.
+   - **`PR #N has merge conflicts...`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again.
+   - **`PR #N CI failed...`** — `prism prompt <worker-session>` to investigate and fix, then `prism merge <number>` again.
+   - **`PR #N was closed without merging...`** — typically nothing; the PR was closed deliberately.
+3. Use `prism merges` to inspect the current queue at any time.
+
+See the prism skill for the full notification table and the `prism merges` command surface.
+
+### Manual fallback
+
+If for any reason the queue is unavailable (e.g. you need to merge a PR that isn't enqueued, or the watcher has misbehaved), the manual flow remains available:
+
+1. Wait for CI to pass. `IN_PROGRESS` means come back later — do not retry in a loop.
 2. `gh pr merge <number> --squash` — if it fails because the branch is behind main, run `gh pr update-branch <number>` and retry. If that still doesn't resolve it, use `prism prompt <session>` to ask the worker to rebase and push.
-3. `git pull` to sync with the merged result.
-4. `prism cleanup --yes --session <name>` to remove the worktree, branch, and tmux session.
+3. `git pull`.
+4. `prism cleanup --yes --session <name>`.
 
 ---
 
