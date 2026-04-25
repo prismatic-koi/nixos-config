@@ -864,6 +864,12 @@ func (s *Sidecar) handleServerConnected() {
 		if s.lastState != agent.StateActive {
 			return
 		}
+		// Suppress if the DB state is reviewing — the worker is awaiting review
+		// results and must not be prematurely finished.
+		if s.currentDBState() == agent.StateReviewing {
+			log.Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
+			return
+		}
 		log.Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
 		log.Printf("sidecar: transition -> finished (cause=recovery_timer)")
 		s.upsertState(agent.StateFinished, nil, nil)
@@ -941,8 +947,15 @@ func (s *Sidecar) handleSessionIdle() {
 		}
 
 		// Check current DB state: if interrupted or error, don't overwrite.
+		// If reviewing, suppress finished — the worker is awaiting review results;
+		// it will transition to finished naturally after the review-complete prompt
+		// is delivered and the worker resolves the results.
 		currentState := s.currentDBState()
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
+			return
+		}
+		if currentState == agent.StateReviewing {
+			log.Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
 
@@ -1395,6 +1408,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 
 				currentState := s.currentDBState()
 				if currentState == agent.StateInterrupted || currentState == agent.StateError {
+					return
+				}
+				if currentState == agent.StateReviewing {
+					log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
 					return
 				}
 

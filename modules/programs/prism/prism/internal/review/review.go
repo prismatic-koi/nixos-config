@@ -34,6 +34,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -972,6 +973,27 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			"Review results will NOT be delivered automatically.\n"+
 			"Check agent progress with: prism checkin %s~review-%d-<agent>\n",
 			startErr, opts.ParentSession, round)
+	}
+
+	// Transition the worker session to "reviewing" so that:
+	//   1. The coordinator does not receive a premature "has finished" notification.
+	//   2. The dashboard and `prism list-sessions` display the worker as awaiting
+	//      review results rather than finished or idle.
+	// This write uses the still-open DB handle (d). The sidecar's upsertState
+	// path is intentionally bypassed here: the sidecar is running in the worker
+	// session and will respect the reviewing state when it checks currentDBState()
+	// before firing the coordinator notification.
+	//
+	// Non-fatal: if the update fails (e.g. session row not found) the monitor
+	// will still deliver results and the worker will still receive them — only
+	// the interim display state is affected.
+	if workerStatus, stErr := d.CurrentStatus(opts.WorkerSession); stErr == nil && workerStatus != nil {
+		if err := d.UpsertStatus(opts.WorkerSession, workerStatus.Repo, workerStatus.Worktree,
+			string(agent.StateReviewing), nil, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "[prism review] warning: could not set worker state to reviewing: %v\n", err)
+		}
+	} else if stErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism review] warning: could not look up worker session %q: %v\n", opts.WorkerSession, stErr)
 	}
 
 	// Build acknowledgement message.

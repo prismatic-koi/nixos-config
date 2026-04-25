@@ -41,6 +41,13 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateInterrupted, StateActive, "session resumed after interruption"},
 		{StateInterrupted, StateIdle, "tmux-session-start resets interrupted session on recreate"},
 
+		// Reviewing state (issue #1033)
+		{StateActive, StateReviewing, "prism review called — entering reviewing state"},
+		{StateReviewing, StateFinished, "PASS verdict received — coordinator notified"},
+		{StateReviewing, StateActive, "FAIL verdict received — worker resumes to fix issues"},
+		{StateReviewing, StateInterrupted, "pane-died or SIGTERM while awaiting review results"},
+		{StateReviewing, StateDeleted, "session.deleted while reviewing"},
+
 		// Deleted from any state
 		{StateActive, StateDeleted, "session.deleted while active"},
 		{StateWaiting, StateDeleted, "session.deleted while waiting"},
@@ -105,7 +112,7 @@ func TestTransition_DeletedIsTerminal(t *testing.T) {
 	// a state were somehow not a key in ValidTransitions.
 	allStates := []AgentState{
 		StateActive, StateWaiting, StateFinished, StateCompacting,
-		StateError, StateIdle, StateInterrupted, StateDeleted,
+		StateError, StateIdle, StateInterrupted, StateDeleted, StateReviewing,
 	}
 	for _, to := range allStates {
 		if to == StateDeleted {
@@ -134,7 +141,7 @@ func TestTransition_UnknownFromState(t *testing.T) {
 func TestValidTransitionsCompleteness(t *testing.T) {
 	allStates := []AgentState{
 		StateActive, StateWaiting, StateFinished, StateCompacting,
-		StateError, StateIdle, StateInterrupted, StateDeleted,
+		StateError, StateIdle, StateInterrupted, StateDeleted, StateReviewing,
 	}
 	for _, s := range allStates {
 		if _, ok := ValidTransitions[s]; !ok {
