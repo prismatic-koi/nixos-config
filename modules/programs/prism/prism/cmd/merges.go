@@ -253,8 +253,7 @@ func emptyMergesMessage(filter string) string {
 	}
 }
 
-// mergesColumnWidths defines the column widths for the merges table. Exposed
-// as a package-level block so tests can refer to the same values.
+// Column widths for the merges table.
 const (
 	mergesWPos     = 5
 	mergesWPR      = 6

@@ -1,12 +1,20 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
+
+// expectedPosPrefix builds the expected POS-column prefix for a 1-based rank,
+// padded to mergesWPos with %-*s. Using the real constant means the test
+// stays correct if the column width is ever changed.
+func expectedPosPrefix(rank int) string {
+	return fmt.Sprintf("%-*s", mergesWPos, fmt.Sprintf("%d", rank))
+}
 
 // TestFormatMergesRows_PosIsOneBasedRank verifies that the POS column shows
 // the row's 1-based rank in the input slice — not the raw queue_position
@@ -32,10 +40,10 @@ func TestFormatMergesRows_PosIsOneBasedRank(t *testing.T) {
 	}
 
 	// Each row must start with its 1-based rank, padded to mergesWPos columns.
-	wantPrefixes := []string{"1    ", "2    ", "3    "}
 	for i, row := range rows {
-		if !strings.HasPrefix(row, wantPrefixes[i]) {
-			t.Errorf("row %d: expected POS prefix %q, got row %q", i, wantPrefixes[i], row)
+		want := expectedPosPrefix(i + 1)
+		if !strings.HasPrefix(row, want) {
+			t.Errorf("row %d: expected POS prefix %q, got row %q", i, want, row)
 		}
 		// Sanity: the raw timestamp must NOT appear anywhere in the row.
 		if strings.Contains(row, "17771") {
@@ -63,18 +71,19 @@ func TestFormatMergesRows_RankPerFilteredView(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("expected 2 rows, got %d", len(rows))
 	}
-	if !strings.HasPrefix(rows[0], "1    ") {
-		t.Errorf("filtered row 0: expected POS=1, got %q", rows[0])
+	if want := expectedPosPrefix(1); !strings.HasPrefix(rows[0], want) {
+		t.Errorf("filtered row 0: expected POS prefix %q, got %q", want, rows[0])
 	}
-	if !strings.HasPrefix(rows[1], "2    ") {
-		t.Errorf("filtered row 1: expected POS=2, got %q", rows[1])
+	if want := expectedPosPrefix(2); !strings.HasPrefix(rows[1], want) {
+		t.Errorf("filtered row 1: expected POS prefix %q, got %q", want, rows[1])
 	}
 }
 
 // TestFormatMergesRows_HeaderIncludesPos sanity-checks that the header row
 // still labels the column "POS".
 func TestFormatMergesRows_HeaderIncludesPos(t *testing.T) {
-	header, _ := formatMergesRows(nil, time.Now())
+	now := time.Date(2025, 4, 26, 12, 0, 0, 0, time.UTC)
+	header, _ := formatMergesRows(nil, now)
 	if !strings.HasPrefix(header, "POS") {
 		t.Errorf("expected header to start with POS, got %q", header)
 	}
