@@ -87,6 +87,25 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 		filter = "all"
 	}
 
+	// Inside a bwrap sandbox: proxy the list to the host sidecar (#1043).
+	// The host's prism.db is invisible to direct DB reads from inside the
+	// sandbox, so falling through to the DB path would read from a shadow
+	// tmpfs DB that has none of the host's queued rows. The sidecar reads its
+	// own (host-side) DB using the same instance_id and session_name the
+	// merge-queue watcher uses, so the response matches what `sqlite3
+	// prism.db` shows on the host.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		params := map[string]string{}
+		if filter != "" {
+			params["filter"] = filter
+		}
+		var merges []db.PendingMerge
+		if proxyErr := proxyGetFromHostAPI(apiURL, "/merges", params, &merges); proxyErr != nil {
+			return fmt.Errorf("prism merges list: %w", proxyErr)
+		}
+		return renderMergesList(merges, filter)
+	}
+
 	callerSession := review.LookupParentSession()
 	d, err := openDB()
 	if err != nil {
@@ -113,6 +132,38 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 	pr, err := strconv.Atoi(prArg)
 	if err != nil || pr <= 0 {
 		return fmt.Errorf("prism merges cancel: invalid PR number %q", prArg)
+	}
+
+	// Inside a bwrap sandbox: proxy the cancel to the host sidecar (#1043).
+	// See merge.go and runMergesList for the reasoning. The sidecar uses its
+	// own instance_id when calling CancelMerge, which is the same identity
+	// the host watcher and `prism merges` use, so cancellation is visible to
+	// both immediately.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		var resp struct {
+			Cancelled bool             `json:"cancelled"`
+			Row       *db.PendingMerge `json:"row"`
+		}
+		if proxyErr := proxyToHostAPI(apiURL, "/merges/cancel", map[string]any{
+			"pr": pr,
+		}, &resp); proxyErr != nil {
+			return fmt.Errorf("prism merges cancel: %w", proxyErr)
+		}
+		if resp.Cancelled {
+			fmt.Printf("PR #%d removed from merge queue.\n", pr)
+		} else if resp.Row == nil {
+			fmt.Printf("PR #%d is not in the merge queue.\n", pr)
+		} else {
+			// Either the row is owned by a different incarnation, or it is
+			// already in a terminal state. Match the host-path message
+			// shapes so the user sees the same output regardless of mode.
+			if resp.Row.Status == "watching" {
+				fmt.Printf("PR #%d is owned by a different coordinator incarnation — not cancelled.\n", pr)
+			} else {
+				fmt.Printf("PR #%d is already in terminal state %q — no change.\n", pr, resp.Row.Status)
+			}
+		}
+		return nil
 	}
 
 	callerSession := review.LookupParentSession()
