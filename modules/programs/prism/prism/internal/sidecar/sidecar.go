@@ -2725,7 +2725,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// GET /logs
-	// Query params: session (required), tail (optional int ≥ 0), follow (optional bool)
+	// Query params: session (required), tail (optional int ≥ 0), follow (optional bool),
+	//               source (optional: "sidecar" [default] or "agent-run")
 	// Permission: coordinator only; own-repo sessions or cross-repo @main sessions.
 	// Returns 404 with JSON error when the log file does not exist.
 	// When follow=true, streams new lines and closes after the session reaches a
@@ -2770,15 +2771,32 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Resolve log file path.
-		logPath, pathErr := session.SidecarLogPath(targetSession)
-		if pathErr != nil {
-			writeError(w, http.StatusInternalServerError, "cannot resolve log path: "+pathErr.Error())
-			return
-		}
-		if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("no log file for session %s", targetSession))
-			return
+		// Resolve log file path. source=agent-run selects the bwrap harness log;
+		// the default (source absent or "sidecar") selects the sidecar log.
+		logSource := q.Get("source")
+		var logPath string
+		var pathErr error
+		switch logSource {
+		case "agent-run":
+			logPath, pathErr = session.AgentRunLogPath(targetSession)
+			if pathErr != nil {
+				writeError(w, http.StatusInternalServerError, "cannot resolve agent-run log path: "+pathErr.Error())
+				return
+			}
+			if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("no agent-run log file for session %s", targetSession))
+				return
+			}
+		default:
+			logPath, pathErr = session.SidecarLogPath(targetSession)
+			if pathErr != nil {
+				writeError(w, http.StatusInternalServerError, "cannot resolve log path: "+pathErr.Error())
+				return
+			}
+			if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("no log file for session %s", targetSession))
+				return
+			}
 		}
 
 		// Parse optional tail param (non-negative integer).

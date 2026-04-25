@@ -83,6 +83,22 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", sessionName, "hostapi.sock"), nil
 }
 
+// AgentRunLogPath returns the agent-run log file path for the named session.
+// The log captures the stdout and stderr of the bwrap sandbox (and the opencode
+// harness running inside it) for the lifetime of the session. It lives alongside
+// hostapi.sock in the per-session run directory so that the directory is already
+// created by the time agent-run opens the file (the sidecar pre-creates it via
+// container.prepareVolumeDirs, and agent-run falls back to creating it if needed).
+//
+// Log path: $XDG_STATE_HOME/prism/run/<session>/agent-run.log
+func AgentRunLogPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", sessionName, "agent-run.log"), nil
+}
+
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the
 // recorded process, and removes the PID file. It handles missing or stale PID
 // files gracefully — no error is returned in those cases.

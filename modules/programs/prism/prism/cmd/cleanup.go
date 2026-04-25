@@ -814,6 +814,11 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if sess.PrismVersion != nil {
 		params.PrismVersion = *sess.PrismVersion
 	}
+	// Include the agent-run log when it exists. Non-fatal if the path cannot
+	// be resolved — non-bwrap sessions never create this file.
+	if agentRunLogPath, arLogErr := prismSession.AgentRunLogPath(sessionName); arLogErr == nil {
+		params.AgentRunLogPath = agentRunLogPath
+	}
 
 	archivePath, archiveErr := archive.Run(params)
 	if archiveErr != nil {
@@ -988,13 +993,19 @@ func removeContainerIfExists(sessionName string) {
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitconfig-"+name))
 	_ = os.Remove(filepath.Join(os.TempDir(), "prism-allowed-signers-"+name))
 
-	// Clean up the host-API Unix socket and its per-session directory. The
-	// sidecar's own shutdown path would normally remove these, but cleanup runs
-	// after KillSidecar so we cannot rely on that — remove them directly.
+	// Clean up the host-API Unix socket, the agent-run log, and their
+	// per-session directory. The sidecar's own shutdown path would normally
+	// remove the socket, but cleanup runs after KillSidecar so we cannot rely
+	// on that — remove them directly.
 	// The per-session directory (run/<session>/) was introduced by security fix
 	// #960 to isolate sockets; removing it here prevents accumulated empty dirs.
 	if sockPath, err := prismSession.SidecarHostAPIPath(sessionName); err == nil {
 		_ = os.Remove(sockPath)
+		// Also remove the agent-run log from the same per-session directory so
+		// the directory can be cleaned up without leaving orphaned files.
+		if agentRunLogPath, arErr := prismSession.AgentRunLogPath(sessionName); arErr == nil {
+			_ = os.Remove(agentRunLogPath)
+		}
 		_ = os.Remove(filepath.Dir(sockPath)) // remove now-empty per-session dir
 	}
 }

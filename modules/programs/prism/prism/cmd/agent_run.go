@@ -5,14 +5,24 @@ package cmd
 // This command is invoked by the tmux agent window when the resolved isolation
 // mode is "bwrap". It reconstructs the container.Manager from the session's DB
 // row and config, writes the same temp files that Manager.Create() writes for
-// podman sessions (SSH config, gitconfig, opencode.json), and then execs:
+// podman sessions (SSH config, gitconfig, opencode.json), and then runs:
 //
 //	bwrap <args...>
 //
-// The bwrap subprocess runs opencode directly inside the sandbox. It is owned
-// by this process (and thus by the tmux pane) — not by the sidecar. The sidecar
-// is already running for bwrap sessions, handling SSE, state transitions, and
-// the host-API socket.
+// as a child process (not a direct exec). stdout and stderr are tee'd to both
+// the tmux pane (os.Stdout/os.Stderr) and a per-session log file at:
+//
+//	~/.local/state/prism/run/<session>/agent-run.log
+//
+// This preserves harness output for forensic inspection after pane death —
+// the primary motivation being bwrap startup failures that previously left no
+// surviving evidence (issue #1023).
+//
+// Signal forwarding: SIGTERM, SIGINT, and SIGHUP received by agent-run are
+// forwarded to the child process group within 1 second. When the tmux pane's
+// controlling terminal is closed, the kernel sends SIGHUP to agent-run, which
+// forwards it to bwrap and its children, replicating the previous
+// --die-with-parent behaviour.
 //
 // On non-Linux platforms the command fails immediately with a clear error
 // because bubblewrap is Linux-only.
@@ -23,8 +33,10 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
@@ -48,8 +60,9 @@ window when the isolation mode is "bwrap". It is not intended for direct user
 invocation.
 
 It reconstructs the container config from the session's DB row, writes temp
-files (SSH config, gitconfig), builds the bwrap argument list, and execs bwrap
-directly — replacing the current process with the bwrap sandbox running opencode.`,
+files (SSH config, gitconfig), builds the bwrap argument list, and runs bwrap
+as a child process — tee-ing stdout and stderr to both the tmux pane and a
+per-session log file at ~/.local/state/prism/run/<session>/agent-run.log.`,
 	RunE: runAgentRun,
 }
 
@@ -170,16 +183,103 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agent-run: %w", err)
 	}
 
-	// exec replaces the current process with bwrap. argv[0] must be the binary
-	// path. The child env is filtered to a minimal allow-list so that nothing
+	// Open the per-session agent-run log file. The parent directory is the
+	// per-session run dir (run/<session>/), which also holds hostapi.sock.
+	// We create it here if it does not exist yet (it is normally pre-created
+	// by container.prepareVolumeDirs, but agent-run may run before that on
+	// some paths).
+	logPath, logPathErr := session.AgentRunLogPath(sessionName)
+	var logFile *os.File
+	if logPathErr != nil {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot resolve agent-run log path: %v — continuing without log file\n", logPathErr)
+	} else {
+		if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
+			fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create log directory %s: %v — continuing without log file\n", filepath.Dir(logPath), mkErr)
+		} else {
+			var openErr error
+			logFile, openErr = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if openErr != nil {
+				fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot open agent-run log %s: %v — continuing without log file\n", logPath, openErr)
+			}
+		}
+	}
+
+	// Build stdout/stderr writers. When the log file is available, tee to
+	// both the pane and the file. When log open failed, use the pane alone
+	// (harness must not be blocked on logging infrastructure).
+	var stdout, stderr io.Writer
+	if logFile != nil {
+		defer logFile.Close()
+		stdout = io.MultiWriter(os.Stdout, logFile)
+		stderr = io.MultiWriter(os.Stderr, logFile)
+	} else {
+		stdout = os.Stdout
+		stderr = os.Stderr
+	}
+
+	// Build the bwrap command. argv[0] must be the binary path.
+	// The child env is filtered to a minimal allow-list so that nothing
 	// from the invoking shell leaks into bwrap's own process environment.
 	// This is defence-in-depth: bwrap itself will also run with --clearenv
 	// (see internal/container/bwrap.go) so the sandbox interior is wiped
 	// regardless. Stripping here ensures secrets never appear in bwrap's
 	// own /proc/<pid>/environ either, and means "ps aux" / "bwrap --help"
 	// style debugging can't accidentally expose them.
-	argv := append([]string{bwrapBin}, bwrapArgs...)
-	return syscall.Exec(bwrapBin, argv, minimalBwrapExecEnv(os.Environ()))
+	bwrapCmd := exec.Command(bwrapBin, bwrapArgs...)
+	bwrapCmd.Env = minimalBwrapExecEnv(os.Environ())
+	bwrapCmd.Stdin = os.Stdin
+	bwrapCmd.Stdout = stdout
+	bwrapCmd.Stderr = stderr
+
+	// Place bwrap in its own process group so that signal forwarding targets
+	// the entire group (bwrap + any children it spawns). This replicates the
+	// previous --die-with-parent behaviour: when the tmux pane dies, the
+	// kernel sends SIGHUP to agent-run (which inherits the pane's controlling
+	// terminal); agent-run then forwards it to the bwrap process group.
+	bwrapCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := bwrapCmd.Start(); err != nil {
+		return fmt.Errorf("agent-run: start bwrap: %w", err)
+	}
+
+	// Forward SIGTERM, SIGINT, and SIGHUP to the child process group.
+	// The goroutine exits when bwrapCmd.Wait() returns (signalled by doneCh).
+	doneCh := make(chan struct{})
+	go forwardSignalsToBwrap(bwrapCmd.Process, doneCh)
+
+	waitErr := bwrapCmd.Wait()
+	close(doneCh)
+
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return fmt.Errorf("agent-run: wait bwrap: %w", waitErr)
+	}
+	return nil
+}
+
+// forwardSignalsToBwrap forwards SIGTERM, SIGINT, and SIGHUP to the bwrap
+// child process group until doneCh is closed. Using a negative PID in
+// syscall.Kill targets the entire process group (bwrap and its children).
+func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}) {
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+
+	for {
+		select {
+		case <-doneCh:
+			return
+		case sig := <-sigCh:
+			if proc == nil {
+				continue
+			}
+			// Send to the process group (negative PGID = group of bwrap).
+			// Ignore ESRCH (process already gone).
+			_ = syscall.Kill(-proc.Pid, sig.(syscall.Signal))
+		}
+	}
 }
 
 // minimalBwrapExecEnv filters a hostEnv slice (K=V pairs, as returned by

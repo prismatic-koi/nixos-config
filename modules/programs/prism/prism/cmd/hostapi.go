@@ -383,8 +383,10 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 // proxyLogsFromHostAPI proxies a GET /logs request to the host-API server and
 // streams the response body directly to w. For follow mode, it handles Ctrl-C
 // gracefully by cancelling the request context. apiURL is either a unix:// or
-// http:// URL depending on the platform.
-func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, follow bool, w io.Writer) error {
+// http:// URL depending on the platform. When agentRun is true, the
+// source=agent-run query parameter is sent so the host reads the agent-run log
+// instead of the sidecar log.
+func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, follow bool, agentRun bool, w io.Writer) error {
 	var client *http.Client
 	var baseURL string
 
@@ -408,6 +410,9 @@ func proxyLogsFromHostAPI(apiURL, sessionName string, tail int, tailSet bool, fo
 	}
 	if follow {
 		q.Set("follow", "true")
+	}
+	if agentRun {
+		q.Set("source", "agent-run")
 	}
 	rawURL := baseURL + "/logs?" + q.Encode()
 

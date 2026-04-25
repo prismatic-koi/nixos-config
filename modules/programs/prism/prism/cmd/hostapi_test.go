@@ -840,7 +840,7 @@ func TestProxyLogsFromHostAPI_TCPScheme(t *testing.T) {
 	})
 
 	var buf strings.Builder
-	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 20, true, false, &buf)
+	err := proxyLogsFromHostAPI(srv.apiURL(), "myrepo@main", 20, true, false, false, &buf)
 	if err != nil {
 		t.Fatalf("proxyLogsFromHostAPI (TCP): %v", err)
 	}

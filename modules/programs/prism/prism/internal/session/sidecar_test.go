@@ -286,6 +286,67 @@ func TestSidecarReadyPath_CustomXDG(t *testing.T) {
 	}
 }
 
+// ── AgentRunLogPath tests ─────────────────────────────────────────────────────
+
+func TestAgentRunLogPath_DefaultXDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	got, err := AgentRunLogPath("myrepo@feature")
+	if err != nil {
+		t.Fatalf("AgentRunLogPath: %v", err)
+	}
+
+	// Per-session subdirectory format: run/<session>/agent-run.log
+	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature", "agent-run.log")
+	if got != want {
+		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestAgentRunLogPath_CustomXDG(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	got, err := AgentRunLogPath("myrepo@main")
+	if err != nil {
+		t.Fatalf("AgentRunLogPath: %v", err)
+	}
+
+	// Per-session subdirectory format: run/<session>/agent-run.log
+	want := filepath.Join(tmp, "prism", "run", "myrepo@main", "agent-run.log")
+	if got != want {
+		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
+	}
+}
+
+// TestAgentRunLogPath_SameDirectoryAsHostAPIPath verifies that the agent-run log
+// and the host-API socket live in the same per-session directory. This is
+// important for cleanup: both are removed when the per-session dir is cleaned up.
+func TestAgentRunLogPath_SameDirectoryAsHostAPIPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const session = "myrepo@feature"
+
+	agentRunPath, err := AgentRunLogPath(session)
+	if err != nil {
+		t.Fatalf("AgentRunLogPath: %v", err)
+	}
+	hostAPIPath, err := SidecarHostAPIPath(session)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+
+	if filepath.Dir(agentRunPath) != filepath.Dir(hostAPIPath) {
+		t.Errorf("agent-run log dir %q != host-API dir %q — they must share the per-session directory",
+			filepath.Dir(agentRunPath), filepath.Dir(hostAPIPath))
+	}
+}
+
 // ── SidecarHostAPIPath tests ──────────────────────────────────────────────────
 
 func TestSidecarHostAPIPath_DefaultXDG(t *testing.T) {
