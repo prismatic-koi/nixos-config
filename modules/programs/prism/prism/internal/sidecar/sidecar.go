@@ -386,15 +386,20 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// but we check ctx.Err() to distinguish a context-cancelled WaitHealthy
 			// (SIGTERM path where Shutdown already ran) from a genuine probe timeout
 			// (no Shutdown yet), avoiding a double-Shutdown with spurious log lines.
+			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
 			if ctx.Err() == nil {
+				// Genuine probe timeout (not SIGTERM): clean up the container
+				// ourselves (Shutdown() has not run yet) and write StateError
+				// directly so the DB row is in the correct terminal state.
+				// On SIGTERM, Shutdown() has already run (and will write
+				// StateInterrupted), so we skip both actions to avoid a race.
 				mgr.Shutdown()
 				closeTCPListenerOnError()
+				// Gap 1 fix: write StateError directly so the DB row transitions
+				// to "error" (not relying on the fragile pane-died tmux hook).
+				// This is skipped on SIGTERM to avoid racing with Shutdown().
+				s.writeStartupError(startupErr)
 			}
-			// Gap 1 fix: write StateError directly so the DB row transitions to
-			// "error" (not "interrupted" via the pane-died hook). This is reliable
-			// regardless of tmux hook timing.
-			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
-			s.writeStartupError(startupErr)
 			return startupErr
 		}
 		healthyAt := time.Now()
@@ -427,10 +432,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
-				// Gap 1 fix: write StateError directly so the DB row transitions to
-				// "error" on CreateSession failure. Also notify the parent worker.
 				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
-				s.writeStartupError(startupErr)
+				if ctx.Err() == nil {
+					// Genuine CreateSession failure (not a SIGTERM-induced context
+					// cancellation). Write StateError directly so the DB row is in
+					// the correct terminal state, regardless of tmux hook timing.
+					// On SIGTERM, Shutdown() handles the state write.
+					s.writeStartupError(startupErr)
+				}
 				return startupErr
 			}
 			log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
