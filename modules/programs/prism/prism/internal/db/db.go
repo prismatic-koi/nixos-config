@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // migration. Rows with empty instance_id are skipped (a warning is printed).
 // This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
 // guard (pragma_table_info check) make it safe to run on an already-migrated DB.
-// v16→v17 is a one-shot backfill that fixes sessions rows whose started_at was
+// v17→v18 is a one-shot backfill that fixes sessions rows whose started_at was
 // persisted as -62135596800000 (Go's zero time.Time{} marshalled via UnixMilli)
 // due to a wrong zero-value guard in InsertSession. For each such row it sets
 // started_at to MIN(agent_events.created_at) for the matching instance_id.
@@ -808,8 +808,8 @@ func Open(path string) (*DB, error) {
 		version = 16
 	}
 
-	if version == 16 {
-		// Migration v16 → v17: backfill sessions rows whose started_at was
+	if version == 17 {
+		// Migration v17 → v18: backfill sessions rows whose started_at was
 		// persisted as -62135596800000 (Go's zero time.Time{} marshalled via
 		// UnixMilli). For each broken row, use MIN(agent_events.created_at)
 		// for the matching instance_id as a best-effort recovery. Rows with
@@ -824,7 +824,7 @@ func Open(path string) (*DB, error) {
 			SELECT instance_id FROM sessions WHERE started_at < 0`)
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("db: migration v16→v17: query broken sessions: %w", err)
+			return nil, fmt.Errorf("db: migration v17→v18: query broken sessions: %w", err)
 		}
 		var brokenIDs []string
 		for brokenRows.Next() {
@@ -832,14 +832,14 @@ func Open(path string) (*DB, error) {
 			if err := brokenRows.Scan(&iid); err != nil {
 				brokenRows.Close()
 				conn.Close()
-				return nil, fmt.Errorf("db: migration v16→v17: scan broken session: %w", err)
+				return nil, fmt.Errorf("db: migration v17→v18: scan broken session: %w", err)
 			}
 			brokenIDs = append(brokenIDs, iid)
 		}
 		brokenRows.Close()
 		if err := brokenRows.Err(); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("db: migration v16→v17: iterate broken sessions: %w", err)
+			return nil, fmt.Errorf("db: migration v17→v18: iterate broken sessions: %w", err)
 		}
 
 		for _, iid := range brokenIDs {
@@ -848,7 +848,7 @@ func Open(path string) (*DB, error) {
 				SELECT MIN(created_at) FROM agent_events WHERE instance_id = ?`, iid,
 			).Scan(&minTs); err != nil {
 				conn.Close()
-				return nil, fmt.Errorf("db: migration v16→v17: min timestamp for %q: %w", iid, err)
+				return nil, fmt.Errorf("db: migration v17→v18: min timestamp for %q: %w", iid, err)
 			}
 			if minTs == nil || *minTs <= 0 {
 				// No usable events — leave the row unchanged.
@@ -858,15 +858,15 @@ func Open(path string) (*DB, error) {
 				UPDATE sessions SET started_at = ? WHERE instance_id = ?`, *minTs, iid,
 			); err != nil {
 				conn.Close()
-				return nil, fmt.Errorf("db: migration v16→v17: update started_at for %q: %w", iid, err)
+				return nil, fmt.Errorf("db: migration v17→v18: update started_at for %q: %w", iid, err)
 			}
 		}
 
-		if _, err := conn.Exec("UPDATE schema_version SET version = 17"); err != nil {
+		if _, err := conn.Exec("UPDATE schema_version SET version = 18"); err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("db: migration v16→v17: bump version: %w", err)
+			return nil, fmt.Errorf("db: migration v17→v18: bump version: %w", err)
 		}
-		version = 17
+		version = 18
 	}
 
 	return &DB{conn: conn, path: path}, nil
