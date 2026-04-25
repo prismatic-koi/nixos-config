@@ -7782,3 +7782,383 @@ func TestBuildNotifyPromptBody_IncludesTextAndModel(t *testing.T) {
 		}
 	})
 }
+
+// ── Startup failure tests (issue #994) ──────────────────────────────────────
+
+// newReviewAgentSidecar creates a review-agent sidecar whose session name
+// follows the <parent>~review-<N>-<role> convention. It shares the given DB
+// and HTTP client with the parent worker.
+func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
+	t.Helper()
+	clk := newTestClock()
+	reviewSession := parentSession + "~review-1-review-goal"
+	cfg := Config{
+		SessionName: reviewSession,
+		Repo:        "test-repo",
+		Worktree:    "/tmp/" + reviewSession,
+		OpencodeURL: "http://localhost:14003",
+		DB:          d,
+		Clock:       clk,
+		HTTPClient:  httpClient,
+		AgentRole:   "review-goal",
+		Harness:     opencode.New("http://localhost:14003", httpClient, "review-goal", ""),
+	}
+	return New(cfg), clk
+}
+
+// seedParentWorkerWithPort seeds a parent worker session in the DB with a
+// harness port and session ID, so notifyParentWorkerOnStartupFailure can
+// deliver notifications.
+func seedParentWorkerWithPort(t *testing.T, d *db.DB, sessionName, repo string, port int, sid string) {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, repo, "/tmp/"+sessionName, "active", nil, &sid); err != nil {
+		t.Fatalf("seed parent worker: UpsertStatus: %v", err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
+		port, sessionName,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("seed parent worker: set port: %v", err)
+	}
+}
+
+// waitForHTTPPromptCalls polls until the given counter reaches the expected
+// value (for async HTTP delivery).
+func waitForHTTPPromptCalls(t *testing.T, counter *int, mu *sync.Mutex, want int) bool {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := *counter
+		mu.Unlock()
+		if got >= want {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
+// TestWriteStartupError_WritesErrorState verifies Gap 1: when writeStartupError
+// is called (simulating WaitHealthy or CreateSession failure), the DB row
+// transitions directly to "error" state — not via the pane-died tmux hook.
+func TestWriteStartupError_WritesErrorState(t *testing.T) {
+	d := openTestDB(t)
+	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d, nil)
+
+	// Seed an idle row (as tmux-session-start would write it).
+	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
+
+	// Call writeStartupError directly (simulates WaitHealthy timeout).
+	startupErr := fmt.Errorf("container health check: context deadline exceeded")
+	sc.writeStartupError(startupErr)
+
+	// The DB row must be "error", not "idle" or "interrupted".
+	state := getState(t, d, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after writeStartupError, want %q", state, agent.StateError)
+	}
+}
+
+// TestWriteStartupError_WritesStateChangeEvent verifies that writeStartupError
+// writes a state_change event to the DB, providing a visible audit trail.
+func TestWriteStartupError_WritesStateChangeEvent(t *testing.T) {
+	d := openTestDB(t)
+	sc, _ := newReviewAgentSidecar(t, "test-repo@feature", d, nil)
+
+	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
+
+	sc.writeStartupError(fmt.Errorf("container health check: timeout"))
+
+	events := getEvents(t, d, sc.cfg.SessionName)
+	found := false
+	for _, e := range events {
+		if e.Type == "state_change" {
+			found = true
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(e.Payload), &payload); err == nil {
+				if payload["state"] != string(agent.StateError) {
+					t.Errorf("state_change event state = %q, want %q", payload["state"], agent.StateError)
+				}
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected state_change event after writeStartupError")
+	}
+}
+
+// TestWriteStartupError_NonReviewAgent_NoParentNotification verifies that
+// writeStartupError on a non-review-agent session does NOT attempt to notify
+// a parent (it returns silently from notifyParentWorkerOnStartupFailure).
+func TestWriteStartupError_NonReviewAgent_NoParentNotification(t *testing.T) {
+	d := openTestDB(t)
+
+	// A regular worker session (no "~review" in name).
+	worker, _ := newWorkerSidecar(t, d, nil)
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "idle", nil, nil)
+
+	worker.writeStartupError(fmt.Errorf("container health check: timeout"))
+
+	// State should still be "error".
+	state := getState(t, d, worker.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	// Give a brief window for any spurious goroutines to complete.
+	time.Sleep(50 * time.Millisecond)
+
+	// No bus messages should have been written (no coordinator or parent notification).
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("non-review-agent writeStartupError must not write bus messages, got %d", totalMsgs)
+	}
+}
+
+// TestWriteStartupError_ReviewAgent_NotifiesParentWorker verifies Gap 2:
+// when a review-agent container fails to start, the parent worker session
+// receives a notification via HTTP POST to its harness port.
+func TestWriteStartupError_ReviewAgent_NotifiesParentWorker(t *testing.T) {
+	d := openTestDB(t)
+
+	parentSession := "test-repo@feature"
+	parentSID := "parent-sid-startup-failure"
+
+	// Set up a test HTTP server that simulates the parent worker's opencode process.
+	// It must serve GET /session (for SID validation) and POST prompt_async.
+	var promptCallCount int
+	var promptMu sync.Mutex
+	var capturedText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": parentSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			promptMu.Lock()
+			promptCallCount++
+			var bodyMap map[string]any
+			if err := json.Unmarshal(body, &bodyMap); err == nil {
+				if parts, ok := bodyMap["parts"].([]any); ok && len(parts) > 0 {
+					if part, ok := parts[0].(map[string]any); ok {
+						capturedText, _ = part["text"].(string)
+					}
+				}
+			}
+			promptMu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+
+	// Seed the parent worker with a port and SID.
+	seedParentWorkerWithPort(t, d, parentSession, "test-repo", srvPort, parentSID)
+
+	// Create review-agent sidecar with the test server's HTTP client.
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, srv.Client())
+	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
+
+	// Simulate WaitHealthy timeout.
+	startupErrMsg := "container health check: context deadline exceeded (120s)"
+	reviewAgent.writeStartupError(fmt.Errorf("%s", startupErrMsg))
+
+	// Gap 1: DB state must be "error".
+	if state := getState(t, d, reviewAgent.cfg.SessionName); state != string(agent.StateError) {
+		t.Errorf("state = %q after startup failure, want %q (Gap 1 fix)", state, agent.StateError)
+	}
+
+	// Gap 2: wait for the parent worker notification to arrive.
+	if !waitForHTTPPromptCalls(t, &promptCallCount, &promptMu, 1) {
+		t.Fatal("timed out waiting for parent worker notification (Gap 2 fix) — expected HTTP POST to parent's harness port")
+	}
+
+	// Verify the notification text mentions the review agent session name.
+	promptMu.Lock()
+	text := capturedText
+	promptMu.Unlock()
+	if !strings.Contains(text, reviewAgent.cfg.SessionName) {
+		t.Errorf("notification text %q does not mention review agent session name %q", text, reviewAgent.cfg.SessionName)
+	}
+	if !strings.Contains(text, "failed to start") {
+		t.Errorf("notification text %q does not mention 'failed to start'", text)
+	}
+}
+
+// TestWriteStartupError_ReviewAgent_ParentEnded_LogsAndExitsCleanly verifies
+// the edge case: if the parent worker session has ended (ended_at set), the
+// notification failure is logged and the sidecar exits cleanly without panic.
+func TestWriteStartupError_ReviewAgent_ParentEnded_LogsAndExitsCleanly(t *testing.T) {
+	d := openTestDB(t)
+
+	parentSession := "test-repo@feature"
+	parentSID := "parent-sid-ended"
+
+	// Seed the parent worker, then mark it as ended.
+	if err := d.UpsertStatus(parentSession, "test-repo", "/tmp/"+parentSession, "finished", nil, &parentSID); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+	if err := d.SetEnded(parentSession); err != nil {
+		t.Fatalf("SetEnded parent: %v", err)
+	}
+
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, nil)
+	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
+
+	// writeStartupError should not panic even when parent has ended.
+	reviewAgent.writeStartupError(fmt.Errorf("container health check: timeout"))
+
+	// State must still transition to "error".
+	if state := getState(t, d, reviewAgent.cfg.SessionName); state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	// Give a brief window to ensure no panics or unexpected goroutine behaviour.
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly verifies
+// the edge case: if the parent worker has no harness port, the notification
+// failure is logged and the sidecar exits cleanly.
+func TestWriteStartupError_ReviewAgent_ParentNoPort_LogsAndExitsCleanly(t *testing.T) {
+	d := openTestDB(t)
+
+	parentSession := "test-repo@feature"
+	// Seed parent without a harness port.
+	if err := d.UpsertStatus(parentSession, "test-repo", "/tmp/"+parentSession, "active", nil, nil); err != nil {
+		t.Fatalf("seed parent: %v", err)
+	}
+
+	reviewAgent, _ := newReviewAgentSidecar(t, parentSession, d, nil)
+	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "idle", nil, nil)
+
+	// Should not panic — notification is skipped with a log message.
+	reviewAgent.writeStartupError(fmt.Errorf("container health check: timeout"))
+
+	if state := getState(t, d, reviewAgent.cfg.SessionName); state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+}
+
+// TestWriteStartupError_NormalFinish_NotSuppressed verifies that the existing
+// review-agent suppress-coordinator-notification behaviour on the normal finish
+// path is not affected by the new writeStartupError function. When a review
+// agent finishes normally (via session.idle), notifyCoordinator is still
+// suppressed and the parent worker notification path is NOT triggered.
+func TestWriteStartupError_NormalFinish_NotSuppressed(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-normal-finish"
+	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Review agent session (normal finish path).
+	reviewAgent, clk := newReviewAgentSidecar(t, "test-repo@feature", d, srv.Client())
+	_ = d.UpsertStatus(reviewAgent.cfg.SessionName, reviewAgent.cfg.Repo, reviewAgent.cfg.Worktree, "active", nil, nil)
+
+	// Normal finish: session.idle → debounce → finished.
+	reviewAgent.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	if state := getState(t, d, reviewAgent.cfg.SessionName); state != string(agent.StateFinished) {
+		t.Errorf("state = %q, want finished", state)
+	}
+
+	// Give time for any async goroutines.
+	time.Sleep(100 * time.Millisecond)
+
+	// The coordinator must NOT have received a notification (review-agent suppression preserved).
+	if *promptCalls != 0 {
+		t.Errorf("coordinator received %d notification(s) from review-agent normal finish, want 0 (suppression must be preserved)", *promptCalls)
+	}
+
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("expected no bus messages from review-agent normal finish, got %d", totalMsgs)
+	}
+}
+
+// TestShutdown_DoesNotOverrideError verifies that Shutdown() does not overwrite
+// a StateError that was written by writeStartupError — the narrow-window race
+// where SIGTERM arrives after writeStartupError sets lastState=StateError but
+// before Run() returns.
+func TestShutdown_DoesNotOverrideError(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Simulate writeStartupError having already run: set lastState to StateError
+	// as writeStartupError would do.
+	sc.mu.Lock()
+	sc.lastState = agent.StateError
+	sc.mu.Unlock()
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "error", nil, nil)
+
+	// Shutdown() must not overwrite the error state.
+	sc.Shutdown()
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q after Shutdown on error, want %q (Shutdown must not clobber startup-failure error)", state, agent.StateError)
+	}
+}
+
+// TestReviewAgentParentSession verifies the reviewAgentParentSession helper
+// correctly derives the parent session name from various review-agent session
+// name shapes.
+func TestReviewAgentParentSession(t *testing.T) {
+	cases := []struct {
+		session    string
+		wantParent string
+		wantOK     bool
+	}{
+		// Current shape: <parent>~review-<N>-<role>
+		{"nixos-config@feature~review-1-review-goal", "nixos-config@feature", true},
+		{"nixos-config@feature~review-2-review-code", "nixos-config@feature", true},
+		// Old shape: <parent>~review-<N>~<role>
+		{"nixos-config@feature~review-1~review", "nixos-config@feature", true},
+		// Round session: <parent>~review-<N>
+		{"nixos-config@feature~review-3", "nixos-config@feature", true},
+		// Normal worker — no "~review" in name.
+		{"nixos-config@feature", "", false},
+		{"nixos-config@main", "", false},
+		// Empty string
+		{"", "", false},
+	}
+
+	for _, tc := range cases {
+		got, ok := reviewAgentParentSession(tc.session)
+		if ok != tc.wantOK {
+			t.Errorf("reviewAgentParentSession(%q): ok = %v, want %v", tc.session, ok, tc.wantOK)
+			continue
+		}
+		if ok && got != tc.wantParent {
+			t.Errorf("reviewAgentParentSession(%q) = %q, want %q", tc.session, got, tc.wantParent)
+		}
+	}
+}

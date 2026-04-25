@@ -1131,15 +1131,16 @@ ON CONFLICT(session_name) DO UPDATE SET
 }
 
 // UpsertStatusIfNotTerminal upserts the state for sessionName only when the
-// current state is not already a terminal state (finished, interrupted, or
-// deleted) and the session has not yet been ended (ended_at IS NULL). Returns
+// current state is not already a terminal state (error, finished, interrupted,
+// or deleted) and the session has not yet been ended (ended_at IS NULL). Returns
 // (true, nil) if the update was applied, (false, nil) if the session was
 // already in a terminal state, has been ended, or did not exist, or
 // (false, err) on a database error.
 //
 // This is used by the pane-died hook to transition active sessions to
-// "interrupted" without clobbering a clean "finished" that was written first,
-// and without acting on sessions that have already been ended by cleanup.
+// "interrupted" without clobbering a clean "finished" or an "error" state
+// written directly by the sidecar on startup failure, and without acting on
+// sessions that have already been ended by cleanup.
 func (d *DB) UpsertStatusIfNotTerminal(sessionName, state string) (bool, error) {
 	// Snapshot the current state before the write so that the advisory
 	// transition check (below) sees the from-state rather than the newly
@@ -1151,7 +1152,7 @@ UPDATE agent_status
 SET state = ?, last_seen = ?
 WHERE session_name = ?
   AND ended_at IS NULL
-  AND state NOT IN ('finished', 'interrupted', 'deleted')`
+  AND state NOT IN ('error', 'finished', 'interrupted', 'deleted')`
 	res, err := d.conn.Exec(q, state, now, sessionName)
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status if not terminal: %w", err)
@@ -1179,11 +1180,14 @@ WHERE session_name = ?
 // exit means the process was killed or crashed, so even a prior "finished" that
 // the plugin wrote should be corrected to "interrupted".
 //
+// "error" is left intact — a startup failure that wrote "error" directly (via
+// writeStartupError in sidecar.go) must not be overwritten to "interrupted" by
+// the pane-died hook, since "error" is the correct terminal state in that case.
 // "deleted" is still left intact — a deleted session should not be resurrected.
 // "interrupted" is also left alone to avoid a no-op double-write.
 //
 // Returns (true, nil) if the update was applied, (false, nil) if the row did
-// not exist, was already interrupted or deleted, or has ended_at set.
+// not exist, was already error/interrupted/deleted, or has ended_at set.
 func (d *DB) UpsertStatusInterruptedOverrideFinished(sessionName string) (bool, error) {
 	// Snapshot the current state before the write so that the advisory
 	// transition check (below) sees the from-state rather than the newly
@@ -1195,7 +1199,7 @@ UPDATE agent_status
 SET state = 'interrupted', last_seen = ?
 WHERE session_name = ?
   AND ended_at IS NULL
-  AND state NOT IN ('interrupted', 'deleted')`
+  AND state NOT IN ('error', 'interrupted', 'deleted')`
 	res, err := d.conn.Exec(q, now, sessionName)
 	if err != nil {
 		return false, fmt.Errorf("db: upsert status interrupted override finished: %w", err)

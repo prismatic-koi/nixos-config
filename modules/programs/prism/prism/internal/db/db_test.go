@@ -618,6 +618,23 @@ func TestUpsertStatusIfNotTerminal(t *testing.T) {
 	if sEnded.State != "active" {
 		t.Errorf("State after ended no-op: got %q, want \"active\" (unchanged)", sEnded.State)
 	}
+
+	// Should be a no-op when already in "error" (terminal state — startup failure).
+	// The pane-died hook must not overwrite a startup-failure "error" with "interrupted".
+	if err := d.UpsertStatus("repo@errored", "repo", "/code/repo/errored", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (error): %v", err)
+	}
+	updated7, err := d.UpsertStatusIfNotTerminal("repo@errored", "interrupted")
+	if err != nil {
+		t.Fatalf("UpsertStatusIfNotTerminal (error): %v", err)
+	}
+	if updated7 {
+		t.Error("UpsertStatusIfNotTerminal (error): got updated=true, want false (no-op — error is terminal)")
+	}
+	sErrored, _ := d.CurrentStatus("repo@errored")
+	if sErrored.State != "error" {
+		t.Errorf("State after error no-op: got %q, want \"error\" (must not be overwritten)", sErrored.State)
+	}
 }
 
 // TestUpsertStatusInterruptedOverrideFinished verifies that the method
@@ -702,6 +719,24 @@ func TestUpsertStatusInterruptedOverrideFinished(t *testing.T) {
 	}
 	if updated6 {
 		t.Error("UpsertStatusInterruptedOverrideFinished (nonexistent): got updated=true, want false (no-op)")
+	}
+
+	// "error" should be a no-op — the pane-died hook must not overwrite a startup-
+	// failure "error" with "interrupted". writeStartupError sets StateError
+	// directly before the sidecar exits; the hook must leave it intact.
+	if err := d.UpsertStatus("repo@errored", "repo", "/code/repo/errored", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus (error): %v", err)
+	}
+	updated7, err := d.UpsertStatusInterruptedOverrideFinished("repo@errored")
+	if err != nil {
+		t.Fatalf("UpsertStatusInterruptedOverrideFinished (error): %v", err)
+	}
+	if updated7 {
+		t.Error("UpsertStatusInterruptedOverrideFinished (error): got updated=true, want false (no-op — error is terminal)")
+	}
+	sErr, _ := d.CurrentStatus("repo@errored")
+	if sErr.State != "error" {
+		t.Errorf("State after error no-op: got %q, want \"error\" (pane-died must not overwrite startup-failure error)", sErr.State)
 	}
 }
 
@@ -2259,7 +2294,7 @@ func TestCheckTransition_SameState(t *testing.T) {
 }
 
 // TestCheckTransition_InvalidTransition verifies that a genuinely invalid
-// transition (e.g. idle → error, idle → finished) still logs a warning to
+// transition (e.g. idle → finished) still logs a warning to
 // stderr after the same-state early-return fix is in place.
 func TestCheckTransition_InvalidTransition(t *testing.T) {
 	// "error → active" is valid per ValidTransitions; use only pairs that are
@@ -2268,7 +2303,6 @@ func TestCheckTransition_InvalidTransition(t *testing.T) {
 		from string
 		to   string
 	}{
-		{"idle", "error"},
 		{"idle", "finished"},
 		{"deleted", "active"},
 		{"idle", "waiting"},

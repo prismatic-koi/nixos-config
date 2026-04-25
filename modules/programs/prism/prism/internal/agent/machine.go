@@ -11,6 +11,9 @@ import "fmt"
 //     session.created fires active in the plugin).
 //   - idle → interrupted: pane-died before the session was ever active (rare but
 //     possible if the opencode process crashes before session.created fires).
+//   - idle → error: container startup failure (WaitHealthy timeout or CreateSession
+//     failure) before the session became active. The sidecar writes error directly
+//     to avoid relying on the pane-died tmux hook for state cleanup.
 //   - finished → interrupted: explicitly allowed for the pane-died hook when the
 //     pane exits with a non-zero code — a crash overrides a cleanly-written
 //     "finished" (see UpsertStatusInterruptedOverrideFinished).
@@ -29,6 +32,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 	StateIdle: {
 		StateActive:      true,
 		StateInterrupted: true,
+		StateError:       true, // container startup failure before session.created
 		StateDeleted:     true,
 	},
 	StateActive: {
