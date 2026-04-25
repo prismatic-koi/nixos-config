@@ -659,6 +659,15 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				s.cfg.SessionName, url, startupTimeout)
 			log.Printf("sidecar: startup-connect timeout fired: %v", startupErr)
 			s.writeStartupError(startupErr)
+			// writeStartupError notifies the parent worker for review-agent sessions.
+			// For non-review-agent (worker) sessions, also notify the coordinator so
+			// the coordinator learns the worker is dead — symmetric to the finished
+			// notification path (notifyCoordinator is suppressed for review agents
+			// and self-notifications internally). This satisfies the routing requirement
+			// from #1022: "worker agents notify the coordinator."
+			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB) {
+				go s.notifyCoordinator()
+			}
 			sseCancel()
 		}()
 	}

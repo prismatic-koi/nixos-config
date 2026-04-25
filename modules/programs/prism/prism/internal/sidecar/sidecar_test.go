@@ -8472,3 +8472,74 @@ func TestStartupConnectTimeout_ErrorNotOverwrittenByShutdown(t *testing.T) {
 		t.Errorf("state = %q after Shutdown post-startup-timeout, want %q — Shutdown must not overwrite startup error", state, agent.StateError)
 	}
 }
+
+// TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator verifies that when
+// a non-review-agent (worker) session hits the startup-connect timeout, the
+// coordinator receives a notification — satisfying the "worker agents notify the
+// coordinator" routing requirement from #1022. (Review-agent notification is
+// already covered by TestStartupConnectTimeout_ReviewAgentNotifiesParent.)
+func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-worker-startup-fail"
+
+	// Set up a coordinator with an HTTP server so we can detect notifications.
+	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	// Create a worker-agent sidecar (non-review, no "~review" in session name).
+	cfg := Config{
+		SessionName:           "test-repo@feature",
+		Repo:                  "test-repo",
+		Worktree:              "/tmp/test-worker-worktree",
+		OpencodeURL:           "http://localhost:19996",
+		DB:                    d,
+		Clock:                 newTestClock(),
+		Harness:               &blockingHarness{},
+		HTTPClient:            srv.Client(),
+		StartupConnectTimeout: timeout,
+		// Container is nil — bwrap mode.
+	}
+	sc := New(cfg)
+
+	// Seed the worker row.
+	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- sc.Run(ctx)
+	}()
+
+	select {
+	case <-done:
+		// Expected: timeout fired.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not exit after startup-connect timeout in worker-agent mode")
+	}
+
+	// StateError must be written.
+	state := getState(t, d, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("state = %q, want %q", state, agent.StateError)
+	}
+
+	// The coordinator must receive a notification. Wait for async delivery.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected coordinator notification for worker-agent startup-connect timeout, got none")
+	}
+	if msg.FromSession != "test-repo@feature" {
+		t.Errorf("from_session = %q, want %q", msg.FromSession, "test-repo@feature")
+	}
+
+	if *promptCalls < 1 {
+		t.Errorf("coordinator POST calls = %d, want >= 1", *promptCalls)
+	}
+}
