@@ -23,8 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -77,7 +79,10 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		}
 	}
 
-	// Look up instance_id for the calling session.
+	// Look up instance_id for the calling session. When no instance_id is
+	// registered (e.g. a coordinator session opened outside of prism switch,
+	// which is the common case for @main sessions), mint one on the fly and
+	// write it to the DB so the rest of the merge flow proceeds normally.
 	var instanceID string
 	if callerSession != "" {
 		status, statusErr := d.CurrentStatus(callerSession)
@@ -89,7 +94,58 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		}
 	}
 	if instanceID == "" {
-		return fmt.Errorf("prism merge: cannot determine instance_id for session %q\nhint: ensure the coordinator session is registered in prism.db", callerSession)
+		// Guard: if we have no session identity at all, we cannot mint a
+		// meaningful instance_id — fail with a clear message rather than
+		// creating a garbage DB row keyed on an empty session name.
+		if callerSession == "" {
+			return fmt.Errorf("prism merge: cannot determine calling session — run from inside a prism tmux session or set PRISM_SESSION_NAME")
+		}
+
+		// Determine worktree and repo for the on-the-fly registration.
+		// Prefer the value already stored in agent_status (if the row exists
+		// with a non-empty worktree); fall back to the process's CWD.
+		worktree, _ := os.Getwd()
+		// Re-query: the status row may already exist with a worktree.
+		if existing, _ := d.CurrentStatus(callerSession); existing != nil && existing.Worktree != "" {
+			worktree = existing.Worktree
+		}
+		repo := deriveRepo(worktree)
+		if repo == "" {
+			// Not inside a bare-repo worktree — derive from the session name.
+			if idx := strings.Index(callerSession, "@"); idx > 0 {
+				repo = callerSession[:idx]
+			}
+		}
+
+		minted := uuid.New().String()
+		// Ensure the agent_status row exists before writing instance_id.
+		if upsertErr := d.UpsertStatus(callerSession, repo, worktree, "idle", nil, nil); upsertErr != nil {
+			return fmt.Errorf("prism merge: register session %q: %w", callerSession, upsertErr)
+		}
+		// Clear any stale ended_at so the session is visible as active in the
+		// dashboard and in ended_at IS NULL queries. This mirrors the
+		// tmux-session-start handler (event.go:ClearEnded) which does the same
+		// immediately after UpsertStatus, and covers the case where the session
+		// was previously ended but has been re-opened without prism switch.
+		if clearErr := d.ClearEnded(callerSession); clearErr != nil {
+			fmt.Fprintf(os.Stderr, "prism merge: clear ended for %q: %v\n", callerSession, clearErr)
+		}
+		if setErr := d.SetInstanceID(callerSession, minted); setErr != nil {
+			return fmt.Errorf("prism merge: set instance_id for session %q: %w", callerSession, setErr)
+		}
+		// Insert a sessions row so the incarnation is fully registered
+		// (idempotent: INSERT OR IGNORE).
+		if insErr := d.InsertSession(db.Session{
+			InstanceID:  minted,
+			SessionName: callerSession,
+			Repo:        repo,
+			Worktree:    worktree,
+		}); insErr != nil {
+			// Non-fatal: log and continue. The instance_id is already written
+			// to agent_status, which is sufficient for EnqueueMerge.
+			fmt.Fprintf(os.Stderr, "prism merge: insert session row for %q: %v\n", callerSession, insErr)
+		}
+		instanceID = minted
 	}
 
 	sessionName := callerSession
