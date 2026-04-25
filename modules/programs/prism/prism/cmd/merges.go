@@ -221,50 +221,68 @@ func resolveCallerIdentity(callerSession string, d *db.DB) (instanceID, sessionN
 // renderMergesList renders a tabular view of merge queue entries.
 func renderMergesList(merges []db.PendingMerge, filter string) error {
 	if len(merges) == 0 {
-		switch filter {
-		case "failed":
-			fmt.Println("no failed merge queue entries")
-		case "abandoned":
-			fmt.Println("no abandoned merge queue entries from previous coordinator sessions")
-		case "all":
-			fmt.Println("no merge queue entries in the last 7 days")
-		default:
-			fmt.Println("merge queue is empty")
-		}
+		fmt.Println(emptyMergesMessage(filter))
 		return nil
 	}
 
 	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
-	now := time.Now()
 
-	const (
-		wPos     = 5
-		wPR      = 6
-		wTitle   = 40
-		wStatus  = 11
-		wQueued  = 10
-		wChecked = 10
-		wError   = 40
-	)
+	header, rows := formatMergesRows(merges, time.Now())
 
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
-		wPos, "POS",
-		wPR, "PR",
-		wTitle, "TITLE",
-		wStatus, "STATUS",
-		wQueued, "QUEUED",
-		wChecked, "CHECKED",
-		"ERROR",
-	)
 	fmt.Println(styleHeader.Render(header))
 	fmt.Println(styleDim.Render(strings.Repeat("─", len(header)+5)))
+	for _, row := range rows {
+		fmt.Println(row)
+	}
+	fmt.Fprintln(os.Stdout)
+	return nil
+}
 
-	for _, m := range merges {
-		posStr := fmt.Sprintf("%d", m.QueuePosition)
-		if len(posStr) > wPos {
-			posStr = posStr[:wPos]
-		}
+// emptyMergesMessage returns the empty-state message for the given filter.
+func emptyMergesMessage(filter string) string {
+	switch filter {
+	case "failed":
+		return "no failed merge queue entries"
+	case "abandoned":
+		return "no abandoned merge queue entries from previous coordinator sessions"
+	case "all":
+		return "no merge queue entries in the last 7 days"
+	default:
+		return "merge queue is empty"
+	}
+}
+
+// mergesColumnWidths defines the column widths for the merges table. Exposed
+// as a package-level block so tests can refer to the same values.
+const (
+	mergesWPos     = 5
+	mergesWPR      = 6
+	mergesWTitle   = 40
+	mergesWStatus  = 11
+	mergesWQueued  = 10
+	mergesWChecked = 10
+	mergesWError   = 40
+)
+
+// formatMergesRows builds the header line and one formatted line per merge
+// queue row. POS is the 1-based rank of the row in the (already FIFO-sorted)
+// input slice — not the raw queue_position timestamp. The header and rows are
+// returned as strings so tests can assert on them without capturing stdout.
+func formatMergesRows(merges []db.PendingMerge, now time.Time) (header string, rows []string) {
+	header = fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
+		mergesWPos, "POS",
+		mergesWPR, "PR",
+		mergesWTitle, "TITLE",
+		mergesWStatus, "STATUS",
+		mergesWQueued, "QUEUED",
+		mergesWChecked, "CHECKED",
+		"ERROR",
+	)
+
+	rows = make([]string, 0, len(merges))
+	for i, m := range merges {
+		posStr := fmt.Sprintf("%d", i+1)
 		prStr := fmt.Sprintf("#%d", m.PR)
 		titleStr := "—"
 		if m.Title != nil && *m.Title != "" {
@@ -279,24 +297,23 @@ func renderMergesList(merges []db.PendingMerge, filter string) error {
 		if m.Error != nil {
 			errStr = *m.Error
 		}
-		if len(errStr) > wError {
-			errStr = errStr[:wError-3] + "..."
+		if len(errStr) > mergesWError {
+			errStr = errStr[:mergesWError-3] + "..."
 		}
 
-		statusStyled := mergeStatusStyle(m.Status).Render(fmt.Sprintf("%-*s", wStatus, truncateStr(m.Status, wStatus)))
+		statusStyled := mergeStatusStyle(m.Status).Render(fmt.Sprintf("%-*s", mergesWStatus, truncateStr(m.Status, mergesWStatus)))
 
-		fmt.Printf("%-*s  %-*s  %-*s  %s  %-*s  %-*s  %s\n",
-			wPos, posStr,
-			wPR, prStr,
-			wTitle, truncateStr(titleStr, wTitle),
+		rows = append(rows, fmt.Sprintf("%-*s  %-*s  %-*s  %s  %-*s  %-*s  %s",
+			mergesWPos, posStr,
+			mergesWPR, prStr,
+			mergesWTitle, truncateStr(titleStr, mergesWTitle),
 			statusStyled,
-			wQueued, queuedStr,
-			wChecked, checkedStr,
+			mergesWQueued, queuedStr,
+			mergesWChecked, checkedStr,
 			errStr,
-		)
+		))
 	}
-	fmt.Fprintln(os.Stdout)
-	return nil
+	return header, rows
 }
 
 // mergeStatusStyle returns a lipgloss style for a merge status value.
