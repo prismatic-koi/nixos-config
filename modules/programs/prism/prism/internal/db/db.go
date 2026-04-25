@@ -197,6 +197,7 @@ CREATE TABLE IF NOT EXISTS pending_merges (
   instance_id     TEXT NOT NULL,
   queue_position  INTEGER NOT NULL,
   status          TEXT NOT NULL,
+  title           TEXT,
   error           TEXT,
   queued_at       INTEGER NOT NULL,
   last_checked_at INTEGER,
@@ -2824,6 +2825,7 @@ type PendingMerge struct {
 	InstanceID    string
 	QueuePosition int64
 	Status        string // 'watching' | 'merged' | 'failed' | 'cancelled' | 'abandoned'
+	Title         *string
 	Error         *string
 	QueuedAt      time.Time
 	LastCheckedAt *time.Time
@@ -2836,8 +2838,10 @@ type PendingMerge struct {
 // insertion order). If a non-terminal row already exists for pr, the existing
 // row is returned unchanged (idempotent success). A terminal row (merged,
 // failed, cancelled, abandoned) is treated as gone — a fresh row is inserted.
+// title is the PR title stored for display in `prism merges list`; pass nil
+// if the title is not known at enqueue time.
 // Returns the resulting row (existing or newly inserted).
-func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string) (*PendingMerge, error) {
+func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string, title *string) (*PendingMerge, error) {
 	// Check for an existing non-terminal row.
 	existing, err := d.PendingMergeByPR(pr)
 	if err != nil {
@@ -2850,19 +2854,20 @@ func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string) (*PendingMerge
 
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO pending_merges (pr, session_name, instance_id, queue_position, status, queued_at)
-VALUES (?, ?, ?, ?, 'watching', ?)
+INSERT INTO pending_merges (pr, session_name, instance_id, queue_position, status, title, queued_at)
+VALUES (?, ?, ?, ?, 'watching', ?, ?)
 ON CONFLICT(pr) DO UPDATE SET
   session_name    = excluded.session_name,
   instance_id     = excluded.instance_id,
   queue_position  = excluded.queue_position,
   status          = 'watching',
+  title           = excluded.title,
   error           = NULL,
   queued_at       = excluded.queued_at,
   last_checked_at = NULL,
   merged_at       = NULL,
   ended_at        = NULL`
-	if _, err := d.conn.Exec(q, pr, sessionName, instanceID, now, now); err != nil {
+	if _, err := d.conn.Exec(q, pr, sessionName, instanceID, now, title, now); err != nil {
 		return nil, fmt.Errorf("db: enqueue merge: insert: %w", err)
 	}
 	row, err := d.PendingMergeByPR(pr)
@@ -2884,7 +2889,7 @@ func isMergeTerminal(status string) bool {
 // PendingMergeByPR returns the pending_merges row for pr, or nil if not found.
 func (d *DB) PendingMergeByPR(pr int) (*PendingMerge, error) {
 	const q = `
-SELECT pr, session_name, instance_id, queue_position, status, error,
+SELECT pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
  WHERE pr = ?`
@@ -2904,7 +2909,7 @@ SELECT pr, session_name, instance_id, queue_position, status, error,
 // is empty.
 func (d *DB) MergeQueueHead(instanceID string) (*PendingMerge, error) {
 	const q = `
-SELECT pr, session_name, instance_id, queue_position, status, error,
+SELECT pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
  WHERE instance_id = ? AND status = 'watching'
@@ -3019,21 +3024,21 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 
 	switch filter {
 	case "failed":
-		q = `SELECT pr, session_name, instance_id, queue_position, status, error,
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND status = 'failed'
 		      ORDER BY queue_position ASC`
 		args = []any{instanceID}
 	case "abandoned":
-		q = `SELECT pr, session_name, instance_id, queue_position, status, error,
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE session_name = ? AND instance_id != ? AND status = 'abandoned'
 		      ORDER BY queue_position ASC`
 		args = []any{sessionName, instanceID}
 	case "all":
-		q = `SELECT pr, session_name, instance_id, queue_position, status, error,
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND status != 'abandoned' AND queued_at >= ?
@@ -3041,7 +3046,7 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		args = []any{instanceID, sevenDaysAgo}
 	default:
 		// Default: only watching rows for this instanceID.
-		q = `SELECT pr, session_name, instance_id, queue_position, status, error,
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND status = 'watching'
@@ -3073,14 +3078,14 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 func scanPendingMerge(row *sql.Row) (*PendingMerge, error) {
 	var m PendingMerge
 	var (
-		queuedAtMs       int64
-		lastCheckedAtMs  *int64
-		mergedAtMs       *int64
-		endedAtMs        *int64
+		queuedAtMs      int64
+		lastCheckedAtMs *int64
+		mergedAtMs      *int64
+		endedAtMs       *int64
 	)
 	err := row.Scan(
 		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
-		&m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
+		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
 	)
 	if err != nil {
 		return nil, err
@@ -3112,7 +3117,7 @@ func scanPendingMergeRow(rows *sql.Rows) (PendingMerge, error) {
 	)
 	err := rows.Scan(
 		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
-		&m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
+		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
 	)
 	if err != nil {
 		return m, err

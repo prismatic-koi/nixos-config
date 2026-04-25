@@ -190,15 +190,17 @@ func renderMergesList(merges []db.PendingMerge, filter string) error {
 	const (
 		wPos     = 5
 		wPR      = 6
+		wTitle   = 40
 		wStatus  = 11
 		wQueued  = 10
 		wChecked = 10
 		wError   = 40
 	)
 
-	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %s",
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %-*s  %s",
 		wPos, "POS",
 		wPR, "PR",
+		wTitle, "TITLE",
 		wStatus, "STATUS",
 		wQueued, "QUEUED",
 		wChecked, "CHECKED",
@@ -213,6 +215,10 @@ func renderMergesList(merges []db.PendingMerge, filter string) error {
 			posStr = posStr[:wPos]
 		}
 		prStr := fmt.Sprintf("#%d", m.PR)
+		titleStr := "—"
+		if m.Title != nil && *m.Title != "" {
+			titleStr = *m.Title
+		}
 		queuedStr := formatAge(now, m.QueuedAt)
 		checkedStr := "—"
 		if m.LastCheckedAt != nil {
@@ -228,9 +234,10 @@ func renderMergesList(merges []db.PendingMerge, filter string) error {
 
 		statusStyled := mergeStatusStyle(m.Status).Render(fmt.Sprintf("%-*s", wStatus, truncateStr(m.Status, wStatus)))
 
-		fmt.Printf("%-*s  %-*s  %s  %-*s  %-*s  %s\n",
+		fmt.Printf("%-*s  %-*s  %-*s  %s  %-*s  %-*s  %s\n",
 			wPos, posStr,
 			wPR, prStr,
+			wTitle, truncateStr(titleStr, wTitle),
 			statusStyled,
 			wQueued, queuedStr,
 			wChecked, checkedStr,

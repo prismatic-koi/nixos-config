@@ -63,17 +63,17 @@ func TestEnqueueMerge_FIFO(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue PRs in reverse order to ensure FIFO is by queue_position, not PR number.
-	m3, err := d.EnqueueMerge(300, session, instanceID)
+	m3, err := d.EnqueueMerge(300, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("EnqueueMerge(300): %v", err)
 	}
 	time.Sleep(time.Millisecond) // ensure distinct timestamps
-	m2, err := d.EnqueueMerge(200, session, instanceID)
+	m2, err := d.EnqueueMerge(200, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("EnqueueMerge(200): %v", err)
 	}
 	time.Sleep(time.Millisecond)
-	m1, err := d.EnqueueMerge(100, session, instanceID)
+	m1, err := d.EnqueueMerge(100, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("EnqueueMerge(100): %v", err)
 	}
@@ -104,12 +104,12 @@ func TestEnqueueMerge_Idempotent(t *testing.T) {
 	instanceID := "inst-idem"
 	session := "myrepo@main"
 
-	m1, err := d.EnqueueMerge(42, session, instanceID)
+	m1, err := d.EnqueueMerge(42, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("first EnqueueMerge: %v", err)
 	}
 
-	m2, err := d.EnqueueMerge(42, session, instanceID)
+	m2, err := d.EnqueueMerge(42, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("second EnqueueMerge: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestEnqueueMerge_TerminalRowReplaceable(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue and then fail.
-	if _, err := d.EnqueueMerge(99, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(99, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 	if err := d.TerminateMerge(99, "failed", "CI failed"); err != nil {
@@ -148,7 +148,7 @@ func TestEnqueueMerge_TerminalRowReplaceable(t *testing.T) {
 	}
 
 	// Re-enqueue — should produce a fresh watching row.
-	m, err := d.EnqueueMerge(99, session, instanceID)
+	m, err := d.EnqueueMerge(99, session, instanceID, nil)
 	if err != nil {
 		t.Fatalf("second EnqueueMerge: %v", err)
 	}
@@ -168,10 +168,10 @@ func TestAbandonWatchingMerges(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue two PRs.
-	if _, err := d.EnqueueMerge(1, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(1, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(1): %v", err)
 	}
-	if _, err := d.EnqueueMerge(2, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(2, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(2): %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestCancelMerge(t *testing.T) {
 	instanceID := "inst-cancel"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(55, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(55, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestCancelMerge(t *testing.T) {
 	}
 
 	// Wrong instanceID returns false.
-	if _, err := d.EnqueueMerge(66, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(66, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(66): %v", err)
 	}
 	cancelled3, err := d.CancelMerge(66, "other-instance")
@@ -267,7 +267,7 @@ func TestMergeQueueHead_ScopedByInstanceID(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue a PR under instance A.
-	if _, err := d.EnqueueMerge(10, session, "inst-A"); err != nil {
+	if _, err := d.EnqueueMerge(10, session, "inst-A", nil); err != nil {
 		t.Fatalf("EnqueueMerge inst-A: %v", err)
 	}
 
@@ -288,13 +288,13 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue 3 PRs. Fail one, leave one watching, cancel one.
-	if _, err := d.EnqueueMerge(1, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(1, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(1): %v", err)
 	}
-	if _, err := d.EnqueueMerge(2, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(2, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(2): %v", err)
 	}
-	if _, err := d.EnqueueMerge(3, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(3, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(3): %v", err)
 	}
 
@@ -344,7 +344,7 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	newInstance := "inst-new"
 
 	// Enqueue under old instance and abandon.
-	if _, err := d.EnqueueMerge(77, session, oldInstance); err != nil {
+	if _, err := d.EnqueueMerge(77, session, oldInstance, nil); err != nil {
 		t.Fatalf("EnqueueMerge(old): %v", err)
 	}
 	if err := d.AbandonWatchingMerges(oldInstance); err != nil {
@@ -352,7 +352,7 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 	}
 
 	// Enqueue under new instance.
-	if _, err := d.EnqueueMerge(88, session, newInstance); err != nil {
+	if _, err := d.EnqueueMerge(88, session, newInstance, nil); err != nil {
 		t.Fatalf("EnqueueMerge(new): %v", err)
 	}
 
@@ -517,7 +517,7 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 	seedCoordinator(t, d, session, instanceID, port, sid)
 
 	// Enqueue PR 100.
-	if _, err := d.EnqueueMerge(100, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(100, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -557,7 +557,7 @@ func TestWatcher_BEHINDLeaveWatching(t *testing.T) {
 	session := "myrepo@main"
 	updateCalled := false
 
-	if _, err := d.EnqueueMerge(200, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(200, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -599,7 +599,7 @@ func TestWatcher_DIRTYTransitionToFailed(t *testing.T) {
 	sid := "opencode-sid-dirty"
 	seedCoordinator(t, d, session, instanceID, port, sid)
 
-	if _, err := d.EnqueueMerge(300, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(300, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -635,7 +635,7 @@ func TestWatcher_BLOCKEDWithCIFailure(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	seedCoordinator(t, d, session, instanceID, port, "sid-ci")
 
-	if _, err := d.EnqueueMerge(400, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(400, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -672,7 +672,7 @@ func TestWatcher_BLOCKEDWithoutCIFailureStaysWatching(t *testing.T) {
 	instanceID := "inst-blocked-noci"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(500, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(500, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -705,7 +705,7 @@ func TestWatcher_UNSTABLEStaysWatching(t *testing.T) {
 	instanceID := "inst-unstable"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(600, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(600, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -734,7 +734,7 @@ func TestWatcher_UNKNOWNStaysWatching(t *testing.T) {
 	instanceID := "inst-unknown"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(700, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(700, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -764,7 +764,7 @@ func TestWatcher_BranchMovedRaceRetries(t *testing.T) {
 	instanceID := "inst-race"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(800, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(800, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -811,7 +811,7 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	seedCoordinator(t, d, session, instanceID, port, "sid-closed")
 
-	if _, err := d.EnqueueMerge(900, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(900, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -840,7 +840,7 @@ func TestWatcher_Cancellation(t *testing.T) {
 	instanceID := "inst-canc"
 	session := "myrepo@main"
 
-	if _, err := d.EnqueueMerge(111, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(111, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
@@ -870,11 +870,11 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	session := "myrepo@main"
 
 	// Enqueue two PRs.
-	if _, err := d.EnqueueMerge(10, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(10, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(10): %v", err)
 	}
 	time.Sleep(time.Millisecond)
-	if _, err := d.EnqueueMerge(20, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(20, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(20): %v", err)
 	}
 
@@ -1004,7 +1004,7 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	seedCoordinator(t, d, session, instanceID, port, "sid-notif")
 
-	if _, err := d.EnqueueMerge(123, session, instanceID); err != nil {
+	if _, err := d.EnqueueMerge(123, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 

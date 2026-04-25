@@ -92,23 +92,33 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: cannot determine instance_id for session %q\nhint: ensure the coordinator session is registered in prism.db", callerSession)
 	}
 
-	// Pre-flight: verify the PR exists and is open.
-	if err := preflight(pr); err != nil {
-		return fmt.Errorf("prism merge: %w", err)
-	}
-
 	sessionName := callerSession
 	if sessionName == "" {
 		sessionName = "unknown"
 	}
 
-	// Enqueue (idempotent).
-	row, err := d.EnqueueMerge(pr, sessionName, instanceID)
+	// Pre-flight: verify the PR exists and is open, and fetch its title.
+	// Timeout is kept tight (5s) so the overall command returns well within
+	// the 2-second AC when the GitHub API responds promptly.
+	title, err := preflight(pr)
+	if err != nil {
+		return fmt.Errorf("prism merge: %w", err)
+	}
+
+	// Enqueue (idempotent). Pass title for `prism merges list` display.
+	var titlePtr *string
+	if title != "" {
+		titlePtr = &title
+	}
+	row, err := d.EnqueueMerge(pr, sessionName, instanceID, titlePtr)
 	if err != nil {
 		return fmt.Errorf("prism merge: %w", err)
 	}
 
 	fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", pr, row.QueuePosition, row.Status)
+	if title != "" {
+		fmt.Printf("  %s\n", title)
+	}
 	fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
 	fmt.Println("You will be notified when it merges or fails.")
 	fmt.Println()
@@ -116,15 +126,17 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 	return nil
 }
 
-// preflight calls `gh pr view <pr> --json state,number` to verify the PR
-// exists and is open. Returns an error if the PR is closed, merged, or not found.
-func preflight(pr int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+// preflight calls `gh pr view <pr> --json state,number,title` to verify the PR
+// exists and is open. Returns (title, nil) on success. Returns ("", err) if the
+// PR is closed, merged, or not found.
+// Timeout is 5s — callers should complete within ~2s for typical API latency.
+func preflight(pr int) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
 		"--json", "state,number,title").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(out)))
 	}
 	var info struct {
 		State  string `json:"state"`
@@ -132,20 +144,19 @@ func preflight(pr int) error {
 		Title  string `json:"title"`
 	}
 	if jsonErr := json.Unmarshal(out, &info); jsonErr != nil {
-		return fmt.Errorf("parse gh pr view output: %w", jsonErr)
+		return "", fmt.Errorf("parse gh pr view output: %w", jsonErr)
 	}
 	switch strings.ToUpper(info.State) {
 	case "OPEN":
 		// Good.
 	case "CLOSED":
-		return fmt.Errorf("PR #%d is already closed — cannot enqueue", pr)
+		return "", fmt.Errorf("PR #%d is already closed — cannot enqueue", pr)
 	case "MERGED":
-		return fmt.Errorf("PR #%d is already merged — cannot enqueue", pr)
+		return "", fmt.Errorf("PR #%d is already merged — cannot enqueue", pr)
 	default:
-		return fmt.Errorf("PR #%d has unexpected state %q — cannot enqueue", pr, info.State)
+		return "", fmt.Errorf("PR #%d has unexpected state %q — cannot enqueue", pr, info.State)
 	}
 
-	// Also print PR title for confirmation.
 	fmt.Fprintf(os.Stderr, "prism merge: enqueueing PR #%d: %s\n", pr, info.Title)
-	return nil
+	return info.Title, nil
 }
