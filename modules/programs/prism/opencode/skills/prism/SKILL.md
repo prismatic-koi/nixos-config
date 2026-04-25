@@ -180,6 +180,57 @@ review to pass. If ANY returns `<verdict>FAIL</verdict>`, fix all blocking
 issues, push, and re-run all five. After 3 full cycles without convergence,
 stop and escalate — do not run a 4th cycle.
 
+## Merge queue (coordinators only)
+
+> **Coordinators only.** Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` denied in their bash deny lists. If you are not a coordinator agent, skip this section.
+
+The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 45 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
+
+A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watching` → `merged` / `failed` / `cancelled` / `abandoned`. See issue #783 for the full state machine.
+
+### Command surface
+
+| Command | Description |
+|---|---|
+| `prism merge <pr>` | Enqueue a PR. Returns within ~2 seconds. Idempotent — safe to call on an already-queued PR. |
+| `prism merges` | Show the queue scoped to the current coordinator session (alias for `prism merges list`). |
+| `prism merges list` | Same as above. |
+| `prism merges list --failed` | Show only failed entries. |
+| `prism merges list --abandoned` | Show entries left behind by a previous coordinator incarnation. |
+| `prism merges list --all` | Include terminal-state history (last 7 days). |
+| `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
+
+### Notification contract
+
+When a queued PR reaches a terminal outcome, the watcher delivers a bus notification to the coordinator session. The text is:
+
+| Outcome | Notification text |
+|---|---|
+| Merged (with archive path) | ``PR #N merged. Archive: <archive_path>. Run `git pull` in @main and `prism cleanup` the worker session.`` |
+| Merged (no archive path yet) | ``PR #N merged. Run `git pull` in @main and `prism cleanup` the worker session.`` |
+| Merge conflicts | `PR #N has merge conflicts — worker rebase needed` |
+| CI failure | `PR #N CI failed — needs worker fix` |
+| Closed without merging | `PR #N was closed without merging — removed from queue` |
+| Other merge failure | `PR #N merge failed: <error>` |
+| Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
+
+### Action table
+
+When a merge-queue notification arrives, treat it as high-priority (same as a worker finished-notification):
+
+| Notification | Action |
+|---|---|
+| `merged` | `git pull` in @main, then `prism cleanup --yes --session <worker-session>` |
+| `merge conflicts` | `prism prompt <worker-session>` asking it to rebase onto main and push; re-enqueue with `prism merge <pr>` after the worker finishes |
+| `CI failed` | `prism prompt <worker-session>` asking it to investigate the failed check, fix, and push; re-enqueue with `prism merge <pr>` |
+| `closed without merging` | Usually nothing — the PR was closed deliberately. Investigate if unexpected. |
+| `merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
+| `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
+
+### Why workers cannot invoke it
+
+Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` in their bash deny lists. Only coordinator agents have it allowed. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around the deny list.
+
 ## Example: reviewing a PR (manual spawn)
 
 ```bash
