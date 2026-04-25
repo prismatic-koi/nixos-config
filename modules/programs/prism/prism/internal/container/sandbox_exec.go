@@ -35,13 +35,12 @@ type sandboxExecIsolator struct {
 	// name is the stable session identifier (used for log messages).
 	name string
 
-	// mu guards cmd. The sandbox-exec process for a session is launched by
-	// agent-run via syscall.Exec, so this Isolator's Run path is unused in
-	// the production flow — it exists to satisfy the Isolator interface.
-	mu sync.Mutex
-	// exited and exitCode track terminal state for HasExited(). They are
-	// unused in the production flow (agent-run replaces the current process
-	// via syscall.Exec) but kept for interface parity and future tests.
+	// mu guards exited/exitCode. The sandbox-exec process for a session is
+	// launched by agent-run via syscall.Exec, so this Isolator's Run path is
+	// unused in the production flow — these fields exist solely to satisfy
+	// the Isolator interface and to give future tests a place to record
+	// terminal state.
+	mu       sync.Mutex
 	exited   bool
 	exitCode int
 }
@@ -273,5 +272,3 @@ func MinimalIsolatedExecEnv(hostEnv []string) []string {
 	}
 	return out
 }
-
-
