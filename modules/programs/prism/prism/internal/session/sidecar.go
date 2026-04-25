@@ -174,8 +174,8 @@ type StartSidecarOpts struct {
 	ContainerMode bool
 	// IsolationMode is the resolved isolation mode for this session. When set,
 	// it is passed to the sidecar via --isolation-mode so the sidecar can
-	// branch on it (e.g. skip container creation for "bwrap" and "host").
-	// Valid values: "podman", "bwrap", "host".
+	// branch on it (e.g. skip container creation for "bwrap", "sandbox-exec",
+	// and "host"). Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	IsolationMode string
 	// AgentRole is "worker" or "coordinator". Passed via --agent-role when in
 	// container mode to select the appropriate credential set.
@@ -271,8 +271,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	}
 
 	// --container enables the full container lifecycle (podman create/stop/rm).
-	// For bwrap mode the sidecar is started but --container is NOT passed —
-	// bwrap's process lifecycle is owned by the tmux pane (prism agent-run).
+	// For bwrap and sandbox-exec modes the sidecar is started but --container
+	// is NOT passed — the sandbox's process lifecycle is owned by the tmux pane
+	// (prism agent-run).
 	if opts.ContainerMode {
 		cmdArgs = append(cmdArgs, "--container")
 		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
@@ -288,10 +289,10 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 		if opts.ConfigContent != "" {
 			cmdArgs = append(cmdArgs, "--config-content", opts.ConfigContent)
 		}
-	} else if opts.IsolationMode == "bwrap" {
-		// bwrap mode: pass --port and common options but not --container.
-		// The sidecar sets up the host-API socket and harness but does not
-		// create a container.
+	} else if opts.IsolationMode == "bwrap" || opts.IsolationMode == "sandbox-exec" {
+		// bwrap and sandbox-exec modes: pass --port and common options but not
+		// --container. The sidecar sets up the host-API socket and harness but
+		// does not create a container.
 		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
 		if opts.AgentRole != "" {
 			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)

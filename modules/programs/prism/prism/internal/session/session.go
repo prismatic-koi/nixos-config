@@ -78,8 +78,8 @@ type Opts struct {
 	ContainerMode bool
 
 	// IsolationMode is the resolved isolation mode for this session.
-	// Valid values: "podman", "bwrap", "host". When non-empty it overrides
-	// ContainerMode.
+	// Valid values: "podman", "bwrap", "sandbox-exec", "host". When non-empty
+	// it overrides ContainerMode.
 	IsolationMode string
 	// PluginHostPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin. Only used
@@ -249,9 +249,10 @@ func effectiveIsolationMode(opts Opts) string {
 // BuildOpencodeCmd returns the opencode launch command string for the given opts.
 //
 // Isolation mode determines the command:
-//   - "podman": "podman attach --sig-proxy=false <container-name>"
-//   - "bwrap":  "prism agent-run --session <session-name>"
-//   - "host":   direct opencode invocation (legacy behaviour)
+//   - "podman":       "podman attach --sig-proxy=false <container-name>"
+//   - "bwrap":        "prism agent-run --session <session-name>"
+//   - "sandbox-exec": "prism agent-run --session <session-name>"
+//   - "host":         direct opencode invocation (legacy behaviour)
 //
 // For back-compat, ContainerMode=true maps to "podman" when IsolationMode is empty.
 func BuildOpencodeCmd(opts Opts) string {
@@ -275,14 +276,14 @@ func BuildOpencodeCmd(opts Opts) string {
 		// buildReadinessWaitCmd embeds this string in the readiness shell script.
 		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(opts.SessionName))
 
-	case "bwrap":
+	case "bwrap", "sandbox-exec":
 		if opts.SessionName == "" {
 			// Shouldn't happen — fall back to direct opencode command.
 			return buildDirectOpencodeCmd(opts)
 		}
-		// The bwrap sandbox is owned by the tmux pane, not the sidecar.
-		// "prism agent-run" reads the resolved bwrap args from the session
-		// state and execs "bwrap <args...> -- opencode ..." directly.
+		// Both bwrap and sandbox-exec sandboxes are owned by the tmux pane,
+		// not the sidecar. "prism agent-run" reads the session's isolation mode
+		// from the DB and dispatches to the appropriate sandbox invocation.
 		return "prism agent-run --session " + shellQuote(opts.SessionName)
 
 	default: // "host" or any unknown value

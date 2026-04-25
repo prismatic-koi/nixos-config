@@ -258,7 +258,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			if effectiveContainerMode || isolationMode == config.IsolationBwrap || profileFlag != "" {
+			if effectiveContainerMode || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec || profileFlag != "" {
 				return loadErr
 			}
 			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
@@ -288,8 +288,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	// In container/bwrap mode, inject the role-specific opencode.json blob as
-	// the harness config env var so it takes precedence (level 6) over any
+	// In container/bwrap/sandbox-exec mode, inject the role-specific opencode.json
+	// blob as the harness config env var so it takes precedence (level 6) over any
 	// project-level opencode.jsonc. This ensures agent identity is always
 	// determined by Nix config, not by the project file.
 	//
@@ -298,13 +298,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// This must run after worktreePath is known so that DefaultAgent can inspect
 	// the directory name (e.g. "main").
 	//
-	// This block fires for both podman and bwrap isolation modes. Host-mode
-	// sessions skip it because they run opencode directly with the host's real
-	// ~/.config/opencode/opencode.json via xdg.configFile.
+	// This block fires for podman, bwrap, and sandbox-exec isolation modes.
+	// Host-mode sessions skip it because they run opencode directly with the
+	// host's real ~/.config/opencode/opencode.json via xdg.configFile.
 	//
 	// DefaultAgent (not DefaultAgentForSession) is intentional: at spawn time the
 	// session has no DB row yet, so this call ASSIGNS the role rather than reading it.
-	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
+	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec
 	if sandboxed && pf != nil {
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		// Non-worktree paths (effectiveRole == "") use the coordinator config blob
