@@ -2908,18 +2908,25 @@ SELECT pr, session_name, instance_id, queue_position, status, title, error,
 	return m, nil
 }
 
-// MergeQueueHead returns the head of the merge queue for the given instanceID:
-// the watching row with the lowest queue_position. Returns nil when the queue
-// is empty.
-func (d *DB) MergeQueueHead(instanceID string) (*PendingMerge, error) {
+// MergeQueueHead returns the head of the merge queue for the given
+// sessionName: the watching row with the lowest queue_position. Returns nil
+// when the queue is empty.
+//
+// Filtering by session_name rather than instance_id ensures the watcher picks
+// up rows regardless of which instance_id was written at enqueue time (e.g.
+// when prism merge mints a fresh UUID on the fly). Incarnation isolation —
+// preventing stale rows from a previous sidecar from being re-processed — is
+// handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
+// 'abandoned' before the new sidecar starts.
+func (d *DB) MergeQueueHead(sessionName string) (*PendingMerge, error) {
 	const q = `
 SELECT pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
- WHERE instance_id = ? AND status = 'watching'
+ WHERE session_name = ? AND status = 'watching'
  ORDER BY queue_position ASC
  LIMIT 1`
-	row := d.conn.QueryRow(q, instanceID)
+	row := d.conn.QueryRow(q, sessionName)
 	m, err := scanPendingMerge(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

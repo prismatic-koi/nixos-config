@@ -1,7 +1,7 @@
 // Package mergequeue implements the local serial merge queue for prism (#783).
 //
 // The Watcher is a goroutine started by the coordinator's sidecar on init.
-// It polls the head of the pending_merges queue for the sidecar's instance_id
+// It polls the head of the pending_merges queue for the sidecar's session_name
 // and drives PRs through the merge lifecycle using the GitHub CLI:
 //
 //   - CLEAN   → gh pr merge --squash
@@ -16,7 +16,8 @@
 // path, and prompts git pull + prism cleanup.
 //
 // Watcher lifetime equals coordinator session lifetime. On sidecar shutdown,
-// all watching rows for this instance_id are transitioned to 'abandoned'.
+// all watching rows for this instance_id are transitioned to 'abandoned' by
+// AbandonWatchingMerges, preventing a future sidecar from inheriting stale rows.
 package mergequeue
 
 import (
@@ -88,7 +89,7 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
-	head, err := w.db.MergeQueueHead(w.instanceID)
+	head, err := w.db.MergeQueueHead(w.sessionName)
 	if err != nil {
 		log.Printf("[mergequeue] db error reading head: %v", err)
 		return
