@@ -98,12 +98,25 @@ func (s *fakeHostAPIServer) handler() http.Handler {
 	return mux
 }
 
-// startFakeHostAPIServer starts the fake server bound to a unix socket inside
-// t.TempDir() and returns the server, the apiURL string for PRISM_HOST_API,
-// and a teardown function.
+// startFakeHostAPIServer starts the fake server bound to a unix socket and
+// returns the server and the apiURL string for PRISM_HOST_API.
+//
+// The socket path is placed under a short directory (os.MkdirTemp("/tmp", …))
+// rather than t.TempDir() because Darwin's struct sockaddr_un.sun_path is only
+// 104 bytes (vs 108 on Linux), and on macOS — including the Nix sandbox and
+// GitHub Actions runners — t.TempDir() resolves to a long path like
+// /var/folders/…/T/TestName.../NNN/ or /nix/var/nix/builds/nix-…/TestName.../NNN/
+// that easily exceeds 104 bytes for tests with long names. bind(2) then fails
+// with EINVAL ("invalid argument"). Using /tmp/p<rand>/host.sock keeps the
+// path well under the limit on every platform we target.
 func startFakeHostAPIServer(t *testing.T) (*fakeHostAPIServer, string) {
 	t.Helper()
-	sockPath := filepath.Join(t.TempDir(), "host.sock")
+	sockDir, err := os.MkdirTemp("/tmp", "p")
+	if err != nil {
+		t.Fatalf("mkdir short sock dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "host.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("listen unix %s: %v", sockPath, err)
