@@ -214,6 +214,9 @@
         # deny PR merge — merging is a coordinator responsibility, never a worker's
         "gh pr merge" = "deny";
         "gh pr merge *" = "deny";
+        # deny prism merge — enqueuing is a coordinator responsibility (#783)
+        "prism merge" = "deny";
+        "prism merge *" = "deny";
         # file operations that modify
         "mkdir *" = "allow";
         "rm *" = "allow";
@@ -277,6 +280,11 @@
         "prism prompt *" = "allow";
         "prism cleanup *" = "allow";
         "prism pr *" = "allow";
+        # prism merge — local serial merge queue (#783)
+        "prism merge" = "allow";
+        "prism merge *" = "allow";
+        "prism merges" = "allow";
+        "prism merges *" = "allow";
         # prism review is denied — spawns heavy containers, can crash host.
         # Use @review-* Task calls instead.
         "prism review" = "deny";
@@ -456,6 +464,9 @@
         "prism pr *" = "deny";
         "gh pr merge" = "deny";
         "gh pr merge *" = "deny";
+        # prism merge — enqueuing is a coordinator responsibility (#783)
+        "prism merge" = "deny";
+        "prism merge *" = "deny";
         "nixos-rebuild *" = "deny";
         "sudo nixos-rebuild *" = "deny";
         # prism review is the primary async review path for workers (#864).
@@ -727,6 +738,9 @@
                 "prism spawn *" = "deny";
                 "prism pr" = "deny";
                 "prism pr *" = "deny";
+                # prism merge — enqueuing is a coordinator responsibility (#783)
+                "prism merge" = "deny";
+                "prism merge *" = "deny";
                 # prism review is allowed for workers — async model is non-blocking
                 # and concurrency-capped (#864). The bwrap sandbox is the safety net.
               }
@@ -789,6 +803,9 @@
         # prism review recursion prevention (belt-and-suspenders over deny-all)
         "prism review" = "deny";
         "prism review *" = "deny";
+        # prism merge — coordinator-only; review agents must not enqueue (#783)
+        "prism merge" = "deny";
+        "prism merge *" = "deny";
         # Standard read-only file/text operations
         "cat *" = "allow";
         "head *" = "allow";
@@ -897,6 +914,9 @@
         "prism review *" = "deny";
         "prism spawn" = "deny";
         "prism spawn *" = "deny";
+        # prism merge — coordinator-only; review agents must not enqueue (#783)
+        "prism merge" = "deny";
+        "prism merge *" = "deny";
         # Standard read-only file/text operations (mirrors readOnlyBashCommands)
         "cat *" = "allow";
         "head *" = "allow";
@@ -1289,6 +1309,9 @@
                         "prism spawn *" = "deny";
                         "prism pr" = "deny";
                         "prism pr *" = "deny";
+                        # prism merge — enqueuing is a coordinator responsibility (#783)
+                        "prism merge" = "deny";
+                        "prism merge *" = "deny";
                         # prism review denied — recursive review spawning caused OOM (#1002)
                         "prism review" = "deny";
                         "prism review *" = "deny";

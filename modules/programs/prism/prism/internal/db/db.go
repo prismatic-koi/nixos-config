@@ -190,6 +190,21 @@ CREATE INDEX IF NOT EXISTS idx_bus_pending ON bus_messages(to_session, delivered
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_merges (
+  pr              INTEGER PRIMARY KEY,
+  session_name    TEXT NOT NULL,
+  instance_id     TEXT NOT NULL,
+  queue_position  INTEGER NOT NULL,
+  status          TEXT NOT NULL,
+  title           TEXT,
+  error           TEXT,
+  queued_at       INTEGER NOT NULL,
+  last_checked_at INTEGER,
+  merged_at       INTEGER,
+  ended_at        INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -252,6 +267,12 @@ CREATE TABLE IF NOT EXISTS schema_version (
 // via the formatDurationLong defence-in-depth fallback). The migration is
 // idempotent: a second run finds no rows with negative started_at and is a
 // no-op. Fresh databases have no such rows so the migration is trivially safe.
+// v18→v19 adds the pending_merges table for the local serial merge queue
+// (#783). Uses CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS so the
+// migration is idempotent (safe to run twice). Both the declarative schema
+// block and the migration produce identical sqlite_master output on a fresh
+// database — fresh databases have the table from the schema block and skip the
+// CREATE silently.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -294,11 +315,12 @@ func Open(path string) (*DB, error) {
 	}
 
 	// Set schema_version=11 if the table is empty. Fresh databases have all
-	// current columns from the schema above. The v11→v12, v12→v13, v13→v14,
-	// and v14→v15 migrations run immediately below; on a fresh DB they are
-	// effectively no-ops (the index already exists, there are no rows to
-	// backfill, and the column is already named harness_session_id), so
-	// starting at 11 rather than 15 is safe.
+	// current columns from the schema above (including pending_merges). The
+	// v11→v12 through v18→v19 migrations run immediately below; on a fresh DB
+	// they are all effectively no-ops (indexes already exist, no rows to
+	// backfill, columns already named correctly, sessions and pending_merges
+	// tables already present from the declarative schema block), so starting
+	// at 11 is safe.
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		conn.Close()
@@ -811,7 +833,6 @@ func Open(path string) (*DB, error) {
 		}
 		version = 16
 	}
-
 	if version == 16 {
 		// Migration v16 → v17: no-op bridge. This slot is occupied by PR #1014
 		// (local serial merge queue / pending_merges table). When #1014 lands
@@ -885,6 +906,37 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v17→v18: bump version: %w", err)
 		}
 		version = 18
+	}
+	if version == 18 {
+		// Migration v18 → v19: introduce the pending_merges table for the
+		// local serial merge queue (#783). Uses CREATE TABLE IF NOT EXISTS and
+		// CREATE INDEX IF NOT EXISTS so this migration is fully idempotent —
+		// running it against a fresh database that already has the table from
+		// the declarative schema block above is a safe no-op.
+		steps := []string{
+			`CREATE TABLE IF NOT EXISTS pending_merges (
+			  pr              INTEGER PRIMARY KEY,
+			  session_name    TEXT NOT NULL,
+			  instance_id     TEXT NOT NULL,
+			  queue_position  INTEGER NOT NULL,
+			  status          TEXT NOT NULL,
+			  title           TEXT,
+			  error           TEXT,
+			  queued_at       INTEGER NOT NULL,
+			  last_checked_at INTEGER,
+			  merged_at       INTEGER,
+			  ended_at        INTEGER
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position)`,
+			`UPDATE schema_version SET version = 19`,
+		}
+		for _, s := range steps {
+			if _, err := conn.Exec(s); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v18→v19: %w", err)
+			}
+		}
+		version = 19
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -2747,6 +2799,14 @@ func (d *DB) SessionsByName(name string) ([]Session, error) {
 	return d.querySessions(sessionsSelectCols+` WHERE session_name = ? ORDER BY started_at DESC`, name)
 }
 
+// SessionsByNamePattern returns all sessions rows whose session_name ends with
+// the given suffix (LIKE '%<suffix>' pattern), ordered by started_at DESC.
+// The suffix is escaped for SQL LIKE metacharacters.
+func (d *DB) SessionsByNamePattern(suffix string) ([]Session, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(suffix)
+	return d.querySessions(sessionsSelectCols+` WHERE session_name LIKE ? ESCAPE '\' ORDER BY started_at DESC`, "%"+escaped)
+}
+
 // TokenTurn holds per-turn token and cost data for a single msg_assistant event.
 // Used by SessionTurnTokens to return per-turn data for cost calculation.
 type TokenTurn struct {
@@ -2756,6 +2816,330 @@ type TokenTurn struct {
 	CacheRead   int
 	CacheWrite  int
 	EventCost   float64
+}
+
+// PendingMerge represents a row in the pending_merges table.
+type PendingMerge struct {
+	PR            int
+	SessionName   string
+	InstanceID    string
+	QueuePosition int64
+	Status        string // 'watching' | 'merged' | 'failed' | 'cancelled' | 'abandoned'
+	Title         *string
+	Error         *string
+	QueuedAt      time.Time
+	LastCheckedAt *time.Time
+	MergedAt      *time.Time
+	EndedAt       *time.Time
+}
+
+// EnqueueMerge inserts a new pending_merges row with status = 'watching'.
+// queue_position is set to the current Unix millisecond timestamp (monotone
+// insertion order). If a non-terminal row already exists for pr, the existing
+// row is returned unchanged (idempotent success). A terminal row (merged,
+// failed, cancelled, abandoned) is treated as gone — a fresh row is inserted.
+// title is the PR title stored for display in `prism merges list`; pass nil
+// if the title is not known at enqueue time.
+// Returns the resulting row (existing or newly inserted).
+func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string, title *string) (*PendingMerge, error) {
+	// Check for an existing non-terminal row.
+	existing, err := d.PendingMergeByPR(pr)
+	if err != nil {
+		return nil, fmt.Errorf("db: enqueue merge: check existing: %w", err)
+	}
+	if existing != nil && !isMergeTerminal(existing.Status) {
+		// Non-terminal row exists — idempotent success.
+		return existing, nil
+	}
+
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT INTO pending_merges (pr, session_name, instance_id, queue_position, status, title, queued_at)
+VALUES (?, ?, ?, ?, 'watching', ?, ?)
+ON CONFLICT(pr) DO UPDATE SET
+  session_name    = excluded.session_name,
+  instance_id     = excluded.instance_id,
+  queue_position  = excluded.queue_position,
+  status          = 'watching',
+  title           = excluded.title,
+  error           = NULL,
+  queued_at       = excluded.queued_at,
+  last_checked_at = NULL,
+  merged_at       = NULL,
+  ended_at        = NULL`
+	if _, err := d.conn.Exec(q, pr, sessionName, instanceID, now, title, now); err != nil {
+		return nil, fmt.Errorf("db: enqueue merge: insert: %w", err)
+	}
+	row, err := d.PendingMergeByPR(pr)
+	if err != nil {
+		return nil, fmt.Errorf("db: enqueue merge: refetch: %w", err)
+	}
+	return row, nil
+}
+
+// isMergeTerminal returns true when status is a terminal state.
+func isMergeTerminal(status string) bool {
+	switch status {
+	case "merged", "failed", "cancelled", "abandoned":
+		return true
+	}
+	return false
+}
+
+// PendingMergeByPR returns the pending_merges row for pr, or nil if not found.
+func (d *DB) PendingMergeByPR(pr int) (*PendingMerge, error) {
+	const q = `
+SELECT pr, session_name, instance_id, queue_position, status, title, error,
+       queued_at, last_checked_at, merged_at, ended_at
+  FROM pending_merges
+ WHERE pr = ?`
+	row := d.conn.QueryRow(q, pr)
+	m, err := scanPendingMerge(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: pending merge by pr: %w", err)
+	}
+	return m, nil
+}
+
+// MergeQueueHead returns the head of the merge queue for the given instanceID:
+// the watching row with the lowest queue_position. Returns nil when the queue
+// is empty.
+func (d *DB) MergeQueueHead(instanceID string) (*PendingMerge, error) {
+	const q = `
+SELECT pr, session_name, instance_id, queue_position, status, title, error,
+       queued_at, last_checked_at, merged_at, ended_at
+  FROM pending_merges
+ WHERE instance_id = ? AND status = 'watching'
+ ORDER BY queue_position ASC
+ LIMIT 1`
+	row := d.conn.QueryRow(q, instanceID)
+	m, err := scanPendingMerge(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: merge queue head: %w", err)
+	}
+	return m, nil
+}
+
+// UpdateMergeLastChecked sets last_checked_at to now for the given pr.
+func (d *DB) UpdateMergeLastChecked(pr int) error {
+	now := time.Now().UnixMilli()
+	_, err := d.conn.Exec(
+		"UPDATE pending_merges SET last_checked_at = ? WHERE pr = ?",
+		now, pr,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update merge last checked: %w", err)
+	}
+	return nil
+}
+
+// TerminateMerge transitions a pending_merges row to a terminal status.
+// status must be one of 'merged', 'failed', 'cancelled', or 'abandoned'.
+// errMsg is stored in the error column; pass "" for no error.
+// merged_at is populated when status = 'merged'; ended_at is always set.
+func (d *DB) TerminateMerge(pr int, status, errMsg string) error {
+	now := time.Now().UnixMilli()
+	var errPtr *string
+	if errMsg != "" {
+		errPtr = &errMsg
+	}
+	var mergedAt *int64
+	if status == "merged" {
+		mergedAt = &now
+	}
+	const q = `
+UPDATE pending_merges
+   SET status   = ?,
+       error    = ?,
+       merged_at = ?,
+       ended_at  = ?
+ WHERE pr = ?`
+	_, err := d.conn.Exec(q, status, errPtr, mergedAt, now, pr)
+	if err != nil {
+		return fmt.Errorf("db: terminate merge: %w", err)
+	}
+	return nil
+}
+
+// AbandonWatchingMerges transitions all watching rows for instanceID to
+// 'abandoned' with error = 'coordinator session ended'. Called on sidecar
+// shutdown so that a new coordinator never inherits stale watching rows.
+func (d *DB) AbandonWatchingMerges(instanceID string) error {
+	now := time.Now().UnixMilli()
+	const q = `
+UPDATE pending_merges
+   SET status   = 'abandoned',
+       error    = 'coordinator session ended',
+       ended_at = ?
+ WHERE instance_id = ? AND status = 'watching'`
+	_, err := d.conn.Exec(q, now, instanceID)
+	if err != nil {
+		return fmt.Errorf("db: abandon watching merges: %w", err)
+	}
+	return nil
+}
+
+// CancelMerge transitions a watching row owned by instanceID to 'cancelled'.
+// Returns (true, nil) when the row was cancelled; (false, nil) when the row
+// does not exist, is already terminal, or is owned by a different instanceID.
+func (d *DB) CancelMerge(pr int, instanceID string) (bool, error) {
+	now := time.Now().UnixMilli()
+	const q = `
+UPDATE pending_merges
+   SET status   = 'cancelled',
+       ended_at = ?
+ WHERE pr = ? AND instance_id = ? AND status = 'watching'`
+	res, err := d.conn.Exec(q, now, pr, instanceID)
+	if err != nil {
+		return false, fmt.Errorf("db: cancel merge: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: cancel merge: rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// MergeQueueForInstance returns merge queue rows for instanceID, optionally
+// filtered by status. Rows are sorted by queue_position ascending.
+// filter values: "watching", "failed", "all", "abandoned" (special: cross-instance).
+//
+//   - "" or "watching" → only watching rows for instanceID
+//   - "failed"         → failed rows for instanceID
+//   - "all"            → all non-abandoned rows for instanceID from the last 7 days
+//   - "abandoned"      → abandoned rows for the same session_name but a different
+//     instanceID (previous coordinator incarnations)
+func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]PendingMerge, error) {
+	var (
+		q    string
+		args []any
+	)
+	sevenDaysAgo := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+
+	switch filter {
+	case "failed":
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		            queued_at, last_checked_at, merged_at, ended_at
+		       FROM pending_merges
+		      WHERE instance_id = ? AND status = 'failed'
+		      ORDER BY queue_position ASC`
+		args = []any{instanceID}
+	case "abandoned":
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		            queued_at, last_checked_at, merged_at, ended_at
+		       FROM pending_merges
+		      WHERE session_name = ? AND instance_id != ? AND status = 'abandoned'
+		      ORDER BY queue_position ASC`
+		args = []any{sessionName, instanceID}
+	case "all":
+		// Include all terminal states (merged, cancelled, failed, abandoned) plus
+		// watching, from the last 7 days, scoped to this instanceID. Per AC:
+		// "includes terminal states (merged, cancelled, failed, abandoned) from
+		// the last 7 days."
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		            queued_at, last_checked_at, merged_at, ended_at
+		       FROM pending_merges
+		      WHERE instance_id = ? AND queued_at >= ?
+		      ORDER BY queue_position ASC`
+		args = []any{instanceID, sevenDaysAgo}
+	default:
+		// Default: only watching rows for this instanceID.
+		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		            queued_at, last_checked_at, merged_at, ended_at
+		       FROM pending_merges
+		      WHERE instance_id = ? AND status = 'watching'
+		      ORDER BY queue_position ASC`
+		args = []any{instanceID}
+	}
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: merge queue for instance: %w", err)
+	}
+	defer rows.Close()
+
+	var merges []PendingMerge
+	for rows.Next() {
+		m, scanErr := scanPendingMergeRow(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("db: merge queue for instance: scan: %w", scanErr)
+		}
+		merges = append(merges, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: merge queue for instance: iterate: %w", err)
+	}
+	return merges, nil
+}
+
+// scanPendingMerge scans a single *sql.Row into a PendingMerge.
+func scanPendingMerge(row *sql.Row) (*PendingMerge, error) {
+	var m PendingMerge
+	var (
+		queuedAtMs      int64
+		lastCheckedAtMs *int64
+		mergedAtMs      *int64
+		endedAtMs       *int64
+	)
+	err := row.Scan(
+		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
+		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	m.QueuedAt = time.UnixMilli(queuedAtMs)
+	if lastCheckedAtMs != nil {
+		t := time.UnixMilli(*lastCheckedAtMs)
+		m.LastCheckedAt = &t
+	}
+	if mergedAtMs != nil {
+		t := time.UnixMilli(*mergedAtMs)
+		m.MergedAt = &t
+	}
+	if endedAtMs != nil {
+		t := time.UnixMilli(*endedAtMs)
+		m.EndedAt = &t
+	}
+	return &m, nil
+}
+
+// scanPendingMergeRow scans a *sql.Rows (multi-row scanner) into a PendingMerge.
+func scanPendingMergeRow(rows *sql.Rows) (PendingMerge, error) {
+	var m PendingMerge
+	var (
+		queuedAtMs      int64
+		lastCheckedAtMs *int64
+		mergedAtMs      *int64
+		endedAtMs       *int64
+	)
+	err := rows.Scan(
+		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
+		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
+	)
+	if err != nil {
+		return m, err
+	}
+	m.QueuedAt = time.UnixMilli(queuedAtMs)
+	if lastCheckedAtMs != nil {
+		t := time.UnixMilli(*lastCheckedAtMs)
+		m.LastCheckedAt = &t
+	}
+	if mergedAtMs != nil {
+		t := time.UnixMilli(*mergedAtMs)
+		m.MergedAt = &t
+	}
+	if endedAtMs != nil {
+		t := time.UnixMilli(*endedAtMs)
+		m.EndedAt = &t
+	}
+	return m, nil
 }
 
 // SessionTurnTokens returns per-turn token data for the given instance_id.
