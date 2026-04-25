@@ -383,16 +383,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
 			// sets shuttingDown=true and stops the container) then cancel(). In
 			// that case ctx may still be non-nil here (cancel fires after Shutdown),
-			// but we check ctx.Err() to distinguish a context-cancelled WaitHealthy
-			// (SIGTERM path where Shutdown already ran) from a genuine probe timeout
-			// (no Shutdown yet), avoiding a double-Shutdown with spurious log lines.
+			// but we check shuttingDown to distinguish a SIGTERM-cancelled WaitHealthy
+			// (Shutdown already ran) from a genuine probe timeout (no Shutdown yet),
+			// avoiding a double-Shutdown with spurious log lines.
+			//
+			// shuttingDown is the reliable SIGTERM gate: Shutdown() sets it before
+			// calling ctr.mgr.Shutdown(), so even when the container exits early
+			// (WaitHealthy returns via hasExited before cancel fires), shuttingDown
+			// is already true. ctx.Err() is set only after Shutdown() returns, which
+			// is too late.
+			s.mu.Lock()
+			alreadyShutdown := s.shuttingDown
+			s.mu.Unlock()
 			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
-			if ctx.Err() == nil {
+			if !alreadyShutdown {
 				// Genuine probe timeout (not SIGTERM): clean up the container
 				// ourselves (Shutdown() has not run yet) and write StateError
 				// directly so the DB row is in the correct terminal state.
-				// On SIGTERM, Shutdown() has already run (and will write
-				// StateInterrupted), so we skip both actions to avoid a race.
+				// On SIGTERM, Shutdown() handles cleanup and writes StateInterrupted.
 				mgr.Shutdown()
 				closeTCPListenerOnError()
 				// Gap 1 fix: write StateError directly so the DB row transitions
@@ -433,10 +441,15 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			if createErr != nil {
 				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
 				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
-				if ctx.Err() == nil {
-					// Genuine CreateSession failure (not a SIGTERM-induced context
-					// cancellation). Write StateError directly so the DB row is in
-					// the correct terminal state, regardless of tmux hook timing.
+				// Use shuttingDown (not ctx.Err()) as the SIGTERM guard — same
+				// rationale as the WaitHealthy path above. The outer isShuttingDown
+				// snapshot predates CreateSession, so re-read under the lock here.
+				s.mu.Lock()
+				alreadyShutdown := s.shuttingDown
+				s.mu.Unlock()
+				if !alreadyShutdown {
+					// Genuine CreateSession failure. Write StateError so the DB row
+					// is in the correct terminal state, regardless of tmux hook timing.
 					// On SIGTERM, Shutdown() handles the state write.
 					s.writeStartupError(startupErr)
 				}
