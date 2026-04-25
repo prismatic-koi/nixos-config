@@ -8,11 +8,17 @@ import (
 
 // openMergeTestDB opens an isolated test DB and registers cleanup.
 // Sets testDBPath so that openDB() in cmd package uses the test DB.
+//
+// It also unsets PRISM_HOST_API for the duration of the test so that
+// runMerge / runMergesList / runMergesCancel exercise the host-side DB path
+// rather than attempting to proxy through a host-API socket that does not
+// exist in the test environment (#1043).
 func openMergeTestDB(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	SetTestDBPath(filepath.Join(dir, "merge_test.db"))
 	t.Cleanup(func() { SetTestDBPath("") })
+	t.Setenv("PRISM_HOST_API", "")
 }
 
 // ── runMerge coordinator-only guard ───────────────────────────────────────────

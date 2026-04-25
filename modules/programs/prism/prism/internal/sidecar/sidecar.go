@@ -2541,13 +2541,16 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // hostAPIHandler returns an http.Handler that exposes host-side tmux operations
 // to agents running inside the container via a Unix socket. Routes:
 //
-//	POST /spawn        — spawn a new worktree session (coordinator only)
-//	POST /review       — run review agents against a PR (workers and coordinators)
-//	POST /cleanup      — clean up an existing session (coordinator only)
-//	POST /switch       — switch the tmux client to a session
+//	POST /spawn         — spawn a new worktree session (coordinator only)
+//	POST /review        — run review agents against a PR (workers and coordinators)
+//	POST /cleanup       — clean up an existing session (coordinator only)
+//	POST /switch        — switch the tmux client to a session
 //	GET  /list-sessions — list active sessions (role-scoped)
-//	GET  /checkin      — return conversation history for a session (coordinator only)
-//	POST /prompt       — deliver a prompt to a target session (role-scoped)
+//	GET  /checkin       — return conversation history for a session (coordinator only)
+//	POST /prompt        — deliver a prompt to a target session (role-scoped)
+//	POST /merge         — enqueue a PR for the merge queue (coordinator only)
+//	GET  /merges        — list merge queue entries (coordinator only)
+//	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
 //
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
@@ -3438,6 +3441,145 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
+	// POST /merge
+	// Request:  {"pr": <int>, "title": <string|null>}
+	// Response: PendingMerge JSON | {"error":"..."}
+	//
+	// Enqueues a PR into the merge queue using the sidecar's own session_name
+	// and instance_id — the values the merge-queue watcher queries against.
+	// This is the proxy path for `prism merge <pr>` invoked from inside a
+	// bwrap sandbox where dbPath() resolves to a shadow tmpfs (#1043).
+	//
+	// Coordinator-only: the merge queue is owned by coordinator sessions.
+	mux.HandleFunc("/merge", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "merge") {
+			return
+		}
+		var req struct {
+			PR    int     `json:"pr"`
+			Title *string `json:"title"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.PR <= 0 {
+			writeError(w, http.StatusBadRequest, "pr is required and must be a positive integer")
+			return
+		}
+		if s.cfg.InstanceID == "" {
+			writeError(w, http.StatusInternalServerError,
+				"sidecar has no instance_id — cannot enqueue merge without an instance identity")
+			return
+		}
+
+		// Use the sidecar's own session_name and instance_id so that the row
+		// is keyed on exactly the values the merge-queue watcher queries
+		// against. This is the architectural reason for routing through the
+		// sidecar at all (#1043).
+		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
+		if err != nil {
+			log.Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
+			writeError(w, http.StatusInternalServerError, "enqueue merge: "+err.Error())
+			return
+		}
+		log.Printf("sidecar: host-API /merge: PR #%d enqueued (queue_position=%d, status=%s)",
+			row.PR, row.QueuePosition, row.Status)
+		writeJSON(w, http.StatusOK, row)
+	})
+
+	// GET /merges
+	// Query params: filter=watching|failed|abandoned|all (default: watching)
+	// Response: JSON array of PendingMerge | {"error":"..."}
+	//
+	// Lists merge queue entries scoped to the sidecar's own instance_id and
+	// session_name — the same filters used by the host-side `prism merges`
+	// command. This is the proxy path for `prism merges` invoked from inside
+	// a bwrap sandbox (#1043).
+	mux.HandleFunc("/merges", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "merges") {
+			return
+		}
+		if s.cfg.InstanceID == "" {
+			writeError(w, http.StatusInternalServerError,
+				"sidecar has no instance_id — cannot list merges without an instance identity")
+			return
+		}
+
+		filter := r.URL.Query().Get("filter")
+		merges, err := s.cfg.DB.MergeQueueForInstance(s.cfg.InstanceID, s.cfg.SessionName, filter)
+		if err != nil {
+			log.Printf("sidecar: host-API /merges: MergeQueueForInstance: %v", err)
+			writeError(w, http.StatusInternalServerError, "list merges: "+err.Error())
+			return
+		}
+		// Return empty array rather than null when no rows.
+		if merges == nil {
+			merges = []db.PendingMerge{}
+		}
+		writeJSON(w, http.StatusOK, merges)
+	})
+
+	// POST /merges/cancel
+	// Request:  {"pr": <int>}
+	// Response: {"cancelled": <bool>, "row": <PendingMerge|null>} | {"error":"..."}
+	//
+	// Cancels a watching row owned by the sidecar's instance_id. The response
+	// includes the current row (when present) so the client can render a
+	// helpful message when cancellation is a no-op (already terminal, owned
+	// by a different incarnation, etc.).
+	mux.HandleFunc("/merges/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "merges cancel") {
+			return
+		}
+		var req struct {
+			PR int `json:"pr"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.PR <= 0 {
+			writeError(w, http.StatusBadRequest, "pr is required and must be a positive integer")
+			return
+		}
+		if s.cfg.InstanceID == "" {
+			writeError(w, http.StatusInternalServerError,
+				"sidecar has no instance_id — cannot cancel merge without an instance identity")
+			return
+		}
+
+		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.InstanceID)
+		if err != nil {
+			log.Printf("sidecar: host-API /merges/cancel: CancelMerge: %v", err)
+			writeError(w, http.StatusInternalServerError, "cancel merge: "+err.Error())
+			return
+		}
+		// Always look up the current row so the client can render a helpful
+		// message when cancellation is a no-op. PendingMergeByPR returning nil
+		// means the row does not exist at all.
+		row, lookupErr := s.cfg.DB.PendingMergeByPR(req.PR)
+		if lookupErr != nil {
+			log.Printf("sidecar: host-API /merges/cancel: PendingMergeByPR: %v", lookupErr)
+			// Lookup error is non-fatal — return cancelled status without the row.
+			row = nil
+		}
+		log.Printf("sidecar: host-API /merges/cancel: PR #%d cancelled=%v", req.PR, cancelled)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"cancelled": cancelled,
+			"row":       row,
+		})
 	})
 
 	return mux

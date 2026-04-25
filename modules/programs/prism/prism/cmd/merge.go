@@ -59,6 +59,53 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("prism merge: invalid PR number %q — must be a positive integer", prArg)
 	}
 
+	// Inside a bwrap sandbox: proxy the enqueue to the host sidecar (#1043).
+	// The host's prism.db is invisible to direct DB writes from inside the
+	// sandbox, so falling through to the DB path would silently write to a
+	// shadow tmpfs DB that the merge-queue watcher never sees. We must NOT
+	// silently fall back to the direct DB path on socket failure — that is the
+	// exact behaviour this fix replaces. A clear error and non-zero exit is
+	// the correct response (AC-6).
+	//
+	// Coordinator-only enforcement happens on the sidecar side via
+	// requireCoordinator, which returns HTTP 403 for worker sessions. The
+	// preflight is run inside the sandbox (gh works there) before the proxy
+	// call so that invalid PRs do not pin sidecar resources.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		title, preflightErr := preflight(pr)
+		if preflightErr != nil {
+			return fmt.Errorf("prism merge: %w", preflightErr)
+		}
+		var titlePtr *string
+		if title != "" {
+			titlePtr = &title
+		}
+		// The sidecar returns the full PendingMerge struct as JSON. Decode
+		// only the fields we need for the user-facing message; the rest is
+		// ignored. Field names match the Go struct exactly (default JSON
+		// marshalling of internal/db.PendingMerge has no struct tags).
+		var row struct {
+			PR            int    `json:"PR"`
+			QueuePosition int64  `json:"QueuePosition"`
+			Status        string `json:"Status"`
+		}
+		if proxyErr := proxyToHostAPI(apiURL, "/merge", map[string]any{
+			"pr":    pr,
+			"title": titlePtr,
+		}, &row); proxyErr != nil {
+			return fmt.Errorf("prism merge: %w", proxyErr)
+		}
+		fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", row.PR, row.QueuePosition, row.Status)
+		if title != "" {
+			fmt.Printf("  %s\n", title)
+		}
+		fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
+		fmt.Println("You will be notified when it merges or fails.")
+		fmt.Println()
+		fmt.Println("Track progress with: prism merges")
+		return nil
+	}
+
 	// Guard: coordinator-only.
 	callerSession := review.LookupParentSession()
 	d, dbErr := openDB()
