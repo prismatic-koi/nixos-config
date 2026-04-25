@@ -371,12 +371,12 @@ func rejectIfCoordinator() error {
 	if session.IsCoordinatorSession(callerSession, d) {
 		return fmt.Errorf(`prism review: this command is for worker sessions only.
 
-Coordinators do not run review directly. To review a PR, delegate to a worker:
+Coordinators do not run review directly. To review a PR, spawn a session on the
+PR branch and let that session run the review:
 
-  prism spawn --pr <number> --prompt 'read the PR and linked issue, run prism review <number>, and report findings'
+  prism pr <number> --prompt 'review this PR'
 
-The worker will run the review agents as children of its own session, which is
-the correct parent for review attribution.
+Wait for the finish notification from that spawned session before reporting back.
 
 See: modules/programs/prism/opencode/agents/coordinator.md`)
 	}

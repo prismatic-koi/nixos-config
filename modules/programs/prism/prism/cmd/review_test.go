@@ -413,8 +413,8 @@ func TestRejectIfCoordinator_BlocksCoordinatorSession(t *testing.T) {
 	if !strings.Contains(err.Error(), "worker sessions only") {
 		t.Errorf("rejectIfCoordinator error %q does not mention 'worker sessions only'", err.Error())
 	}
-	if !strings.Contains(err.Error(), "prism spawn") {
-		t.Errorf("rejectIfCoordinator error %q does not mention 'prism spawn'", err.Error())
+	if !strings.Contains(err.Error(), "prism pr") {
+		t.Errorf("rejectIfCoordinator error %q does not mention 'prism pr'", err.Error())
 	}
 }
 
