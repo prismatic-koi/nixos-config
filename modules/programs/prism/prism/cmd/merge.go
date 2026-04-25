@@ -23,8 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -77,7 +79,10 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		}
 	}
 
-	// Look up instance_id for the calling session.
+	// Look up instance_id for the calling session. When no instance_id is
+	// registered (e.g. a coordinator session opened outside of prism switch,
+	// which is the common case for @main sessions), mint one on the fly and
+	// write it to the DB so the rest of the merge flow proceeds normally.
 	var instanceID string
 	if callerSession != "" {
 		status, statusErr := d.CurrentStatus(callerSession)
@@ -89,7 +94,43 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		}
 	}
 	if instanceID == "" {
-		return fmt.Errorf("prism merge: cannot determine instance_id for session %q\nhint: ensure the coordinator session is registered in prism.db", callerSession)
+		// Determine worktree and repo for the on-the-fly registration.
+		worktree, _ := os.Getwd()
+		if callerSession != "" {
+			// Re-query: the status row may already exist with a worktree.
+			if existing, _ := d.CurrentStatus(callerSession); existing != nil && existing.Worktree != "" {
+				worktree = existing.Worktree
+			}
+		}
+		repo := deriveRepo(worktree)
+		if repo == "" {
+			// Not inside a bare-repo worktree — derive from the session name.
+			if idx := strings.Index(callerSession, "@"); idx > 0 {
+				repo = callerSession[:idx]
+			}
+		}
+
+		minted := uuid.New().String()
+		// Ensure the agent_status row exists before writing instance_id.
+		if upsertErr := d.UpsertStatus(callerSession, repo, worktree, "idle", nil, nil); upsertErr != nil {
+			return fmt.Errorf("prism merge: register session %q: %w", callerSession, upsertErr)
+		}
+		if setErr := d.SetInstanceID(callerSession, minted); setErr != nil {
+			return fmt.Errorf("prism merge: set instance_id for session %q: %w", callerSession, setErr)
+		}
+		// Insert a sessions row so the incarnation is fully registered
+		// (idempotent: INSERT OR IGNORE).
+		if insErr := d.InsertSession(db.Session{
+			InstanceID:  minted,
+			SessionName: callerSession,
+			Repo:        repo,
+			Worktree:    worktree,
+		}); insErr != nil {
+			// Non-fatal: log and continue. The instance_id is already written
+			// to agent_status, which is sufficient for EnqueueMerge.
+			fmt.Fprintf(os.Stderr, "prism merge: insert session row for %q: %v\n", callerSession, insErr)
+		}
+		instanceID = minted
 	}
 
 	sessionName := callerSession
