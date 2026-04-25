@@ -169,6 +169,18 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
+	// Override isoMode with the parent session's recorded isolation_mode from
+	// the DB. On navi the machine default (cfg.EffectiveIsolationMode) is
+	// "podman", but worker sessions may run as "bwrap". Using the machine
+	// default would cause prism agent-run to reject the spawned review agents:
+	//   agent-run: session "..~review-1-review-code" has isolation mode
+	//   "podman", not bwrap; this command is only for bwrap sessions
+	// We fall back to cfg.EffectiveIsolationMode() only when the DB lookup
+	// fails or the recorded mode is empty (back-compat with pre-v10 rows).
+	if dbIsoMode := resolveParentIsolationMode(parentSession); dbIsoMode != "" {
+		isoMode = config.IsolationMode(dbIsoMode)
+	}
+
 	if len(agents) == 0 {
 		return fmt.Errorf("prism review: no agents to run")
 	}
@@ -318,6 +330,23 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 		return "", fmt.Errorf("prism review: no worktree path for session %q", parentSession)
 	}
 	return status.Worktree, nil
+}
+
+// resolveParentIsolationMode returns the isolation_mode recorded in the DB for
+// parentSession. It returns "" when the DB cannot be opened, the session has no
+// row, or the isolation_mode field is empty (pre-v10 back-compat rows). The
+// caller falls back to cfg.EffectiveIsolationMode() in the empty-string case.
+func resolveParentIsolationMode(parentSession string) string {
+	d, dbErr := openDB()
+	if dbErr != nil {
+		return ""
+	}
+	defer d.Close()
+	status, stErr := d.CurrentStatus(parentSession)
+	if stErr != nil || status == nil {
+		return ""
+	}
+	return status.IsolationMode
 }
 
 // splitCSV splits a comma-separated string and trims whitespace.
