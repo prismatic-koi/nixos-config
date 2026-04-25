@@ -287,7 +287,7 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	instanceID := "inst-filter"
 	session := "myrepo@main"
 
-	// Enqueue 3 PRs. Fail one, leave one watching, cancel one.
+	// Enqueue 4 PRs. Fail one, leave one watching, cancel one, abandon one.
 	if _, err := d.EnqueueMerge(1, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(1): %v", err)
 	}
@@ -296,6 +296,9 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	}
 	if _, err := d.EnqueueMerge(3, session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge(3): %v", err)
+	}
+	if _, err := d.EnqueueMerge(4, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge(4): %v", err)
 	}
 
 	// Fail PR 2.
@@ -306,14 +309,22 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 	if _, err := d.CancelMerge(3, instanceID); err != nil {
 		t.Fatalf("CancelMerge(3): %v", err)
 	}
+	// Abandon PR 4 via AbandonWatchingMerges (simulates coordinator shutdown).
+	// First, mark PR 1 as merged so only PR 4 is still watching.
+	if err := d.TerminateMerge(1, "merged", ""); err != nil {
+		t.Fatalf("TerminateMerge(1,merged): %v", err)
+	}
+	if err := d.AbandonWatchingMerges(instanceID); err != nil {
+		t.Fatalf("AbandonWatchingMerges: %v", err)
+	}
 
-	// Default filter: only watching.
+	// Default filter: only watching — should be empty (PR 4 was abandoned).
 	watching, err := d.MergeQueueForInstance(instanceID, session, "")
 	if err != nil {
 		t.Fatalf("MergeQueueForInstance(watching): %v", err)
 	}
-	if len(watching) != 1 || watching[0].PR != 1 {
-		t.Errorf("watching filter: got %d rows, want 1 (PR 1)", len(watching))
+	if len(watching) != 0 {
+		t.Errorf("watching filter: got %d rows, want 0 (all terminated)", len(watching))
 	}
 
 	// Failed filter.
@@ -325,13 +336,24 @@ func TestMergeQueueForInstance_Filters(t *testing.T) {
 		t.Errorf("failed filter: got %d rows, want 1 (PR 2)", len(failed))
 	}
 
-	// All filter includes watching + failed + cancelled (not abandoned).
+	// All filter includes all terminal states including abandoned (per AC).
+	// merged(1) + failed(2) + cancelled(3) + abandoned(4) = 4 rows.
 	all, err := d.MergeQueueForInstance(instanceID, session, "all")
 	if err != nil {
 		t.Fatalf("MergeQueueForInstance(all): %v", err)
 	}
-	if len(all) != 3 {
-		t.Errorf("all filter: got %d rows, want 3", len(all))
+	if len(all) != 4 {
+		t.Errorf("all filter: got %d rows, want 4 (includes abandoned per AC)", len(all))
+	}
+	// Verify abandoned row is included in --all.
+	foundAbandoned := false
+	for _, m := range all {
+		if m.PR == 4 && m.Status == "abandoned" {
+			foundAbandoned = true
+		}
+	}
+	if !foundAbandoned {
+		t.Error("all filter: abandoned PR 4 not found — --all must include abandoned rows")
 	}
 }
 

@@ -3038,10 +3038,14 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		      ORDER BY queue_position ASC`
 		args = []any{sessionName, instanceID}
 	case "all":
+		// Include all terminal states (merged, cancelled, failed, abandoned) plus
+		// watching, from the last 7 days, scoped to this instanceID. Per AC:
+		// "includes terminal states (merged, cancelled, failed, abandoned) from
+		// the last 7 days."
 		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
-		      WHERE instance_id = ? AND status != 'abandoned' AND queued_at >= ?
+		      WHERE instance_id = ? AND queued_at >= ?
 		      ORDER BY queue_position ASC`
 		args = []any{instanceID, sevenDaysAgo}
 	default:
