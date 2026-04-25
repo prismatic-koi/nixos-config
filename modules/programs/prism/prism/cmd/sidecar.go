@@ -89,7 +89,7 @@ readiness signal. The bwrap sandbox is owned by the tmux pane.`,
 func init() {
 	sidecarCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	sidecarCmd.Flags().String("opencode-url", "", "Base URL of the opencode HTTP server")
-	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: podman, bwrap, or host (default: derived from --container flag)")
+	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: derived from --container flag)")
 	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container) — deprecated, use --isolation-mode=podman")
 	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (used in container mode; inferred from SSE events when empty)")
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container/bwrap mode)")
@@ -130,12 +130,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Derive the legacy bool for paths that still use it.
 	podmanMode := isolationMode == config.IsolationPodman
 	bwrapMode := isolationMode == config.IsolationBwrap
-	// needsHostAPI is true for podman and bwrap (the agent runs in a sandbox
-	// without direct access to host tmux, so the host-API socket is required).
-	needsHostAPI := podmanMode || bwrapMode
-	// useContainerHarness is true for podman and bwrap (opencode is pre-created
-	// with --prompt at launch in both cases).
-	useContainerHarness := podmanMode || bwrapMode
+	sandboxExecMode := isolationMode == config.IsolationSandboxExec
+	// needsHostAPI is true for podman, bwrap, and sandbox-exec (the agent runs
+	// in a sandbox without direct access to host tmux, so the host-API socket
+	// is required).
+	needsHostAPI := podmanMode || bwrapMode || sandboxExecMode
+	// useContainerHarness is true for podman, bwrap, and sandbox-exec
+	// (opencode is pre-created with --prompt at launch in all three cases).
+	useContainerHarness := podmanMode || bwrapMode || sandboxExecMode
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -228,13 +230,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the host-API socket path for podman and bwrap modes. The agent
-	// runs in a sandbox without direct access to host tmux in both cases, so
-	// the host-API Unix socket is required for proxying prism CLI calls.
+	// Build the host-API socket path for podman, bwrap, and sandbox-exec modes.
+	// The agent runs in a sandbox without direct access to host tmux in all
+	// three cases, so the host-API Unix socket is required for proxying prism
+	// CLI calls.
 	var hostAPISockPath string
 	if needsHostAPI {
-		if port == 0 && bwrapMode {
-			return fmt.Errorf("sidecar: --port is required in bwrap mode")
+		if port == 0 && (bwrapMode || sandboxExecMode) {
+			return fmt.Errorf("sidecar: --port is required in bwrap/sandbox-exec mode")
 		}
 		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
 		if err != nil {
@@ -243,17 +246,17 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		hostAPISockPath = sockPath
 		// Wire the socket path into the container config so the container
 		// gets the socket mounted and PRISM_HOST_API injected (A-2).
-		// In bwrap mode ctrCfg is nil — the bwrap args are built by
-		// bwrapIsolator.BuildArgs at prism agent-run time, not here.
+		// In bwrap and sandbox-exec modes ctrCfg is nil — the sandbox args
+		// are built by the isolator at prism agent-run time, not here.
 		if ctrCfg != nil {
 			ctrCfg.HostAPISockPath = sockPath
 		}
 	}
 
 	// Build the OnReady callback — only for podman mode (AC-18, AC-19).
-	// In bwrap mode the sidecar does NOT write the readiness signal:
-	// "prism agent-run" in the tmux pane starts immediately without waiting.
-	// In host mode there is no readiness file at all.
+	// In bwrap and sandbox-exec modes the sidecar does NOT write the readiness
+	// signal: "prism agent-run" in the tmux pane starts immediately without
+	// waiting. In host mode there is no readiness file at all.
 	var onReady func()
 	if podmanMode {
 		onReady = func() {

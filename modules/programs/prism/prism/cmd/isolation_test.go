@@ -31,6 +31,7 @@ func TestResolveIsolationMode_ValidValues(t *testing.T) {
 	}{
 		{"podman", config.IsolationPodman},
 		{"bwrap", config.IsolationBwrap},
+		{"sandbox-exec", config.IsolationSandboxExec},
 		{"host", config.IsolationHost},
 	}
 
@@ -38,6 +39,9 @@ func TestResolveIsolationMode_ValidValues(t *testing.T) {
 		t.Run(tc.flag, func(t *testing.T) {
 			if tc.flag == "bwrap" && runtime.GOOS != "linux" {
 				t.Skip("bwrap only available on Linux")
+			}
+			if tc.flag == "sandbox-exec" && runtime.GOOS != "darwin" {
+				t.Skip("sandbox-exec only available on macOS")
 			}
 			cmd := newSpawnCmdForTest()
 			if err := cmd.Flags().Set("isolation", tc.flag); err != nil {
@@ -70,8 +74,8 @@ func TestResolveIsolationMode_UnknownValue(t *testing.T) {
 	if !strings.Contains(err.Error(), "unknown isolation mode") {
 		t.Errorf("error %q does not contain 'unknown isolation mode'", err.Error())
 	}
-	// Error message must list valid values.
-	for _, m := range []string{"podman", "bwrap", "host"} {
+	// Error message must list all valid values, including sandbox-exec.
+	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
 		if !strings.Contains(err.Error(), m) {
 			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
 		}
@@ -157,6 +161,66 @@ func TestResolveIsolationMode_BwrapOnDarwin(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "requires Linux") {
 		t.Errorf("error %q does not mention 'requires Linux'", err.Error())
+	}
+}
+
+// TestResolveIsolationMode_SandboxExecOnLinux verifies that --isolation
+// sandbox-exec on non-Darwin (e.g. Linux) returns a clear error naming the
+// platform requirement.
+func TestResolveIsolationMode_SandboxExecOnLinux(t *testing.T) {
+	if runtime.GOOS == "darwin" {
+		t.Skip("this test validates non-Darwin platform rejection; skipping on macOS")
+	}
+	cmd := newSpawnCmdForTest()
+	if err := cmd.Flags().Set("isolation", "sandbox-exec"); err != nil {
+		t.Fatalf("set --isolation: %v", err)
+	}
+	cfg := config.Config{}
+	_, err := resolveIsolationMode(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected error for sandbox-exec on non-Darwin, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires macOS") {
+		t.Errorf("error %q does not mention 'requires macOS'", err.Error())
+	}
+}
+
+// TestResolveIsolationMode_SandboxExecHostModeAlias verifies that
+// --isolation sandbox-exec combined with --host-mode returns the existing
+// mutual-exclusion error (same behaviour as any other isolation mode + host-mode).
+func TestResolveIsolationMode_SandboxExecHostModeAlias(t *testing.T) {
+	cmd := newSpawnCmdForTest()
+	if err := cmd.Flags().Set("isolation", "sandbox-exec"); err != nil {
+		t.Fatalf("set --isolation: %v", err)
+	}
+	if err := cmd.Flags().Set("host-mode", "true"); err != nil {
+		t.Fatalf("set --host-mode: %v", err)
+	}
+	cfg := config.Config{}
+	_, err := resolveIsolationMode(cmd, cfg)
+	if err == nil {
+		t.Fatal("expected mutual-exclusion error when both --isolation sandbox-exec and --host-mode are set")
+	}
+	if !strings.Contains(err.Error(), "--isolation and --host-mode") {
+		t.Errorf("error %q does not mention both flags", err.Error())
+	}
+}
+
+// TestResolveIsolationMode_FallbackFromConfig_SandboxExec verifies that when
+// no flags are set and config specifies sandbox-exec, the mode is used — but
+// only on Darwin (the platform guard rejects it elsewhere).
+func TestResolveIsolationMode_FallbackFromConfig_SandboxExec(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec from config is only valid on macOS; platform guard rejects it on other platforms")
+	}
+	cmd := newSpawnCmdForTest() // fresh command, no flags set
+	cfg := config.Config{DefaultIsolationMode: config.IsolationSandboxExec}
+	got, err := resolveIsolationMode(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolveIsolationMode: %v", err)
+	}
+	if got != config.IsolationSandboxExec {
+		t.Errorf("got %q, want %q", got, config.IsolationSandboxExec)
 	}
 }
 
