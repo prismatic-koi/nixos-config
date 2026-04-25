@@ -145,12 +145,15 @@ func TestRunMerge_MintsInstanceIDWhenMissing(t *testing.T) {
 	t.Setenv("PRISM_SESSION_NAME", coordSession)
 	t.Setenv("TMUX", "")
 
-	// runMerge should fail at the gh preflight, not at instance_id.
+	// runMerge should fail at the gh preflight, not at the instance_id guard.
 	err = runMerge(mergeCmd, []string{"999"})
 	if err != nil {
 		// Acceptable: gh preflight will fail in CI/test environments.
 		if strings.Contains(err.Error(), "cannot determine instance_id") {
-			t.Fatalf("runMerge still fails with 'cannot determine instance_id' — fix did not take effect: %v", err)
+			t.Fatalf("runMerge still fails with old 'cannot determine instance_id' error — fix did not take effect: %v", err)
+		}
+		if strings.Contains(err.Error(), "cannot determine calling session") {
+			t.Fatalf("runMerge returned 'cannot determine calling session' — should only happen when callerSession is empty, not here: %v", err)
 		}
 		if strings.Contains(err.Error(), "register session") || strings.Contains(err.Error(), "set instance_id") {
 			t.Fatalf("runMerge failed at DB registration step: %v", err)

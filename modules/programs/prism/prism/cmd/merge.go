@@ -94,13 +94,20 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		}
 	}
 	if instanceID == "" {
+		// Guard: if we have no session identity at all, we cannot mint a
+		// meaningful instance_id — fail with a clear message rather than
+		// creating a garbage DB row keyed on an empty session name.
+		if callerSession == "" {
+			return fmt.Errorf("prism merge: cannot determine calling session — run from inside a prism tmux session or set PRISM_SESSION_NAME")
+		}
+
 		// Determine worktree and repo for the on-the-fly registration.
+		// Prefer the value already stored in agent_status (if the row exists
+		// with a non-empty worktree); fall back to the process's CWD.
 		worktree, _ := os.Getwd()
-		if callerSession != "" {
-			// Re-query: the status row may already exist with a worktree.
-			if existing, _ := d.CurrentStatus(callerSession); existing != nil && existing.Worktree != "" {
-				worktree = existing.Worktree
-			}
+		// Re-query: the status row may already exist with a worktree.
+		if existing, _ := d.CurrentStatus(callerSession); existing != nil && existing.Worktree != "" {
+			worktree = existing.Worktree
 		}
 		repo := deriveRepo(worktree)
 		if repo == "" {
@@ -114,6 +121,14 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		// Ensure the agent_status row exists before writing instance_id.
 		if upsertErr := d.UpsertStatus(callerSession, repo, worktree, "idle", nil, nil); upsertErr != nil {
 			return fmt.Errorf("prism merge: register session %q: %w", callerSession, upsertErr)
+		}
+		// Clear any stale ended_at so the session is visible as active in the
+		// dashboard and in ended_at IS NULL queries. This mirrors the
+		// tmux-session-start handler (event.go:ClearEnded) which does the same
+		// immediately after UpsertStatus, and covers the case where the session
+		// was previously ended but has been re-opened without prism switch.
+		if clearErr := d.ClearEnded(callerSession); clearErr != nil {
+			fmt.Fprintf(os.Stderr, "prism merge: clear ended for %q: %v\n", callerSession, clearErr)
 		}
 		if setErr := d.SetInstanceID(callerSession, minted); setErr != nil {
 			return fmt.Errorf("prism merge: set instance_id for session %q: %w", callerSession, setErr)
