@@ -57,6 +57,13 @@ var defaultNotifyHTTPClient = &http.Client{Timeout: 10 * time.Second}
 // the finished state. Cancelled if session.status busy fires in the window.
 const IdleDebounce = 2 * time.Second
 
+// DefaultStartupConnectTimeout is the default duration that bwrap-mode sidecars
+// will wait for the first SSE event from the harness. If no event is received
+// within this window, the session is transitioned to StateError via
+// writeStartupError. This mirrors the WaitHealthy/CreateSession timeout
+// mechanism added in #1011 for the podman path.
+const DefaultStartupConnectTimeout = 5 * time.Minute
+
 // ReconnectRecoveryDelay is the window the sidecar waits after a reconnect
 // (detected via server.connected while in active state) before concluding
 // that session.idle was missed and writing the finished state. Any arriving
@@ -158,6 +165,14 @@ type Config struct {
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,
 	// /prompt). Used in tests to inject a stub binary.
 	PrismBinaryPath string
+	// StartupConnectTimeout is the duration the sidecar waits for the first
+	// SSE event before concluding the harness never bound to its port and
+	// transitioning to StateError via writeStartupError. Only applies to
+	// bwrap mode (Container == nil): podman mode uses WaitHealthy/CreateSession
+	// for the same protection. Defaults to DefaultStartupConnectTimeout (5m)
+	// when zero. Set to a small value in tests to exercise the timeout path
+	// without real wall-clock waits.
+	StartupConnectTimeout time.Duration
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -569,7 +584,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
-	ch, err := s.harness.Subscribe(ctx)
+	// Wrap ctx with a cancel so the startup-timeout goroutine (bwrap mode only)
+	// can stop the SSE loop by cancelling the derived context. The outer ctx
+	// cancellation still propagates normally.
+	sseCtx, sseCancel := context.WithCancel(ctx)
+	defer sseCancel()
+
+	ch, err := s.harness.Subscribe(sseCtx)
 	if err != nil {
 		return fmt.Errorf("sidecar: connect to SSE stream: %w", err)
 	}
@@ -580,7 +601,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// they cannot be correlated to an opencode session.
 	go func() {
 		select {
-		case <-ctx.Done():
+		case <-sseCtx.Done():
 			return
 		case <-time.After(30 * time.Second):
 		}
@@ -591,6 +612,65 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			log.Printf("[warning] opencode_sid not received after 30s — session may be invisible to forensics")
 		}
 	}()
+
+	// Startup-connect timeout: bwrap mode only.
+	//
+	// In bwrap mode the harness is launched by agent-run from a tmux pane, not
+	// by the sidecar. The sidecar's only signal of harness liveness is whether
+	// SSE connects. If the harness never binds to its port the SSE retry loop
+	// runs forever, leaving the session stuck at "idle".
+	//
+	// After startupConnectTimeout with no first event, transition the session
+	// to StateError (same mechanism as #1011's WaitHealthy/CreateSession paths)
+	// and cancel the SSE loop so the sidecar exits cleanly.
+	//
+	// Container != nil means podman mode, which already has WaitHealthy/
+	// CreateSession covering startup failures — skip the timeout there.
+	if s.cfg.Container == nil {
+		startupTimeout := s.cfg.StartupConnectTimeout
+		if startupTimeout == 0 {
+			startupTimeout = DefaultStartupConnectTimeout
+		}
+		url := s.cfg.OpencodeURL
+		go func() {
+			select {
+			case <-sseCtx.Done():
+				return
+			case <-time.After(startupTimeout):
+			}
+
+			// Check whether the first SSE event has been received. If it has,
+			// the harness is alive and this is a post-connect reconnect scenario
+			// — the existing reconnect loop handles it; do nothing.
+			s.mu.Lock()
+			firstEventReceived := s.firstEventLogged
+			alreadyShuttingDown := s.shuttingDown
+			s.mu.Unlock()
+
+			if firstEventReceived || alreadyShuttingDown {
+				// Harness connected successfully, or sidecar is already shutting
+				// down (SIGTERM). No startup timeout action needed.
+				return
+			}
+
+			// The harness never bound to its port within the timeout window.
+			// Write StateError and cancel the SSE context to stop the retry loop.
+			startupErr := fmt.Errorf("bwrap harness for %s never bound to %s within %v",
+				s.cfg.SessionName, url, startupTimeout)
+			log.Printf("sidecar: startup-connect timeout fired: %v", startupErr)
+			s.writeStartupError(startupErr)
+			// writeStartupError notifies the parent worker for review-agent sessions.
+			// For non-review-agent (worker) sessions, also notify the coordinator so
+			// the coordinator learns the worker is dead — symmetric to the finished
+			// notification path (notifyCoordinator is suppressed for review agents
+			// and self-notifications internally). This satisfies the routing requirement
+			// from #1022: "worker agents notify the coordinator."
+			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB) {
+				go s.notifyCoordinator()
+			}
+			sseCancel()
+		}()
+	}
 
 	for evt := range ch {
 		s.HandleEvent(evt)
@@ -3141,6 +3221,32 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), execTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+
+		// Anchor the subprocess CWD to the calling session's worktree so that
+		// `prism review` can run `gh` and `git` commands against the correct
+		// repository. Without this, the subprocess inherits the sidecar's CWD
+		// (typically the tmux session-start directory), which may not be a git
+		// repository — producing the "not a git repository" warning and causing
+		// prism review to fall back to degraded per-agent git discovery.
+		//
+		// Lookup order:
+		//   1. DB: agent_status.worktree for this session.
+		//   2. Existence check: verify the directory is reachable on disk
+		//      (defence in depth — the path is from the trusted DB but the
+		//      worktree may have been cleaned up since the row was written).
+		//   3. Fallback: log and proceed with default CWD when the lookup
+		//      fails or the directory no longer exists, so that the existing
+		//      degraded-context path keeps working rather than hard-failing.
+		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
+			log.Printf("sidecar: host-API /review: worktree lookup failed (DB error): %v — using default CWD", dbErr)
+		} else if status == nil || status.Worktree == "" {
+			log.Printf("sidecar: host-API /review: worktree not set for session %q — using default CWD", s.cfg.SessionName)
+		} else if _, statErr := os.Stat(status.Worktree); statErr != nil {
+			log.Printf("sidecar: host-API /review: worktree %q is not accessible: %v — using default CWD", status.Worktree, statErr)
+		} else {
+			cmd.Dir = status.Worktree
+			log.Printf("sidecar: host-API /review: subprocess CWD set to worktree %q", status.Worktree)
+		}
 
 		// Build the subprocess environment:
 		// PRISM_SESSION_NAME: so review.LookupParentSession() resolves the
