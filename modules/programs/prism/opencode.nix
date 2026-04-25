@@ -364,7 +364,8 @@
           If no review-complete prompt arrives within 30 minutes, investigate with `prism checkin <session>~review-<N>-review-goal`.
           After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
           Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response) as a fallback when `prism review` is unavailable.
-          **This fallback is for worker and coordinator agents only. Review agents must never follow it — they must never spawn further review sessions of any kind.**
+          **This fallback is for worker and spawned sessions only. Review agents must never follow it — they must never spawn further review sessions of any kind.**
+          **Coordinator agents must not call `prism review` or this fallback directly — use `prism pr <number> --prompt 'review this PR'` instead (see coordinator agent instructions).**
 
         ## Search Scope
 
