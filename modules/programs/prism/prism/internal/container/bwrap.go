@@ -671,36 +671,16 @@ func (b *bwrapIsolator) Run(ctx context.Context, args []string) error {
 // is NOT the sandbox interior env (bwrap starts the sandbox with --clearenv
 // and rebuilds the interior env from explicit --setenv pairs in BuildArgs).
 //
+// This is a thin alias over minimalIsolatedExecEnv (sandbox_exec.go) — the
+// allow-list is identical across bwrap and sandbox-exec, so both call sites
+// share a single helper. The alias is retained so the existing tests and
+// callers in this file continue to read naturally as a bwrap-specific
+// concern.
+//
 // See cmd/agent_run.go for the corresponding filter at the syscall.Exec
 // call site. Both filters use the same allow-list; keep them in sync.
 func minimalBwrapExecEnv(hostEnv []string) []string {
-	allow := map[string]bool{
-		"PATH":      true,
-		"HOME":      true,
-		"USER":      true,
-		"LOGNAME":   true,
-		"TERM":      true,
-		"COLORTERM": true,
-		"LANG":      true,
-		"LC_ALL":    true,
-	}
-	out := make([]string, 0, len(allow))
-	for _, kv := range hostEnv {
-		eq := -1
-		for i := 0; i < len(kv); i++ {
-			if kv[i] == '=' {
-				eq = i
-				break
-			}
-		}
-		if eq <= 0 {
-			continue
-		}
-		if allow[kv[:eq]] {
-			out = append(out, kv)
-		}
-	}
-	return out
+	return MinimalIsolatedExecEnv(hostEnv)
 }
 
 // Shutdown sends SIGTERM to the bwrap process if it is still running. It uses
