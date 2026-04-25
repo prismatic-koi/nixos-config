@@ -319,7 +319,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	//
 	// Host-mode sessions skip this entirely because they run opencode directly
 	// with the host's real ~/.config/opencode/opencode.json via xdg.configFile.
-	sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap
+	sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
 	if sandboxed {
 		pf, pfErr := loadRestoreProfiles()
 		if pfErr != nil {

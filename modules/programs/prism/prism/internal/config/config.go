@@ -16,7 +16,7 @@ import (
 )
 
 // IsolationMode represents the isolation mechanism for agent sessions.
-// Valid values are "podman", "bwrap", and "host".
+// Valid values are "podman", "bwrap", "sandbox-exec", and "host".
 type IsolationMode string
 
 const (
@@ -29,15 +29,21 @@ const (
 	// manage the process lifecycle. Linux only.
 	IsolationBwrap IsolationMode = "bwrap"
 
+	// IsolationSandboxExec runs opencode inside an Apple sandbox-exec profile
+	// sandbox, launched and owned by the tmux pane via "prism agent-run". The
+	// sidecar does not manage the process lifecycle. macOS (Darwin) only.
+	IsolationSandboxExec IsolationMode = "sandbox-exec"
+
 	// IsolationHost runs opencode directly in the tmux pane with no isolation.
 	// Equivalent to the legacy --host-mode flag.
 	IsolationHost IsolationMode = "host"
 )
 
 // ValidIsolationModes lists all valid isolation mode strings.
-var ValidIsolationModes = []IsolationMode{IsolationPodman, IsolationBwrap, IsolationHost}
+var ValidIsolationModes = []IsolationMode{IsolationPodman, IsolationBwrap, IsolationSandboxExec, IsolationHost}
 
 // IsValidIsolationMode reports whether s is a valid isolation mode.
+// Valid values are "podman", "bwrap", "sandbox-exec", and "host".
 func IsValidIsolationMode(s string) bool {
 	for _, m := range ValidIsolationModes {
 		if string(m) == s {

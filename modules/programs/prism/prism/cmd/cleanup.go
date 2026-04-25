@@ -760,7 +760,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 
 	// Validate isolation mode before doing any work.
 	switch statusIsolationMode {
-	case "host", "bwrap", "podman":
+	case "host", "bwrap", "sandbox-exec", "podman":
 		// OK — supported modes.
 	default:
 		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — unsupported isolation mode %q\n",

@@ -1068,16 +1068,16 @@ var switchCmd = &cobra.Command{
 		isoMode := cfg.EffectiveIsolationMode()
 		effectiveContainerMode := isoMode == config.IsolationPodman
 
-		// Load profiles.json for container/bwrap config injection and agent env
-		// var injection (host mode). Always attempt to load; treat missing file as
-		// fatal when sandboxed (podman or bwrap), since those paths require the
-		// role config blob.
+		// Load profiles.json for container/bwrap/sandbox-exec config injection and
+		// agent env var injection (host mode). Always attempt to load; treat missing
+		// file as fatal when sandboxed (podman, bwrap, or sandbox-exec), since those
+		// paths require the role config blob.
 		var pf *config.ProfilesFile
 		{
 			var pfErr error
 			pf, pfErr = config.LoadProfiles()
 			if pfErr != nil {
-				if effectiveContainerMode || isoMode == config.IsolationBwrap {
+				if effectiveContainerMode || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec {
 					return pfErr
 				}
 				fmt.Fprintf(os.Stderr, "[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
@@ -1103,9 +1103,9 @@ var switchCmd = &cobra.Command{
 			opts.AgentEnvVars = pf.AgentEnvVars
 		}
 
-		// sandboxed is true for both podman and bwrap isolation modes —
-		// both require container config injection.
-		sandboxed := effectiveContainerMode || isoMode == config.IsolationBwrap
+		// sandboxed is true for podman, bwrap, and sandbox-exec isolation modes —
+		// all require container config injection.
+		sandboxed := effectiveContainerMode || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
 
 		// --path: open a specific path directly.
 		if pathArg != "" {

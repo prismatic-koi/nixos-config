@@ -700,6 +700,8 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// This mirrors the pattern in cmd/spawn.go:334-340 for regular bwrap spawns.
 		// Podman mode does NOT need this write — the sidecar's Create() path
 		// already writes the file before the container starts.
+		// sandbox-exec mode does NOT yet use this path — it has no bwrap-equivalent
+		// mount mechanism. Config delivery for sandbox-exec is deferred to #1016.
 		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
 			containerName := container.NameForSession(agentSession)
 			if writeErr := container.WriteOpencodeConfig(containerName, agentConfigContent); writeErr != nil {
@@ -925,6 +927,8 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// For bwrap sessions, write the opencode.json config file to disk now
 		// so it is present before the agent pane opens. Mirrors the pattern in
 		// cmd/spawn.go:334-340 for regular bwrap spawns.
+		// sandbox-exec mode does NOT yet use this path — config delivery for
+		// sandbox-exec is deferred to #1016.
 		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
 			containerName := container.NameForSession(agentSession)
 			if writeErr := container.WriteOpencodeConfig(containerName, agentConfigContent); writeErr != nil {
@@ -1057,13 +1061,14 @@ func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []st
 }
 
 // ResolveAgentConfigContent resolves the per-agent opencode.json config blob
-// for a single agent in sandboxed mode (podman or bwrap). It is factored out
-// of Run so that it can be unit-tested independently of the tmux/DB machinery.
+// for a single agent in sandboxed mode (podman, bwrap, or sandbox-exec). It is
+// factored out of Run so that it can be unit-tested independently of the
+// tmux/DB machinery.
 //
 // Returns ("", nil) in host mode (isolationMode == "host" or ""), because no
 // config injection is needed — opencode is launched directly on the host.
 //
-// In sandboxed mode (isolationMode == "podman" or "bwrap"):
+// In sandboxed mode (isolationMode == "podman", "bwrap", or "sandbox-exec"):
 //   - Returns an error if pf is nil (missing profiles file).
 //   - Returns an error if ContainerConfigForRole returns an error.
 //   - Returns an error if the resolved blob is empty (stale profiles.json).
@@ -1072,7 +1077,7 @@ func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []st
 // Exported so that cmd/review_test.go (and integration tests) can exercise the
 // config-resolution path without needing a live DB or tmux session.
 func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName string) (string, error) {
-	needsConfig := isolationMode == string(config.IsolationPodman) || isolationMode == string(config.IsolationBwrap)
+	needsConfig := isolationMode == string(config.IsolationPodman) || isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
 	if !needsConfig {
 		return "", nil
 	}

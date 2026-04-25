@@ -14,7 +14,7 @@ package cmd
 //	--profile <name>      model profile to use from ~/.config/prism/profiles.json
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
-//	--isolation <mode>    isolation mode: podman, bwrap, or host (default: from config.json)
+//	--isolation <mode>    isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
 //	--host-mode           deprecated alias for --isolation host
 //	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
 
@@ -93,7 +93,7 @@ func init() {
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
-	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, or host (default: from ~/.config/prism/config.json)")
+	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host; bypass container mode and run opencode directly in the tmux pane")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use (currently only 'opencode' is supported)")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
@@ -109,7 +109,8 @@ func init() {
 //
 // Returns an error if both --isolation and --host-mode are set, or if
 // --isolation has an unknown value, or if the resolved mode is "bwrap" on
-// a non-Linux platform.
+// a non-Linux platform, or if the resolved mode is "sandbox-exec" on a
+// non-Darwin platform.
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
@@ -136,6 +137,9 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 		if err := checkBwrapPlatform(mode); err != nil {
 			return "", err
 		}
+		if err := checkSandboxExecPlatform(mode); err != nil {
+			return "", err
+		}
 		return mode, nil
 	}
 
@@ -149,6 +153,9 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	if err := checkBwrapPlatform(mode); err != nil {
 		return "", err
 	}
+	if err := checkSandboxExecPlatform(mode); err != nil {
+		return "", err
+	}
 	return mode, nil
 }
 
@@ -157,6 +164,15 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 func checkBwrapPlatform(mode config.IsolationMode) error {
 	if mode == config.IsolationBwrap && runtime.GOOS != "linux" {
 		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", mode, runtime.GOOS)
+	}
+	return nil
+}
+
+// checkSandboxExecPlatform returns an error if the isolation mode is
+// "sandbox-exec" on a non-Darwin platform (sandbox-exec is macOS-only).
+func checkSandboxExecPlatform(mode config.IsolationMode) error {
+	if mode == config.IsolationSandboxExec && runtime.GOOS != "darwin" {
+		return fmt.Errorf("isolation mode %q requires macOS (Darwin); current platform is %s", mode, runtime.GOOS)
 	}
 	return nil
 }
@@ -242,7 +258,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			if effectiveContainerMode || isolationMode == config.IsolationBwrap || profileFlag != "" {
+			if effectiveContainerMode || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec || profileFlag != "" {
 				return loadErr
 			}
 			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
@@ -272,8 +288,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create worktree: %w", err)
 	}
 
-	// In container/bwrap mode, inject the role-specific opencode.json blob as
-	// the harness config env var so it takes precedence (level 6) over any
+	// In container/bwrap/sandbox-exec mode, inject the role-specific opencode.json
+	// blob as the harness config env var so it takes precedence (level 6) over any
 	// project-level opencode.jsonc. This ensures agent identity is always
 	// determined by Nix config, not by the project file.
 	//
@@ -282,13 +298,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// This must run after worktreePath is known so that DefaultAgent can inspect
 	// the directory name (e.g. "main").
 	//
-	// This block fires for both podman and bwrap isolation modes. Host-mode
-	// sessions skip it because they run opencode directly with the host's real
-	// ~/.config/opencode/opencode.json via xdg.configFile.
+	// This block fires for podman, bwrap, and sandbox-exec isolation modes.
+	// Host-mode sessions skip it because they run opencode directly with the
+	// host's real ~/.config/opencode/opencode.json via xdg.configFile.
 	//
 	// DefaultAgent (not DefaultAgentForSession) is intentional: at spawn time the
 	// session has no DB row yet, so this call ASSIGNS the role rather than reading it.
-	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap
+	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec
 	if sandboxed && pf != nil {
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		// Non-worktree paths (effectiveRole == "") use the coordinator config blob

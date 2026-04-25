@@ -1,13 +1,15 @@
 package cmd
 
-// prism agent-run — exec the bwrap sandbox for a bwrap-mode agent session.
+// prism agent-run — exec the sandbox for a bwrap or sandbox-exec mode agent session.
 //
 // This command is invoked by the tmux agent window when the resolved isolation
-// mode is "bwrap". It reconstructs the container.Manager from the session's DB
-// row and config, writes the same temp files that Manager.Create() writes for
-// podman sessions (SSH config, gitconfig, opencode.json), and then runs:
+// mode is "bwrap" or "sandbox-exec". It reconstructs the container.Manager
+// from the session's DB row and config, writes the same temp files that
+// Manager.Create() writes for podman sessions (SSH config, gitconfig,
+// opencode.json), and then runs:
 //
-//	bwrap <args...>
+//	bwrap <args...>       (bwrap mode)
+//	sandbox-exec <args...> (sandbox-exec mode — not yet implemented, see #1016)
 //
 // as a child process (not a direct exec). A PTY pair is created so that bwrap
 // and opencode see a real terminal on all three fds (stdin/stdout/stderr).
@@ -31,14 +33,17 @@ package cmd
 // terminal is closed, the kernel sends SIGHUP to agent-run, which forwards
 // it to bwrap and its children.
 //
-// On non-Linux platforms the command fails immediately with a clear error
-// because bubblewrap is Linux-only.
+// On non-Linux platforms the bwrap path fails immediately with a clear error
+// because bubblewrap is Linux-only. The sandbox-exec path requires macOS;
+// the platform guard in spawn.go intercepts sandbox-exec requests on non-Darwin
+// before agent-run is reached.
 //
 // Flags:
 //
 //	--session <name>   prism session name (e.g. "nixos-config@feature")
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,18 +65,18 @@ import (
 
 var agentRunCmd = &cobra.Command{
 	Use:   "agent-run",
-	Short: "Exec the bwrap sandbox for a bwrap-mode agent session (internal)",
-	Long: `Exec the bwrap sandbox for a bwrap-mode agent session.
+	Short: "Exec the sandbox for a bwrap or sandbox-exec mode agent session (internal)",
+	Long: `Exec the sandbox for a bwrap or sandbox-exec mode agent session.
 
 This command is an internal implementation detail invoked by the tmux agent
-window when the isolation mode is "bwrap". It is not intended for direct user
-invocation.
+window when the isolation mode is "bwrap" or "sandbox-exec". It is not intended
+for direct user invocation.
 
 It reconstructs the container config from the session's DB row, writes temp
-files (SSH config, gitconfig), builds the bwrap argument list, and runs bwrap
-as a child process. A PTY pair gives bwrap a real terminal so that opencode's
-Bubble Tea TUI can query TIOCGWINSZ correctly. The master side is tee'd to
-both the tmux pane and ~/.local/state/prism/run/<session>/agent-run.log.`,
+files (SSH config, gitconfig), builds the sandbox argument list, and runs the
+sandbox as a child process. A PTY pair gives the sandbox a real terminal so
+that opencode's Bubble Tea TUI can query TIOCGWINSZ correctly. The master side
+is tee'd to both the tmux pane and ~/.local/state/prism/run/<session>/agent-run.log.`,
 	RunE: runAgentRun,
 }
 
@@ -82,11 +87,6 @@ func init() {
 }
 
 func runAgentRun(cmd *cobra.Command, args []string) error {
-	// Fail fast on non-Linux: bubblewrap is Linux-only.
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("prism agent-run: bwrap isolation requires Linux; current platform is %s", runtime.GOOS)
-	}
-
 	sessionName, _ := cmd.Flags().GetString("session")
 
 	// Open the prism database to look up session state.
@@ -103,10 +103,20 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agent-run: session %q not found in DB", sessionName)
 	}
 
-	// Verify this is actually a bwrap session.
+	// Dispatch based on the session's isolation mode.
 	isoMode := status.EffectiveIsolationMode()
-	if isoMode != "bwrap" {
-		return fmt.Errorf("agent-run: session %q has isolation mode %q, not bwrap; this command is only for bwrap sessions", sessionName, isoMode)
+	switch config.IsolationMode(isoMode) {
+	case config.IsolationBwrap:
+		// Fail fast on non-Linux: bubblewrap is Linux-only.
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("prism agent-run: bwrap isolation requires Linux; current platform is %s", runtime.GOOS)
+		}
+	case config.IsolationSandboxExec:
+		// The platform guard in spawn.go ensures this is only reached on Darwin.
+		// The full sandbox-exec implementation is tracked in issue #1016.
+		return errors.New("sandbox-exec mode: not yet implemented (issue #1016)")
+	default:
+		return fmt.Errorf("agent-run: session %q has isolation mode %q; this command is only for bwrap and sandbox-exec sessions", sessionName, isoMode)
 	}
 
 	// Load prism config for git identity and SSH key names.
