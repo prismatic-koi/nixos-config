@@ -1182,47 +1182,71 @@ func sampleReviewProfilesFile() *config.ProfilesFile {
 	}
 }
 
-// TestResolveAgentConfigContent_HostMode verifies that host mode (containerMode=false)
-// always returns ("", nil) regardless of ProfilesFile or agent name.
+// TestResolveAgentConfigContent_HostMode verifies that host mode (isolationMode="host"
+// or "") always returns ("", nil) regardless of ProfilesFile or agent name.
 // This is the regression guard for the host-mode path (#735 domain).
 func TestResolveAgentConfigContent_HostMode(t *testing.T) {
 	pf := sampleReviewProfilesFile()
-	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context", "review", "worker"} {
-		blob, err := review.ResolveAgentConfigContent(false, pf, agentName)
-		if err != nil {
-			t.Errorf("host mode, agent %q: unexpected error: %v", agentName, err)
-		}
-		if blob != "" {
-			t.Errorf("host mode, agent %q: expected empty blob, got %q", agentName, blob)
+	for _, isolationMode := range []string{"host", ""} {
+		for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context", "review", "worker"} {
+			blob, err := review.ResolveAgentConfigContent(isolationMode, pf, agentName)
+			if err != nil {
+				t.Errorf("host mode %q, agent %q: unexpected error: %v", isolationMode, agentName, err)
+			}
+			if blob != "" {
+				t.Errorf("host mode %q, agent %q: expected empty blob, got %q", isolationMode, agentName, blob)
+			}
 		}
 	}
 	// nil ProfilesFile in host mode must also be safe.
-	blob, err := review.ResolveAgentConfigContent(false, nil, "review-goal")
+	blob, err := review.ResolveAgentConfigContent("host", nil, "review-goal")
 	if err != nil {
 		t.Errorf("host mode, nil pf: unexpected error: %v", err)
 	}
 	if blob != "" {
 		t.Errorf("host mode, nil pf: expected empty blob, got %q", blob)
 	}
+	blob, err = review.ResolveAgentConfigContent("", nil, "review-goal")
+	if err != nil {
+		t.Errorf("empty isolation mode, nil pf: unexpected error: %v", err)
+	}
+	if blob != "" {
+		t.Errorf("empty isolation mode, nil pf: expected empty blob, got %q", blob)
+	}
 }
 
 // TestResolveAgentConfigContent_ContainerMode_NilProfilesFile verifies that
-// container mode with a nil ProfilesFile returns an explicit error.
+// podman mode with a nil ProfilesFile returns an explicit error.
 // This is the primary regression test for issue #784 (silent build-agent spawn).
 func TestResolveAgentConfigContent_ContainerMode_NilProfilesFile(t *testing.T) {
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent(true, nil, agentName)
+		_, err := review.ResolveAgentConfigContent("podman", nil, agentName)
 		if err == nil {
-			t.Errorf("container mode, nil pf, agent %q: expected error, got nil", agentName)
+			t.Errorf("podman mode, nil pf, agent %q: expected error, got nil", agentName)
 		}
 		if !findSubstring(err.Error(), "nil ProfilesFile") {
-			t.Errorf("container mode, nil pf, agent %q: error should mention 'nil ProfilesFile', got: %v", agentName, err)
+			t.Errorf("podman mode, nil pf, agent %q: error should mention 'nil ProfilesFile', got: %v", agentName, err)
+		}
+	}
+}
+
+// TestResolveAgentConfigContent_BwrapMode_NilProfilesFile verifies that
+// bwrap mode with a nil ProfilesFile returns an explicit error, matching
+// the podman-mode error path (AC: edge-case from issue #1037).
+func TestResolveAgentConfigContent_BwrapMode_NilProfilesFile(t *testing.T) {
+	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
+		_, err := review.ResolveAgentConfigContent("bwrap", nil, agentName)
+		if err == nil {
+			t.Errorf("bwrap mode, nil pf, agent %q: expected error, got nil", agentName)
+		}
+		if !findSubstring(err.Error(), "nil ProfilesFile") {
+			t.Errorf("bwrap mode, nil pf, agent %q: error should mention 'nil ProfilesFile', got: %v", agentName, err)
 		}
 	}
 }
 
 // TestResolveAgentConfigContent_ContainerMode_EmptyBlob verifies that
-// container mode with a ProfilesFile that has empty review config blobs returns
+// podman mode with a ProfilesFile that has empty review config blobs returns
 // an explicit error instead of silently falling back to the build agent.
 // This is the root cause of issue #784.
 func TestResolveAgentConfigContent_ContainerMode_EmptyBlob(t *testing.T) {
@@ -1239,19 +1263,43 @@ func TestResolveAgentConfigContent_ContainerMode_EmptyBlob(t *testing.T) {
 		ContainerReviewContextConfig:  "",
 	}
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent(true, stale, agentName)
+		_, err := review.ResolveAgentConfigContent("podman", stale, agentName)
 		if err == nil {
-			t.Errorf("container mode, empty blob, agent %q: expected error, got nil (would have silently spawned as build agent)", agentName)
+			t.Errorf("podman mode, empty blob, agent %q: expected error, got nil (would have silently spawned as build agent)", agentName)
 		}
 		if !findSubstring(err.Error(), "stale") {
-			t.Errorf("container mode, empty blob, agent %q: error should mention 'stale', got: %v", agentName, err)
+			t.Errorf("podman mode, empty blob, agent %q: error should mention 'stale', got: %v", agentName, err)
+		}
+	}
+}
+
+// TestResolveAgentConfigContent_BwrapMode_EmptyBlob verifies that bwrap mode
+// with a ProfilesFile that has empty review config blobs returns an explicit
+// error (AC: edge-case from issue #1037 — mirrors the podman error path).
+func TestResolveAgentConfigContent_BwrapMode_EmptyBlob(t *testing.T) {
+	stale := &config.ProfilesFile{
+		ContainerWorkerConfig:      `{"model":"worker"}`,
+		ContainerCoordinatorConfig: `{"model":"coordinator"}`,
+		ContainerReviewGoalConfig:     "",
+		ContainerReviewCodeConfig:     "",
+		ContainerReviewSecurityConfig: "",
+		ContainerReviewQaConfig:       "",
+		ContainerReviewContextConfig:  "",
+	}
+	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
+		_, err := review.ResolveAgentConfigContent("bwrap", stale, agentName)
+		if err == nil {
+			t.Errorf("bwrap mode, empty blob, agent %q: expected error, got nil (would have fallen back to host config)", agentName)
+		}
+		if !findSubstring(err.Error(), "stale") {
+			t.Errorf("bwrap mode, empty blob, agent %q: error should mention 'stale', got: %v", agentName, err)
 		}
 	}
 }
 
 // TestResolveAgentConfigContent_ContainerMode_Success verifies that all five
-// per-agent review config blobs are resolved correctly when the ProfilesFile
-// is fully populated.
+// per-agent review config blobs are resolved correctly in podman mode when the
+// ProfilesFile is fully populated.
 func TestResolveAgentConfigContent_ContainerMode_Success(t *testing.T) {
 	pf := sampleReviewProfilesFile()
 	want := map[string]string{
@@ -1262,19 +1310,45 @@ func TestResolveAgentConfigContent_ContainerMode_Success(t *testing.T) {
 		"review-context":  pf.ContainerReviewContextConfig,
 	}
 	for agentName, wantBlob := range want {
-		blob, err := review.ResolveAgentConfigContent(true, pf, agentName)
+		blob, err := review.ResolveAgentConfigContent("podman", pf, agentName)
 		if err != nil {
-			t.Errorf("container mode, agent %q: unexpected error: %v", agentName, err)
+			t.Errorf("podman mode, agent %q: unexpected error: %v", agentName, err)
 			continue
 		}
 		if blob != wantBlob {
-			t.Errorf("container mode, agent %q: got blob %q, want %q", agentName, blob, wantBlob)
+			t.Errorf("podman mode, agent %q: got blob %q, want %q", agentName, blob, wantBlob)
+		}
+	}
+}
+
+// TestResolveAgentConfigContent_BwrapMode_Success verifies that all five
+// per-agent review config blobs are resolved correctly in bwrap mode when the
+// ProfilesFile is fully populated. This is the primary AC for issue #1037:
+// the per-agent opencode.json blob is sourced from profiles.json via
+// ContainerConfigForRole for bwrap mode, consistent with podman mode.
+func TestResolveAgentConfigContent_BwrapMode_Success(t *testing.T) {
+	pf := sampleReviewProfilesFile()
+	want := map[string]string{
+		"review-goal":     pf.ContainerReviewGoalConfig,
+		"review-code":     pf.ContainerReviewCodeConfig,
+		"review-security": pf.ContainerReviewSecurityConfig,
+		"review-qa":       pf.ContainerReviewQaConfig,
+		"review-context":  pf.ContainerReviewContextConfig,
+	}
+	for agentName, wantBlob := range want {
+		blob, err := review.ResolveAgentConfigContent("bwrap", pf, agentName)
+		if err != nil {
+			t.Errorf("bwrap mode, agent %q: unexpected error: %v", agentName, err)
+			continue
+		}
+		if blob != wantBlob {
+			t.Errorf("bwrap mode, agent %q: got blob %q, want %q", agentName, blob, wantBlob)
 		}
 	}
 }
 
 // TestResolveAgentConfigContent_ContainerMode_WorkerAndCoordinator verifies
-// that worker and coordinator roles in container mode return empty blob (they
+// that worker and coordinator roles in podman mode return empty blob (they
 // are not review agents and their blobs are not expected by this function —
 // they are handled by the spawn path, not the review path).
 // The function returns an empty-blob error for them, which prevents accidental
@@ -1284,9 +1358,19 @@ func TestResolveAgentConfigContent_ContainerMode_WorkerRole(t *testing.T) {
 	// Worker and coordinator are not review agents — ContainerConfigForRole
 	// returns their blobs, but they are not set in sampleReviewProfilesFile.
 	// Empty blob should produce an error.
-	_, err := review.ResolveAgentConfigContent(true, pf, "worker")
+	_, err := review.ResolveAgentConfigContent("podman", pf, "worker")
 	if err == nil {
-		t.Error("container mode, agent 'worker': expected error for empty blob, got nil")
+		t.Error("podman mode, agent 'worker': expected error for empty blob, got nil")
+	}
+}
+
+// TestResolveAgentConfigContent_BwrapMode_WorkerRole verifies that worker role
+// in bwrap mode also returns an empty-blob error (mirrors podman behaviour).
+func TestResolveAgentConfigContent_BwrapMode_WorkerRole(t *testing.T) {
+	pf := sampleReviewProfilesFile()
+	_, err := review.ResolveAgentConfigContent("bwrap", pf, "worker")
+	if err == nil {
+		t.Error("bwrap mode, agent 'worker': expected error for empty blob, got nil")
 	}
 }
 
@@ -1564,7 +1648,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		{Name: "review-goal", OpencodeName: "review-goal"},
 	}
 
-	// container mode with nil ProfilesFile triggers ResolveAgentConfigContent
+	// podman mode with nil ProfilesFile triggers ResolveAgentConfigContent
 	// to return a "nil ProfilesFile" error before any tmux session is created.
 	opts := review.Opts{
 		PRNumber:      "999",
@@ -1574,6 +1658,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
 		ContainerMode: true,
+		IsolationMode: "podman",
 		ProfilesFile:  nil,
 	}
 
@@ -2669,6 +2754,7 @@ func TestRunAsync_ReturnsImmediately(t *testing.T) {
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
 		ContainerMode: true,
+		IsolationMode: "podman",
 		ProfilesFile:  nil, // triggers immediate config-resolution failure → fast return
 	}
 
@@ -2718,6 +2804,7 @@ func TestRunAsync_AllSpawnFailReturnsError(t *testing.T) {
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
 		ContainerMode: true,
+		IsolationMode: "podman",
 		ProfilesFile:  nil, // → all agents fail to spawn
 	}
 
