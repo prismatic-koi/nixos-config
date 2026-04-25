@@ -111,14 +111,14 @@ func (w *Watcher) tick(ctx context.Context) {
 	}
 
 	// PR closed without merging.
-	if prInfo.State == "CLOSED" && !prInfo.Merged {
+	if prInfo.State == "CLOSED" && !prInfo.isMerged() {
 		msg := "PR was closed without merging"
 		w.failAndNotify(head, msg)
 		return
 	}
 
 	// PR already merged (shouldn't happen, but handle it gracefully).
-	if prInfo.State == "MERGED" || prInfo.Merged {
+	if prInfo.State == "MERGED" || prInfo.isMerged() {
 		w.succeedAndNotify(ctx, head)
 		return
 	}
@@ -325,12 +325,26 @@ func buildNotifyBody(text string, status *db.Status) map[string]any {
 	return body
 }
 
+// prInfoJSONFields is the comma-separated list of fields requested from
+// `gh pr view --json`. Exposed as a package-level constant so tests can assert
+// the field list never regresses to use the (invalid) "merged" field again —
+// `gh pr view` rejects unknown JSON fields with a non-zero exit, so an invalid
+// field name silently breaks the entire merge-queue watcher (see #1014 fallout).
+const prInfoJSONFields = "state,mergedAt,mergeStateStatus,statusCheckRollup"
+
 // prInfo holds the fields we care about from `gh pr view --json`.
 type prInfo struct {
-	State             string          `json:"state"`
-	Merged            bool            `json:"merged"`
-	MergeStateStatus  string          `json:"mergeStateStatus"`
-	StatusCheckRollup []checkEntry    `json:"statusCheckRollup"`
+	State             string       `json:"state"`
+	MergedAt          *string      `json:"mergedAt"`
+	MergeStateStatus  string       `json:"mergeStateStatus"`
+	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
+}
+
+// isMerged reports whether the PR has been merged. `gh pr view` emits
+// mergedAt as a non-null ISO-8601 timestamp string when the PR is merged, and
+// null otherwise (which unmarshals to a nil pointer).
+func (p *prInfo) isMerged() bool {
+	return p.MergedAt != nil && *p.MergedAt != ""
 }
 
 type checkEntry struct {
@@ -341,7 +355,7 @@ type checkEntry struct {
 // fetchPRInfo calls `gh pr view <pr> --json` and returns the parsed result.
 func fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
 	out, err := runGH(ctx, "pr", "view", fmt.Sprintf("%d", pr),
-		"--json", "state,merged,mergeStateStatus,statusCheckRollup")
+		"--json", prInfoJSONFields)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(string(out)))
 	}
