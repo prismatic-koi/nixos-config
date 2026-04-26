@@ -13,6 +13,8 @@ package session
 // (setupFullLayout) treats this as non-fatal and logs a warning.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +23,35 @@ import (
 	"strings"
 	"syscall"
 )
+
+// sessionDirHashLen is the number of hex characters used as the per-session
+// run/ subdirectory name. 12 hex chars = 6 bytes = 48 bits of entropy from
+// SHA-256, more than enough to disambiguate the small set of concurrent
+// session names a single user runs (collision probability ≈ N²/2^49).
+//
+// The hashed directory name keeps the host-API socket path under sun_path
+// budgets on every platform: with the default state dir
+// "$HOME/.local/state/prism/run/" + 12 hex + "/hostapi.sock", the path is
+// roughly 58 bytes — comfortably under Darwin's 104-byte limit and Linux's
+// 108-byte limit even when $HOME is unusually long. See issue #1050 for the
+// full path arithmetic and the regression test in this package.
+const sessionDirHashLen = 12
+
+// SessionDirName returns the deterministic per-session directory name used
+// under $XDG_STATE_HOME/prism/run/ for files that must be co-located with the
+// host-API Unix socket (currently hostapi.sock and agent-run.log).
+//
+// The directory name is the first 12 hex characters of SHA-256(sessionName).
+// This keeps the resulting socket path under sun_path budgets on every
+// platform regardless of how long the session name itself is — see #1050.
+//
+// The mapping is pure and deterministic, so cleanup, debugging
+// (`prism logs <session>`), and bwrap/podman bind-mount construction can all
+// re-derive the directory from the session name without any persisted lookup.
+func SessionDirName(sessionName string) string {
+	sum := sha256.Sum256([]byte(sessionName))
+	return hex.EncodeToString(sum[:])[:sessionDirHashLen]
+}
 
 // sidecarStateDir returns the $XDG_STATE_HOME/prism base directory.
 func sidecarStateDir() (string, error) {
@@ -74,13 +105,20 @@ func SidecarPIDPath(sessionName string) (string, error) {
 // when podman evaluates the bind-mount, even though the socket file inside it is
 // created later by the sidecar (after the container becomes healthy).
 //
-// Socket path: $XDG_STATE_HOME/prism/run/<session>/hostapi.sock
+// The directory name is a 12-hex-char SHA-256 prefix of the session name (see
+// SessionDirName) rather than the session name itself. This keeps the resulting
+// socket path under the platform sun_path limits — historically the full session
+// name (e.g. "<repo>@<long-branch>~review-N-review-<role>") could push the path
+// past Linux's 108-byte and Darwin's 104-byte budgets, causing bind(2) to fail
+// with EINVAL. See #1050 for the path arithmetic and regression test.
+//
+// Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/hostapi.sock
 func SidecarHostAPIPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "run", sessionName, "hostapi.sock"), nil
+	return filepath.Join(base, "run", SessionDirName(sessionName), "hostapi.sock"), nil
 }
 
 // AgentRunLogPath returns the agent-run log file path for the named session.
@@ -90,13 +128,17 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 // created by the time agent-run opens the file (the sidecar pre-creates it via
 // container.prepareVolumeDirs, and agent-run falls back to creating it if needed).
 //
-// Log path: $XDG_STATE_HOME/prism/run/<session>/agent-run.log
+// The directory name is the same SessionDirName-derived 12-hex prefix used by
+// SidecarHostAPIPath, so the log and the socket always live in the same
+// per-session directory regardless of how long the session name is.
+//
+// Log path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/agent-run.log
 func AgentRunLogPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "run", sessionName, "agent-run.log"), nil
+	return filepath.Join(base, "run", SessionDirName(sessionName), "agent-run.log"), nil
 }
 
 // KillSidecar reads the PID file for the named session, sends SIGTERM to the

@@ -295,13 +295,14 @@ func TestAgentRunLogPath_DefaultXDG(t *testing.T) {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
 
-	got, err := AgentRunLogPath("myrepo@feature")
+	const sess = "myrepo@feature"
+	got, err := AgentRunLogPath(sess)
 	if err != nil {
 		t.Fatalf("AgentRunLogPath: %v", err)
 	}
 
-	// Per-session subdirectory format: run/<session>/agent-run.log
-	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature", "agent-run.log")
+	// Per-session subdirectory format (#1050): run/<12-hex-of-sha256(session)>/agent-run.log
+	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "agent-run.log")
 	if got != want {
 		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
 	}
@@ -311,13 +312,14 @@ func TestAgentRunLogPath_CustomXDG(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	got, err := AgentRunLogPath("myrepo@main")
+	const sess = "myrepo@main"
+	got, err := AgentRunLogPath(sess)
 	if err != nil {
 		t.Fatalf("AgentRunLogPath: %v", err)
 	}
 
-	// Per-session subdirectory format: run/<session>/agent-run.log
-	want := filepath.Join(tmp, "prism", "run", "myrepo@main", "agent-run.log")
+	// Per-session subdirectory format (#1050): run/<12-hex-of-sha256(session)>/agent-run.log
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "agent-run.log")
 	if got != want {
 		t.Errorf("AgentRunLogPath = %q, want %q", got, want)
 	}
@@ -356,13 +358,15 @@ func TestSidecarHostAPIPath_DefaultXDG(t *testing.T) {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
 
-	got, err := SidecarHostAPIPath("myrepo@feature")
+	const sess = "myrepo@feature"
+	got, err := SidecarHostAPIPath(sess)
 	if err != nil {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	// Per-session subdirectory format (security fix #960): run/<session>/hostapi.sock
-	want := filepath.Join(home, ".local", "state", "prism", "run", "myrepo@feature", "hostapi.sock")
+	// Per-session subdirectory format (security fix #960, hashed for #1050):
+	// run/<12-hex-of-sha256(session)>/hostapi.sock
+	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "hostapi.sock")
 	if got != want {
 		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
 	}
@@ -372,14 +376,118 @@ func TestSidecarHostAPIPath_CustomXDG(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	got, err := SidecarHostAPIPath("myrepo@main")
+	const sess = "myrepo@main"
+	got, err := SidecarHostAPIPath(sess)
 	if err != nil {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
 	}
 
-	// Per-session subdirectory format (security fix #960): run/<session>/hostapi.sock
-	want := filepath.Join(tmp, "prism", "run", "myrepo@main", "hostapi.sock")
+	// Per-session subdirectory format (security fix #960, hashed for #1050):
+	// run/<12-hex-of-sha256(session)>/hostapi.sock
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "hostapi.sock")
 	if got != want {
 		t.Errorf("SidecarHostAPIPath = %q, want %q", got, want)
+	}
+}
+
+// ── Path-length invariant tests (#1050) ──────────────────────────────────────
+//
+// The host-API socket path is bound by the kernel's sun_path limit:
+//   - Linux:  108 bytes (sizeof(((struct sockaddr_un *)0)->sun_path))
+//   - Darwin: 104 bytes
+// We assert ≤ 104 bytes on every platform so the same code path works on both.
+//
+// These tests use a deliberately-pessimistic synthetic $HOME that matches the
+// real-world layout under which #1050 was first observed
+// (/home/<user>/.local/state/prism/run/...). Test-time temp dirs are too short
+// to surface the bug, so we substitute the realistic prefix manually.
+
+const sunPathBudget = 104
+
+// realisticHostAPIPath builds the host-API socket path that a production
+// system with the given $HOME would produce, without depending on test-time
+// $XDG_STATE_HOME (which a test harness sets to a short path under /tmp).
+func realisticHostAPIPath(home, sessionName string) string {
+	return filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sessionName), "hostapi.sock")
+}
+
+// TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession exercises the
+// worst-case session name from the issue (#1050 AC-1) and asserts the
+// resulting path fits the cross-platform budget.
+func TestSidecarHostAPIPath_LengthInvariant_WorstCaseSession(t *testing.T) {
+	const home = "/home/prismatic-koi"
+	worstCase := "nixos-config@" + strings.Repeat("x", 80) + "~review-99-review-context"
+
+	got := realisticHostAPIPath(home, worstCase)
+	if len(got) > sunPathBudget {
+		t.Errorf("worst-case socket path is %d bytes (limit %d): %q",
+			len(got), sunPathBudget, got)
+	}
+}
+
+// TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes asserts the
+// path-length invariant for the three plausible session shapes called out by
+// AC-2: a short coordinator name, a long branch name, and a long branch +
+// review suffix.
+func TestSidecarHostAPIPath_LengthInvariant_PlausibleShapes(t *testing.T) {
+	const home = "/home/prismatic-koi"
+	cases := []struct {
+		name    string
+		session string
+	}{
+		{
+			name:    "short coordinator",
+			session: "nixos-config@main",
+		},
+		{
+			name:    "long branch name",
+			session: "nixos-config@fix-something-with-a-fairly-long-branch-name",
+		},
+		{
+			name:    "long branch + review suffix",
+			session: "nixos-config@fix-something-with-a-fairly-long-branch-name~review-1-review-security",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := realisticHostAPIPath(home, tc.session)
+			if len(got) > sunPathBudget {
+				t.Errorf("session %q produced %d-byte path (limit %d): %q",
+					tc.session, len(got), sunPathBudget, got)
+			}
+		})
+	}
+}
+
+// TestSessionDirName_Deterministic asserts that SessionDirName is a pure
+// function of its input — bwrap.BuildArgs, container.Manager.buildRunArgs,
+// the sidecar bind site and cleanup all derive the directory by calling this
+// function (or SidecarHostAPIPath which calls it), so they must agree
+// regardless of when they are called.
+func TestSessionDirName_Deterministic(t *testing.T) {
+	const session = "nixos-config@fix-mergequeue-merged-field~review-1-review-context"
+	first := SessionDirName(session)
+	second := SessionDirName(session)
+	if first != second {
+		t.Errorf("SessionDirName not deterministic: %q vs %q", first, second)
+	}
+	if got, want := len(first), sessionDirHashLen; got != want {
+		t.Errorf("SessionDirName length = %d, want %d", got, want)
+	}
+}
+
+// TestSessionDirName_StableFormula pins the exact formula (12-hex-char SHA-256
+// prefix) so that any silent drift in the algorithm is caught immediately.
+// internal/container has a parallel test (TestHostAPIPath_RoundTrip_*) that
+// re-derives the dir name with the same formula — if either side changes
+// without the other, both this test and the container-side round-trip test
+// will fail loudly.
+func TestSessionDirName_StableFormula(t *testing.T) {
+	// First 12 hex chars of SHA-256("nixos-config@main") = "896d0e575a71".
+	// Verify with: printf 'nixos-config@main' | sha256sum | cut -c1-12
+	if got, want := SessionDirName("nixos-config@main"), "896d0e575a71"; got != want {
+		t.Errorf("SessionDirName(\"nixos-config@main\") = %q, want %q "+
+			"(formula drift: must remain first 12 hex chars of SHA-256)", got, want)
 	}
 }

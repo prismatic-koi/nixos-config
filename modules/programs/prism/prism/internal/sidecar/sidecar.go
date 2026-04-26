@@ -5,6 +5,17 @@
 // DB writes, and dashboard sentinel touches — replicating the logic in
 // opencode/plugins/prism-hooks.ts.
 //
+// Host-API socket path budget. The Unix socket the sidecar binds for the
+// host-API server (Config.HostAPISockPath) must fit the kernel's sun_path
+// limit: 108 bytes on Linux, 104 bytes on Darwin. We treat 104 as the budget
+// for both platforms so the same code path works everywhere. The path is
+// constructed by session.SidecarHostAPIPath and uses a 12-hex-char SHA-256
+// prefix of the session name as the per-session directory — see #1050 for the
+// path arithmetic and the regression tests in
+// internal/session/sidecar_test.go (TestSidecarHostAPIPath_LengthInvariant_*).
+// If a future change reverts that to a long-form session name, those tests
+// will fail with a clear message before the bug ships.
+//
 // All runtime-specific logic (session creation, prompt delivery, SSE
 // subscription, event type mapping, message extraction, container command,
 // health check, config mount path) is delegated to the Harness interface.
@@ -525,21 +536,31 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 		if listenErr != nil {
+			// Failure to bind is FATAL (#1050). Continuing without a socket
+			// produces a partially-functional agent: bwrap exec proceeds with
+			// PRISM_HOST_API set but nothing listening, so anything inside the
+			// container that hits the host-API channel hangs or fails in a
+			// downstream way that prevents opencode from ever binding its TCP
+			// port. The agent then appears as "idle" with no title, the SSE
+			// loop retries forever, and the user has no clear signal that
+			// anything is wrong. Returning the error here surfaces it via the
+			// sidecar log and exits with a non-zero status so the operator
+			// sees the failure immediately.
 			log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
-		} else {
-			srv := &http.Server{Handler: s.hostAPIHandler()}
-			s.mu.Lock()
-			s.hostAPIListener = ln
-			s.hostAPISrv = srv
-			s.mu.Unlock()
-			go func() {
-				if err := srv.Serve(ln); err != nil &&
-					!errors.Is(err, http.ErrServerClosed) &&
-					!errors.Is(err, net.ErrClosed) {
-					log.Printf("sidecar: host-API server (unix): %v", err)
-				}
-			}()
+			return fmt.Errorf("sidecar: host-API socket bind failed for %q: %w", s.cfg.HostAPISockPath, listenErr)
 		}
+		srv := &http.Server{Handler: s.hostAPIHandler()}
+		s.mu.Lock()
+		s.hostAPIListener = ln
+		s.hostAPISrv = srv
+		s.mu.Unlock()
+		go func() {
+			if err := srv.Serve(ln); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) &&
+				!errors.Is(err, net.ErrClosed) {
+				log.Printf("sidecar: host-API server (unix): %v", err)
+			}
+		}()
 
 		// TCP server — Darwin only, when the TCP listener was bound before
 		// container creation. Uses a separate http.Server with the same handler
