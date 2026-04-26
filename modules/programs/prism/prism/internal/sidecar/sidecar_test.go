@@ -5672,6 +5672,200 @@ echo "session \"${last}@cap-branch\" created"
 	}
 }
 
+// TestHostAPI_Spawn_IsolationForwarded verifies that when a /spawn request
+// carries {"isolation":"<mode>"} for each of the four valid modes, the sidecar
+// includes "--isolation <mode>" in the args passed to the prism binary.
+// This is the regression test for issue #1059: previously the /spawn handler
+// did not read the isolation field at all, so a coordinator inside a container
+// running `prism spawn --isolation host` saw the value silently dropped and
+// the spawned session landed in the configured default mode (typically bwrap).
+func TestHostAPI_Spawn_IsolationForwarded(t *testing.T) {
+	for _, mode := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+		t.Run(mode, func(t *testing.T) {
+			d := openTestDB(t)
+
+			argsFile := filepath.Join(t.TempDir(), "captured-args")
+			stubPath := filepath.Join(t.TempDir(), "prism-stub")
+			stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@iso-branch\" created"
+`
+			if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+				t.Fatalf("write stub: %v", err)
+			}
+			clk := newTestClock()
+			cfg := Config{
+				SessionName:     "nixos-config@main",
+				Repo:            "nixos-config",
+				Worktree:        "/tmp/nixos-config@main",
+				OpencodeURL:     "http://localhost:14000",
+				DB:              d,
+				Clock:           clk,
+				AgentRole:       "coordinator",
+				PrismBinaryPath: stubPath,
+				Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+			}
+			sc := New(cfg)
+
+			body := `{"branch":"iso-branch","isolation":"` + mode + `"}`
+			rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+			}
+
+			capturedArgs, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read captured args: %v", err)
+			}
+			want := "--isolation " + mode
+			if !strings.Contains(string(capturedArgs), want) {
+				t.Errorf("captured args %q do not contain %q; isolation:%q was not forwarded (regression for issue #1059)",
+					string(capturedArgs), want, mode)
+			}
+		})
+	}
+}
+
+// TestHostAPI_Spawn_IsolationOmittedWhenAbsent verifies that when the /spawn
+// request body does NOT include an isolation field, no --isolation flag is
+// appended to the spawned subprocess args. Absence must mean "fall back to
+// config.json default", not "force an empty-string value".
+func TestHostAPI_Spawn_IsolationOmittedWhenAbsent(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@no-iso-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"no-iso-branch"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if strings.Contains(string(capturedArgs), "--isolation") {
+		t.Errorf("captured args %q contain --isolation; absence in body must omit the flag, not pass empty",
+			string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Spawn_IsolationUnknownValueRejected verifies that an unknown
+// isolation mode is rejected at the API boundary with HTTP 400 and a clear
+// error listing the accepted values, rather than being silently forwarded to
+// a subprocess that would also reject it (the API rejection is faster and
+// keeps the error close to the source).
+func TestHostAPI_Spawn_IsolationUnknownValueRejected(t *testing.T) {
+	d := openTestDB(t)
+
+	// Stub should never be invoked — the API must reject before exec.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "stub should not be invoked" >&2
+exit 99
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"bad-iso-branch","isolation":"banana"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	errMsg := errResp["error"]
+	if !strings.Contains(errMsg, "unknown isolation mode") {
+		t.Errorf("error %q does not mention 'unknown isolation mode'", errMsg)
+	}
+	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+		if !strings.Contains(errMsg, m) {
+			t.Errorf("error %q does not list valid mode %q", errMsg, m)
+		}
+	}
+}
+
+// TestHostAPI_Spawn_IsolationAndHostModeRejected verifies that a /spawn
+// request that sets both isolation and host_mode is rejected at the API
+// boundary, mirroring the resolveIsolationMode mutual-exclusion rule.
+func TestHostAPI_Spawn_IsolationAndHostModeRejected(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "stub should not be invoked" >&2
+exit 99
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"both-branch","isolation":"host","host_mode":true}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	errMsg := errResp["error"]
+	if !strings.Contains(errMsg, "--isolation and --host-mode") {
+		t.Errorf("error %q does not mention both flags", errMsg)
+	}
+}
+
 // TestHostAPI_Spawn_SubprocessOutputIncludedInError verifies that when the
 // host-side prism spawn subprocess exits non-zero, the error response includes
 // the subprocess stdout/stderr output (not just "exit status 1").
