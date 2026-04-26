@@ -8,7 +8,7 @@ Source corpus:
 [`B1-harness-transport-and-lifecycle-assumptions.md`](B1-harness-transport-and-lifecycle-assumptions.md)
 (landed in #1096),
 [`B2-harness-registry-and-transport-shape.md`](B2-harness-registry-and-transport-shape.md)
-(landed in #1097), and the primary source:
+(landed in #1102), and the primary source:
 `internal/harness/harness.go` (interface definition) and
 `internal/harness/opencode/adapter.go` (sole existing implementation).
 
@@ -412,7 +412,7 @@ the deferral should end and grouping should be re-evaluated:
 - B.1 (#1074, landed #1096):
   [`B1-harness-transport-and-lifecycle-assumptions.md`](B1-harness-transport-and-lifecycle-assumptions.md)
   — transport-shape classification this proposal consumes.
-- B.2 (#1080, landed #1097):
+- B.2 (#1080, landed #1102):
   [`B2-harness-registry-and-transport-shape.md`](B2-harness-registry-and-transport-shape.md)
   — flat registry proposal; B.4 evaluates whether to add a layer above it.
 - B.3 (#1081):
