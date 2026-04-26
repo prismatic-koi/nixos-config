@@ -23,6 +23,7 @@ package session
 //     review.go once this primitive lands.
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -350,7 +351,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// for why opencode never came up; for the size-driven failure
 			// mode the cause is structural and predictable, so name it.
 			if mode == "host" && hostLaunchCmdSize > HostLaunchCmdWarnThreshold {
-				if rte, ok := readyErr.(*ReadinessTimeoutError); ok {
+				// errors.As (rather than a bare type assertion) so a future
+				// refactor that wraps the readiness error keeps enrichment
+				// firing — same shape IsReadinessTimeout uses.
+				var rte *ReadinessTimeoutError
+				if errors.As(readyErr, &rte) {
 					rte.Hint = fmt.Sprintf(
 						"host-mode launch command was %d bytes, above the typical safe range of %d bytes; "+
 							"a prompt-size issue is a likely cause (see issue #1064)",
@@ -394,6 +399,12 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 // pre-spawn size guard in SpawnSession) hands to BuildOpencodeCmd. Centralised
 // here so the size-guard preview and the actual layout invocation cannot
 // drift — both share the same constructed command.
+//
+// The size guard calls this with port=0 (the port is allocated only after
+// the guard runs), while the real launch path passes the allocated port.
+// The few-byte difference (--port <N> --hostname 127.0.0.1 contributes <30
+// bytes) is well within the 4 KB safe bound and 1 KB warn threshold, so
+// the guard's verdict cannot flip between preview and launch in practice.
 func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	return Opts{
 		Prompt:           opts.Prompt,

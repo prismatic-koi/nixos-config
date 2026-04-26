@@ -30,10 +30,13 @@ import (
 
 // ── prompt-file helpers ─────────────────────────────────────────────────────
 
-// TestInitialPromptPath_LivesUnderRunDir verifies that the prompt-file path
-// lives next to agent-startup.log under the per-session run directory, so a
-// single `ls run/<session>/` shows both forensic artefacts together.
-func TestInitialPromptPath_LivesUnderRunDir(t *testing.T) {
+// TestInitialPromptPath_CoLocatedWithAgentLogs verifies that the prompt-file
+// path lives in the same per-session run directory as agent-startup.log,
+// agent-run.log, and hostapi.sock — see #1066 for the SessionDirName
+// alignment that this test pins. A single
+// `ls run/<sessionDirName>/` should show every forensic artefact for the
+// session.
+func TestInitialPromptPath_CoLocatedWithAgentLogs(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
@@ -42,7 +45,7 @@ func TestInitialPromptPath_LivesUnderRunDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InitialPromptPath: %v", err)
 	}
-	want := filepath.Join(tmp, "prism", "run", sessionName, "initial-prompt.txt")
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sessionName), "initial-prompt.txt")
 	if got != want {
 		t.Errorf("InitialPromptPath = %q, want %q", got, want)
 	}
@@ -54,6 +57,15 @@ func TestInitialPromptPath_LivesUnderRunDir(t *testing.T) {
 	if filepath.Dir(got) != filepath.Dir(startup) {
 		t.Errorf("initial-prompt dir %q != agent-startup dir %q — files should be co-located",
 			filepath.Dir(got), filepath.Dir(startup))
+	}
+
+	runPath, err := AgentRunLogPath(sessionName)
+	if err != nil {
+		t.Fatalf("AgentRunLogPath: %v", err)
+	}
+	if filepath.Dir(got) != filepath.Dir(runPath) {
+		t.Errorf("initial-prompt dir %q != agent-run dir %q — files should be co-located",
+			filepath.Dir(got), filepath.Dir(runPath))
 	}
 }
 

@@ -17,10 +17,16 @@ package session
 // regardless of prompt size, while the prompt content reaches opencode via
 // argv (which comfortably handles 100s of KB on both Linux and Darwin).
 //
-// The file lives next to agent-startup.log (#1051 / #1062) so the per-session
-// run directory has a single authoritative location:
+// The file lives next to agent-startup.log (#1051 / #1062), agent-run.log
+// (#1061), and hostapi.sock under a single SessionDirName-derived directory
+// so the per-session run directory has a single authoritative location:
 //
-//	$XDG_STATE_HOME/prism/run/<session>/initial-prompt.txt
+//	$XDG_STATE_HOME/prism/run/<sessionDirName>/initial-prompt.txt
+//
+// SessionDirName(sessionName) is the 12-hex SHA-256 prefix of the session
+// name (see sidecar.go) — the same scheme #1061 introduced to keep socket
+// paths under the sun_path limit. Using the raw session name here would
+// scatter the forensic trail across two sibling directories — see #1066.
 //
 // Cleanup is best-effort and lifecycle-tied:
 //   - Pre-spawn: any stale file from a previous incarnation is removed
@@ -28,9 +34,9 @@ package session
 //     re-uses a previous prompt.
 //   - On readiness-gate timeout: the file is removed alongside the rest of
 //     the half-alive session cleanup.
-//   - On normal shutdown / archive: the surrounding run/<session>/ directory
-//     is reaped by the existing per-session-dir cleanup paths; this file
-//     does not need a separate hook.
+//   - On normal shutdown / archive: the surrounding run/<sessionDirName>/
+//     directory is reaped by the existing per-session-dir cleanup paths;
+//     this file does not need a separate hook.
 
 import (
 	"fmt"
@@ -39,18 +45,18 @@ import (
 )
 
 // InitialPromptPath returns the initial-prompt.txt file path for the named
-// session. It lives in the per-session run directory next to
-// agent-startup.log (see startup_log.go), keyed on the raw session name so
-// `ls $XDG_STATE_HOME/prism/run/<session>/` shows both files together.
-// (Note: the bwrap agent-run.log uses a hashed-prefix directory under run/
-// instead — see SessionDirName in sidecar.go — so it is NOT in the same
-// dir as this file. Aligning the two layouts is tracked separately.)
+// session. It lives in the per-session run directory keyed on
+// SessionDirName(sessionName), so it is co-located with agent-startup.log
+// (see startup_log.go), agent-run.log, and hostapi.sock — a single
+// `ls $XDG_STATE_HOME/prism/run/<sessionDirName>/` shows the full forensic
+// trail. See #1066 for the alignment rationale and #1061 for the original
+// switch to SessionDirName.
 func InitialPromptPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "run", sessionName, "initial-prompt.txt"), nil
+	return filepath.Join(base, "run", SessionDirName(sessionName), "initial-prompt.txt"), nil
 }
 
 // WriteInitialPrompt writes the prompt to the per-session initial-prompt.txt
