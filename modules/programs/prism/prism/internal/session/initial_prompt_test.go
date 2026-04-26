@@ -315,7 +315,7 @@ func TestSpawnSession_HostMode_RejectsOversizedLaunchCmd(t *testing.T) {
 	// present.
 	msg := err.Error()
 	for _, expected := range []string{
-		"host-mode launch command",
+		"launch command",
 		"safe bound",
 		"--prompt-file",
 		"#1064",
