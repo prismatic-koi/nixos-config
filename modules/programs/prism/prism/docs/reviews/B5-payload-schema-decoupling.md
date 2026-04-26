@@ -48,12 +48,33 @@ inventory and a `grep payload\.` pass over the source tree):
   dashboard reads `agent_status` (and a sentinel push channel for refresh
   triggers) and never inspects `agent_events.payload`. It is therefore
   payload-shape-agnostic.
-- `internal/db/db.go` — `QueryEvents`, `QueryEventsByMessageIDs`,
-  `AllSessionEvents` return raw `Event` rows (the payload is opaque
-  `string`); `QueryDoomLoopEvents`, `QueryPermissionEvents`,
-  `QueryAuditEvents` filter by `type` (and `QueryAuditEvents` also runs a
-  `JSON_EXTRACT(payload, '$.command') LIKE …` filter at SQL level — the
-  only consumer that reaches into payload field names from inside SQL).
+- `internal/db/db.go` — `QueryEvents`, `AllSessionEvents` return raw
+  `Event` rows (the payload is opaque `string`); `QueryDoomLoopEvents`,
+  `QueryPermissionEvents` filter by `type` only. **Four DB methods reach
+  into payload field names from inside SQL via `JSON_EXTRACT`**, and
+  these are the most schema-coupled consumer surface of all because they
+  bake the field path into SQL string literals where Go's type system
+  cannot help:
+  - `QueryEventsByMessageIDs` (db.go:1656) — `JSON_EXTRACT(payload,
+    '$.messageId') IN (…)` — the cross-event correlation query that
+    powers `cmd/checkin.go`'s "find all `tool_call` / `tool_result` /
+    `permission_ask` / `permission_denied` / `thinking` children of a
+    given user message turn" lookup.
+  - `QueryAuditEvents` (db.go:2186) — `LOWER(JSON_EXTRACT(payload,
+    '$.command')) LIKE ?` — the substring filter for `prism audit
+    --pattern <substr>`.
+  - `ConsecutiveSidecarFailures` (db.go:2362-2366) — selects
+    `JSON_EXTRACT(payload, '$.state')` and filters
+    `JSON_EXTRACT(payload, '$.state') IN ('finished','interrupted',
+    'error','deleted')` — the sidecar restart circuit-breaker reads
+    state-change payloads via SQL pushdown.
+  - `SessionTurnTokens` (db.go:3186-3191) — selects six fields
+    (`$.model`, `$.inputTokens`, `$.outputTokens`, `$.cacheReadTokens`,
+    `$.cacheWriteTokens`, `$.cost`) from `msg_assistant` payloads via
+    SQL pushdown for per-turn token aggregation. This is the most
+    schema-bound query in the entire codebase: it depends on six exact
+    JSON paths matching the `MsgAssistant` field-tag camelCase
+    verbatim.
 
 For background and motivation, see also:
 - Inventory §3.13, §7.19, §11.8 (paths above).
@@ -366,10 +387,13 @@ JSON today).
 | `cmd/stats.go` (token / cost / duration / TTFT / context-window / agent / model aggregation, plus per-tool counts and durations, subagent invocations, doom-loop / denial / ask tables) | Unchanged. `cost`, `ttftMs`, and `contextWindowPct` will be `0` for PI events — already a documented "not available" sentinel in the struct doc. The local pricing table fallback for `cost` already exists and will engage automatically. | Unchanged for the existing aggregations. Future "by-provider" / "by-stop-reason" cuts of stats become possible without further migration but require adding new aggregation arms. Risk: a `DurationMs` populated by PI with provider-request-only semantics rather than full-message semantics would silently bias `TurnDurations`. | Every aggregation arm gains a per-harness switch. The biggest concrete pain points: `m.InputTokens += p.InputTokens` becomes harness-aware; `m.ToolCalls[p.Tool]++` must reach into PI's tool-name field which may live under a different key; `coordinatorModel` detection (which keys off `p.Agent == "coordinator"`) needs a PI-equivalent (which doesn't natively exist). Roughly 7 dispatch sites; each gains a switch. |
 | `cmd/audit.go` | Unchanged. PI emits `audit` only if a PI extension synthesises one (PI has no native equivalent of opencode's bash-tool audit-promotion). The fields the table renders (`SessionName`, `Command`) are easy to populate from a synthesised PI event. | Same as Translate; `Audit` is small enough that widening adds no real branching. | Per-harness `Audit` struct in each package. The `JSON_EXTRACT(payload, '$.command') LIKE …` filter in `QueryAuditEvents` (db.go:2186) is the catch — it assumes the JSON path. If PI's audit shape uses a different path the SQL filter has to be per-harness too. |
 | `internal/dashboard/` | Unchanged (does not unmarshal payload). | Unchanged. | Unchanged. |
-| `internal/db/QueryEvents`, `QueryEventsByMessageIDs`, `AllSessionEvents` | Unchanged. Returns opaque payload strings; consumers unmarshal. | Unchanged. | Unchanged signature, but consumers downstream of these methods must know the harness — which means either threading `harness` through every caller or doing a per-row join against `agent_status.harness` here. |
+| `internal/db/QueryEvents`, `AllSessionEvents` | Unchanged. Returns opaque payload strings; consumers unmarshal. | Unchanged. | Unchanged signature, but consumers downstream of these methods must know the harness — which means either threading `harness` through every caller or doing a per-row join against `agent_status.harness` here. |
+| `internal/db/QueryEventsByMessageIDs` (SQL pushdown on `$.messageId`) | Unchanged **iff** the PI adapter writes `messageId` at the same JSON path. The Translate option bakes this in at adapter-write time, so the assumption is upheld by construction. | Unchanged for the same reason — Widen keeps `messageId` at the canonical path; PI's adapter must continue to populate it there. | The SQL pushdown is **harness-blind by design**. If PI under Version writes the message ID at a different path (e.g. `id` or `messageID` capitalisation), this query silently returns no children for PI rows. Either the SQL filter forks per-harness, or the cross-event correlation breaks for PI sessions, or the Version package designs deliberately retain `messageId` for SQL-compatibility. |
 | `internal/db/QueryDoomLoopEvents` | Unchanged. | Unchanged. | Unchanged signature; doom-loop events are produced exclusively by the prism-hooks plugin (opencode-side), so unless a PI extension also emits them the per-harness split is moot. `[uncertain — whether a PI-side doom-loop detector is in scope]` |
 | `internal/db/QueryPermissionEvents` | Unchanged signature. PI has no built-in permission system (RFC #606), so this query returns only opencode rows unless a PI extension synthesises permission events. | Same as Translate. | Same — but if a PI extension does emit them, the harness discriminator needs to flow through to the unmarshal site. |
-| `internal/db/QueryAuditEvents` | Unchanged. The `JSON_EXTRACT(payload, '$.command')` filter at `db.go:2186` keeps working because PI events also use `command`. | Unchanged. The filter still works because both shapes put `command` at the same path. | The `JSON_EXTRACT` filter must either become harness-aware (different path per harness) or the filter has to be applied in Go after fetching all rows, which trades SQL pushdown for portability. |
+| `internal/db/QueryAuditEvents` (SQL pushdown on `$.command`) | Unchanged. The filter at `db.go:2186` keeps working because the PI adapter writes `command` at the same path. | Unchanged. The filter still works because both shapes put `command` at the same path. | The `JSON_EXTRACT` filter must either become harness-aware (different path per harness) or the filter has to be applied in Go after fetching all rows, which trades SQL pushdown for portability. |
+| `internal/db/ConsecutiveSidecarFailures` (SQL pushdown on `$.state` for `state_change`) | Unchanged. The PI adapter writes `state_change` events with `$.state` matching the existing string set (`finished`/`interrupted`/`error`/`deleted`). This is a constraint on the Translate adapter that needs to be honoured for sidecar restart logic to work for PI sessions. | Unchanged. The widened struct keeps `state` at the same path. | Sidecar circuit-breaker logic becomes harness-aware: either every harness retains the same `$.state` enum at the same path (in which case Version buys nothing here), or the SQL is rewritten to UNION across per-harness paths, or the circuit-breaker is moved into Go and loses SQL pushdown. The first option is most likely the operationally correct one, but it leaks "state-change schema must match opencode's" into the Version design. |
+| `internal/db/SessionTurnTokens` (SQL pushdown on six `MsgAssistant` paths: `$.model`, `$.inputTokens`, `$.outputTokens`, `$.cacheReadTokens`, `$.cacheWriteTokens`, `$.cost`) | Unchanged **iff** the PI adapter populates exactly those six camelCase paths. This is the strongest pressure on Translate: the adapter does not just have to produce a `MsgAssistant`-shaped struct, it has to produce it at the exact JSON paths the SQL pushdown expects. Information loss for `cost` (PI may not provide it for all providers) silently zeroes out per-turn cost — the same behaviour opencode has today for providers that don't report cost in the event metadata. | Unchanged for the existing six fields. New widened fields (e.g. `$.providerRequestMs`) are not in the SQL projection and so are invisible to this aggregation unless a follow-up migration adds them. | The SQL projection must either fork per-harness (six new `JSON_EXTRACT` paths per harness) or be rewritten as a Go-side aggregation that pulls full payloads and computes per-turn tokens in code. Either way, this is the most expensive single consumer to migrate to Version — the per-row JSON_EXTRACT cost gets multiplied by the number of harnesses-supported, and SQL pushdown is lost if the migration goes the Go-side route. |
 | `cmd/event_doomloop_test.go`, `internal/payload/payload_test.go` | Unchanged. | Tests for new optional fields needed; existing round-trip tests still pass. | Tests fork per-harness; both packages need their own round-trip suites. |
 
 The pattern across the table: Translate buys the fewest consumer changes
@@ -396,11 +420,22 @@ note is short. The opencode-side struct carries 12 fields, several of which
 (`cost`, `ttftMs`, `contextWindowPct`, `cacheReadTokens`/`cacheWriteTokens`)
 exist for opencode-specific reasons and may not have direct PI analogues.
 **Translate-friendly**, with documented information loss for `cost`,
-`ttftMs`, `contextWindowPct`. **Widen-justified** if surfaces like
-`provider` or `stopReason` become useful per-harness display fields.
-**Version-heavy** because of the seven unmarshal sites — the most
-expensive event type to version. `[uncertain — PI's actual per-provider
-metadata shape; whether PI's TTFT exists as a discrete field]`
+`ttftMs`, `contextWindowPct` — **but** Translate carries an additional
+constraint specifically for `MsgAssistant`: `internal/db/SessionTurnTokens`
+(db.go:3186-3191) reads six `MsgAssistant` field paths via SQL pushdown
+(`$.model`, `$.inputTokens`, `$.outputTokens`, `$.cacheReadTokens`,
+`$.cacheWriteTokens`, `$.cost`), so the PI adapter must populate exactly
+those six camelCase paths or per-turn token aggregation breaks silently
+for PI sessions. **Widen-justified** if surfaces like `provider` or
+`stopReason` become useful per-harness display fields, but new widened
+fields are invisible to `SessionTurnTokens` until that query is updated to
+project them. **Version-heavy** because of the seven Go-side unmarshal
+sites **and** because `SessionTurnTokens` is the most expensive single
+consumer to migrate to a per-harness model — losing SQL pushdown to keep
+the aggregation portable, or forking the SQL once per harness, are the
+two viable paths and both are costly. `[uncertain — PI's actual
+per-provider metadata shape; whether PI's TTFT exists as a discrete
+field]`
 
 ### `ToolCall`
 
@@ -472,6 +507,44 @@ legacy shape, so that quirk is opencode-history baggage either way.
 prism, and if so what its native event shape would be]`
 
 ## Cross-cutting concerns
+
+### SQL-layer payload couplings (the hardest pressure on Version)
+
+The four `JSON_EXTRACT` sites listed in the Context recap deserve their own
+cross-cutting treatment because they apply pressure that the Go-side
+analysis alone misses:
+
+- **The SQL layer treats payload field paths as part of the schema.** Every
+  `JSON_EXTRACT(payload, '$.<name>')` literal is a coupling that lives in
+  a SQL string, not a Go struct tag. Go's compiler cannot catch a drift
+  here; only an integration test against a real PI-emitted payload will
+  surface a mismatch.
+- **Translate is the option that contains this coupling at the lowest
+  cost.** A single rule for the PI adapter — "write JSON at the same
+  paths opencode's plugin writes them" — keeps every SQL pushdown
+  working. The cost is paid once, in the adapter, in the form of a
+  hand-maintained mapping from PI's native field names to opencode's.
+- **Widen also keeps this working** because Widen does not move existing
+  fields; it only adds optional new ones. The existing SQL paths are
+  unchanged. New widened fields, however, are invisible to SQL aggregations
+  unless follow-up migrations add them — which means Widen is forward-
+  extensible only at the Go level, not at the SQL level, until each new
+  field is also wired into queries.
+- **Version is where this coupling becomes load-bearing.** Three of the
+  four SQL pushdown sites (`QueryEventsByMessageIDs`,
+  `ConsecutiveSidecarFailures`, `SessionTurnTokens`) would, under Version,
+  either need (a) a per-harness SQL fork, (b) a UNION across paths, or
+  (c) a Go-side fallback that loses SQL pushdown. None of those is
+  particularly cheap, and `SessionTurnTokens` is the worst of them: a
+  six-field SQL projection over potentially thousands of rows per session
+  is exactly the workload SQL pushdown was designed for. Losing it to keep
+  Go-side aggregations portable is a real performance regression for the
+  cost-and-tokens stats path.
+
+This finding does not change the recommendation, but it strengthens it:
+Translate's "write opencode-shaped JSON" rule is also a "preserve SQL
+pushdown" rule, which is the cheapest path to keeping the existing
+performance characteristics of the stats and circuit-breaker queries.
 
 ### Field-name camelCase vs snake_case
 
@@ -580,8 +653,11 @@ That said, the worker's read of the trade-offs is:
    per-harness branching tax has poor leverage. Version becomes more
    attractive at three or more harnesses, or if any harness produces
    events with semantically-different fields under the same name (the
-   semantic-union risk Widen carries). Until that happens, the simpler
-   options dominate.
+   semantic-union risk Widen carries). The SQL-pushdown analysis above
+   adds to this: three of the four `JSON_EXTRACT` sites become
+   substantially harder under Version, and `SessionTurnTokens` in
+   particular would either lose SQL pushdown or fork the projection per
+   harness. Until the leverage shifts, the simpler options dominate.
 
 4. **For event types that have no native PI source** (`PermissionAsk`,
    `PermissionDenied`, `Audit`, `DoomLoopDetected`), Translate's
