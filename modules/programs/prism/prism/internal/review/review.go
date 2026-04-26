@@ -19,12 +19,64 @@
 //
 // The ~ separator in the session name is used by the dashboard for depth-2
 // child detection (review sessions appear indented under their parent branch).
+//
+// Readiness gate (#1051 Piece A):
+//
+// Each per-agent session.SpawnSession call only returns "the tmux session was
+// created and the sidecar process was kicked off" — opencode itself runs
+// inside the bwrap/podman/host process the tmux pane launches, several steps
+// further along, and may take seconds to bind its TCP port (≈8.5s observed
+// in the worst healthy case captured in #1051) or never bind at all if
+// startup fails silently. The spawn loop therefore runs a per-agent
+// readiness gate via gateReviewAgents (see readiness.go) after spawning, in
+// parallel goroutines so one slow agent does not delay the others.
+//
+// Each gate calls session.WaitForReady, which polls the DB for either:
+//   - any state_change event (the sidecar wrote one when the first SSE event
+//     arrived from opencode, which can only happen after opencode bound its
+//     port), or
+//   - agent_status.harness_session_id becoming non-NULL (the sidecar saw
+//     opencode's session.created event).
+//
+// The default per-agent readiness window is 30s
+// (DefaultReviewReadinessTimeout). On timeout, the gate emits
+// "<role> failed to start: not ready within 30s" via OnProgress, populates
+// the spawn-failure slot for that agent, and runs the standard cleanup
+// (KillSidecar + cleanupAgentSession + tmux.KillSession). The other agents
+// are unaffected; the review proceeds with the survivors.
+//
+// Per-agent startup log (#1051 Piece B):
+//
+// Each spawned session has an agent-startup.log file in its run directory:
+//
+//	$XDG_STATE_HOME/prism/run/<session>/agent-startup.log
+//
+// SpawnSession writes timestamped breadcrumbs to this file describing the
+// spawn-time sequence (DB seed, port allocation, tmux session creation,
+// sidecar startup, readiness gate outcome). It is the forensic trail
+// covering the gap between "session created in DB" and "first SSE event
+// arrives at the sidecar" — exactly the window in which the silent failure
+// reported by #1051 occurs. The bwrap-side stderr lands in agent-run.log in
+// the same directory; together they cover the full pre-opencode startup
+// timeline.
+//
+// Async Ack contract (#1051 Piece C):
+//
+// RunAsync's AsyncResult.Ack distinguishes successfully-ready agents from
+// failed-to-spawn / failed-to-ready agents:
+//
+//	Spawned: 3, Failed: 2 (review-goal: not ready within 30s, review-qa: not ready within 30s)
+//
+// so the worker session reading the Ack sees a partial-success outcome
+// immediately instead of discovering it 20 minutes later when the monitor
+// timeout fires.
 package review
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -574,6 +626,11 @@ type Opts struct {
 	// When empty, spawnAgentOnlyLayout will call cfg.EffectiveIsolationMode()
 	// to resolve the machine default rather than silently falling back to host.
 	IsolationMode string
+	// ReadinessTimeout is the per-agent deadline for the post-spawn
+	// readiness gate (#1051 Piece A). Zero falls back to
+	// DefaultReviewReadinessTimeout (30s). The gate runs concurrently per
+	// agent so the worst-case wall time is one timeout, not five.
+	ReadinessTimeout time.Duration
 }
 
 // FormatAgentDisplayName converts an agent name like "review-goal" to a
@@ -749,14 +806,26 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			continue
 		}
 
-		// Emit "started" progress line immediately after successful spawn.
-		if opts.OnProgress != nil {
-			opts.OnProgress(fmt.Sprintf("%s started", FormatAgentDisplayName(ag.Name)))
-		}
+		// Capture the spawn time so the readiness-gate phase below can
+		// reset it once the agent is actually ready, and so the polling
+		// phase has a sensible fallback if the gate is somehow skipped.
+		// The "started" progress line is emitted by the readiness gate,
+		// not here — see #1051 for why "spawned" is not the same as
+		// "ready".
 		spawnTimes[i] = time.Now()
 	}
 
-	// Check if all agents failed to spawn — surface a combined error.
+	// Per-agent readiness gate (#1051 Piece A). Runs in parallel goroutines
+	// so one slow agent does not delay the others. Updates spawnErr[i] for
+	// agents whose gate trips on timeout, and emits "<role> started" /
+	// "<role> failed to start: not ready within <timeout>" via OnProgress.
+	gateReviewAgents(d, agents, agentSessions, spawnErr, spawnTimes,
+		opts.ReadinessTimeout, opts.OnProgress)
+
+	// Check if all agents failed to spawn (or to become ready) — surface
+	// a combined error. With the readiness gate in place, "all failed"
+	// covers both pre-spawn failures (config errors, SpawnSession errors)
+	// and never-came-up failures (readiness timeouts).
 	allFailed := true
 	for _, se := range spawnErr {
 		if se == nil {
@@ -768,8 +837,8 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		return nil, fmt.Errorf("all review agents failed to spawn")
 	}
 
-	// Build the subset of agents that successfully spawned for polling and
-	// SIGINT notification.
+	// Build the subset of agents that successfully spawned AND became ready
+	// for polling and SIGINT notification.
 	var liveAgents []Agent
 	var liveSessions []string
 	var liveSpawnTimes []time.Time
@@ -781,7 +850,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		}
 	}
 
-	// Notify the caller with all successfully-spawned session names for SIGINT handling.
+	// Notify the caller with all successfully-ready session names for SIGINT handling.
 	if onSessionsCreated != nil {
 		onSessionsCreated(liveSessions)
 	}
@@ -966,12 +1035,22 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			continue
 		}
 
-		if opts.OnProgress != nil {
-			opts.OnProgress(fmt.Sprintf("%s started", FormatAgentDisplayName(ag.Name)))
-		}
+		// "started" is now emitted by the readiness gate below, not here.
+		// See #1051 — "spawned" is not the same as "opencode is ready".
 	}
 
-	// Check if all agents failed to spawn.
+	// Per-agent readiness gate (#1051 Piece A). Runs concurrently so one
+	// slow agent does not delay the others. Updates spawnErr[i] for agents
+	// whose gate trips, and emits "<role> started" or
+	// "<role> failed to start: not ready within <timeout>" via OnProgress.
+	// spawnTimes is unused by RunAsync (the monitor process owns timing
+	// from this point on), but the gate signature requires it; allocate a
+	// throwaway slice so the in-loop write does not blow up.
+	gateSpawnTimes := make([]time.Time, len(agents))
+	gateReviewAgents(d, agents, agentSessions, spawnErr, gateSpawnTimes,
+		opts.ReadinessTimeout, opts.OnProgress)
+
+	// Check if all agents failed to spawn or to become ready.
 	allFailed := true
 	for _, se := range spawnErr {
 		if se == nil {
@@ -983,13 +1062,25 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		return nil, fmt.Errorf("all review agents failed to spawn")
 	}
 
-	// Collect successfully-spawned sessions.
+	// Collect successfully-spawned-and-ready sessions, plus the failure
+	// list for the Ack (#1051 Piece C) so the worker sees which agents
+	// did not come up and why.
 	var liveSessions []string
 	var liveAgents []Agent
+	type failedAgent struct {
+		name   string
+		reason string
+	}
+	var failures []failedAgent
 	for i, se := range spawnErr {
 		if se == nil {
 			liveSessions = append(liveSessions, agentSessions[i])
 			liveAgents = append(liveAgents, agents[i])
+		} else {
+			failures = append(failures, failedAgent{
+				name:   agents[i].Name,
+				reason: failureReason(se),
+			})
 		}
 	}
 
@@ -1034,8 +1125,12 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		fmt.Fprintf(os.Stderr, "[prism review] warning: could not look up worker session %q: %v\n", opts.WorkerSession, stErr)
 	}
 
-	// Build acknowledgement message.
-	ack := buildAsyncAck(opts.PRNumber, round, groupID, liveSessions, opts.WorkerSession)
+	// Build acknowledgement message (#1051 Piece C: surface partial-success).
+	failurePairs := make([][2]string, 0, len(failures))
+	for _, f := range failures {
+		failurePairs = append(failurePairs, [2]string{f.name, f.reason})
+	}
+	ack := buildAsyncAck(opts.PRNumber, round, groupID, liveSessions, failurePairs, opts.WorkerSession)
 
 	return &AsyncResult{
 		GroupID:      groupID,
@@ -1045,18 +1140,73 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	}, nil
 }
 
+// failureReason returns the user-facing reason string for a spawn / readiness
+// failure. For *session.ReadinessTimeoutError it produces "not ready within
+// <timeout>" (matching the AC-5 example text exactly); other errors are
+// passed through verbatim.
+func failureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if session.IsReadinessTimeout(err) {
+		// session.ReadinessTimeoutError already renders as "not ready
+		// within <timeout>" via its Error() method. Surfacing the inner
+		// message keeps the Ack readable without redundant prefixes from
+		// the gate-side wrapping.
+		var rte *session.ReadinessTimeoutError
+		if errors.As(err, &rte) {
+			return rte.Error()
+		}
+	}
+	return err.Error()
+}
+
 // buildAsyncAck constructs the acknowledgement message returned to the worker
-// immediately after spawning the review agents.
-func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []string, workerSession string) string {
+// immediately after spawning the review agents. failures is a list of
+// (agentName, reason) pairs for agents that did not become ready — see
+// #1051 AC-5: "Coordinators reading the Ack should be able to see
+// `Spawned: 3, Failed: 2 (review-goal: not ready within 30s, …)`."
+func buildAsyncAck(prNumber string, round int, groupID string, sessionNames []string, failures [][2]string, workerSession string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("Review in progress — PR #%s, round %d (group: %s)\n\n", prNumber, round, groupID))
-	sb.WriteString(fmt.Sprintf("Spawned %d review agents:\n", len(sessionNames)))
-	for _, name := range sessionNames {
-		sb.WriteString(fmt.Sprintf("  • %s\n", name))
+
+	// Spawned/Failed summary line — the headline scan target for operators
+	// reading the Ack at a glance. Always emit both numbers, even when
+	// Failed is 0, so the format is stable across runs.
+	sb.WriteString(fmt.Sprintf("Spawned: %d", len(sessionNames)))
+	if len(failures) > 0 {
+		// Inline reasons in the same order as the failures slice (which
+		// preserves the original agent order from the spawn loop).
+		var parts []string
+		for _, f := range failures {
+			parts = append(parts, fmt.Sprintf("%s: %s", f[0], f[1]))
+		}
+		sb.WriteString(fmt.Sprintf(", Failed: %d (%s)", len(failures), strings.Join(parts, ", ")))
+	} else {
+		sb.WriteString(", Failed: 0")
+	}
+	sb.WriteString("\n\n")
+
+	if len(sessionNames) > 0 {
+		sb.WriteString(fmt.Sprintf("Spawned %d review agents:\n", len(sessionNames)))
+		for _, name := range sessionNames {
+			sb.WriteString(fmt.Sprintf("  • %s\n", name))
+		}
+	}
+	if len(failures) > 0 {
+		sb.WriteString(fmt.Sprintf("\n%d agent(s) failed to start. Inspect the per-session startup log for details:\n", len(failures)))
+		for _, f := range failures {
+			sb.WriteString(fmt.Sprintf("  • %s — %s\n", f[0], f[1]))
+		}
+		sb.WriteString("\nStartup logs:\n")
+		sb.WriteString("  prism logs <session> --startup            # spawn-time breadcrumbs\n")
+		sb.WriteString("  prism logs <session> --agent-run          # bwrap stderr (if it got that far)\n")
 	}
 	sb.WriteString(fmt.Sprintf("\nResults will be delivered to session %q via prism prompt when all agents complete.\n", workerSession))
 	sb.WriteString("\n**Do NOT commit, merge, or announce completion** until the review-complete prompt arrives.\n")
-	sb.WriteString(fmt.Sprintf("\nYou may monitor progress with:\n  prism checkin %s~review-%d-review-goal\n", workerSession, round))
+	if len(sessionNames) > 0 {
+		sb.WriteString(fmt.Sprintf("\nYou may monitor progress with:\n  prism checkin %s~review-%d-review-goal\n", workerSession, round))
+	}
 	return sb.String()
 }
 
@@ -1403,6 +1553,14 @@ func DiffFilePathForTest(prNumber string, round int) string {
 	return diffFilePath(prNumber, round)
 }
 
+// BuildAsyncAckForTest is an exported wrapper around buildAsyncAck for use
+// in external tests. Mirrors the production signature so AC-5 assertions
+// can verify the partial-success summary text without spinning up a real
+// review run.
+func BuildAsyncAckForTest(prNumber string, round int, groupID string, sessionNames []string, failures [][2]string, workerSession string) string {
+	return buildAsyncAck(prNumber, round, groupID, sessionNames, failures, workerSession)
+}
+
 // PollAgentsForTest is an exported wrapper around pollAgents for use in tests.
 // It accepts pre-seeded DB rows and returns both results and the progress lines
 // emitted via onProgress.
@@ -1600,10 +1758,33 @@ func AssessPassed(text string) (bool, VerdictKind) {
 }
 
 // cleanupAgentSession cleans up the DB state for a completed agent session.
+//
+// In addition to releasing the port and marking the row ended, this transitions
+// the state to "error" when the row is non-terminal. That matters for the
+// review monitor's GroupCompleted check (#1051 AC-6): a half-alive agent
+// stuck at "idle" would otherwise block the group's terminal-state count
+// forever. State="error" is a valid agent state machine transition from any
+// non-terminal state and is treated as terminal by GroupCompleted.
 func cleanupAgentSession(d *db.DB, agentSession string) {
+	st, lookupErr := d.CurrentStatus(agentSession)
+	if lookupErr == nil && st != nil && !isTerminalAgentState(st.State) {
+		_ = d.UpsertStatus(agentSession, st.Repo, st.Worktree, "error", nil, nil)
+	}
 	_ = d.ReleasePort(agentSession)
 	_ = d.SetEnded(agentSession)
 	_ = d.PurgeBusMessages(agentSession)
+}
+
+// isTerminalAgentState mirrors the terminalStates set in internal/db/db.go
+// (finished, interrupted, error, deleted). Duplicated here so the review
+// package does not have to widen the db package's exported surface for a
+// single check.
+func isTerminalAgentState(state string) bool {
+	switch state {
+	case "finished", "interrupted", "error", "deleted":
+		return true
+	}
+	return false
 }
 
 // DefaultFindingsSizeBudget is the default maximum inline size (in bytes) for

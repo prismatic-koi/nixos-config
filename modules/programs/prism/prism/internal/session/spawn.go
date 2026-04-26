@@ -25,6 +25,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -132,6 +133,24 @@ type SpawnOpts struct {
 	// instance. These are prepended outermost (before AgentEnvVars and
 	// PRISM_SESSION_NAME) in the agent command string.
 	RuntimeEnvVars map[string]string
+
+	// ReadinessTimeout, when > 0, causes SpawnSession to gate its return on
+	// the agent reaching a readiness signal in the prism DB (see
+	// WaitForReady). If the gate trips with a timeout, SpawnSession cleans
+	// up the half-alive session (kill sidecar, release port, end DB row,
+	// kill tmux session) and returns a *ReadinessTimeoutError.
+	//
+	// Zero means SpawnSession returns as soon as tmux/sidecar are kicked
+	// off, leaving the readiness check to the caller. The parallel review
+	// fan-out uses zero here and runs WaitForReady in per-agent goroutines
+	// after the spawn loop completes — that way one slow agent does not
+	// delay the others.
+	//
+	// Single-worker `prism spawn` sets this to DefaultReadinessTimeout so
+	// operators see a clear `failed to start: not ready within 30s` message
+	// instead of a "session created" success line followed by an idle
+	// session that will never make progress (see #1051 widening comment).
+	ReadinessTimeout time.Duration
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -165,14 +184,26 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		return fmt.Errorf("spawn session: Worktree is required")
 	}
 
+	// Open the per-session startup log as the very first step (#1051 Piece B).
+	// Doing this before any other work means the per-session run directory
+	// exists from the moment the spawn begins, so any later failure has a
+	// place to leave breadcrumbs — even when `prism agent-run` never reaches
+	// its own log-open call (the failure mode #1051 reports).
+	startup := openStartupLog(opts.SessionName)
+	defer startup.close()
+	startup.log("spawn-session: begin (role=%q, worktree=%q, layout=%d, isolation=%q, container_mode=%t)",
+		opts.AgentRole, opts.Worktree, opts.Layout, opts.IsolationMode, opts.ContainerMode)
+
 	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
 	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
 	// value written here.
 	if err := d.UpsertStatusSeedRootAgentName(
 		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole,
 	); err != nil {
+		startup.log("spawn-session: seed status FAILED: %v", err)
 		return fmt.Errorf("spawn session: seed status: %w", err)
 	}
+	startup.log("spawn-session: agent_status seeded (state=idle)")
 
 	// Step 2: Write group_id when set (hook for Issue E — single-session
 	// spawns leave GroupID empty and this is a no-op).
@@ -203,20 +234,84 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// allocation fails — a session with no port cannot start opencode.
 	port, err := d.AllocatePort(opts.SessionName)
 	if err != nil {
+		startup.log("spawn-session: allocate port FAILED: %v", err)
 		return fmt.Errorf("spawn session: allocate port: %w", err)
 	}
+	startup.log("spawn-session: allocated port %d", port)
 
 	// Step 4 & 5: Create the tmux session and start the sidecar. Both
 	// layouts share the same responsibilities — only the window shape and
 	// the ownership of the sidecar-start call differ.
+	var layoutErr error
 	switch opts.Layout {
 	case LayoutFull:
-		return spawnFullLayout(d, opts, port)
+		layoutErr = spawnFullLayout(d, opts, port)
 	case LayoutAgentOnly:
-		return spawnAgentOnlyLayout(opts, port)
+		layoutErr = spawnAgentOnlyLayout(opts, port)
 	default:
+		startup.log("spawn-session: unsupported layout %d", opts.Layout)
 		return fmt.Errorf("spawn session: unsupported layout %d", opts.Layout)
 	}
+	if layoutErr != nil {
+		startup.log("spawn-session: layout setup FAILED: %v", layoutErr)
+		return layoutErr
+	}
+	startup.log("spawn-session: tmux session and sidecar kicked off — handing control to agent pane (further bwrap stderr in agent-run.log)")
+
+	// Step 6 (#1051 Piece A): readiness gate. When the caller opted in by
+	// setting opts.ReadinessTimeout > 0, block here until the sidecar
+	// observes the first SSE event from opencode (i.e. opencode actually
+	// bound its port and the sidecar connected). On timeout, clean up the
+	// half-alive session so a second spawn attempt with the same name does
+	// not see stale state, and surface a *ReadinessTimeoutError so callers
+	// can render a "<role> failed to start: not ready within <timeout>"
+	// message instead of the optimistic "session created" line.
+	//
+	// Callers that prefer to run the gate themselves (e.g. the parallel
+	// review fan-out in internal/review/review.go) leave ReadinessTimeout=0
+	// and call WaitForReady directly in goroutines, so per-agent gates run
+	// concurrently and one slow agent does not delay the others.
+	if opts.ReadinessTimeout > 0 {
+		startup.log("spawn-session: waiting for readiness (timeout=%s)", opts.ReadinessTimeout)
+		if readyErr := WaitForReady(d, opts.SessionName, opts.ReadinessTimeout); readyErr != nil {
+			startup.log("spawn-session: readiness gate FAILED: %v", readyErr)
+			// Clean up: the sidecar is still running and reporting
+			// `connection refused` to its own log, but opencode never came
+			// up. KillSidecar releases the sidecar process, the DB cleanup
+			// releases the port and marks the row ended, and tmux.KillSession
+			// releases the pane. All three are best-effort and idempotent.
+			KillSidecar(opts.SessionName)
+			cleanupHalfAliveSession(d, opts.SessionName)
+			_ = tmux.KillSession(opts.SessionName)
+			return readyErr
+		}
+		startup.log("spawn-session: ready")
+	}
+	return nil
+}
+
+// cleanupHalfAliveSession releases the DB resources for a session that was
+// spawned but failed its readiness gate. Mirrors the cleanupAgentSession
+// helper in internal/review/review.go but lives here so the session package
+// can self-contain the readiness-failure cleanup path without an import
+// cycle. All operations are best-effort and tolerant of missing rows.
+//
+// Importantly, this transitions the agent_status state to "error" so that
+// db.GroupCompleted treats the row as terminal — without that, a review
+// monitor watching the group would block indefinitely on the half-alive
+// member's "idle" state (#1051 AC-6).
+func cleanupHalfAliveSession(d *db.DB, sessionName string) {
+	st, lookupErr := d.CurrentStatus(sessionName)
+	if lookupErr == nil && st != nil {
+		// UpsertStatus is idempotent and validates the transition (idle →
+		// error is allowed; error → error is a no-op-shaped repeat). We
+		// preserve repo/worktree from the existing row so we do not blank
+		// them out with empty strings.
+		_ = d.UpsertStatus(sessionName, st.Repo, st.Worktree, "error", nil, nil)
+	}
+	_ = d.ReleasePort(sessionName)
+	_ = d.SetEnded(sessionName)
+	_ = d.PurgeBusMessages(sessionName)
 }
 
 // spawnFullLayout delegates to Create, which handles the 3-window spawn-path
