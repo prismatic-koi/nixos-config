@@ -65,10 +65,22 @@ const readinessPollInterval = 250 * time.Millisecond
 type ReadinessTimeoutError struct {
 	SessionName string
 	Timeout     time.Duration
+	// Hint, when non-empty, is appended to the error message after the
+	// standard "not ready within <timeout>" prefix. SpawnSession sets this
+	// in #1064's enrichment path (host mode + unusually large launch
+	// command) so the operator sees the prompt-size suspicion alongside
+	// the bare timeout message instead of having to grep through logs to
+	// discover it. Other call sites leave Hint empty and the message stays
+	// unchanged.
+	Hint string
 }
 
 func (e *ReadinessTimeoutError) Error() string {
-	return fmt.Sprintf("not ready within %s", formatTimeout(e.Timeout))
+	base := fmt.Sprintf("not ready within %s", formatTimeout(e.Timeout))
+	if e.Hint == "" {
+		return base
+	}
+	return base + " — " + e.Hint
 }
 
 // IsReadinessTimeout reports whether err is (or wraps) a ReadinessTimeoutError.
