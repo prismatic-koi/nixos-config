@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -152,6 +153,36 @@ func MonitorFunc(opts MonitorOpts) error {
 	// overflow-to-file is handled when the total findings exceed the budget.
 	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, opts.SizeBudget)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
+
+	// Before delivery, clear the worker's `reviewing` state by writing `active`.
+	// Background: RunAsync writes `reviewing` to the DB so that incidental busy
+	// turns + idle debounces in the worker session do not produce a premature
+	// "has finished" notification while the review is in flight (see #1036 and
+	// #1049). The sidecar's busy-event handler treats `reviewing` as a sticky
+	// state and refuses to write `active` over it. We must therefore flip the
+	// DB state to `active` ourselves *just before* delivering the review-
+	// complete prompt — that way, the busy event triggered by the prompt
+	// arriving is processed against `active`, the subsequent idle debounce
+	// fires normally, and the genuine end-of-review handoff is observed.
+	//
+	// This write only runs while the worker is in `reviewing`; if the state
+	// has already moved on (worker crashed, manual override, etc.) we leave it
+	// alone. Failures here are non-fatal: the prompt is still delivered, and
+	// at worst the suppression remains in effect (no spurious notifications,
+	// just no end-of-review notification — the worker can still observe the
+	// prompt directly).
+	if workerStatus, stErr := d.CurrentStatus(opts.WorkerSession); stErr == nil && workerStatus != nil {
+		if workerStatus.State == string(agent.StateReviewing) {
+			if err := d.UpsertStatus(opts.WorkerSession, workerStatus.Repo, workerStatus.Worktree,
+				string(agent.StateActive), nil, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: could not clear reviewing→active before delivery: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "[prism monitor-review] worker state reviewing→active (pre-delivery)\n")
+			}
+		}
+	} else if stErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: could not look up worker session %q before delivery: %v\n", opts.WorkerSession, stErr)
+	}
 
 	// Deliver to worker via prism prompt with bounded retry.
 	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath)
