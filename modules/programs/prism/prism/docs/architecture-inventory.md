@@ -1633,7 +1633,7 @@ Source: `cmd/spawn.go:137-149` (declarations) and `cmd/spawn.go:57-261` (flag-pa
 | `--host-mode` | false | Deprecated alias for `--isolation host`. |
 | `--harness <name>` | `opencode` | Agent harness. Persisted to the DB row and forwarded to the sidecar via `--harness`. Allow-list currently `{opencode}`; rejected at parse time otherwise. |
 | `--ignore-concurrency-cap` | false | Bypass the soft concurrency cap (podman or bwrap, depending on resolved mode). |
-| *(positional)* | — | Optional initial prompt; if non-empty it is propagated as `PRISM_INITIAL_PROMPT` env var to the agent pane. |
+| *(positional)* | — | Optional initial prompt; if non-empty it is propagated to the agent pane via `PRISM_INITIAL_PROMPT_FILE=<path>` (post-#1092 — file lives in the per-session run dir) for bwrap/sandbox-exec modes, or via `PRISM_INITIAL_PROMPT=<text>` inline for host mode. |
 
 The proxy-spawn path in the host-API server (`internal/sidecar/sidecar.go:3101-3219`) accepts a JSON request shape with the matching field set: `branch`, `prompt`, `agent`, `profile`, `host_mode`, `harness`, `isolation` plus `ignore_concurrency_cap`. `--model` and `--variant` are conspicuously absent from the proxy request shape — only the worker-side `prism spawn` invocation carries them. [uncertain — verify whether `--model`/`--variant` reach the proxy path; the JSON struct in `internal/sidecar/sidecar.go:3122` did not list them in the snippet captured during inventory generation]
 

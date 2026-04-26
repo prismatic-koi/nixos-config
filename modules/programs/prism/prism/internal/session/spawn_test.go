@@ -16,6 +16,7 @@ package session
 // tests — SpawnSession composes those helpers without adding new logic.
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -359,13 +360,17 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt verifies that when
-// opts.Prompt is non-empty, spawnAgentOnlyLayout sets PRISM_INITIAL_PROMPT in
-// the agent pane's tmux environment via a -e flag on tmux new-window. This is
-// the regression test for #1042: review agents in bwrap mode must receive
-// their initial prompt via the PRISM_INITIAL_PROMPT env var, since the bwrap
-// path reads it in agent-run and appends --prompt to the opencode invocation.
-func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt(t *testing.T) {
+// TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt_Host verifies the legacy
+// path for the host-mode resolution: when opts.IsolationMode is empty and the
+// machine default resolves to "host", spawnAgentOnlyLayout sets the inline
+// PRISM_INITIAL_PROMPT env var on the agent pane (the pre-#1092 shape).
+//
+// This is the regression test for #1042 carried forward: review agents in
+// host mode must receive their initial prompt via the PRISM_INITIAL_PROMPT
+// env var. The new file-based path (PRISM_INITIAL_PROMPT_FILE) is gated on
+// bwrap/sandbox-exec modes only — see
+// TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap below.
+func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt_Host(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	argsFile := spyTmuxBin(t)
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
@@ -374,12 +379,13 @@ func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt(t *testing.T) {
 	const sessionName = "myrepo@branch~review-1-review-code"
 	const prompt = "review this PR"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-code",
-		Prompt:      prompt,
-		Layout:      LayoutAgentOnly,
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      "/worktrees/myrepo-branch",
+		AgentRole:     "review-code",
+		Prompt:        prompt,
+		Layout:        LayoutAgentOnly,
+		IsolationMode: "host",
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -388,7 +394,15 @@ func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt(t *testing.T) {
 
 	args := readSpyArgs(argsFile)
 	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT=" + prompt}) {
-		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT=%s] — review agents in bwrap mode will start with no initial prompt (#1042)", args, prompt)
+		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT=%s] — host-mode review agents should still receive the inline env var (#1042)", args, prompt)
+	}
+	// The file-based env var must NOT appear for host mode — that path
+	// would route the prompt through `prism agent-run`, which only fires
+	// for bwrap/sandbox-exec.
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT_FILE=") {
+			t.Errorf("tmux args %v contain PRISM_INITIAL_PROMPT_FILE for host mode — should only fire for bwrap/sandbox-exec", args)
+		}
 	}
 }
 
@@ -431,11 +445,160 @@ func TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt(t *testing.T) {
 	}
 }
 
-// TestSpawnAgentPaneEnvVars verifies the helper directly: with a non-empty
-// prompt it returns the PRISM_INITIAL_PROMPT entry; with an empty prompt it
-// returns nil (not an empty map and not an empty-string entry).
+// TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap is the regression
+// test for #1092. When opts.IsolationMode is "bwrap" and opts.Prompt is
+// non-empty, SpawnSession must write the prompt to a per-session file and
+// set PRISM_INITIAL_PROMPT_FILE on the agent pane — not the inline
+// PRISM_INITIAL_PROMPT env var that previously carried the prompt body
+// onto tmux's argv and tripped the launch-command size guard for review
+// fan-outs with long role prompts.
+//
+// Verifies the three pieces of the contract together:
+//   - The file exists at the expected per-session path.
+//   - The file contents byte-for-byte equal opts.Prompt.
+//   - The tmux new-window argv carries PRISM_INITIAL_PROMPT_FILE=<path> and
+//     does NOT carry the prompt body inline.
+func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "myrepo@long-branch~review-2-review-context"
+	// A 24 KB prompt — well above the 16 KiB safe bound, so any inline
+	// path would also trip the guard. The file path keeps the launch
+	// command O(1) in prompt size, so spawn must succeed.
+	prompt := strings.Repeat("review-context system prompt body ", 720) // ~24 KB
+
+	opts := SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      "/worktrees/myrepo-long-branch",
+		AgentRole:     "review-context",
+		Prompt:        prompt,
+		Layout:        LayoutAgentOnly,
+		IsolationMode: "bwrap",
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v — bwrap-mode review fan-out must accept large role prompts via the prompt-file path (#1092)", err)
+	}
+
+	// File side: must exist and round-trip the prompt bytes intact.
+	filePath, pathErr := InitialPromptPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("InitialPromptPath: %v", pathErr)
+	}
+	body, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%s): %v — prompt file must exist after a bwrap-mode SpawnSession", filePath, readErr)
+	}
+	if string(body) != prompt {
+		t.Errorf("prompt round-trip mismatch: file len=%d, prompt len=%d", len(body), len(prompt))
+	}
+
+	// Permission side: the file must be 0600 — prompts can carry secrets
+	// or branch context the operator does not want world-readable.
+	st, statErr := os.Stat(filePath)
+	if statErr != nil {
+		t.Fatalf("Stat(%s): %v", filePath, statErr)
+	}
+	if mode := st.Mode().Perm(); mode != 0o600 {
+		t.Errorf("prompt-file perms = %o, want 0600 (operator-only)", mode)
+	}
+
+	// Tmux side: PRISM_INITIAL_PROMPT_FILE must point to the file, and
+	// PRISM_INITIAL_PROMPT must NOT carry the body — that would re-introduce
+	// the #1092 failure mode.
+	args := readSpyArgs(argsFile)
+	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT_FILE=" + filePath}) {
+		t.Errorf("tmux args do not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] — review agents in bwrap mode must receive the prompt-file path (#1092)\nargs: %v", filePath, args)
+	}
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT=") {
+			t.Errorf("tmux args carry inline PRISM_INITIAL_PROMPT for bwrap mode — would re-introduce the #1092 launch-cmd size failure: %v", args)
+			break
+		}
+	}
+	// Defence-in-depth: the tmux argv as a whole must not contain the
+	// prompt body. With #1092 fixed, the only thing tmux sees is the
+	// file path; a regression that put the body back on argv would fail
+	// this assertion before the size guard or kernel ARG_MAX trips.
+	for _, a := range args {
+		if strings.Contains(a, prompt) {
+			t.Errorf("tmux argv element contains the prompt body inline (len=%d) — file-based delivery is broken", len(a))
+			break
+		}
+	}
+}
+
+// TestSpawnSession_AgentOnly_PromptFile_WithPrompt_SandboxExec mirrors the
+// bwrap test for the sandbox-exec mode. The file-based path must fire for
+// both bwrap and sandbox-exec because both delegate prompt delivery to
+// `prism agent-run` (which now reads PRISM_INITIAL_PROMPT_FILE).
+func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_SandboxExec(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "myrepo@branch~review-3-review-security"
+	const prompt = "review-security system prompt body"
+
+	opts := SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      "/worktrees/myrepo-branch",
+		AgentRole:     "review-security",
+		Prompt:        prompt,
+		Layout:        LayoutAgentOnly,
+		IsolationMode: "sandbox-exec",
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+
+	filePath, pathErr := InitialPromptPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("InitialPromptPath: %v", pathErr)
+	}
+	body, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%s): %v", filePath, readErr)
+	}
+	if string(body) != prompt {
+		t.Errorf("prompt round-trip mismatch: got %q, want %q", string(body), prompt)
+	}
+
+	args := readSpyArgs(argsFile)
+	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT_FILE=" + filePath}) {
+		t.Errorf("tmux args do not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] for sandbox-exec mode\nargs: %v", filePath, args)
+	}
+}
+
+// TestSpawnAgentPaneEnvVars verifies the helper directly across the three
+// shapes: file path set (post-#1092), inline prompt only (legacy), and no
+// prompt at all (no env vars emitted).
 func TestSpawnAgentPaneEnvVars(t *testing.T) {
-	t.Run("with prompt", func(t *testing.T) {
+	t.Run("with prompt file", func(t *testing.T) {
+		got := spawnAgentPaneEnvVars(SpawnOpts{
+			Prompt:         "hello",
+			PromptFilePath: "/var/state/prism/run/abc/initial-prompt.txt",
+		})
+		if got == nil {
+			t.Fatal("got nil, want non-nil map")
+		}
+		if v, ok := got["PRISM_INITIAL_PROMPT_FILE"]; !ok || v != "/var/state/prism/run/abc/initial-prompt.txt" {
+			t.Errorf("PRISM_INITIAL_PROMPT_FILE = %q, want %q", v, "/var/state/prism/run/abc/initial-prompt.txt")
+		}
+		if _, present := got["PRISM_INITIAL_PROMPT"]; present {
+			t.Errorf("PRISM_INITIAL_PROMPT must NOT be set when PRISM_INITIAL_PROMPT_FILE is — would inline prompt body and re-introduce #1092: got %v", got)
+		}
+	})
+	t.Run("with prompt only (legacy)", func(t *testing.T) {
 		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "hello"})
 		if got == nil {
 			t.Fatal("got nil, want non-nil map")
