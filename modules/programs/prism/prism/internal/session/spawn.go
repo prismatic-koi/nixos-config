@@ -60,6 +60,16 @@ type SpawnOpts struct {
 	// (container/bwrap mode).
 	Prompt string
 
+	// PromptFilePath is set internally by SpawnSession when it has written
+	// the prompt to the per-session run directory (host mode only — see
+	// #1064 / WriteInitialPrompt). Callers should leave this empty;
+	// SpawnSession populates it from opts.Prompt before spawnFullLayout
+	// runs so BuildOpencodeCmd emits `--prompt "$(cat <path>)"` rather
+	// than inlining the prompt body. Carried on SpawnOpts (rather than as
+	// a function-local variable) so spawnFullLayout — which receives a
+	// copy — sees the same value the size guard validated against.
+	PromptFilePath string
+
 	// ConfigContent is the JSON blob injected as OPENCODE_CONFIG_CONTENT.
 	// Generated upstream from --profile/--model/--variant or from per-role
 	// container profiles. Empty string means no override.
@@ -194,6 +204,65 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	startup.log("spawn-session: begin (role=%q, worktree=%q, layout=%d, isolation=%q, container_mode=%t)",
 		opts.AgentRole, opts.Worktree, opts.Layout, opts.IsolationMode, opts.ContainerMode)
 
+	// #1064: in host mode with a non-empty prompt, write the prompt to the
+	// per-session run directory and let buildDirectOpencodeCmd reference it
+	// via $(cat …) instead of inlining the prompt onto the launch command.
+	// Two-line touch on this loop because the path is also threaded into
+	// the size guard a few lines below — keep both updates next to each
+	// other so a future reader sees the chain.
+	//
+	// Scoped to LayoutFull because that is the only layout the spawn path
+	// uses today — review fan-outs (LayoutAgentOnly) typically run under
+	// bwrap and have not exhibited this failure mode. If review fan-outs
+	// later need the same treatment, extend the gate; do not silently
+	// widen it.
+	mode := resolveLayoutIsolationMode(opts)
+	var promptFilePath string
+	if opts.Layout == LayoutFull && mode == "host" && opts.Prompt != "" {
+		path, writeErr := WriteInitialPrompt(opts.SessionName, opts.Prompt)
+		if writeErr != nil {
+			// AC-5: prompt-delivery setup failures must surface to the
+			// operator instead of being swallowed. Bail out before any
+			// tmux state is created so a re-spawn after fixing the
+			// underlying issue (e.g. disk full) starts from a clean slate.
+			startup.log("spawn-session: write initial-prompt FAILED: %v", writeErr)
+			return fmt.Errorf("spawn session: write initial prompt: %w", writeErr)
+		}
+		promptFilePath = path
+		startup.log("spawn-session: wrote initial-prompt file (%d bytes) to %s", len(opts.Prompt), path)
+	}
+
+	// #1064 AC-6: pre-spawn size check. Build the launch command preview
+	// using the same Opts shape that spawnFullLayout will reuse below, and
+	// reject any host-mode session whose constructed command exceeds the
+	// safe bound. Doing this BEFORE any tmux state is created means a
+	// rejected spawn has no observable side effects on the tmux server.
+	// The check fires only for host mode — podman/bwrap launch commands
+	// are bounded by construction (they reference a session name, not the
+	// prompt body) and never approach the threshold.
+	hostLaunchCmdSize := 0
+	if opts.Layout == LayoutFull && mode == "host" {
+		previewOpts := buildOptsForLayout(opts, 0, promptFilePath)
+		hostLaunchCmd := BuildOpencodeCmd(previewOpts)
+		hostLaunchCmdSize = len(hostLaunchCmd)
+		if hostLaunchCmdSize > HostLaunchCmdSafeBound {
+			startup.log("spawn-session: host launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
+				hostLaunchCmdSize, HostLaunchCmdSafeBound)
+			// Best-effort: remove the prompt file we just wrote so a
+			// subsequent retry doesn't see a stale file under a recycled
+			// session name.
+			removeInitialPrompt(opts.SessionName)
+			return &HostLaunchCmdTooLargeError{
+				SessionName: opts.SessionName,
+				CmdSize:     hostLaunchCmdSize,
+				SafeBound:   HostLaunchCmdSafeBound,
+			}
+		}
+		startup.log("spawn-session: host launch command size %d (safe bound %d, warn threshold %d)",
+			hostLaunchCmdSize, HostLaunchCmdSafeBound, HostLaunchCmdWarnThreshold)
+	}
+	opts.PromptFilePath = promptFilePath
+
 	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
 	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
 	// value written here.
@@ -275,6 +344,20 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: waiting for readiness (timeout=%s)", opts.ReadinessTimeout)
 		if readyErr := WaitForReady(d, opts.SessionName, opts.ReadinessTimeout); readyErr != nil {
 			startup.log("spawn-session: readiness gate FAILED: %v", readyErr)
+			// #1064 AC-7: enrich the readiness-gate error when the host-mode
+			// launch command was unusually large. The bare timeout message
+			// ("not ready within 30s") leaves the operator without a hint
+			// for why opencode never came up; for the size-driven failure
+			// mode the cause is structural and predictable, so name it.
+			if mode == "host" && hostLaunchCmdSize > HostLaunchCmdWarnThreshold {
+				if rte, ok := readyErr.(*ReadinessTimeoutError); ok {
+					rte.Hint = fmt.Sprintf(
+						"host-mode launch command was %d bytes, above the typical safe range of %d bytes; "+
+							"a prompt-size issue is a likely cause (see issue #1064)",
+						hostLaunchCmdSize, HostLaunchCmdWarnThreshold,
+					)
+				}
+			}
 			// Clean up: the sidecar is still running and reporting
 			// `connection refused` to its own log, but opencode never came
 			// up. KillSidecar releases the sidecar process, the DB cleanup
@@ -283,11 +366,53 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			KillSidecar(opts.SessionName)
 			cleanupHalfAliveSession(d, opts.SessionName)
 			_ = tmux.KillSession(opts.SessionName)
+			// Drop the per-session prompt file so a retry starts fresh.
+			removeInitialPrompt(opts.SessionName)
 			return readyErr
 		}
 		startup.log("spawn-session: ready")
 	}
 	return nil
+}
+
+// resolveLayoutIsolationMode returns the resolved isolation mode for the
+// SpawnOpts, mirroring the lookup in BuildOpencodeCmd / spawnAgentOnlyLayout.
+// Kept as a small helper so SpawnSession can decide whether to write the
+// initial-prompt file (host only) and whether to apply the launch-command
+// size guard (host only) without duplicating the precedence logic.
+func resolveLayoutIsolationMode(opts SpawnOpts) string {
+	if opts.IsolationMode != "" {
+		return opts.IsolationMode
+	}
+	if opts.ContainerMode {
+		return "podman"
+	}
+	return "host"
+}
+
+// buildOptsForLayout returns the Opts struct that spawnFullLayout (and the
+// pre-spawn size guard in SpawnSession) hands to BuildOpencodeCmd. Centralised
+// here so the size-guard preview and the actual layout invocation cannot
+// drift — both share the same constructed command.
+func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
+	return Opts{
+		Prompt:           opts.Prompt,
+		PromptFilePath:   promptFilePath,
+		Agent:            opts.AgentRole,
+		ConfigContent:    opts.ConfigContent,
+		SessionName:      opts.SessionName,
+		Port:             port,
+		ContainerMode:    opts.ContainerMode,
+		IsolationMode:    opts.IsolationMode,
+		PluginHostPath:   opts.PluginHostPath,
+		InstanceID:       opts.InstanceID,
+		AgentEnvVars:     opts.AgentEnvVars,
+		ConfigEnvVarName: opts.ConfigEnvVarName,
+		RuntimeEnvVars:   opts.RuntimeEnvVars,
+		Layout:           LayoutFull,
+		ForceFresh:       opts.ForceFresh,
+		Headless:         opts.Headless,
+	}
 }
 
 // cleanupHalfAliveSession releases the DB resources for a session that was
@@ -319,24 +444,8 @@ func cleanupHalfAliveSession(d *db.DB, sessionName string) {
 // tmux-session-start hook (which idempotently re-seeds root_agent_name) and
 // starts the sidecar from inside setupFullLayout.
 func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
-	createOpts := Opts{
-		Prompt:           opts.Prompt,
-		Agent:            opts.AgentRole,
-		ConfigContent:    opts.ConfigContent,
-		SessionName:      opts.SessionName,
-		Port:             port,
-		ContainerMode:    opts.ContainerMode,
-		IsolationMode:    opts.IsolationMode,
-		PluginHostPath:   opts.PluginHostPath,
-		InstanceID:       opts.InstanceID,
-		AgentEnvVars:     opts.AgentEnvVars,
-		ConfigEnvVarName: opts.ConfigEnvVarName,
-		RuntimeEnvVars:   opts.RuntimeEnvVars,
-		Layout:           LayoutFull,
-		ForceFresh:       opts.ForceFresh,
-		Headless:         opts.Headless,
-		DB:               d,
-	}
+	createOpts := buildOptsForLayout(opts, port, opts.PromptFilePath)
+	createOpts.DB = d
 	return Create(opts.SessionName, opts.Worktree, createOpts)
 }
 

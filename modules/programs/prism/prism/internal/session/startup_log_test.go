@@ -28,12 +28,18 @@ func TestAgentStartupLogPath_DefaultsToXDGState(t *testing.T) {
 	}
 }
 
-// TestAgentStartupLogPath_LivesNextToAgentRunLog verifies that the startup
-// log and agent-run log share the same parent directory. This co-location
-// matters for forensic discovery: an operator who finds one file should see
-// the other in the same `ls`.
-func TestAgentStartupLogPath_LivesNextToAgentRunLog(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+// TestAgentStartupLogPath_LivesUnderRunDir verifies that the startup log
+// and the agent-run log both live somewhere under $XDG_STATE_HOME/prism/run/.
+// They are not in the same leaf directory — agent-startup.log uses the raw
+// session name (so a `prism logs <name> --startup` lookup is direct), while
+// agent-run.log uses a SessionDirName-hashed prefix so the per-session
+// directory stays under sun_path limits for the host-API socket (#1050).
+// Aligning the two layouts is tracked separately; this test pins the
+// current-and-intended shape so a future refactor must update both call
+// sites coherently.
+func TestAgentStartupLogPath_LivesUnderRunDir(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
 	startupPath, err := AgentStartupLogPath("myrepo@feat")
 	if err != nil {
 		t.Fatalf("AgentStartupLogPath: %v", err)
@@ -42,9 +48,12 @@ func TestAgentStartupLogPath_LivesNextToAgentRunLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AgentRunLogPath: %v", err)
 	}
-	if filepath.Dir(startupPath) != filepath.Dir(runPath) {
-		t.Errorf("startup log dir %q != agent-run dir %q — files should be co-located",
-			filepath.Dir(startupPath), filepath.Dir(runPath))
+	wantPrefix := filepath.Join(xdg, "prism", "run") + string(filepath.Separator)
+	if !strings.HasPrefix(startupPath, wantPrefix) {
+		t.Errorf("AgentStartupLogPath = %q, want prefix %q", startupPath, wantPrefix)
+	}
+	if !strings.HasPrefix(runPath, wantPrefix) {
+		t.Errorf("AgentRunLogPath = %q, want prefix %q", runPath, wantPrefix)
 	}
 }
 
