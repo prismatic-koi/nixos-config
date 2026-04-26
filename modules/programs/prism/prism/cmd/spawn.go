@@ -441,6 +441,14 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// be killed.
 		ForceFresh: true,
 		Headless:   headless,
+		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
+		// return on opencode actually binding its port (#1051 AC-14).
+		// Single-worker spawns benefit from the same readiness check that
+		// review fan-outs do: an operator running `prism spawn --branch foo`
+		// sees a clear "failed to start: not ready within 30s" instead of
+		// "session created" followed by a session that idles forever
+		// because opencode never came up.
+		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
 	// receive env vars via podman --env flags in the sidecar.

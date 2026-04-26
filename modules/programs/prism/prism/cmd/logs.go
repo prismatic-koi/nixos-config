@@ -54,6 +54,12 @@ opencode stdout/stderr for the lifetime of the session):
   prism logs nixos-config@feat --agent-run
   prism logs nixos-config@feat --agent-run --follow
 
+Use --startup to read the spawn-time breadcrumb log (covers the window
+between "session created in DB" and "opencode reachable", written by
+session.SpawnSession before tmux send-keys):
+
+  prism logs nixos-config@feat --startup
+
 Works identically from the host or inside a coordinator container — in
 container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).`,
 	Args:         cobra.ExactArgs(1),
@@ -65,6 +71,7 @@ func init() {
 	logsCmd.Flags().Int("tail", 0, "Number of lines to show from the end of the log; 0 prints nothing (omit flag to show all)")
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
 	logsCmd.Flags().Bool("agent-run", false, "Read the agent-run log (bwrap harness stdout/stderr) instead of the sidecar log")
+	logsCmd.Flags().Bool("startup", false, "Read the agent-startup log (spawn-time breadcrumbs written by session.SpawnSession)")
 	rootCmd.AddCommand(logsCmd)
 }
 
@@ -75,9 +82,14 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	follow, _ := cmd.Flags().GetBool("follow")
 	tailSet := cmd.Flags().Changed("tail")
 	agentRun, _ := cmd.Flags().GetBool("agent-run")
+	startup, _ := cmd.Flags().GetBool("startup")
 
 	if tailSet && follow {
 		return fmt.Errorf("--tail and --follow are mutually exclusive")
+	}
+
+	if agentRun && startup {
+		return fmt.Errorf("--agent-run and --startup are mutually exclusive")
 	}
 
 	if tailSet && tailN < 0 {
@@ -85,19 +97,27 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Container proxy path: delegate to the host-API sidecar.
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+	// (--startup is host-only because the agent-startup log is written by
+	// the host-side SpawnSession; container coordinators have no use for it.)
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" && !startup {
 		return proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, agentRun, os.Stdout)
 	}
 
 	// Host path: resolve the appropriate log file.
 	var logPath string
 	var err error
-	if agentRun {
+	switch {
+	case startup:
+		logPath, err = session.AgentStartupLogPath(sessionName)
+		if err != nil {
+			return fmt.Errorf("resolve agent-startup log path: %w", err)
+		}
+	case agentRun:
 		logPath, err = session.AgentRunLogPath(sessionName)
 		if err != nil {
 			return fmt.Errorf("resolve agent-run log path: %w", err)
 		}
-	} else {
+	default:
 		logPath, err = session.SidecarLogPath(sessionName)
 		if err != nil {
 			return fmt.Errorf("resolve log path: %w", err)
@@ -105,10 +125,22 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	if _, statErr := os.Stat(logPath); os.IsNotExist(statErr) {
-		if agentRun {
+		switch {
+		case startup:
+			return fmt.Errorf("no agent-startup log file found for session %q", sessionName)
+		case agentRun:
 			return fmt.Errorf("no agent-run log file found for session %q", sessionName)
+		default:
+			// For the default sidecar-log path, if a startup log exists, hint
+			// at it — the operator was probably looking at the wrong file
+			// because the agent silently failed to come up before the sidecar
+			// produced any meaningful events (the #1051 failure mode).
+			if session.AgentStartupLogExists(sessionName) {
+				return fmt.Errorf("no sidecar log file found for session %q\nhint: an agent-startup log exists for this session — try `prism logs %s --startup` to see spawn-time breadcrumbs",
+					sessionName, sessionName)
+			}
+			return fmt.Errorf("no log file found for session %q", sessionName)
 		}
-		return fmt.Errorf("no log file found for session %q", sessionName)
 	}
 
 	if follow {
@@ -119,7 +151,76 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return runLogsTail(logPath, tailN)
 	}
 
-	return runLogsFull(logPath)
+	if err := runLogsFull(logPath); err != nil {
+		return err
+	}
+
+	// AC-4: when the operator is reading the default (sidecar) log and that
+	// log contains nothing beyond SSE-retry noise — the #1051 failure
+	// signature — surface a one-line hint pointing at the agent-startup log
+	// where spawn-time breadcrumbs live. The hint is silenced when the
+	// sidecar log shows real activity (server.connected, first event, etc.)
+	// or when no startup log exists for this session.
+	if !startup && !agentRun && sidecarLogIsStuckOnSSERetries(logPath) && session.AgentStartupLogExists(sessionName) {
+		fmt.Fprintf(os.Stderr,
+			"\nhint: this sidecar log contains only SSE-retry noise — opencode never bound its port.\n"+
+				"      Spawn-time breadcrumbs (port, isolation mode, sidecar PID) are in the agent-startup log:\n"+
+				"        prism logs %s --startup\n"+
+				"      bwrap stderr (if it ran) is in the agent-run log:\n"+
+				"        prism logs %s --agent-run\n",
+			sessionName, sessionName)
+	}
+	return nil
+}
+
+// sidecarLogIsStuckOnSSERetries returns true when the named sidecar log file
+// contains nothing beyond the [prism sidecar] starting line and a series of
+// "sse: …" retry messages — i.e. the sidecar started, opencode never bound
+// its port, and we have no further evidence of progress. Used by runLogs to
+// surface a startup-log hint to operators reading the wrong file.
+//
+// The implementation is deliberately conservative: it returns false on any
+// I/O error, on any line that does not begin with "[prism sidecar]" or "sse:"
+// (or is blank / "clipboard …"), and on logs above 64 KiB (large logs almost
+// always contain real events; the failure mode this targets produces tiny
+// logs of a dozen lines or so). False negatives are fine — the hint is
+// optional. False positives would print a noisy hint on healthy sessions.
+func sidecarLogIsStuckOnSSERetries(logPath string) bool {
+	const maxBytes = 64 * 1024
+	info, statErr := os.Stat(logPath)
+	if statErr != nil || info.Size() == 0 || info.Size() > maxBytes {
+		return false
+	}
+	data, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		return false
+	}
+	hasRealEvent := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Accept the lines we expect on the failure path:
+		//   "[prism sidecar] starting: …"
+		//   "clipboard clean: …"
+		//   "<timestamp> sse: …"
+		if strings.HasPrefix(trimmed, "[prism sidecar]") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "clipboard ") {
+			continue
+		}
+		// "2026/04/26 10:22:52 sse: …" — match the "sse:" token after
+		// timestamp.
+		if strings.Contains(trimmed, " sse: ") || strings.HasPrefix(trimmed, "sse: ") {
+			continue
+		}
+		// Any other line indicates the sidecar produced real output — bail.
+		hasRealEvent = true
+		break
+	}
+	return !hasRealEvent
 }
 
 // runLogsFull prints the full contents of the log file to stdout.
