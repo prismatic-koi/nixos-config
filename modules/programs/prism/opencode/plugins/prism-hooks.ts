@@ -284,12 +284,22 @@ export const PrismHooks: Plugin = async (pluginInput) => {
               // Log the event to the prism DB asynchronously (fire-and-forget).
               // We do not await this so the tool execution path is not blocked.
               if (sessionName) {
-                const $ = (pluginInput as any).$;
-                if ($) {
-                  void $`prism event doom-loop-detected --session ${sessionName} --tool ${input.tool} --pattern ${key} --count ${String(doomLoop.consecutiveCount)}`.quiet().catch(() => {
-                    // Ignore errors — event logging is best-effort.
-                  });
-                }
+                Bun.spawn(
+                  [
+                    "prism",
+                    "event",
+                    "doom-loop-detected",
+                    "--session",
+                    sessionName,
+                    "--tool",
+                    input.tool,
+                    "--pattern",
+                    key,
+                    "--count",
+                    String(doomLoop.consecutiveCount),
+                  ],
+                  { stderr: "ignore", stdout: "ignore" },
+                );
               }
             }
           }
