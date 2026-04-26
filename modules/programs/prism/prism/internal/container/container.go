@@ -360,15 +360,24 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	}
 }
 
-// tempPath returns the host path for a temporary per-session artefact file.
-// All per-session temp files follow the shape:
+// sessionTempPath is the package-level building block for per-session temp
+// file paths. All per-session artefact files follow the shape:
 //
 //	<os.TempDir()>/prism-<stem>-<session_name><suffix>
 //
 // stem identifies the artefact (e.g. "gitdir", "ssh-config"); suffix is ""
 // for most artefacts and ".sb" for the sandbox-exec SBPL profile.
+//
+// It is a free function so that exported helpers like OpencodeConfigFilePath
+// can share the same path logic without requiring a Manager receiver.
+func sessionTempPath(stem, suffix, name string) string {
+	return filepath.Join(os.TempDir(), "prism-"+stem+"-"+name+suffix)
+}
+
+// tempPath returns the host path for a temporary per-session artefact file.
+// It is a thin wrapper over sessionTempPath using the Manager's session name.
 func (m *Manager) tempPath(stem, suffix string) string {
-	return filepath.Join(os.TempDir(), "prism-"+stem+"-"+m.name+suffix)
+	return sessionTempPath(stem, suffix, m.name)
 }
 
 // gitdirFilePath returns the host path for the temporary corrected .git pointer
@@ -424,8 +433,9 @@ func (m *Manager) opencodeConfigFilePath() string {
 // config file for the given session name. The path is deterministic and
 // derived from the session name, so callers outside the Manager (e.g.
 // cmd/spawn.go) can write the file before the Manager is constructed.
+// Delegates to sessionTempPath so all per-session paths share one naming rule.
 func OpencodeConfigFilePath(sessionName string) string {
-	return filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName)
+	return sessionTempPath("opencode-config", "", sessionName)
 }
 
 // WriteOpencodeConfig writes content to the temp opencode.json file for the
