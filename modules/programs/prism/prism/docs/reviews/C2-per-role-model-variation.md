@@ -147,6 +147,17 @@ CREATE TABLE spawn_inputs (
 );
 ```
 
+**JSON column vs normalised side-table.** C.1 §7 open question #9 explicitly delegated this decision to C.2: "Should `model_variant_overrides` be a JSON column on `spawn_inputs` (as proposed in §4.1) or a normalised side-table `spawn_role_overrides(instance_id, role, model_id, variant)`?"
+
+This proposal adopts the **JSON column form** for the following reasons:
+
+- The expected cardinality is low (at most 5–7 roles per spawn for a review fan-out); a normalised table gains nothing at this scale.
+- The JSON form is cheap to ship as an additive column on `spawn_inputs`; no join is needed to recover the full override map.
+- Query patterns for A/B comparison are at the session grain ("did session A use a different model for review-context than session B?"), not at the individual-role grain. A `json_extract` on a TEXT column is adequate for this.
+- A normalised side-table would be appropriate if per-role model data needed to be aggregated across many sessions (e.g. "what fraction of sessions used gemini for review-context?"). That aggregation use case is plausible but is not in scope for the initial A/B comparison workflow; it can be added as a materialised view or a migration once the query patterns are confirmed.
+
+The JSON form therefore wins on cost-to-ship vs benefit for near-term use cases. The decision is revisable at the implementation phase if C.3's outcome capture or E.1's synthesis identifies a strong aggregation requirement.
+
 **What to persist.** The user-supplied per-role override map — not the fully resolved per-agent model IDs (those are already on `agent_status.model_id` / per-event). The override map records *intent*: "I asked for this specific role to use this specific model." The resolved values are derivable by combining the override map with the profile's role_mapping.
 
 **Granularity.** For a five-agent review fan-out, each spawned agent session already has its own `instance_id`. The `spawn_inputs` row per-agent would carry the full override map (redundantly) unless a parent/group-level `spawn_inputs` row is introduced. A group-level row (keyed by `group_id` rather than `instance_id`) avoids the redundancy but adds complexity. [uncertain — depends on whether C.3's outcome capture design needs per-agent vs per-group `spawn_inputs` rows; defer to that discussion.]
