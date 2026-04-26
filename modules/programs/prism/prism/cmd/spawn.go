@@ -44,6 +44,15 @@ import (
 // derives the repo from its own session name, so a client running inside a
 // container where PRISM_BARE_ROOT is a mount-path name (e.g. "/prism-git")
 // does not need to supply the correct repo name. See issue #616.
+//
+// The "isolation" field forwards the --isolation flag value when explicitly
+// set. Validation of unknown values happens client-side here so the error
+// surfaces immediately at the proxy boundary with the same error message
+// shape as the direct (host-shell) path; see issue #1059. Without this, a
+// coordinator running inside a container could silently drop --isolation host
+// (or any other valid value) because the proxy never read the flag — the
+// sidecar fell back to its default mode and the user only noticed by reading
+// the sidecar log line.
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	agentFlag, _ := cmd.Flags().GetString("agent")
@@ -53,6 +62,39 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
+	isolationFlag, _ := cmd.Flags().GetString("isolation")
+
+	// Detect explicit-set state for the mutually-exclusive isolation flags so
+	// the proxy mirrors the validation behaviour of the direct (host-shell)
+	// path in resolveIsolationMode.
+	isolationChanged := cmd.Flags().Changed("isolation")
+	hostModeChanged := cmd.Flags().Changed("host-mode")
+
+	// Reject simultaneous use of --isolation and --host-mode at the proxy
+	// boundary so the user gets the same error as the direct path. Without
+	// this, the host-API server would still see both fields populated and
+	// would have to re-run the same check.
+	if isolationChanged && hostModeChanged {
+		return fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
+	}
+
+	// Validate --isolation client-side so unknown values fail fast with the
+	// same error message as the direct path. The platform guards in
+	// resolveIsolationMode (bwrap on non-Linux, sandbox-exec on non-Darwin)
+	// are intentionally NOT applied here: the proxy is running inside a
+	// container, but the spawned session lands on the host, so the host's
+	// platform — not the proxy's — is what matters. The host-side prism spawn
+	// re-runs resolveIsolationMode and will reject an incompatible mode there.
+	if isolationChanged {
+		if !config.IsValidIsolationMode(isolationFlag) {
+			valid := make([]string, len(config.ValidIsolationModes))
+			for i, m := range config.ValidIsolationModes {
+				valid[i] = string(m)
+			}
+			return fmt.Errorf("unknown isolation mode %q; valid values: %s", isolationFlag, strings.Join(valid, ", "))
+		}
+	}
+
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
@@ -60,7 +102,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	var resp struct {
 		SessionName string `json:"session_name"`
 	}
-	if err := proxyToHostAPI(apiURL, "/spawn", map[string]any{
+	body := map[string]any{
 		"branch":                 branchFlag,
 		"prompt":                 promptFlag,
 		"agent":                  agentFlag,
@@ -70,7 +112,15 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"host_mode":              hostModeFlag,
 		"harness":                harnessFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
-	}, &resp); err != nil {
+	}
+	// Only forward "isolation" when explicitly set. An empty value would tell
+	// the host-side spawn to fall back to config.json, which is correct only
+	// when the user really did not pass the flag — we must distinguish the
+	// "absent" and "empty" cases here.
+	if isolationChanged {
+		body["isolation"] = isolationFlag
+	}
+	if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
 		return err
 	}
 	fmt.Printf("session %q created\n", resp.SessionName)

@@ -5,6 +5,17 @@
 // DB writes, and dashboard sentinel touches — replicating the logic in
 // opencode/plugins/prism-hooks.ts.
 //
+// Host-API socket path budget. The Unix socket the sidecar binds for the
+// host-API server (Config.HostAPISockPath) must fit the kernel's sun_path
+// limit: 108 bytes on Linux, 104 bytes on Darwin. We treat 104 as the budget
+// for both platforms so the same code path works everywhere. The path is
+// constructed by session.SidecarHostAPIPath and uses a 12-hex-char SHA-256
+// prefix of the session name as the per-session directory — see #1050 for the
+// path arithmetic and the regression tests in
+// internal/session/sidecar_test.go (TestSidecarHostAPIPath_LengthInvariant_*).
+// If a future change reverts that to a long-form session name, those tests
+// will fail with a clear message before the bug ships.
+//
 // All runtime-specific logic (session creation, prompt delivery, SSE
 // subscription, event type mapping, message extraction, container command,
 // health check, config mount path) is delegated to the Harness interface.
@@ -42,6 +53,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
@@ -524,21 +536,31 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
 		if listenErr != nil {
+			// Failure to bind is FATAL (#1050). Continuing without a socket
+			// produces a partially-functional agent: bwrap exec proceeds with
+			// PRISM_HOST_API set but nothing listening, so anything inside the
+			// container that hits the host-API channel hangs or fails in a
+			// downstream way that prevents opencode from ever binding its TCP
+			// port. The agent then appears as "idle" with no title, the SSE
+			// loop retries forever, and the user has no clear signal that
+			// anything is wrong. Returning the error here surfaces it via the
+			// sidecar log and exits with a non-zero status so the operator
+			// sees the failure immediately.
 			log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
-		} else {
-			srv := &http.Server{Handler: s.hostAPIHandler()}
-			s.mu.Lock()
-			s.hostAPIListener = ln
-			s.hostAPISrv = srv
-			s.mu.Unlock()
-			go func() {
-				if err := srv.Serve(ln); err != nil &&
-					!errors.Is(err, http.ErrServerClosed) &&
-					!errors.Is(err, net.ErrClosed) {
-					log.Printf("sidecar: host-API server (unix): %v", err)
-				}
-			}()
+			return fmt.Errorf("sidecar: host-API socket bind failed for %q: %w", s.cfg.HostAPISockPath, listenErr)
 		}
+		srv := &http.Server{Handler: s.hostAPIHandler()}
+		s.mu.Lock()
+		s.hostAPIListener = ln
+		s.hostAPISrv = srv
+		s.mu.Unlock()
+		go func() {
+			if err := srv.Serve(ln); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) &&
+				!errors.Is(err, net.ErrClosed) {
+				log.Printf("sidecar: host-API server (unix): %v", err)
+			}
+		}()
 
 		// TCP server — Darwin only, when the TCP listener was bound before
 		// container creation. Uses a separate http.Server with the same handler
@@ -934,7 +956,18 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		s.cancelRecoveryTimer()
 		s.manualDenial = false
 		s.busyEpoch++
-		if !s.compacting {
+		// Suppress the active write if compacting (existing exception) or if the
+		// DB state is reviewing — the worker is awaiting the review-complete
+		// prompt and any incidental busy turn (e.g. an assistant summary fired
+		// after `prism review` returns, before the monitor delivers results)
+		// must not clobber `reviewing`. The monitor is responsible for writing
+		// `active` to the DB just before delivering the review-complete prompt
+		// so that the genuine reviewing→active transition still happens. See
+		// internal/review/monitor.go and #1049.
+		dbStateOnBusy := s.currentDBState()
+		if dbStateOnBusy == agent.StateReviewing {
+			log.Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
+		} else if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 		}
@@ -3087,6 +3120,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Model                string `json:"model"`
 			Variant              string `json:"variant"`
 			HostMode             bool   `json:"host_mode"`
+			Isolation            string `json:"isolation"`
 			Harness              string `json:"harness"`
 			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
 		}
@@ -3105,6 +3139,24 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Harness != "opencode" {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown harness %q: only 'opencode' is supported in this version of prism", req.Harness))
+			return
+		}
+		// Reject conflicting isolation flags at the API boundary so the error
+		// surfaces from the proxy (the spawned subprocess would also reject it,
+		// but doing it here avoids the round-trip and keeps the error close to
+		// the source). Mirrors the resolveIsolationMode rule in cmd/spawn.go.
+		if req.Isolation != "" && req.HostMode {
+			writeError(w, http.StatusBadRequest, "--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
+			return
+		}
+		// Validate isolation server-side as defence-in-depth (the client
+		// already validated, but a non-prism client could send anything).
+		if req.Isolation != "" && !config.IsValidIsolationMode(req.Isolation) {
+			valid := make([]string, len(config.ValidIsolationModes))
+			for i, m := range config.ValidIsolationModes {
+				valid[i] = string(m)
+			}
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown isolation mode %q; valid values: %s", req.Isolation, strings.Join(valid, ", ")))
 			return
 		}
 
@@ -3138,6 +3190,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
+		if req.Isolation != "" {
+			args = append(args, "--isolation", req.Isolation)
+		}
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")
 		}
@@ -3163,6 +3218,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
+		}
+		if req.Isolation != "" {
+			logArgs = append(logArgs, "--isolation", req.Isolation)
 		}
 		if req.IgnoreConcurrencyCap {
 			logArgs = append(logArgs, "--ignore-concurrency-cap")
