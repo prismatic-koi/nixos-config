@@ -8925,17 +8925,109 @@ func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
 	}
 }
 
-// TestReviewing_TransitionsToFinishedAfterPromptDelivery verifies the full
-// lifecycle: worker in "reviewing" → review-complete prompt arrives → opencode
-// goes busy (active) → idle debounce fires → finished → coordinator notified.
+// TestReviewing_NotClobberedByBusyTurn verifies that a session.status{busy}
+// event fired while the worker is in "reviewing" does NOT overwrite that state
+// with "active". This is the regression test for issue #1049: prior to the
+// fix, the busy branch of handleSessionStatus wrote `active` unconditionally
+// (only excepting `compacting`), so any incidental assistant turn the worker
+// emitted between `prism review` returning and the review-complete prompt
+// arriving would clobber `reviewing`. The subsequent idle debounce then saw
+// `active` (not `reviewing`), the suppression path was skipped, and the
+// coordinator received a spurious "has finished" notification.
 //
-// This simulates the happy path for issue #1033:
-//  1. Worker is in "reviewing" state (set by RunAsync).
-//  2. Monitor delivers review-complete prompt; opencode goes busy.
-//  3. session.status{busy} fires → sidecar writes "active" to DB.
-//  4. Worker processes results and goes idle.
-//  5. Idle debounce fires → DB state is "active" (not "reviewing") → finished.
-//  6. Coordinator receives the "has finished" notification.
+// The fix adds a `reviewing` exception parallel to the existing `compacting`
+// exception. With it, the state must remain `reviewing` across one or more
+// busy + idle cycles, and no coordinator notification must fire.
+func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-reviewing-clobber"
+	var notifyCount int
+	var notifyMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		notifyMu.Lock()
+		notifyCount++
+		notifyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Set the worker state to "reviewing" (as RunAsync does after spawning
+	// review agents).
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+
+	// Fire two busy + idle cycles, simulating one or more assistant turns the
+	// worker emits after `prism review` returns but before the review-complete
+	// prompt arrives.
+	for i := 0; i < 2; i++ {
+		worker.HandleEvent(makeSSE("session.status", map[string]any{
+			"status": map[string]string{"type": "busy"},
+		}))
+		// State must still be "reviewing" — busy must NOT clobber it.
+		if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateReviewing) {
+			t.Fatalf("cycle %d: after busy: state = %q, want %q (busy must not clobber reviewing)",
+				i, state, agent.StateReviewing)
+		}
+
+		worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+		timer := clk.LastTimer()
+		if timer == nil {
+			t.Fatalf("cycle %d: expected idle timer from session.idle", i)
+		}
+		timer.Fire()
+
+		// State must still be "reviewing" — the idle debounce suppression
+		// path must trigger because the DB state is still `reviewing`.
+		if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateReviewing) {
+			t.Errorf("cycle %d: after idle debounce: state = %q, want %q (idle debounce must be suppressed while reviewing)",
+				i, state, agent.StateReviewing)
+		}
+	}
+
+	// Allow async goroutines a moment to settle.
+	time.Sleep(100 * time.Millisecond)
+
+	// No bus messages and no HTTP POST notifications must have been delivered.
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("worker in reviewing state must NOT send coordinator notification, but got %d bus message(s)", totalMsgs)
+	}
+
+	notifyMu.Lock()
+	nc := notifyCount
+	notifyMu.Unlock()
+	if nc != 0 {
+		t.Errorf("coordinator HTTP POST count = %d, want 0 (busy turns while reviewing must suppress notifications)", nc)
+	}
+}
+
+// TestReviewing_TransitionsToFinishedAfterPromptDelivery verifies the full
+// lifecycle: worker in "reviewing" → review monitor flips state to "active"
+// just before delivering the review-complete prompt → busy event → idle
+// debounce → finished → coordinator notified.
+//
+// Per the option-1 fix for #1049, the reviewing→active flip is driven by the
+// review monitor writing `active` to the DB before delivering the prompt, NOT
+// by an arbitrary busy event (which is suppressed while in `reviewing`). This
+// test mirrors that contract: the test seeds `reviewing`, then simulates the
+// monitor's pre-delivery DB write by upserting `active`, and only then fires
+// the busy + idle events that arise from the prompt being processed.
 func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 	d := openTestDB(t)
 
@@ -8963,8 +9055,18 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 		t.Errorf("after suppressed idle: state = %q, want %q", state, agent.StateReviewing)
 	}
 
-	// Step 2: review-complete prompt arrives; opencode goes busy.
-	// session.status{busy} overwrites "reviewing" with "active".
+	// Step 2: the review monitor writes `active` to the DB just before
+	// delivering the review-complete prompt (option 1 in #1049). This mirrors
+	// the pre-delivery write performed by review.MonitorFunc.
+	if err := d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree,
+		string(agent.StateActive), nil, nil); err != nil {
+		t.Fatalf("monitor pre-delivery upsert active: %v", err)
+	}
+
+	// Step 3: review-complete prompt arrives; opencode goes busy. The busy
+	// event now sees `active` (not `reviewing`) in the DB, so it proceeds
+	// normally — though the state is already `active`, upsertState is a
+	// no-op for same-state transitions.
 	worker.HandleEvent(makeSSE("session.status", map[string]any{
 		"status": map[string]string{"type": "busy"},
 	}))
@@ -8972,7 +9074,7 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 		t.Errorf("after busy: state = %q, want %q", state, agent.StateActive)
 	}
 
-	// Step 3: worker processes results and goes idle again.
+	// Step 4: worker processes results and goes idle again.
 	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
 	timer2 := clk.LastTimer()
 	if timer2 == nil {

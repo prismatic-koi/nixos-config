@@ -935,7 +935,18 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		s.cancelRecoveryTimer()
 		s.manualDenial = false
 		s.busyEpoch++
-		if !s.compacting {
+		// Suppress the active write if compacting (existing exception) or if the
+		// DB state is reviewing — the worker is awaiting the review-complete
+		// prompt and any incidental busy turn (e.g. an assistant summary fired
+		// after `prism review` returns, before the monitor delivers results)
+		// must not clobber `reviewing`. The monitor is responsible for writing
+		// `active` to the DB just before delivering the review-complete prompt
+		// so that the genuine reviewing→active transition still happens. See
+		// internal/review/monitor.go and #1049.
+		dbStateOnBusy := s.currentDBState()
+		if dbStateOnBusy == agent.StateReviewing {
+			log.Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
+		} else if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 		}
