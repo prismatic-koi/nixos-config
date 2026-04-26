@@ -15,6 +15,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -997,7 +998,7 @@ func fakeTmux(t *testing.T, stderrMsg string, exitCode int) {
 	t.Helper()
 	wrapperPath := t.TempDir() + "/tmux"
 	// printf to stderr, then exit with the requested code.
-	script := "#!/bin/sh\nprintf '%s\\n' " + shellSingleQuote(stderrMsg) + " >&2\nexit " + itoa(exitCode) + "\n"
+	script := "#!/bin/sh\nprintf '%s\\n' " + shellSingleQuote(stderrMsg) + " >&2\nexit " + strconv.Itoa(exitCode) + "\n"
 	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
 		t.Fatalf("write fake tmux: %v", err)
 	}
@@ -1009,29 +1010,6 @@ func fakeTmux(t *testing.T, stderrMsg string, exitCode int) {
 // shellSingleQuote single-quotes s for safe inclusion in a /bin/sh script.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-// itoa avoids pulling strconv into the test file's import block for one digit.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
 }
 
 // TestRunError_IncludesArgvAndStderr verifies that when tmux exits non-zero,
