@@ -224,6 +224,21 @@
     ];
   };
 
+  # Swapfile on /persist for OOM protection (survives reboots, btrfs-aware)
+  swapDevices = [
+    {
+      device = "/persist/swapfile";
+      size = 16384; # 16 GiB
+    }
+  ];
+
+  # Kill memory hogs early before the system freezes under OOM pressure
+  services.earlyoom = {
+    enable = true;
+    freeMemThreshold = 5;
+    freeSwapThreshold = 10;
+  };
+
   # This value determines the NixOS release from which the default
   # settings for stateful data, like file locations and database versions
   # on your system were taken. It‘s perfectly fine and recommended to leave
