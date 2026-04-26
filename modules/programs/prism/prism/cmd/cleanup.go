@@ -801,6 +801,16 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	}
 	if sess.HarnessSessionID != nil {
 		params.HarnessSessionID = *sess.HarnessSessionID
+	} else {
+		// sessions.harness_session_id is NULL — this can happen for sessions
+		// started before UpdateHarnessSessionID was fixed to write to both
+		// tables. Fall back to agent_status, which is where the sidecar
+		// historically wrote the value.
+		if sid, fallbackErr := d.HarnessSessionIDForInstance(instanceID); fallbackErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
+		} else if sid != "" {
+			params.HarnessSessionID = sid
+		}
 	}
 	if sess.GroupID != nil {
 		params.GroupID = *sess.GroupID
