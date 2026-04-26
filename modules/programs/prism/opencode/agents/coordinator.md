@@ -132,6 +132,17 @@ issues, and summarise the findings. Your role is to relay the outcome.
 
 ### Case 2: Worker has self-reviewed and handed off
 
+> **Anti-pattern: do not act on PR-open alone.** Observing a PR in `gh pr list`,
+> in a `gh pr view` output, in the GitHub UI, or in any notification from any
+> source other than the worker's explicit `has finished` signal is **not** a
+> completion signal. The worker opens the PR early — before running `prism
+> review`, before fixing blocking issues, before pushing final commits. Acting on
+> PR-open without the finish notification risks merging a PR before the worker's
+> own review cycle resolves PASS, or before fixes for blocker findings have
+> landed. When multiple PRs are open simultaneously, each PR's sense-check and
+> enqueue gates on **its own** worker's finish notification — another worker
+> finishing does not clear the gate for a different PR.
+
 When a spawned agent opens a PR and announces completion:
 
 1. **Trust the worker review.** The worker runs `prism review <pr>` (async) —
@@ -139,7 +150,8 @@ When a spawned agent opens a PR and announces completion:
    `prism prompt` delivery before announcing completion. All blocking issues are
    fixed before the worker hands off. Do not re-review the code yourself — that
    is the worker's job.
-2. **Do a lightweight sense-check.** Run `gh pr view <number>` and verify:
+2. **Do a lightweight sense-check.** _Only after the finish notification for this
+   specific PR has arrived via the bus._ Run `gh pr view <number>` and verify:
    - PR title and description are clear and accurate
    - `Closes #N` is present and references the correct issue
    - The branch targets `main` (not another feature branch)
