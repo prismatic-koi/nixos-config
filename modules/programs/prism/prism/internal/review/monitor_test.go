@@ -130,6 +130,94 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 	}
 }
 
+// TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery verifies the option-1
+// fix for issue #1049: the review monitor must clear the worker's `reviewing`
+// state by writing `active` to the DB *before* delivering the review-complete
+// prompt. This ensures the busy event triggered by the prompt arriving is
+// processed against `active` (not `reviewing`, which the sidecar treats as
+// sticky and refuses to overwrite), so the subsequent idle debounce can fire
+// the genuine end-of-review handoff.
+func TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@monitor-flip-test"
+	agents := []review.Agent{
+		{Name: "review-goal", OpencodeName: "review-goal"},
+	}
+
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	sessions := []string{parent + "~review-1-review-goal"}
+	for _, sess := range sessions {
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", sess, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", sess, err)
+		}
+	}
+	seedAssistantEvent(t, d, sessions[0], "All ACs verified.\n<verdict>PASS</verdict>")
+
+	// Seed the worker session in `reviewing` state — exactly as RunAsync
+	// leaves it after spawning the review-agent group.
+	workerSession := "nixos-config@worker-flip-test"
+	if err := d.UpsertStatus(workerSession, "nixos-config", "/wt", "reviewing", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus worker: %v", err)
+	}
+
+	// Capture the worker's DB state at the moment of delivery (i.e. when the
+	// HTTP server receives the prompt_async POST). If the monitor has correctly
+	// flipped reviewing→active before delivery, this snapshot must read `active`.
+	var stateAtDelivery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if status, sErr := d.CurrentStatus(workerSession); sErr == nil && status != nil {
+			stateAtDelivery = status.State
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	port := extractPort(t, srv.URL)
+	if err := setHarnessInfo(t, d, workerSession, port, "test-opencode-session-id"); err != nil {
+		t.Fatalf("SetHarnessInfo: %v", err)
+	}
+
+	opts := review.MonitorOpts{
+		GroupID:              groupID,
+		WorkerSession:        workerSession,
+		PRNumber:             "1049",
+		Round:                1,
+		Agents:               agents,
+		AgentSessions:        sessions,
+		DBPath:               d.Path(),
+		PollInterval:         10 * time.Millisecond,
+		MaxDeliveryRetries:   0,
+		DeliveryRetryBackoff: 1 * time.Millisecond,
+	}
+
+	if err := review.MonitorFunc(opts); err != nil {
+		t.Fatalf("MonitorFunc: %v", err)
+	}
+
+	if stateAtDelivery != "active" {
+		t.Errorf("worker state at moment of delivery = %q, want %q (monitor must flip reviewing→active before delivering)",
+			stateAtDelivery, "active")
+	}
+
+	// Post-delivery: the DB state should still be `active` (or whatever the
+	// worker has moved on to in response to the delivery).
+	finalStatus, err := d.CurrentStatus(workerSession)
+	if err != nil {
+		t.Fatalf("CurrentStatus post-delivery: %v", err)
+	}
+	if finalStatus == nil || finalStatus.State == "reviewing" {
+		t.Errorf("worker state after delivery = %v, want non-reviewing", finalStatus)
+	}
+}
+
 // TestMonitorFunc_DeliveryFailure_WritesFallbackFile verifies that when all
 // delivery retries fail, MonitorFunc writes the fallback file at the expected
 // path.

@@ -371,6 +371,197 @@ func TestProxySpawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
 	}
 }
 
+// TestProxySpawn_IsolationForwarded verifies that --isolation <mode> is
+// forwarded over the host-API as the "isolation" JSON field, for each of the
+// four valid values. Regression test for issue #1059: previously the proxy
+// dropped --isolation entirely, so coordinators inside containers spawning
+// `--isolation host` (or any other value) silently fell back to the configured
+// default. The fix requires that the value reach the host-API request body
+// unchanged.
+func TestProxySpawn_IsolationForwarded(t *testing.T) {
+	type spawnReq struct {
+		Branch    string `json:"branch"`
+		Isolation string `json:"isolation"`
+	}
+
+	cases := []string{"podman", "bwrap", "sandbox-exec", "host"}
+	for _, mode := range cases {
+		t.Run(mode, func(t *testing.T) {
+			reqCh := make(chan spawnReq, 1)
+			srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/spawn" {
+					http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+					return
+				}
+				var req spawnReq
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				reqCh <- req
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"session_name":"nixos-config@iso-branch"}`))
+			})
+
+			t.Setenv("PRISM_HOST_API", srv.apiURL())
+			t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+			cmd := &cobra.Command{Use: "spawn"}
+			cmd.Flags().String("branch", "", "")
+			cmd.Flags().String("agent", "", "")
+			cmd.Flags().String("profile", "", "")
+			cmd.Flags().String("model", "", "")
+			cmd.Flags().String("variant", "", "")
+			cmd.Flags().Bool("host-mode", false, "")
+			cmd.Flags().String("isolation", "", "")
+			cmd.Flags().Bool("ignore-concurrency-cap", false, "")
+			cmd.Flags().String("harness", "opencode", "")
+			addPromptFlags(cmd)
+			_ = cmd.Flags().Set("branch", "iso-branch")
+			_ = cmd.Flags().Set("isolation", mode)
+
+			if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+				t.Fatalf("proxySpawn: %v", err)
+			}
+
+			select {
+			case req := <-reqCh:
+				if req.Isolation != mode {
+					t.Errorf("isolation = %q, want %q (issue #1059: --isolation must be forwarded)", req.Isolation, mode)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for request")
+			}
+		})
+	}
+}
+
+// TestProxySpawn_IsolationOmittedWhenUnset verifies that when --isolation is
+// not passed on the command line, the JSON body does NOT include an
+// "isolation" key (so the host-side spawn falls back to its config.json
+// default rather than receiving an empty-string override). The contract is
+// that absence is meaningful — proxySpawn must distinguish "user did not pass
+// the flag" from "user passed --isolation= (empty string)".
+func TestProxySpawn_IsolationOmittedWhenUnset(t *testing.T) {
+	rawCh := make(chan map[string]any, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var raw map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		rawCh <- raw
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@no-iso-branch"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
+	cmd.Flags().String("isolation", "", "")
+	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
+	cmd.Flags().String("harness", "opencode", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "no-iso-branch")
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case raw := <-rawCh:
+		if _, present := raw["isolation"]; present {
+			t.Errorf("isolation key present in body when --isolation not passed; body = %v", raw)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+// TestProxySpawn_IsolationUnknownValueRejectedClientSide verifies that
+// --isolation banana fails fast at the proxy boundary with the same error
+// shape as the direct (host-shell) path, rather than being silently forwarded
+// to the host-API server. The client-side validation prevents the bad value
+// from being sent at all.
+func TestProxySpawn_IsolationUnknownValueRejectedClientSide(t *testing.T) {
+	// Server should never be hit — the client must fail before sending.
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not receive a request; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
+	cmd.Flags().String("isolation", "", "")
+	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
+	cmd.Flags().String("harness", "opencode", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "bad-iso-branch")
+	_ = cmd.Flags().Set("isolation", "banana")
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("expected error for --isolation banana, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown isolation mode") {
+		t.Errorf("error %q does not mention 'unknown isolation mode'", err.Error())
+	}
+	// Error message must list all valid values so the user sees the accepted set.
+	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+		if !strings.Contains(err.Error(), m) {
+			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
+		}
+	}
+}
+
+// TestProxySpawn_IsolationAndHostModeRejected verifies that passing both
+// --isolation and --host-mode at the same time fails fast at the proxy
+// boundary with the same mutual-exclusion message as the direct path.
+func TestProxySpawn_IsolationAndHostModeRejected(t *testing.T) {
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not receive a request when both flags are set; got %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("agent", "", "")
+	cmd.Flags().String("profile", "", "")
+	cmd.Flags().String("model", "", "")
+	cmd.Flags().String("variant", "", "")
+	cmd.Flags().Bool("host-mode", false, "")
+	cmd.Flags().String("isolation", "", "")
+	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
+	cmd.Flags().String("harness", "opencode", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "both-flags-branch")
+	_ = cmd.Flags().Set("isolation", "host")
+	_ = cmd.Flags().Set("host-mode", "true")
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("expected error when both --isolation and --host-mode are set, got nil")
+	}
+	if !strings.Contains(err.Error(), "--isolation and --host-mode") {
+		t.Errorf("error %q does not mention both flags", err.Error())
+	}
+}
+
 // ── cleanup proxy tests (AC-2, AC-11) ─────────────────────────────────────────
 
 // TestHeadlessCleanup_Proxy verifies AC-11 for cleanup: when PRISM_HOST_API is
