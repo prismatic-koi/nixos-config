@@ -253,7 +253,17 @@ ALTER TABLE session_groups ADD COLUMN spawn_command TEXT;
 
 `DEFAULT 'review'` keeps existing rows valid without backfill. New abtest groups insert with `kind = 'abtest'`.
 
-### 4.5 What this delta does *not* add (deferred to siblings)
+### 4.5 Security considerations for the implementation phase
+
+RFC #691's `[security]` AC requires that "the sidecar's per-harness adapter does not expose harness credentials or auth tokens in session records, logs, or the prism dashboard." Three fields proposed in §4.1 / §3.5 carry credential-exposure risk that the implementation phase must address — flagged here so the synthesis pass (E.1) and the implementation issue inherit the constraint:
+
+- **`spawn_inputs.prompt_text`** — captures the prompt as delivered. Today the same content is recoverable from the first `msg_user` event in `agent_events`, so no net-new exposure surface is created by this column. The implementer should mirror whatever scrubbing (if any) the existing `msg_user` write path applies. If the existing path applies none, that gap is a separate issue and should not block this column landing.
+- **`spawn_inputs.extras`** (JSON pressure-relief valve) — has no documented hygiene rules. The implementation issue must define an explicit allow-list or scrubbing pass before any caller writes to `extras`. Treat `extras` as a no-credentials zone by convention.
+- **The `--harness`-config-blob persistence contemplated in §3.5 item 8** — per-session config blobs may contain `Authorization` headers, API keys, or token-bearing fields depending on harness. If a future revision of this delta adds a column to persist that blob (this proposal deliberately does not), the implementer must scrub credential-bearing keys before write and must not surface the blob in the dashboard.
+
+These constraints are out-of-scope for this proposal to enforce — they belong in the implementation issue Track E will file. The note is here so the constraint travels with the schema design.
+
+### 4.6 What this delta does *not* add (deferred to siblings)
 
 - A `spawn_outcome` table or `verdict` / `rubric_score` columns on `sessions` — **C.3** owns this. The `outcome_summary` JSON hook is a placeholder.
 - A `skills` table or per-skill rows linked to `spawn_inputs` — **C.4** owns this. The `skills_manifest_hash` column is a placeholder; C.4 may add a sister `skills_manifest` table.
@@ -356,7 +366,7 @@ Collected in one place for the synthesis pass (E.1) and for the sibling Track C 
 
 - **§2** addresses every flag in inventory §8.1, classifying each as input-persisted / resolved-only / not-persisted. The high-impact gaps are `--profile` name, `--model` flag value, `--variant` value, and the prompt-as-delivered.
 - **§3** addresses every column in inventory §8.3 (`agent_status`, `sessions`, `agent_events`) plus the auxiliary tables (`bus_messages`, `pending_merges`, `session_groups`). The persistence shape captures outcomes well; intent is what is missing.
-- **§4** proposes a concrete schema delta as SQL sketches: a new `spawn_inputs` table keyed on `instance_id`, three additive columns on `sessions`, one additive column on `agent_events` (reserved for B.5's normalised payload projection), and a `kind` column on `session_groups` to distinguish review groups from abtest groups.
+- **§4** proposes a concrete schema delta as SQL sketches: a new `spawn_inputs` table keyed on `instance_id`, three additive columns on `sessions`, one additive column on `agent_events` (reserved for B.5's normalised payload projection), and a `kind` column on `session_groups` to distinguish review groups from abtest groups. §4.5 carries forward RFC #691's `[security]` AC by flagging credential-exposure constraints the implementation phase must address (notably for `prompt_text`, `extras`, and any future per-harness config-blob persistence).
 - **§5** classifies comparison metrics as universal (computable across any harness from columns / event types alone) vs harness-specific (depending on `payload` content). Token cost, tool-call count, time-to-first-event, time-to-finished, error rate, terminal state, and state-transition pattern are universal; tool-call argument shape, tool-call result content, audit content, and thinking content are harness-specific. Cross-harness `[uncertain]` flags are marked where PI's event shape has not been stress-tested.
 - **§6** identifies the `prism stats` surface gaps: the existing subcommands need `--group-by harness/profile/variant` axes, and two new subcommands (`stats compare`, `stats abtest`) are needed to render the comparison query the schema delta makes possible. `prism dashboard` and `prism checkin` need only consumer-side awareness of `session_groups.kind='abtest'`; no schema work for them.
 - **§7** collects all open questions and `[uncertain]` flags for the synthesis pass (E.1) and the sibling Track C issues (C.2, C.3, C.4) to consume.
