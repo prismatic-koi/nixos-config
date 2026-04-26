@@ -455,12 +455,51 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 	return container.MinimalIsolatedExecEnv(hostEnv)
 }
 
-// applyInitialPromptEnvVar reads PRISM_INITIAL_PROMPT from the process
-// environment and, when non-empty, sets cfg.InitialPrompt. This feeds the
-// existing bwrap.go BuildArgs --prompt append at lines 466-468 without
-// requiring any new persistent state: the env var is set by tmux.NewWindow
-// via the -e flag and exists only for the lifetime of this pane.
+// applyInitialPromptEnvVar populates cfg.InitialPrompt from the agent pane's
+// environment. Two delivery shapes are supported:
+//
+//  1. PRISM_INITIAL_PROMPT_FILE (post-#1092): the env var holds a filesystem
+//     path. agent-run reads the file and uses its contents as the prompt.
+//     This is the shape SpawnSession uses for bwrap/sandbox-exec sessions
+//     so the prompt body never has to fit on tmux's `new-window -e` argv —
+//     the file lives in the per-session run directory next to
+//     agent-startup.log / agent-run.log / hostapi.sock.
+//
+//  2. PRISM_INITIAL_PROMPT (pre-#1092 fallback): the env var carries the
+//     prompt body inline. Honoured for back-compat with any pane env that
+//     was set up before #1092 (and for direct callers of agent-run that
+//     have not migrated yet).
+//
+// Precedence — `PRISM_INITIAL_PROMPT_FILE` wins outright when set:
+//
+//   - If both env vars are set, the file path is used and the inline
+//     value is ignored. A stale inline value from a re-attached pane
+//     must not override the fresh path the spawner just wrote.
+//
+//   - If `PRISM_INITIAL_PROMPT_FILE` is set but the file read fails, the
+//     inline value is NOT consulted as a fallback. The contract is "FILE
+//     takes precedence absolutely" — silently substituting an inline
+//     value would mask a real failure (e.g. the spawner wrote the file
+//     but it was deleted, or perms were tampered with). agent-run logs
+//     the read error to stderr and proceeds with no initial prompt.
+//
+// File-read failures are not fatal to agent-run itself. The pane is
+// already alive; failing here would leave the operator with a dead review
+// window and no way to recover. The empty-prompt outcome is no worse than
+// the pre-#1042 behaviour where review agents started without a prompt at
+// all.
 func applyInitialPromptEnvVar(cfg *container.Config) {
+	if path := os.Getenv("PRISM_INITIAL_PROMPT_FILE"); path != "" {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr,
+				"[agent-run] warning: read PRISM_INITIAL_PROMPT_FILE %q: %v — starting agent without an initial prompt\n",
+				path, err)
+			return
+		}
+		cfg.InitialPrompt = string(body)
+		return
+	}
 	if initialPrompt := os.Getenv("PRISM_INITIAL_PROMPT"); initialPrompt != "" {
 		cfg.InitialPrompt = initialPrompt
 	}

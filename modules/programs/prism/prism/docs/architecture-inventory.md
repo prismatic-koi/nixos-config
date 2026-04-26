@@ -1633,7 +1633,7 @@ Source: `cmd/spawn.go:137-149` (declarations) and `cmd/spawn.go:57-261` (flag-pa
 | `--host-mode` | false | Deprecated alias for `--isolation host`. |
 | `--harness <name>` | `opencode` | Agent harness. Persisted to the DB row and forwarded to the sidecar via `--harness`. Allow-list currently `{opencode}`; rejected at parse time otherwise. |
 | `--ignore-concurrency-cap` | false | Bypass the soft concurrency cap (podman or bwrap, depending on resolved mode). |
-| *(positional)* | — | Optional initial prompt; if non-empty it is propagated as `PRISM_INITIAL_PROMPT` env var to the agent pane. |
+| *(positional)* | — | Optional initial prompt; if non-empty it is propagated to the agent pane via `PRISM_INITIAL_PROMPT_FILE=<path>` (post-#1092 — file lives in the per-session run dir) for bwrap/sandbox-exec modes, or via `PRISM_INITIAL_PROMPT=<text>` inline for host mode. |
 
 The proxy-spawn path in the host-API server (`internal/sidecar/sidecar.go:3101-3219`) accepts a JSON request shape with the matching field set: `branch`, `prompt`, `agent`, `profile`, `host_mode`, `harness`, `isolation` plus `ignore_concurrency_cap`. `--model` and `--variant` are conspicuously absent from the proxy request shape — only the worker-side `prism spawn` invocation carries them. [uncertain — verify whether `--model`/`--variant` reach the proxy path; the JSON struct in `internal/sidecar/sidecar.go:3122` did not list them in the snippet captured during inventory generation]
 
@@ -2199,28 +2199,28 @@ Per-package figures. `tests` = count of `^func Test` lines; `skips` = count of `
 | Package | Test LoC | `Test*` count | `t.Skip*` count | `//nolint` count |
 |---|---|---|---|---|
 | `cmd` | 16866 | 442 | 29 | 26 |
-| `internal/agent` | 151 | 0 | 0 | 0 |
-| `internal/archive` | 668 | 0 | 0 | 0 |
+| `internal/agent` | 151 | 5 | 0 | 0 |
+| `internal/archive` | 668 | 15 | 0 | 0 |
 | `internal/config` | 803 | 32 | 0 | 0 |
 | `internal/container` | 7032 | 236 | 3 | 0 |
 | `internal/dashboard` | 2017 | 39 | 0 | 0 |
-| `internal/db` | 5899 | 0 | 0 | 0 |
-| `internal/git` | 641 | 0 | 0 | 0 |
-| `internal/harness/opencode` | 331 | 0 | 0 | 0 |
-| `internal/integration` | 954 | 0 | 0 | 0 |
-| `internal/mergequeue` | 1344 | 0 | 0 | 0 |
-| `internal/opencode` | 144 | 0 | 0 | 0 |
-| `internal/payload` | 294 | 0 | 0 | 0 |
-| `internal/piexport` | 907 | 0 | 0 | 0 |
+| `internal/db` | 5899 | 122 | 0 | 0 |
+| `internal/git` | 641 | 20 | 0 | 0 |
+| `internal/harness/opencode` | 331 | 13 | 0 | 0 |
+| `internal/integration` | 954 | 15 | 0 | 0 |
+| `internal/mergequeue` | 1344 | 30 | 0 | 0 |
+| `internal/opencode` | 144 | 4 | 0 | 0 |
+| `internal/payload` | 294 | 17 | 0 | 0 |
+| `internal/piexport` | 907 | 8 | 0 | 0 |
 | `internal/review` | 4511 | 143 | 0 | 0 |
 | `internal/session` | 2408 | 88 | 2 | 0 |
 | `internal/sidecar` | 9802 | 248 | 0 | 0 |
-| `internal/sse` | 579 | 0 | 0 | 0 |
+| `internal/sse` | 579 | 14 | 0 | 0 |
 | `internal/tmux` | 1391 | 33 | 3 | 0 |
 | `internal/harness` | 0 | 0 | 0 | 0 |
 | `internal/quick` | 0 | 0 | 0 | 0 |
 
-[uncertain — packages reporting `Test*` count = 0 with non-zero test LoC (e.g. `internal/db`, `internal/git`, `internal/mergequeue`, `internal/integration`, `internal/piexport`) likely use a non-`Test*`-named convention or have helper-only test files. Verify per package — the count was produced by `rg '^func Test' <pkg>/*_test.go` which only matches the canonical Go test naming]
+The 11 packages previously listed as `Test*` count = 0 with non-zero test LoC have been audited (#1076). All eleven use canonical `func TestX(t *testing.T)` naming and `go test -list` reports the same totals as `rg -c '^func Test'`. The zeros were a mechanical bug in the §14.2 step-12 shell wrapper, not a non-canonical convention: when `rg -c` is given a single file argument it omits the filename prefix, so the surrounding `awk -F: '{s+=$2}'` summed empty fields. Every affected package had exactly one `_test.go` file. The inventory table above now records the corrected counts; the §14.2 recipe has been amended.
 
 ### 12.1 Skip reasons (non-test-discovery skips)
 
@@ -2435,10 +2435,15 @@ This section records the methodology used to build the inventory so a future reg
 12. **Test landscape (section 12)**
     ```bash
     # Per package: tests, skips, nolint counts.
+    # Note: pass --no-filename so rg -c's output shape is identical for single-file
+    # and multi-file packages (just the count, no leading "<file>:"). The previous
+    # recipe used `awk -F: '{s+=$2}'` which silently summed to 0 when a package had
+    # exactly one _test.go file (#1076).
     for dir in $(find . -name '*_test.go' -exec dirname {} \; | sort -u); do
-      test_funcs=$(rg -c '^func Test' "$dir"/*_test.go 2>/dev/null | awk -F: '{s+=$2}END{print s}')
-      skips=$(rg -c 't\.Skip' "$dir"/*_test.go 2>/dev/null | awk -F: '{s+=$2}END{print s}')
-      nolint=$(rg -c '//nolint' "$dir"/*_test.go 2>/dev/null | awk -F: '{s+=$2}END{print s}')
+      test_funcs=$(rg -c --no-filename '^func Test' "$dir"/*_test.go 2>/dev/null | awk '{s+=$1}END{print s+0}')
+      skips=$(rg -c --no-filename 't\.Skip' "$dir"/*_test.go 2>/dev/null | awk '{s+=$1}END{print s+0}')
+      nolint=$(rg -c --no-filename '//nolint' "$dir"/*_test.go 2>/dev/null | awk '{s+=$1}END{print s+0}')
+      echo "$dir: tests=$test_funcs skips=$skips nolint=$nolint"
     done
     rg -n 't\.Skip' --glob '*_test.go'
     rg -n '//nolint' --glob '*.go' --glob '!*_test.go'
@@ -2452,7 +2457,7 @@ This section records the methodology used to build the inventory so a future reg
 - Total `.go` files: 154 (80 source + 74 test).
 - Total `.go` LoC: 93999 (37257 source + 56742 test).
 - `exec.Command` / `exec.CommandContext` invocations in non-test source: 82.
-- `func Test*` declarations across all packages: 1390 (sum of section 12 column).
+- `func Test*` declarations across all packages: 1524 (literal sum of the §12 column as it stands; corrected per #1076 — previously reported as 1390 because eleven single-`_test.go`-file packages summed to 0 under the buggy regen recipe). Note: a fresh full re-run of the corrected §14.2 step-12 recipe will produce a slightly higher number than this column-sum total because two pre-existing rows (`internal/session`, `internal/sidecar`) have drifted from `rg` ground truth since the inventory was first generated; reconciling those rows is out of scope for #1076 and should be folded into the next full regeneration.
 - `t.Skip*` calls in `_test.go`: 39 (sum of section 12 column).
 - `//nolint` directives: 3 in source, 26 in tests.
 - Files >= 500 LoC: 21.
@@ -2464,7 +2469,7 @@ This section records the methodology used to build the inventory so a future reg
 - Cross-package call counts are based on regex over `<pkg>.<Symbol>` literals; method calls via receiver variable are not counted.
 - Function-size measurement uses brace-walking from `^func`; functions whose body extends past unbalanced string-literal braces could in theory be miscounted, though no such case was observed in practice.
 - Section 6 and 7 classification (`surface`/`shape`/`structural` and `opencode-only`/`multi-harness via interface`/`harness-agnostic`) is judgmental; entries marked `[uncertain]` flag where the inventory worker did not verify directly.
-- Test counts for packages reporting zero `Test*` declarations despite non-zero test LoC (e.g. `internal/db`) are likely test-file conventions different from the canonical naming; verify via `go test ./...` output.
+- (Resolved in #1076) Test counts that previously reported zero `Test*` declarations despite non-zero test LoC turned out to be a regen-recipe shell bug (single-file `rg -c` output shape), not a non-canonical convention; the §12 table and §14.2 step 12 have been corrected.
 - Display-only references (dashboard column formatting, list-sessions output, stats tables) are not enumerated line-by-line in sections 6 and 7; they are summarised in subsection paragraphs.
 - The inventory was generated on Linux (`linux/amd64`); platform-specific code paths (Darwin sandbox-exec) were verified by reading source rather than running.
 
