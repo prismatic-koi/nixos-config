@@ -394,20 +394,33 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// Host-mode launch-command size thresholds (#1064).
+// Host-mode launch-command size thresholds (#1064 / #1092).
 //
 // HostLaunchCmdSafeBound is the maximum constructed launch-command size
 // SpawnSession will hand to tmux without rejecting up-front. Above this,
 // SpawnSession exits non-zero with HostLaunchCmdTooLargeError before any
-// tmux state is created — the empirical failure threshold for tmux
-// arg-handling is somewhere above 12 KB and below ~64 KB depending on
-// build / terminal config, so 4 KB is a comfortable conservative ceiling
-// that still leaves headroom for realistic prompts after the Option-A
-// $(cat …) plumbing pulls the prompt body off the command line. With the
-// fix in place, the only way to exceed this is to inflate the command
-// itself (huge AgentEnvVars, exotic ConfigContent, etc.) — exactly the
-// future regression class this guard exists to surface loudly.
-const HostLaunchCmdSafeBound = 4 * 1024
+// tmux state is created.
+//
+// The empirical failure threshold for tmux arg-handling is somewhere above
+// 12 KB and below ~64 KB depending on build / terminal config. The kernel's
+// per-argv ARG_MAX is far higher — 128 KiB on Linux and 256 KiB on Darwin —
+// so the binding constraint here is tmux's own command parser, not execve.
+//
+// 4 KiB was the original (pre-#1092) bound, chosen when the only spawned
+// shape was LayoutFull and the prompt body was already pulled off the
+// launch command via the $(cat …) plumbing (see initial_prompt.go). It
+// turned out to be too tight once review fan-outs (LayoutAgentOnly) started
+// going through the same guard with the role prompt still inlined into a
+// `-e PRISM_INITIAL_PROMPT=<huge>` pair on tmux's argv.
+//
+// Post-#1092 the role prompt is also delivered via a per-session file
+// (PRISM_INITIAL_PROMPT_FILE), so the launch command size is bounded by
+// boilerplate (session name, env-var prefixes, harness paths) regardless
+// of prompt size. 16 KiB is comfortably above any realistic boilerplate
+// total, and well below tmux's empirical ceiling — exotic ConfigContent or
+// huge AgentEnvVars are still surfaced as a clear pre-spawn failure rather
+// than left to fail silently inside tmux.
+const HostLaunchCmdSafeBound = 16 * 1024
 
 // HostLaunchCmdWarnThreshold is the launch-command size above which
 // SpawnSession enriches a readiness-gate timeout error with a hint that
@@ -418,12 +431,17 @@ const HostLaunchCmdSafeBound = 4 * 1024
 const HostLaunchCmdWarnThreshold = 1024
 
 // HostLaunchCmdTooLargeError is returned by SpawnSession when the
-// constructed host-mode launch command exceeds HostLaunchCmdSafeBound. It
-// carries the actual size, the safe bound, and the session name so the
-// operator can pattern-match the message and mechanically extract the
-// numbers (#1064 AC-6). The error fires before any tmux state is created;
-// callers can treat the spawn as having had no observable side effects on
-// the tmux server.
+// constructed launch command exceeds HostLaunchCmdSafeBound. It carries the
+// actual size, the safe bound, and the session name so the operator can
+// pattern-match the message and mechanically extract the numbers (#1064
+// AC-6). The error fires before any tmux state is created; callers can
+// treat the spawn as having had no observable side effects on the tmux
+// server.
+//
+// The type retains its "HostLaunchCmd…" name for back-compat with #1064
+// callers (IsHostLaunchCmdTooLarge etc.) even though the post-#1092 guard
+// also covers bwrap/sandbox-exec review fan-outs whose size budget is
+// dominated by the env-var pair tmux carries on `new-window -e`.
 type HostLaunchCmdTooLargeError struct {
 	SessionName string
 	CmdSize     int
@@ -432,11 +450,11 @@ type HostLaunchCmdTooLargeError struct {
 
 func (e *HostLaunchCmdTooLargeError) Error() string {
 	return fmt.Sprintf(
-		"host-mode launch command for session %q is %d bytes, above the safe bound of %d bytes — "+
+		"launch command for session %q is %d bytes, above the safe bound of %d bytes — "+
 			"tmux cannot reliably deliver commands above this size and would fail silently. "+
 			"Workaround: spawn with a small placeholder prompt (e.g. --prompt 'wait') and send the "+
 			"real prompt via `prism prompt %s --prompt-file <path>` once the session is alive. "+
-			"See issue #1064.",
+			"See issues #1064 and #1092.",
 		e.SessionName, e.CmdSize, e.SafeBound, e.SessionName,
 	)
 }
@@ -562,16 +580,24 @@ func Create(name, directory string, opts Opts) error {
 }
 
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
-// When opts.Prompt is non-empty, PRISM_INITIAL_PROMPT is included so that
-// "prism agent-run" can read it and populate container.Config.InitialPrompt,
-// activating bwrap's --prompt CLI-append path.
 //
-// Skipped entirely for host mode: the host-mode launch path reads the prompt
-// directly via $(cat …) (see buildDirectOpencodeCmd / #1064), and emitting a
-// large PRISM_INITIAL_PROMPT here would re-introduce the same tmux arg-size
-// limit the prompt-file plumbing was added to avoid. The variable is also
-// unused on the host path — only `prism agent-run` (bwrap entry point)
-// consumes it.
+// When opts.PromptFilePath is non-empty (the post-#1092 path),
+// PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the
+// prompt body itself is NOT inlined into tmux's argv. `prism agent-run`
+// reads the file when it sees the env var and feeds the contents to
+// bwrap's --prompt CLI-append path. This keeps the launch-command size
+// O(1) in prompt size — the failure mode #1092 hit on review fan-outs.
+//
+// When opts.PromptFilePath is empty but opts.Prompt is non-empty, fall
+// back to the legacy inline PRISM_INITIAL_PROMPT env var. SpawnSession
+// always writes the prompt file for bwrap/sandbox-exec, so this branch
+// is exercised only by direct callers that have not opted into the file
+// path (e.g. test code or future modes added without prompt-file
+// plumbing).
+//
+// Skipped entirely for host mode: the host-mode launch path reads the
+// prompt directly via $(cat …) (see buildDirectOpencodeCmd / #1064), so
+// no agent-pane env var is needed at all.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux.
 func agentPaneEnvVars(opts Opts) map[string]string {
@@ -580,6 +606,11 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 	}
 	if effectiveIsolationMode(opts) == "host" {
 		return nil
+	}
+	if opts.PromptFilePath != "" {
+		return map[string]string{
+			"PRISM_INITIAL_PROMPT_FILE": opts.PromptFilePath,
+		}
 	}
 	return map[string]string{
 		"PRISM_INITIAL_PROMPT": opts.Prompt,

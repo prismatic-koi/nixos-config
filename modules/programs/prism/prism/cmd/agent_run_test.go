@@ -67,6 +67,74 @@ func TestApplyInitialPromptEnvVar_SpecialChars(t *testing.T) {
 	}
 }
 
+// TestApplyInitialPromptEnvVar_FilePath verifies the post-#1092 file-based
+// delivery path: when PRISM_INITIAL_PROMPT_FILE points to a readable file,
+// applyInitialPromptEnvVar reads the file and assigns its contents to
+// InitialPrompt. This is the regression test for the launch-command size
+// failure on review fan-outs — the role prompt is now delivered via a file
+// instead of inlined into the tmux pane env.
+func TestApplyInitialPromptEnvVar_FilePath(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "initial-prompt.txt")
+	// A 24 KB body to demonstrate that the file path carries arbitrary
+	// content sizes — the same shape that tripped #1092 when inlined.
+	body := strings.Repeat("review-context system prompt body ", 720)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("PRISM_INITIAL_PROMPT_FILE", path)
+
+	cfg := container.Config{}
+	applyInitialPromptEnvVar(&cfg)
+
+	if cfg.InitialPrompt != body {
+		t.Errorf("InitialPrompt round-trip mismatch: got len=%d, want len=%d", len(cfg.InitialPrompt), len(body))
+	}
+}
+
+// TestApplyInitialPromptEnvVar_FilePathPreferredOverInline verifies that
+// when both PRISM_INITIAL_PROMPT_FILE and PRISM_INITIAL_PROMPT are set, the
+// file path wins. This protects against a stale inline value from a
+// re-attached pane overriding the fresh file contents.
+func TestApplyInitialPromptEnvVar_FilePathPreferredOverInline(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "initial-prompt.txt")
+	if err := os.WriteFile(path, []byte("fresh from file"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("PRISM_INITIAL_PROMPT_FILE", path)
+	t.Setenv("PRISM_INITIAL_PROMPT", "stale inline value")
+
+	cfg := container.Config{}
+	applyInitialPromptEnvVar(&cfg)
+
+	if cfg.InitialPrompt != "fresh from file" {
+		t.Errorf("InitialPrompt = %q, want %q (file path must win over stale inline value)", cfg.InitialPrompt, "fresh from file")
+	}
+}
+
+// TestApplyInitialPromptEnvVar_FilePathMissing verifies the failure-mode
+// behaviour: a PRISM_INITIAL_PROMPT_FILE pointing at a missing file does
+// NOT abort agent-run — InitialPrompt stays empty (no prompt is delivered)
+// and a warning is logged to stderr. The pane is already alive; failing
+// here would leave the operator with a dead review window.
+func TestApplyInitialPromptEnvVar_FilePathMissing(t *testing.T) {
+	t.Setenv("PRISM_INITIAL_PROMPT_FILE", "/nonexistent/path/initial-prompt.txt")
+	// The inline fallback should NOT kick in here either — the explicit
+	// file path takes precedence even when the read fails. This matches
+	// the contract: `…_FILE` is the post-#1092 shape; if it is set the
+	// caller has chosen the file path and a stale inline value would not
+	// be the right substitute.
+	t.Setenv("PRISM_INITIAL_PROMPT", "should not be used as fallback")
+
+	cfg := container.Config{}
+	applyInitialPromptEnvVar(&cfg)
+
+	if cfg.InitialPrompt != "" {
+		t.Errorf("InitialPrompt = %q, want empty string when file is missing", cfg.InitialPrompt)
+	}
+}
+
 // ── minimalBwrapExecEnv ───────────────────────────────────────────────────────
 
 // TestMinimalBwrapExecEnv_AllowedVarsPass verifies that variables in the

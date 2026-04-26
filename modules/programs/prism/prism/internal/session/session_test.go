@@ -481,6 +481,29 @@ func TestAgentPaneEnvVars_HostMode_Skipped(t *testing.T) {
 	}
 }
 
+// TestAgentPaneEnvVars_PromptFile_PreferredOverInline verifies the post-#1092
+// behaviour: when both opts.Prompt and opts.PromptFilePath are set in bwrap
+// or sandbox-exec mode, agentPaneEnvVars emits PRISM_INITIAL_PROMPT_FILE
+// (carrying the path) and NOT the inline PRISM_INITIAL_PROMPT (which would
+// re-introduce the launch-cmd size failure).
+func TestAgentPaneEnvVars_PromptFile_PreferredOverInline(t *testing.T) {
+	opts := Opts{
+		Prompt:         "hello",
+		PromptFilePath: "/var/state/prism/run/abc/initial-prompt.txt",
+		IsolationMode:  "bwrap",
+	}
+	got := agentPaneEnvVars(opts)
+	if got == nil {
+		t.Fatal("agentPaneEnvVars: got nil, want non-nil map")
+	}
+	if v, ok := got["PRISM_INITIAL_PROMPT_FILE"]; !ok || v != "/var/state/prism/run/abc/initial-prompt.txt" {
+		t.Errorf("PRISM_INITIAL_PROMPT_FILE = %q, want %q", v, "/var/state/prism/run/abc/initial-prompt.txt")
+	}
+	if _, present := got["PRISM_INITIAL_PROMPT"]; present {
+		t.Errorf("PRISM_INITIAL_PROMPT must NOT be set when PRISM_INITIAL_PROMPT_FILE is — would inline prompt body and re-introduce #1092: got %v", got)
+	}
+}
+
 // spyTmuxBin creates a fake tmux binary that records its arguments (one per line)
 // to argsFile, redirects tmux.TmuxBin for the duration of the test, and returns
 // the path to argsFile. Only call this from non-parallel tests.
