@@ -427,15 +427,19 @@ func TestIsolationMode_PodmanWrittenBeforeWindow(t *testing.T) {
 // ── agentPaneEnvVars (initial-prompt env var) ─────────────────────────────────
 
 // TestAgentPaneEnvVars_WithPrompt verifies that agentPaneEnvVars returns a map
-// containing PRISM_INITIAL_PROMPT when opts.Prompt is non-empty.
+// containing PRISM_INITIAL_PROMPT when opts.Prompt is non-empty AND the
+// isolation mode consumes the env var (bwrap / sandbox-exec). Host mode is
+// covered by TestAgentPaneEnvVars_HostMode_Skipped — the env var is omitted
+// there because the host launch path reads the prompt from a file directly
+// (#1064).
 func TestAgentPaneEnvVars_WithPrompt(t *testing.T) {
-	opts := Opts{Prompt: "hello"}
+	opts := Opts{Prompt: "hello", IsolationMode: "bwrap"}
 	got := agentPaneEnvVars(opts)
 	if got == nil {
-		t.Fatal("agentPaneEnvVars(Prompt=hello): got nil, want non-nil map")
+		t.Fatal("agentPaneEnvVars(bwrap, Prompt=hello): got nil, want non-nil map")
 	}
 	if v, ok := got["PRISM_INITIAL_PROMPT"]; !ok || v != "hello" {
-		t.Errorf("agentPaneEnvVars(Prompt=hello): PRISM_INITIAL_PROMPT = %q, want %q", v, "hello")
+		t.Errorf("agentPaneEnvVars(bwrap, Prompt=hello): PRISM_INITIAL_PROMPT = %q, want %q", v, "hello")
 	}
 }
 
@@ -450,16 +454,30 @@ func TestAgentPaneEnvVars_NoPrompt(t *testing.T) {
 }
 
 // TestAgentPaneEnvVars_SpecialChars verifies that a prompt containing newlines,
-// quotes, backticks, and equals signs is stored verbatim.
+// quotes, backticks, and equals signs is stored verbatim. Asserted on bwrap
+// mode (where PRISM_INITIAL_PROMPT is consumed by `prism agent-run`).
 func TestAgentPaneEnvVars_SpecialChars(t *testing.T) {
 	prompt := "line1\nline2 'single' \"double\" `backtick` KEY=value"
-	opts := Opts{Prompt: prompt}
+	opts := Opts{Prompt: prompt, IsolationMode: "bwrap"}
 	got := agentPaneEnvVars(opts)
 	if got == nil {
 		t.Fatal("agentPaneEnvVars: got nil, want non-nil map")
 	}
 	if v := got["PRISM_INITIAL_PROMPT"]; v != prompt {
 		t.Errorf("PRISM_INITIAL_PROMPT = %q, want %q", v, prompt)
+	}
+}
+
+// TestAgentPaneEnvVars_HostMode_Skipped verifies that agentPaneEnvVars returns
+// nil for host mode regardless of prompt content (#1064). The host launch
+// path uses $(cat <prompt-file>) for delivery, so emitting a large
+// PRISM_INITIAL_PROMPT here would re-introduce the same tmux arg-size limit
+// the file-based plumbing was added to avoid.
+func TestAgentPaneEnvVars_HostMode_Skipped(t *testing.T) {
+	opts := Opts{Prompt: "hello", IsolationMode: "host"}
+	got := agentPaneEnvVars(opts)
+	if got != nil {
+		t.Errorf("agentPaneEnvVars(host, Prompt=hello): got %v, want nil — host mode reads prompt from file, not env var", got)
 	}
 }
 
@@ -516,8 +534,10 @@ func containsSeq(haystack, needle []string) bool {
 }
 
 // TestSpawnSession_PromptEnvVar_WithPrompt verifies that when opts.Prompt is
-// set, the tmux new-window call for the agent pane contains
-// -e PRISM_INITIAL_PROMPT=<prompt>.
+// set in a sandboxed isolation mode (bwrap), the tmux new-window call for
+// the agent pane contains -e PRISM_INITIAL_PROMPT=<prompt> — the env var is
+// consumed by `prism agent-run` to populate the bwrap container's
+// initial-prompt path.
 // It calls tmux.NewWindow directly (the same call path used by setupFullLayout)
 // via the spy so no real tmux session is required.
 func TestSpawnSession_PromptEnvVar_WithPrompt(t *testing.T) {
@@ -525,7 +545,7 @@ func TestSpawnSession_PromptEnvVar_WithPrompt(t *testing.T) {
 
 	// Call tmux.NewWindow with the env var map that agentPaneEnvVars would
 	// return for a non-empty prompt. This mirrors setupFullLayout's call site.
-	opts := Opts{Prompt: "hello"}
+	opts := Opts{Prompt: "hello", IsolationMode: "bwrap"}
 	_ = tmux.NewWindow("test-session", 1, "agent", "/tmp", "echo hi", agentPaneEnvVars(opts))
 
 	args := readSpyArgs(argsFile)
