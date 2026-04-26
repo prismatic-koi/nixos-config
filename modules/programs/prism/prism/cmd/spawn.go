@@ -443,6 +443,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		PluginHostPath:   cfg.SidecarPluginPath,
 		ConfigEnvVarName: h.ConfigEnvVar(),
 		RuntimeEnvVars:   h.RuntimeEnv(),
+		HarnessName:      harnessFlag,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
