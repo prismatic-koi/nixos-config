@@ -3284,6 +3284,35 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requirePost(w, r) {
 			return
 		}
+
+		// Pre-emptive: mark the calling session as `reviewing` immediately,
+		// before spawning the `prism review` subprocess. The subprocess's
+		// RunAsync also writes `reviewing` to the DB, but it does so several
+		// seconds later (after argument parsing, PR validation, agent-spec
+		// computation, etc.). In practice the worker idles in that window and
+		// the idle-debounce path runs before the subprocess gets to its DB
+		// write — leaving `currentDBState()` returning `active` and the
+		// reviewing-state suppression in handleSessionStatus / the idle path
+		// failing to fire. The result is a spurious "has finished"
+		// notification before the review has even started.
+		//
+		// Writing here, in-process with the DB handle already open, closes
+		// the race deterministically: by the time we return the first byte
+		// to the worker, the row is already `reviewing`. See #1068. The
+		// subprocess-side write in RunAsync remains as defence in depth.
+		//
+		// Best-effort: if the upsert fails (e.g. the row is missing or the
+		// DB is transiently unavailable), log a warning and proceed. The
+		// subprocess still runs and the user-facing behaviour degrades to
+		// the pre-fix state for this single call rather than hard-failing.
+		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
+			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — CurrentStatus error: %v", dbErr)
+		} else if status == nil {
+			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — no agent_status row for session %q", s.cfg.SessionName)
+		} else if upsertErr := s.cfg.DB.UpsertStatus(s.cfg.SessionName, status.Repo, status.Worktree, string(agent.StateReviewing), nil, nil); upsertErr != nil {
+			log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed: %v", upsertErr)
+		}
+
 		var req struct {
 			PRNumber string   `json:"pr_number"`
 			Agents   []string `json:"agents"`

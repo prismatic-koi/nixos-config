@@ -9098,6 +9098,186 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 	}
 }
 
+// TestHostAPI_Review_PreEmptiveReviewingWriteBeforeStreamCompletes verifies
+// the entry-point write fix for #1068: the sidecar's /review HTTP handler
+// must mark the calling session as `reviewing` in the DB before its response
+// stream completes, so that any worker idle that races with the
+// `prism review` subprocess startup observes `reviewing` (not `active`) and
+// suppresses the spurious "has finished" notification.
+//
+// Mechanism: a stub `prism` subprocess blocks on a release file. While the
+// subprocess is blocked the request is mid-flight (no first byte streamed
+// to the worker yet because the subprocess has not produced any output),
+// and the test asserts via a separate DB read that the session row has
+// already transitioned to `reviewing`. The test then releases the stub,
+// the request completes, and the post-condition confirms the response
+// succeeded.
+func TestHostAPI_Review_PreEmptiveReviewingWriteBeforeStreamCompletes(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed the worker row in `active` — this is the state the worker would
+	// be in when it invokes `prism review`. If the entry-point write does
+	// not fire, the row stays `active` until RunAsync's later DB write,
+	// which the stub never performs.
+	const sessionName = "test-repo@feature"
+	const repo = "test-repo"
+	worktree := t.TempDir()
+	if err := d.UpsertStatus(sessionName, repo, worktree, string(agent.StateActive), nil, nil); err != nil {
+		t.Fatalf("seed agent_status: %v", err)
+	}
+
+	// Stub `prism` subprocess that blocks until the test creates a release
+	// file. Mirrors the real subprocess in that it cannot run instantly —
+	// the entry-point write must land before the stub's first byte is
+	// streamed to the response.
+	tmp := t.TempDir()
+	startedFile := filepath.Join(tmp, "stub-started")
+	releaseFile := filepath.Join(tmp, "stub-release")
+	stubPath := filepath.Join(tmp, "prism-stub")
+	stubScript := fmt.Sprintf(`#!/bin/sh
+touch %q
+# Block until the test releases us. Poll briefly so the stub does not run
+# forever if the test fails before reaching the release.
+i=0
+while [ ! -f %q ] && [ "$i" -lt 200 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+echo "Review in progress — PR #1068"
+exit 0
+`, startedFile, releaseFile)
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     sessionName,
+		Repo:            repo,
+		Worktree:        worktree,
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	// Issue the /review request in a goroutine so we can observe the DB
+	// state while the subprocess is blocked.
+	type result struct {
+		rr *httptest.ResponseRecorder
+	}
+	done := make(chan result, 1)
+	go func() {
+		rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1068"}`)
+		done <- result{rr: rr}
+	}()
+
+	// Wait for the stub to indicate it has started — at that point the
+	// /review handler has already passed its entry-point write and spawned
+	// the subprocess. Poll for up to 5 s.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(startedFile); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stub subprocess did not start within 5 s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// While the stub is still blocked (no first byte streamed yet), read
+	// the DB from this goroutine — equivalent to a "separate connection"
+	// in real-world terms: an outside observer of agent_status.
+	if state := getState(t, d, sessionName); state != string(agent.StateReviewing) {
+		_ = os.WriteFile(releaseFile, nil, 0o644) // unblock so goroutine can finish
+		<-done
+		t.Fatalf("agent_status.state = %q while subprocess is mid-flight, want %q "+
+			"(entry-point write must land before response stream completes)",
+			state, agent.StateReviewing)
+	}
+
+	// Release the stub so the request can complete.
+	if err := os.WriteFile(releaseFile, nil, 0o644); err != nil {
+		t.Fatalf("create release file: %v", err)
+	}
+
+	// Wait for the request to finish and confirm the response was OK.
+	select {
+	case res := <-done:
+		if res.rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", res.rr.Code, res.rr.Body.String())
+		}
+		body := res.rr.Body.String()
+		if !strings.Contains(body, ReviewSentinelPassed) {
+			t.Errorf("body %q should contain ReviewSentinelPassed %q", body, ReviewSentinelPassed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("/review request did not complete within 10 s after release")
+	}
+
+	// Final post-condition: the row remains `reviewing` after the handler
+	// returns (the monitor — not exercised here — would later flip it to
+	// `active` before delivering the review-complete prompt).
+	if state := getState(t, d, sessionName); state != string(agent.StateReviewing) {
+		t.Errorf("post-handler agent_status.state = %q, want %q", state, agent.StateReviewing)
+	}
+}
+
+// TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow verifies AC #4
+// from #1068: when no agent_status row exists for the session (so the
+// pre-emptive write has nothing to update), the /review handler logs a
+// warning and proceeds normally — the subprocess still runs and the
+// response is streamed back as before. The fix is best-effort: a missing
+// row must not block the review.
+func TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow(t *testing.T) {
+	d := openTestDB(t)
+
+	// Deliberately do NOT seed an agent_status row for the session. The
+	// pre-emptive write should observe nil from CurrentStatus, log, and
+	// proceed.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\necho 'Review in progress — PR #1068'\nexit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "no-such-row@feature",
+		Repo:            "no-such-row",
+		Worktree:        "/tmp/no-such-row@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1068"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (missing row must not block review); body = %s",
+			rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), ReviewSentinelPassed) {
+		t.Errorf("body %q should contain ReviewSentinelPassed %q", rr.Body.String(), ReviewSentinelPassed)
+	}
+
+	// No row was created by the entry-point write (it does not insert
+	// when the row is missing — the worker's sidecar startup is the only
+	// path that should be inserting agent_status rows).
+	if status, err := d.CurrentStatus("no-such-row@feature"); err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	} else if status != nil {
+		t.Errorf("CurrentStatus = %+v, want nil (entry-point write must not insert when row is missing)", status)
+	}
+}
+
 // ── [timing] markers — bwrap path (#1052) ───────────────────────────────────
 
 // TestBwrapTimingMarkers_FirstEvent verifies that on the bwrap path
