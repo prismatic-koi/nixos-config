@@ -1198,3 +1198,147 @@ func TestPRInfo_IsMerged(t *testing.T) {
 		})
 	}
 }
+
+// TestWatcher_RunGHPassesRepoFlag verifies the #1055 fix: every gh invocation
+// from the watcher includes "--repo <owner/name>" as the first two argv tokens
+// so calls succeed regardless of the sidecar's CWD. Exercises the real
+// fetchPRInfo / tryMerge / updateBranch methods with an injected runGHFunc
+// that captures argv.
+func TestWatcher_RunGHPassesRepoFlag(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-repo-flag"
+	session := "myrepo@main"
+	const repoSlug = "owner/myrepo"
+
+	// Seed the coordinator so notify() can find the harness port — needed
+	// because the CLEAN→merged path fires a notification.
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-repo-flag")
+
+	// Build a Watcher directly (bypass New so we don't shell out to gh) with
+	// the repo cached and a runGHFunc that records every invocation.
+	var calls [][]string
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        repoSlug,
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			// Copy args defensively so later calls don't alias the slice.
+			snap := make([]string, len(args))
+			copy(snap, args)
+			calls = append(calls, snap)
+			// Tailor the response so each method completes its happy path.
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[]}`), nil
+			}
+			// merge / update-branch return empty success.
+			return nil, nil
+		},
+	}
+
+	ctx := context.Background()
+
+	// 1. fetchPRInfo (calls gh pr view).
+	if _, err := w.fetchPRInfo(ctx, 101); err != nil {
+		t.Fatalf("fetchPRInfo: %v", err)
+	}
+	// 2. tryMerge (calls gh pr merge --squash on the CLEAN path).
+	if _, err := d.EnqueueMerge(202, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+	head, err := d.MergeQueueHead(session)
+	if err != nil || head == nil {
+		t.Fatalf("MergeQueueHead: %v / nil=%v", err, head == nil)
+	}
+	w.tryMerge(ctx, head)
+	// 3. updateBranch (calls gh pr update-branch).
+	if err := w.updateBranch(ctx, 303); err != nil {
+		t.Fatalf("updateBranch: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 gh invocations (view, merge, update-branch); got %d: %v", len(calls), calls)
+	}
+
+	for i, argv := range calls {
+		if len(argv) < 2 {
+			t.Errorf("call %d argv too short: %v", i, argv)
+			continue
+		}
+		if argv[0] != "--repo" {
+			t.Errorf("call %d argv[0]: got %q, want %q (full argv: %v)", i, argv[0], "--repo", argv)
+		}
+		if argv[1] != repoSlug {
+			t.Errorf("call %d argv[1]: got %q, want %q (full argv: %v)", i, argv[1], repoSlug, argv)
+		}
+	}
+
+	// Spot-check that the trailing subcommand is preserved (defence against a
+	// future refactor that accidentally drops the original args).
+	wantSubs := []string{"view", "merge", "update-branch"}
+	for i, sub := range wantSubs {
+		argv := calls[i]
+		found := false
+		for _, a := range argv {
+			if a == sub {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("call %d argv missing %q subcommand: %v", i, sub, argv)
+		}
+	}
+}
+
+// TestWatcher_RunExitsWhenRepoUnresolved verifies AC #5: when owner/name
+// resolution fails at startup (Watcher.repo == ""), Run() returns immediately
+// without entering the poll loop.
+func TestWatcher_RunExitsWhenRepoUnresolved(t *testing.T) {
+	d := openTestDB(t)
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-no-repo",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        "", // resolution failure simulated
+	}
+
+	// A non-cancelled context: if Run enters the poll loop it would block
+	// for PollInterval. We assert it returns within a small budget instead.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// PASS — Run returned without polling.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return when repo was unresolved — would block the goroutine forever")
+	}
+}
+
+// TestNew_NoAgentStatusRow_LeavesRepoEmpty verifies that when CurrentStatus
+// returns no row for the session, New() leaves Watcher.repo == "" rather than
+// shelling out to gh from a possibly-bogus directory. Together with
+// TestWatcher_RunExitsWhenRepoUnresolved this gives end-to-end coverage of the
+// AC #5 startup-failure path.
+func TestNew_NoAgentStatusRow_LeavesRepoEmpty(t *testing.T) {
+	d := openTestDB(t)
+	// No seedCoordinator call → CurrentStatus("ghost-session@main") returns nil.
+	w := New(d, "inst-ghost", "ghost-session@main", nil)
+	if w == nil {
+		t.Fatal("New returned nil")
+	}
+	if w.repo != "" {
+		t.Errorf("Watcher.repo: got %q, want empty (no agent_status row)", w.repo)
+	}
+}

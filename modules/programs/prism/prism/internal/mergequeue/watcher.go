@@ -42,31 +42,103 @@ const (
 
 // Watcher runs the merge-queue polling loop for a single coordinator session.
 type Watcher struct {
-	db         *db.DB
-	instanceID string
+	db          *db.DB
+	instanceID  string
 	sessionName string
-	httpClient *http.Client
+	httpClient  *http.Client
+
+	// repo is the GitHub owner/name slug (e.g. "prismatic-koi/nixos-config")
+	// resolved once at construction time from the coordinator session's
+	// worktree. Every gh invocation routes through w.runGH which prepends
+	// "--repo <repo>" so calls succeed regardless of the sidecar's CWD (#1055).
+	// An empty string means resolution failed — Run() logs and exits cleanly
+	// rather than entering a poll loop that can never succeed.
+	repo string
+
+	// runGHFunc is the function used to invoke the gh CLI. It is configurable
+	// so tests can inject a stub that captures argv. When nil, runGH falls back
+	// to execGH (the real os/exec implementation).
+	runGHFunc func(ctx context.Context, args ...string) ([]byte, error)
 }
 
 // New creates a Watcher. instanceID and sessionName identify the coordinator
 // session that owns this watcher. httpClient is used for notification delivery;
 // pass nil to use the default client.
+//
+// New resolves the GitHub owner/name slug once, using the worktree path
+// recorded for sessionName in agent_status. Subsequent gh invocations are
+// pinned to that slug via "--repo", so the watcher works even when the sidecar
+// process CWD is not a git repo (#1055). If resolution fails (no row in
+// agent_status, missing worktree, or `gh repo view` errors), repo is left
+// empty and a warning is logged; Run() will then exit cleanly without polling.
 func New(database *db.DB, instanceID, sessionName string, httpClient *http.Client) *Watcher {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Watcher{
+	w := &Watcher{
 		db:          database,
 		instanceID:  instanceID,
 		sessionName: sessionName,
 		httpClient:  httpClient,
 	}
+	w.repo = resolveRepo(database, sessionName)
+	return w
+}
+
+// resolveRepo looks up the coordinator session's worktree path in agent_status
+// and runs `gh repo view --json nameWithOwner -q .nameWithOwner` from that
+// directory to obtain the GitHub owner/name slug. Returns "" on any failure
+// (no agent_status row, empty worktree, gh error, etc.) and logs a single
+// warning naming the cause.
+func resolveRepo(database *db.DB, sessionName string) string {
+	status, err := database.CurrentStatus(sessionName)
+	if err != nil {
+		log.Printf("[mergequeue] cannot resolve repo for session %q: agent_status lookup failed: %v — watcher will not start", sessionName, err)
+		return ""
+	}
+	if status == nil {
+		log.Printf("[mergequeue] cannot resolve repo for session %q: no agent_status row — watcher will not start", sessionName)
+		return ""
+	}
+	worktree := strings.TrimSpace(status.Worktree)
+	if worktree == "" {
+		log.Printf("[mergequeue] cannot resolve repo for session %q: agent_status.worktree is empty — watcher will not start", sessionName)
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[mergequeue] cannot resolve repo for session %q from worktree %q: gh repo view: %v: %s — watcher will not start",
+			sessionName, worktree, err, strings.TrimSpace(string(out)))
+		return ""
+	}
+	repo := strings.TrimSpace(string(out))
+	if repo == "" {
+		log.Printf("[mergequeue] cannot resolve repo for session %q from worktree %q: gh repo view returned empty output — watcher will not start",
+			sessionName, worktree)
+		return ""
+	}
+	log.Printf("[mergequeue] resolved repo for session %q: %s", sessionName, repo)
+	return repo
 }
 
 // Run starts the polling loop and blocks until ctx is cancelled.
 // It is safe to run in a goroutine.
+//
+// If the watcher has no resolved repo (resolution failed at New() time), Run
+// logs a single warning and returns immediately. The poll loop never starts,
+// so the goroutine exits cleanly and the coordinator session remains usable
+// for non-merge-queue work. (#1055)
 func (w *Watcher) Run(ctx context.Context) {
-	log.Printf("[mergequeue] watcher started (instance=%s)", w.instanceID)
+	if w.repo == "" {
+		log.Printf("[mergequeue] watcher NOT started for session %q (instance=%s): owner/name resolution failed at startup — see prior log line", w.sessionName, w.instanceID)
+		return
+	}
+	log.Printf("[mergequeue] watcher started (instance=%s, repo=%s)", w.instanceID, w.repo)
 	ticker := time.NewTicker(PollInterval)
 	defer ticker.Stop()
 
@@ -104,7 +176,7 @@ func (w *Watcher) tick(ctx context.Context) {
 		log.Printf("[mergequeue] UpdateMergeLastChecked PR #%d: %v", head.PR, err)
 	}
 
-	prInfo, err := fetchPRInfo(ctx, head.PR)
+	prInfo, err := w.fetchPRInfo(ctx, head.PR)
 	if err != nil {
 		log.Printf("[mergequeue] fetchPRInfo PR #%d: %v — leaving watching", head.PR, err)
 		return
@@ -129,7 +201,7 @@ func (w *Watcher) tick(ctx context.Context) {
 
 	case "BEHIND":
 		log.Printf("[mergequeue] PR #%d is BEHIND — calling gh pr update-branch", head.PR)
-		if err := updateBranch(ctx, head.PR); err != nil {
+		if err := w.updateBranch(ctx, head.PR); err != nil {
 			log.Printf("[mergequeue] gh pr update-branch PR #%d: %v — leaving watching", head.PR, err)
 		}
 		// Leave row as watching; next tick will see UNSTABLE→BLOCKED→CLEAN cycle.
@@ -158,7 +230,7 @@ func (w *Watcher) tick(ctx context.Context) {
 // "sha1" message) leaves watching; on other errors transitions to failed.
 func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 	log.Printf("[mergequeue] PR #%d CLEAN — attempting gh pr merge --squash", head.PR)
-	out, err := runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash")
+	out, err := w.runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash")
 	if err == nil {
 		log.Printf("[mergequeue] PR #%d merged successfully", head.PR)
 		w.succeedAndNotify(ctx, head)
@@ -353,8 +425,8 @@ type checkEntry struct {
 }
 
 // fetchPRInfo calls `gh pr view <pr> --json` and returns the parsed result.
-func fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
-	out, err := runGH(ctx, "pr", "view", fmt.Sprintf("%d", pr),
+func (w *Watcher) fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
+	out, err := w.runGH(ctx, "pr", "view", fmt.Sprintf("%d", pr),
 		"--json", prInfoJSONFields)
 	if err != nil {
 		return nil, fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(string(out)))
@@ -395,17 +467,34 @@ func isBranchMovedRace(output string) bool {
 }
 
 // updateBranch calls `gh pr update-branch <pr>` to rebase the PR onto main.
-func updateBranch(ctx context.Context, pr int) error {
-	out, err := runGH(ctx, "pr", "update-branch", fmt.Sprintf("%d", pr))
+func (w *Watcher) updateBranch(ctx context.Context, pr int) error {
+	out, err := w.runGH(ctx, "pr", "update-branch", fmt.Sprintf("%d", pr))
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// runGH runs `gh <args...>` and returns combined output. Uses a 30s timeout
-// per call to avoid hanging the poll loop.
-func runGH(ctx context.Context, args ...string) ([]byte, error) {
+// runGH runs `gh --repo <owner/name> <args...>` and returns combined output.
+// The "--repo" flag is prepended unconditionally so calls succeed regardless
+// of the sidecar process's CWD (#1055). Uses a 30s timeout per call to avoid
+// hanging the poll loop.
+//
+// runGH dispatches to w.runGHFunc when set (used by tests to inject a stub
+// that captures argv), or falls back to execGH for real os/exec invocation.
+func (w *Watcher) runGH(ctx context.Context, args ...string) ([]byte, error) {
+	full := make([]string, 0, len(args)+2)
+	full = append(full, "--repo", w.repo)
+	full = append(full, args...)
+	if w.runGHFunc != nil {
+		return w.runGHFunc(ctx, full...)
+	}
+	return execGH(ctx, full...)
+}
+
+// execGH is the real gh-CLI invocation. Extracted from runGH so tests can
+// substitute Watcher.runGHFunc without losing the production code path.
+func execGH(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
