@@ -42,7 +42,7 @@ I re-read the three sites named in the inventory at §6.1 and §6.18 plus
 `ContainerMode`, `--host-mode`/`"host-mode"`, `EffectiveIsolationMode`, and
 `HostMode` mention to confirm no back-compat site was missed. The grep
 turns up 33 files; non-test sites are 16 and are catalogued individually
-below. Test sites are summarised in §3.10 because each test exercises a
+below. Test sites are summarised in §3.8 because each test exercises a
 production path already enumerated.
 
 For each site I record:
@@ -153,7 +153,7 @@ caller dereferences a removed field.
 
 - `cmd/spawn.go:202` — final fallback in `resolveIsolationMode` after
   `--isolation` and `--host-mode` flag handling.
-- `cmd/switch.go:1068`, `cmd/pr.go:76`, `cmd/review.go:170` — derive the
+- `cmd/switch.go:1068`, `cmd/pr.go:76`, `cmd/review.go:168` — derive the
   effective machine-default mode when no per-spawn flag is in play.
 
 **What it handles:** a `Config` whose `DefaultIsolationMode` is empty —
@@ -226,7 +226,7 @@ receive NULL).
   `hostModeFromDB` (`cmd/cleanup.go:863-868`) reads it to short-circuit
   podman teardown for host-mode sessions. After the fallback method is
   removed, `hostModeFromDB` becomes dead because cleanup branches purely
-  on `isolation_mode == "host"`. **[uncertain]** — see §3.7 for the
+  on `isolation_mode == "host"`. **[uncertain]** — see §3.6 for the
   `host_mode` column drop, which is a separate migration with its own
   data shape.
 
@@ -423,6 +423,16 @@ gateway site (`cmd/spawn.go:275`, `cmd/switch.go:1068`, `cmd/pr.go:76`,
   the A.1 Phase 2/3 migration sequence.
 - **Independent of sandbox-exec parity.** This is a purely structural
   cleanup of a Go field shape; no platform-mode question is involved.
+- **Coordinate with A.2 (#1077).** A.2's duplication audit covers
+  cross-mode helpers extracted from `bwrap.go`/`sandbox_exec.go` and
+  the surrounding `Manager` lifecycle. The three parallel
+  `Opts.ContainerMode`/`SpawnOpts.ContainerMode`/`StartSidecarOpts.ContainerMode`
+  fields catalogued above are precisely the kind of incidental
+  cross-mode duplication A.2 is reviewing. If A.2 lands first and
+  proposes extracting a shared helper around any of these sites, the
+  helper should accept `IsolationMode` (not the legacy `ContainerMode`
+  bool) so A.4 can complete the deletion without re-touching A.2's
+  code; if A.4 lands first, A.2 has fewer call sites to audit.
 
 ### 3.6 `Status.HostMode` field, `SetHostMode` writer, `host_mode` column
 
@@ -603,12 +613,16 @@ is intended to land as one PR with no behaviour change.
 
 ### Phase B — `Config.ContainerMode` and the config-side fallback (independent of sandbox-exec parity)
 
-3. **Migrate gateway callers** at `cmd/spawn.go:275`, `cmd/switch.go:1068`,
-   `cmd/pr.go:76`, `cmd/restore.go:43` to call
+3. **Migrate gateway callers** at `cmd/spawn.go:202`, `cmd/switch.go:1068`,
+   `cmd/pr.go:76`, `cmd/review.go:168`, `cmd/restore.go:289` to call
    `registry.Resolve(cfg, …)` instead of
    `cfg.EffectiveIsolationMode()`. Drops one of the two back-compat
    readers immediately; `Resolve` carries the back-compat in one place
-   (per A.1 §4.2).
+   (per A.1 §4.2). Note this is the *config-side* fallback set —
+   distinct from the `effectiveContainerMode := isolationMode == config.IsolationPodman`
+   derivations (`cmd/spawn.go:275`, `cmd/switch.go:1069`, `cmd/pr.go:77`)
+   which are the §3.5 `Opts.ContainerMode` gateways and migrate as part
+   of Phase C.
 4. **Set `defaults().DefaultIsolationMode = config.IsolationHost`** in
    `internal/config/config.go:162-181`. This makes the compiled-in
    default explicit instead of relying on
@@ -661,6 +675,21 @@ is intended to land as one PR with no behaviour change.
     projection in `internal/db/db.go` (seven sites). Delete the v4→v5
     migration's add-column step? **No** — historical migrations stay
     intact; only the current schema and the projection lists change.
+    **Coordinate with A.3 (#1078).** A.3's concurrency-cap unification
+    consults the same persisted-mode columns this phase reshapes —
+    `cmd/cleanup.go:863-879`'s `hostModeFromDB`/`isolationModeFromDB`
+    helpers are the live consumers of `Status.HostMode` /
+    `Status.EffectiveIsolationMode()`, and A.3's `Isolator.Cap` design
+    (per A.1 §4.2) reads `db.ActiveBwrapSessionCount` filtered by
+    `isolation_mode = 'bwrap'` (`internal/db/db.go:1720-1740`).
+    Sequencing options: (a) Phase E lands first — A.3 then implements
+    `Cap` against the post-cleanup DB shape (`isolation_mode` only,
+    no `host_mode`); (b) A.3 lands first — A.3's per-mode cap dispatch
+    must consult `Status.IsolationMode` directly (not
+    `Status.EffectiveIsolationMode()`) so it does not re-acquire a
+    dependency on the back-compat reader Phase E is removing. Either
+    order works; (a) is preferred because it lets A.3 land against a
+    single canonical column.
 
 ### Phase F — explicit non-action
 
@@ -683,6 +712,42 @@ is intended to land as one PR with no behaviour change.
   Every back-compat shim under review here is independent of which
   sandbox modes ship. The gate exists only for the separately-tracked
   podman-as-a-mode removal, which is out of scope per §3 / Phase F.
+
+### Relationship to sibling Track A issues
+
+A.4 sits between two in-flight Track A peers:
+
+- **A.1 (#1073 / merged as #1097) — registry shape.** A.1 named every
+  back-compat site catalogued here as **(d) deletable** and explicitly
+  deferred them to A.4. The `IsolationRegistry.Resolve(...)` helper
+  proposed in A.1 §4.2 is the natural home for the back-compat
+  decoder during the migration window — every (d)-tagged caller in A.1
+  routes through `Resolve`, which means A.4 has *one* file to touch
+  (the registry) when each shim drops, not the per-cmd surface. Phase
+  A step 1 explicitly depends on A.1's R.1–R.3.
+- **A.2 (#1077) — duplication audit (in flight).** A.2 reviews
+  cross-mode helper duplication in `bwrap.go`/`sandbox_exec.go` and
+  the surrounding `Manager` lifecycle. The §3.5 `Opts.ContainerMode`
+  cleanup (three parallel struct fields with the same name) is
+  precisely the kind of incidental duplication A.2 is auditing — see
+  the §3.5 "Coordinate with A.2" note for ordering guidance. A.2 does
+  not gate A.4, and vice versa, but each can simplify the other's
+  diff if they land in the right order.
+- **A.3 (#1078) — concurrency-cap unification (in flight).** A.3
+  unifies the parallel `checkConcurrencyCap` (podman) and
+  `checkBwrapConcurrencyCap` (bwrap) functions into a single
+  `Isolator.Cap` per A.1 §4.1. A.3's implementation reads the same
+  persisted-mode columns Phase E reshapes — see the Phase E step 16
+  "Coordinate with A.3" note for ordering guidance. The shared
+  ground is `cmd/cleanup.go:863-879` (which reads `Status.HostMode`)
+  and `internal/db/db.go:1720-1740` (which filters by
+  `isolation_mode = 'bwrap'`); A.3 must not re-acquire a dependency
+  on `Status.EffectiveIsolationMode()` if it lands before A.4.
+
+None of the three siblings hard-block A.4, but the back-compat shim
+removals are easier-and-smaller-diffs once A.1's `Resolve` funnel is in
+place (already landed) and naturally interleave with A.2 and A.3 at the
+sites called out above.
 
 ## 6. Open questions and `[uncertain]` flags (consolidated)
 
