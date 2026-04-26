@@ -13,7 +13,13 @@ package session
 //
 // The file lives in the same directory as agent-run.log:
 //
-//	$XDG_STATE_HOME/prism/run/<session>/agent-startup.log
+//	$XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/agent-startup.log
+//
+// The per-session subdirectory uses the same SessionDirName-derived 12-hex
+// SHA-256 prefix as the host-API socket and agent-run.log so all three files
+// are co-located on disk and discoverable from a single `ls`. See
+// internal/session/sidecar.go:SessionDirName for the formula and #1050 for
+// the sun_path budget that motivated the hashing.
 //
 // Pre-creating the directory at SpawnSession time means the file path is
 // always valid even if `prism agent-run` never reaches its own log-open call
@@ -29,13 +35,20 @@ import (
 
 // AgentStartupLogPath returns the agent-startup.log file path for the named
 // session. It lives next to AgentRunLogPath so the two are co-located on disk
-// and discoverable from a single `ls $XDG_STATE_HOME/prism/run/<session>/`.
+// and discoverable from a single `ls $XDG_STATE_HOME/prism/run/<dir>/`.
+//
+// The directory name is the SessionDirName-derived 12-hex prefix used by
+// SidecarHostAPIPath and AgentRunLogPath (see sidecar.go), so the path stays
+// under the sun_path limits and the agent-startup.log lives in the same
+// directory as agent-run.log and hostapi.sock. Using the raw session name
+// here would put the file in a sibling directory and break the
+// "single ls discovers the forensic trail" property — see #1066.
 func AgentStartupLogPath(sessionName string) (string, error) {
 	base, err := sidecarStateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "run", sessionName, "agent-startup.log"), nil
+	return filepath.Join(base, "run", SessionDirName(sessionName), "agent-startup.log"), nil
 }
 
 // startupLogger wraps an *os.File with the conventions used across the

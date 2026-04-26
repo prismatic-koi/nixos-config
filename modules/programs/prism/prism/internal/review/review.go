@@ -49,7 +49,7 @@
 //
 // Each spawned session has an agent-startup.log file in its run directory:
 //
-//	$XDG_STATE_HOME/prism/run/<session>/agent-startup.log
+//	$XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/agent-startup.log
 //
 // SpawnSession writes timestamped breadcrumbs to this file describing the
 // spawn-time sequence (DB seed, port allocation, tmux session creation,

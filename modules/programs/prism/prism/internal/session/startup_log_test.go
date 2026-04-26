@@ -15,11 +15,15 @@ func TestAgentStartupLogPath_DefaultsToXDGState(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	got, err := AgentStartupLogPath("myrepo@feat")
+	const sessionName = "myrepo@feat"
+	got, err := AgentStartupLogPath(sessionName)
 	if err != nil {
 		t.Fatalf("AgentStartupLogPath: %v", err)
 	}
-	want := filepath.Join(tmp, "prism", "run", "myrepo@feat", "agent-startup.log")
+	// The per-session subdirectory uses the SessionDirName-derived 12-hex
+	// SHA-256 prefix so the startup log is co-located with hostapi.sock and
+	// agent-run.log (see #1066).
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sessionName), "agent-startup.log")
 	if got != want {
 		t.Errorf("AgentStartupLogPath = %q, want %q", got, want)
 	}
@@ -28,7 +32,8 @@ func TestAgentStartupLogPath_DefaultsToXDGState(t *testing.T) {
 // TestAgentStartupLogPath_LivesNextToAgentRunLog verifies that the startup
 // log and agent-run log share the same parent directory. This co-location
 // matters for forensic discovery: an operator who finds one file should see
-// the other in the same `ls`.
+// the other in the same `ls`. See #1066 for the alignment fix that brought
+// AgentStartupLogPath onto SessionDirName.
 func TestAgentStartupLogPath_LivesNextToAgentRunLog(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	startupPath, err := AgentStartupLogPath("myrepo@feat")
