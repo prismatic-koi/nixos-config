@@ -32,7 +32,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"time"
 )
@@ -361,11 +360,31 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	}
 }
 
+// sessionTempPath is the package-level building block for per-session temp
+// file paths. All per-session artefact files follow the shape:
+//
+//	<os.TempDir()>/prism-<stem>-<session_name><suffix>
+//
+// stem identifies the artefact (e.g. "gitdir", "ssh-config"); suffix is ""
+// for most artefacts and ".sb" for the sandbox-exec SBPL profile.
+//
+// It is a free function so that exported helpers like OpencodeConfigFilePath
+// can share the same path logic without requiring a Manager receiver.
+func sessionTempPath(stem, suffix, name string) string {
+	return filepath.Join(os.TempDir(), "prism-"+stem+"-"+name+suffix)
+}
+
+// tempPath returns the host path for a temporary per-session artefact file.
+// It is a thin wrapper over sessionTempPath using the Manager's session name.
+func (m *Manager) tempPath(stem, suffix string) string {
+	return sessionTempPath(stem, suffix, m.name)
+}
+
 // gitdirFilePath returns the host path for the temporary corrected .git pointer
 // file written before container start. The file is named after the container
 // so it is stable and can be cleaned up by EnsureRemoved.
 func (m *Manager) gitdirFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-gitdir-"+m.name)
+	return m.tempPath("gitdir", "")
 }
 
 // GitdirFilePath is the exported version of gitdirFilePath for tests.
@@ -377,7 +396,7 @@ func (m *Manager) GitdirFilePath() string { return m.gitdirFilePath() }
 // nix store symlink with wrong ownership (nobody:nogroup, 0444) which SSH
 // rejects. We write a simple config that points to the mounted key.
 func (m *Manager) sshConfigFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-ssh-config-"+m.name)
+	return m.tempPath("ssh-config", "")
 }
 
 // SshConfigFilePath is the exported version of sshConfigFilePath for tests.
@@ -387,7 +406,7 @@ func (m *Manager) SshConfigFilePath() string { return m.sshConfigFilePath() }
 // written before container start. The container needs a minimal gitconfig
 // for commit identity and SSH signing. Mounted read-only at /root/.gitconfig.
 func (m *Manager) gitconfigFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-gitconfig-"+m.name)
+	return m.tempPath("gitconfig", "")
 }
 
 // GitconfigFilePath is the exported version of gitconfigFilePath for tests.
@@ -398,7 +417,7 @@ func (m *Manager) GitconfigFilePath() string { return m.gitconfigFilePath() }
 // read-only at /root/.ssh/allowed_signers and is required for
 // git verify-commit to work with SSH signing.
 func (m *Manager) allowedSignersFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-allowed-signers-"+m.name)
+	return m.tempPath("allowed-signers", "")
 }
 
 // opencodeConfigFilePath returns the host path for the temporary opencode.json
@@ -414,8 +433,9 @@ func (m *Manager) opencodeConfigFilePath() string {
 // config file for the given session name. The path is deterministic and
 // derived from the session name, so callers outside the Manager (e.g.
 // cmd/spawn.go) can write the file before the Manager is constructed.
+// Delegates to sessionTempPath so all per-session paths share one naming rule.
 func OpencodeConfigFilePath(sessionName string) string {
-	return filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName)
+	return sessionTempPath("opencode-config", "", sessionName)
 }
 
 // WriteOpencodeConfig writes content to the temp opencode.json file for the
@@ -436,7 +456,7 @@ func WriteOpencodeConfig(sessionName, content string) error {
 // file so it can be bind-mounted at /root/.claude/.credentials.json inside
 // the container where opencode-claude-auth can read it.
 func (m *Manager) claudeCredentialsFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-claude-creds-"+m.name)
+	return m.tempPath("claude-creds", "")
 }
 
 // writeClaudeCredentials extracts Claude Code credentials from the macOS
@@ -633,7 +653,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 // bind-mount it over the original so that nix/libgit2 can resolve the full
 // worktree chain.
 func (m *Manager) worktreeGitdirFilePath() string {
-	return filepath.Join(os.TempDir(), "prism-wt-gitdir-"+m.name)
+	return m.tempPath("wt-gitdir", "")
 }
 
 // WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
@@ -1454,31 +1474,13 @@ func (m *Manager) buildRunArgs() []string {
 		args = append(args, "--env", kv)
 	}
 
-	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true). These come
-	// from profiles.json agent_env_vars (written by Nix). Emitted in sorted
-	// key order for determinism.
-	//
-	// KUBECONFIG and AWS_CONFIG_FILE are intentionally suppressed here: both
-	// files are already bind-mounted at their canonical default paths
-	// (/root/.kube/config and /root/.aws/config respectively), so the host
-	// XDG paths held in AgentEnvVars do not exist inside the container and
-	// would only override the correctly-mounted locations.
-	sandboxMountedByDefault := map[string]bool{
-		"KUBECONFIG":      true,
-		"AWS_CONFIG_FILE": true,
-	}
-	if len(cfg.AgentEnvVars) > 0 {
-		keys := make([]string, 0, len(cfg.AgentEnvVars))
-		for k := range cfg.AgentEnvVars {
-			if !sandboxMountedByDefault[k] {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "--env", k+"="+cfg.AgentEnvVars[k])
-		}
-	}
+	// Inject profile-level agent env vars (AgentEnvVars, with KUBECONFIG /
+	// AWS_CONFIG_FILE suppressed) and harness-specific runtime env vars
+	// (RuntimeEnv). The podman appender uses "--env K=V" syntax.
+	// See env.go:AppendStandardEnv for the suppression rationale.
+	args = AppendStandardEnv(args, cfg, func(a []string, k, v string) []string {
+		return append(a, "--env", k+"="+v)
+	})
 
 	// opencode.json: mount the generated config file when ConfigContent is set.
 	// The file is written by Create() to a temp path and mounted read-only at
@@ -1510,14 +1512,6 @@ func (m *Manager) buildRunArgs() []string {
 	// connects to the SSE endpoint on the mapped host port exactly as before.
 	// The tmux agent window uses "podman attach" to bridge the PTY (RFC #691,
 	// Phase 1a / Issue #715).
-	// Inject harness-specific runtime env vars into the container. These are
-	// populated from harness.Harness.RuntimeEnv() by the sidecar. For opencode,
-	// this includes the experimental bash-tool timeout (15 min). Precedence:
-	// podman --env overrides any same-named ENV instruction baked into the
-	// image, so the harness values are what the agent runtime sees.
-	for k, v := range cfg.RuntimeEnv {
-		args = append(args, "--env", k+"="+v)
-	}
 
 	args = append(args, Image,
 		"opencode",
