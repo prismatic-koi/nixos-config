@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
+	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
 
 // ── applyInitialPromptEnvVar ──────────────────────────────────────────────────
@@ -605,13 +606,14 @@ func TestOpenAgentRunLog_CreatesDirAndFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	f := openAgentRunLog("myrepo@feature")
+	const sess = "myrepo@feature"
+	f := openAgentRunLog(sess)
 	if f == nil {
 		t.Fatal("openAgentRunLog returned nil")
 	}
 	defer f.Close()
 
-	logPath := filepath.Join(tmp, "prism", "run", "myrepo@feature", "agent-run.log")
+	logPath := filepath.Join(tmp, "prism", "run", prismsession.SessionDirName(sess), "agent-run.log")
 	info, err := os.Stat(logPath)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
@@ -642,7 +644,8 @@ func TestOpenAgentRunLog_AppendMode(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmp)
 
-	f1 := openAgentRunLog("myrepo@feature")
+	const sess = "myrepo@feature"
+	f1 := openAgentRunLog(sess)
 	if f1 == nil {
 		t.Fatal("openAgentRunLog (1) returned nil")
 	}
@@ -651,7 +654,7 @@ func TestOpenAgentRunLog_AppendMode(t *testing.T) {
 	}
 	f1.Close()
 
-	f2 := openAgentRunLog("myrepo@feature")
+	f2 := openAgentRunLog(sess)
 	if f2 == nil {
 		t.Fatal("openAgentRunLog (2) returned nil")
 	}
@@ -660,7 +663,7 @@ func TestOpenAgentRunLog_AppendMode(t *testing.T) {
 	}
 	f2.Close()
 
-	logPath := filepath.Join(tmp, "prism", "run", "myrepo@feature", "agent-run.log")
+	logPath := filepath.Join(tmp, "prism", "run", prismsession.SessionDirName(sess), "agent-run.log")
 	got, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read: %v", err)
