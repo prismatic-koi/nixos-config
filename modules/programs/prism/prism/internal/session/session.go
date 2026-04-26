@@ -580,16 +580,24 @@ func Create(name, directory string, opts Opts) error {
 }
 
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
-// When opts.Prompt is non-empty, PRISM_INITIAL_PROMPT is included so that
-// "prism agent-run" can read it and populate container.Config.InitialPrompt,
-// activating bwrap's --prompt CLI-append path.
 //
-// Skipped entirely for host mode: the host-mode launch path reads the prompt
-// directly via $(cat …) (see buildDirectOpencodeCmd / #1064), and emitting a
-// large PRISM_INITIAL_PROMPT here would re-introduce the same tmux arg-size
-// limit the prompt-file plumbing was added to avoid. The variable is also
-// unused on the host path — only `prism agent-run` (bwrap entry point)
-// consumes it.
+// When opts.PromptFilePath is non-empty (the post-#1092 path),
+// PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the
+// prompt body itself is NOT inlined into tmux's argv. `prism agent-run`
+// reads the file when it sees the env var and feeds the contents to
+// bwrap's --prompt CLI-append path. This keeps the launch-command size
+// O(1) in prompt size — the failure mode #1092 hit on review fan-outs.
+//
+// When opts.PromptFilePath is empty but opts.Prompt is non-empty, fall
+// back to the legacy inline PRISM_INITIAL_PROMPT env var. SpawnSession
+// always writes the prompt file for bwrap/sandbox-exec, so this branch
+// is exercised only by direct callers that have not opted into the file
+// path (e.g. test code or future modes added without prompt-file
+// plumbing).
+//
+// Skipped entirely for host mode: the host-mode launch path reads the
+// prompt directly via $(cat …) (see buildDirectOpencodeCmd / #1064), so
+// no agent-pane env var is needed at all.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux.
 func agentPaneEnvVars(opts Opts) map[string]string {
@@ -598,6 +606,11 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 	}
 	if effectiveIsolationMode(opts) == "host" {
 		return nil
+	}
+	if opts.PromptFilePath != "" {
+		return map[string]string{
+			"PRISM_INITIAL_PROMPT_FILE": opts.PromptFilePath,
+		}
 	}
 	return map[string]string{
 		"PRISM_INITIAL_PROMPT": opts.Prompt,

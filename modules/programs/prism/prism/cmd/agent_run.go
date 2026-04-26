@@ -470,15 +470,24 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 //     was set up before #1092 (and for direct callers of agent-run that
 //     have not migrated yet).
 //
-// If both are set, the file path wins — a stale inline value from a
-// re-attached pane should not override the fresh path.
+// Precedence — `PRISM_INITIAL_PROMPT_FILE` wins outright when set:
 //
-// File-read failures are NOT fatal: agent-run logs to stderr and proceeds
-// with an empty prompt rather than refusing to start the agent. The pane
-// is already alive; failing here would leave the operator with a dead
-// review window and no way to recover. The empty-prompt outcome is no
-// worse than the pre-#1042 behaviour where review agents started without
-// a prompt at all.
+//   - If both env vars are set, the file path is used and the inline
+//     value is ignored. A stale inline value from a re-attached pane
+//     must not override the fresh path the spawner just wrote.
+//
+//   - If `PRISM_INITIAL_PROMPT_FILE` is set but the file read fails, the
+//     inline value is NOT consulted as a fallback. The contract is "FILE
+//     takes precedence absolutely" — silently substituting an inline
+//     value would mask a real failure (e.g. the spawner wrote the file
+//     but it was deleted, or perms were tampered with). agent-run logs
+//     the read error to stderr and proceeds with no initial prompt.
+//
+// File-read failures are not fatal to agent-run itself. The pane is
+// already alive; failing here would leave the operator with a dead review
+// window and no way to recover. The empty-prompt outcome is no worse than
+// the pre-#1042 behaviour where review agents started without a prompt at
+// all.
 func applyInitialPromptEnvVar(cfg *container.Config) {
 	if path := os.Getenv("PRISM_INITIAL_PROMPT_FILE"); path != "" {
 		body, err := os.ReadFile(path)
