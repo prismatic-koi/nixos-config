@@ -128,7 +128,16 @@ var prCmd = &cobra.Command{
 				return roleErr
 			}
 			if roleConfig != "" {
-				configContent = roleConfig
+				// Role config governs agent identity and permissions. Re-apply
+				// any --model/--variant overrides on top so they are not lost.
+				// prism pr has no --model/--profile/--variant flags today, but
+				// the call is a no-op when all overrides are empty, ensuring
+				// forward-compatibility if those flags are added later.
+				patched, patchErr := config.ApplyModelOverrides(roleConfig, "", "", "", pf)
+				if patchErr != nil {
+					return patchErr
+				}
+				configContent = patched
 			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
 				fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
 			}

@@ -340,6 +340,124 @@ func allKnownAgents(pf *ProfilesFile) []string {
 	}
 }
 
+// ApplyModelOverrides patches modelOverride and/or variantOverride into an
+// existing role config JSON blob (e.g. ContainerWorkerConfig) and returns the
+// result as a JSON string.
+//
+// Rules (mirror BuildConfigContent semantics):
+//   - modelOverride non-empty → set top-level "model" and every agent's "model".
+//   - variantOverride non-empty → set every agent's "variant".
+//   - profileName non-empty and modelOverride non-empty → only override
+//     primary-role agents' "model" (same as BuildConfigContent when both flags
+//     are set). pf must be non-nil in this case to resolve the primary-role list.
+//   - Both overrides empty → return blob unchanged (no re-marshal).
+//
+// The function preserves all other fields in the blob (agent identity, system
+// prompt, tool allow-list, $schema, etc.).
+//
+// Returns an error if blob is non-empty but not valid JSON.
+func ApplyModelOverrides(blob, profileName, modelOverride, variantOverride string, pf *ProfilesFile) (string, error) {
+	if modelOverride == "" && variantOverride == "" {
+		// Nothing to override — return blob as-is.
+		return blob, nil
+	}
+	if blob == "" {
+		// No base blob — nothing to patch.
+		return blob, nil
+	}
+
+	// Parse the existing blob into a generic map.
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(blob), &cfg); err != nil {
+		return "", fmt.Errorf("profiles: ApplyModelOverrides: parse blob: %w", err)
+	}
+
+	// Ensure the "agent" sub-map exists (it may be absent in minimal blobs).
+	agentObj, _ := cfg["agent"].(map[string]any)
+	if agentObj == nil {
+		agentObj = make(map[string]any)
+	}
+
+	// Determine which agent names should receive the model override.
+	// When profileName is set, only primary-role agents are overridden (matching
+	// BuildConfigContent behaviour). Otherwise all known agents are overridden.
+	var primaryAgents map[string]struct{}
+	if profileName != "" && modelOverride != "" && pf != nil {
+		primaryAgents = make(map[string]struct{})
+		for _, name := range pf.RoleMapping["primary"] {
+			primaryAgents[name] = struct{}{}
+		}
+	}
+
+	// Apply modelOverride to the top-level field.
+	if modelOverride != "" {
+		cfg["model"] = modelOverride
+	}
+
+	// Apply overrides to each existing agent entry, and to every known agent
+	// for variant (which must reach even agents not yet listed in the blob).
+	//
+	// Strategy:
+	//  1. Update existing agent entries in agentObj.
+	//  2. For variantOverride, also ensure every known agent has an entry.
+	//  3. For modelOverride (no-profile path), also ensure every known agent
+	//     has an entry so they don't silently use the system-default model
+	//     when opened in a new blob that lacks them.
+
+	// Collect all agent names we must touch.
+	agentsToTouch := make(map[string]struct{})
+	// Always touch agents already declared in the blob.
+	for name := range agentObj {
+		agentsToTouch[name] = struct{}{}
+	}
+	// When variantOverride is set, ensure every known agent is present.
+	if variantOverride != "" {
+		for _, name := range allKnownAgents(pf) {
+			agentsToTouch[name] = struct{}{}
+		}
+	}
+	// When modelOverride is set without a profile (→ override all agents),
+	// ensure every known agent is present.
+	if modelOverride != "" && profileName == "" {
+		for _, name := range allKnownAgents(pf) {
+			agentsToTouch[name] = struct{}{}
+		}
+	}
+
+	for name := range agentsToTouch {
+		entry, _ := agentObj[name].(map[string]any)
+		if entry == nil {
+			entry = make(map[string]any)
+		}
+		if modelOverride != "" {
+			// Apply model override: to all agents when no profile, or only to
+			// primary-role agents when a profile is set.
+			if primaryAgents == nil {
+				entry["model"] = modelOverride
+			} else if _, isPrimary := primaryAgents[name]; isPrimary {
+				entry["model"] = modelOverride
+			}
+		}
+		if variantOverride != "" {
+			entry["variant"] = variantOverride
+		}
+		// Only write back if the entry has content.
+		if len(entry) > 0 {
+			agentObj[name] = entry
+		}
+	}
+
+	if len(agentObj) > 0 {
+		cfg["agent"] = agentObj
+	}
+
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("profiles: ApplyModelOverrides: marshal: %w", err)
+	}
+	return string(out), nil
+}
+
 // marshalConfigContent builds the JSON blob for OPENCODE_CONFIG_CONTENT.
 func marshalConfigContent(topModel string, agentMap map[string]agentCfg) (string, error) {
 	// Build the top-level map.

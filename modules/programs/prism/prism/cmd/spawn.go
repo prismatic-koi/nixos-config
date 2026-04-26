@@ -368,9 +368,14 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			return roleErr
 		}
 		if roleConfig != "" {
-			// Role config supersedes profile/model overrides for identity &
-			// permissions; use it as the primary config content.
-			configContent = roleConfig
+			// Role config governs agent identity and permissions (system prompt,
+			// tool allow-list). Re-apply any --model/--variant overrides on top
+			// so that user-supplied flags are not silently discarded.
+			patched, patchErr := config.ApplyModelOverrides(roleConfig, profileFlag, modelFlag, variantFlag, pf)
+			if patchErr != nil {
+				return patchErr
+			}
+			configContent = patched
 		} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
 			// worker and coordinator are container-level roles that must have a
 			// config blob; an empty result means the system config is stale.
