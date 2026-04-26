@@ -98,7 +98,7 @@ func For(mode config.IsolationMode, opts ConstructorOpts) (Isolator, error) {
 
 	if !ok {
 		return nil, fmt.Errorf("container: unknown isolation mode %q; registered modes: %s",
-			mode, joinModeNames(globalRegistry))
+			mode, modesString())
 	}
 	return reg.Constructor(opts), nil
 }
@@ -120,7 +120,7 @@ func Names() []config.IsolationMode {
 }
 
 // joinModeNames returns a comma-separated string of the registered mode names.
-// The caller must hold at least a read lock on globalRegistry.mu.
+// The caller must already hold at least a read lock on r.mu.
 func joinModeNames(r *IsolationRegistry) string {
 	names := make([]string, 0, len(r.registrations))
 	for name := range r.registrations {
