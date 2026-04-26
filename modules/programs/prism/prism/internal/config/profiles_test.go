@@ -481,6 +481,265 @@ func TestContainerConfigForRole_NilProfilesFile(t *testing.T) {
 	}
 }
 
+// ── ApplyModelOverrides tests ─────────────────────────────────────────────────
+
+// workerBlob is a realistic ContainerWorkerConfig blob as produced by Nix.
+// It includes a top-level model, agent entries with model fields, a $schema,
+// and a system prompt field to verify those are preserved unchanged.
+const workerBlob = `{
+  "$schema": "https://opencode.ai/opencode.json",
+  "model": "anthropic/claude-sonnet-4-6",
+  "agent": {
+    "worker": {
+      "model": "anthropic/claude-sonnet-4-6",
+      "system": "You are a worker agent."
+    },
+    "title": {
+      "model": "anthropic/claude-haiku-4-5"
+    }
+  }
+}`
+
+// TestApplyModelOverrides_NoOverrides verifies that an empty modelOverride and
+// variantOverride returns the blob unchanged (no re-marshal side-effects).
+func TestApplyModelOverrides_NoOverrides(t *testing.T) {
+	result, err := config.ApplyModelOverrides(workerBlob, "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != workerBlob {
+		t.Errorf("expected blob unchanged, got %q", result)
+	}
+}
+
+// TestApplyModelOverrides_EmptyBlob verifies that an empty blob is returned
+// as-is even when overrides are set.
+func TestApplyModelOverrides_EmptyBlob(t *testing.T) {
+	result, err := config.ApplyModelOverrides("", "", "anthropic/claude-opus-4-7", "high", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "" {
+		t.Errorf("expected empty result for empty blob, got %q", result)
+	}
+}
+
+// TestApplyModelOverrides_ModelOnly verifies that --model sets the top-level
+// model and all agent models, preserving other fields.
+func TestApplyModelOverrides_ModelOnly(t *testing.T) {
+	result, err := config.ApplyModelOverrides(workerBlob, "", "anthropic/claude-opus-4-7", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Top-level model must be overridden.
+	if cfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
+	}
+
+	// $schema must be preserved.
+	if cfg["$schema"] == nil {
+		t.Error("$schema field was dropped")
+	}
+
+	agents := cfg["agent"].(map[string]any)
+
+	// worker model must be overridden, system prompt preserved.
+	worker := agents["worker"].(map[string]any)
+	if worker["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
+	}
+	if worker["system"] == nil {
+		t.Error("worker system prompt was dropped")
+	}
+
+	// title model must also be overridden.
+	title := agents["title"].(map[string]any)
+	if title["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("title model: got %v, want anthropic/claude-opus-4-7", title["model"])
+	}
+}
+
+// TestApplyModelOverrides_VariantOnly verifies that --variant sets the variant
+// on all agents while leaving models unchanged.
+func TestApplyModelOverrides_VariantOnly(t *testing.T) {
+	result, err := config.ApplyModelOverrides(workerBlob, "", "", "high", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Top-level model must be unchanged.
+	if cfg["model"] != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("top-level model changed: got %v", cfg["model"])
+	}
+
+	agents := cfg["agent"].(map[string]any)
+
+	// worker: model unchanged, variant added.
+	worker := agents["worker"].(map[string]any)
+	if worker["model"] != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("worker model changed: got %v", worker["model"])
+	}
+	if worker["variant"] != "high" {
+		t.Errorf("worker variant: got %v, want high", worker["variant"])
+	}
+
+	// title: model unchanged, variant added.
+	title := agents["title"].(map[string]any)
+	if title["model"] != "anthropic/claude-haiku-4-5" {
+		t.Errorf("title model changed: got %v", title["model"])
+	}
+	if title["variant"] != "high" {
+		t.Errorf("title variant: got %v, want high", title["variant"])
+	}
+}
+
+// TestApplyModelOverrides_ModelAndVariant verifies that both --model and
+// --variant are applied together.
+func TestApplyModelOverrides_ModelAndVariant(t *testing.T) {
+	result, err := config.ApplyModelOverrides(workerBlob, "", "anthropic/claude-opus-4-7", "high", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	if cfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
+	}
+
+	agents := cfg["agent"].(map[string]any)
+	worker := agents["worker"].(map[string]any)
+	if worker["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
+	}
+	if worker["variant"] != "high" {
+		t.Errorf("worker variant: got %v, want high", worker["variant"])
+	}
+}
+
+// TestApplyModelOverrides_WithProfile verifies that when a profile name is
+// supplied alongside a model override, only primary-role agents have their
+// model overridden (matching BuildConfigContent semantics).
+func TestApplyModelOverrides_WithProfile(t *testing.T) {
+	pf := sampleProfilesFile()
+	// "anthropic" profile: primary=["coordinator","plan"], secondary=["worker","review","ac"],
+	// lightweight=["explore","title","summary","compaction"].
+	// The blob has worker (secondary) and title (lightweight) plus we add coordinator.
+	blob := `{
+		"model": "anthropic/claude-sonnet-4-6",
+		"agent": {
+			"coordinator": {"model": "anthropic/claude-opus-4-6"},
+			"worker":      {"model": "anthropic/claude-sonnet-4-6"},
+			"title":       {"model": "anthropic/claude-haiku-4-5"}
+		}
+	}`
+
+	result, err := config.ApplyModelOverrides(blob, "anthropic", "custom/model", "", pf)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Top-level model must be overridden.
+	if cfg["model"] != "custom/model" {
+		t.Errorf("top-level model: got %v, want custom/model", cfg["model"])
+	}
+
+	agents := cfg["agent"].(map[string]any)
+
+	// coordinator is primary → model overridden.
+	coordinator := agents["coordinator"].(map[string]any)
+	if coordinator["model"] != "custom/model" {
+		t.Errorf("coordinator model: got %v, want custom/model", coordinator["model"])
+	}
+
+	// worker is secondary → model NOT overridden.
+	worker := agents["worker"].(map[string]any)
+	if worker["model"] != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6 (unchanged)", worker["model"])
+	}
+
+	// title is lightweight → model NOT overridden.
+	title := agents["title"].(map[string]any)
+	if title["model"] != "anthropic/claude-haiku-4-5" {
+		t.Errorf("title model: got %v, want anthropic/claude-haiku-4-5 (unchanged)", title["model"])
+	}
+}
+
+// TestApplyModelOverrides_PreservesNonModelFields verifies that non-model
+// fields in the blob (system prompt, tool permissions, $schema, etc.) are
+// preserved unchanged after applying overrides.
+func TestApplyModelOverrides_PreservesNonModelFields(t *testing.T) {
+	blob := `{
+		"$schema": "https://opencode.ai/opencode.json",
+		"model": "anthropic/claude-sonnet-4-6",
+		"agent": {
+			"worker": {
+				"model": "anthropic/claude-sonnet-4-6",
+				"system": "You are a worker agent.",
+				"tools": {"bash": {"deny": ["rm -rf"]}}
+			}
+		}
+	}`
+
+	result, err := config.ApplyModelOverrides(blob, "", "anthropic/claude-opus-4-7", "high", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	if cfg["$schema"] == nil {
+		t.Error("$schema was dropped")
+	}
+
+	agents := cfg["agent"].(map[string]any)
+	worker := agents["worker"].(map[string]any)
+
+	if worker["system"] == nil {
+		t.Error("system prompt was dropped")
+	}
+	if worker["tools"] == nil {
+		t.Error("tools field was dropped")
+	}
+	if worker["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
+	}
+	if worker["variant"] != "high" {
+		t.Errorf("worker variant: got %v, want high", worker["variant"])
+	}
+}
+
+// TestApplyModelOverrides_InvalidBlob verifies that an invalid JSON blob
+// returns an error.
+func TestApplyModelOverrides_InvalidBlob(t *testing.T) {
+	_, err := config.ApplyModelOverrides("not json {{", "", "some/model", "", nil)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON blob, got nil")
+	}
+}
+
 func TestLoadProfiles_MissingFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/nonexistent/path")
 	_, err := config.LoadProfiles()
