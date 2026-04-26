@@ -527,3 +527,145 @@ func TestValidateSandboxExecArgs_BadShape(t *testing.T) {
 		}
 	}
 }
+
+// ── [timing] markers (#1052) ────────────────────────────────────────────────
+
+// TestLogTimingTo_WritesToLogFile verifies that logTimingTo writes a single
+// `[timing] <phase>: <duration>` line to the supplied log file (with a
+// trailing newline). This is the core invariant for AC #1: the bwrap and
+// sandbox-exec dispatch paths must leave at least pre-exec / args-build
+// markers in the agent-run log even when the launch later fails.
+func TestLogTimingTo_WritesToLogFile(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "agent-run.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	logTimingTo(f, "pre-exec", 1234*time.Millisecond)
+	logTimingTo(f, "bwrap-args build", 50*time.Millisecond)
+	logTimingTo(f, "bwrap exec", 1290*time.Millisecond)
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	want := "[timing] pre-exec: 1.234s\n" +
+		"[timing] bwrap-args build: 50ms\n" +
+		"[timing] bwrap exec: 1.29s\n"
+	if string(got) != want {
+		t.Errorf("log content:\n got: %q\nwant: %q", string(got), want)
+	}
+}
+
+// TestLogTimingTo_NilLogFile verifies that logTimingTo is safe to call with
+// a nil log file. The function falls back to stderr-only output. This is
+// important because openAgentRunLog returns nil on any failure (mkdir, open)
+// and we still want the marker visible somewhere rather than panicking.
+func TestLogTimingTo_NilLogFile(t *testing.T) {
+	// Should not panic.
+	logTimingTo(nil, "pre-exec", 5*time.Millisecond)
+}
+
+// TestLogTimingTo_RoundsToMillisecond verifies that sub-millisecond durations
+// are rounded up/down to the nearest millisecond, mirroring the format used
+// by the podman-side `[timing]` markers (`time.Since(...).Round(time.Millisecond)`).
+// This keeps the bwrap and podman log lines visually aligned for grep.
+func TestLogTimingTo_RoundsToMillisecond(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "agent-run.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open log: %v", err)
+	}
+	// 1500us rounds to 2ms (Go's Duration rounding is half-away-from-zero
+	// for the .Round implementation: 1.5ms → 2ms).
+	logTimingTo(f, "pre-exec", 1500*time.Microsecond)
+	f.Close()
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(got), "[timing] pre-exec: ") {
+		t.Errorf("log missing [timing] prefix: %q", string(got))
+	}
+	if strings.Contains(string(got), "µs") || strings.Contains(string(got), "us") {
+		t.Errorf("log contains sub-ms unit (not rounded): %q", string(got))
+	}
+}
+
+// TestOpenAgentRunLog_CreatesDirAndFile verifies that openAgentRunLog resolves
+// the per-session log path under XDG_STATE_HOME, creates the directory tree
+// with mode 0700, and opens the log file in append+create mode.
+func TestOpenAgentRunLog_CreatesDirAndFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	f := openAgentRunLog("myrepo@feature")
+	if f == nil {
+		t.Fatal("openAgentRunLog returned nil")
+	}
+	defer f.Close()
+
+	logPath := filepath.Join(tmp, "prism", "run", "myrepo@feature", "agent-run.log")
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %o, want 0600", info.Mode().Perm())
+	}
+
+	dirInfo, err := os.Stat(filepath.Dir(logPath))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode = %o, want 0700", dirInfo.Mode().Perm())
+	}
+
+	// Verify the returned file is writable and append-mode.
+	if _, err := f.WriteString("first line\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}
+
+// TestOpenAgentRunLog_AppendMode verifies that repeated calls open the same
+// log file in append mode, so prior content survives across agent-run
+// invocations within a single session. This matters because tmux pane
+// restarts can re-invoke agent-run, and we want the timing history preserved.
+func TestOpenAgentRunLog_AppendMode(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	f1 := openAgentRunLog("myrepo@feature")
+	if f1 == nil {
+		t.Fatal("openAgentRunLog (1) returned nil")
+	}
+	if _, err := f1.WriteString("first\n"); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	f1.Close()
+
+	f2 := openAgentRunLog("myrepo@feature")
+	if f2 == nil {
+		t.Fatal("openAgentRunLog (2) returned nil")
+	}
+	if _, err := f2.WriteString("second\n"); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+	f2.Close()
+
+	logPath := filepath.Join(tmp, "prism", "run", "myrepo@feature", "agent-run.log")
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != "first\nsecond\n" {
+		t.Errorf("log content = %q, want %q", string(got), "first\nsecond\n")
+	}
+}

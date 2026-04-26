@@ -51,6 +51,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/spf13/cobra"
@@ -87,7 +88,25 @@ func init() {
 }
 
 func runAgentRun(cmd *cobra.Command, args []string) error {
+	// Capture wall-clock entry time so that the bwrap and sandbox-exec
+	// dispatch paths can emit `[timing]` markers symmetric to the podman
+	// path's sidecar-side instrumentation (see internal/sidecar/sidecar.go
+	// "from start" lines). All `[timing]` durations from agent-run are
+	// relative to this point, which is the closest analogue to the podman
+	// `sessionStart` marker (taken when sidecar Run() begins).
+	agentRunStart := time.Now()
+
 	sessionName, _ := cmd.Flags().GetString("session")
+
+	// Open the agent-run log file as early as possible so that pre-exec
+	// `[timing]` markers can be written to it and the failure point is
+	// locatable even when later setup fails (e.g. bwrap exec returns ENOENT).
+	// The log file is also tee-target for bwrap stderr further down; opening
+	// here means there is no second open call.
+	logFile := openAgentRunLog(sessionName)
+	if logFile != nil {
+		defer logFile.Close()
+	}
 
 	// Open the prism database to look up session state.
 	d, err := openDB()
@@ -118,7 +137,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		if runtime.GOOS != "darwin" {
 			return fmt.Errorf("prism agent-run: sandbox-exec isolation requires macOS (Darwin); current platform is %s", runtime.GOOS)
 		}
-		return runAgentRunSandboxExec(sessionName, status)
+		return runAgentRunSandboxExec(sessionName, status, agentRunStart, logFile)
 	default:
 		return fmt.Errorf("agent-run: session %q has isolation mode %q; this command is only for bwrap and sandbox-exec sessions", sessionName, isoMode)
 	}
@@ -195,39 +214,28 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Construct the Manager. PrepareBwrap will write temp files and build args.
 	m := container.New(ctrCfg)
 
+	// `[timing] pre-exec`: covers everything between agent-run entry and the
+	// start of bwrap-args assembly — DB lookup, config load, profile load,
+	// Manager construction. Symmetric to the podman path's `[timing] pre-Create`
+	// in internal/sidecar/sidecar.go.
+	logTimingTo(logFile, "pre-exec", time.Since(agentRunStart))
+
+	argsBuildStart := time.Now()
 	bwrapArgs, err := m.PrepareBwrap()
 	if err != nil {
 		return fmt.Errorf("agent-run: prepare bwrap args: %w", err)
 	}
+	// `[timing] bwrap-args build`: time spent assembling the bwrap argv plus
+	// writing the per-session SSH config / gitconfig / opencode.json temp files
+	// (PrepareBwrap does both). Analogous to `[timing] buildRunArgs` on the
+	// podman side. Emitted before the binary lookup and exec so that an
+	// exec-stage failure still leaves this marker in the agent-run log.
+	logTimingTo(logFile, "bwrap-args build", time.Since(argsBuildStart))
 
 	// Locate the bwrap binary.
 	bwrapBin, err := findBwrap()
 	if err != nil {
 		return fmt.Errorf("agent-run: %w", err)
-	}
-
-	// Open the per-session agent-run log file. The parent directory is the
-	// per-session run dir (run/<session>/), which also holds hostapi.sock.
-	// We create it here if it does not exist yet (it is normally pre-created
-	// by container.prepareVolumeDirs, but agent-run may run before that on
-	// some paths).
-	logPath, logPathErr := session.AgentRunLogPath(sessionName)
-	var logFile *os.File
-	if logPathErr != nil {
-		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot resolve agent-run log path: %v — continuing without log file\n", logPathErr)
-	} else {
-		if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
-			fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create log directory %s: %v — continuing without log file\n", filepath.Dir(logPath), mkErr)
-		} else {
-			var openErr error
-			logFile, openErr = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-			if openErr != nil {
-				fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot open agent-run log %s: %v — continuing without log file\n", logPath, openErr)
-			}
-		}
-	}
-	if logFile != nil {
-		defer logFile.Close()
 	}
 
 	// Build the bwrap command. argv[0] must be the binary path.
@@ -276,6 +284,17 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// controlling terminal); agent-run then forwards it to the bwrap process
 	// group via forwardSignalsToBwrap.
 	bwrapCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	// `[timing] bwrap exec`: total wall time from agent-run entry to the
+	// moment bwrap is started (fork+exec under exec.Cmd.Start). The phase
+	// name follows the AC text — we use exec.Cmd.Start rather than
+	// syscall.Exec because agent-run supervises the child for PTY/signal
+	// handling, but the wall-time semantic is identical: this is the point
+	// at which control passes to the bwrap binary. Sidecar-side markers
+	// (`[timing] opencode listening: <d> from start`) measure from sidecar
+	// spawn, not from this point, so the two timelines are independent —
+	// stitch them via wall-clock from each log to bound "exec → opencode up".
+	logTimingTo(logFile, "bwrap exec", time.Since(agentRunStart))
 
 	if err := bwrapCmd.Start(); err != nil {
 		return fmt.Errorf("agent-run: start bwrap: %w", err)
@@ -489,7 +508,12 @@ func validateSandboxExecArgs(args []string) error {
 //   - syscall.Exec("/usr/bin/sandbox-exec", args, env).
 //
 // PR 4 (#1018) replaces this with a supervised child + lifecycle hardening.
-func runAgentRunSandboxExec(sessionName string, status *db.Status) error {
+//
+// agentRunStart and logFile are passed through from runAgentRun so that the
+// sandbox-exec path can emit `[timing]` markers symmetric to the bwrap path
+// (#1052). All durations are relative to agentRunStart, which is the wall-clock
+// moment agent-run was invoked.
+func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart time.Time, logFile *os.File) error {
 	// Load prism config for git identity and SSH key names. Mirrors the
 	// bwrap path so future PRs in this design can extend the Manager.Config
 	// uniformly (staging HOME, credentials, caches in #1017).
@@ -549,10 +573,20 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status) error {
 
 	m := container.New(ctrCfg)
 
+	// `[timing] pre-exec`: covers DB lookup, config load, profile lookup,
+	// Manager construction. Symmetric to the bwrap path's pre-exec marker
+	// (see runAgentRun).
+	logTimingTo(logFile, "pre-exec", time.Since(agentRunStart))
+
+	argsBuildStart := time.Now()
 	args, err := m.PrepareSandboxExec()
 	if err != nil {
 		return fmt.Errorf("agent-run: prepare sandbox-exec args: %w", err)
 	}
+	// `[timing] sandbox-exec args build`: time spent writing the SBPL profile
+	// and assembling the sandbox-exec argv. Mirrors `[timing] bwrap-args build`
+	// on the bwrap path.
+	logTimingTo(logFile, "sandbox-exec args build", time.Since(argsBuildStart))
 
 	if err := validateSandboxExecArgs(args); err != nil {
 		return err
@@ -566,12 +600,72 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status) error {
 	// and friends land).
 	env := container.MinimalIsolatedExecEnv(os.Environ())
 
+	// `[timing] sandbox-exec exec`: total wall time from agent-run entry to
+	// the moment of syscall.Exec. Mirrors `[timing] bwrap exec` on the bwrap
+	// path. After this line, syscall.Exec replaces the process image — no
+	// further markers can be emitted here, downstream timing arrives via the
+	// sidecar log (`[timing] opencode listening: <d> from start`, etc.).
+	logTimingTo(logFile, "sandbox-exec exec", time.Since(agentRunStart))
+
 	const sandboxExecBinary = "/usr/bin/sandbox-exec"
 	if execErr := syscall.Exec(sandboxExecBinary, args, env); execErr != nil {
 		return fmt.Errorf("agent-run: exec %s: %w", sandboxExecBinary, execErr)
 	}
 	// Unreachable: syscall.Exec only returns on error.
 	return nil
+}
+
+// openAgentRunLog opens the per-session agent-run log file in append mode for
+// the bwrap and sandbox-exec dispatch paths. It encapsulates the resolve →
+// mkdir → open dance previously inlined in runAgentRun, and is reused by both
+// dispatch paths so they share a single log destination for `[timing]` markers
+// and bwrap stderr tee output.
+//
+// Returns nil on any failure (path-resolve, mkdir, open). All failures are
+// reported via stderr warnings — this function never returns an error so that
+// agent-run can continue running an isolated sandbox even when the host log
+// dir is unwritable. Callers must handle a nil return from this function
+// (logTimingTo also tolerates nil).
+//
+// The destination is normally `~/.local/state/prism/run/<session>/agent-run.log`
+// (see internal/session.AgentRunLogPath). The file is opened with O_APPEND so
+// repeated agent-run invocations across a single session preserve history.
+func openAgentRunLog(sessionName string) *os.File {
+	logPath, logPathErr := session.AgentRunLogPath(sessionName)
+	if logPathErr != nil {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot resolve agent-run log path: %v — continuing without log file\n", logPathErr)
+		return nil
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot create log directory %s: %v — continuing without log file\n", filepath.Dir(logPath), mkErr)
+		return nil
+	}
+	logFile, openErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if openErr != nil {
+		fmt.Fprintf(os.Stderr, "[agent-run] warning: cannot open agent-run log %s: %v — continuing without log file\n", logPath, openErr)
+		return nil
+	}
+	return logFile
+}
+
+// logTimingTo writes a single `[timing] <phase>: <duration>` line to both the
+// per-session agent-run log file (when non-nil) and stderr. The format matches
+// the podman side's `[timing]` markers (see internal/sidecar/sidecar.go and
+// internal/container/container.go) so the two timelines grep coherently:
+//
+//	grep '\[timing\]' ~/.local/state/prism/run/<session>/agent-run.log
+//	grep '\[timing\]' ~/.local/state/prism/logs/<session>-sidecar.log
+//
+// Durations are rounded to milliseconds for readability — sub-millisecond
+// noise on these phases is rarely actionable. Errors writing to the log file
+// are silently ignored; the stderr write is best-effort too. The intent is
+// instrumentation that never blocks or fails the launch path.
+func logTimingTo(logFile *os.File, phase string, d time.Duration) {
+	line := fmt.Sprintf("[timing] %s: %s\n", phase, d.Round(time.Millisecond))
+	_, _ = fmt.Fprint(os.Stderr, line)
+	if logFile != nil {
+		_, _ = logFile.WriteString(line)
+	}
 }
 
 // findBwrap locates the bwrap binary on PATH or in well-known Nix store paths.
