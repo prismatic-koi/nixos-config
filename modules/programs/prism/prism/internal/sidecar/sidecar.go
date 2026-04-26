@@ -42,6 +42,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
@@ -3098,6 +3099,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Model                string `json:"model"`
 			Variant              string `json:"variant"`
 			HostMode             bool   `json:"host_mode"`
+			Isolation            string `json:"isolation"`
 			Harness              string `json:"harness"`
 			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
 		}
@@ -3116,6 +3118,24 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Harness != "opencode" {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown harness %q: only 'opencode' is supported in this version of prism", req.Harness))
+			return
+		}
+		// Reject conflicting isolation flags at the API boundary so the error
+		// surfaces from the proxy (the spawned subprocess would also reject it,
+		// but doing it here avoids the round-trip and keeps the error close to
+		// the source). Mirrors the resolveIsolationMode rule in cmd/spawn.go.
+		if req.Isolation != "" && req.HostMode {
+			writeError(w, http.StatusBadRequest, "--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
+			return
+		}
+		// Validate isolation server-side as defence-in-depth (the client
+		// already validated, but a non-prism client could send anything).
+		if req.Isolation != "" && !config.IsValidIsolationMode(req.Isolation) {
+			valid := make([]string, len(config.ValidIsolationModes))
+			for i, m := range config.ValidIsolationModes {
+				valid[i] = string(m)
+			}
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown isolation mode %q; valid values: %s", req.Isolation, strings.Join(valid, ", ")))
 			return
 		}
 
@@ -3149,6 +3169,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.HostMode {
 			args = append(args, "--host-mode")
 		}
+		if req.Isolation != "" {
+			args = append(args, "--isolation", req.Isolation)
+		}
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")
 		}
@@ -3174,6 +3197,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.HostMode {
 			logArgs = append(logArgs, "--host-mode")
+		}
+		if req.Isolation != "" {
+			logArgs = append(logArgs, "--isolation", req.Isolation)
 		}
 		if req.IgnoreConcurrencyCap {
 			logArgs = append(logArgs, "--ignore-concurrency-cap")
