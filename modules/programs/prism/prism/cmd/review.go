@@ -82,6 +82,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
 	sizeBudgetFlag, _ := cmd.Flags().GetInt("size-budget")
 
+	// Validate harness BEFORE any session state is created.
+	if _, ok := harness.Lookup(harnessFlag); !ok {
+		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
+	}
+
 	// Resolve the full agent list and apply --only filtering up-front.
 	// This is done before the container-mode branch so that validation
 	// (empty CSV, unknown names) is consistent across both paths and no
@@ -205,8 +210,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// harness-specific check (for opencode: agent .md files in the agents
 	// directory). This keeps opencode-specific filesystem paths out of
 	// cmd/ and review/ packages.
-	// harnessFlag was already used to resolve allAgents above; it is a valid
-	// harness name if we reached this point. The error is unreachable.
+	// harnessFlag was validated via harness.Lookup above; the error is unreachable.
 	h, _ := harness.New(harnessFlag, "", nil, "", "")
 	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		return fmt.Errorf("prism review: %w", err)

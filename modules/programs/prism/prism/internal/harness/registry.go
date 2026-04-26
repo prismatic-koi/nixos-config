@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -120,7 +121,7 @@ type Registration struct {
 // sequentially so no lock is needed during registration itself, but
 // callers after init may run concurrently.
 var (
-	mu           sync.RWMutex
+	mu            sync.RWMutex
 	registrations = map[string]Registration{}
 )
 
@@ -247,13 +248,5 @@ func ShapeOf(name string) (TransportShape, bool) {
 // joinNames returns the sorted registered names as a comma-separated
 // string, for use in error messages.
 func joinNames() string {
-	names := Names()
-	result := ""
-	for i, n := range names {
-		if i > 0 {
-			result += ", "
-		}
-		result += n
-	}
-	return result
+	return strings.Join(Names(), ", ")
 }
