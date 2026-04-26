@@ -10,7 +10,7 @@
 
 ## 1. Context recap
 
-C.1 established the *input* side of the A/B story: a `spawn_inputs` table keyed on `instance_id` captures every flag value the user passed, plus thin JSON hooks for sibling Track C work (`outcome_summary`, `model_variant_overrides`, `skills_manifest_hash`, `prompt_template_hash`). C.1 deliberately deferred the outcome-side detail to this proposal — `sessions.outcome_summary` is a JSON column placeholder, marked as "C.3 owns this" in C.1 §4.6.
+C.1 established the *input* side of the A/B story: a `spawn_inputs` table keyed on `instance_id` captures every flag value the user passed, with thin JSON hooks for sibling Track C work (`model_variant_overrides`, `skills_manifest_hash`, `prompt_template_hash` on `spawn_inputs`; `outcome_summary` on `sessions`). C.1 deliberately deferred the outcome-side detail to this proposal — `sessions.outcome_summary` is a JSON column placeholder added via `ALTER TABLE sessions ADD COLUMN outcome_summary TEXT`, marked as "C.3 owns this" in C.1 §4.6.
 
 Today the only *outcome* signals prism captures per spawn are:
 
