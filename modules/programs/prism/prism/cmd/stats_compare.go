@@ -636,8 +636,7 @@ func renderSection(
 	fmt.Println(styleHeader.Render(title + ":"))
 	for _, row := range rows {
 		line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
-		for i, v := range row.Values {
-			_ = i
+		for _, v := range row.Values {
 			line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
 		}
 		if isPairwise {
