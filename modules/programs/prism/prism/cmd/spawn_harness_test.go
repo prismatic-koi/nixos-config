@@ -55,8 +55,8 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 	if !strings.Contains(err.Error(), `unknown harness "pi"`) {
 		t.Errorf("error %q does not contain expected text 'unknown harness \"pi\"'", err.Error())
 	}
-	if !strings.Contains(err.Error(), "only 'opencode' is supported") {
-		t.Errorf("error %q does not mention 'only 'opencode' is supported'", err.Error())
+	if !strings.Contains(err.Error(), "valid harnesses:") {
+		t.Errorf("error %q does not mention 'valid harnesses:'", err.Error())
 	}
 }
 

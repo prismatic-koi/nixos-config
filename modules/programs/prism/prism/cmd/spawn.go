@@ -31,7 +31,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -145,7 +146,7 @@ func init() {
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host; bypass container mode and run opencode directly in the tmux pane")
-	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use (currently only 'opencode' is supported)")
+	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(spawnCmd)
 }
@@ -247,9 +248,9 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 
 	// Validate harness BEFORE any session state is created (no worktree, no
-	// tmux session, no DB row). Only "opencode" is supported in this version.
-	if harnessFlag != "opencode" {
-		return fmt.Errorf("unknown harness %q: only 'opencode' is supported in this version of prism", harnessFlag)
+	// tmux session, no DB row).
+	if _, ok := harness.Lookup(harnessFlag); !ok {
+		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
 	}
 
 	promptFlag, err := resolvePrompt(cmd)
@@ -427,7 +428,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// These are populated from the harness adapter and threaded through
 	// SpawnOpts → Opts → buildDirectOpencodeCmd so that no
 	// opencode-specific string literals appear in the session package.
-	h := opencode.New("", nil, "", "")
+	// harnessFlag was already validated above, so the error is unreachable.
+	h, _ := harness.New(harnessFlag, "", nil, "", "")
 	spawnOpts := session.SpawnOpts{
 		SessionName:      sessionName,
 		Repo:             deriveRepo(worktreePath),

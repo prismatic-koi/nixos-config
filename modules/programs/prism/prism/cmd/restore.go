@@ -33,7 +33,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/db"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -294,7 +295,19 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	if s.HarnessSessionID != nil {
 		opencodeSession = *s.HarnessSessionID
 	}
-	restoreHarness := opencode.New("", nil, "", "")
+	// Resolve the harness name from the DB row. Fall back to "opencode" for
+	// pre-registry rows where the harness column is NULL.
+	restoreHarnessName := "opencode"
+	if s.Harness != nil && *s.Harness != "" {
+		restoreHarnessName = *s.Harness
+	}
+	// If the persisted harness is not registered (e.g. a future harness that
+	// was later uninstalled), fall back to the opencode adapter so that
+	// restore does not hard-fail on every row.
+	restoreHarness, restoreHarnessErr := harness.New(restoreHarnessName, "", nil, "", "")
+	if restoreHarnessErr != nil {
+		restoreHarness, _ = harness.New("opencode", "", nil, "", "")
+	}
 	opts := session.Opts{
 		Headless:         true,
 		OpencodeSession:  opencodeSession,

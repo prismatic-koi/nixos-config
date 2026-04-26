@@ -27,7 +27,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -204,7 +205,9 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// harness-specific check (for opencode: agent .md files in the agents
 	// directory). This keeps opencode-specific filesystem paths out of
 	// cmd/ and review/ packages.
-	h := opencode.New("", nil, "", "")
+	// harnessFlag was already used to resolve allAgents above; it is a valid
+	// harness name if we reached this point. The error is unreachable.
+	h, _ := harness.New(harnessFlag, "", nil, "", "")
 	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		return fmt.Errorf("prism review: %w", err)
 	}

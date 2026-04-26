@@ -251,6 +251,11 @@ type StartSidecarOpts struct {
 	// container. Set for review agent containers so they cannot modify the
 	// branch under review. Passed via --worktree-readonly to the sidecar.
 	WorktreeReadOnly bool
+	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// non-empty it is forwarded to the sidecar via --harness so the sidecar
+	// can call harness.ShapeOf to determine its own transport shape. When
+	// empty, the sidecar defaults to "opencode".
+	HarnessName string
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -354,6 +359,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	}
 	if opts.WorktreeReadOnly {
 		cmdArgs = append(cmdArgs, "--worktree-readonly")
+	}
+	if opts.HarnessName != "" {
+		cmdArgs = append(cmdArgs, "--harness", opts.HarnessName)
 	}
 
 	cmd := exec.Command(self, cmdArgs...)

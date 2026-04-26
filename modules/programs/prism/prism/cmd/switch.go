@@ -21,7 +21,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/git"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -1087,7 +1088,8 @@ var switchCmd = &cobra.Command{
 
 		// Populate harness-specific env var names from the adapter so that
 		// no opencode-specific string literals appear in session.go.
-		switchHarness := opencode.New("", nil, "", "")
+		// "opencode" is the only registered harness; fall back gracefully.
+		switchHarness, _ := harness.New("opencode", "", nil, "", "")
 		opts := session.Opts{
 			Fresh:            fresh,
 			ContainerMode:    effectiveContainerMode,
