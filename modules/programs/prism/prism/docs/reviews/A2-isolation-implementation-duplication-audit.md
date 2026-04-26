@@ -13,7 +13,7 @@ Source corpus:
   (the isolation-mode coupling map).
 - The three implementation files cover-to-cover:
   - `internal/container/bwrap.go` (734 LoC; `BuildArgs` at 488 LoC).
-  - `internal/container/sandbox_exec.go` (274 LoC; `BuildArgs` at 49 LoC).
+  - `internal/container/sandbox_exec.go` (274 LoC; `BuildArgs` at 29 LoC).
   - `internal/container/container.go` (1753 LoC; `buildRunArgs` at 555 LoC).
 - The parent design doc:
   `modules/programs/prism/prism/docs/reviews/000-design-narrow-review-series.md`
