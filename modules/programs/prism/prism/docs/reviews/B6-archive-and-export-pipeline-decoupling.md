@@ -225,10 +225,7 @@ remain centralised.
 // post-archive trace format.
 package harnessarchive
 
-import (
-    "context"
-    "time"
-)
+import "context"
 
 // SourceParams describes the session whose raw data is to be located
 // on disk. It is a strict subset of archive.Params, carrying only the
