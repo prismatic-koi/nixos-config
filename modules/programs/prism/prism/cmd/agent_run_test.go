@@ -289,22 +289,13 @@ func TestAgentRunLogFileCreation_LogDirCreated(t *testing.T) {
 
 // agentRunLogPathFromEnv is a thin helper for the test above: it calls the
 // session package to resolve the log path, exercising the same code path as
-// runAgentRun without requiring a real DB or bwrap binary.
+// runAgentRun without requiring a real DB or bwrap binary. Delegating to the
+// real session.AgentRunLogPath ensures this helper stays in sync with the
+// production scheme (e.g. the SessionDirName-based hashed directory from
+// #1050) — re-implementing the path construction here would silently mask
+// regressions in the production path layout.
 func agentRunLogPathFromEnv(sessionName string) (string, error) {
-	// Import the session package's AgentRunLogPath via the same import path
-	// used by agent_run.go — we call it indirectly through the package.
-	// Since we are in package cmd, we can call any unexported helpers here.
-	// The real path resolution uses session.AgentRunLogPath; exercise it via
-	// a direct path construction that mirrors what the session package does.
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		stateHome = home + "/.local/state"
-	}
-	return stateHome + "/prism/run/" + sessionName + "/agent-run.log", nil
+	return prismsession.AgentRunLogPath(sessionName)
 }
 
 // ── integration: tee captures process output in log file ─────────────────────
@@ -320,13 +311,20 @@ func agentRunLogPathFromEnv(sessionName string) (string, error) {
 // process (and its "pane") is gone.
 func TestAgentRunLog_TeeCapture(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
 
-	// Create the per-session log directory (mode 0700) and log file (mode 0600).
-	logDir := tmp + "/prism/run/myrepo@feat"
+	// Resolve the per-session log path via the same helper agent-run uses,
+	// so this test exercises the production path layout (hashed per-session
+	// directory after #1050) rather than re-asserting an old layout that no
+	// longer matches production.
+	logPath, err := prismsession.AgentRunLogPath("myrepo@feat")
+	if err != nil {
+		t.Fatalf("AgentRunLogPath: %v", err)
+	}
+	logDir := filepath.Dir(logPath)
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll log dir: %v", err)
 	}
-	logPath := logDir + "/agent-run.log"
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		t.Fatalf("open log file: %v", err)
