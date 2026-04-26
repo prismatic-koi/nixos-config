@@ -107,14 +107,18 @@ to redact would eliminate the repetition.
 ```
 // hostAPIHelpers groups the per-handler utility closures as a struct
 // so handlers can receive it by value rather than closing over multiple
-// separate variables.
+// separate variables. Fields are function-typed so they can be assigned
+// from the existing closure bodies.
+//
+// Note: an alternative shape is to promote these to methods on *Sidecar
+// (no struct needed) or to package-level helpers; see §6 open questions.
 type hostAPIHelpers struct {
-    writeJSON(w http.ResponseWriter, status int, v any)
-    writeError(w http.ResponseWriter, status int, msg string)
-    requirePost(w http.ResponseWriter, r *http.Request) bool
-    requireGet(w http.ResponseWriter, r *http.Request) bool
-    requireCoordinator(w http.ResponseWriter, operation string) bool
-    prismBinary() string
+    writeJSON          func(w http.ResponseWriter, status int, v any)
+    writeError         func(w http.ResponseWriter, status int, msg string)
+    requirePost        func(w http.ResponseWriter, r *http.Request) bool
+    requireGet         func(w http.ResponseWriter, r *http.Request) bool
+    requireCoordinator func(w http.ResponseWriter, operation string) bool
+    prismBinary        func() string
 }
 
 // registerSessionInspectionRoutes mounts /list-sessions, /checkin, /logs.
@@ -130,9 +134,13 @@ func (s *Sidecar) registerReviewRoute(mux *http.ServeMux, h hostAPIHelpers)
 func (s *Sidecar) registerMergeQueueRoutes(mux *http.ServeMux, h hostAPIHelpers)
 
 // buildCheckinTimeline assembles the merged event timeline for a /checkin
-// response when no explicit types filter is given.
+// response when no explicit types filter is given. The db parameter is
+// satisfied by *db.DB — the interface is a minimal subset for testability.
 func buildCheckinTimeline(
-    db interface{ QueryEvents(...); QueryEventsByMessageIDs(...) },
+    querier interface {
+        QueryEvents(sessionName string, limit int, before, after *string, types []string) ([]db.Event, error)
+        QueryEventsByMessageIDs(sessionName string, messageIDs []string, types []string) ([]db.Event, error)
+    },
     session string, limit int,
     beforePtr, afterPtr *string,
 ) ([]db.Event, error)
