@@ -12,7 +12,9 @@
 package tmux_test
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -977,5 +979,107 @@ func TestAPI_TwoClientsGlobalStampIsolation(t *testing.T) {
 	}
 	if gotB != "nixos-config@main" {
 		t.Errorf("clientB session = %q, want %q (should be unaffected)", gotB, "nixos-config@main")
+	}
+}
+
+// ─── run() error-format tests ─────────────────────────────────────────────────
+// These verify the diagnostic shape of errors returned when tmux exits
+// non-zero. They install a fake tmux that fails predictably and exercise the
+// public API (which routes through run()).
+//
+// These tests mutate TmuxBin via fakeTmux/spyTmux helpers, so they are
+// intentionally NOT parallel.
+
+// fakeTmux installs a fake tmux binary that writes the given string to stderr
+// and exits with the given code. Returns nothing — TmuxBin is restored via
+// t.Cleanup.
+func fakeTmux(t *testing.T, stderrMsg string, exitCode int) {
+	t.Helper()
+	wrapperPath := t.TempDir() + "/tmux"
+	// printf to stderr, then exit with the requested code.
+	script := "#!/bin/sh\nprintf '%s\\n' " + shellSingleQuote(stderrMsg) + " >&2\nexit " + itoa(exitCode) + "\n"
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+}
+
+// shellSingleQuote single-quotes s for safe inclusion in a /bin/sh script.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// itoa avoids pulling strconv into the test file's import block for one digit.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+// TestRunError_IncludesArgvAndStderr verifies that when tmux exits non-zero,
+// the error returned by a public helper that goes through run() contains both
+// the tmux subcommand name and a substring derived from tmux's stderr.
+//
+// This is the core diagnostic regression test for issue #1054.
+func TestRunError_IncludesArgvAndStderr(t *testing.T) {
+	const stderrMsg = "can't find session: bogus-session"
+	fakeTmux(t, stderrMsg, 1)
+
+	err := tmux.KillSession("bogus-session")
+	if err == nil {
+		t.Fatal("KillSession returned nil error; expected failure from fake tmux")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "kill-session") {
+		t.Errorf("error %q does not contain tmux subcommand name 'kill-session'", msg)
+	}
+	if !strings.Contains(msg, stderrMsg) {
+		t.Errorf("error %q does not contain stderr substring %q", msg, stderrMsg)
+	}
+	// The wrapped exec error must still be unwrappable to *exec.ExitError.
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("error %q does not unwrap to *exec.ExitError", msg)
+	}
+}
+
+// TestRunError_EmptyStderrDegradesGracefully verifies the edge case where tmux
+// exits non-zero but writes nothing to stderr. The error must still carry the
+// argv and the wrapped exec error — no panic, no empty error string.
+func TestRunError_EmptyStderrDegradesGracefully(t *testing.T) {
+	fakeTmux(t, "", 2)
+
+	err := tmux.KillSession("anything")
+	if err == nil {
+		t.Fatal("KillSession returned nil error; expected failure from fake tmux")
+	}
+	msg := err.Error()
+	if msg == "" {
+		t.Fatal("error string is empty; expected argv + wrapped exec error")
+	}
+	if !strings.Contains(msg, "kill-session") {
+		t.Errorf("error %q does not contain 'kill-session' (argv missing)", msg)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Errorf("error %q does not unwrap to *exec.ExitError", msg)
 	}
 }
