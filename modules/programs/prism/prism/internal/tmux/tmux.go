@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,11 +26,23 @@ type Session struct {
 	ClientCount int    // number of tmux clients currently attached
 }
 
-// run executes a tmux command and returns trimmed stdout.
+// run executes a tmux command and returns trimmed stdout. On failure, the
+// returned error wraps the original *exec.ExitError (or other exec error) and
+// includes the full tmux argv plus the trimmed contents of tmux's stderr.
+// tmux writes its actual diagnostic ("can't find session", "duplicate session",
+// "index in use", etc.) on stderr, so capturing it is essential — without it
+// every failure surfaces as a context-free "exit status 1".
+//
+// Edge case: if tmux exits non-zero with no stderr output, the error still
+// carries the argv and the wrapped exec error; the trailing ": " is followed
+// by an empty string rather than a nil deref.
 func run(args ...string) (string, error) {
-	out, err := exec.Command(TmuxBin, args...).Output()
+	var stderr bytes.Buffer
+	cmd := exec.Command(TmuxBin, args...)
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
