@@ -658,6 +658,15 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			startupErr := fmt.Errorf("bwrap harness for %s never bound to %s within %v",
 				s.cfg.SessionName, url, startupTimeout)
 			log.Printf("sidecar: startup-connect timeout fired: %v", startupErr)
+			// Emit a `[timing] opencode listening` line recording the timeout
+			// duration so the grep-the-log workflow yields a coherent timeline
+			// even on the failure path (#1052 AC: "When opencode never reaches
+			// the listening state and the sidecar times out, the timing line
+			// emitted records the timeout duration, not silence."). The
+			// "(timed out)" suffix distinguishes failure from a real listening
+			// marker without changing the leading prefix that grep targets.
+			log.Printf("[timing] opencode listening: %s from start (timed out)",
+				time.Since(s.spawnTime).Round(time.Millisecond))
 			s.writeStartupError(startupErr)
 			// writeStartupError notifies the parent worker for review-agent sessions.
 			// For non-review-agent (worker) sessions, also notify the coordinator so
@@ -694,8 +703,36 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	// Gap 1b: log the first event received from opencode (once per session).
 	if !s.firstEventLogged {
 		s.firstEventLogged = true
-		elapsed := time.Since(s.spawnTime)
-		log.Printf("sidecar: first event received from opencode (%s after spawn)", elapsed.Round(time.Millisecond))
+		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
+		log.Printf("sidecar: first event received from opencode (%s after spawn)", elapsed)
+
+		// Bwrap path `[timing]` markers (#1052). The podman path emits these
+		// from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
+		// mode opencode is launched by the tmux pane (via prism agent-run)
+		// and the sidecar's only signal of readiness is the first SSE event,
+		// so the markers are emitted here.
+		//
+		//   - opencode listening: equivalent to the podman WaitHealthy ok
+		//     marker — opencode's HTTP endpoint is reachable, since SSE has
+		//     successfully connected and delivered an event.
+		//   - ready: the sidecar is processing events. In bwrap there is no
+		//     CreateSession step (opencode is started with --prompt by
+		//     agent-run, so the session pre-exists), which means listening
+		//     and ready coincide. Both lines are still emitted so the bwrap
+		//     and podman timelines have the same shape for grepping.
+		//   - prompt delivered: when InitialPrompt is non-empty, the prompt
+		//     was supplied to opencode via --prompt at agent-run time. From
+		//     the sidecar's POV "delivered" is observable when opencode
+		//     starts emitting events — the prompt is in flight by then.
+		//     Emitted at the same moment for symmetry with the podman line
+		//     at sidecar.go:489.
+		if s.cfg.Container == nil {
+			log.Printf("[timing] opencode listening: %s from start", elapsed)
+			log.Printf("[timing] ready: %s from start", elapsed)
+			if s.cfg.InitialPrompt != "" {
+				log.Printf("[timing] prompt delivered: %s from start", elapsed)
+			}
+		}
 	}
 
 	switch eventType {
