@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
 
 // bwrapIsolator implements Isolator using bubblewrap (bwrap). It satisfies the
@@ -43,6 +45,30 @@ type bwrapIsolator struct {
 // session name. The returned value satisfies the Isolator interface.
 func newBwrapIsolator(name string) Isolator {
 	return &bwrapIsolator{name: name}
+}
+
+// Name returns config.IsolationBwrap — the registry key for this isolator.
+func (b *bwrapIsolator) Name() config.IsolationMode {
+	return config.IsolationBwrap
+}
+
+// Capabilities returns the bwrap feature flags:
+//   - NeedsConfigBlob: config blob must be written to disk before agent-run.
+//   - NeedsHostAPISocket: the sidecar binds the host-API socket for in-sandbox proxy calls.
+//   - RestartOnExit: the sidecar restart-loop fires to relaunch agent-run on exit.
+//   - NeedsStartupConnectTimeout: bwrap-specific startup-connect timeout in the sidecar.
+func (b *bwrapIsolator) Capabilities() Capabilities {
+	return Capabilities{
+		IsContainer:                false,
+		OwnsContainerLifecycle:     false,
+		NeedsConfigBlob:            true,
+		NeedsHostAPISocket:         true,
+		UsesContainerHarness:       false,
+		RestartOnExit:              true,
+		NeedsStartupConnectTimeout: true,
+		NeedsReadinessWait:         false,
+		EmitsTmuxStatusColumns:     false,
+	}
 }
 
 // BuildRunArgs satisfies the Isolator interface. It returns nil because the
@@ -731,4 +757,10 @@ func (b *bwrapIsolator) HasExited() (bool, int) {
 // for bwrap (stdout/stderr are forwarded live to the sidecar log during Run).
 func (b *bwrapIsolator) DumpLogs() {
 	log.Printf("container: bwrap %q: live output was forwarded to sidecar stderr during Run", b.name)
+}
+
+func init() {
+	MustRegister(config.IsolationBwrap, func(opts ConstructorOpts) Isolator {
+		return newBwrapIsolator(opts.Name)
+	})
 }

@@ -12,12 +12,73 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
+
+// Capabilities is a flat struct of per-mode feature flags consulted by callers
+// that today branch on the literal isolation mode value. A single
+// iso.Capabilities() call is cheaper and more readable than a long parade of
+// yes/no methods on the interface.
+//
+// Each flag is cited with the call sites that would collapse to a capability
+// query after the per-phase migrations in A.1's §7.
+type Capabilities struct {
+	// IsContainer replaces (isoMode == IsolationPodman) tests outside the
+	// package. True only for podmanIsolator.
+	// Cites: cmd/spawn.go:275, cmd/switch.go:1069, cmd/pr.go:77.
+	IsContainer bool
+
+	// OwnsContainerLifecycle means the sidecar creates, stops, and removes
+	// the container. True only for podmanIsolator.
+	// Cites: internal/sidecar/sidecar.go:153-183 (s.cfg.Container == nil branch).
+	OwnsContainerLifecycle bool
+
+	// NeedsConfigBlob means the harness config blob must be supplied via
+	// env-var or on-disk file before the process starts. True for podman,
+	// bwrap, and sandbox-exec; false for host.
+	// Cites: cmd/spawn.go:311-357, cmd/switch.go:1069-1108,
+	//        cmd/restore.go:269-292, cmd/pr.go:77-170,
+	//        internal/review/review.go:1230.
+	NeedsConfigBlob bool
+
+	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
+	// this mode. True for bwrap and sandbox-exec; false for podman and host.
+	// Cites: internal/sidecar/sidecar.go:512-547; cmd/sidecar.go:233-249.
+	NeedsHostAPISocket bool
+
+	// UsesContainerHarness means the harness adapter is constructed in
+	// container mode (podman) vs host mode (bwrap, sandbox-exec, host).
+	// Cites: cmd/sidecar.go:288-301.
+	UsesContainerHarness bool
+
+	// RestartOnExit means the sidecar restart-loop goroutine is started for
+	// this mode. True for podman and bwrap; false for sandbox-exec and host.
+	// Cites: cmd/sidecar.go:348.
+	RestartOnExit bool
+
+	// NeedsStartupConnectTimeout means the sidecar's startup-connect timeout
+	// fires for this mode. True for bwrap; false for all others.
+	// Cites: internal/sidecar/sidecar.go:638-680.
+	NeedsStartupConnectTimeout bool
+
+	// NeedsReadinessWait means the agent-pane command should be prefixed by
+	// the readiness-wait shell command. True for podman; false for others.
+	// Cites: internal/session/session.go:539-547.
+	NeedsReadinessWait bool
+
+	// EmitsTmuxStatusColumns means the tmux event hooks should seed
+	// isolation-specific status columns for sessions in this mode. True for
+	// podman; false for bwrap, sandbox-exec, and host.
+	// Cites: cmd/event.go (per §6.22 flat appendix).
+	EmitsTmuxStatusColumns bool
+}
 
 // Isolator is the interface that wraps the isolation-specific operations needed
 // by Manager to create and manage an agent session container.
 //
 // An Isolator is responsible for:
+//   - Reporting its identity (Name, Capabilities).
 //   - Building the argument list for launching the isolated process.
 //   - Executing the launch command.
 //   - Shutting down the isolated process cleanly.
@@ -28,6 +89,16 @@ import (
 // exclusively — no direct exec.CommandContext("podman", ...) calls remain in
 // container.go after this interface is in place.
 type Isolator interface {
+	// Name returns the canonical mode name as persisted in the database and
+	// accepted by --isolation. The value is the IsolationRegistry key.
+	// Cites: internal/config/config.go:18-43 (the IsolationMode constants).
+	Name() config.IsolationMode
+
+	// Capabilities returns the per-mode feature flags consulted by callers
+	// that today branch on the literal mode value. See the Capabilities struct
+	// above for the full set of flags and their citations.
+	Capabilities() Capabilities
+
 	// BuildRunArgs returns the complete argument list for launching the isolated
 	// session process (e.g. all arguments after the "podman" binary for a
 	// podman run invocation). The returned slice must not be modified by the
@@ -65,6 +136,32 @@ type podmanIsolator struct {
 // container with the given stable container name.
 func newPodmanIsolator(name string) Isolator {
 	return &podmanIsolator{name: name}
+}
+
+// Name returns config.IsolationPodman — the registry key for this isolator.
+func (p *podmanIsolator) Name() config.IsolationMode {
+	return config.IsolationPodman
+}
+
+// Capabilities returns the podman feature flags:
+//   - IsContainer + OwnsContainerLifecycle: the sidecar manages a real container.
+//   - NeedsConfigBlob: config blob is injected as an env var into the container.
+//   - UsesContainerHarness: the harness adapter is built in container mode.
+//   - RestartOnExit: the sidecar restart-loop fires to keep the container alive.
+//   - NeedsReadinessWait: the agent pane waits for the container HTTP endpoint.
+//   - EmitsTmuxStatusColumns: podman sessions seed the tmux status columns.
+func (p *podmanIsolator) Capabilities() Capabilities {
+	return Capabilities{
+		IsContainer:            true,
+		OwnsContainerLifecycle: true,
+		NeedsConfigBlob:        true,
+		NeedsHostAPISocket:     false,
+		UsesContainerHarness:   true,
+		RestartOnExit:          true,
+		NeedsStartupConnectTimeout: false,
+		NeedsReadinessWait:     true,
+		EmitsTmuxStatusColumns: true,
+	}
 }
 
 // BuildRunArgs returns the argument list for "podman run …" built by the
@@ -155,4 +252,10 @@ func (p *podmanIsolator) DumpLogs() {
 		return
 	}
 	log.Printf("container: logs for %q:\n%s", p.name, string(out))
+}
+
+func init() {
+	MustRegister(config.IsolationPodman, func(opts ConstructorOpts) Isolator {
+		return newPodmanIsolator(opts.Name)
+	})
 }

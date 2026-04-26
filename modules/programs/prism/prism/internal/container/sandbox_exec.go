@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
 
 // sandboxExecIsolator implements Isolator using Apple's sandbox-exec. It
@@ -50,6 +52,30 @@ type sandboxExecIsolator struct {
 // interface.
 func newSandboxExecIsolator(name string) Isolator {
 	return &sandboxExecIsolator{name: name}
+}
+
+// Name returns config.IsolationSandboxExec — the registry key for this isolator.
+func (s *sandboxExecIsolator) Name() config.IsolationMode {
+	return config.IsolationSandboxExec
+}
+
+// Capabilities returns the sandbox-exec feature flags:
+//   - NeedsConfigBlob: config blob is injected as an env var before agent-run.
+//   - NeedsHostAPISocket: the sidecar binds the host-API socket for in-sandbox proxy calls.
+//   - RestartOnExit is false: sandbox-exec replaces the agent-run process via
+//     syscall.Exec, so the sidecar does not observe process exit to restart.
+func (s *sandboxExecIsolator) Capabilities() Capabilities {
+	return Capabilities{
+		IsContainer:                false,
+		OwnsContainerLifecycle:     false,
+		NeedsConfigBlob:            true,
+		NeedsHostAPISocket:         true,
+		UsesContainerHarness:       false,
+		RestartOnExit:              false,
+		NeedsStartupConnectTimeout: false,
+		NeedsReadinessWait:         false,
+		EmitsTmuxStatusColumns:     false,
+	}
 }
 
 // BuildRunArgs satisfies the Isolator interface. It returns nil because the
@@ -223,6 +249,12 @@ func (s *sandboxExecIsolator) HasExited() (bool, int) {
 // production flow).
 func (s *sandboxExecIsolator) DumpLogs() {
 	log.Printf("container: sandbox-exec %q: live output is forwarded via the inherited terminal during syscall.Exec", s.name)
+}
+
+func init() {
+	MustRegister(config.IsolationSandboxExec, func(opts ConstructorOpts) Isolator {
+		return newSandboxExecIsolator(opts.Name)
+	})
 }
 
 // MinimalIsolatedExecEnv filters a hostEnv slice (K=V pairs, as returned by
