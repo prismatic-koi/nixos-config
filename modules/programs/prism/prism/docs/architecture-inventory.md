@@ -2457,7 +2457,7 @@ This section records the methodology used to build the inventory so a future reg
 - Total `.go` files: 154 (80 source + 74 test).
 - Total `.go` LoC: 93999 (37257 source + 56742 test).
 - `exec.Command` / `exec.CommandContext` invocations in non-test source: 82.
-- `func Test*` declarations across all packages: 1653 (sum of section 12 column; corrected per #1076 — previously reported as 1390 because eleven single-`_test.go`-file packages summed to 0 under the buggy regen recipe).
+- `func Test*` declarations across all packages: 1524 (literal sum of the §12 column as it stands; corrected per #1076 — previously reported as 1390 because eleven single-`_test.go`-file packages summed to 0 under the buggy regen recipe). Note: a fresh full re-run of the corrected §14.2 step-12 recipe will produce a slightly higher number than this column-sum total because two pre-existing rows (`internal/session`, `internal/sidecar`) have drifted from `rg` ground truth since the inventory was first generated; reconciling those rows is out of scope for #1076 and should be folded into the next full regeneration.
 - `t.Skip*` calls in `_test.go`: 39 (sum of section 12 column).
 - `//nolint` directives: 3 in source, 26 in tests.
 - Files >= 500 LoC: 21.
