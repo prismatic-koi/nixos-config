@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=22 (all migrations applied on Open).
+	// Verify schema_version=23 (all migrations applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version: got %d, want 23", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -1018,8 +1018,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1093,8 +1093,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1594,8 +1594,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1660,8 +1660,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1730,8 +1730,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1825,8 +1825,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1918,8 +1918,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2502,8 +2502,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2591,20 +2591,21 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
-	// isolation_mode column must exist (NULL for pre-migration rows).
-	var isoMode *string
+	// isolation_mode column must exist and be backfilled by v22→v23.
+	// The seeded row has host_mode=0 (default), so isolation_mode becomes 'podman'.
+	var isoMode string
 	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'repo@main'").Scan(&isoMode); err != nil {
 		t.Fatalf("query isolation_mode column after migration: %v", err)
 	}
-	if isoMode != nil {
-		t.Errorf("isolation_mode for migrated row: got %q, want nil", *isoMode)
+	if isoMode != "podman" {
+		t.Errorf("isolation_mode for migrated row: got %q, want %q (backfilled by v22→v23)", isoMode, "podman")
 	}
 
-	// Existing row must still be present and unmodified.
+	// Existing row must still be present and unmodified (other fields).
 	s, err := d.CurrentStatus("repo@main")
 	if err != nil {
 		t.Fatalf("CurrentStatus after migration: %v", err)
@@ -2615,11 +2616,12 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if s.State != "active" {
 		t.Errorf("State preserved: got %q, want \"active\"", s.State)
 	}
-	// IsolationMode for pre-migration rows must be "".
-	if s.IsolationMode != "" {
-		t.Errorf("IsolationMode: got %q, want \"\" (NULL → empty)", s.IsolationMode)
+	// IsolationMode for pre-v10 rows is backfilled to 'podman' by v22→v23
+	// (host_mode=0 default → 'podman').
+	if s.IsolationMode != "podman" {
+		t.Errorf("IsolationMode: got %q, want %q (backfilled by v22→v23)", s.IsolationMode, "podman")
 	}
-	// EffectiveIsolationMode with HostMode=false falls back to "podman".
+	// EffectiveIsolationMode returns 'podman' (now from the populated field).
 	if s.EffectiveIsolationMode() != "podman" {
 		t.Errorf("EffectiveIsolationMode: got %q, want %q", s.EffectiveIsolationMode(), "podman")
 	}
@@ -4194,8 +4196,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// Check each row.
@@ -4622,8 +4624,8 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4897,8 +4899,8 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -5118,8 +5120,8 @@ func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// sessions table must exist.
@@ -5272,8 +5274,8 @@ func TestMigration_V15ToV16_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after second open: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after second open: got %d, want 23", version)
 	}
 }
 
@@ -5821,13 +5823,13 @@ func TestMigration_V17ToV18_BackfillsStartedAt(t *testing.T) {
 	}
 	defer d.Close()
 
-	// Schema version must advance to 22 (v17→v18 backfill + v18→v19 pending_merges + v19→v20 index + v20→v21 harness_session_id backfill + v21→v22 zero started_at backfill).
+	// Schema version must advance to 23 (v17→v18 backfill + v18→v19 pending_merges + v19→v20 index + v20→v21 harness_session_id backfill + v21→v22 zero started_at backfill + v22→v23 isolation_mode backfill).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// iid-has-events: started_at must be updated to 1600000000000 (min event ts).
@@ -5884,8 +5886,8 @@ func TestMigration_V17ToV18_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after second open: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after second open: got %d, want 23", version)
 	}
 
 	// iid-has-events should still have the corrected timestamp.
@@ -6186,8 +6188,8 @@ func TestMigration_V20ToV21_BackfillsHarnessSessionID(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// iid-with-sid: harness_session_id must have been backfilled.
@@ -6248,8 +6250,8 @@ func TestMigration_V20ToV21_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after second open: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after second open: got %d, want 23", version)
 	}
 
 	// iid-with-sid must still have the backfilled value.
@@ -6407,8 +6409,8 @@ func TestMigration_V21ToV22_BackfillsZeroStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after migration: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
 	}
 
 	// iid-zero-has-events: started_at must be updated to the minimum event ts.
@@ -6461,8 +6463,8 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 22 {
-		t.Errorf("schema_version after second open: got %d, want 22", version)
+	if version != 23 {
+		t.Errorf("schema_version after second open: got %d, want 23", version)
 	}
 
 	var startedAt int64
@@ -6471,5 +6473,249 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	}
 	if startedAt != 1650000000000 {
 		t.Errorf("started_at after idempotent run: got %d, want 1650000000000", startedAt)
+	}
+}
+
+// ── Migration v22→v23 (backfill isolation_mode for pre-v10 NULL rows, #1129) ─
+
+// seedV22DB creates a raw SQLite database seeded at schema_version=22.
+// It contains four agent_status rows:
+//   - 'host-null':   host_mode=1, isolation_mode NULL  → must become 'host'
+//   - 'podman-null': host_mode=0, isolation_mode NULL  → must become 'podman'
+//   - 'already-set': host_mode=0, isolation_mode='bwrap' → must not change
+//   - 'host-set':    host_mode=1, isolation_mode='host'  → must not change
+func seedV22DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v22 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
+
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY,
+		  repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL,
+		  state TEXT NOT NULL,
+		  title TEXT,
+		  agent_name TEXT,
+		  model_id TEXT,
+		  root_agent_name TEXT,
+		  root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT,
+		  last_seen INTEGER NOT NULL,
+		  ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness_session_id TEXT,
+		  harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC);
+
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr              INTEGER PRIMARY KEY,
+		  session_name    TEXT NOT NULL,
+		  instance_id     TEXT NOT NULL,
+		  queue_position  INTEGER NOT NULL,
+		  status          TEXT NOT NULL,
+		  title           TEXT,
+		  error           TEXT,
+		  queued_at       INTEGER NOT NULL,
+		  last_checked_at INTEGER,
+		  merged_at       INTEGER,
+		  ended_at        INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
+		CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(session_name, status, queue_position);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (22);
+
+		-- host_mode=1, isolation_mode NULL → migration must set 'host'.
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('host-null', 'repo', '/wt', 'ended', 1, NULL, 1000, 1001);
+
+		-- host_mode=0, isolation_mode NULL → migration must set 'podman'.
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('podman-null', 'repo2', '/wt', 'ended', 0, NULL, 1000, 1001);
+
+		-- isolation_mode already set to 'bwrap' → must not change.
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('already-set', 'repo3', '/wt', 'ended', 0, 'bwrap', 1000, 1001);
+
+		-- host_mode=1 but isolation_mode already set to 'host' → must not change.
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('host-set', 'repo4', '/wt', 'ended', 1, 'host', 1000, 1001);
+	`)
+	if err != nil {
+		t.Fatalf("seed v22 db: %v", err)
+	}
+}
+
+// TestMigration_V22ToV23_BackfillsIsolationMode verifies that the v22→v23
+// migration populates isolation_mode for NULL rows using host_mode as the
+// discriminator (host_mode=1 → 'host', else → 'podman'), and leaves rows
+// that already have isolation_mode set unchanged.
+func TestMigration_V22ToV23_BackfillsIsolationMode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v22_backfill_isolation.db")
+	seedV22DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v22 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 23 {
+		t.Errorf("schema_version after migration: got %d, want 23", version)
+	}
+
+	// host-null: host_mode=1, was NULL → must now be 'host'.
+	var isoHostNull string
+	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'host-null'").Scan(&isoHostNull); err != nil {
+		t.Fatalf("query host-null: %v", err)
+	}
+	if isoHostNull != "host" {
+		t.Errorf("host-null isolation_mode: got %q, want %q", isoHostNull, "host")
+	}
+
+	// podman-null: host_mode=0, was NULL → must now be 'podman'.
+	var isoPodmanNull string
+	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'podman-null'").Scan(&isoPodmanNull); err != nil {
+		t.Fatalf("query podman-null: %v", err)
+	}
+	if isoPodmanNull != "podman" {
+		t.Errorf("podman-null isolation_mode: got %q, want %q", isoPodmanNull, "podman")
+	}
+
+	// already-set: was 'bwrap' → must remain 'bwrap'.
+	var isoAlreadySet string
+	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'already-set'").Scan(&isoAlreadySet); err != nil {
+		t.Fatalf("query already-set: %v", err)
+	}
+	if isoAlreadySet != "bwrap" {
+		t.Errorf("already-set isolation_mode: got %q, want %q (must not change)", isoAlreadySet, "bwrap")
+	}
+
+	// host-set: host_mode=1 but was already 'host' → must remain 'host'.
+	var isoHostSet string
+	if err := d.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'host-set'").Scan(&isoHostSet); err != nil {
+		t.Fatalf("query host-set: %v", err)
+	}
+	if isoHostSet != "host" {
+		t.Errorf("host-set isolation_mode: got %q, want %q (must not change)", isoHostSet, "host")
+	}
+
+	// No NULL rows must remain.
+	var nullCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM agent_status WHERE isolation_mode IS NULL").Scan(&nullCount); err != nil {
+		t.Fatalf("count NULL isolation_mode rows: %v", err)
+	}
+	if nullCount != 0 {
+		t.Errorf("isolation_mode NULL rows after migration: got %d, want 0", nullCount)
+	}
+}
+
+// TestMigration_V22ToV23_Idempotent verifies that opening a DB already at v23
+// is a no-op for the isolation_mode backfill: a second open must not return an
+// error and the isolation_mode values must remain correct.
+func TestMigration_V22ToV23_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v22_isolation_idem.db")
+	seedV22DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 23 {
+		t.Errorf("schema_version after second open: got %d, want 23", version)
+	}
+
+	// Values must be stable after a second open.
+	var isoHostNull string
+	if err := d2.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'host-null'").Scan(&isoHostNull); err != nil {
+		t.Fatalf("query host-null on second open: %v", err)
+	}
+	if isoHostNull != "host" {
+		t.Errorf("host-null isolation_mode after idempotent run: got %q, want %q", isoHostNull, "host")
+	}
+
+	var isoPodmanNull string
+	if err := d2.QueryRow("SELECT isolation_mode FROM agent_status WHERE session_name = 'podman-null'").Scan(&isoPodmanNull); err != nil {
+		t.Fatalf("query podman-null on second open: %v", err)
+	}
+	if isoPodmanNull != "podman" {
+		t.Errorf("podman-null isolation_mode after idempotent run: got %q, want %q", isoPodmanNull, "podman")
+	}
+
+	var nullCount int
+	if err := d2.QueryRow("SELECT COUNT(*) FROM agent_status WHERE isolation_mode IS NULL").Scan(&nullCount); err != nil {
+		t.Fatalf("count NULL isolation_mode rows on second open: %v", err)
+	}
+	if nullCount != 0 {
+		t.Errorf("isolation_mode NULL rows after idempotent run: got %d, want 0", nullCount)
 	}
 }

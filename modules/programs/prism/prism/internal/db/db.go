@@ -297,6 +297,13 @@ CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(
 // "00010101T000000Z_" archive directory names (#1127). Recovery strategy is
 // the same: set started_at = MIN(agent_events.created_at) for the matching
 // instance_id. Idempotent: rows with started_at > 0 are skipped.
+// v22→v23 is a one-shot backfill that populates agent_status.isolation_mode
+// for every row where it is currently NULL (pre-v10 archived rows that were
+// added before the column existed). The value mirrors the runtime fallback in
+// (db.Status).EffectiveIsolationMode(): host_mode=1 → 'host', otherwise →
+// 'podman'. The WHERE clause makes the migration idempotent: rows already set
+// are skipped on any subsequent open. This is the Phase A prerequisite for the
+// A4 deprecation-removal sequence (#1129).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -341,7 +348,7 @@ func Open(path string) (*DB, error) {
 	// Set schema_version=11 if the table is empty. Fresh databases have all
 	// current columns from the schema above (including pending_merges and the
 	// new idx_pending_merges_status_session index). The v11→v12 through
-	// v21→v22 migrations run immediately below; on a fresh DB they are all
+	// v22→v23 migrations run immediately below; on a fresh DB they are all
 	// effectively no-ops (indexes already exist, no rows to backfill, columns
 	// already named correctly, sessions and pending_merges tables already
 	// present from the declarative schema block), so starting at 11 is safe.
@@ -1077,6 +1084,26 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v21→v22: bump version: %w", err)
 		}
 		version = 22
+	}
+	if version == 22 {
+		// Migration v22 → v23: backfill isolation_mode for pre-v10 rows.
+		// Rows inserted before v9→v10 landed (the migration that added the
+		// isolation_mode column as NULLABLE) have isolation_mode IS NULL.
+		// The CASE expression mirrors the runtime fallback in
+		// (db.Status).EffectiveIsolationMode(): host_mode=1 → 'host', else →
+		// 'podman'. The WHERE clause skips rows already set, making the
+		// migration idempotent. Fresh databases have no rows so this is a
+		// no-op. (#1129)
+		_, err = conn.Exec(`UPDATE agent_status SET isolation_mode = CASE WHEN host_mode = 1 THEN 'host' ELSE 'podman' END WHERE isolation_mode IS NULL`)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v22→v23: %w", err)
+		}
+		if _, err := conn.Exec("UPDATE schema_version SET version = 23"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v22→v23: bump version: %w", err)
+		}
+		version = 23
 	}
 
 	return &DB{conn: conn, path: path}, nil
