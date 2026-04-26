@@ -242,6 +242,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
 				}
+				if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
+					fmt.Fprintf(os.Stderr, "[prism] doCleanup: write spawn outcome: %v\n", outcomeErr)
+				}
 				// Archive the session storage after recording the end state.
 				if archiveErr := runSessionArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
 					if errors.Is(archiveErr, archive.ErrAlreadyExists) {
@@ -521,6 +524,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
+			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: write spawn outcome: %v\n", outcomeErr)
+			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
@@ -580,6 +586,9 @@ func closeSession(session string) error {
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
+			}
+			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] closeSession: write spawn outcome: %v\n", outcomeErr)
 			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
@@ -652,6 +661,9 @@ func headlessCloseSession(session string) error {
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
+			}
+			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: write spawn outcome: %v\n", outcomeErr)
 			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
