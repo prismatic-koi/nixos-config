@@ -1,8 +1,10 @@
 # A.2 — bwrap / sandbox-exec / podman implementation duplication audit
 
 Status: proposal (no code changes).
-Issue: #1077.
+Issue: #1077. Refs design issue #1072.
 Track: A (isolation), Wave 2 follow-up to A.1.
+Sibling tracks (deferred — out of A.2 scope): A.3 concurrency cap (#1078,
+in flight at PR #1099); A.4 deprecation surface (#1079).
 Source corpus:
 
 - `modules/programs/prism/prism/docs/reviews/A1-isolation-registry-shape.md`
@@ -11,10 +13,11 @@ Source corpus:
   (the isolation-mode coupling map).
 - The three implementation files cover-to-cover:
   - `internal/container/bwrap.go` (734 LoC; `BuildArgs` at 488 LoC).
-  - `internal/container/sandbox_exec.go` (240 LoC).
+  - `internal/container/sandbox_exec.go` (274 LoC; `BuildArgs` at 49 LoC).
   - `internal/container/container.go` (1753 LoC; `buildRunArgs` at 555 LoC).
 - The parent design doc:
-  `modules/programs/prism/prism/docs/reviews/000-design-narrow-review-series.md`.
+  `modules/programs/prism/prism/docs/reviews/000-design-narrow-review-series.md`
+  (issue #1072).
 
 ## 1. Context and method
 
@@ -157,7 +160,12 @@ type MountSpec struct {
 // StandardSandboxMounts returns the canonical mount set for a given session
 // configuration, agnostic of isolation mode. The caller (each Isolator) walks
 // the slice and emits the per-mode syntax via its own appender.
-func StandardSandboxMounts(cfg Config, sandboxHome string, isReview bool) []MountSpec
+//
+// Note: the parameter name `sandboxHomeDir` (not `sandboxHome`) is used to
+// avoid shadowing the existing package-level function `sandboxHome(mode
+// isolationMode) string` at container.go:83. An equivalent shape passes the
+// mode through and lets the helper call `sandboxHome(mode)` itself.
+func StandardSandboxMounts(cfg Config, sandboxHomeDir string, isReview bool) []MountSpec
 ```
 
 Each isolator then walks `StandardSandboxMounts` and appends mode-specific
@@ -500,14 +508,21 @@ func (m *Manager) <stem>FilePath() string {
 
 ```go
 // internal/container/temppath.go (new file or fold into container.go).
-func (m *Manager) tempPath(stem string) string {
-    return filepath.Join(os.TempDir(), "prism-"+stem+"-"+m.name)
+//
+// stem is the bare per-artefact key ("gitdir", "ssh-config", "gitconfig",
+// "allowed-signers", "opencode-config", "claude-creds", "wt-gitdir").
+// suffix is "" for most artefacts; sandboxExecProfilePath uses ".sb" — the
+// suffix arg keeps that case in scope of the helper rather than forcing a
+// special-cased call site.
+func (m *Manager) tempPath(stem, suffix string) string {
+    return filepath.Join(os.TempDir(), "prism-"+stem+"-"+m.name+suffix)
 }
 ```
 
 The seven existing methods can either delegate to `tempPath` (preserving
-public API) or be replaced by inline `m.tempPath("gitdir")` calls. Lives
-**below** A.1's interface (purely a Manager-internal shape).
+public API) or be replaced by inline `m.tempPath("gitdir", "")` calls; the
+sandbox-exec profile becomes `m.tempPath("sandbox-exec-profile", ".sb")`.
+Lives **below** A.1's interface (purely a Manager-internal shape).
 
 **Migration cost.** Trivial. No behaviour change. The `EnsureRemoved` and
 `Shutdown` cleanup blocks (`container.go:317-325, 821-828`) currently list
