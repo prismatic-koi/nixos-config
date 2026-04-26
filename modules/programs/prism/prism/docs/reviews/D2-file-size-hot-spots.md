@@ -159,7 +159,7 @@ None. `cmd` is an executable-only package with no exported symbols consumed by o
 
 ### Concerns currently mixed
 
-1. **PR context fetching** — `FetchPRContext()`, `FetchPRContextWithOpts()`, `FetchPRContextOpts`, `PRContext`, `prViewJSON`, `FetchPRContextWithOpts` and supporting helpers (`diffFilePath()`, `parseLinkedIssues()`, `runGitInWorktree()`, `runGH()`, `truncateDiff()`) constitute a self-contained GitHub CLI integration layer. They are invoked once before any agent is spawned and have no dependency on the spawn/poll machinery.
+1. **PR context fetching** — `FetchPRContext()`, `FetchPRContextWithOpts()`, `FetchPRContextOpts`, `PRContext`, `prViewJSON`, and supporting helpers (`diffFilePath()`, `parseLinkedIssues()`, `runGitInWorktree()`, `runGH()`, `truncateDiff()`) constitute a self-contained GitHub CLI integration layer. They are invoked once before any agent is spawned and have no dependency on the spawn/poll machinery.
 
 2. **Agent definition and configuration** — `Agent`, `Agents()`, `AgentsByName()`, `CheckAgentAvailability()`, `agentNames()`, `FormatAgentDisplayName()`, `ResolveAgentConfigContent()`, `knownReviewAgentNames()` (and its DB-backed counterparts) define the static catalogue of review agents and how to resolve per-agent configs.
 
