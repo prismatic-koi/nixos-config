@@ -281,6 +281,22 @@ CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(
 // idx_pending_merges_status_instance is preserved (it covers
 // AbandonWatchingMerges and CancelMerge). CREATE INDEX IF NOT EXISTS makes
 // this idempotent.
+// v20→v21 is a one-shot backfill that sets sessions.harness_session_id from
+// agent_status.harness_session_id for rows where sessions.harness_session_id
+// IS NULL. This fixes sessions created before UpdateHarnessSessionID was
+// changed to write to both tables (#1126). The join is on instance_id, which
+// is present in both tables. Rows with no matching agent_status row, or where
+// agent_status.harness_session_id is also NULL, are left unchanged — their
+// raw/ directories will remain empty (the harness never ran for them).
+// The migration is idempotent: a second run matches no rows (all NULL sessions
+// rows either got backfilled or have no agent_status counterpart).
+// v21→v22 extends the v17→v18 started_at backfill to also cover rows where
+// started_at = 0 (literal Unix epoch zero). The earlier migration only fixed
+// rows with started_at < 0 (Go zero-time as -62135596800000 ms); a separate
+// code path could insert started_at = 0 directly, producing
+// "00010101T000000Z_" archive directory names (#1127). Recovery strategy is
+// the same: set started_at = MIN(agent_events.created_at) for the matching
+// instance_id. Idempotent: rows with started_at > 0 are skipped.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -325,7 +341,7 @@ func Open(path string) (*DB, error) {
 	// Set schema_version=11 if the table is empty. Fresh databases have all
 	// current columns from the schema above (including pending_merges and the
 	// new idx_pending_merges_status_session index). The v11→v12 through
-	// v19→v20 migrations run immediately below; on a fresh DB they are all
+	// v21→v22 migrations run immediately below; on a fresh DB they are all
 	// effectively no-ops (indexes already exist, no rows to backfill, columns
 	// already named correctly, sessions and pending_merges tables already
 	// present from the declarative schema block), so starting at 11 is safe.
@@ -964,6 +980,103 @@ func Open(path string) (*DB, error) {
 			}
 		}
 		version = 20
+	}
+	if version == 20 {
+		// Migration v20 → v21: backfill sessions.harness_session_id from
+		// agent_status for rows where sessions.harness_session_id IS NULL.
+		// UpdateHarnessSessionID historically only wrote to agent_status; this
+		// one-shot backfill ensures that sessions created before the fix for
+		// #1126 also have harness_session_id set in the sessions table, so that
+		// cleanup.runSessionArchive can archive them on the next run.
+		//
+		// The join is on instance_id (present in both tables). Rows where
+		// agent_status.harness_session_id is also NULL, or where there is no
+		// matching agent_status row, are left unchanged.
+		//
+		// Idempotency: sessions rows already having a non-NULL harness_session_id
+		// are excluded by the WHERE clause, so a second run is a no-op.
+		if _, err := conn.Exec(`
+			UPDATE sessions
+			   SET harness_session_id = (
+			         SELECT harness_session_id
+			           FROM agent_status
+			          WHERE agent_status.instance_id = sessions.instance_id
+			            AND agent_status.harness_session_id IS NOT NULL
+			       )
+			 WHERE harness_session_id IS NULL
+			   AND EXISTS (
+			         SELECT 1 FROM agent_status
+			          WHERE agent_status.instance_id = sessions.instance_id
+			            AND agent_status.harness_session_id IS NOT NULL
+			       )`); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v20→v21: backfill harness_session_id: %w", err)
+		}
+		if _, err := conn.Exec("UPDATE schema_version SET version = 21"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v20→v21: bump version: %w", err)
+		}
+		version = 21
+	}
+	if version == 21 {
+		// Migration v21 → v22: extend the v17→v18 started_at backfill to also
+		// cover rows where started_at = 0 (literal Unix epoch). The v17→v18
+		// migration fixed rows where started_at < 0 (Go zero-time marshalled as
+		// -62135596800000 ms), but a separate code path could store started_at = 0
+		// directly, producing "00010101T000000Z_" directory names in the archive
+		// (#1127). The same recovery strategy is used: set started_at to
+		// MIN(agent_events.created_at) for the matching instance_id. Rows with no
+		// matching events are left with started_at = 0 and will display as
+		// "00010101T000000Z_<instanceID>" in archive listings (the same
+		// formatDurationLong fallback applies).
+		//
+		// Idempotency: rows with started_at = 0 are either fixed or have no
+		// usable events; a second run is a no-op.
+		brokenRows2, err := conn.Query(`SELECT instance_id FROM sessions WHERE started_at = 0`)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v21→v22: query zero sessions: %w", err)
+		}
+		var zeroIDs []string
+		for brokenRows2.Next() {
+			var iid string
+			if err := brokenRows2.Scan(&iid); err != nil {
+				brokenRows2.Close()
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v21→v22: scan zero session: %w", err)
+			}
+			zeroIDs = append(zeroIDs, iid)
+		}
+		brokenRows2.Close()
+		if err := brokenRows2.Err(); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v21→v22: iterate zero sessions: %w", err)
+		}
+
+		for _, iid := range zeroIDs {
+			var minTs *int64
+			if err := conn.QueryRow(`
+				SELECT MIN(created_at) FROM agent_events WHERE instance_id = ?`, iid,
+			).Scan(&minTs); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v21→v22: min timestamp for %q: %w", iid, err)
+			}
+			if minTs == nil || *minTs <= 0 {
+				continue
+			}
+			if _, err := conn.Exec(`
+				UPDATE sessions SET started_at = ? WHERE instance_id = ?`, *minTs, iid,
+			); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v21→v22: update started_at for %q: %w", iid, err)
+			}
+		}
+
+		if _, err := conn.Exec("UPDATE schema_version SET version = 22"); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v21→v22: bump version: %w", err)
+		}
+		version = 22
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -2053,16 +2166,65 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
 // keep the stored SID current when the user creates a new harness session
 // mid-conversation (e.g. via /continue or TUI restart).
 //
+// It writes to both agent_status and sessions (matching by instance_id) so
+// that cleanup.runSessionArchive can read harness_session_id directly from the
+// sessions row without a fallback query. The sessions update is best-effort:
+// if no row exists for the current instance_id it is silently skipped.
+//
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) UpdateHarnessSessionID(sessionName, sid string) error {
-	_, err := d.conn.Exec(
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: update harness_session_id: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(
 		"UPDATE agent_status SET harness_session_id = ? WHERE session_name = ?",
 		sid, sessionName,
-	)
-	if err != nil {
-		return fmt.Errorf("db: update harness_session_id: %w", err)
+	); err != nil {
+		return fmt.Errorf("db: update harness_session_id (agent_status): %w", err)
+	}
+
+	// Also update sessions.harness_session_id for the current incarnation so
+	// that cleanup reads the correct value without a fallback query.
+	if _, err := tx.Exec(`
+		UPDATE sessions
+		   SET harness_session_id = ?
+		 WHERE instance_id = (
+		         SELECT instance_id FROM agent_status WHERE session_name = ?
+		       )`, sid, sessionName,
+	); err != nil {
+		return fmt.Errorf("db: update harness_session_id (sessions): %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: update harness_session_id: commit: %w", err)
 	}
 	return nil
+}
+
+// HarnessSessionIDForInstance returns the harness_session_id stored in
+// agent_status for the given instance_id, or "" when not found or NULL.
+// Used by cleanup as a fallback when sessions.harness_session_id is NULL
+// (e.g. for sessions started before UpdateHarnessSessionID was fixed to
+// also write to sessions).
+func (d *DB) HarnessSessionIDForInstance(instanceID string) (string, error) {
+	var sid sql.NullString
+	err := d.conn.QueryRow(
+		"SELECT harness_session_id FROM agent_status WHERE instance_id = ?",
+		instanceID,
+	).Scan(&sid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: harness_session_id for instance: %w", err)
+	}
+	if !sid.Valid {
+		return "", nil
+	}
+	return sid.String, nil
 }
 
 // QueryDoomLoopEvents returns doom_loop_detected events from agent_events,
