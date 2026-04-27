@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -80,6 +81,7 @@ func TestMain(m *testing.M) {
 	beforeSessions := snapshotTmuxSessions()
 	beforeAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
 	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
+	beforeWorktrees := snapshotWorktreeDirs()
 
 	code := m.Run()
 
@@ -91,6 +93,7 @@ func TestMain(m *testing.M) {
 		afterSessions := snapshotTmuxSessions()
 		afterAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
 		afterSessionsRows := snapshotSessionsRows(liveDBPath)
+		afterWorktrees := snapshotWorktreeDirs()
 		if leaked := setDiff(afterSessions, beforeSessions); len(leaked) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"\n[LEAK GUARD] cmd test suite created %d new live tmux session(s):\n",
@@ -119,6 +122,16 @@ func TestMain(m *testing.M) {
 				fmt.Fprintf(os.Stderr, "  - %s\n", s)
 			}
 			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
+			code = 1
+		}
+		if leaked := setDiff(afterWorktrees, beforeWorktrees); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new worktree director(ies) in ~/code/nixos-config/:\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests set PRISM_SPAWN_PATH to a non-git t.TempDir().")
 			code = 1
 		}
 	}
@@ -191,6 +204,33 @@ func snapshotSessionsRows(dbFilePath string) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// worktreeDirPattern matches prism worktree directory names created by
+// git.CreateWorktree: YYYYMMDDTHHMM (14 digits with a T separator).
+var worktreeDirPattern = regexp.MustCompile(`^\d{8}T\d{4}$`)
+
+// snapshotWorktreeDirs returns the sorted list of prism worktree directories
+// (matching [0-9]{8}T[0-9]{4}) in ~/code/nixos-config/. Returns nil if the
+// directory cannot be read or does not exist.
+func snapshotWorktreeDirs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	root := filepath.Join(home, "code", "nixos-config")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // directory doesn't exist or isn't readable
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && worktreeDirPattern.MatchString(e.Name()) {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
 }
 
 // setDiff returns elements in after that are not in before (new additions).
