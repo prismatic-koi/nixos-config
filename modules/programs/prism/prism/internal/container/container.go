@@ -302,8 +302,6 @@ func New(cfg Config) *Manager {
 // Name returns the container name.
 func (m *Manager) Name() string { return m.name }
 
-
-
 // sessionTempPath is the package-level building block for per-session temp
 // file paths. All per-session artefact files follow the shape:
 //
@@ -565,8 +563,6 @@ func (m *Manager) worktreeGitdirFilePath() string {
 
 // WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
 func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFilePath() }
-
-
 
 // PrepareBwrap writes the same temp files that Create() writes for podman
 // sessions (SSH config, gitconfig, opencode.json config) and returns the
@@ -1252,8 +1248,6 @@ func (m *Manager) buildRunArgs() []string {
 
 	return args
 }
-
-
 
 // redactArgs returns a copy of args where any value immediately following a
 // "--env" element has its value (the part after the first "=") replaced with
