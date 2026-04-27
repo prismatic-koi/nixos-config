@@ -617,6 +617,16 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	if sandboxHarness != nil {
 		sandboxRuntimeEnv = sandboxHarness.RuntimeEnv()
 	}
+	// Resolve instance ID from DB status. This is required so that the
+	// staging HOME is namespaced by the same instance_id that prism cleanup
+	// uses when looking up the staging dir to remove. Without it, the staging
+	// HOME would be namespaced by the container name (m.name fallback) and
+	// cleanup would fail to find it.
+	instanceID := ""
+	if status.InstanceID != nil {
+		instanceID = *status.InstanceID
+	}
+
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -629,6 +639,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
+		InstanceID:        instanceID,
 		RuntimeEnv:        sandboxRuntimeEnv,
 		AgentEnvVars:      agentEnvVars,
 	}
@@ -693,6 +704,27 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Inject harness-specific runtime env vars and profile AgentEnvVars.
 	// AppendSandboxEnvVars appends K=V pairs for the sandbox interior env.
 	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
+
+	// Inject prism context vars that prism CLI commands inside the sandbox
+	// depend on. Mirror the bwrap path's injection (bwrap.go:555-601).
+	//
+	// PRISM_SPAWN_PATH: the worktree path. The sandbox shares the host
+	// filesystem, so the path is the same inside and outside.
+	if ctrCfg.Worktree != "" {
+		env = append(env, "PRISM_SPAWN_PATH="+ctrCfg.Worktree)
+	}
+	// PRISM_BARE_ROOT: the bare repo root. Same reasoning as PRISM_SPAWN_PATH.
+	if ctrCfg.BareRoot != "" {
+		env = append(env, "PRISM_BARE_ROOT="+ctrCfg.BareRoot)
+	}
+	// PRISM_SESSION_NAME: the session name (e.g. "nixos-config@feature").
+	env = append(env, "PRISM_SESSION_NAME="+ctrCfg.SessionName)
+	// PRISM_HOST_API: the host-API socket path. The socket is a Unix socket
+	// on Darwin; sandbox-exec shares the host filesystem so the path is the
+	// same inside and outside the sandbox.
+	if ctrCfg.HostAPISockPath != "" {
+		env = append(env, "PRISM_HOST_API=unix://"+ctrCfg.HostAPISockPath)
+	}
 
 	// `[timing] sandbox-exec exec`: total wall time from agent-run entry to
 	// the moment of syscall.Exec. Mirrors `[timing] bwrap exec` on the bwrap

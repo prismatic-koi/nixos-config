@@ -173,22 +173,29 @@ func generateProfile(m *Manager) string {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
 		}
-		// opencode shared state dir — ~/.local/share/opencode (SQLite DB, logs).
+		// opencode shared state dir — ~/.local/share/opencode (SQLite DB, logs,
+		// snapshots). Must use (subpath ...) not (literal ...) so the sandbox can
+		// read/write files inside the directory (not just the directory node itself).
 		if home != "" {
 			opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
-			sb.WriteString("  (literal " + quoteSBPL(opencodeDataDir) + ")\n")
+			sb.WriteString("  (subpath " + quoteSBPL(opencodeDataDir) + ")\n")
 		}
 		sb.WriteString(")\n")
 		sb.WriteString("\n")
 	}
 
-	// ── Symlink target allows (read-only, one literal per resolved target) ─
+	// ── Symlink target allows (read-only) ─────────────────────────────────
 	// For every symlink in the staging HOME, resolve its target via
-	// EvalSymlinks and emit an (allow file-read* (literal "<path>")) rule.
-	// This lets the sandbox follow symlinks out of the staging HOME to their
-	// real Nix store or host-config locations.
-	// Locked in #1012 and #1017: resolved via filepath.EvalSymlinks exactly
-	// as bwrap.go does for SSH keys (bwrap.go:369-388).
+	// filepath.EvalSymlinks and emit an allow rule. Locked in #1012 and #1017.
+	//
+	// Rule type selection:
+	//   - Directory targets → (subpath ...) so the sandbox can access files
+	//     within (not just the directory node itself).
+	//   - File targets → (literal ...) to allow the specific file.
+	//
+	// Targets that fall under the denied ~HOME/.aws subtree are excluded from
+	// this block to avoid the Apple SBPL literal-over-subpath precedence issue
+	// (a more-specific (literal) allow defeats a broader (subpath) deny).
 	if stagingErr == nil {
 		targets, targErr := collectStagingHomeSymlinkTargets(stagingHome)
 		if targErr != nil {
@@ -197,7 +204,11 @@ func generateProfile(m *Manager) string {
 		if len(targets) > 0 {
 			sb.WriteString("(allow file-read*\n")
 			for _, t := range targets {
-				sb.WriteString("  (literal " + quoteSBPL(t) + ")\n")
+				if t.IsDir {
+					sb.WriteString("  (subpath " + quoteSBPL(t.ResolvedPath) + ")\n")
+				} else {
+					sb.WriteString("  (literal " + quoteSBPL(t.ResolvedPath) + ")\n")
+				}
 			}
 			sb.WriteString(")\n")
 			sb.WriteString("\n")

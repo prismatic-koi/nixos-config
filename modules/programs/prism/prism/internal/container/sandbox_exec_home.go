@@ -463,57 +463,112 @@ func RemoveSandboxExecStagingHome(instanceID string) {
 	_ = os.RemoveAll(stagingHome)
 }
 
+// StagingSymlinkTarget represents a resolved symlink target with metadata
+// about whether the target is a directory (requiring subpath) or a file
+// (allowing literal).
+type StagingSymlinkTarget struct {
+	// ResolvedPath is the resolved absolute path of the symlink target.
+	ResolvedPath string
+	// IsDir is true when the resolved target is a directory. Directory
+	// targets require (subpath ...) rules in SBPL; file targets use (literal ...).
+	IsDir bool
+}
+
 // collectStagingHomeSymlinkTargets resolves all symlinks in the staging HOME
 // directory and returns the unique set of resolved real paths. These are the
-// paths the SBPL profile must allow by literal match so the sandbox can read
-// through the symlinks.
+// paths the SBPL profile must allow so the sandbox can read through the symlinks.
 //
-// The traversal is shallow + conditional: only paths that exist as symlinks
-// directly inside the staging HOME tree are resolved. We do not recurse into
-// symlinked directories.
-func collectStagingHomeSymlinkTargets(stagingHome string) ([]string, error) {
-	seen := map[string]bool{}
-	var targets []string
+// The return value includes IsDir metadata so callers can emit (subpath ...)
+// rules for directory targets (allowing access to directory contents) and
+// (literal ...) rules for file targets (allowing access to specific files).
+//
+// Symlink targets that fall under a path that will be denied by the profile
+// (e.g. host $HOME/.aws) are excluded from the results to avoid the
+// literal-over-subpath precedence issue in Apple's SBPL: a (literal ...) allow
+// for a path inside a (subpath ...) deny region would defeat the deny.
+//
+// The traversal is shallow: only top-level symlinks in the staging HOME tree
+// are followed. We do not recurse into symlinked directory contents.
+func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarget, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
 
-	add := func(path string) {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err != nil {
+	// deniedPrefixes lists host paths that will be denied in the SBPL profile.
+	// Symlink targets that fall under these prefixes are excluded from the
+	// allow-literal/subpath block to avoid the literal-over-subpath precedence
+	// issue in Apple's SBPL.
+	var deniedPrefixes []string
+	if home != "" {
+		deniedPrefixes = append(deniedPrefixes, filepath.Join(home, ".aws")+"/")
+	}
+
+	isDenied := func(path string) bool {
+		for _, prefix := range deniedPrefixes {
+			if strings.HasPrefix(path+"/", prefix) || path == strings.TrimSuffix(prefix, "/") {
+				return true
+			}
+		}
+		return false
+	}
+
+	seen := map[string]bool{}
+	var targets []StagingSymlinkTarget
+
+	add := func(rawTarget string) {
+		resolved, evalErr := filepath.EvalSymlinks(rawTarget)
+		if evalErr != nil {
 			return
 		}
-		if !seen[resolved] {
-			seen[resolved] = true
-			targets = append(targets, resolved)
+		if seen[resolved] {
+			return
+		}
+		if isDenied(resolved) {
+			// Exclude targets under denied paths to avoid defeating deny rules.
+			return
+		}
+		seen[resolved] = true
+		// Determine whether the target is a directory or a file.
+		info, statErr := os.Stat(resolved)
+		isDir := statErr == nil && info.IsDir()
+		targets = append(targets, StagingSymlinkTarget{ResolvedPath: resolved, IsDir: isDir})
+	}
+
+	// Use os.ReadDir for the top-level staging HOME entries only (no recursion).
+	// filepath.Walk doesn't follow symlinks, so a top-level walk would stop at
+	// symlinks pointing at directories — which is the behaviour we want (don't
+	// recurse into symlinked dirs). We use ReadDir instead for clarity.
+	scanDir := func(dir string) {
+		entries, readErr := os.ReadDir(dir)
+		if readErr != nil {
+			return
+		}
+		for _, e := range entries {
+			entryPath := filepath.Join(dir, e.Name())
+			// Only process symlinks; regular files and real dirs are fine as-is.
+			if e.Type()&os.ModeSymlink != 0 {
+				linkTarget, readLinkErr := os.Readlink(entryPath)
+				if readLinkErr != nil {
+					continue
+				}
+				if !filepath.IsAbs(linkTarget) {
+					linkTarget = filepath.Join(dir, linkTarget)
+				}
+				add(linkTarget)
+			}
 		}
 	}
 
-	// Walk the staging HOME and collect resolved targets for all symlinks.
-	err := filepath.Walk(stagingHome, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return nil // skip inaccessible entries
-		}
-		if path == stagingHome {
-			return nil
-		}
-		// Resolve symlinks one level at a time (don't recurse into symlinked dirs).
-		linkTarget, readErr := os.Readlink(path)
-		if readErr != nil {
-			// Not a symlink — skip.
-			return nil
-		}
-		// Make the link target absolute.
-		if !filepath.IsAbs(linkTarget) {
-			linkTarget = filepath.Join(filepath.Dir(path), linkTarget)
-		}
-		add(linkTarget)
-		// Don't recurse into symlinked directories.
-		if info.IsDir() {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walk staging home %s: %w", stagingHome, err)
+	// Scan the top-level staging HOME and all immediate subdirectories that
+	// the staging HOME builder creates (one level deep).
+	scanDir(stagingHome)
+	subDirs := []string{".ssh", ".aws", ".kube", ".config/opencode", ".cache"}
+	for _, sub := range subDirs {
+		scanDir(filepath.Join(stagingHome, sub))
 	}
+	// Also scan .cache/prism if it exists.
+	scanDir(filepath.Join(stagingHome, ".cache", "prism"))
 
 	return targets, nil
 }

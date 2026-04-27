@@ -795,6 +795,69 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed verifies AC11:
+// (a) the profile denies the host ~/.aws subtree and
+// (b) the resolved target of the staged ~/.aws/config symlink appears as an
+// allow rule in the same profile output.
+// Both assertions are in the same test — this is the "combined test" that AC11 requires.
+func TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	// The fake home has ~/.config/aws/readonly-config written by newFakeHome.
+	// PrepareSandboxExecHome creates a symlink ~/.aws/config → <resolved readonly-config>.
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "ac11-test",
+		Worktree:    t.TempDir(),
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	profile := generateProfile(m)
+
+	// (a) The deny clause must cover host ~/.aws.
+	awsDenyPath := filepath.Join(fakeHome, ".aws")
+	if !strings.Contains(profile, awsDenyPath) {
+		t.Errorf("profile missing deny for host ~/.aws (%s); full profile:\n%s", awsDenyPath, profile)
+	}
+	// Verify it's inside a (deny ...) clause not just any clause.
+	awsDenyIdx := strings.Index(profile, awsDenyPath)
+	denyBefore := strings.LastIndex(profile[:awsDenyIdx], "(deny")
+	allowBefore := strings.LastIndex(profile[:awsDenyIdx], "(allow")
+	if denyBefore < 0 || allowBefore > denyBefore {
+		t.Errorf("host ~/.aws path appears in profile but NOT inside a (deny ...) clause before it; full profile:\n%s", profile)
+	}
+
+	// (b) The allow clause must include the resolved target of the staged
+	// ~/.aws/config symlink (which points at ~/.config/aws/readonly-config).
+	awsConfigSymlink := filepath.Join(stagingHome, ".aws", "config")
+	resolvedTarget, resolveErr := filepath.EvalSymlinks(awsConfigSymlink)
+	if resolveErr != nil {
+		t.Skipf("staged ~/.aws/config symlink not present (skipping allow assertion): %v", resolveErr)
+	}
+	if !strings.Contains(profile, resolvedTarget) {
+		t.Errorf("profile missing allow for resolved staged ~/.aws/config target %q; full profile:\n%s", resolvedTarget, profile)
+	}
+	// Verify it's inside an (allow ...) clause.
+	targetIdx := strings.Index(profile, resolvedTarget)
+	if targetIdx < 0 {
+		t.Errorf("resolved target %q not in profile", resolvedTarget)
+	} else {
+		allowBeforeTarget := strings.LastIndex(profile[:targetIdx], "(allow")
+		denyBeforeTarget := strings.LastIndex(profile[:targetIdx], "(deny")
+		if allowBeforeTarget < 0 || denyBeforeTarget > allowBeforeTarget {
+			t.Errorf("resolved target %q appears in profile but NOT inside an (allow ...) clause before it; full profile:\n%s", resolvedTarget, profile)
+		}
+	}
+}
+
 // TestGenerateProfile_AWSDenyClause verifies that the profile contains a
 // (deny file-read* file-write* (subpath ".../.aws")) clause for the host's
 // ~/.aws directory, to prevent the sandbox from accessing host credentials.
