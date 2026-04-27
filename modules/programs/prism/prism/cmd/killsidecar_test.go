@@ -29,17 +29,20 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestMain serves two purposes:
+// TestMain serves three purposes:
 //
 //  1. Stub sidecar: when PRISM_CMD_TEST_STUB=1, the binary sleeps for 60
 //     seconds (simulating a long-running sidecar). The sleep is interruptible
@@ -50,6 +53,13 @@ import (
 //     belt-and-suspenders fallback for when oomd or a test harness kills the
 //     test binary mid-run — t.Cleanup will not fire in that case, but the
 //     SIGTERM handler will.
+//
+//  3. Leak guard (#1180): snapshots the live tmux server's session list and
+//     the live agent_status and sessions tables before running tests, then
+//     asserts no new entries appear after the suite completes. This catches
+//     any test that creates real sessions in the live environment. The guard
+//     uses the DB path that was live at suite start (before any test overrides
+//     XDG_STATE_HOME), so it reliably reads the production database.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
@@ -65,7 +75,177 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}()
 
-	os.Exit(m.Run())
+	// Leak guard: snapshot live environment before tests.
+	// Capture the DB path now, before any test overrides XDG_STATE_HOME.
+	liveDBPath := dbPath()
+	beforeSessions := snapshotTmuxSessions()
+	beforeAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
+	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
+	beforeWorktrees := snapshotWorktreeDirs()
+
+	code := m.Run()
+
+	// Leak guard: assert no new sessions or DB rows were created in the live
+	// environment. We skip the check if the suite failed — a failing test may
+	// have left intentional state, and we don't want to obscure the primary
+	// failure with a secondary leak report.
+	if code == 0 {
+		afterSessions := snapshotTmuxSessions()
+		afterAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
+		afterSessionsRows := snapshotSessionsRows(liveDBPath)
+		afterWorktrees := snapshotWorktreeDirs()
+		if leaked := setDiff(afterSessions, beforeSessions); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new live tmux session(s):\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests use withNoopTmux() or an isolated test server.")
+			code = 1
+		}
+		if leaked := setDiff(afterAgentStatusRows, beforeAgentStatusRows); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new live agent_status row(s):\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
+			code = 1
+		}
+		if leaked := setDiff(afterSessionsRows, beforeSessionsRows); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new live sessions row(s):\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
+			code = 1
+		}
+		if leaked := setDiff(afterWorktrees, beforeWorktrees); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new worktree director(ies) in ~/code/nixos-config/:\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests set PRISM_SPAWN_PATH to a non-git t.TempDir().")
+			code = 1
+		}
+	}
+
+	os.Exit(code)
+}
+
+// snapshotTmuxSessions returns the sorted list of session names in the live
+// tmux server, or nil if tmux is not running.
+func snapshotTmuxSessions() []string {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil // tmux server not running — treat as empty
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// snapshotAgentStatusRows returns the sorted list of session_names in
+// agent_status with ended_at IS NULL, using the given DB path. Returns nil if
+// the DB cannot be opened (e.g. first run with no DB yet).
+func snapshotAgentStatusRows(dbFilePath string) []string {
+	if dbFilePath == "" {
+		return nil
+	}
+	d, err := db.Open(dbFilePath)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	rows, qErr := d.AllActiveStatus()
+	if qErr != nil {
+		return nil
+	}
+	names := make([]string, len(rows))
+	for i, r := range rows {
+		names[i] = r.SessionName
+	}
+	sort.Strings(names)
+	return names
+}
+
+// snapshotSessionsRows returns the sorted list of instance_ids in the sessions
+// table where ended_at IS NULL, using the given DB path. Returns nil if the DB
+// cannot be opened (e.g. first run with no DB yet).
+func snapshotSessionsRows(dbFilePath string) []string {
+	if dbFilePath == "" {
+		return nil
+	}
+	d, err := db.Open(dbFilePath)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	rows, qErr := d.AllSessions()
+	if qErr != nil {
+		return nil
+	}
+	var ids []string
+	for _, r := range rows {
+		if r.EndedAt == nil {
+			ids = append(ids, r.InstanceID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// worktreeDirPattern matches prism worktree directory names created by
+// git.CreateWorktree: YYYYMMDDTHHMM (8 date digits + T + 4 time digits).
+var worktreeDirPattern = regexp.MustCompile(`^\d{8}T\d{4}$`)
+
+// snapshotWorktreeDirs returns the sorted list of prism worktree directories
+// (matching [0-9]{8}T[0-9]{4}) in ~/code/nixos-config/. Returns nil if the
+// directory cannot be read or does not exist.
+func snapshotWorktreeDirs() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	root := filepath.Join(home, "code", "nixos-config")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // directory doesn't exist or isn't readable
+	}
+	var dirs []string
+	for _, e := range entries {
+		if e.IsDir() && worktreeDirPattern.MatchString(e.Name()) {
+			dirs = append(dirs, e.Name())
+		}
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+// setDiff returns elements in after that are not in before (new additions).
+func setDiff(after, before []string) []string {
+	set := make(map[string]struct{}, len(before))
+	for _, s := range before {
+		set[s] = struct{}{}
+	}
+	var diff []string
+	for _, s := range after {
+		if _, ok := set[s]; !ok {
+			diff = append(diff, s)
+		}
+	}
+	return diff
 }
 
 // writePIDFile writes a PID file under stateDir/prism/run/ and returns the path.
