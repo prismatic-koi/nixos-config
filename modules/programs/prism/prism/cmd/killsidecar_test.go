@@ -207,7 +207,7 @@ func snapshotSessionsRows(dbFilePath string) []string {
 }
 
 // worktreeDirPattern matches prism worktree directory names created by
-// git.CreateWorktree: YYYYMMDDTHHMM (14 digits with a T separator).
+// git.CreateWorktree: YYYYMMDDTHHMM (8 date digits + T + 4 time digits).
 var worktreeDirPattern = regexp.MustCompile(`^\d{8}T\d{4}$`)
 
 // snapshotWorktreeDirs returns the sorted list of prism worktree directories
