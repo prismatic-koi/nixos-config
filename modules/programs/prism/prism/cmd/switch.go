@@ -626,7 +626,7 @@ func allocatePortForSession(sessionName, directory string) (int, error) {
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoMode config.IsolationMode, sandboxed bool) error {
+func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -679,12 +679,12 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-		if sandboxed && pf != nil {
+		if isoCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			tmuxSessionName := session.NameFor(worktreePath, projectPath)
 			containerName := container.NameForSession(tmuxSessionName)
 			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -694,12 +694,12 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		return ensureAndSwitch(worktreePath, projectPath, opts)
 	}
 
-	if sandboxed && pf != nil {
+	if isoCaps.NeedsConfigBlob && pf != nil {
 		if err := injectContainerConfig(chosen.path, pf, &opts, "prism switch"); err != nil {
 			return err
 		}
 	}
-	if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+	if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 		tmuxSessionName := session.NameFor(chosen.path, projectPath)
 		containerName := container.NameForSession(tmuxSessionName)
 		if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -881,15 +881,15 @@ func handleReviewGroupPick(groupKey string) error {
 	return err
 }
 
-func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoMode config.IsolationMode, sandboxed bool) error {
+func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
-		if sandboxed && pf != nil {
+		if isoCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			tmuxSessionName := session.NameFor(path, "")
 			containerName := container.NameForSession(tmuxSessionName)
 			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -916,12 +916,12 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
-			if sandboxed && pf != nil {
+			if isoCaps.NeedsConfigBlob && pf != nil {
 				if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 					return err
 				}
 			}
-			if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+			if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 				tmuxSessionName := session.NameFor(path, "")
 				containerName := container.NameForSession(tmuxSessionName)
 				if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -957,12 +957,12 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 			removeContainerIfExists(oldSessionName)
 		}
 
-		if sandboxed && pf != nil {
+		if isoCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			tmuxSessionName := session.NameFor(worktreePath, path)
 			containerName := container.NameForSession(tmuxSessionName)
 			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -971,12 +971,12 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 		}
 		return ensureAndSwitch(worktreePath, path, opts)
 	default:
-		if sandboxed && pf != nil {
+		if isoCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			tmuxSessionName := session.NameFor(path, "")
 			containerName := container.NameForSession(tmuxSessionName)
 			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -989,7 +989,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 
 // ── clone repo ────────────────────────────────────────────────────────────────
 
-func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoMode config.IsolationMode, sandboxed bool) error {
+func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
 	repoURL := promptInput("clone url> ")
 	if repoURL == "" {
 		return nil
@@ -1020,12 +1020,12 @@ func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoMode config.
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
 	}
-	if sandboxed && pf != nil {
+	if isoCaps.NeedsConfigBlob && pf != nil {
 		if err := injectContainerConfig(worktrees[0], pf, &opts, "prism switch"); err != nil {
 			return err
 		}
 	}
-	if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+	if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 		tmuxSessionName := session.NameFor(worktrees[0], targetDir)
 		containerName := container.NameForSession(tmuxSessionName)
 		if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
@@ -1067,7 +1067,10 @@ var switchCmd = &cobra.Command{
 		// Derive the effective isolation mode from config, mirroring the pattern
 		// in spawn.go. switch has no --isolation flag — the machine default is used.
 		isoMode := cfg.EffectiveIsolationMode()
-		effectiveContainerMode := isoMode == config.IsolationPodman
+
+		// Look up the isolation capabilities for this mode. All per-mode branching
+		// below reads from isoCaps rather than comparing against raw mode constants.
+		isoCaps := container.CapabilitiesFor(isoMode)
 
 		// Load profiles.json for container/bwrap/sandbox-exec config injection and
 		// agent env var injection (host mode). Always attempt to load; treat missing
@@ -1078,7 +1081,7 @@ var switchCmd = &cobra.Command{
 			var pfErr error
 			pf, pfErr = config.LoadProfiles()
 			if pfErr != nil {
-				if effectiveContainerMode || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec {
+				if isoCaps.NeedsConfigBlob {
 					return pfErr
 				}
 				fmt.Fprintf(os.Stderr, "[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
@@ -1092,7 +1095,7 @@ var switchCmd = &cobra.Command{
 		switchHarness, _ := harness.New("opencode", "", nil, "", "")
 		opts := session.Opts{
 			Fresh:            fresh,
-			ContainerMode:    effectiveContainerMode,
+			ContainerMode:    isoCaps.IsContainer,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigEnvVarName: switchHarness.ConfigEnvVar(),
@@ -1101,13 +1104,9 @@ var switchCmd = &cobra.Command{
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
 		// receive env vars via podman --env flags in the sidecar (podman) or
 		// via the bwrap environment pass-through.
-		if pf != nil && isoMode == config.IsolationHost {
+		if pf != nil && !isoCaps.NeedsConfigBlob {
 			opts.AgentEnvVars = pf.AgentEnvVars
 		}
-
-		// sandboxed is true for podman, bwrap, and sandbox-exec isolation modes —
-		// all require container config injection.
-		sandboxed := effectiveContainerMode || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
 
 		// --path: open a specific path directly.
 		if pathArg != "" {
@@ -1122,12 +1121,12 @@ var switchCmd = &cobra.Command{
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
 				o := opts
-				if sandboxed && pf != nil {
+				if isoCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(worktrees[0], pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoMode == config.IsolationBwrap && o.ConfigContent != "" {
+				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
 					tmuxSessionName := session.NameFor(worktrees[0], p)
 					containerName := container.NameForSession(tmuxSessionName)
 					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
@@ -1138,12 +1137,12 @@ var switchCmd = &cobra.Command{
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
 				o := opts
-				if sandboxed && pf != nil {
+				if isoCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoMode == config.IsolationBwrap && o.ConfigContent != "" {
+				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
 					tmuxSessionName := session.NameFor(p, bareRoot)
 					containerName := container.NameForSession(tmuxSessionName)
 					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
@@ -1153,12 +1152,12 @@ var switchCmd = &cobra.Command{
 				return ensureAndSwitch(p, bareRoot, o)
 			}
 			o := opts
-			if sandboxed && pf != nil {
+			if isoCaps.NeedsConfigBlob && pf != nil {
 				if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 					return err
 				}
 			}
-			if isoMode == config.IsolationBwrap && o.ConfigContent != "" {
+			if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
 				tmuxSessionName := session.NameFor(p, "")
 				containerName := container.NameForSession(tmuxSessionName)
 				if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
@@ -1195,23 +1194,23 @@ var switchCmd = &cobra.Command{
 			return ensureAndSwitch("[scratchpad]", "", opts)
 
 		case "[+ clone repo]":
-			return handleCloneRepo(pf, opts, isoMode, sandboxed)
+			return handleCloneRepo(pf, opts, isoCaps)
 
 		default:
 			p := chosen.path
 			switch {
 			case git.IsBareRepo(p):
-				return handleBareRepo(p, pf, opts, isoMode, sandboxed)
+				return handleBareRepo(p, pf, opts, isoCaps)
 			case git.IsRegularRepo(p):
-				return handleRegularRepo(p, pf, opts, isoMode, sandboxed)
+				return handleRegularRepo(p, pf, opts, isoCaps)
 			default:
 				o := opts
-				if sandboxed && pf != nil {
+				if isoCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoMode == config.IsolationBwrap && o.ConfigContent != "" {
+				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
 					tmuxSessionName := session.NameFor(p, "")
 					containerName := container.NameForSession(tmuxSessionName)
 					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {

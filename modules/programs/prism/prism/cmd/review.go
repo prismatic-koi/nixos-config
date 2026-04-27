@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -176,14 +177,16 @@ func runReview(cmd *cobra.Command, args []string) error {
 		isoMode = config.IsolationMode(dbIsoMode)
 	}
 
+	// Look up the isolation capabilities for this mode. All per-mode branching
+	// below reads from isoCaps rather than comparing against raw mode constants.
+	isoCaps := container.CapabilitiesFor(isoMode)
+
 	// Concurrency cap checks: BEFORE any container-creation side effects.
 	// Both checks run after the DB isolation-mode lookup so that the cap
 	// decisions reflect the session's actual mode rather than the machine
 	// default. The PRISM_HOST_API proxy-out branch above already returned, so
 	// by this point we are guaranteed to be on the host.
-	// bwrap sessions are plain host processes — only podman triggers the container cap.
-	conCapped := isoMode == config.IsolationPodman
-	if err := checkConcurrencyCap(cmd, "review", conCapped); err != nil {
+	if err := checkConcurrencyCap(cmd, "review", isoCaps.IsContainer); err != nil {
 		return err
 	}
 	if isoMode == config.IsolationBwrap {
@@ -261,7 +264,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 	})
 
 	// Build run options.
-	effectiveContainerMode := isoMode == config.IsolationPodman
 	opts := review.Opts{
 		PRNumber:       prNumber,
 		ParentSession:  parentSession,
@@ -271,7 +273,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Harness:        harnessFlag,
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
-		ContainerMode:  effectiveContainerMode,
+		ContainerMode:  isoCaps.IsContainer,
 		IsolationMode:  string(isoMode),
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
@@ -289,7 +291,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// so the sandbox picks up the host's ~/.config/opencode/opencode.json (wrong
 	// agent identity). Surface this as an explicit error rather than silently
 	// spawning broken agents.
-	if isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec {
+	if isoCaps.NeedsConfigBlob {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr != nil {
 			return fmt.Errorf("prism review: %s mode requires profiles.json but it could not be loaded: %w\nhint: ensure the system has been rebuilt with the prism NixOS module enabled", isoMode, pfErr)

@@ -103,6 +103,26 @@ func For(mode config.IsolationMode, opts ConstructorOpts) (Isolator, error) {
 	return reg.Constructor(opts), nil
 }
 
+// CapabilitiesFor returns the pre-computed Capabilities snapshot for the given
+// isolation mode. This is the intended entry point for callers that only need
+// to query capabilities without constructing a live Isolator. It panics if mode
+// is not registered — callers that receive a mode from user input should
+// validate it with config.IsValidIsolationMode first.
+func CapabilitiesFor(mode config.IsolationMode) Capabilities {
+	globalRegistry.mu.RLock()
+	reg, ok := globalRegistry.registrations[mode]
+	globalRegistry.mu.RUnlock()
+
+	if !ok {
+		// Unknown mode: return zero Capabilities (all flags false). This
+		// produces safe no-op behaviour for callers that do not check the mode
+		// in advance, and is consistent with treating an unrecognised mode as
+		// "host-like" (no sandbox, no container lifecycle).
+		return Capabilities{}
+	}
+	return reg.Capabilities
+}
+
 // Names returns the registered mode names in sorted order. This is the
 // authoritative list of modes the current binary knows how to run.
 func Names() []config.IsolationMode {

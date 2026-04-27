@@ -290,7 +290,10 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		isoMode = cfg.EffectiveIsolationMode()
 	}
 
-	containerMode := isoMode == config.IsolationPodman
+	// Look up the isolation capabilities for this mode. All per-mode branching
+	// below reads from isoCaps rather than comparing against raw mode constants.
+	isoCaps := container.CapabilitiesFor(isoMode)
+
 	opencodeSession := ""
 	if s.HarnessSessionID != nil {
 		opencodeSession = *s.HarnessSessionID
@@ -315,12 +318,12 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		SessionName:      s.SessionName,
 		Layout:           session.LayoutFull,
 		SkipStatusSeed:   true,
-		ContainerMode:    containerMode,
+		ContainerMode:    isoCaps.IsContainer,
 		IsolationMode:    string(isoMode),
 		ConfigEnvVarName: restoreHarness.ConfigEnvVar(),
 		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),
 	}
-	if containerMode {
+	if isoCaps.IsContainer {
 		opts.PluginHostPath = cfg.SidecarPluginPath
 	}
 
@@ -332,8 +335,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	//
 	// Host-mode sessions skip this entirely because they run opencode directly
 	// with the host's real ~/.config/opencode/opencode.json via xdg.configFile.
-	sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
-	if sandboxed {
+	if isoCaps.NeedsConfigBlob {
 		pf, pfErr := loadRestoreProfiles()
 		if pfErr != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: load profiles: %v — skipping config injection\n", s.SessionName, pfErr)
@@ -371,7 +373,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
 		// So we must pass the container name (not the raw tmux session name) to
 		// WriteOpencodeConfig. This mirrors the pattern in spawn.go.
-		if isoMode == config.IsolationBwrap && opts.ConfigContent != "" {
+		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			containerName := container.NameForSession(s.SessionName)
 			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
 				// Non-fatal: log and continue with restore. The session will
@@ -407,7 +409,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// removeContainerIfExists is idempotent and logs non-fatal errors
 	// internally, so it is safe to call even when no container exists.
 	// Host-mode sessions never have a container, so this step is skipped.
-	if containerMode {
+	if isoCaps.IsContainer {
 		removeContainerIfExists(s.SessionName)
 	}
 

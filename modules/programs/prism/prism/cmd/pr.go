@@ -75,13 +75,14 @@ var prCmd = &cobra.Command{
 
 		cfg := config.Load()
 		isoMode := cfg.EffectiveIsolationMode()
-		effectiveContainerMode := isoMode == config.IsolationPodman
-		// bwrap sessions are plain host processes — only podman triggers the container cap.
-		conCapped := isoMode == config.IsolationPodman
+
+		// Look up the isolation capabilities for this mode. All per-mode branching
+		// below reads from isoCaps rather than comparing against raw mode constants.
+		isoCaps := container.CapabilitiesFor(isoMode)
 
 		// Concurrency cap checks: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
-		if err := checkConcurrencyCap(cmd, "pr", conCapped); err != nil {
+		if err := checkConcurrencyCap(cmd, "pr", isoCaps.IsContainer); err != nil {
 			return err
 		}
 		if isoMode == config.IsolationBwrap {
@@ -110,9 +111,8 @@ var prCmd = &cobra.Command{
 		// This block fires for podman, bwrap, and sandbox-exec isolation modes.
 		// Host-mode sessions skip it because they run opencode directly with the
 		// host's real ~/.config/opencode/opencode.json via xdg.configFile.
-		sandboxed := isoMode == config.IsolationPodman || isoMode == config.IsolationBwrap || isoMode == config.IsolationSandboxExec
 		var configContent string
-		if sandboxed {
+		if isoCaps.NeedsConfigBlob {
 			pf, pfErr := config.LoadProfiles()
 			if pfErr != nil {
 				return pfErr
@@ -163,7 +163,7 @@ var prCmd = &cobra.Command{
 		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
 		// So we must pass the container name (not the raw tmux session name) to
 		// WriteOpencodeConfig. This mirrors the pattern in spawn.go.
-		if isoMode == config.IsolationBwrap && configContent != "" {
+		if isoCaps.NeedsConfigBlob && configContent != "" {
 			tmuxSessionName := session.NameFor(worktreePath, bareRoot)
 			containerName := container.NameForSession(tmuxSessionName)
 			if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
@@ -176,7 +176,7 @@ var prCmd = &cobra.Command{
 			Prompt:           promptFlag,
 			Agent:            agentFlag,
 			Headless:         !attachFlag,
-			ContainerMode:    effectiveContainerMode,
+			ContainerMode:    isoCaps.IsContainer,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigContent:    configContent,

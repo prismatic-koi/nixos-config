@@ -47,6 +47,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
@@ -148,6 +149,11 @@ type Config struct {
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
+	// IsolationMode is the effective isolation mode for this session (e.g.
+	// "podman", "bwrap", "sandbox-exec", or "host"). It is used to derive
+	// capability flags via container.CapabilitiesFor so that Run can branch on
+	// typed caps rather than raw mode strings or the Container!=nil proxy.
+	IsolationMode config.IsolationMode
 	// Container, when non-nil, enables container mode: the sidecar creates and
 	// manages a podman container running opencode in combined TUI + HTTP mode
 	// instead of relying on a directly-launched opencode process.
@@ -178,11 +184,11 @@ type Config struct {
 	PrismBinaryPath string
 	// StartupConnectTimeout is the duration the sidecar waits for the first
 	// SSE event before concluding the harness never bound to its port and
-	// transitioning to StateError via writeStartupError. Only applies to
-	// bwrap mode (Container == nil): podman mode uses WaitHealthy/CreateSession
-	// for the same protection. Defaults to DefaultStartupConnectTimeout (5m)
-	// when zero. Set to a small value in tests to exercise the timeout path
-	// without real wall-clock waits.
+	// transitioning to StateError via writeStartupError. Only applies when
+	// NeedsStartupConnectTimeout is true (currently bwrap mode): podman mode
+	// uses WaitHealthy/CreateSession for the same protection. Defaults to
+	// DefaultStartupConnectTimeout (5m) when zero. Set to a small value in
+	// tests to exercise the timeout path without real wall-clock waits.
 	StartupConnectTimeout time.Duration
 	// HarnessBinaryPath is the path to the harness binary used by
 	// runStartupStdio for TransportStdioPipe harnesses. The binary is launched
@@ -510,7 +516,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Startup-connect timeout: bwrap mode only.
+	// Startup-connect timeout: applies only to modes where NeedsStartupConnectTimeout
+	// is true (currently bwrap).
 	//
 	// In bwrap mode the harness is launched by agent-run from a tmux pane, not
 	// by the sidecar. The sidecar's only signal of harness liveness is whether
@@ -521,9 +528,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// to StateError (same mechanism as #1011's WaitHealthy/CreateSession paths)
 	// and cancel the SSE loop so the sidecar exits cleanly.
 	//
-	// Container != nil means podman mode, which already has WaitHealthy/
-	// CreateSession covering startup failures — skip the timeout there.
-	if s.cfg.Container == nil {
+	// Podman mode already has WaitHealthy/CreateSession covering startup
+	// failures, so NeedsStartupConnectTimeout is false there.
+	if container.CapabilitiesFor(s.cfg.IsolationMode).NeedsStartupConnectTimeout {
 		startupTimeout := s.cfg.StartupConnectTimeout
 		if startupTimeout == 0 {
 			startupTimeout = DefaultStartupConnectTimeout
@@ -678,13 +685,13 @@ func (s *Sidecar) Shutdown() {
 // harnesses (e.g. opencode). It is called from Run when the harness transport
 // shape is TransportHTTPPort (or when HarnessName is empty for back-compat).
 //
-// When Config.Container is nil (bwrap / host mode), this function is a no-op:
-// the harness is already running and the SSE loop connects directly. The
+// When OwnsContainerLifecycle is false (bwrap / host mode), this function is a
+// no-op: the harness is already running and the SSE loop connects directly. The
 // container startup sequence (mgr.Create → WaitHealthy → CreateSession →
 // OnReady → DeliverInitialPrompt) is only performed in podman container mode.
 func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 	// Container mode: create and health-check the container before connecting.
-	if s.cfg.Container != nil {
+	if container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
 		sessionStart := time.Now()
 
 		// On Darwin, start a TCP listener on 0.0.0.0:0 BEFORE container creation

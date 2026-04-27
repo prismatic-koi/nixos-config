@@ -1414,11 +1414,12 @@ func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_PodmanMode_NoTempFileWritten verifies that podman-mode
-// restore does NOT write the opencode temp file via the new code path — the
-// podman sidecar's Create() flow handles that file itself. Writing it in
-// restore.go for podman would be a no-op at best and a source of drift at worst.
-func TestRestoreSession_PodmanMode_NoTempFileWritten(t *testing.T) {
+// TestRestoreSession_PodmanMode_TempFileWritten verifies that podman-mode
+// restore writes the opencode temp file when NeedsConfigBlob is true. Although
+// the podman sidecar's Create() path also writes this file, the pre-write in
+// restore.go is an idempotent precondition — both writes use the same content
+// source (ContainerConfigForRole) and the same deterministic path.
+func TestRestoreSession_PodmanMode_TempFileWritten(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
@@ -1452,10 +1453,12 @@ func TestRestoreSession_PodmanMode_NoTempFileWritten(t *testing.T) {
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	// Podman mode: restore.go must NOT preemptively write the temp file.
-	// The sidecar's own Create() path writes it just before container start.
-	if _, err := os.Stat(expectedPath); err == nil {
-		t.Errorf("podman restore wrote opencode temp file at %q — must not write for podman (sidecar handles it)",
-			expectedPath)
+	// Podman mode: NeedsConfigBlob=true, so restore.go writes the temp file.
+	// This is idempotent — the sidecar's Create() path will write it again
+	// (same content). The write here ensures the file is present even if the
+	// sidecar is restarted without a full container create.
+	if _, err := os.Stat(expectedPath); err != nil {
+		t.Errorf("podman restore did not write opencode temp file at %q — expected file when NeedsConfigBlob=true: %v",
+			expectedPath, err)
 	}
 }

@@ -272,12 +272,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Derive the legacy ContainerMode boolean for callers that still use it.
-	effectiveContainerMode := isolationMode == config.IsolationPodman
+	// Look up the isolation capabilities for this mode. All per-mode branching
+	// below reads from isoCaps rather than comparing against raw mode constants.
+	isoCaps := container.CapabilitiesFor(isolationMode)
 
 	// Container availability check: when container mode is active verify
 	// podman is available before touching anything.
-	if isolationMode == config.IsolationPodman {
+	if isoCaps.IsContainer {
 		if err := container.CheckAvailability(); err != nil {
 			return err
 		}
@@ -288,8 +289,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// The podman cap guards host memory against container overhead.
 	// The bwrap cap guards against process-count exhaustion from uncapped
 	// bwrap sessions (each is a host process with no per-session memory ceil).
-	conCapped := isolationMode == config.IsolationPodman
-	if err := checkConcurrencyCap(cmd, "spawn", conCapped); err != nil {
+	if err := checkConcurrencyCap(cmd, "spawn", isoCaps.IsContainer); err != nil {
 		return err
 	}
 	if isolationMode == config.IsolationBwrap {
@@ -309,7 +309,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		var loadErr error
 		pf, loadErr = config.LoadProfiles()
 		if loadErr != nil {
-			if effectiveContainerMode || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec || profileFlag != "" {
+			if isoCaps.NeedsConfigBlob || profileFlag != "" {
 				return loadErr
 			}
 			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
@@ -355,8 +355,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	//
 	// DefaultAgent (not DefaultAgentForSession) is intentional: at spawn time the
 	// session has no DB row yet, so this call ASSIGNS the role rather than reading it.
-	sandboxed := isolationMode == config.IsolationPodman || isolationMode == config.IsolationBwrap || isolationMode == config.IsolationSandboxExec
-	if sandboxed && pf != nil {
+	if isoCaps.NeedsConfigBlob && pf != nil {
 		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
 		// Non-worktree paths (effectiveRole == "") use the coordinator config blob
 		// so that build/plan agents are available, but pass no --agent flag.
@@ -403,7 +402,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
 	// calls OpencodeConfigFilePath(m.name). So we must pass the container name
 	// (not the raw tmux session name) to WriteOpencodeConfig.
-	if isolationMode == config.IsolationBwrap && configContent != "" {
+	if isoCaps.NeedsConfigBlob && configContent != "" {
 		tmuxSessionName := session.NameFor(worktreePath, bareRoot)
 		containerName := container.NameForSession(tmuxSessionName)
 		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
@@ -438,7 +437,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Prompt:           promptFlag,
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
-		ContainerMode:    effectiveContainerMode,
+		ContainerMode:    isoCaps.IsContainer,
 		IsolationMode:    string(isolationMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
 		ConfigEnvVarName: h.ConfigEnvVar(),
@@ -460,7 +459,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
 	// receive env vars via podman --env flags in the sidecar.
-	if pf != nil && !effectiveContainerMode {
+	if pf != nil && !isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = pf.AgentEnvVars
 	}
 
