@@ -187,9 +187,9 @@ type ResolveInput struct {
 	// Deprecated: A.4 removes this column after backfilling isolation_mode.
 	DBHostMode bool
 
-	// ConfigDefault is the result of cfg.EffectiveIsolationMode() — the
-	// machine-level default from config.json (with ContainerMode back-compat
-	// already applied by the Config method).
+	// ConfigDefault is the machine-level default from config.json
+	// (cfg.DefaultIsolationMode). Always set to a valid mode; the compiled-in
+	// fallback is "host".
 	ConfigDefault config.IsolationMode
 
 	// ContainerMode is the deprecated Opts.ContainerMode / SpawnOpts.ContainerMode

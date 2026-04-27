@@ -70,17 +70,8 @@ type Config struct {
 	KittyBin string `json:"kitty_bin"`
 
 	// Sidecar container settings.
-	// ContainerMode, when true, causes spawn and switch to run opencode inside
-	// a podman container managed by the sidecar, using "podman attach" in the
-	// agent window rather than launching opencode directly.
-	// Deprecated: use DefaultIsolationMode instead. When DefaultIsolationMode
-	// is present it takes precedence; ContainerMode is derived from it for
-	// back-compat (ContainerMode == (DefaultIsolationMode == "podman")).
-	ContainerMode bool `json:"container_mode"`
-
 	// DefaultIsolationMode is the machine-level default isolation mode for new
-	// agent sessions. Valid values: "podman", "bwrap", "host". When absent,
-	// falls back to ContainerMode for back-compat (true → "podman", false → "host").
+	// agent sessions. Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	DefaultIsolationMode IsolationMode `json:"default_isolation_mode,omitempty"`
 	// SidecarPluginPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin.
@@ -135,7 +126,6 @@ type parsedConfig struct {
 	ColorForeground                string    `json:"color_foreground"`
 	ColorBg0                       string    `json:"color_bg0"`
 	KittyBin                       string    `json:"kitty_bin"`
-	ContainerMode                  *bool     `json:"container_mode"`
 	DefaultIsolationMode           string    `json:"default_isolation_mode"`
 	SidecarPluginPath              string    `json:"sidecar_plugin_path"`
 	GitUserName                    string    `json:"git_user_name"`
@@ -161,22 +151,23 @@ const DefaultBwrapConcurrencyCap = 20
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
 	return Config{
-		ColorPrimary:        "#d4be98",
-		ColorSecondary:      "#a89984",
-		ColorPurple:         "#d3869b",
-		ColorYellow:         "#d8a657",
-		ColorGreen:          "#a9b665",
-		ColorBlue:           "#7daea3",
-		ColorRed:            "#ea6962",
-		ColorForeground:     "#d3c6aa",
-		ColorBg0:            "#2d353b",
-		KittyBin:            "kitty",
-		SshAccessKeyName:    "prismatic-koi-ed25519",
-		SshSigningKeyName:   "prismatic-koi-ed25519-signingkey",
-		BwrapConcurrencyCap: DefaultBwrapConcurrencyCap,
-		WorktreeExclude:     []string{"obsidian"},
-		ProjectLocations:    []string{"~/code"},
-		ProjectSpecific:     []string{"~/documents/obsidian"},
+		ColorPrimary:         "#d4be98",
+		ColorSecondary:       "#a89984",
+		ColorPurple:          "#d3869b",
+		ColorYellow:          "#d8a657",
+		ColorGreen:           "#a9b665",
+		ColorBlue:            "#7daea3",
+		ColorRed:             "#ea6962",
+		ColorForeground:      "#d3c6aa",
+		ColorBg0:             "#2d353b",
+		KittyBin:             "kitty",
+		DefaultIsolationMode: IsolationHost,
+		SshAccessKeyName:     "prismatic-koi-ed25519",
+		SshSigningKeyName:    "prismatic-koi-ed25519-signingkey",
+		BwrapConcurrencyCap:  DefaultBwrapConcurrencyCap,
+		WorktreeExclude:      []string{"obsidian"},
+		ProjectLocations:     []string{"~/code"},
+		ProjectSpecific:      []string{"~/documents/obsidian"},
 	}
 }
 
@@ -251,20 +242,13 @@ func load() Config {
 	if parsed.KittyBin != "" {
 		cfg.KittyBin = parsed.KittyBin
 	}
-	// DefaultIsolationMode takes precedence when present and valid.
-	// When absent, fall back to ContainerMode for back-compat.
+	// DefaultIsolationMode: use the parsed value when present and valid;
+	// otherwise keep the compiled-in default (IsolationHost).
+	// Unknown values (including legacy "container_mode" keys) are silently
+	// ignored — Go's JSON decoder drops unknown keys, and invalid mode strings
+	// are treated as absent.
 	if parsed.DefaultIsolationMode != "" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
 		cfg.DefaultIsolationMode = IsolationMode(parsed.DefaultIsolationMode)
-		// Derive ContainerMode from the new field for back-compat callers.
-		cfg.ContainerMode = cfg.DefaultIsolationMode == IsolationPodman
-	} else if parsed.ContainerMode != nil {
-		cfg.ContainerMode = *parsed.ContainerMode
-		// Derive DefaultIsolationMode from ContainerMode for back-compat.
-		if cfg.ContainerMode {
-			cfg.DefaultIsolationMode = IsolationPodman
-		} else {
-			cfg.DefaultIsolationMode = IsolationHost
-		}
 	}
 	if parsed.SidecarPluginPath != "" {
 		cfg.SidecarPluginPath = parsed.SidecarPluginPath
@@ -344,20 +328,6 @@ func (c Config) CircuitBreakerThreshold() int {
 		return 0
 	}
 	return n
-}
-
-// EffectiveIsolationMode returns the effective isolation mode, applying
-// defaults and back-compat logic. When DefaultIsolationMode is set and valid
-// it is returned directly. Otherwise ContainerMode is used for back-compat:
-// true → "podman", false → "host".
-func (c Config) EffectiveIsolationMode() IsolationMode {
-	if c.DefaultIsolationMode != "" {
-		return c.DefaultIsolationMode
-	}
-	if c.ContainerMode {
-		return IsolationPodman
-	}
-	return IsolationHost
 }
 
 // configFilePath returns the path to look for the config file.

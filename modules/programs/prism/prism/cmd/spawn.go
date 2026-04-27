@@ -156,7 +156,7 @@ func init() {
 //
 //  1. --isolation flag (explicit override), validated against known values
 //  2. --host-mode flag (deprecated alias for "host")
-//  3. cfg.EffectiveIsolationMode() (from config.json)
+//  3. cfg.DefaultIsolationMode (from config.json; defaults to "host")
 //
 // Returns an error if both --isolation and --host-mode are set, or if
 // --isolation has an unknown value, or if the resolved mode is "bwrap" on
@@ -199,8 +199,8 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 		return config.IsolationHost, nil
 	}
 
-	// Fall back to config.json default.
-	mode := cfg.EffectiveIsolationMode()
+	// Fall back to config.json default (always set; compiled-in default is "host").
+	mode := cfg.DefaultIsolationMode
 	if err := checkBwrapPlatform(mode); err != nil {
 		return "", err
 	}

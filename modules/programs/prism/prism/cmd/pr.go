@@ -74,7 +74,7 @@ var prCmd = &cobra.Command{
 		}
 
 		cfg := config.Load()
-		isoMode := cfg.EffectiveIsolationMode()
+		isoMode := cfg.DefaultIsolationMode
 
 		// Look up the isolation capabilities for this mode. All per-mode branching
 		// below reads from isoCaps rather than comparing against raw mode constants.

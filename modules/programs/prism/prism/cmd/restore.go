@@ -287,7 +287,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		// fall back to the global config's effective isolation mode.
 		// This restores pre-v10 sessions with the same mode the machine
 		// is currently configured for.
-		isoMode = cfg.EffectiveIsolationMode()
+		isoMode = cfg.DefaultIsolationMode
 	}
 
 	// Look up the isolation capabilities for this mode. All per-mode branching
