@@ -6,7 +6,8 @@
 }:
 let
   github-nvim-theme = pkgs.vimUtils.buildVimPlugin {
-    name = "github-nvim-theme";
+    pname = "github-nvim-theme";
+    version = "unstable";
     src = pkgs.fetchFromGitHub {
       owner = "projekt0n";
       repo = "github-nvim-theme";

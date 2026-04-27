@@ -6,7 +6,8 @@
 }:
 let
   nightcity-theme = pkgs.vimUtils.buildVimPlugin {
-    name = "nightcity-theme";
+    pname = "nightcity-theme";
+    version = "unstable";
     src = pkgs.fetchFromGitHub {
       owner = "cryptomilk";
       repo = "nightcity.nvim";

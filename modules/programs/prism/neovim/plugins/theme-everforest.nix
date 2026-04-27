@@ -6,7 +6,8 @@
 }:
 let
   everforest-nvim = pkgs.vimUtils.buildVimPlugin {
-    name = "everforest-nvim";
+    pname = "everforest-nvim";
+    version = "unstable";
     src = pkgs.fetchFromGitHub {
       owner = "neanias";
       repo = "everforest-nvim";

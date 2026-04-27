@@ -5,7 +5,8 @@
 }:
 let
   live-server-nvim = pkgs.vimUtils.buildVimPlugin {
-    name = "live-server-nvim";
+    pname = "live-server-nvim";
+    version = "unstable";
     src = pkgs.fetchFromGitHub {
       owner = "selimacerbas";
       repo = "live-server.nvim";
@@ -14,7 +15,8 @@ let
     };
   };
   markdown-preview-nvim = pkgs.vimUtils.buildVimPlugin {
-    name = "markdown-preview-nvim";
+    pname = "markdown-preview-nvim";
+    version = "unstable";
     nvimSkipModules = [ "markdown_preview" ];
     src = pkgs.fetchFromGitHub {
       owner = "selimacerbas";
