@@ -68,6 +68,13 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 // repo context, so runSpawn will fail later with a different error (e.g.
 // "not inside a git repo"). The test just asserts the error is NOT a harness
 // validation error, proving that validation passed.
+//
+// IMPORTANT ISOLATION: PRISM_SPAWN_PATH must be set to a non-git directory so
+// that resolveBareRoot() uses that path directly and returns "not inside a git
+// repo" without calling tmux.CurrentPanePath(). If PRISM_SPAWN_PATH is empty,
+// resolveBareRoot falls through to CurrentPanePath which reads the live tmux
+// pane path — potentially a nixos-config worktree — causing runSpawn to create
+// real worktrees, DB rows, and tmux sessions in the live environment. See #1180.
 func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
@@ -85,14 +92,21 @@ func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 	_ = cmd.Flags().Set("harness", "opencode")
 
 	t.Setenv("PRISM_HOST_API", "")
-	// Clear PRISM_SPAWN_PATH so tmux is not called.
-	t.Setenv("PRISM_SPAWN_PATH", "")
+	// Set PRISM_SPAWN_PATH to a non-git temp dir so resolveBareRoot uses it
+	// directly and returns "not inside a git repo" without calling
+	// tmux.CurrentPanePath(). An empty value would fall through to
+	// CurrentPanePath which reads the live pane path and could trigger real
+	// session creation if the live pane is inside a prism bare repo (#1180).
+	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
 	// PRISM_BARE_ROOT points to nowhere — runSpawn will fail, but not on harness.
 	t.Setenv("PRISM_BARE_ROOT", "")
+	// Redirect TmuxBin to a no-op stub so no live tmux server is contacted
+	// even if an unexpected code path reaches tmux commands.
+	withNoopTmux(t)
 
 	err := runSpawn(cmd, nil)
-	// We expect a non-nil error (no git repo, no tmux pane), but it must not be
-	// a harness validation error.
+	// We expect a non-nil error (no git repo), but it must not be a harness
+	// validation error.
 	if err != nil && strings.Contains(err.Error(), "unknown harness") {
 		t.Errorf("runSpawn with --harness opencode returned harness validation error: %v", err)
 	}
@@ -103,6 +117,7 @@ func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 //
 // Same approach as TestRunSpawn_HarnessOpencode_Explicit_PassesValidation: the
 // command will fail after the harness check, but not on the harness itself.
+// See that test's IMPORTANT ISOLATION comment for the PRISM_SPAWN_PATH rationale.
 func TestRunSpawn_HarnessDefault_PassesValidation(t *testing.T) {
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
@@ -119,8 +134,11 @@ func TestRunSpawn_HarnessDefault_PassesValidation(t *testing.T) {
 	// No --harness flag set — stays at default "opencode".
 
 	t.Setenv("PRISM_HOST_API", "")
-	t.Setenv("PRISM_SPAWN_PATH", "")
+	// See TestRunSpawn_HarnessOpencode_Explicit_PassesValidation for why
+	// PRISM_SPAWN_PATH must be a non-git temp dir rather than empty string.
+	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
 	t.Setenv("PRISM_BARE_ROOT", "")
+	withNoopTmux(t)
 
 	err := runSpawn(cmd, nil)
 	if err != nil && strings.Contains(err.Error(), "unknown harness") {
