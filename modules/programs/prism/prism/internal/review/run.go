@@ -160,6 +160,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
 			RuntimeEnvVars:   opts.RuntimeEnvVars,
+			HarnessName:      opts.Harness,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -378,6 +379,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			WorktreeReadOnly: true,
 			GroupID:          groupID,
 			RuntimeEnvVars:   opts.RuntimeEnvVars,
+			HarnessName:      opts.Harness,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
