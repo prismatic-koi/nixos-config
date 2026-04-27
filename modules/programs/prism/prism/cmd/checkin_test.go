@@ -1294,22 +1294,21 @@ func TestRunCheckinReviewRoundsByGroup(t *testing.T) {
 	}
 }
 
-// TestRunCheckin_DBGroupPathTakesPrecedence verifies that when a session arg is
-// a registered parent_session in session_groups, runCheckin routes to the DB
-// path (runCheckinReviewRoundsByGroup) even when the session name does NOT end
-// with "~review". The DB path must take precedence over the name heuristic.
+// TestRunCheckin_NoReviewDivertWithoutSuffix verifies that a session that has a
+// registered review group in session_groups is NOT diverted to the review
+// summary view when checked in without the "~review" suffix. The session's own
+// conversation must be shown instead.
 //
-// This test wires up the checkin command's flag set (so GetBool/GetInt work)
-// and calls runCheckin directly.
-func TestRunCheckin_DBGroupPathTakesPrecedence(t *testing.T) {
+// This is a regression test for the bug where HasReviewGroup fired
+// unconditionally and hijacked the plain "prism checkin <session>" path.
+func TestRunCheckin_NoReviewDivertWithoutSuffix(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 
 	d := openCheckinTestDB(t)
 
-	// Use a parent session whose name does NOT end with "~review" — this
-	// ensures the DB path must fire, not the name heuristic.
-	parentSession := "repo@non-review-parent"
-	reviewerSession := "repo@non-review-parent~review-1-review-code"
+	// Parent session that has run "prism review" — it has a registered group.
+	parentSession := "repo@worker-session"
+	reviewerSession := "repo@worker-session~review-1-review-code"
 	base := time.Now().Truncate(time.Second)
 
 	groupID, err := d.RegisterGroup(parentSession)
@@ -1322,8 +1321,14 @@ func TestRunCheckin_DBGroupPathTakesPrecedence(t *testing.T) {
 	if err := d.SetGroupID(reviewerSession, groupID); err != nil {
 		t.Fatalf("SetGroupID: %v", err)
 	}
-	writeEvent(t, d, "evt-grp-1", reviewerSession, "msg_assistant",
-		assistantPayload("msg-grp-1", "group path test"), base)
+
+	// Write events for the parent session's own conversation.
+	writeEvent(t, d, "evt-parent-1", parentSession, "msg_assistant",
+		assistantPayload("msg-parent-1", "worker own conversation"), base)
+
+	// Write events for the reviewer session too (review summary would show these).
+	writeEvent(t, d, "evt-review-1", reviewerSession, "msg_assistant",
+		assistantPayload("msg-review-1", "reviewer output should not appear"), base.Add(time.Second))
 
 	SetTestDBPath(d.Path())
 	t.Cleanup(func() { SetTestDBPath("") })
@@ -1335,20 +1340,80 @@ func TestRunCheckin_DBGroupPathTakesPrecedence(t *testing.T) {
 	cmd.Flags().String("from", "", "")
 	cmd.Flags().String("before", "", "")
 	cmd.Flags().String("types", "", "")
-	cmd.Flags().Bool("verbose", false, "")
+	cmd.Flags().BoolP("verbose", "v", false, "")
 
-	// runCheckin with the parent session name (no "~review" suffix).
-	// The DB path (HasReviewGroup) must route to runCheckinReviewRoundsByGroup.
+	// Call runCheckin WITHOUT "~review" suffix — must show parent session conversation.
 	out := captureStdout(t, func() {
 		if err := runCheckin(cmd, []string{parentSession}); err != nil {
-			t.Logf("runCheckin returned error (may be acceptable): %v", err)
+			t.Logf("runCheckin returned error: %v", err)
 		}
 	})
 
-	// The reviewer session must appear in the output — it was found via DB group membership.
+	// Parent session's own conversation must appear.
+	if !strings.Contains(out, "worker own conversation") {
+		t.Errorf("runCheckin without ~review: parent session conversation missing\ngot:\n%s", out)
+	}
+
+	// Review summary output must NOT appear (it would contain the reviewer session name).
+	if strings.Contains(out, "reviewer output should not appear") {
+		t.Errorf("runCheckin without ~review: was diverted to review summary — reviewer output appeared\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "review sessions for") {
+		t.Errorf("runCheckin without ~review: was diverted to review summary view\ngot:\n%s", out)
+	}
+}
+
+// TestRunCheckin_ReviewSuffixRoutesToReviewSummary verifies that when the
+// session arg ends with "~review", runCheckin routes to the DB-backed review
+// summary (runCheckinReviewRoundsByGroup) when the parent has a registered group.
+func TestRunCheckin_ReviewSuffixRoutesToReviewSummary(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	d := openCheckinTestDB(t)
+
+	parentSession := "repo@worker-with-review"
+	reviewerSession := "repo@worker-with-review~review-1-review-code"
+	base := time.Now().Truncate(time.Second)
+
+	groupID, err := d.RegisterGroup(parentSession)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.UpsertStatus(reviewerSession, "repo", "/code/repo", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus reviewer: %v", err)
+	}
+	if err := d.SetGroupID(reviewerSession, groupID); err != nil {
+		t.Fatalf("SetGroupID: %v", err)
+	}
+	writeEvent(t, d, "evt-rev-1", reviewerSession, "msg_assistant",
+		assistantPayload("msg-rev-1", "review summary content"), base)
+
+	SetTestDBPath(d.Path())
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Build a minimal cobra.Command with the flags that runCheckin reads.
+	cmd := &cobra.Command{}
+	cmd.Flags().Bool("all", false, "")
+	cmd.Flags().Int("last", 10, "")
+	cmd.Flags().String("from", "", "")
+	cmd.Flags().String("before", "", "")
+	cmd.Flags().String("types", "", "")
+	cmd.Flags().BoolP("verbose", "v", false, "")
+
+	// Call runCheckin WITH "~review" suffix — must route to review summary.
+	out := captureStdout(t, func() {
+		if err := runCheckin(cmd, []string{parentSession + "~review"}); err != nil {
+			t.Logf("runCheckin ~review returned error: %v", err)
+		}
+	})
+
+	// Review summary output must appear (reviewer session listed).
 	if !strings.Contains(out, reviewerSession) && !strings.Contains(out, "review-code") {
-		t.Errorf("runCheckin DB group path: output does not mention reviewer session %q\ngot:\n%s",
+		t.Errorf("runCheckin with ~review: review summary missing reviewer session %q\ngot:\n%s",
 			reviewerSession, out)
+	}
+	if !strings.Contains(out, "review sessions for") {
+		t.Errorf("runCheckin with ~review: review summary header missing\ngot:\n%s", out)
 	}
 }
 
