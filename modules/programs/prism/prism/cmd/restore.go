@@ -318,7 +318,6 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		SessionName:      s.SessionName,
 		Layout:           session.LayoutFull,
 		SkipStatusSeed:   true,
-		ContainerMode:    isoCaps.IsContainer,
 		IsolationMode:    string(isoMode),
 		ConfigEnvVarName: restoreHarness.ConfigEnvVar(),
 		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),

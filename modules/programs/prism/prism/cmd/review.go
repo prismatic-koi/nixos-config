@@ -265,7 +265,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Harness:        harnessFlag,
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
-		ContainerMode:  isoCaps.IsContainer,
 		IsolationMode:  string(isoMode),
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,

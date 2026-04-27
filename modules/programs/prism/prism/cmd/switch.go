@@ -275,7 +275,6 @@ var switchCmd = &cobra.Command{
 		switchHarness, _ := harness.New("opencode", "", nil, "", "")
 		opts := session.Opts{
 			Fresh:            fresh,
-			ContainerMode:    isoCaps.IsContainer,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigEnvVarName: switchHarness.ConfigEnvVar(),

@@ -437,7 +437,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Prompt:           promptFlag,
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
-		ContainerMode:    isoCaps.IsContainer,
 		IsolationMode:    string(isolationMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
 		ConfigEnvVarName: h.ConfigEnvVar(),

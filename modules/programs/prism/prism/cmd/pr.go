@@ -176,7 +176,6 @@ var prCmd = &cobra.Command{
 			Prompt:           promptFlag,
 			Agent:            agentFlag,
 			Headless:         !attachFlag,
-			ContainerMode:    isoCaps.IsContainer,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigContent:    configContent,
