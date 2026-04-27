@@ -614,20 +614,49 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 	return b.BuildArgs(m), nil
 }
 
-// PrepareSandboxExec writes the SBPL profile for this session to a temp file
-// under the per-session state dir and returns the complete sandbox-exec
-// argument list via sandboxExecIsolator.BuildArgs.
+// PrepareSandboxExec prepares the per-session staging HOME, writes the SBPL
+// profile, and returns the complete sandbox-exec argument list.
 //
-// Call this from "prism agent-run" in the tmux pane for sandbox-exec mode.
+// Steps:
+//  1. PrepareSandboxExecHome() — create the staging HOME directory tree and
+//     populate it with symlinks to the host credential, config, and cache
+//     paths. On Darwin this also calls writeClaudeCredentials() so that the
+//     Keychain-extracted credentials file is reachable at
+//     $HOME/.claude/.credentials.json via the .claude symlink.
+//  2. writeProfile() — generate the SBPL profile with staging HOME,
+//     worktree, credential, and AWS deny rules, and write it to a temp file.
+//  3. Build and return the sandbox-exec argument list.
+//
 // The returned args slice is suitable for passing directly to
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). The first element of
-// args is "sandbox-exec" itself (which becomes argv[0] under syscall.Exec).
+// args is "sandbox-exec" itself (argv[0] under syscall.Exec).
 //
-// This PR (#1016) is the minimal read-only launch — no SSH config,
-// gitconfig, or opencode.json temp files are written here. Staging HOME,
-// credentials, caches, and write paths come in PR 3 (#1017); concurrency
-// cap and lifecycle hardening come in PR 4 (#1018).
+// The env passed to syscall.Exec should set HOME=<staging_home> so that
+// opencode and its tools find credentials and config at their canonical paths
+// inside the staging HOME. agent_run.go constructs that env after this call.
 func (m *Manager) PrepareSandboxExec() ([]string, error) {
+	// Populate the staging HOME with symlinks. This must happen before
+	// generateProfile() so the profile generator can call
+	// collectStagingHomeSymlinkTargets to emit (allow file-read* (literal ...))
+	// rules for every resolved symlink target.
+	//
+	// Non-fatal: if the staging HOME cannot be created (e.g. the home dir is
+	// read-only, as in the nix sandbox build environment), log a warning and
+	// continue with a degraded profile. The sandbox will still launch but will
+	// lack the staged credentials and caches.
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		log.Printf("container: sandbox-exec: prepare staging home: %v — launching with degraded profile", err)
+	}
+	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
+
+	// On Darwin, extract Claude Code credentials from the macOS Keychain and
+	// write them to a temp file. The temp file path (m.claudeCredentialsFilePath())
+	// is reachable inside the sandbox at $HOME/.claude/.credentials.json via the
+	// .claude symlink in the staging HOME (which points at host ~/.claude).
+	// The writeClaudeCredentials helper sets m.claudeCredentialsReady on success.
+	m.writeClaudeCredentials()
+
 	if _, err := writeProfile(m); err != nil {
 		return nil, err
 	}

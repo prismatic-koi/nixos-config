@@ -254,6 +254,8 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 					}
 					// Other archive errors are non-fatal — cleanup continues.
 				}
+				// Remove the sandbox-exec staging HOME for this session instance.
+				container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
@@ -536,6 +538,10 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 				}
 				// Other archive errors are non-fatal — cleanup continues.
 			}
+			// Remove the sandbox-exec staging HOME for this session instance.
+			// Non-fatal and idempotent — silently skips when the directory
+			// does not exist (e.g. non-sandbox-exec sessions).
+			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -599,6 +605,8 @@ func closeSession(session string) error {
 				}
 				// Other archive errors are non-fatal — cleanup continues.
 			}
+			// Remove the sandbox-exec staging HOME for this session instance.
+			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -674,6 +682,8 @@ func headlessCloseSession(session string) error {
 				}
 				// Other archive errors are non-fatal — cleanup continues.
 			}
+			// Remove the sandbox-exec staging HOME for this session instance.
+			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()

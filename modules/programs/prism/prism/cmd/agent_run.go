@@ -617,6 +617,16 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	if sandboxHarness != nil {
 		sandboxRuntimeEnv = sandboxHarness.RuntimeEnv()
 	}
+	// Resolve instance ID from DB status. This is required so that the
+	// staging HOME is namespaced by the same instance_id that prism cleanup
+	// uses when looking up the staging dir to remove. Without it, the staging
+	// HOME would be namespaced by the container name (m.name fallback) and
+	// cleanup would fail to find it.
+	instanceID := ""
+	if status.InstanceID != nil {
+		instanceID = *status.InstanceID
+	}
+
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -629,6 +639,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
+		InstanceID:        instanceID,
 		RuntimeEnv:        sandboxRuntimeEnv,
 		AgentEnvVars:      agentEnvVars,
 	}
@@ -656,13 +667,64 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		return err
 	}
 
-	// Filter the env passed to sandbox-exec through the same allow-list as
-	// bwrap (PATH, HOME, USER, LOGNAME, TERM, COLORTERM, LANG, LC_ALL). This
-	// is the only line of defence in this PR against host-shell secrets
-	// reaching the sandbox interior — the minimal profile does not yet
-	// rebuild the env via setenv equivalents (#1017 is where staging HOME
-	// and friends land).
+	// Build the env for sandbox-exec. The env slice is K=V pairs for syscall.Exec.
+	//
+	//  1. Start with the filtered minimal allow-list (PATH, HOME, USER, …).
+	//  2. Override HOME with the staging HOME path so that opencode and all
+	//     tools inside the sandbox find their configuration, credentials, and
+	//     caches at the canonical paths inside the staging HOME.
+	//  3. Inject credential env vars (LLM API keys, GITHUB_TOKEN) and
+	//     harness/profile runtime env vars using the same logic as bwrap.
 	env := container.MinimalIsolatedExecEnv(os.Environ())
+
+	// Override HOME → staging HOME so the sandbox sees the staged layout.
+	// The staging HOME was created by PrepareSandboxExecHome() inside
+	// PrepareSandboxExec() above. Only override HOME when the staging dir
+	// actually exists on disk — PrepareSandboxExecHome() may have failed
+	// non-fatally (e.g. read-only home dir) in which case we fall back to
+	// the host HOME so the sandbox still launches.
+	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
+		if _, statErr := os.Stat(stagingHome); statErr == nil {
+			// Replace any existing HOME= entry from MinimalIsolatedExecEnv.
+			filtered := make([]string, 0, len(env))
+			for _, kv := range env {
+				if len(kv) >= 5 && kv[:5] == "HOME=" {
+					continue
+				}
+				filtered = append(filtered, kv)
+			}
+			env = append(filtered, "HOME="+stagingHome)
+		}
+	}
+
+	// Inject credential env vars (LLM API keys, GITHUB_TOKEN). These mirror
+	// the bwrap path's credentialEnvVars injection (bwrap.go:510-512).
+	env = append(env, m.CredentialEnvVars()...)
+
+	// Inject harness-specific runtime env vars and profile AgentEnvVars.
+	// AppendSandboxEnvVars appends K=V pairs for the sandbox interior env.
+	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
+
+	// Inject prism context vars that prism CLI commands inside the sandbox
+	// depend on. Mirror the bwrap path's injection (bwrap.go:555-601).
+	//
+	// PRISM_SPAWN_PATH: the worktree path. The sandbox shares the host
+	// filesystem, so the path is the same inside and outside.
+	if ctrCfg.Worktree != "" {
+		env = append(env, "PRISM_SPAWN_PATH="+ctrCfg.Worktree)
+	}
+	// PRISM_BARE_ROOT: the bare repo root. Same reasoning as PRISM_SPAWN_PATH.
+	if ctrCfg.BareRoot != "" {
+		env = append(env, "PRISM_BARE_ROOT="+ctrCfg.BareRoot)
+	}
+	// PRISM_SESSION_NAME: the session name (e.g. "nixos-config@feature").
+	env = append(env, "PRISM_SESSION_NAME="+ctrCfg.SessionName)
+	// PRISM_HOST_API: the host-API socket path. The socket is a Unix socket
+	// on Darwin; sandbox-exec shares the host filesystem so the path is the
+	// same inside and outside the sandbox.
+	if ctrCfg.HostAPISockPath != "" {
+		env = append(env, "PRISM_HOST_API=unix://"+ctrCfg.HostAPISockPath)
+	}
 
 	// `[timing] sandbox-exec exec`: total wall time from agent-run entry to
 	// the moment of syscall.Exec. Mirrors `[timing] bwrap exec` on the bwrap
