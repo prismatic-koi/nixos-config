@@ -31,13 +31,16 @@
 package sidecar
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -181,6 +184,12 @@ type Config struct {
 	// when zero. Set to a small value in tests to exercise the timeout path
 	// without real wall-clock waits.
 	StartupConnectTimeout time.Duration
+	// HarnessBinaryPath is the path to the harness binary used by
+	// runStartupStdio for TransportStdioPipe harnesses. The binary is launched
+	// as a child process; the sidecar reads its stdout as a JSONL event stream.
+	// When empty, runStartupStdio returns an error (the path is required for
+	// stdio-pipe harnesses).
+	HarnessBinaryPath string
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -836,12 +845,33 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 	return nil
 }
 
-// runStartupStdio is the startup stub for TransportStdioPipe harnesses.
+// runStartupStdio launches a TransportStdioPipe harness binary, reads its
+// stdout as a JSONL event stream, and writes each frame as an agent event.
 //
-// This stage (B.3 Stage 1) ships the transport-shape gate seam only. Real
-// stdio harness lifecycle integration (launching the child process, managing
-// its stdin/stdout pipes, handling process exit) lands in later stages once
-// the following open questions are resolved:
+// # Wire format
+//
+// The harness binary writes one JSON object per line to stdout. Each line is a
+// "frame" with at minimum a "type" field:
+//
+//   - {"type":"state_change","state":"<state>"} — records an agent state
+//     transition; valid values mirror agent.AgentState ("started", "active",
+//     "finished", "error", …).
+//   - {"type":"msg_assistant","text":"<text>"} — records an assistant message
+//     fragment.
+//
+// Any other frame type is written as-is to agent_events with the raw JSON as
+// the payload, allowing forward compatibility.
+//
+// # Process lifecycle
+//
+// The binary is launched via exec.CommandContext so that ctx cancellation sends
+// SIGKILL to the child. The sidecar reads frames until EOF (process exited).
+// If the process exits 0 and the last state written was "finished", the session
+// is considered cleanly terminated and runStartupStdio returns nil. Any other
+// outcome (non-zero exit, process exits before any frame is read, or the last
+// frame was not state=finished) is treated as a startup error.
+//
+// # Open questions (deferred to later stages)
 //
 //   - TUI bridging: how does the user-facing PTY connect to the harness
 //     process's output? Options include a capture pipe, a tmux pane that
@@ -856,17 +886,120 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 //   - Signal handling: SIGTERM must drain in-flight stdio messages before
 //     closing the pipe and waiting for the child process to exit; the
 //     current Shutdown() path is HTTP-centric.
-//
-// For now, this function writes a startup-error event and returns an error
-// so the sidecar exits cleanly rather than hanging.
 func (s *Sidecar) runStartupStdio(ctx context.Context) error {
-	const note = "stdio harness lifecycle not yet implemented; refusing to start"
-	startupErr := fmt.Errorf(note)
-	s.mu.Lock()
-	s.upsertState(agent.StateError, nil, nil)
-	s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": note}, nil)
-	s.lastState = agent.StateError
-	s.mu.Unlock()
-	log.Printf("sidecar: runStartupStdio: %v", startupErr)
-	return startupErr
+	if s.cfg.HarnessBinaryPath == "" {
+		const note = "stdio harness lifecycle not yet implemented; refusing to start"
+		startupErr := fmt.Errorf(note)
+		s.mu.Lock()
+		s.upsertState(agent.StateError, nil, nil)
+		s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": note}, nil)
+		s.lastState = agent.StateError
+		s.mu.Unlock()
+		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		return startupErr
+	}
+
+	log.Printf("sidecar: runStartupStdio: launching harness binary %q", s.cfg.HarnessBinaryPath)
+
+	cmd := exec.CommandContext(ctx, s.cfg.HarnessBinaryPath)
+	// Inherit stderr so harness log output reaches the sidecar's log.
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		startupErr := fmt.Errorf("sidecar: runStartupStdio: stdout pipe: %w", err)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+	if err := cmd.Start(); err != nil {
+		startupErr := fmt.Errorf("sidecar: runStartupStdio: start %q: %w", s.cfg.HarnessBinaryPath, err)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	// Read JSONL frames from the harness's stdout. Each line is a JSON object.
+	var framesRead int
+	var lastState string
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		framesRead++
+
+		// Parse only the "type" field to determine routing; the full raw line
+		// is stored as the payload for every event type.
+		var frame struct {
+			Type  string `json:"type"`
+			State string `json:"state"`
+			Text  string `json:"text"`
+		}
+		if err := json.Unmarshal(line, &frame); err != nil {
+			log.Printf("sidecar: runStartupStdio: parse frame: %v (raw: %s)", err, truncateBytes(line, 200))
+			continue
+		}
+
+		log.Printf("sidecar: runStartupStdio: frame type=%q", frame.Type)
+
+		switch frame.Type {
+		case "state_change":
+			st := agent.AgentState(frame.State)
+			s.mu.Lock()
+			s.upsertState(st, nil, nil)
+			s.writeStateChange(st)
+			s.mu.Unlock()
+			lastState = frame.State
+
+		case "msg_assistant":
+			s.mu.Lock()
+			s.writeEvent("msg_assistant", map[string]string{"text": frame.Text}, nil)
+			s.mu.Unlock()
+
+		default:
+			// Forward-compatible: write the raw frame as an event of the named type.
+			s.mu.Lock()
+			s.writeEvent(frame.Type, json.RawMessage(line), nil)
+			s.mu.Unlock()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("sidecar: runStartupStdio: scanner error: %v", err)
+	}
+
+	// Wait for the child process to exit. cmd.Wait() also closes the stdout
+	// pipe, which is fine because we have already read all frames above.
+	waitErr := cmd.Wait()
+
+	if framesRead == 0 {
+		// Harness exited before writing any frames — startup failure.
+		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness %q exited before writing any frames", s.cfg.HarnessBinaryPath)
+		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	if waitErr != nil {
+		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness process exited with error: %w", waitErr)
+		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	if lastState != string(agent.StateFinished) {
+		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness exited without writing state=finished (last state: %q)", lastState)
+		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	log.Printf("sidecar: runStartupStdio: harness finished cleanly (%d frames)", framesRead)
+	return nil
+}
+
+// truncateBytes returns up to maxLen bytes of b as a string.
+func truncateBytes(b []byte, maxLen int) string {
+	if len(b) <= maxLen {
+		return string(b)
+	}
+	return string(b[:maxLen])
 }

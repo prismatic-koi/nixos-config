@@ -100,6 +100,7 @@ func init() {
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	sidecarCmd.Flags().String("harness", "opencode", "Agent harness to use (e.g. opencode)")
+	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -118,6 +119,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	instanceID, _ := cmd.Flags().GetString("instance-id")
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
 	harnessName, _ := cmd.Flags().GetString("harness")
+	harnessBinaryPath, _ := cmd.Flags().GetString("harness-binary")
 	if harnessName == "" {
 		harnessName = "opencode"
 	}
@@ -317,21 +319,22 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := sidecar.Config{
-		SessionName:     sessionName,
-		Repo:            repo,
-		Worktree:        worktree,
-		OpencodeURL:     opencodeURL,
-		DB:              d,
-		Clock:           sidecar.RealClock(),
-		AgentRole:       agentRole,
-		AgentModel:      agentModel,
-		HarnessName:     harnessName,
-		InstanceID:      instanceID,
-		Container:       ctrCfg,
-		HostAPISockPath: hostAPISockPath,
-		OnReady:         onReady,
-		InitialPrompt:   initialPrompt,
-		Harness:         h,
+		SessionName:       sessionName,
+		Repo:              repo,
+		Worktree:          worktree,
+		OpencodeURL:       opencodeURL,
+		DB:                d,
+		Clock:             sidecar.RealClock(),
+		AgentRole:         agentRole,
+		AgentModel:        agentModel,
+		HarnessName:       harnessName,
+		HarnessBinaryPath: harnessBinaryPath,
+		InstanceID:        instanceID,
+		Container:         ctrCfg,
+		HostAPISockPath:   hostAPISockPath,
+		OnReady:           onReady,
+		InitialPrompt:     initialPrompt,
+		Harness:           h,
 	}
 	sc := sidecar.New(cfg)
 
