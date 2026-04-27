@@ -639,9 +639,14 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 	// generateProfile() so the profile generator can call
 	// collectStagingHomeSymlinkTargets to emit (allow file-read* (literal ...))
 	// rules for every resolved symlink target.
+	//
+	// Non-fatal: if the staging HOME cannot be created (e.g. the home dir is
+	// read-only, as in the nix sandbox build environment), log a warning and
+	// continue with a degraded profile. The sandbox will still launch but will
+	// lack the staged credentials and caches.
 	stagingHome, err := m.PrepareSandboxExecHome()
 	if err != nil {
-		return nil, fmt.Errorf("container: sandbox-exec: prepare staging home: %w", err)
+		log.Printf("container: sandbox-exec: prepare staging home: %v — launching with degraded profile", err)
 	}
 	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
 

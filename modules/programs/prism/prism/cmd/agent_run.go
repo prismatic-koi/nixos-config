@@ -668,17 +668,22 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 
 	// Override HOME → staging HOME so the sandbox sees the staged layout.
 	// The staging HOME was created by PrepareSandboxExecHome() inside
-	// PrepareSandboxExec() above.
+	// PrepareSandboxExec() above. Only override HOME when the staging dir
+	// actually exists on disk — PrepareSandboxExecHome() may have failed
+	// non-fatally (e.g. read-only home dir) in which case we fall back to
+	// the host HOME so the sandbox still launches.
 	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
-		// Replace any existing HOME= entry from MinimalIsolatedExecEnv.
-		filtered := make([]string, 0, len(env))
-		for _, kv := range env {
-			if len(kv) >= 5 && kv[:5] == "HOME=" {
-				continue
+		if _, statErr := os.Stat(stagingHome); statErr == nil {
+			// Replace any existing HOME= entry from MinimalIsolatedExecEnv.
+			filtered := make([]string, 0, len(env))
+			for _, kv := range env {
+				if len(kv) >= 5 && kv[:5] == "HOME=" {
+					continue
+				}
+				filtered = append(filtered, kv)
 			}
-			filtered = append(filtered, kv)
+			env = append(filtered, "HOME="+stagingHome)
 		}
-		env = append(filtered, "HOME="+stagingHome)
 	}
 
 	// Inject credential env vars (LLM API keys, GITHUB_TOKEN). These mirror
