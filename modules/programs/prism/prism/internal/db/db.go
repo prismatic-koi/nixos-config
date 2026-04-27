@@ -206,6 +206,50 @@ CREATE TABLE IF NOT EXISTS pending_merges (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(session_name, status, queue_position);
+
+CREATE TABLE IF NOT EXISTS spawn_outcome (
+    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+    -- Process-level
+    end_state              TEXT,
+    exit_code              INTEGER,
+    duration_ms            INTEGER,
+    interrupted_count      INTEGER NOT NULL DEFAULT 0,
+    compaction_count       INTEGER NOT NULL DEFAULT 0,
+    error_event_count      INTEGER NOT NULL DEFAULT 0,
+    permission_ask_count   INTEGER NOT NULL DEFAULT 0,
+    permission_denied_count INTEGER NOT NULL DEFAULT 0,
+    doom_loop_count        INTEGER NOT NULL DEFAULT 0,
+    -- Agent-level
+    pr_number              INTEGER,
+    pr_merged_at           INTEGER,
+    review_group_id        TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+    review_verdict         TEXT,
+    review_pass_count      INTEGER,
+    review_fail_count      INTEGER,
+    review_none_count      INTEGER,
+    -- Rubric-level (reserved for future grader, NULL until then)
+    rubric_verdict         TEXT,
+    rubric_score           REAL,
+    rubric_breakdown       TEXT,
+    rubric_grader          TEXT,
+    -- Per-axis aggregations (pre-computed at session-end)
+    tokens_input_total       INTEGER NOT NULL DEFAULT 0,
+    tokens_output_total      INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_read_total  INTEGER NOT NULL DEFAULT 0,
+    tokens_cache_write_total INTEGER NOT NULL DEFAULT 0,
+    cost_usd_total           REAL    NOT NULL DEFAULT 0,
+    tool_call_count          INTEGER NOT NULL DEFAULT 0,
+    tool_error_count         INTEGER NOT NULL DEFAULT 0,
+    msg_assistant_count      INTEGER NOT NULL DEFAULT 0,
+    time_to_first_event_ms   INTEGER,
+    time_to_finished_ms      INTEGER,
+    -- Audit
+    computed_at            INTEGER NOT NULL,
+    schema_version         INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_spawn_outcome_end_state    ON spawn_outcome(end_state);
+CREATE INDEX IF NOT EXISTS idx_spawn_outcome_pr_number    ON spawn_outcome(pr_number);
+CREATE INDEX IF NOT EXISTS idx_spawn_outcome_review_group ON spawn_outcome(review_group_id);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -304,6 +348,16 @@ CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(
 // 'podman'. The WHERE clause makes the migration idempotent: rows already set
 // are skipped on any subsequent open. This is the Phase A prerequisite for the
 // A4 deprecation-removal sequence (#1129).
+// v23→v24 drops sessions.outcome_summary (reserved by C.1 as a JSON
+// placeholder with zero writers) and adds the spawn_outcome table (C.3 §4).
+// The outcome_summary column is dropped with a rebuild-via-rename strategy
+// because SQLite does not support ALTER TABLE ... DROP COLUMN on columns with
+// foreign-key references (and to maintain compatibility with older SQLite
+// builds). The spawn_outcome table is created with CREATE TABLE IF NOT EXISTS
+// and the three indexes are created with CREATE INDEX IF NOT EXISTS, making
+// the migration idempotent. Fresh databases skip the column-drop (the column
+// never existed in the declarative schema) and the table creation is a no-op
+// because the schema block above already created it.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -1104,6 +1158,121 @@ func Open(path string) (*DB, error) {
 			return nil, fmt.Errorf("db: migration v22→v23: bump version: %w", err)
 		}
 		version = 23
+	}
+	if version == 23 {
+		// Migration v23 → v24: drop sessions.outcome_summary (reserved by C.1
+		// as a JSON placeholder with zero writers) and add the spawn_outcome
+		// table (C.3 §4, issue #1130).
+		//
+		// Dropping a column from sessions requires recreating the table because
+		// SQLite < 3.35 does not support ALTER TABLE ... DROP COLUMN and because
+		// the column may have been added via ALTER TABLE on an existing database
+		// (in which case it has no FK references that would block a simple DROP
+		// COLUMN even on newer SQLite).  We use the standard rename-copy-drop
+		// strategy only when the outcome_summary column actually exists, to
+		// preserve idempotency.
+		//
+		// The spawn_outcome table and its indexes use IF NOT EXISTS guards so
+		// that on a fresh database (where the schema block above already created
+		// them) this migration is a no-op.
+
+		// Check whether sessions.outcome_summary exists.
+		var osColExists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'outcome_summary'`,
+		).Scan(&osColExists); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("db: migration v23→v24: check outcome_summary column: %w", err)
+		}
+		if osColExists > 0 {
+			// Rebuild sessions without outcome_summary using the rename-copy-drop
+			// idiom. Foreign keys are temporarily disabled during the rebuild to
+			// allow rename without cascading FK errors.
+			rebuildSteps := []string{
+				`PRAGMA foreign_keys = OFF`,
+				`ALTER TABLE sessions RENAME TO sessions_old_v24`,
+				`CREATE TABLE sessions (
+				  instance_id         TEXT PRIMARY KEY,
+				  session_name        TEXT NOT NULL,
+				  agent_role          TEXT,
+				  root_agent_name     TEXT,
+				  repo                TEXT NOT NULL,
+				  worktree            TEXT NOT NULL,
+				  harness             TEXT NOT NULL,
+				  harness_session_id  TEXT,
+				  group_id            TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+				  started_at          INTEGER NOT NULL,
+				  ended_at            INTEGER,
+				  end_state           TEXT,
+				  archive_path        TEXT,
+				  prism_version       TEXT
+				)`,
+				`INSERT INTO sessions SELECT instance_id, session_name, agent_role,
+				  root_agent_name, repo, worktree, harness, harness_session_id,
+				  group_id, started_at, ended_at, end_state, archive_path, prism_version
+				  FROM sessions_old_v24`,
+				`DROP TABLE sessions_old_v24`,
+				`CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC)`,
+				`CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC)`,
+				`PRAGMA foreign_keys = ON`,
+			}
+			for _, step := range rebuildSteps {
+				if _, err := conn.Exec(step); err != nil {
+					conn.Close()
+					return nil, fmt.Errorf("db: migration v23→v24: rebuild sessions: %w", err)
+				}
+			}
+		}
+
+		// Add spawn_outcome table and indexes (idempotent: IF NOT EXISTS).
+		spawnOutcomeSteps := []string{
+			`CREATE TABLE IF NOT EXISTS spawn_outcome (
+			    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+			    end_state              TEXT,
+			    exit_code              INTEGER,
+			    duration_ms            INTEGER,
+			    interrupted_count      INTEGER NOT NULL DEFAULT 0,
+			    compaction_count       INTEGER NOT NULL DEFAULT 0,
+			    error_event_count      INTEGER NOT NULL DEFAULT 0,
+			    permission_ask_count   INTEGER NOT NULL DEFAULT 0,
+			    permission_denied_count INTEGER NOT NULL DEFAULT 0,
+			    doom_loop_count        INTEGER NOT NULL DEFAULT 0,
+			    pr_number              INTEGER,
+			    pr_merged_at           INTEGER,
+			    review_group_id        TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+			    review_verdict         TEXT,
+			    review_pass_count      INTEGER,
+			    review_fail_count      INTEGER,
+			    review_none_count      INTEGER,
+			    rubric_verdict         TEXT,
+			    rubric_score           REAL,
+			    rubric_breakdown       TEXT,
+			    rubric_grader          TEXT,
+			    tokens_input_total       INTEGER NOT NULL DEFAULT 0,
+			    tokens_output_total      INTEGER NOT NULL DEFAULT 0,
+			    tokens_cache_read_total  INTEGER NOT NULL DEFAULT 0,
+			    tokens_cache_write_total INTEGER NOT NULL DEFAULT 0,
+			    cost_usd_total           REAL    NOT NULL DEFAULT 0,
+			    tool_call_count          INTEGER NOT NULL DEFAULT 0,
+			    tool_error_count         INTEGER NOT NULL DEFAULT 0,
+			    msg_assistant_count      INTEGER NOT NULL DEFAULT 0,
+			    time_to_first_event_ms   INTEGER,
+			    time_to_finished_ms      INTEGER,
+			    computed_at            INTEGER NOT NULL,
+			    schema_version         INTEGER NOT NULL DEFAULT 1
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_spawn_outcome_end_state    ON spawn_outcome(end_state)`,
+			`CREATE INDEX IF NOT EXISTS idx_spawn_outcome_pr_number    ON spawn_outcome(pr_number)`,
+			`CREATE INDEX IF NOT EXISTS idx_spawn_outcome_review_group ON spawn_outcome(review_group_id)`,
+			`UPDATE schema_version SET version = 24`,
+		}
+		for _, step := range spawnOutcomeSteps {
+			if _, err := conn.Exec(step); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("db: migration v23→v24: spawn_outcome: %w", err)
+			}
+		}
+		version = 24
 	}
 
 	return &DB{conn: conn, path: path}, nil
@@ -3400,4 +3569,299 @@ SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
 		return nil, fmt.Errorf("db: session turn tokens: iterate: %w", err)
 	}
 	return turns, nil
+}
+
+// SpawnOutcome represents a row in the spawn_outcome table. All pointer fields
+// are NULL-able; zero-value pointers indicate the signal was not available for
+// this run (e.g. exit_code is always nil because the sidecar does not capture
+// it today).
+type SpawnOutcome struct {
+	InstanceID string
+
+	// Process-level
+	EndState             *string
+	ExitCode             *int
+	DurationMs           *int64
+	InterruptedCount     int
+	CompactionCount      int
+	ErrorEventCount      int
+	PermissionAskCount   int
+	PermissionDeniedCount int
+	DoomLoopCount        int
+
+	// Agent-level
+	PRNumber       *int
+	PRMergedAt     *int64 // ms epoch
+	ReviewGroupID  *string
+	ReviewVerdict  *string // "pass" | "fail" | "mixed" | nil
+	ReviewPassCount *int
+	ReviewFailCount *int
+	ReviewNoneCount *int
+
+	// Rubric-level (reserved; all nil until a grader mechanism lands)
+	RubricVerdict   *string
+	RubricScore     *float64
+	RubricBreakdown *string // JSON
+	RubricGrader    *string
+
+	// Per-axis aggregations
+	TokensInputTotal     int64
+	TokensOutputTotal    int64
+	TokensCacheReadTotal int64
+	TokensCacheWriteTotal int64
+	CostUSDTotal         float64
+	ToolCallCount        int
+	ToolErrorCount       int
+	MsgAssistantCount    int
+	TimeToFirstEventMs   *int64
+	TimeToFinishedMs     *int64
+
+	// Audit
+	ComputedAt    int64
+	SchemaVersion int
+}
+
+// WriteSpawnOutcome computes all aggregated columns for the given instanceID
+// from agent_events and sessions, then upserts a spawn_outcome row. The write
+// is idempotent (INSERT OR REPLACE). Calling it twice produces the same result.
+//
+// The function does not return an error when the sessions row does not exist
+// (e.g. for pre-migration instances). In that case it is a silent no-op.
+//
+// Review-group verdict is rolled up from GroupResults when a review group
+// exists for the session. PR number and merge timestamp come from
+// pending_merges (merge-queue path only).
+func (d *DB) WriteSpawnOutcome(instanceID string) error {
+	// Fetch the sessions row; skip if not found.
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		return fmt.Errorf("db: write spawn outcome: fetch session: %w", err)
+	}
+	if sess == nil {
+		return nil // pre-migration or unknown instance — silent no-op
+	}
+
+	now := time.Now().UnixMilli()
+	out := SpawnOutcome{
+		InstanceID:    instanceID,
+		ComputedAt:    now,
+		SchemaVersion: 1,
+	}
+
+	// --- Process-level ---
+
+	out.EndState = sess.EndState
+	if sess.EndedAt != nil && sess.StartedAt.UnixMilli() > 0 {
+		dur := sess.EndedAt.Sub(sess.StartedAt).Milliseconds()
+		out.DurationMs = &dur
+		if sess.EndState != nil && *sess.EndState == "finished" {
+			out.TimeToFinishedMs = &dur
+		}
+	}
+
+	// Aggregate process-level counts from agent_events in a single query.
+	const aggQ = `
+SELECT
+    COALESCE(SUM(CASE WHEN type = 'state_change'       AND JSON_EXTRACT(payload,'$.state') = 'interrupted' THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'compaction'                                                              THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'error'                                                                   THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'permission_ask'                                                          THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'permission_denied'                                                       THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'doom_loop_detected'                                                      THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'tool_call'                                                               THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'tool_error'                                                              THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant'                                                           THEN 1 ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.inputTokens'),   0) ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.outputTokens'),  0) ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheReadTokens'), 0) ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheWriteTokens'),0) ELSE 0 END), 0),
+    COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cost'),          0) ELSE 0.0 END), 0.0),
+    MIN(created_at)
+FROM agent_events
+WHERE instance_id = ?`
+
+	row := d.conn.QueryRow(aggQ, instanceID)
+	var minCreatedAt *int64
+	if scanErr := row.Scan(
+		&out.InterruptedCount, &out.CompactionCount, &out.ErrorEventCount,
+		&out.PermissionAskCount, &out.PermissionDeniedCount, &out.DoomLoopCount,
+		&out.ToolCallCount, &out.ToolErrorCount, &out.MsgAssistantCount,
+		&out.TokensInputTotal, &out.TokensOutputTotal,
+		&out.TokensCacheReadTotal, &out.TokensCacheWriteTotal,
+		&out.CostUSDTotal,
+		&minCreatedAt,
+	); scanErr != nil {
+		return fmt.Errorf("db: write spawn outcome: aggregate events: %w", scanErr)
+	}
+
+	// time_to_first_event_ms: min(event.created_at) − session.started_at
+	if minCreatedAt != nil && sess.StartedAt.UnixMilli() > 0 {
+		ttfe := *minCreatedAt - sess.StartedAt.UnixMilli()
+		if ttfe >= 0 {
+			out.TimeToFirstEventMs = &ttfe
+		}
+	}
+
+	// --- Agent-level: PR from pending_merges ---
+	const prQ = `
+SELECT pr, merged_at FROM pending_merges
+ WHERE instance_id = ? AND status IN ('watching','merged')
+ ORDER BY queued_at ASC LIMIT 1`
+	prRow := d.conn.QueryRow(prQ, instanceID)
+	var prNum int
+	var prMergedAt *int64
+	if scanErr := prRow.Scan(&prNum, &prMergedAt); scanErr == nil {
+		out.PRNumber = &prNum
+		out.PRMergedAt = prMergedAt
+	}
+
+	// --- Agent-level: review-group verdict ---
+	// Look up whether a review group exists for this session.
+	const revGroupQ = `
+SELECT group_id FROM session_groups
+ WHERE parent_session = (SELECT session_name FROM sessions WHERE instance_id = ?)
+ LIMIT 1`
+	var reviewGroupID string
+	if scanErr := d.conn.QueryRow(revGroupQ, instanceID).Scan(&reviewGroupID); scanErr == nil && reviewGroupID != "" {
+		out.ReviewGroupID = &reviewGroupID
+
+		// Roll up verdicts from group members.
+		members, revErr := d.GroupResults(reviewGroupID)
+		if revErr == nil && len(members) > 0 {
+			var passCount, failCount, noneCount int
+			for _, m := range members {
+				// Import review package would create a cycle; inline the check here.
+				lower := strings.ToLower(m.LastMessage)
+				if strings.Contains(lower, "<verdict>pass</verdict>") {
+					passCount++
+				} else if strings.Contains(lower, "<verdict>fail</verdict>") {
+					failCount++
+				} else {
+					noneCount++
+				}
+			}
+			out.ReviewPassCount = &passCount
+			out.ReviewFailCount = &failCount
+			out.ReviewNoneCount = &noneCount
+
+			var verdict string
+			switch {
+			case failCount == 0 && noneCount == 0 && passCount > 0:
+				verdict = "pass"
+			case passCount == 0 && noneCount == 0 && failCount > 0:
+				verdict = "fail"
+			case passCount > 0 && failCount > 0:
+				verdict = "mixed"
+			default:
+				verdict = "mixed"
+			}
+			out.ReviewVerdict = &verdict
+		}
+	}
+
+	// --- INSERT OR REPLACE ---
+	const insertQ = `
+INSERT OR REPLACE INTO spawn_outcome (
+    instance_id,
+    end_state, exit_code, duration_ms,
+    interrupted_count, compaction_count, error_event_count,
+    permission_ask_count, permission_denied_count, doom_loop_count,
+    pr_number, pr_merged_at,
+    review_group_id, review_verdict,
+    review_pass_count, review_fail_count, review_none_count,
+    rubric_verdict, rubric_score, rubric_breakdown, rubric_grader,
+    tokens_input_total, tokens_output_total,
+    tokens_cache_read_total, tokens_cache_write_total,
+    cost_usd_total, tool_call_count, tool_error_count,
+    msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
+    computed_at, schema_version
+) VALUES (
+    ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?, ?,
+    ?, ?,
+    ?, ?, ?,
+    ?, ?, ?, ?,
+    ?, ?,
+    ?, ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?, ?
+)`
+	_, err = d.conn.Exec(insertQ,
+		out.InstanceID,
+		out.EndState, out.ExitCode, out.DurationMs,
+		out.InterruptedCount, out.CompactionCount, out.ErrorEventCount,
+		out.PermissionAskCount, out.PermissionDeniedCount, out.DoomLoopCount,
+		out.PRNumber, out.PRMergedAt,
+		out.ReviewGroupID, out.ReviewVerdict,
+		out.ReviewPassCount, out.ReviewFailCount, out.ReviewNoneCount,
+		out.RubricVerdict, out.RubricScore, out.RubricBreakdown, out.RubricGrader,
+		out.TokensInputTotal, out.TokensOutputTotal,
+		out.TokensCacheReadTotal, out.TokensCacheWriteTotal,
+		out.CostUSDTotal, out.ToolCallCount, out.ToolErrorCount,
+		out.MsgAssistantCount, out.TimeToFirstEventMs, out.TimeToFinishedMs,
+		out.ComputedAt, out.SchemaVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("db: write spawn outcome: insert: %w", err)
+	}
+	return nil
+}
+
+// SpawnOutcomeByInstanceID returns the spawn_outcome row for instanceID, or nil
+// when not found.
+func (d *DB) SpawnOutcomeByInstanceID(instanceID string) (*SpawnOutcome, error) {
+	const q = `
+SELECT
+    instance_id,
+    end_state, exit_code, duration_ms,
+    interrupted_count, compaction_count, error_event_count,
+    permission_ask_count, permission_denied_count, doom_loop_count,
+    pr_number, pr_merged_at,
+    review_group_id, review_verdict,
+    review_pass_count, review_fail_count, review_none_count,
+    rubric_verdict, rubric_score, rubric_breakdown, rubric_grader,
+    tokens_input_total, tokens_output_total,
+    tokens_cache_read_total, tokens_cache_write_total,
+    cost_usd_total, tool_call_count, tool_error_count,
+    msg_assistant_count, time_to_first_event_ms, time_to_finished_ms,
+    computed_at, schema_version
+FROM spawn_outcome
+WHERE instance_id = ?`
+	row := d.conn.QueryRow(q, instanceID)
+	out, err := scanSpawnOutcome(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: spawn outcome by instance_id: %w", err)
+	}
+	return out, nil
+}
+
+// scanSpawnOutcome scans a *sql.Row into a SpawnOutcome.
+func scanSpawnOutcome(row *sql.Row) (*SpawnOutcome, error) {
+	var out SpawnOutcome
+	err := row.Scan(
+		&out.InstanceID,
+		&out.EndState, &out.ExitCode, &out.DurationMs,
+		&out.InterruptedCount, &out.CompactionCount, &out.ErrorEventCount,
+		&out.PermissionAskCount, &out.PermissionDeniedCount, &out.DoomLoopCount,
+		&out.PRNumber, &out.PRMergedAt,
+		&out.ReviewGroupID, &out.ReviewVerdict,
+		&out.ReviewPassCount, &out.ReviewFailCount, &out.ReviewNoneCount,
+		&out.RubricVerdict, &out.RubricScore, &out.RubricBreakdown, &out.RubricGrader,
+		&out.TokensInputTotal, &out.TokensOutputTotal,
+		&out.TokensCacheReadTotal, &out.TokensCacheWriteTotal,
+		&out.CostUSDTotal, &out.ToolCallCount, &out.ToolErrorCount,
+		&out.MsgAssistantCount, &out.TimeToFirstEventMs, &out.TimeToFinishedMs,
+		&out.ComputedAt, &out.SchemaVersion,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
 }

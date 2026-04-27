@@ -1055,8 +1055,8 @@ func TestMigration_V18ToV19_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 23 {
-		t.Errorf("schema_version after second open: got %d, want 23", version)
+	if version != 24 {
+		t.Errorf("schema_version after second open: got %d, want 24", version)
 	}
 }
 
