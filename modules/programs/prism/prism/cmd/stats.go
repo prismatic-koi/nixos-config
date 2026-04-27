@@ -104,6 +104,11 @@ func init() {
 	rootCmd.AddCommand(statsCmd)
 }
 
+func init() {
+	modelCmd.Flags().Int("days", 7, "Number of days to include (default 7)")
+	statsCmd.AddCommand(modelCmd)
+}
+
 // parseSinceFlag parses the --since flag value into a Unix millisecond timestamp.
 // Returns (0, nil) when since is empty. Returns an error when unparseable.
 func parseSinceFlag(since string) (int64, error) {

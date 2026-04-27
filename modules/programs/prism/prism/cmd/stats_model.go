@@ -32,11 +32,6 @@ agent types used that model.`,
 	RunE: runStatsModel,
 }
 
-func init() {
-	modelCmd.Flags().Int("days", 7, "Number of days to include (default 7)")
-	statsCmd.AddCommand(modelCmd)
-}
-
 func runStatsModel(cmd *cobra.Command, _ []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	if days <= 0 {
