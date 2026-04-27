@@ -939,52 +939,55 @@ func TestFormatResults_ExactlyNResultLines(t *testing.T) {
 	}
 }
 
-// ── FormatResults: full findings ─────────────────────────────────────────────
+// ── FormatResults: structured per-agent findings ─────────────────────────────
 
-// TestFormatResults_FullFindingsIncluded verifies that FormatResults includes
-// the full per-agent findings (verdict, full output text) below the summary
-// header, not just the one-line summary.
-func TestFormatResults_FullFindingsIncluded(t *testing.T) {
-	longOutput := "This is the full reviewer output.\n" +
-		"It includes blocking issues, non-blocking observations,\n" +
-		"and a structured analysis of each acceptance criterion.\n" +
+// TestFormatResults_StructuredSummaryExtracted verifies that FormatResults
+// extracts and inlines the <summary> tag content for a PASS result, and does
+// not include the full per-agent monologue.
+func TestFormatResults_StructuredSummaryExtracted(t *testing.T) {
+	output := "Some lengthy monologue that should NOT appear.\n" +
+		"<summary>All acceptance criteria verified. No issues found.</summary>\n" +
 		"<verdict>PASS</verdict>"
 	results := []review.AgentResult{
 		{
 			Agent:  review.Agent{Name: "review-goal"},
 			Passed: true,
-			Output: longOutput,
+			Output: output,
 		},
 	}
-	output, allPassed := review.FormatResults(results, "123", 0, 0)
+	formatted, allPassed := review.FormatResults(results, "123", 0, 0)
 	if !allPassed {
 		t.Errorf("allPassed = false, want true")
 	}
-	// Summary header must still be present.
-	if !findSubstring(output, "✓") {
-		t.Errorf("output missing ✓ summary header: %q", output)
+	// Summary header must be present.
+	if !findSubstring(formatted, "✓") {
+		t.Errorf("output missing ✓ summary header: %q", formatted)
 	}
-	if !findSubstring(output, "review-goal") {
-		t.Errorf("output missing agent name in summary: %q", output)
+	if !findSubstring(formatted, "review-goal") {
+		t.Errorf("output missing agent name in summary: %q", formatted)
 	}
-	// Full output text must appear in the findings section.
-	if !findSubstring(output, "full reviewer output") {
-		t.Errorf("output missing full reviewer text: %q", output)
-	}
-	if !findSubstring(output, "non-blocking observations") {
-		t.Errorf("output missing non-blocking observations: %q", output)
+	// Extracted summary content must be present.
+	if !findSubstring(formatted, "All acceptance criteria verified") {
+		t.Errorf("output missing extracted summary content: %q", formatted)
 	}
 	// Findings section header must be present.
-	if !findSubstring(output, "Per-agent findings") {
-		t.Errorf("output missing 'Per-agent findings' section: %q", output)
+	if !findSubstring(formatted, "Per-agent findings") {
+		t.Errorf("output missing 'Per-agent findings' section: %q", formatted)
+	}
+	// Full monologue must NOT appear.
+	if findSubstring(formatted, "lengthy monologue") {
+		t.Errorf("output should not contain full monologue text: %q", formatted)
 	}
 }
 
-// TestFormatResults_FullFindingsOnFail verifies that full findings are included
-// for FAIL results including blocking issues in the output.
-func TestFormatResults_FullFindingsOnFail(t *testing.T) {
-	failOutput := "<blocking_issues>\n- Missing error handling in foo()\n</blocking_issues>\n\n" +
-		"Non-blocking: consider renaming bar to baz for clarity.\n" +
+// TestFormatResults_StructuredBlockingIssuesExtracted verifies that
+// FormatResults extracts and inlines the <blocking_issues> tag content for a
+// FAIL result, and does not include the full per-agent monologue.
+func TestFormatResults_StructuredBlockingIssuesExtracted(t *testing.T) {
+	failOutput := "Lengthy analysis that should NOT appear verbatim.\n" +
+		"<summary>One blocking issue found.</summary>\n" +
+		"<blocking_issues>\n- Missing error handling in foo()\n</blocking_issues>\n" +
+		"Non-blocking prose that should NOT appear.\n" +
 		"<verdict>FAIL</verdict>"
 	results := []review.AgentResult{
 		{
@@ -994,177 +997,111 @@ func TestFormatResults_FullFindingsOnFail(t *testing.T) {
 			IsError: false,
 		},
 	}
-	output, allPassed := review.FormatResults(results, "456", 0, 0)
+	formatted, allPassed := review.FormatResults(results, "456", 0, 0)
 	if allPassed {
 		t.Errorf("allPassed = true, want false")
 	}
-	// Blocking issues must be surfaced.
-	if !findSubstring(output, "blocking_issues") {
-		t.Errorf("output missing blocking issues: %q", output)
+	// FAIL verdict must be present.
+	if !findSubstring(formatted, "FAIL") {
+		t.Errorf("output missing FAIL verdict: %q", formatted)
 	}
-	// Non-blocking observations must also appear.
-	if !findSubstring(output, "Non-blocking") {
-		t.Errorf("output missing non-blocking observations: %q", output)
+	// Extracted blocking issues content must be present.
+	if !findSubstring(formatted, "Missing error handling in foo()") {
+		t.Errorf("output missing extracted blocking issues content: %q", formatted)
 	}
-	// FAIL verdict section must be present.
-	if !findSubstring(output, "FAIL") {
-		t.Errorf("output missing FAIL verdict in findings: %q", output)
+	// Extracted summary must be present.
+	if !findSubstring(formatted, "One blocking issue found") {
+		t.Errorf("output missing extracted summary content: %q", formatted)
+	}
+	// Full monologue and non-blocking prose must NOT appear.
+	if findSubstring(formatted, "Lengthy analysis") {
+		t.Errorf("output should not contain full monologue: %q", formatted)
+	}
+	if findSubstring(formatted, "Non-blocking prose") {
+		t.Errorf("output should not contain non-blocking prose: %q", formatted)
 	}
 }
 
-// TestFormatResults_OverflowToFile verifies that when total findings exceed the
-// size budget, the full findings are written to a file and a file pointer is
-// returned inline instead.
-func TestFormatResults_OverflowToFile(t *testing.T) {
-	// Build a result with very large output that will exceed a tiny budget.
-	largeOutput := strings.Repeat("x", 500) + "\n<verdict>PASS</verdict>"
+// TestFormatResults_NoSummaryTagGraceful verifies that when an agent produces
+// no <summary> tag, FormatResults does not panic and the output is still valid.
+func TestFormatResults_NoSummaryTagGraceful(t *testing.T) {
+	results := []review.AgentResult{
+		{
+			Agent:  review.Agent{Name: "review-qa"},
+			Passed: true,
+			Output: "No tags here at all.\n<verdict>PASS</verdict>",
+		},
+	}
+	formatted, allPassed := review.FormatResults(results, "789", 0, 0)
+	if !allPassed {
+		t.Errorf("allPassed = false, want true")
+	}
+	// Must not panic. Must still contain the summary header and agent name.
+	if !findSubstring(formatted, "✓") {
+		t.Errorf("output missing ✓ summary header: %q", formatted)
+	}
+	if !findSubstring(formatted, "review-qa") {
+		t.Errorf("output missing agent name: %q", formatted)
+	}
+}
+
+// TestFormatResults_NoBlockingIssuesTagOnFail verifies that when a FAIL agent
+// produces no <blocking_issues> tag, the delivery notes the absence clearly
+// rather than panicking or silently omitting the section.
+func TestFormatResults_NoBlockingIssuesTagOnFail(t *testing.T) {
+	results := []review.AgentResult{
+		{
+			Agent:   review.Agent{Name: "review-security"},
+			Passed:  false,
+			Output:  "Something went wrong but no blocking_issues tag.\n<verdict>FAIL</verdict>",
+			IsError: false,
+		},
+	}
+	formatted, allPassed := review.FormatResults(results, "101", 0, 0)
+	if allPassed {
+		t.Errorf("allPassed = true, want false")
+	}
+	// Must note absence of blocking issues.
+	if !findSubstring(formatted, "none found") {
+		t.Errorf("output should note absence of blocking issues tag: %q", formatted)
+	}
+}
+
+// TestFormatResults_NoFileWrittenToTmp verifies that FormatResults never writes
+// a file to /tmp regardless of output size — the overflow-to-file path has been
+// removed.
+func TestFormatResults_NoFileWrittenToTmp(t *testing.T) {
+	// Build a large output that would previously have triggered overflow.
+	largeOutput := strings.Repeat("x", 500) + "\n<summary>Large output.</summary>\n<verdict>PASS</verdict>"
 	results := []review.AgentResult{
 		{Agent: review.Agent{Name: "review-goal"}, Passed: true, Output: largeOutput},
 		{Agent: review.Agent{Name: "review-code"}, Passed: true, Output: largeOutput},
 	}
 
-	// Use a small budget (100 bytes) and a non-zero round so overflow fires.
-	prNumber := "overflow-test-001"
+	prNumber := "no-file-test-001"
 	round := 7
-	budget := 100 // tiny budget to force overflow
 
-	// Clean up the expected file before and after.
-	expectedPath := review.FindingsFilePath(prNumber, round)
-	_ = os.Remove(expectedPath)
-	t.Cleanup(func() { _ = os.Remove(expectedPath) })
+	// Construct the path that the old code would have written to.
+	oldFilePath := fmt.Sprintf("/tmp/prism-review-%s-round-%d.md", prNumber, round)
+	_ = os.Remove(oldFilePath)
+	t.Cleanup(func() { _ = os.Remove(oldFilePath) })
 
-	output, allPassed := review.FormatResults(results, prNumber, round, budget)
+	output, allPassed := review.FormatResults(results, prNumber, round, 100)
 	if !allPassed {
 		t.Errorf("allPassed = false, want true")
 	}
 
-	// Inline output must contain a file pointer.
-	if !findSubstring(output, expectedPath) {
-		t.Errorf("inline output missing file pointer %q: %q", expectedPath, output)
+	// No file pointer should appear in the output.
+	if findSubstring(output, "/tmp/prism-review") {
+		t.Errorf("output should not contain a /tmp file pointer: %q", output)
 	}
-	// Inline output must still contain the summary header.
+	// No file should have been written.
+	if _, err := os.Stat(oldFilePath); err == nil {
+		t.Errorf("FormatResults wrote a file to /tmp — this path has been removed: %s", oldFilePath)
+	}
+	// Output must still contain the summary header.
 	if !findSubstring(output, "✓") {
-		t.Errorf("inline output missing summary header ✓: %q", output)
-	}
-	// Full findings must NOT be inlined (they went to the file).
-	// The large 'x' block should be in the file, not in inline output.
-	if findSubstring(output, strings.Repeat("x", 100)) {
-		t.Errorf("inline output should not contain large findings when overflowing to file: %q", output[:200])
-	}
-
-	// The file must exist and contain the full findings.
-	data, err := os.ReadFile(expectedPath)
-	if err != nil {
-		t.Fatalf("overflow file not written at %q: %v", expectedPath, err)
-	}
-	fileContent := string(data)
-	if !findSubstring(fileContent, strings.Repeat("x", 100)) {
-		t.Errorf("overflow file missing full findings: (first 200 bytes) %q", fileContent[:min(200, len(fileContent))])
-	}
-}
-
-// TestFormatResults_NoOverflowWithinBudget verifies that when total findings
-// are within the budget, findings are inlined and no file is written.
-func TestFormatResults_NoOverflowWithinBudget(t *testing.T) {
-	output := "Short output.\n<verdict>PASS</verdict>"
-	results := []review.AgentResult{
-		{Agent: review.Agent{Name: "review-goal"}, Passed: true, Output: output},
-	}
-
-	prNumber := "no-overflow-test-002"
-	round := 1
-	budget := 1024 * 1024 // 1 MB — way above the short output
-
-	// Clean up any leftover file.
-	expectedPath := review.FindingsFilePath(prNumber, round)
-	_ = os.Remove(expectedPath)
-	t.Cleanup(func() { _ = os.Remove(expectedPath) })
-
-	formatted, allPassed := review.FormatResults(results, prNumber, round, budget)
-	if !allPassed {
-		t.Errorf("allPassed = false, want true")
-	}
-
-	// Full findings must be inlined.
-	if !findSubstring(formatted, "Short output") {
-		t.Errorf("findings not inlined within budget: %q", formatted)
-	}
-	// No file pointer should appear.
-	if findSubstring(formatted, expectedPath) {
-		t.Errorf("unexpected file pointer in inline output: %q", formatted)
-	}
-	// File must not be written.
-	if _, err := os.Stat(expectedPath); err == nil {
-		t.Errorf("overflow file was written when findings fit within budget: %s", expectedPath)
-	}
-}
-
-// TestFormatResults_OverflowThresholdEnvVar verifies that the overflow
-// threshold can be overridden via the PRISM_REVIEW_SIZE_BUDGET environment
-// variable without a rebuild.
-func TestFormatResults_OverflowThresholdEnvVar(t *testing.T) {
-	// Set env var to a very small budget.
-	t.Setenv(review.FindingsSizeBudgetEnvVar, "50")
-
-	largeOutput := strings.Repeat("y", 200) + "\n<verdict>PASS</verdict>"
-	results := []review.AgentResult{
-		{Agent: review.Agent{Name: "review-security"}, Passed: true, Output: largeOutput},
-	}
-
-	prNumber := "envvar-test-003"
-	round := 2
-
-	expectedPath := review.FindingsFilePath(prNumber, round)
-	_ = os.Remove(expectedPath)
-	t.Cleanup(func() { _ = os.Remove(expectedPath) })
-
-	// sizeBudget=0 → uses env var (50 bytes).
-	output, allPassed := review.FormatResults(results, prNumber, round, 0)
-	if !allPassed {
-		t.Errorf("allPassed = false, want true")
-	}
-
-	// With budget=50, the large output must overflow to file.
-	if !findSubstring(output, expectedPath) {
-		t.Errorf("expected file pointer in output when env var budget=50: %q", output)
-	}
-
-	// File must exist.
-	if _, err := os.Stat(expectedPath); err != nil {
-		t.Errorf("overflow file not written when budget=50 via env var: %v", err)
-	}
-}
-
-// TestFormatResults_FilePointerFormat verifies the file pointer format matches
-// the documented shape: "Full findings: `<path>` (N KB) — read with `cat` or
-// `rg` as needed."
-func TestFormatResults_FilePointerFormat(t *testing.T) {
-	// Force overflow with a tiny budget.
-	largeOutput := strings.Repeat("z", 300) + "\n<verdict>PASS</verdict>"
-	results := []review.AgentResult{
-		{Agent: review.Agent{Name: "review-context"}, Passed: true, Output: largeOutput},
-	}
-	prNumber := "pointer-format-004"
-	round := 3
-
-	expectedPath := review.FindingsFilePath(prNumber, round)
-	_ = os.Remove(expectedPath)
-	t.Cleanup(func() { _ = os.Remove(expectedPath) })
-
-	output, _ := review.FormatResults(results, prNumber, round, 10 /* tiny budget */)
-
-	// The pointer line must match the documented format.
-	if !findSubstring(output, "Full findings:") {
-		t.Errorf("missing 'Full findings:' prefix in pointer line: %q", output)
-	}
-	if !findSubstring(output, expectedPath) {
-		t.Errorf("missing file path in pointer line: %q", output)
-	}
-	if !findSubstring(output, "KB") {
-		t.Errorf("missing KB size in pointer line: %q", output)
-	}
-	if !findSubstring(output, "cat") {
-		t.Errorf("missing 'cat' usage hint in pointer line: %q", output)
+		t.Errorf("output missing ✓ summary header: %q", output)
 	}
 }
 

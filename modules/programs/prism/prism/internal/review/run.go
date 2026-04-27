@@ -450,8 +450,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		Agents:        liveAgents,
 		AgentSessions: liveSessions,
 		DBPath:        dbPath,
-		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
-		SizeBudget:    opts.SizeBudget,
+		Timeout: opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.

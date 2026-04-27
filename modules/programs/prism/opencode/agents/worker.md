@@ -73,19 +73,12 @@ delivered to you via a follow-up `prism prompt` when all agents complete.
 
 ### Handling review results
 
-`prism review` returns full reviewer output for each agent: verdict, summary,
-blocking issues, and non-blocking observations. The review-complete prompt
-includes a one-line summary header followed by a `## Per-agent findings` section
-with the full output.
-
-When findings exceed the inline budget (default 20 KB), a file pointer appears:
-
-```
-Full findings: `/tmp/prism-review-<pr>-round-<N>.md` (N KB) — read with `cat` or `rg` as needed.
-```
-
-Read the file with `cat /tmp/prism-review-<pr>-round-<N>.md` to see the full
-per-agent findings when the pointer is present.
+`prism review` returns structured output for each agent: verdict, extracted
+`<summary>` content, and extracted `<blocking_issues>` content. The
+review-complete prompt includes a one-line summary header followed by a
+`## Per-agent findings` section with these structured fields inline. No file
+is written to `/tmp` — the full agent reasoning is available via
+`prism checkin <session>~review-<N>-<agent>` if needed.
 
 **ALL 5 must pass** for the review to pass.
 

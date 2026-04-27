@@ -238,12 +238,6 @@ type Opts struct {
 	// agents are productive from turn 1. When nil or FetchFailed is true, a
 	// minimal fallback prompt is used instead.
 	PRCtx *PRContext
-	// SizeBudget is the maximum inline size (bytes) for full per-agent findings
-	// in the formatted output. When the total findings exceed this budget they
-	// are written to /tmp/prism-review-<pr>-round-<N>.md and a pointer is
-	// included inline. Zero uses the default (20 KB). Can also be overridden
-	// via the PRISM_REVIEW_SIZE_BUDGET environment variable.
-	SizeBudget int
 	// IsolationMode is the resolved isolation mode to use when spawning review
 	// agent sessions. Valid values: "podman", "bwrap", "host". When set, it is
 	// forwarded to session.SpawnOpts.IsolationMode for every spawned agent.

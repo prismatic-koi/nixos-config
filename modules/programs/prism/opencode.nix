@@ -357,8 +357,7 @@
           `prism review <pr>` is **async** — it spawns 5 review agents, registers a group, and returns immediately with an acknowledgement.
           Results are delivered to you via a follow-up `prism prompt` when all agents complete.
           **Do NOT commit, merge, or announce completion** until the review-complete prompt arrives.
-          The review-complete prompt includes a one-line summary header followed by full per-agent findings (verdict, blocking issues, non-blocking observations).
-          When findings exceed the inline budget, a file pointer appears — read the file with `cat /tmp/prism-review-<pr>-round-<N>.md` to see the full output.
+          The review-complete prompt includes a one-line summary header followed by a `## Per-agent findings` section with structured fields: verdict, extracted `<summary>` content, and extracted `<blocking_issues>` content. No file is written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read the full agent reasoning if needed.
           On FAIL: fix all blocking issues, commit, push, and re-run. Non-blocking observations on a failed round MAY be actioned alongside the fix.
           On PASS: non-blocking observations MAY be actioned if they align with repo conventions or add defence-in-depth at low cost. You are NOT required to action them — shipping the PR is not gated on non-blocking observations.
           If no review-complete prompt arrives within 30 minutes, investigate with `prism checkin <session>~review-<N>-review-goal`.
