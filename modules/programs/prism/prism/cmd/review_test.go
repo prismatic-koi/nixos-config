@@ -379,28 +379,16 @@ func TestOnlyFlag_EmptyCSVReturnsNoTokens(t *testing.T) {
 // ── CheckAgentAvailability guard logic tests ──────────────────────────────────
 //
 // These tests document the fix for #758: the if !cfg.ContainerMode guard was
-// removed from runReview. CheckAgentAvailability must be called when
-// PRISM_HOST_API == "" regardless of what cfg.ContainerMode would be.
-//
-// By the time runReview reaches the CheckAgentAvailability call, PRISM_HOST_API
-// is guaranteed to be "" (the proxy-out branch fires first if it is set).
-// cfg.ContainerMode is a Nix-time flag ("this host spawns workers in
-// containers"), not a runtime signal ("this process is running in a container").
-// Using it as the latter silently skips the pre-flight check on Darwin hosts
-// with container_mode=true, allowing missing agent files to go undetected.
+// removed from runReview. CheckAgentAvailability is now called unconditionally
+// when PRISM_HOST_API == "". By the time runReview reaches the
+// CheckAgentAvailability call, PRISM_HOST_API is guaranteed to be "" (the
+// proxy-out branch fires first if it is set).
 
-// TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant
-// verifies that CheckAgentAvailability is NOT skipped when PRISM_HOST_API is
-// unset, regardless of what cfg.ContainerMode would be. It does this by
-// confirming that missing agent files produce an error — which can only happen
-// if CheckAgentAvailability is actually called.
-//
-// This test covers two scenarios that correspond to the two values of
-// cfg.ContainerMode:
-//   - containerMode=false: the old code and the new code both call the check.
-//   - containerMode=true: the old code incorrectly skipped the check; the new
-//     code calls it (the guard was removed).
-func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t *testing.T) {
+// TestCheckAgentAvailability_CalledWhenHostAPIUnset verifies that
+// CheckAgentAvailability is NOT skipped when PRISM_HOST_API is unset. It does
+// this by confirming that missing agent files produce an error — which can only
+// happen if CheckAgentAvailability is actually called.
+func TestCheckAgentAvailability_CalledWhenHostAPIUnset(t *testing.T) {
 	// Ensure PRISM_HOST_API is unset — simulating the state after the proxy-out
 	// branch in runReview did not fire (we are on the host).
 	t.Setenv("PRISM_HOST_API", "")
@@ -413,14 +401,9 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t
 
 	agents := review.Agents()
 
-	// Regardless of what cfg.ContainerMode would be (true or false), the check
-	// must be performed. We verify this by calling CheckAgentAvailability
-	// directly — as runReview now does unconditionally — and confirming it
-	// returns an error naming the missing agents.
-	//
-	// If the old if !cfg.ContainerMode guard were still present and
-	// cfg.ContainerMode were true, this call would be skipped and the missing
-	// agents would go undetected.
+	// The check must be performed unconditionally. We verify this by calling
+	// CheckAgentAvailability directly — as runReview now does — and confirming
+	// it returns an error naming the missing agents.
 	h := opencode.New("", nil, "", "")
 	err := review.CheckAgentAvailability(agents, h.ValidateAgentRole)
 	if err == nil {
@@ -434,15 +417,10 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset_ContainerModeIrrelevant(t
 	}
 }
 
-// TestCheckAgentAvailability_PassesWhenAllFilesPresent_ContainerModeIrrelevant
-// verifies the happy path: when all agent .md files exist on the host
-// filesystem and PRISM_HOST_API is unset, CheckAgentAvailability passes
-// (returns nil) regardless of what cfg.ContainerMode would be.
-//
-// This corresponds to the [edge-case] AC: "When ENHANCED_REVIEW=true is set
-// and all required agent .md files are present on a container_mode=true Darwin
-// host, prism review proceeds without error."
-func TestCheckAgentAvailability_PassesWhenAllFilesPresent_ContainerModeIrrelevant(t *testing.T) {
+// TestCheckAgentAvailability_PassesWhenAllFilesPresent verifies the happy path:
+// when all agent .md files exist on the host filesystem and PRISM_HOST_API is
+// unset, CheckAgentAvailability passes (returns nil).
+func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 
 	dir := t.TempDir()
