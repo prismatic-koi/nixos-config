@@ -90,26 +90,24 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 
 	sessionArg := args[0]
 
-	// Special case: render a review-group summary when the session arg is the
-	// parent of a review group. The DB-backed path (HasReviewGroup) is the
-	// primary check; the "~review" name-suffix heuristic is the fallback for
-	// pre-migration sessions where session_groups has not yet been populated.
-	//
-	// For sessions with a trailing "~review" that are NOT yet registered in
-	// session_groups (pre-migration), the name heuristic fires as a fallback.
-	if d, dbErr := openDB(); dbErr == nil {
-		hasGroup, groupErr := d.HasReviewGroup(sessionArg)
-		d.Close()
-		if groupErr == nil && hasGroup {
-			// DB-backed: sessionArg is a registered parent_session — use the
-			// group-aware review summary path.
-			return runCheckinReviewRoundsByGroup(sessionArg, verbose)
-		}
-		// DB open succeeded but no group found; fall through to name heuristic.
-	}
-	// Pre-migration fallback: session ends with "~review" but has no DB group.
-	// Keep backward compat for sessions created before session_groups existed.
+	// Render a review-group summary only when the user explicitly requests it
+	// via the "~review" suffix. A plain "prism checkin <session>" must always
+	// show the session's own conversation, even if that session has previously
+	// called "prism review" and is registered as a parent_session in
+	// session_groups.
 	if strings.HasSuffix(sessionArg, "~review") {
+		// Strip the "~review" suffix to get the parent session name, then use
+		// the DB-backed path. Fall back to the legacy name-prefix scan when no
+		// group members are found (pre-migration sessions).
+		parentSession := strings.TrimSuffix(sessionArg, "~review")
+		if d, dbErr := openDB(); dbErr == nil {
+			hasGroup, groupErr := d.HasReviewGroup(parentSession)
+			d.Close()
+			if groupErr == nil && hasGroup {
+				return runCheckinReviewRoundsByGroup(parentSession, verbose)
+			}
+		}
+		// Pre-migration fallback: no DB group found; use the legacy name-prefix scan.
 		log.Printf("[deprecation] checkin: no session_groups row for %q — falling back to ~review name heuristic", sessionArg)
 		return runCheckinReviewRounds(sessionArg, verbose)
 	}
