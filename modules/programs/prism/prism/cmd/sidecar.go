@@ -101,6 +101,7 @@ func init() {
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	sidecarCmd.Flags().String("harness", "opencode", "Agent harness to use (e.g. opencode)")
 	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
+	sidecarCmd.Flags().String("bwrap-path", "", "Override path to the bwrap binary used to sandbox stdio-pipe harnesses (default: resolved via PATH)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -120,6 +121,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
 	harnessName, _ := cmd.Flags().GetString("harness")
 	harnessBinaryPath, _ := cmd.Flags().GetString("harness-binary")
+	bwrapPath, _ := cmd.Flags().GetString("bwrap-path")
 	if harnessName == "" {
 		harnessName = "opencode"
 	}
@@ -329,6 +331,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		AgentModel:        agentModel,
 		HarnessName:       harnessName,
 		HarnessBinaryPath: harnessBinaryPath,
+		BwrapPath:         bwrapPath,
 		InstanceID:        instanceID,
 		Container:         ctrCfg,
 		HostAPISockPath:   hostAPISockPath,
