@@ -23,6 +23,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/sandboxenv"
 )
 
 var mergesCmd = &cobra.Command{
@@ -94,7 +95,7 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 	// own (host-side) DB using the same instance_id and session_name the
 	// merge-queue watcher uses, so the response matches what `sqlite3
 	// prism.db` shows on the host.
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
 		params := map[string]string{}
 		if filter != "" {
 			params["filter"] = filter
@@ -139,7 +140,7 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 	// own instance_id when calling CancelMerge, which is the same identity
 	// the host watcher and `prism merges` use, so cancellation is visible to
 	// both immediately.
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
 		var resp struct {
 			Cancelled bool             `json:"cancelled"`
 			Row       *db.PendingMerge `json:"row"`
