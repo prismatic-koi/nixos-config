@@ -168,7 +168,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// handles pre-v10 back-compat: when isolation_mode is "" but host_mode is
 	// true, it returns "host"; when both are unset it returns "podman". This
 	// mirrors the restore.go precedent established in PR #882.
-	isoMode := cfg.DefaultIsolationMode // machine default; may be overridden below
+	isoMode, isoErr := container.Resolve(container.ResolveInput{
+		ConfigDefault: cfg.DefaultIsolationMode,
+	})
+	if isoErr != nil {
+		return isoErr
+	}
+	// isoMode may be overridden below by the parent session's DB-recorded mode.
 	if dbIsoMode := resolveParentIsolationMode(parentSession); dbIsoMode != "" {
 		isoMode = config.IsolationMode(dbIsoMode)
 	}

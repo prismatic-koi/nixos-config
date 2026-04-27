@@ -74,7 +74,12 @@ var prCmd = &cobra.Command{
 		}
 
 		cfg := config.Load()
-		isoMode := cfg.DefaultIsolationMode
+		isoMode, isoErr := container.Resolve(container.ResolveInput{
+			ConfigDefault: cfg.DefaultIsolationMode,
+		})
+		if isoErr != nil {
+			return isoErr
+		}
 
 		// Look up the isolation capabilities for this mode. All per-mode branching
 		// below reads from isoCaps rather than comparing against raw mode constants.

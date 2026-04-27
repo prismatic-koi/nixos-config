@@ -41,10 +41,7 @@ let
     color_foreground = foreground;
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
-    # default_isolation_mode is the authoritative field; container_mode is
-    # derived from it for back-compat with Go code that reads the old field.
     default_isolation_mode = isolationDefault;
-    container_mode = isolationDefault == "podman";
     sidecar_plugin_path = "${
       config.home-manager.users.${config.nx.username}.xdg.configHome
     }/opencode/plugins/prism-hooks.ts";

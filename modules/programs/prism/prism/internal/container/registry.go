@@ -191,35 +191,24 @@ type ResolveInput struct {
 	// (cfg.DefaultIsolationMode). Always set to a valid mode; the compiled-in
 	// fallback is "host".
 	ConfigDefault config.IsolationMode
-
-	// ContainerMode is the deprecated Opts.ContainerMode / SpawnOpts.ContainerMode
-	// bool. When true and IsolationFlag is empty, it maps to "podman".
-	// Deprecated: A.4 removes this field from all Opts structs.
-	ContainerMode bool
 }
 
-// Resolve picks the effective isolation mode from the various sources of truth,
-// preserving all back-compat paths verbatim so the deprecated surfaces can be
-// removed in one place (A.4) without changing any caller.
+// Resolve picks the effective isolation mode from the various sources of truth.
 //
-// Resolution order (mirrors today's scattered logic):
+// Resolution order:
 //  1. --isolation flag (explicit override, validated).
 //  2. --host-mode flag (deprecated alias for "host"). Errors if --isolation
 //     is also set.
 //  3. DB isolation_mode column (from a restored session row).
 //  4. DB host_mode column → "host" (back-compat for pre-v10 rows).
-//  5. ContainerMode bool → "podman" (deprecated Opts field).
-//  6. ConfigDefault (cfg.EffectiveIsolationMode() — already applies the
-//     ContainerMode bool from config.json).
+//  5. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
 //
-// Cites: cmd/spawn.go:164-198 (resolveIsolationMode);
+// Cites: cmd/spawn.go:resolveIsolationMode; cmd/switch.go, cmd/pr.go,
 //
-//	internal/session/session.go:253-263 (effectiveIsolationMode);
-//	internal/session/spawn.go:604-616 (spawnAgentOnlyLayout fallback);
-//	cmd/restore.go:279-290 (per-row resolver);
-//	internal/db/db.go:86-98 (Status.EffectiveIsolationMode).
+//	cmd/review.go, cmd/restore.go (ConfigDefault path);
+//	internal/db/db.go (Status.EffectiveIsolationMode, DB back-compat path).
 func Resolve(input ResolveInput) (config.IsolationMode, error) {
-	// Reject simultaneous --isolation and --host-mode (mirrors resolveIsolationMode).
+	// Reject simultaneous --isolation and --host-mode.
 	if input.IsolationFlagChanged && input.HostModeFlagChanged {
 		return "", fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
 	}
@@ -249,12 +238,7 @@ func Resolve(input ResolveInput) (config.IsolationMode, error) {
 		return config.IsolationHost, nil
 	}
 
-	// 5. Deprecated ContainerMode bool → "podman".
-	if input.ContainerMode {
-		return config.IsolationPodman, nil
-	}
-
-	// 6. Machine-level config default.
+	// 5. Machine-level config default (always set; compiled-in default "host").
 	if input.ConfigDefault != "" {
 		return input.ConfigDefault, nil
 	}

@@ -287,7 +287,16 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		// fall back to the global config's effective isolation mode.
 		// This restores pre-v10 sessions with the same mode the machine
 		// is currently configured for.
-		isoMode = cfg.DefaultIsolationMode
+		var resolveErr error
+		isoMode, resolveErr = container.Resolve(container.ResolveInput{
+			ConfigDefault: cfg.DefaultIsolationMode,
+		})
+		if resolveErr != nil {
+			// Resolve only returns an error for conflicting flags; with no
+			// flags set this is unreachable. Log and fall back to IsolationHost.
+			fmt.Fprintf(os.Stderr, "restore %q: resolve isolation mode: %v — falling back to host\n", s.SessionName, resolveErr)
+			isoMode = config.IsolationHost
+		}
 	}
 
 	// Look up the isolation capabilities for this mode. All per-mode branching

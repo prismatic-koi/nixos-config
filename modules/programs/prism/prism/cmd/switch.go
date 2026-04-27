@@ -244,9 +244,14 @@ var switchCmd = &cobra.Command{
 		fresh, _ := cmd.Flags().GetBool("fresh")
 		cfg := config.Load()
 
-		// Derive the effective isolation mode from config, mirroring the pattern
-		// in spawn.go. switch has no --isolation flag — the machine default is used.
-		isoMode := cfg.DefaultIsolationMode
+		// Derive the effective isolation mode from config via registry.Resolve.
+		// switch has no --isolation flag — the machine default is used.
+		isoMode, isoErr := container.Resolve(container.ResolveInput{
+			ConfigDefault: cfg.DefaultIsolationMode,
+		})
+		if isoErr != nil {
+			return isoErr
+		}
 
 		// Look up the isolation capabilities for this mode. All per-mode branching
 		// below reads from isoCaps rather than comparing against raw mode constants.
