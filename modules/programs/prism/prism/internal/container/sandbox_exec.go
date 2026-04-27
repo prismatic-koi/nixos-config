@@ -4,12 +4,12 @@
 // in bwrap.go: BuildRunArgs() is a no-op stub, BuildArgs(m *Manager) is the
 // concrete argument builder that has access to the Manager's config and state.
 //
-// This file implements PR 2 of the sandbox-exec design (issue #1012):
-// minimal read-only profile that lets opencode launch and read system paths.
-// Staging HOME, credentials, caches, and write paths are deferred to PR 3
-// (#1017). Concurrency cap and lifecycle hardening are deferred to PR 4
-// (#1018). New top-level allow/deny clauses introduced beyond what is listed
-// in the issue body require a comment pointing back at #1012.
+// This file implements PR 3 of the sandbox-exec design (issue #1012):
+// staging HOME, credentials, caches, and write paths. PR 2 (#1016) landed
+// the minimal read-only profile. Concurrency cap and lifecycle hardening are
+// deferred to PR 4 (#1018). New top-level allow/deny clauses introduced
+// beyond what is listed in the issue body require a comment pointing back at
+// #1012.
 package container
 
 import (
@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -86,21 +87,29 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 
 // generateProfile returns the SBPL profile content for this session.
 //
-// The profile shape is locked in by issue #1012 and is exactly what is
-// listed in the body of issue #1016 for this PR — minimal read-only
-// system roots, the two deny subpaths for sensitive /private/etc subtrees,
-// the process and IPC primitives required by node/opencode, and (allow
-// network*). Staging-HOME, worktree, credential, and cache rules belong to
-// the next PR (#1017) per the locked design.
+// The profile shape is locked in by issue #1012. It includes:
+//   - Read-only system roots (/nix, /usr, /System, /Library, /private/etc, …)
+//   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant)
+//   - Process and IPC primitives required by node/opencode
+//   - (allow network*)
+//   - (allow file-read* file-write* (subpath "<STAGING_HOME>") ...) for the
+//     staging HOME, worktree, bare repo, and host-API socket dir
+//   - (allow file-read* (literal "<resolved_target>") ...) for every symlink
+//     target in the staging HOME, resolved via filepath.EvalSymlinks
+//   - (deny file-read* file-write* (subpath "$HOME/.aws")) to keep the host
+//     ~/.aws invisible (only the staged entries are accessible)
 //
 // New top-level allow/deny clauses introduced beyond what is sketched in
 // #1012 require a comment in the generator pointing at the issue.
 func generateProfile(m *Manager) string {
-	// Reference m to keep the symmetric BuildArgs(m) signature pattern. The
-	// minimal read-only profile in this PR has no Manager-derived
-	// substitutions; PR 3 (#1017) wires in staging HOME, worktree, and
-	// credential paths that come from m.cfg.
-	_ = m
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+
+	// Derive the staging HOME path. When it cannot be determined (e.g. no
+	// home dir) the staging-HOME-derived rules are simply omitted.
+	stagingHome, stagingErr := m.sandboxExecHomePath()
 
 	var sb strings.Builder
 	sb.WriteString("(version 1)\n")
@@ -132,6 +141,69 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (subpath \"/private/etc/wpa_supplicant\"))\n")
 	sb.WriteString("\n")
 
+	// ── Host ~/.aws deny — keep host credentials invisible ────────────────
+	// Only the staged entries (symlinked through the staging HOME) are
+	// accessible to the sandbox. The host's raw ~/.aws subtree is explicitly
+	// denied so that accidental reads cannot bypass the staging remapping.
+	// This is a security requirement per issue #1017.
+	if home != "" {
+		awsPath := filepath.Join(home, ".aws")
+		sb.WriteString("(deny file-read* file-write*\n")
+		sb.WriteString("  (subpath " + quoteSBPL(awsPath) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── Staging HOME + worktree + bare repo + host-API socket dir (RW) ───
+	// These are the paths the sandbox must be able to read and write.
+	// Locked in #1012 and #1017.
+	if stagingErr == nil {
+		sb.WriteString("(allow file-read* file-write*\n")
+		sb.WriteString("  (subpath " + quoteSBPL(stagingHome) + ")\n")
+		// Worktree — the git checkout the agent works in.
+		if m.cfg.Worktree != "" {
+			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.Worktree) + ")\n")
+		}
+		// Bare repo — the .bare directory holding git objects and refs.
+		if m.cfg.BareRoot != "" {
+			bareDir := filepath.Join(m.cfg.BareRoot, ".bare")
+			sb.WriteString("  (subpath " + quoteSBPL(bareDir) + ")\n")
+		}
+		// Host-API socket directory — the sidecar's per-session socket dir.
+		if m.cfg.HostAPISockPath != "" {
+			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
+			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
+		}
+		// opencode shared state dir — ~/.local/share/opencode (SQLite DB, logs).
+		if home != "" {
+			opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
+			sb.WriteString("  (literal " + quoteSBPL(opencodeDataDir) + ")\n")
+		}
+		sb.WriteString(")\n")
+		sb.WriteString("\n")
+	}
+
+	// ── Symlink target allows (read-only, one literal per resolved target) ─
+	// For every symlink in the staging HOME, resolve its target via
+	// EvalSymlinks and emit an (allow file-read* (literal "<path>")) rule.
+	// This lets the sandbox follow symlinks out of the staging HOME to their
+	// real Nix store or host-config locations.
+	// Locked in #1012 and #1017: resolved via filepath.EvalSymlinks exactly
+	// as bwrap.go does for SSH keys (bwrap.go:369-388).
+	if stagingErr == nil {
+		targets, targErr := collectStagingHomeSymlinkTargets(stagingHome)
+		if targErr != nil {
+			log.Printf("container: sandbox-exec: collect symlink targets: %v", targErr)
+		}
+		if len(targets) > 0 {
+			sb.WriteString("(allow file-read*\n")
+			for _, t := range targets {
+				sb.WriteString("  (literal " + quoteSBPL(t) + ")\n")
+			}
+			sb.WriteString(")\n")
+			sb.WriteString("\n")
+		}
+	}
+
 	// ── Process and IPC primitives required by node/opencode ──────────────
 	// Locked in #1012. PID/UTS/IPC isolation is a documented gap on macOS;
 	// this is defence in depth, not adversarial workload isolation.
@@ -145,6 +217,16 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("(allow network*)\n")
 
 	return sb.String()
+}
+
+// quoteSBPL returns the path quoted for inclusion in an SBPL expression.
+// SBPL uses double-quoted strings; any embedded double-quote or backslash is
+// escaped. In practice macOS paths almost never contain these characters, but
+// we escape defensively.
+func quoteSBPL(path string) string {
+	escaped := strings.ReplaceAll(path, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	return "\"" + escaped + "\""
 }
 
 // sandboxExecProfilePath returns the host path for the SBPL profile temp

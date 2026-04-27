@@ -31,6 +31,10 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
+	// Remove the per-session sandbox-exec staging HOME directory tree.
+	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
+		_ = os.RemoveAll(stagingHome)
+	}
 
 	// Check the container's instance label when we have our own InstanceID.
 	// This detects ownership mismatches where a container from a previous
@@ -256,6 +260,10 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.opencodeConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
+	// Remove the per-session sandbox-exec staging HOME directory tree.
+	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
+		_ = os.RemoveAll(stagingHome)
+	}
 
 	log.Printf("container: %q removed", m.name)
 }

@@ -656,13 +656,38 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		return err
 	}
 
-	// Filter the env passed to sandbox-exec through the same allow-list as
-	// bwrap (PATH, HOME, USER, LOGNAME, TERM, COLORTERM, LANG, LC_ALL). This
-	// is the only line of defence in this PR against host-shell secrets
-	// reaching the sandbox interior — the minimal profile does not yet
-	// rebuild the env via setenv equivalents (#1017 is where staging HOME
-	// and friends land).
+	// Build the env for sandbox-exec. The env slice is K=V pairs for syscall.Exec.
+	//
+	//  1. Start with the filtered minimal allow-list (PATH, HOME, USER, …).
+	//  2. Override HOME with the staging HOME path so that opencode and all
+	//     tools inside the sandbox find their configuration, credentials, and
+	//     caches at the canonical paths inside the staging HOME.
+	//  3. Inject credential env vars (LLM API keys, GITHUB_TOKEN) and
+	//     harness/profile runtime env vars using the same logic as bwrap.
 	env := container.MinimalIsolatedExecEnv(os.Environ())
+
+	// Override HOME → staging HOME so the sandbox sees the staged layout.
+	// The staging HOME was created by PrepareSandboxExecHome() inside
+	// PrepareSandboxExec() above.
+	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
+		// Replace any existing HOME= entry from MinimalIsolatedExecEnv.
+		filtered := make([]string, 0, len(env))
+		for _, kv := range env {
+			if len(kv) >= 5 && kv[:5] == "HOME=" {
+				continue
+			}
+			filtered = append(filtered, kv)
+		}
+		env = append(filtered, "HOME="+stagingHome)
+	}
+
+	// Inject credential env vars (LLM API keys, GITHUB_TOKEN). These mirror
+	// the bwrap path's credentialEnvVars injection (bwrap.go:510-512).
+	env = append(env, m.CredentialEnvVars()...)
+
+	// Inject harness-specific runtime env vars and profile AgentEnvVars.
+	// AppendSandboxEnvVars appends K=V pairs for the sandbox interior env.
+	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
 
 	// `[timing] sandbox-exec exec`: total wall time from agent-run entry to
 	// the moment of syscall.Exec. Mirrors `[timing] bwrap exec` on the bwrap
