@@ -152,11 +152,11 @@ func init() {
 }
 
 // resolveIsolationMode returns the effective isolation mode for a spawn
-// invocation, applying flag precedence and validation:
+// invocation, applying flag precedence and validation via registry.Resolve:
 //
 //  1. --isolation flag (explicit override), validated against known values
 //  2. --host-mode flag (deprecated alias for "host")
-//  3. cfg.EffectiveIsolationMode() (from config.json)
+//  3. cfg.DefaultIsolationMode (from config.json; compiled-in default "host")
 //
 // Returns an error if both --isolation and --host-mode are set, or if
 // --isolation has an unknown value, or if the resolved mode is "bwrap" on
@@ -166,41 +166,16 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 
-	// Detect if flags were explicitly set by the user.
-	isolationChanged := cmd.Flags().Changed("isolation")
-	hostModeChanged := cmd.Flags().Changed("host-mode")
-
-	// Reject simultaneous use of --isolation and --host-mode.
-	if isolationChanged && hostModeChanged {
-		return "", fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
+	mode, err := container.Resolve(container.ResolveInput{
+		IsolationFlag:        isolationFlag,
+		IsolationFlagChanged: cmd.Flags().Changed("isolation"),
+		HostModeFlag:         hostModeFlag,
+		HostModeFlagChanged:  cmd.Flags().Changed("host-mode"),
+		ConfigDefault:        cfg.DefaultIsolationMode,
+	})
+	if err != nil {
+		return "", err
 	}
-
-	// --isolation flag takes precedence.
-	if isolationChanged {
-		if !config.IsValidIsolationMode(isolationFlag) {
-			valid := make([]string, len(config.ValidIsolationModes))
-			for i, m := range config.ValidIsolationModes {
-				valid[i] = string(m)
-			}
-			return "", fmt.Errorf("unknown isolation mode %q; valid values: %s", isolationFlag, strings.Join(valid, ", "))
-		}
-		mode := config.IsolationMode(isolationFlag)
-		if err := checkBwrapPlatform(mode); err != nil {
-			return "", err
-		}
-		if err := checkSandboxExecPlatform(mode); err != nil {
-			return "", err
-		}
-		return mode, nil
-	}
-
-	// --host-mode (deprecated alias).
-	if hostModeChanged && hostModeFlag {
-		return config.IsolationHost, nil
-	}
-
-	// Fall back to config.json default.
-	mode := cfg.EffectiveIsolationMode()
 	if err := checkBwrapPlatform(mode); err != nil {
 		return "", err
 	}
@@ -437,7 +412,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Prompt:           promptFlag,
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
-		ContainerMode:    isoCaps.IsContainer,
 		IsolationMode:    string(isolationMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
 		ConfigEnvVarName: h.ConfigEnvVar(),

@@ -101,6 +101,12 @@ func githubAccountFromURL(remoteURL string) string {
 	return ""
 }
 
+// CredentialEnvVars is the exported version of credentialEnvVars. Used by
+// cmd/agent_run.go to inject credential env vars into the sandbox-exec env.
+func (m *Manager) CredentialEnvVars() []string {
+	return m.credentialEnvVars()
+}
+
 // credentialEnvVars returns the environment variable assignments to inject into
 // the container based on the agent role and current host environment.
 // Only vars that are set on the host are forwarded — unset vars are skipped.

@@ -1,8 +1,10 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,14 +13,22 @@ import (
 
 // newSandboxExecManager creates a Manager and injects a sandboxExecIsolator
 // so tests can drive BuildArgs/PrepareSandboxExec end-to-end without a real
-// macOS host. The test fixture intentionally does not stub HOME or any of the
-// bwrap fixture's fake credential paths because the minimal SBPL profile in
-// this PR does not consume them — staging HOME, credentials, and caches
-// land in #1017.
+// macOS host.
 func newSandboxExecManager(cfg Config) *Manager {
 	m := New(cfg)
 	m.isolator = newSandboxExecIsolator(m.name)
 	return m
+}
+
+// newSandboxExecManagerWithInstance is like newSandboxExecManager but ensures
+// the Config has an InstanceID so sandboxExecHomePath uses the instance ID
+// rather than falling back to the container name. Used in tests that exercise
+// staging HOME generation (#1017).
+func newSandboxExecManagerWithInstance(cfg Config) *Manager {
+	if cfg.InstanceID == "" {
+		cfg.InstanceID = "test-instance-id"
+	}
+	return newSandboxExecManager(cfg)
 }
 
 // ── generateProfile content assertions ──────────────────────────────────────
@@ -127,50 +137,50 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_NoOutOfScopeRules guards against accidentally pulling
-// PR 3 (#1017) or PR 4 (#1018) content into this PR. The minimal read-only
-// profile in this PR must NOT contain staging-HOME, worktree, credential, or
-// cache rules.
-func TestGenerateProfile_NoOutOfScopeRules(t *testing.T) {
-	m := newSandboxExecManager(Config{
+// TestGenerateProfile_StagingHomeAndWorktreeRules verifies that the profile
+// emitted by generateProfile includes the staging HOME, worktree, and bare
+// repo as (allow file-read* file-write* (subpath ...)) clauses when the
+// Manager has InstanceID, Worktree, and BareRoot set. This is the PR #1017
+// replacement for TestGenerateProfile_NoOutOfScopeRules.
+func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
+	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@main",
-		// Set fields that staging-HOME (#1017) will eventually consume.
-		// generateProfile must NOT emit any clauses derived from them in
-		// this PR.
-		Worktree: "/tmp/fake-worktree",
-		BareRoot: "/tmp/fake-bare",
+		Worktree:    "/tmp/fake-worktree",
+		BareRoot:    "/tmp/fake-bare",
+		InstanceID:  "test-instance-id",
 	})
 	profile := generateProfile(m)
 
-	for _, forbidden := range []string{
-		"<HOME>",
-		"<STAGING_HOME>",
-		"<WORKTREE>",
-		"<BARE_REPO>",
-		"<RESOLVED_SSH_ACCESS_KEY>",
-		"file-write*",
-		// file-write* should appear ONLY inside the deny clause; the test
-		// for that clause above already gates it. A bare file-write* allow
-		// is out of scope for this PR.
-	} {
-		// "file-write*" is a special case: it appears in the deny clause
-		// "(deny file-read* file-write* ..." which is in scope. So we
-		// instead check that there is NO "(allow file-write*" anywhere.
-		if forbidden == "file-write*" {
-			if strings.Contains(profile, "(allow file-write*") {
-				t.Errorf("profile contains (allow file-write* ...) which is out of scope for #1016; defer to #1017")
-			}
-			continue
-		}
-		if strings.Contains(profile, forbidden) {
-			t.Errorf("profile contains out-of-scope token %q; defer to #1017/#1018", forbidden)
-		}
+	// The profile must contain (allow file-read* file-write* ...) with the
+	// staging home, worktree, and bare repo subpaths.
+	if !strings.Contains(profile, "(allow file-read* file-write*") {
+		t.Errorf("profile missing (allow file-read* file-write* ...) clause; full profile:\n%s", profile)
 	}
+	if !strings.Contains(profile, "/tmp/fake-worktree") {
+		t.Errorf("profile missing worktree path /tmp/fake-worktree; full profile:\n%s", profile)
+	}
+	if !strings.Contains(profile, "/tmp/fake-bare/.bare") {
+		t.Errorf("profile missing bare repo path /tmp/fake-bare/.bare; full profile:\n%s", profile)
+	}
+	// The staging home path must be present (namespaced by InstanceID).
+	if !strings.Contains(profile, "test-instance-id") {
+		t.Errorf("profile missing staging HOME path containing instance ID 'test-instance-id'; full profile:\n%s", profile)
+	}
+}
 
-	// Worktree path itself must not appear — staging HOME (#1017) is what
-	// will introduce host paths into the profile.
-	if strings.Contains(profile, "/tmp/fake-worktree") || strings.Contains(profile, "/tmp/fake-bare") {
-		t.Errorf("profile contains a host path from cfg; this is staging-HOME territory and belongs to #1017; profile:\n%s", profile)
+// TestGenerateProfile_AWSHomePathDenied verifies that the profile contains a
+// (deny file-read* file-write* (subpath "$HOME/.aws")) clause to prevent the
+// sandbox from accessing the host's raw ~/.aws directory. Only the staged
+// entries (symlinked through the staging HOME) are accessible.
+func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, "(deny file-read* file-write*") {
+		t.Errorf("profile missing deny clause for ~/.aws; full profile:\n%s", profile)
+	}
+	if !strings.Contains(profile, "/.aws") {
+		t.Errorf("profile missing ~/.aws deny subpath; full profile:\n%s", profile)
 	}
 }
 
@@ -188,6 +198,9 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	})
 	t.Cleanup(func() {
 		_ = os.Remove(m.sandboxExecProfilePath())
+		if stagingHome, err := m.sandboxExecHomePath(); err == nil {
+			_ = os.RemoveAll(stagingHome)
+		}
 	})
 
 	args, err := m.PrepareSandboxExec()
@@ -368,6 +381,517 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 	// args[2] is the profile path; args[3] must be the harness binary.
 	if args[3] != "opencode" {
 		t.Errorf("expected args[3] to be the harness binary 'opencode'; got %q in %v", args[3], args)
+	}
+}
+
+// ── PrepareSandboxExecHome ───────────────────────────────────────────────────
+
+// newFakeHome creates a temp directory tree that mimics the credential and
+// config paths that PrepareSandboxExecHome reads from $HOME. It sets HOME to
+// the fake home dir for the duration of the test and returns the fake home path.
+func newFakeHome(t *testing.T) string {
+	t.Helper()
+	fakeHome := t.TempDir()
+
+	// Create all the directories and files that PrepareSandboxExecHome expects.
+	dirs := []string{
+		".ssh",
+		".aws",
+		".config/aws",
+		".config/opencode",
+		".config/kube",
+		".cache/opencode",
+		".cache/bun",
+		".cache/nix",
+		".claude",
+		".mcp-auth",
+		".local/share/opencode",
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o755); err != nil {
+			t.Fatalf("create fake home dir %s: %v", d, err)
+		}
+	}
+
+	// Write dummy files that represent SSH keys and config.
+	sshFiles := []string{
+		"prismatic-koi-ed25519",
+		"prismatic-koi-ed25519-signingkey",
+		"prismatic-koi-ed25519-signingkey.pub",
+		"known_hosts",
+	}
+	for _, f := range sshFiles {
+		if err := os.WriteFile(filepath.Join(fakeHome, ".ssh", f), []byte("dummy"), 0o600); err != nil {
+			t.Fatalf("write ssh file %s: %v", f, err)
+		}
+	}
+
+	// AWS readonly-config (in XDG location, symlinked by the staging builder).
+	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "aws", "readonly-config"), []byte("dummy-aws-cfg"), 0o644); err != nil {
+		t.Fatalf("write aws config: %v", err)
+	}
+	// Kube agents-config.
+	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "kube", "agents-config"), []byte("dummy-kube"), 0o644); err != nil {
+		t.Fatalf("write kube config: %v", err)
+	}
+
+	// Override HOME for the duration of the test.
+	t.Setenv("HOME", fakeHome)
+
+	return fakeHome
+}
+
+// TestPrepareSandboxExecHome_CreatesDirectoryAtExpectedPath verifies that
+// PrepareSandboxExecHome creates the staging HOME at
+// ~/.local/state/prism/sessions/<instance_id>/home/.
+func TestPrepareSandboxExecHome_CreatesDirectoryAtExpectedPath(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	instanceID := "test-instance-abc"
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  instanceID,
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	wantPath := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
+	if stagingHome != wantPath {
+		t.Errorf("staging HOME = %q, want %q", stagingHome, wantPath)
+	}
+	if _, err := os.Stat(stagingHome); err != nil {
+		t.Errorf("staging HOME does not exist on disk: %v", err)
+	}
+}
+
+// TestPrepareSandboxExecHome_SSHSymlinks verifies that the staging HOME
+// contains symlinks for access-key, signing-key, signing-key.pub, and
+// known_hosts when the corresponding files exist in the fake $HOME/.ssh/.
+func TestPrepareSandboxExecHome_SSHSymlinks(t *testing.T) {
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "ssh-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	for _, name := range []string{"access-key", "signing-key", "signing-key.pub", "known_hosts"} {
+		p := filepath.Join(stagingHome, ".ssh", name)
+		if _, err := os.Lstat(p); err != nil {
+			t.Errorf("expected symlink %s to exist: %v", p, err)
+			continue
+		}
+		target, readErr := os.Readlink(p)
+		if readErr != nil {
+			t.Errorf("%s is not a symlink: %v", p, readErr)
+			continue
+		}
+		if target == "" {
+			t.Errorf("%s symlink has empty target", p)
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_MissingSourceSkipped verifies that when a source
+// path does not exist, the corresponding symlink is NOT created (no dangling
+// symlinks).
+func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "missing-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// The fake home has no ~/.aws/sso or ~/.aws/cli directories.
+	// Symlinks for those must not exist in the staging HOME.
+	for _, absent := range []string{
+		filepath.Join(stagingHome, ".aws", "sso"),
+		filepath.Join(stagingHome, ".aws", "cli"),
+	} {
+		if _, err := os.Lstat(absent); err == nil {
+			t.Errorf("symlink %s should NOT exist (source absent), but it does", absent)
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_RegularFilesNotSymlinks verifies that .gitconfig,
+// .ssh/config, and .config/opencode/opencode.json are regular generated files
+// (not symlinks) in the staging HOME.
+func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Write a fake opencode config so the builder copies it.
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName:   "repo@feat",
+		InstanceID:    "reg-file-test",
+		GitUserName:   "Test User",
+		GitUserEmail:  "test@example.com",
+	})
+	// Write the opencode config temp file.
+	_ = os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"test"}`), 0o644)
+	t.Cleanup(func() { _ = os.Remove(m.opencodeConfigFilePath()) })
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	regularFiles := []string{
+		filepath.Join(stagingHome, ".gitconfig"),
+		filepath.Join(stagingHome, ".ssh", "config"),
+		filepath.Join(stagingHome, ".config", "opencode", "opencode.json"),
+	}
+	for _, p := range regularFiles {
+		info, err := os.Lstat(p)
+		if err != nil {
+			t.Errorf("expected %s to exist: %v", p, err)
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("%s must be a regular file, not a symlink", p)
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_AgentsIncludedForNonReview verifies that
+// .config/opencode/agents/ is present when AgentRole does NOT start with
+// "review-". Mirrors bwrap.go:447-448.
+func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	// Create agents/ dir in the fake home's opencode config.
+	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+
+	for _, role := range []string{"worker", "coordinator", ""} {
+		t.Run("role="+role, func(t *testing.T) {
+			m := newSandboxExecManagerWithInstance(Config{
+				SessionName: "repo@feat",
+				InstanceID:  "agents-incl-" + role,
+				AgentRole:   role,
+			})
+			stagingHome, err := m.PrepareSandboxExecHome()
+			if err != nil {
+				t.Fatalf("PrepareSandboxExecHome: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			if _, err := os.Lstat(agentsLink); err != nil {
+				t.Errorf("agents/ symlink must exist for role %q: %v", role, err)
+			}
+		})
+	}
+}
+
+// TestPrepareSandboxExecHome_AgentsExcludedForReview verifies that
+// .config/opencode/agents/ is NOT present when AgentRole starts with "review-".
+// Mirrors bwrap.go:447-448.
+func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	// Create agents/ dir in the fake home's opencode config.
+	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("create agents dir: %v", err)
+	}
+
+	for _, role := range []string{"review-", "review-goal", "review-code", "review-security"} {
+		t.Run("role="+role, func(t *testing.T) {
+			m := newSandboxExecManagerWithInstance(Config{
+				SessionName: "repo@feat",
+				InstanceID:  "agents-excl-" + role,
+				AgentRole:   role,
+			})
+			stagingHome, err := m.PrepareSandboxExecHome()
+			if err != nil {
+				t.Fatalf("PrepareSandboxExecHome: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			if _, err := os.Lstat(agentsLink); err == nil {
+				t.Errorf("agents/ must NOT exist for review role %q", role)
+			}
+		})
+	}
+}
+
+// TestPrepareSandboxExecHome_NixCacheAlwaysIncluded verifies that
+// .cache/nix/ is always included as a symlink (matching bwrap.go:333-335
+// unconditional RW bind).
+func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "nix-cache-test",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	nixLink := filepath.Join(stagingHome, ".cache", "nix")
+	if _, err := os.Lstat(nixLink); err != nil {
+		t.Errorf(".cache/nix symlink must always be created: %v", err)
+	}
+	target, err := os.Readlink(nixLink)
+	if err != nil {
+		t.Errorf(".cache/nix is not a symlink: %v", err)
+	} else if target == "" {
+		t.Errorf(".cache/nix symlink has empty target")
+	}
+}
+
+// TestPrepareSandboxExecHome_IdempotentReCreation verifies that calling
+// PrepareSandboxExecHome a second time on an existing staging dir succeeds
+// without error and does not corrupt symlinks.
+func TestPrepareSandboxExecHome_IdempotentReCreation(t *testing.T) {
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "idempotent-test",
+	})
+
+	// First call.
+	stagingHome1, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("first PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome1) })
+
+	// Second call — must not fail.
+	stagingHome2, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("second PrepareSandboxExecHome: %v", err)
+	}
+	if stagingHome1 != stagingHome2 {
+		t.Errorf("staging HOME changed between calls: %q != %q", stagingHome1, stagingHome2)
+	}
+
+	// Verify that the .cache/nix symlink is still valid after re-creation.
+	nixLink := filepath.Join(stagingHome2, ".cache", "nix")
+	if _, err := os.Lstat(nixLink); err != nil {
+		t.Errorf(".cache/nix not present after re-creation: %v", err)
+	}
+}
+
+// TestPrepareSandboxExecHome_TwoConcurrentSessions verifies that two sessions
+// with different InstanceIDs have independent staging dirs (no collisions).
+func TestPrepareSandboxExecHome_TwoConcurrentSessions(t *testing.T) {
+	newFakeHome(t)
+
+	mA := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat-a",
+		InstanceID:  "instance-aaa",
+	})
+	mB := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat-b",
+		InstanceID:  "instance-bbb",
+	})
+
+	homeA, errA := mA.PrepareSandboxExecHome()
+	if errA != nil {
+		t.Fatalf("session A: %v", errA)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeA) })
+
+	homeB, errB := mB.PrepareSandboxExecHome()
+	if errB != nil {
+		t.Fatalf("session B: %v", errB)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(homeB) })
+
+	if homeA == homeB {
+		t.Errorf("two sessions have the same staging HOME: %q", homeA)
+	}
+	if strings.Contains(homeA, "instance-bbb") || strings.Contains(homeB, "instance-aaa") {
+		t.Errorf("staging HOME paths are not properly namespaced: A=%q B=%q", homeA, homeB)
+	}
+}
+
+// TestSandboxExecCleanup_RemovesStagingHome verifies that EnsureRemoved removes
+// the staging HOME directory created by PrepareSandboxExecHome.
+func TestSandboxExecCleanup_RemovesStagingHome(t *testing.T) {
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "cleanup-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+
+	// Verify it exists.
+	if _, statErr := os.Stat(stagingHome); statErr != nil {
+		t.Fatalf("staging HOME not created: %v", statErr)
+	}
+
+	// Call EnsureRemoved (uses a background context; no podman calls needed
+	// because sandboxExecIsolator.Shutdown is a no-op).
+	m.EnsureRemoved(context.Background())
+
+	// Staging HOME must be gone.
+	if _, statErr := os.Stat(stagingHome); statErr == nil {
+		t.Errorf("staging HOME still exists after EnsureRemoved: %s", stagingHome)
+	}
+}
+
+// TestGenerateProfile_ProfileIncludesSymlinkTargetAllows verifies that the
+// profile emitted by generateProfile includes (allow file-read* (literal ...))
+// rules for symlink targets in the staging HOME.
+func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "profile-targets-test",
+		Worktree:    t.TempDir(),
+	})
+
+	// Pre-build the staging HOME so generateProfile can collect targets.
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	profile := generateProfile(m)
+
+	// The profile must contain (allow file-read* with literal paths from the
+	// fake home's ssh dir or aws dir.
+	if !strings.Contains(profile, "(allow file-read*") {
+		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
+	}
+}
+
+// TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed verifies AC11:
+// (a) the profile denies the host ~/.aws subtree and
+// (b) the resolved target of the staged ~/.aws/config symlink appears as an
+// allow rule in the same profile output.
+// Both assertions are in the same test — this is the "combined test" that AC11 requires.
+func TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	// The fake home has ~/.config/aws/readonly-config written by newFakeHome.
+	// PrepareSandboxExecHome creates a symlink ~/.aws/config → <resolved readonly-config>.
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "ac11-test",
+		Worktree:    t.TempDir(),
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	profile := generateProfile(m)
+
+	// (a) The deny clause must cover host ~/.aws.
+	awsDenyPath := filepath.Join(fakeHome, ".aws")
+	if !strings.Contains(profile, awsDenyPath) {
+		t.Errorf("profile missing deny for host ~/.aws (%s); full profile:\n%s", awsDenyPath, profile)
+	}
+	// Verify it's inside a (deny ...) clause not just any clause.
+	awsDenyIdx := strings.Index(profile, awsDenyPath)
+	denyBefore := strings.LastIndex(profile[:awsDenyIdx], "(deny")
+	allowBefore := strings.LastIndex(profile[:awsDenyIdx], "(allow")
+	if denyBefore < 0 || allowBefore > denyBefore {
+		t.Errorf("host ~/.aws path appears in profile but NOT inside a (deny ...) clause before it; full profile:\n%s", profile)
+	}
+
+	// (b) The allow clause must include the resolved target of the staged
+	// ~/.aws/config symlink (which points at ~/.config/aws/readonly-config).
+	awsConfigSymlink := filepath.Join(stagingHome, ".aws", "config")
+	resolvedTarget, resolveErr := filepath.EvalSymlinks(awsConfigSymlink)
+	if resolveErr != nil {
+		t.Skipf("staged ~/.aws/config symlink not present (skipping allow assertion): %v", resolveErr)
+	}
+	if !strings.Contains(profile, resolvedTarget) {
+		t.Errorf("profile missing allow for resolved staged ~/.aws/config target %q; full profile:\n%s", resolvedTarget, profile)
+	}
+	// Verify it's inside an (allow ...) clause.
+	targetIdx := strings.Index(profile, resolvedTarget)
+	if targetIdx < 0 {
+		t.Errorf("resolved target %q not in profile", resolvedTarget)
+	} else {
+		allowBeforeTarget := strings.LastIndex(profile[:targetIdx], "(allow")
+		denyBeforeTarget := strings.LastIndex(profile[:targetIdx], "(deny")
+		if allowBeforeTarget < 0 || denyBeforeTarget > allowBeforeTarget {
+			t.Errorf("resolved target %q appears in profile but NOT inside an (allow ...) clause before it; full profile:\n%s", resolvedTarget, profile)
+		}
+	}
+}
+
+// TestGenerateProfile_AWSDenyClause verifies that the profile contains a
+// (deny file-read* file-write* (subpath ".../.aws")) clause for the host's
+// ~/.aws directory, to prevent the sandbox from accessing host credentials.
+func TestGenerateProfile_AWSDenyClause(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "aws-deny-test",
+		Worktree:    t.TempDir(),
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	profile := generateProfile(m)
+
+	// The profile must contain a (deny ...) clause that references /.aws.
+	// We look for the /.aws substring inside any deny clause.
+	if !strings.Contains(profile, "/.aws") {
+		t.Fatalf("profile missing /.aws deny subpath; full profile:\n%s", profile)
+	}
+	// Verify it's inside a deny clause (not just an allow).
+	awsIdx := strings.Index(profile, "/.aws")
+	// Walk backwards from awsIdx to find the nearest opening paren clause.
+	clauseStart := strings.LastIndex(profile[:awsIdx], "(deny")
+	if clauseStart < 0 {
+		t.Errorf("/.aws appears in profile but not inside a (deny ...) clause; full profile:\n%s", profile)
 	}
 }
 

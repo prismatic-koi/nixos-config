@@ -317,7 +317,7 @@ func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 // This is the fix for issue #1034: prism agent-run reads isolation_mode from
 // the DB immediately on startup and rejects the session if the mode doesn't
 // match "bwrap". If we write isolation_mode only after tmux.NewWindow, agent-run
-// races and sees NULL → EffectiveIsolationMode() returns "podman" → rejection.
+// races and sees NULL → the agent-run rejects the session.
 //
 // We test "bwrap" and "podman" modes to verify the write happens for both.
 func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
@@ -330,7 +330,6 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 			t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 			sessionName := "myrepo@branch~review-1-review-code-" + mode
-			containerMode := mode == "podman"
 			opts := SpawnOpts{
 				SessionName:   sessionName,
 				Repo:          "myrepo",
@@ -338,7 +337,6 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 				AgentRole:     "review-code",
 				Layout:        LayoutAgentOnly,
 				IsolationMode: mode,
-				ContainerMode: containerMode,
 			}
 
 			if err := SpawnSession(d, opts); err != nil {

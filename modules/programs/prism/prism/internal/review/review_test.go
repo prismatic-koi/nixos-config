@@ -1594,7 +1594,6 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		Agents:        agents,
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
-		ContainerMode: true,
 		IsolationMode: "podman",
 		ProfilesFile:  nil,
 	}
@@ -2690,7 +2689,6 @@ func TestRunAsync_ReturnsImmediately(t *testing.T) {
 		Agents:        review.Agents()[:1], // single agent for speed
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
-		ContainerMode: true,
 		IsolationMode: "podman",
 		ProfilesFile:  nil, // triggers immediate config-resolution failure → fast return
 	}
@@ -2708,12 +2706,12 @@ func TestRunAsync_ReturnsImmediately(t *testing.T) {
 		t.Errorf("RunAsync took %v — expected to return in under %v (must not block on agent completion)", elapsed, maxElapsed)
 	}
 
-	// With ContainerMode=true and nil ProfilesFile, all agents fail at config
+	// With podman mode and nil ProfilesFile, all agents fail at config
 	// resolution → RunAsync returns "all review agents failed to spawn".
 	if runErr == nil {
 		t.Logf("RunAsync returned nil error (agents spawned — monitor start failed silently as expected)")
 	} else {
-		t.Logf("RunAsync returned error (expected for container-mode nil-pf path): %v", runErr)
+		t.Logf("RunAsync returned error (expected for podman nil-pf path): %v", runErr)
 	}
 }
 
@@ -2740,7 +2738,6 @@ func TestRunAsync_AllSpawnFailReturnsError(t *testing.T) {
 		Agents:        review.Agents()[:1],
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
-		ContainerMode: true,
 		IsolationMode: "podman",
 		ProfilesFile:  nil, // → all agents fail to spawn
 	}
