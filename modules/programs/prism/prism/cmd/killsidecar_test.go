@@ -54,10 +54,10 @@ import (
 //     SIGTERM handler will.
 //
 //  3. Leak guard (#1180): snapshots the live tmux server's session list and
-//     the live agent_status table before running tests, then asserts no new
-//     sessions or DB rows appear after the suite completes. This catches any
-//     test that creates real sessions in the live environment. The guard uses
-//     the DB path that was live at suite start (before any test overrides
+//     the live agent_status and sessions tables before running tests, then
+//     asserts no new entries appear after the suite completes. This catches
+//     any test that creates real sessions in the live environment. The guard
+//     uses the DB path that was live at suite start (before any test overrides
 //     XDG_STATE_HOME), so it reliably reads the production database.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
@@ -78,7 +78,8 @@ func TestMain(m *testing.M) {
 	// Capture the DB path now, before any test overrides XDG_STATE_HOME.
 	liveDBPath := dbPath()
 	beforeSessions := snapshotTmuxSessions()
-	beforeDBRows := snapshotAgentStatusRows(liveDBPath)
+	beforeAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
+	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
 
 	code := m.Run()
 
@@ -88,7 +89,8 @@ func TestMain(m *testing.M) {
 	// failure with a secondary leak report.
 	if code == 0 {
 		afterSessions := snapshotTmuxSessions()
-		afterDBRows := snapshotAgentStatusRows(liveDBPath)
+		afterAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
+		afterSessionsRows := snapshotSessionsRows(liveDBPath)
 		if leaked := setDiff(afterSessions, beforeSessions); len(leaked) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"\n[LEAK GUARD] cmd test suite created %d new live tmux session(s):\n",
@@ -99,9 +101,19 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "Fix: ensure tests use withNoopTmux() or an isolated test server.")
 			code = 1
 		}
-		if leaked := setDiff(afterDBRows, beforeDBRows); len(leaked) > 0 {
+		if leaked := setDiff(afterAgentStatusRows, beforeAgentStatusRows); len(leaked) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"\n[LEAK GUARD] cmd test suite created %d new live agent_status row(s):\n",
+				len(leaked))
+			for _, s := range leaked {
+				fmt.Fprintf(os.Stderr, "  - %s\n", s)
+			}
+			fmt.Fprintln(os.Stderr, "Fix: ensure tests use SetTestDBPath() or XDG_STATE_HOME isolation.")
+			code = 1
+		}
+		if leaked := setDiff(afterSessionsRows, beforeSessionsRows); len(leaked) > 0 {
+			fmt.Fprintf(os.Stderr,
+				"\n[LEAK GUARD] cmd test suite created %d new live sessions row(s):\n",
 				len(leaked))
 			for _, s := range leaked {
 				fmt.Fprintf(os.Stderr, "  - %s\n", s)
@@ -153,6 +165,32 @@ func snapshotAgentStatusRows(dbFilePath string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// snapshotSessionsRows returns the sorted list of instance_ids in the sessions
+// table where ended_at IS NULL, using the given DB path. Returns nil if the DB
+// cannot be opened (e.g. first run with no DB yet).
+func snapshotSessionsRows(dbFilePath string) []string {
+	if dbFilePath == "" {
+		return nil
+	}
+	d, err := db.Open(dbFilePath)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	rows, qErr := d.AllSessions()
+	if qErr != nil {
+		return nil
+	}
+	var ids []string
+	for _, r := range rows {
+		if r.EndedAt == nil {
+			ids = append(ids, r.InstanceID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // setDiff returns elements in after that are not in before (new additions).
