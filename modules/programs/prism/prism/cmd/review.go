@@ -108,7 +108,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		agents = allAgents
 	}
 
-	// Load cfg. It is needed below for ContainerMode / SidecarPluginPath even
+	// Load cfg. It is needed below for SidecarPluginPath even
 	// when the actual isolation mode is overridden from the DB.
 	cfg := config.Load()
 
@@ -146,12 +146,10 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Resolve worktree path from the DB. By the time control reaches here we
 	// know PRISM_HOST_API is unset (the proxy-out branch above did not fire),
-	// so this process is running on the host regardless of cfg.ContainerMode.
-	// cfg.ContainerMode is a Nix-time flag meaning "this host spawns workers
-	// inside containers"; it does NOT mean "this process is running inside a
-	// container". Reading PRISM_SPAWN_PATH or falling back to /workspace here
-	// would use the container-internal path, which does not exist on the host
-	// and causes `statfs /workspace: no such file or directory` in podman.
+	// so this process is running on the host. Reading PRISM_SPAWN_PATH or
+	// falling back to /workspace here would use the container-internal path,
+	// which does not exist on the host and causes
+	// `statfs /workspace: no such file or directory` in podman.
 	worktree, wtErr := resolveReviewWorktree(parentSession)
 	if wtErr != nil {
 		return wtErr
@@ -159,7 +157,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Resolve the effective isolation mode for spawning review agents.
 	// Priority: parent session's DB-recorded mode > machine default.
-	// Using the machine default (cfg.EffectiveIsolationMode) is wrong on hosts
+	// Using the machine default (cfg.DefaultIsolationMode) is wrong on hosts
 	// where the machine default is "podman" but the calling worker session runs
 	// as "bwrap" — prism agent-run rejects review agents spawned with the wrong
 	// mode. resolveParentIsolationMode returns "" only when the DB cannot be
@@ -170,7 +168,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// handles pre-v10 back-compat: when isolation_mode is "" but host_mode is
 	// true, it returns "host"; when both are unset it returns "podman". This
 	// mirrors the restore.go precedent established in PR #882.
-	isoMode := cfg.EffectiveIsolationMode() // machine default; may be overridden below
+	isoMode, isoErr := container.Resolve(container.ResolveInput{
+		ConfigDefault: cfg.DefaultIsolationMode,
+	})
+	if isoErr != nil {
+		return isoErr
+	}
+	// isoMode may be overridden below by the parent session's DB-recorded mode.
 	if dbIsoMode := resolveParentIsolationMode(parentSession); dbIsoMode != "" {
 		isoMode = config.IsolationMode(dbIsoMode)
 	}
@@ -200,12 +204,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// Pre-flight: verify that the required agent definitions exist.
 	// By the time we reach here, PRISM_HOST_API is guaranteed to be unset (the
 	// proxy-out branch above returned early if it was set), so this process is
-	// always running on the host regardless of cfg.ContainerMode. The agent
-	// definition files are on the host filesystem and CheckAgentAvailability
-	// can inspect them correctly. cfg.ContainerMode is a Nix-time flag meaning
-	// "this host spawns workers in containers"; it is NOT a runtime signal
-	// meaning "this process is running inside a container" — using it as such
-	// would incorrectly skip this check on Darwin hosts with container_mode=true.
+	// always running on the host. The agent definition files are on the host
+	// filesystem and CheckAgentAvailability can inspect them correctly.
 	//
 	// The harness adapter's ValidateAgentRole method encapsulates the
 	// harness-specific check (for opencode: agent .md files in the agents
@@ -271,7 +271,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 		Harness:        harnessFlag,
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
-		ContainerMode:  isoCaps.IsContainer,
 		IsolationMode:  string(isoMode),
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
@@ -324,9 +323,9 @@ func agentsForHarness(harness string) []review.Agent {
 
 // resolveReviewWorktree returns the host-side worktree path for parentSession
 // by looking it up in the prism DB. It is called from runReview after the
-// PRISM_HOST_API proxy-out branch, so we are always on the host regardless of
-// cfg.ContainerMode. Using PRISM_SPAWN_PATH or a /workspace fallback here
-// would pass the container-internal mount path to podman, causing a
+// PRISM_HOST_API proxy-out branch, so we are always on the host. Using
+// PRISM_SPAWN_PATH or a /workspace fallback here would pass the
+// container-internal mount path to podman, causing a
 // "statfs /workspace: no such file or directory" error on the host.
 func resolveReviewWorktree(parentSession string) (string, error) {
 	d, dbErr := openDB()
@@ -350,7 +349,7 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 // resolveParentIsolationMode returns the effective isolation mode for
 // parentSession by looking it up in the prism DB. It returns "" only when the
 // DB cannot be opened or the session has no row, signalling to the caller that
-// it should fall back to cfg.EffectiveIsolationMode().
+// it should fall back to cfg.DefaultIsolationMode.
 //
 // When a row exists, status.EffectiveIsolationMode() is used rather than
 // status.IsolationMode directly. This handles pre-v10 back-compat rows where

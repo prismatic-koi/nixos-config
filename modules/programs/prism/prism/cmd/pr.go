@@ -74,7 +74,12 @@ var prCmd = &cobra.Command{
 		}
 
 		cfg := config.Load()
-		isoMode := cfg.EffectiveIsolationMode()
+		isoMode, isoErr := container.Resolve(container.ResolveInput{
+			ConfigDefault: cfg.DefaultIsolationMode,
+		})
+		if isoErr != nil {
+			return isoErr
+		}
 
 		// Look up the isolation capabilities for this mode. All per-mode branching
 		// below reads from isoCaps rather than comparing against raw mode constants.
@@ -176,7 +181,6 @@ var prCmd = &cobra.Command{
 			Prompt:           promptFlag,
 			Agent:            agentFlag,
 			Headless:         !attachFlag,
-			ContainerMode:    isoCaps.IsContainer,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigContent:    configContent,

@@ -226,8 +226,6 @@ type Opts struct {
 	// container config blobs via ContainerConfigForRole. When nil, no config
 	// injection is performed (equivalent to pre-PR-B behaviour).
 	ProfilesFile *config.ProfilesFile
-	// ContainerMode: when true, each agent runs in its own container.
-	ContainerMode bool
 	// OnProgress is an optional callback invoked for each progress event:
 	// spawn, finish, timeout, and spawn failure. It receives a formatted
 	// progress line (without trailing newline). The caller is responsible for
@@ -241,8 +239,8 @@ type Opts struct {
 	// IsolationMode is the resolved isolation mode to use when spawning review
 	// agent sessions. Valid values: "podman", "bwrap", "host". When set, it is
 	// forwarded to session.SpawnOpts.IsolationMode for every spawned agent.
-	// When empty, spawnAgentOnlyLayout will call cfg.EffectiveIsolationMode()
-	// to resolve the machine default rather than silently falling back to host.
+	// When empty, spawnAgentOnlyLayout resolves the machine default from
+	// cfg.DefaultIsolationMode rather than silently falling back to host.
 	IsolationMode string
 	// ReadinessTimeout is the per-agent deadline for the post-spawn
 	// readiness gate (#1051 Piece A). Zero falls back to

@@ -320,10 +320,10 @@ func TestResolve_DBHostMode_MapsToHost(t *testing.T) {
 	}
 }
 
-func TestResolve_ContainerMode_MapsToPodman(t *testing.T) {
+func TestResolve_ConfigDefault_Podman(t *testing.T) {
+	// ConfigDefault=podman: without any flags, should resolve to podman.
 	mode, err := Resolve(ResolveInput{
-		ContainerMode: true,
-		ConfigDefault: config.IsolationHost,
+		ConfigDefault: config.IsolationPodman,
 	})
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)

@@ -132,15 +132,15 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 	}
 }
 
-// TestBuildDirectOpencodeCmd_AgentEnvVars_ContainerMode verifies that
-// AgentEnvVars are NOT injected when ContainerMode is true, even via the
-// buildDirectOpencodeCmd fallback path (ContainerMode=true, Port=0).
-func TestBuildDirectOpencodeCmd_AgentEnvVars_ContainerMode(t *testing.T) {
+// TestBuildDirectOpencodeCmd_AgentEnvVars_PodmanMode verifies that
+// AgentEnvVars are NOT injected when IsolationMode is "podman", even via
+// the buildDirectOpencodeCmd fallback path (podman, Port=0).
+func TestBuildDirectOpencodeCmd_AgentEnvVars_PodmanMode(t *testing.T) {
 	opts := Opts{
 		Agent:         "worker",
 		Port:          0, // Port=0 triggers buildDirectOpencodeCmd fallback in BuildOpencodeCmd
 		SessionName:   "myrepo@branch",
-		ContainerMode: true,
+		IsolationMode: "podman",
 		AgentEnvVars: map[string]string{
 			"AWS_CONFIG_FILE": "/Users/bensherman/.config/aws/readonly-config",
 		},
@@ -148,7 +148,7 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ContainerMode(t *testing.T) {
 	cmd := buildDirectOpencodeCmd(opts)
 
 	if strings.Contains(cmd, "AWS_CONFIG_FILE") {
-		t.Errorf("AgentEnvVars should not be injected when ContainerMode=true, got: %q", cmd)
+		t.Errorf("AgentEnvVars should not be injected when IsolationMode=podman, got: %q", cmd)
 	}
 }
 
@@ -254,16 +254,20 @@ func TestBuildOpencodeCmd_HostMode(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_ContainerModeFallback verifies that ContainerMode=true
-// with no IsolationMode falls back to "podman" (back-compat).
-func TestBuildOpencodeCmd_ContainerModeFallback(t *testing.T) {
+// TestBuildOpencodeCmd_EmptyIsolationMode verifies that an empty IsolationMode
+// falls back to the host command (not podman attach).
+func TestBuildOpencodeCmd_EmptyIsolationMode(t *testing.T) {
 	opts := Opts{
-		ContainerMode: true,
-		SessionName:   "nixos-config@feature",
+		SessionName: "nixos-config@feature",
+		Agent:       "worker",
+		Port:        14000,
 	}
 	cmd := BuildOpencodeCmd(opts)
-	if !strings.HasPrefix(cmd, "podman attach --sig-proxy=false") {
-		t.Errorf("ContainerMode fallback: got %q, want 'podman attach --sig-proxy=false ...'", cmd)
+	if strings.HasPrefix(cmd, "podman attach") {
+		t.Errorf("empty IsolationMode: got podman command %q, want direct opencode invocation", cmd)
+	}
+	if !strings.Contains(cmd, "opencode") {
+		t.Errorf("empty IsolationMode: cmd does not contain 'opencode': %q", cmd)
 	}
 }
 
