@@ -519,8 +519,8 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_ContainerMode verifies that when cfg.ContainerMode is
-// enabled and the persisted session is not marked host_mode, restore uses
+// TestRestoreSession_ContainerMode verifies that when cfg.DefaultIsolationMode
+// is "podman" and the persisted session is not marked host_mode, restore uses
 // the container-mode agent command ("podman attach --sig-proxy=false <container-name>")
 // rather than launching opencode directly. It also asserts that the
 // PluginHostPath is propagated from cfg into opts so the sidecar bind-mounts
@@ -534,11 +534,11 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	// Override cfg to enable container mode for this test only.
+	// Override cfg to enable podman mode for this test only.
 	pluginPath := "/fake/plugin/path/prism-hooks.ts"
 	withRestoreConfig(t, config.Config{
-		ContainerMode:     true,
-		SidecarPluginPath: pluginPath,
+		DefaultIsolationMode: config.IsolationPodman,
+		SidecarPluginPath:    pluginPath,
 	})
 
 	d := openRestoreTestDB(t)
@@ -574,17 +574,17 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 
 // TestRestoreSession_HostModeOverride verifies that when a session was
 // explicitly spawned in host mode (host_mode=1 in agent_status), restore
-// preserves that mode even when cfg.ContainerMode is enabled. The agent
-// pane must run "opencode --agent ..." rather than "podman attach".
+// preserves that mode even when cfg.DefaultIsolationMode is "podman". The
+// agent pane must run "opencode --agent ..." rather than "podman attach".
 func TestRestoreSession_HostModeOverride(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	// Enable container mode globally — the test verifies the per-session
+	// Enable podman mode globally — the test verifies the per-session
 	// host_mode flag still overrides it.
-	withRestoreConfig(t, config.Config{ContainerMode: true})
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationPodman})
 
 	d := openRestoreTestDB(t)
 
@@ -709,9 +709,9 @@ func fakeProfilesFile() *config.ProfilesFile {
 }
 
 // TestRestoreSession_ContainerMode_WorkerConfigContent verifies that when
-// cfg.ContainerMode is true and profiles.json contains a worker config blob,
-// restoreProjectSession populates opts.ConfigContent with the worker blob for
-// a non-main worktree directory (DefaultAgent returns "worker").
+// cfg.DefaultIsolationMode is "podman" and profiles.json contains a worker
+// config blob, restoreProjectSession populates opts.ConfigContent with the
+// worker blob for a non-main worktree directory (DefaultAgent returns "worker").
 //
 // This is the AC regression guard for restore: ConfigContent must flow from
 // profiles.json through opts into session.Create (and on to StartSidecarWithOpts
@@ -724,8 +724,8 @@ func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
 
 	pluginPath := "/fake/plugin/path/prism-hooks.ts"
 	withRestoreConfig(t, config.Config{
-		ContainerMode:     true,
-		SidecarPluginPath: pluginPath,
+		DefaultIsolationMode: config.IsolationPodman,
+		SidecarPluginPath:    pluginPath,
 	})
 
 	// Inject a fake profiles file so tests do not require a real profiles.json.
@@ -778,7 +778,7 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 	withCmdServer(t, s)
 
 	withRestoreConfig(t, config.Config{
-		ContainerMode: true,
+		DefaultIsolationMode: config.IsolationPodman,
 	})
 
 	pf := fakeProfilesFile()
@@ -830,7 +830,7 @@ func TestRestoreSession_ContainerMode_ProfilesError(t *testing.T) {
 	withCmdServer(t, s)
 
 	withRestoreConfig(t, config.Config{
-		ContainerMode: true,
+		DefaultIsolationMode: config.IsolationPodman,
 	})
 
 	// Simulate a missing/unreadable profiles.json.
@@ -1242,8 +1242,8 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 
 	withRestoreConfig(t, config.Config{
-		// ContainerMode is intentionally false — bwrap is the session's
-		// recorded isolation mode, not the global default.
+		// DefaultIsolationMode is the compiled-in default ("host") —
+		// bwrap is the session's recorded isolation mode, not the global default.
 	})
 	pf := fakeProfilesFile()
 	withRestoreProfiles(t, pf, nil)
@@ -1368,7 +1368,7 @@ func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 
 	withRestoreConfig(t, config.Config{
-		// Force EffectiveIsolationMode() → IsolationHost for pre-v10 rows.
+		// Force DefaultIsolationMode → IsolationHost for pre-v10 rows.
 		DefaultIsolationMode: config.IsolationHost,
 	})
 	pf := fakeProfilesFile()
@@ -1425,7 +1425,7 @@ func TestRestoreSession_PodmanMode_TempFileWritten(t *testing.T) {
 	withCmdServer(t, s)
 	t.Setenv("TMPDIR", t.TempDir())
 
-	withRestoreConfig(t, config.Config{ContainerMode: true})
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationPodman})
 	pf := fakeProfilesFile()
 	withRestoreProfiles(t, pf, nil)
 

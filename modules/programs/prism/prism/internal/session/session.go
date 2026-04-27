@@ -85,21 +85,12 @@ type Opts struct {
 	// In container mode, the port is also passed to the sidecar so it knows which
 	// host port to bind.
 	Port int
-	// ContainerMode, when true, switches the agent window command from
-	// "opencode --agent <name> --port <n>" to "podman attach <container-name>".
-	// The sidecar is responsible for starting the container and signalling readiness
-	// before the attach command is sent to the tmux pane.
-	// Deprecated: use IsolationMode instead. When IsolationMode is set it
-	// takes precedence; ContainerMode is kept for callers that have not migrated.
-	ContainerMode bool
-
 	// IsolationMode is the resolved isolation mode for this session.
-	// Valid values: "podman", "bwrap", "sandbox-exec", "host". When non-empty
-	// it overrides ContainerMode.
+	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	IsolationMode string
 	// PluginHostPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin. Only used
-	// when ContainerMode is true.
+	// in podman mode.
 	PluginHostPath string
 	// SkipStatusSeed, when true, causes setupFullLayout to skip the
 	// "prism event tmux-session-start" call that seeds agent_status.
@@ -146,13 +137,13 @@ type Opts struct {
 	// agent runtime uses its baked-in config unchanged.
 	ConfigContent string
 	// AgentEnvVars holds environment variables to prepend to the opencode
-	// command string in host-mode (ContainerMode = false) sessions. Each
-	// entry is emitted as KEY=<quoted-value> before PRISM_SESSION_NAME so
-	// that the sh -c invocation in tmux new-window receives the restricted
-	// env vars without needing zsh aliases.
+	// command string in host-mode sessions. Each entry is emitted as
+	// KEY=<quoted-value> before PRISM_SESSION_NAME so that the sh -c
+	// invocation in tmux new-window receives the restricted env vars without
+	// needing zsh aliases.
 	//
 	// Loaded from the agent_env_vars key of profiles.json (written by Nix).
-	// Ignored when ContainerMode is true — container sessions are handled via
+	// Ignored in podman mode — container sessions receive env vars via
 	// podman --env flags in the sidecar.
 	AgentEnvVars map[string]string
 	// ConfigEnvVarName is the environment variable name used to inject
@@ -160,8 +151,8 @@ type Opts struct {
 	// "OPENCODE_CONFIG_CONTENT" for opencode). Populated from
 	// harness.Harness.ConfigEnvVar() by callers that have a harness
 	// instance. When empty, config content injection is skipped in
-	// buildDirectOpencodeCmd (container-mode callers inject config via
-	// mounted files, not env vars).
+	// buildDirectOpencodeCmd (podman callers inject config via mounted
+	// files, not env vars).
 	ConfigEnvVarName string
 	// RuntimeEnvVars holds harness-specific environment variables to
 	// prepend to the agent command in host-mode sessions (e.g. opencode's
@@ -255,14 +246,11 @@ func DefaultAgentForSession(sessionName, directory, explicit string, d *db.DB) s
 	return DefaultAgent(directory, "")
 }
 
-// effectiveIsolationMode returns the resolved isolation mode for opts,
-// falling back to ContainerMode for back-compat.
+// effectiveIsolationMode returns the resolved isolation mode for opts.
+// Defaults to "host" when IsolationMode is empty.
 func effectiveIsolationMode(opts Opts) string {
 	if opts.IsolationMode != "" {
 		return opts.IsolationMode
-	}
-	if opts.ContainerMode {
-		return "podman"
 	}
 	return "host"
 }
@@ -273,9 +261,7 @@ func effectiveIsolationMode(opts Opts) string {
 //   - "podman":       "podman attach --sig-proxy=false <container-name>"
 //   - "bwrap":        "prism agent-run --session <session-name>"
 //   - "sandbox-exec": "prism agent-run --session <session-name>"
-//   - "host":         direct opencode invocation (legacy behaviour)
-//
-// For back-compat, ContainerMode=true maps to "podman" when IsolationMode is empty.
+//   - "host":         direct opencode invocation (default)
 func BuildOpencodeCmd(opts Opts) string {
 	mode := effectiveIsolationMode(opts)
 	switch mode {
@@ -354,9 +340,9 @@ func buildDirectOpencodeCmd(opts Opts) string {
 		cmd = "PRISM_SESSION_NAME=" + shellQuote(opts.SessionName) + " " + cmd
 	}
 	// Prepend agent env vars before PRISM_SESSION_NAME, in sorted key order
-	// for determinism. Only applies to host-mode sessions — container sessions
+	// for determinism. Only applies to host-mode sessions — podman sessions
 	// receive env vars via podman --env flags in the sidecar.
-	if !opts.ContainerMode && len(opts.AgentEnvVars) > 0 {
+	if opts.IsolationMode != "podman" && len(opts.AgentEnvVars) > 0 {
 		keys := make([]string, 0, len(opts.AgentEnvVars))
 		for k := range opts.AgentEnvVars {
 			keys = append(keys, k)
@@ -652,7 +638,6 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	} else {
 		sidecarOpts := StartSidecarOpts{
 			Port:           opts.Port,
-			ContainerMode:  mode == "podman",
 			IsolationMode:  mode,
 			AgentRole:      opts.Agent,
 			Worktree:       directory,

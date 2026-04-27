@@ -211,9 +211,6 @@ func KillSidecar(sessionName string) {
 type StartSidecarOpts struct {
 	// Port is the allocated opencode serve port.
 	Port int
-	// ContainerMode, when true, passes --container to the sidecar so it creates
-	// and manages a podman container. Deprecated: use IsolationMode instead.
-	ContainerMode bool
 	// IsolationMode is the resolved isolation mode for this session. When set,
 	// it is passed to the sidecar via --isolation-mode so the sidecar can
 	// branch on it (e.g. skip container creation for "bwrap", "sandbox-exec",
@@ -233,13 +230,13 @@ type StartSidecarOpts struct {
 	// Empty string means no prompt delivery.
 	InitialPrompt string
 	// ConfigContent is the JSON blob for the container's opencode.json config
-	// file. When non-empty and ContainerMode is true, it is forwarded to
+	// file. When non-empty and IsolationMode is "podman", it is forwarded to
 	// the sidecar via --config-content so the container can write it to a
 	// temp file and mount it at /root/.config/opencode/opencode.json.
 	//
-	// In non-container mode, OPENCODE_CONFIG_CONTENT is injected directly by
-	// buildDirectOpencodeCmd (prepended to the opencode shell command) and does
-	// not need to go through the sidecar.
+	// In host/bwrap/sandbox-exec mode, OPENCODE_CONFIG_CONTENT is injected
+	// directly by buildDirectOpencodeCmd (prepended to the opencode shell
+	// command) and does not need to go through the sidecar.
 	ConfigContent string
 	// InstanceID is the UUID instance identifier for this session incarnation.
 	// When non-empty, it is passed to the sidecar via --instance-id so that
@@ -321,7 +318,7 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	// For bwrap and sandbox-exec modes the sidecar is started but --container
 	// is NOT passed — the sandbox's process lifecycle is owned by the tmux pane
 	// (prism agent-run).
-	if opts.ContainerMode {
+	if opts.IsolationMode == "podman" {
 		cmdArgs = append(cmdArgs, "--container")
 		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
 		if opts.AgentRole != "" {

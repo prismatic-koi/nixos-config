@@ -12,7 +12,7 @@ package session
 //
 //   - SpawnSession contains NO branching on session-type strings. All variant
 //     behaviour flows through SpawnOpts fields (Layout, WorktreeReadOnly,
-//     ContainerMode, GroupID, …). If a branch here feels unavoidable, first
+//     IsolationMode, GroupID, …). If a branch here feels unavoidable, first
 //     ask whether it should be a new SpawnOpts field.
 //
 //   - root_agent_name is written at spawn time from opts.AgentRole — no NULL
@@ -88,14 +88,8 @@ type SpawnOpts struct {
 	//   - LayoutAgentOnly:  2-window layout (shell / agent)       — review path
 	Layout Layout
 
-	// ContainerMode, when true, runs opencode inside a podman container.
-	// Deprecated alias for IsolationMode == "podman"; both are accepted for
-	// back-compat.
-	ContainerMode bool
-
 	// IsolationMode is the resolved isolation mode for this session.
-	// Valid values: "podman", "bwrap", "host". When non-empty it overrides
-	// ContainerMode.
+	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	IsolationMode string
 
 	// PluginHostPath is the host-side path to the opencode plugin bind-mounted
@@ -214,8 +208,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// its own log-open call (the failure mode #1051 reports).
 	startup := openStartupLog(opts.SessionName)
 	defer startup.close()
-	startup.log("spawn-session: begin (role=%q, worktree=%q, layout=%d, isolation=%q, container_mode=%t)",
-		opts.AgentRole, opts.Worktree, opts.Layout, opts.IsolationMode, opts.ContainerMode)
+	startup.log("spawn-session: begin (role=%q, worktree=%q, layout=%d, isolation=%q)",
+		opts.AgentRole, opts.Worktree, opts.Layout, opts.IsolationMode)
 
 	// #1064 / #1092: with a non-empty prompt, write the prompt to the
 	// per-session run directory and let the launch path reference it by
@@ -479,22 +473,19 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 // initial-prompt file and whether to apply the launch-command size guard
 // without duplicating the precedence logic.
 //
-// For LayoutAgentOnly, when neither IsolationMode nor ContainerMode is set,
-// fall back to the same machine default that spawnAgentOnlyLayout uses
-// (config.Load().EffectiveIsolationMode()). This keeps the prompt-file
-// gate aligned with the layout's actual mode — otherwise a caller that
-// leaves IsolationMode empty for a bwrap-default machine would get the
-// legacy inline PRISM_INITIAL_PROMPT path here while spawnAgentOnlyLayout
-// runs the agent under bwrap, re-introducing #1092 by another route.
+// For LayoutAgentOnly, when IsolationMode is not set, fall back to the same
+// machine default that spawnAgentOnlyLayout uses
+// (config.Load().DefaultIsolationMode). This keeps the prompt-file gate
+// aligned with the layout's actual mode — otherwise a caller that leaves
+// IsolationMode empty for a bwrap-default machine would get the legacy inline
+// PRISM_INITIAL_PROMPT path here while spawnAgentOnlyLayout runs the agent
+// under bwrap, re-introducing #1092 by another route.
 func resolveLayoutIsolationMode(opts SpawnOpts) string {
 	if opts.IsolationMode != "" {
 		return opts.IsolationMode
 	}
-	if opts.ContainerMode {
-		return "podman"
-	}
 	if opts.Layout == LayoutAgentOnly {
-		return string(config.Load().EffectiveIsolationMode())
+		return string(config.Load().DefaultIsolationMode)
 	}
 	return "host"
 }
@@ -518,7 +509,6 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		ConfigContent:    opts.ConfigContent,
 		SessionName:      opts.SessionName,
 		Port:             port,
-		ContainerMode:    opts.ContainerMode,
 		IsolationMode:    opts.IsolationMode,
 		PluginHostPath:   opts.PluginHostPath,
 		InstanceID:       opts.InstanceID,
@@ -608,17 +598,13 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 // the worktree is read-only for them.
 func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	mode := opts.IsolationMode
-	if mode == "" && opts.ContainerMode {
-		mode = "podman"
-	}
-	// When IsolationMode is still empty (neither field set), resolve the
-	// machine default from config rather than silently falling back to host.
-	// A silent host fallback breaks bwrap sessions: review agents would run
-	// without the sandbox, pick up the host opencode.json (which only defines
-	// the build agent), and trigger the recursive review explosion described
-	// in issue #1001.
+	// When IsolationMode is not set, resolve the machine default from config
+	// rather than silently falling back to host. A silent host fallback breaks
+	// bwrap sessions: review agents would run without the sandbox, pick up the
+	// host opencode.json (which only defines the build agent), and trigger the
+	// recursive review explosion described in issue #1001.
 	if mode == "" {
-		mode = string(config.Load().EffectiveIsolationMode())
+		mode = string(config.Load().DefaultIsolationMode)
 	}
 
 	// Start the sidecar BEFORE creating the agent window so that the
@@ -627,7 +613,6 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// host-API, and starting it up-front keeps the ordering consistent.
 	sidecarOpts := StartSidecarOpts{
 		Port:             port,
-		ContainerMode:    opts.ContainerMode,
 		IsolationMode:    mode,
 		AgentRole:        opts.AgentRole,
 		Worktree:         opts.Worktree,
@@ -657,7 +642,6 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		ConfigContent:    opts.ConfigContent,
 		SessionName:      opts.SessionName,
 		Port:             port,
-		ContainerMode:    opts.ContainerMode,
 		IsolationMode:    mode,
 		PluginHostPath:   opts.PluginHostPath,
 		ConfigEnvVarName: opts.ConfigEnvVarName,

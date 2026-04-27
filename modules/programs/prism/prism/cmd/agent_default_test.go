@@ -161,27 +161,27 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_ContainerMode verifies that container mode produces the
-// correct "podman attach --sig-proxy=false <container-name>" command (RFC #691, Phase 1a / Issue #715).
-func TestBuildOpencodeCmd_ContainerMode(t *testing.T) {
+// TestBuildOpencodeCmd_PodmanIsolationMode verifies that IsolationMode="podman"
+// produces the correct "podman attach --sig-proxy=false <container-name>" command.
+func TestBuildOpencodeCmd_PodmanIsolationMode(t *testing.T) {
 	re := opencodeRuntimeEnv()
 	cases := []struct {
 		opts session.Opts
 		want string
 	}{
-		// Container mode with SessionName — should use podman attach with the
+		// Podman mode with SessionName — should use podman attach with the
 		// stable container name derived from the session name (single-quoted for
 		// shell safety when embedded in the readiness wait script).
-		{session.Opts{ContainerMode: true, SessionName: "repo@main", Port: 14000}, "podman attach --sig-proxy=false 'prism-repo-main'"},
+		{session.Opts{IsolationMode: "podman", SessionName: "repo@main", Port: 14000}, "podman attach --sig-proxy=false 'prism-repo-main'"},
 		// Different session name — container name is derived correctly.
-		{session.Opts{ContainerMode: true, SessionName: "nixos-config@feature", Port: 14042}, "podman attach --sig-proxy=false 'prism-nixos-config-feature'"},
-		// Agent role is irrelevant in container mode (podman attach is role-agnostic).
-		{session.Opts{ContainerMode: true, SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach --sig-proxy=false 'prism-repo-branch'"},
-		// Container mode with no SessionName falls back to direct launch (safety net).
+		{session.Opts{IsolationMode: "podman", SessionName: "nixos-config@feature", Port: 14042}, "podman attach --sig-proxy=false 'prism-nixos-config-feature'"},
+		// Agent role is irrelevant in podman mode (podman attach is role-agnostic).
+		{session.Opts{IsolationMode: "podman", SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach --sig-proxy=false 'prism-repo-branch'"},
+		// Podman mode with no SessionName falls back to direct launch (safety net).
 		// The fallback calls buildDirectOpencodeCmd, which prepends RuntimeEnvVars.
-		{session.Opts{ContainerMode: true, SessionName: "", Port: 0, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
-		// Non-container mode includes the timeout prefix (via RuntimeEnvVars).
-		{session.Opts{ContainerMode: false, Port: 14000, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
+		{session.Opts{IsolationMode: "podman", SessionName: "", Port: 0, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
+		// Host mode includes the timeout prefix (via RuntimeEnvVars).
+		{session.Opts{IsolationMode: "host", Port: 14000, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
 	}
 	for _, tc := range cases {
 		got := session.BuildOpencodeCmd(tc.opts)
