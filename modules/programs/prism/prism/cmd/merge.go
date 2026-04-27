@@ -28,6 +28,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -71,7 +72,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	// requireCoordinator, which returns HTTP 403 for worker sessions. The
 	// preflight is run inside the sandbox (gh works there) before the proxy
 	// call so that invalid PRs do not pin sidecar resources.
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
 		title, preflightErr := preflight(pr)
 		if preflightErr != nil {
 			return fmt.Errorf("prism merge: %w", preflightErr)
