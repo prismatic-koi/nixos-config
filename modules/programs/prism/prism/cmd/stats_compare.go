@@ -70,7 +70,7 @@ func init() {
 		cmd.Flags().StringSlice("axes", nil, "Comma-separated axes to display (default: all). Names: end_state, duration_ms, interrupted_count, compaction_count, error_event_count, permission_ask_count, permission_denied_count, doom_loop_count, pr_number, pr_merged_at, review_verdict, review_pass_count, review_fail_count, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, cost_usd, tool_call, tool_error, msg_assistant, time_to_first_event, time_to_finished")
 		cmd.Flags().String("format", "table", "Output format: table, json, csv")
 		cmd.Flags().Bool("diff-only", false, "Hide rows where every run has the same value")
-		cmd.Flags().String("sort", "", "Sort columns by this axis value descending")
+		cmd.Flags().String("sort", "", "Sort columns by this axis value descending (reserved; renderer details deferred per C3 §6.5)")
 		cmd.Flags().Bool("include-inputs", false, "Prepend spawn_inputs block (default: on for 2-run, off for 3+)")
 		cmd.Flags().Bool("include-rubric", false, "Include rubric_* columns (hidden by default)")
 	}
@@ -456,11 +456,10 @@ func minMaxAnnotation(axis string, idx int, runs []compareRun) string {
 	if len(vals) < 2 {
 		return ""
 	}
-	_, ok := axisValueNumeric(axis, runs[idx].Outcome)
+	myVal, ok := axisValueNumeric(axis, runs[idx].Outcome)
 	if !ok {
 		return ""
 	}
-	myVal, _ := axisValueNumeric(axis, runs[idx].Outcome)
 	minVal, maxVal := vals[0], vals[0]
 	for _, v := range vals[1:] {
 		if v < minVal {
@@ -635,11 +634,13 @@ func renderSection(
 	fmt.Println()
 	fmt.Println(styleHeader.Render(title + ":"))
 	for _, row := range rows {
-		line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
-		for _, v := range row.Values {
-			line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
-		}
+		var line string
 		if isPairwise {
+			// 2 runs: plain values + Δ column.
+			line = fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
+			for _, v := range row.Values {
+				line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
+			}
 			delta := deltaStr(row.Name, runs[0], runs[1])
 			if delta != "" {
 				line += fmt.Sprintf("  %s", delta)
@@ -647,18 +648,16 @@ func renderSection(
 				line += "  —"
 			}
 		} else {
-			// 3+ runs: MIN/MAX annotation for the last run (cleaner than per-run).
-			// Annotate each run's value.
-			annotated := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
+			// 3+ runs: MIN/MAX annotation per cell; no Δ column.
+			line = fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
 			for i, v := range row.Values {
 				ann := minMaxAnnotation(row.Name, i, runs)
 				cellStr := truncateStr(v, wVal)
 				if ann != "" {
 					cellStr = fmt.Sprintf("%s [%s]", truncateStr(v, wVal-len(ann)-3), ann)
 				}
-				annotated += fmt.Sprintf("  %-*s", wVal, cellStr)
+				line += fmt.Sprintf("  %-*s", wVal, cellStr)
 			}
-			line = annotated
 		}
 		fmt.Println(line)
 	}

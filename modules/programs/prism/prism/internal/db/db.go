@@ -3676,11 +3676,11 @@ SELECT
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheReadTokens'), 0) ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheWriteTokens'),0) ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cost'),          0) ELSE 0.0 END), 0.0),
-    MIN(CASE WHEN instance_id = ? THEN created_at ELSE NULL END)
+    MIN(created_at)
 FROM agent_events
 WHERE instance_id = ?`
 
-	row := d.conn.QueryRow(aggQ, instanceID, instanceID)
+	row := d.conn.QueryRow(aggQ, instanceID)
 	var minCreatedAt *int64
 	if scanErr := row.Scan(
 		&out.InterruptedCount, &out.CompactionCount, &out.ErrorEventCount,
