@@ -57,6 +57,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 	session "github.com/prismatic-koi/prism/internal/session"
 )
@@ -3137,8 +3138,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Harness == "" {
 			req.Harness = "opencode"
 		}
-		if req.Harness != "opencode" {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown harness %q: only 'opencode' is supported in this version of prism", req.Harness))
+		if _, ok := harness.Lookup(req.Harness); !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"unknown harness %q: valid harnesses: %s",
+				req.Harness, strings.Join(harness.Names(), ", ")))
 			return
 		}
 		// Reject conflicting isolation flags at the API boundary so the error

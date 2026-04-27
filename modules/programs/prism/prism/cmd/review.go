@@ -27,7 +27,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -80,6 +81,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 	onlyChanged := cmd.Flags().Changed("only")
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
 	sizeBudgetFlag, _ := cmd.Flags().GetInt("size-budget")
+
+	// Validate harness BEFORE any session state is created.
+	if _, ok := harness.Lookup(harnessFlag); !ok {
+		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
+	}
 
 	// Resolve the full agent list and apply --only filtering up-front.
 	// This is done before the container-mode branch so that validation
@@ -204,7 +210,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// harness-specific check (for opencode: agent .md files in the agents
 	// directory). This keeps opencode-specific filesystem paths out of
 	// cmd/ and review/ packages.
-	h := opencode.New("", nil, "", "")
+	// harnessFlag was validated via harness.Lookup above; the error is unreachable.
+	h, _ := harness.New(harnessFlag, "", nil, "", "")
 	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
 		return fmt.Errorf("prism review: %w", err)
 	}

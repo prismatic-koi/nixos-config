@@ -60,7 +60,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
@@ -98,6 +99,7 @@ func init() {
 	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
+	sidecarCmd.Flags().String("harness", "opencode", "Agent harness to use (e.g. opencode)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -115,6 +117,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	configContent, _ := cmd.Flags().GetString("config-content")
 	instanceID, _ := cmd.Flags().GetString("instance-id")
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
+	harnessName, _ := cmd.Flags().GetString("harness")
+	if harnessName == "" {
+		harnessName = "opencode"
+	}
+	if _, ok := harness.Lookup(harnessName); !ok {
+		return fmt.Errorf("sidecar: unknown harness %q: valid harnesses: %s", harnessName, strings.Join(harness.Names(), ", "))
+	}
 
 	// Resolve the effective isolation mode. When --isolation-mode is set it
 	// takes precedence. Otherwise fall back to --container for back-compat.
@@ -177,7 +186,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Resolve the agent model once via the harness adapter. The adapter is
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
-	agentModel := opencode.New("", nil, agentRole, "").EffectiveModel(agentRole)
+	modelProbe, _ := harness.New(harnessName, "", nil, agentRole, "")
+	agentModel := modelProbe.EffectiveModel(agentRole)
 
 	// Load profiles to extract container resource caps and agent env vars.
 	// Non-fatal if missing (e.g. running without the nix module) — resource
@@ -279,21 +289,24 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Construct the opencode harness adapter and inject it via Config.Harness.
-	// The adapter encapsulates all opencode-specific behaviour: session
+	// Construct the harness adapter and inject it via Config.Harness.
+	// The adapter encapsulates all runtime-specific behaviour: session
 	// creation, prompt delivery, SSE subscription, event type extraction, and
 	// event mapping. The sidecar calls through the harness.Harness interface
-	// and has no direct dependency on the opencode package (#710).
+	// and has no direct dependency on the adapter package (#710).
 	//
-	// In podman and bwrap mode, use NewContainerMode so that:
+	// In podman and bwrap mode, use NewContainer so that:
 	//   - CreateSession uses GET /session to retrieve the existing session ID
 	//     (opencode already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
-	var h *opencode.Adapter
+	var h harness.Harness
 	if useContainerHarness {
-		h = opencode.NewContainerMode(opencodeURL, nil, agentRole, agentModel)
+		h, err = harness.NewContainer(harnessName, opencodeURL, nil, agentRole, agentModel)
 	} else {
-		h = opencode.New(opencodeURL, nil, agentRole, agentModel)
+		h, err = harness.New(harnessName, opencodeURL, nil, agentRole, agentModel)
+	}
+	if err != nil {
+		return fmt.Errorf("sidecar: construct harness adapter: %w", err)
 	}
 
 	// Inject harness-specific runtime env vars into the container config.

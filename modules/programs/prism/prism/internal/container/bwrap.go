@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -513,33 +512,14 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", k, v)
 	}
 
-	// Inject profile-level agent env vars (e.g. GIT_EDITOR=true). These come
-	// from profiles.json agent_env_vars (written by Nix). Emitted in sorted
-	// key order for determinism. bwrap --setenv takes KEY and VALUE as distinct
-	// argv elements so no shell quoting is needed — special characters in
-	// values are passed verbatim.
-	//
-	// KUBECONFIG and AWS_CONFIG_FILE are intentionally suppressed here: both
-	// files are already bind-mounted at their canonical default paths
-	// (~/.kube/config and ~/.aws/config respectively), so the host XDG paths
-	// held in AgentEnvVars do not exist inside the sandbox and would only
-	// override the correctly-mounted locations.
-	sandboxMountedByDefault := map[string]bool{
-		"KUBECONFIG":      true,
-		"AWS_CONFIG_FILE": true,
-	}
-	if len(cfg.AgentEnvVars) > 0 {
-		keys := make([]string, 0, len(cfg.AgentEnvVars))
-		for k := range cfg.AgentEnvVars {
-			if !sandboxMountedByDefault[k] {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			args = append(args, "--setenv", k, cfg.AgentEnvVars[k])
-		}
-	}
+	// Inject profile-level agent env vars (AgentEnvVars, with KUBECONFIG /
+	// AWS_CONFIG_FILE suppressed) and harness-specific runtime env vars
+	// (RuntimeEnv). The bwrap appender uses "--setenv K V" syntax (distinct
+	// argv elements — no shell quoting needed; special characters are verbatim).
+	// See env.go:AppendStandardEnv for the suppression rationale.
+	args = AppendStandardEnv(args, cfg, func(a []string, k, v string) []string {
+		return append(a, "--setenv", k, v)
+	})
 
 	// NIX_CONFIG: tell nix to use the host daemon for store operations.
 	args = append(args, "--setenv", "NIX_CONFIG", "store = daemon")
@@ -594,13 +574,6 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 	args = append(args, "--setenv", "PRISM_SESSION_NAME", cfg.SessionName)
 
-	// Inject harness-specific runtime env vars. For opencode, this includes
-	// the experimental bash-tool timeout (15 min). Populated from
-	// harness.Harness.RuntimeEnv() via the container Config.
-	for k, v := range cfg.RuntimeEnv {
-		args = append(args, "--setenv", k, v)
-	}
-
 	// Host-API env var.
 	if cfg.HostAPITCPPort != 0 {
 		args = append(args,
@@ -644,22 +617,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// theoretical case where AllocatedPort is unset (e.g. a malformed session
 	// row); in normal operation cfg.AllocatedPort is always populated by
 	// agent-run from the DB's harness_port column.
-	opencodePort := cfg.AllocatedPort
-	if opencodePort == 0 {
-		opencodePort = ContainerPort
-	}
-	args = append(args, "--",
-		"opencode",
-		"--port", fmt.Sprintf("%d", opencodePort),
-		"--hostname", "127.0.0.1",
-	)
-
-	if cfg.AgentRole != "" {
-		args = append(args, "--agent", cfg.AgentRole)
-	}
-	if cfg.InitialPrompt != "" {
-		args = append(args, "--prompt", cfg.InitialPrompt)
-	}
+	args = append(args, "--")
+	args = append(args, HarnessInvocation(cfg)...)
 
 	return args
 }

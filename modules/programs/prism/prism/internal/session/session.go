@@ -171,6 +171,11 @@ type Opts struct {
 	// These are prepended outermost (before AgentEnvVars and
 	// PRISM_SESSION_NAME).
 	RuntimeEnvVars map[string]string
+	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// non-empty it is forwarded to the sidecar via --harness so the sidecar
+	// can call harness.ShapeOf to determine its own transport shape. When
+	// empty, the sidecar defaults to "opencode".
+	HarnessName string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -655,6 +660,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			InitialPrompt:  opts.Prompt,
 			ConfigContent:  opts.ConfigContent,
 			InstanceID:     opts.InstanceID,
+			HarnessName:    opts.HarnessName,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.

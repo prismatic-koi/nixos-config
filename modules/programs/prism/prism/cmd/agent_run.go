@@ -60,7 +60,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -186,8 +187,21 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		agentEnvVars = pf.AgentEnvVars
 	}
 
+	// Resolve the harness name from the DB status. Fall back to "opencode"
+	// for pre-registry rows that have a NULL harness column.
+	harnessName := "opencode"
+	if status.Harness != nil && *status.Harness != "" {
+		harnessName = *status.Harness
+	}
+
 	// Populate harness-specific runtime env vars for the bwrap sandbox.
-	agentRunHarness := opencode.New("", nil, "", "")
+	// harnessName comes from the DB; if it is not registered, fall back to
+	// a zero-env map rather than failing the entire agent-run.
+	agentRunHarness, _ := harness.New(harnessName, "", nil, "", "")
+	var runtimeEnv map[string]string
+	if agentRunHarness != nil {
+		runtimeEnv = agentRunHarness.RuntimeEnv()
+	}
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -200,7 +214,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
-		RuntimeEnv:        agentRunHarness.RuntimeEnv(),
+		RuntimeEnv:        runtimeEnv,
 		AgentEnvVars:      agentEnvVars,
 	}
 
@@ -591,7 +605,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		agentEnvVars = pf.AgentEnvVars
 	}
 
-	agentRunHarness := opencode.New("", nil, "", "")
+	// Resolve the harness name from the DB status. Fall back to "opencode"
+	// for pre-registry rows that have a NULL harness column.
+	sandboxHarnessName := "opencode"
+	if status.Harness != nil && *status.Harness != "" {
+		sandboxHarnessName = *status.Harness
+	}
+
+	sandboxHarness, _ := harness.New(sandboxHarnessName, "", nil, "", "")
+	var sandboxRuntimeEnv map[string]string
+	if sandboxHarness != nil {
+		sandboxRuntimeEnv = sandboxHarness.RuntimeEnv()
+	}
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -604,7 +629,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		HostAPISockPath:   hostAPISockPath,
-		RuntimeEnv:        agentRunHarness.RuntimeEnv(),
+		RuntimeEnv:        sandboxRuntimeEnv,
 		AgentEnvVars:      agentEnvVars,
 	}
 

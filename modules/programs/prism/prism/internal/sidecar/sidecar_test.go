@@ -6715,8 +6715,8 @@ exit 0
 	if !strings.Contains(errResp["error"], `unknown harness "pi"`) {
 		t.Errorf("error %q should mention 'unknown harness \"pi\"'", errResp["error"])
 	}
-	if !strings.Contains(errResp["error"], "only 'opencode' is supported") {
-		t.Errorf("error %q should mention 'only 'opencode' is supported'", errResp["error"])
+	if !strings.Contains(errResp["error"], "valid harnesses:") {
+		t.Errorf("error %q should mention 'valid harnesses:'", errResp["error"])
 	}
 	// The stub must NOT have been called (no state was created).
 	if _, err := os.Stat(argsFile); err == nil {

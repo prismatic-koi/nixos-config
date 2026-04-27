@@ -23,7 +23,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -170,7 +171,7 @@ var prCmd = &cobra.Command{
 			}
 		}
 
-		prHarness := opencode.New("", nil, "", "")
+		prHarness, _ := harness.New("opencode", "", nil, "", "")
 		opts := session.Opts{
 			Prompt:           promptFlag,
 			Agent:            agentFlag,

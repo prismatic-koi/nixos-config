@@ -152,6 +152,11 @@ type SpawnOpts struct {
 	// PRISM_SESSION_NAME) in the agent command string.
 	RuntimeEnvVars map[string]string
 
+	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// non-empty it is forwarded to the sidecar via --harness so the sidecar
+	// can call harness.ShapeOf to determine its own transport shape.
+	HarnessName string
+
 	// ReadinessTimeout, when > 0, causes SpawnSession to gate its return on
 	// the agent reaching a readiness signal in the prism DB (see
 	// WaitForReady). If the gate trips with a timeout, SpawnSession cleans
@@ -631,6 +636,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		ConfigContent:    opts.ConfigContent,
 		InstanceID:       opts.InstanceID,
 		WorktreeReadOnly: opts.WorktreeReadOnly,
+		HarnessName:      opts.HarnessName,
 	}
 	if err := StartSidecarWithOpts(opts.SessionName, sidecarOpts); err != nil {
 		// Non-fatal: log and continue, matching the LayoutFull behaviour

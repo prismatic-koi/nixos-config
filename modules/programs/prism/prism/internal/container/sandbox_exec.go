@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -152,7 +151,7 @@ func generateProfile(m *Manager) string {
 // file written before sandbox-exec is launched. The path is namespaced by
 // the session name so concurrent sessions never collide.
 func (m *Manager) sandboxExecProfilePath() string {
-	return filepath.Join(os.TempDir(), "prism-sandbox-exec-profile-"+m.name+".sb")
+	return m.tempPath("sandbox-exec-profile", ".sb")
 }
 
 // writeProfile materialises the generated SBPL profile to a temp file and
@@ -195,27 +194,11 @@ func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 
 	profilePath := m.sandboxExecProfilePath()
 
-	args := []string{"sandbox-exec", "-f", profilePath, "opencode"}
-
-	// Match the bwrap port-fallback rule for parity. AllocatedPort is
-	// populated by agent-run from the DB's harness_port column in normal
-	// operation; ContainerPort is the fallback for the theoretical case
-	// where AllocatedPort is unset.
-	opencodePort := cfg.AllocatedPort
-	if opencodePort == 0 {
-		opencodePort = ContainerPort
-	}
-	args = append(args,
-		"--port", fmt.Sprintf("%d", opencodePort),
-		"--hostname", "127.0.0.1",
-	)
-
-	if cfg.AgentRole != "" {
-		args = append(args, "--agent", cfg.AgentRole)
-	}
-	if cfg.InitialPrompt != "" {
-		args = append(args, "--prompt", cfg.InitialPrompt)
-	}
+	// The sandbox-exec wrapper precedes the harness invocation. HarnessInvocation
+	// returns ["opencode", "--port", ..., "--hostname", "127.0.0.1", ...] and
+	// handles the AllocatedPort ∥ ContainerPort fallback rule (matching bwrap).
+	args := []string{"sandbox-exec", "-f", profilePath}
+	args = append(args, HarnessInvocation(cfg)...)
 
 	return args
 }
