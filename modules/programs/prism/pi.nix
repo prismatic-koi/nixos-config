@@ -73,6 +73,8 @@
         extensions = [ "${piExtensionsDir}/anthropic-oauth/index.ts" ];
       };
 
+      colourLib = import ../../colour-scheme/lib.nix;
+
       piTheme =
         with config.theme;
         builtins.toJSON {
@@ -100,8 +102,8 @@
             customMessageText = "";
             customMessageLabel = primary;
             toolPendingBg = bg_dim;
-            toolSuccessBg = bg_green;
-            toolErrorBg = bg_red;
+            toolSuccessBg = colourLib.darken bg_green 25;
+            toolErrorBg = colourLib.darken bg_red 25;
             toolTitle = primary;
             toolOutput = "";
             # Markdown
