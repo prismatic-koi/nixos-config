@@ -142,6 +142,12 @@ type Config struct {
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
 	AgentModel string
+	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// non-empty, Run consults harness.ShapeOf(HarnessName) at the top of the
+	// function to determine the transport shape and route to the appropriate
+	// startup helper (runStartupHTTP or runStartupStdio). When empty, Run
+	// defaults to TransportHTTPPort behaviour for back-compat.
+	HarnessName string
 	// InstanceID is the UUID assigned to this session incarnation by the
 	// tmux-session-start event handler. When non-empty it is written as
 	// to_instance_id on bus messages addressed to the coordinator, so that the
@@ -343,169 +349,33 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
-	// Container mode: create and health-check the container before connecting.
-	if s.cfg.Container != nil {
-		sessionStart := time.Now()
-
-		// On Darwin, start a TCP listener on 0.0.0.0:0 BEFORE container creation
-		// so the OS-allocated port is known when the container env is configured.
-		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
-		// container VM, so TCP is used instead (#661). The listener must bind on
-		// 0.0.0.0 (not 127.0.0.1) so that gvproxy's bridge interface
-		// (192.168.127.254) can reach it from inside the container VM — loopback
-		// is not reachable from the VM network. No --publish flag is needed:
-		// the container reaches the sidecar via host.containers.internal:<port>,
-		// which routes through the gvproxy bridge directly to this listener.
-		//
-		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode would
-		// reproduce the ENOTSUP bug (#661) — the container would start without a
-		// working host-API channel. Returning an error here aborts container startup
-		// with a clear message rather than creating a silently broken session.
-		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
-			tcpLn, tcpErr := net.Listen("tcp", "0.0.0.0:0")
-			if tcpErr != nil {
-				return fmt.Errorf("sidecar: host-API TCP listener: %w", tcpErr)
-			}
-			port := tcpLn.Addr().(*net.TCPAddr).Port
-			log.Printf("sidecar: host-API TCP listener bound on 0.0.0.0:%d", port)
-			s.cfg.HostAPITCPPort = port
-			s.cfg.Container.HostAPITCPPort = port
-			s.mu.Lock()
-			s.hostAPITCPListener = tcpLn
-			s.mu.Unlock()
+	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
+	// determine the wire-level shape and dispatch to the appropriate startup
+	// helper. The back half of Run (host-API, merge-queue watcher, SSE loop,
+	// shutdown) is shape-agnostic and is unchanged.
+	//
+	// When HarnessName is empty (back-compat: callers that pre-date this field)
+	// the registry lookup is skipped and we fall through to runStartupHTTP,
+	// preserving today's behaviour for all existing sessions.
+	if s.cfg.HarnessName != "" {
+		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
+		if !ok {
+			return fmt.Errorf("sidecar: unknown harness %q (not registered)", s.cfg.HarnessName)
 		}
-
-		// closeTCPListenerOnEarlyReturn closes the TCP listener (Darwin only) when
-		// Run() returns an error before the SSE loop — i.e. before Shutdown() has been
-		// (or will be) called by the signal handler. We use a flag rather than a
-		// defer-always so that the normal success path leaves the listener open for the
-		// running HTTP server (which is closed by Shutdown() later).
-		tcpListenerClosed := false
-		closeTCPListenerOnError := func() {
-			if tcpListenerClosed {
-				return
+		switch shape {
+		case harness.TransportHTTPPort:
+			if err := s.runStartupHTTP(ctx); err != nil {
+				return err
 			}
-			s.mu.Lock()
-			ln := s.hostAPITCPListener
-			s.mu.Unlock()
-			if ln != nil {
-				_ = ln.Close()
-				tcpListenerClosed = true
-			}
+		case harness.TransportStdioPipe:
+			return s.runStartupStdio(ctx)
+		default:
+			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
 		}
-
-		mgr := container.New(*s.cfg.Container)
-		s.mu.Lock()
-		s.container = &containerMgr{mgr: mgr}
-		s.mu.Unlock()
-
-		log.Printf("[timing] pre-Create: %s", time.Since(sessionStart).Round(time.Millisecond))
-		log.Printf("sidecar: creating container %q", mgr.Name())
-		t0 := time.Now()
-		if err := mgr.Create(ctx); err != nil {
-			closeTCPListenerOnError()
-			return fmt.Errorf("sidecar: container create: %w", err)
-		}
-		log.Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
-
-		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
-		t0 = time.Now()
-		if err := mgr.WaitHealthy(ctx); err != nil {
-			log.Printf("sidecar: health check failed: %v", err)
-			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
-			// must stop/remove the container here.
-			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
-			// sets shuttingDown=true and stops the container) then cancel(). In
-			// that case ctx may still be non-nil here (cancel fires after Shutdown),
-			// but we check shuttingDown to distinguish a SIGTERM-cancelled WaitHealthy
-			// (Shutdown already ran) from a genuine probe timeout (no Shutdown yet),
-			// avoiding a double-Shutdown with spurious log lines.
-			//
-			// shuttingDown is the reliable SIGTERM gate: Shutdown() sets it before
-			// calling ctr.mgr.Shutdown(), so even when the container exits early
-			// (WaitHealthy returns via hasExited before cancel fires), shuttingDown
-			// is already true. ctx.Err() is set only after Shutdown() returns, which
-			// is too late.
-			s.mu.Lock()
-			alreadyShutdown := s.shuttingDown
-			s.mu.Unlock()
-			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
-			if !alreadyShutdown {
-				// Genuine probe timeout (not SIGTERM): clean up the container
-				// ourselves (Shutdown() has not run yet) and write StateError
-				// directly so the DB row is in the correct terminal state.
-				// On SIGTERM, Shutdown() handles cleanup and writes StateInterrupted.
-				mgr.Shutdown()
-				closeTCPListenerOnError()
-				// Gap 1 fix: write StateError directly so the DB row transitions
-				// to "error" (not relying on the fragile pane-died tmux hook).
-				// This is skipped on SIGTERM to avoid racing with Shutdown().
-				s.writeStartupError(startupErr)
-			}
-			return startupErr
-		}
-		healthyAt := time.Now()
-		log.Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
-		log.Printf("sidecar: container %q is healthy", mgr.Name())
-
-		// Signal readiness after the container is healthy (AC-7, AC-19).
-		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
-		// even if WaitHealthy returned a genuine 200 during podman stop's grace
-		// period. Shutdown() sets shuttingDown=true before starting podman stop,
-		// so this check is reliable regardless of ctx cancellation timing.
-		s.mu.Lock()
-		isShuttingDown := s.shuttingDown
-		s.mu.Unlock()
-		// Discover the session ID and deliver the initial prompt (#487).
-		// In container mode (opencode --prompt "text"), the prompt was already
-		// delivered via the CLI flag — opencode starts the session and begins
-		// processing immediately. The sidecar still needs the session ID for
-		// subsequent prism prompt follow-up delivery.
-		//
-		// 1. GET /session  — retrieve the session opencode already created
-		//    (via --prompt on CLI). In non-container mode, POST /session creates
-		//    a new session. The harness adapter handles both cases.
-		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
-		// 3. DeliverInitialPrompt — no-op in container mode (prompt already sent
-		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
-		//    so it only runs in container mode; host-mode sessions never reach here.
-		if !isShuttingDown && s.cfg.InitialPrompt != "" {
-			log.Printf("[timing] CreateSession start: %s after WaitHealthy", time.Since(healthyAt).Round(time.Millisecond))
-			_, createErr := s.harness.CreateSession(ctx)
-			if createErr != nil {
-				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
-				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
-				// Use shuttingDown (not ctx.Err()) as the SIGTERM guard — same
-				// rationale as the WaitHealthy path above. The outer isShuttingDown
-				// snapshot predates CreateSession, so re-read under the lock here.
-				s.mu.Lock()
-				alreadyShutdown := s.shuttingDown
-				s.mu.Unlock()
-				if !alreadyShutdown {
-					// Genuine CreateSession failure. Write StateError so the DB row
-					// is in the correct terminal state, regardless of tmux hook timing.
-					// On SIGTERM, Shutdown() handles the state write.
-					s.writeStartupError(startupErr)
-				}
-				return startupErr
-			}
-			log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
-			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
-			if !isShuttingDown && s.cfg.OnReady != nil {
-				s.cfg.OnReady()
-			}
-			initialPrompt := s.cfg.InitialPrompt
-			go func() {
-				if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
-					log.Printf("sidecar: deliverInitialPrompt: %v", err)
-				}
-				log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
-			}()
-		} else if !isShuttingDown {
-			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
-			if s.cfg.OnReady != nil {
-				s.cfg.OnReady()
-			}
+	} else {
+		// HarnessName is empty: preserve legacy behaviour (HTTP-port startup).
+		if err := s.runStartupHTTP(ctx); err != nil {
+			return err
 		}
 	}
 
@@ -1891,6 +1761,218 @@ func isReviewAgentSession(sessionName string, d *db.DB) bool {
 	}
 	// No DB available — use name heuristic.
 	return nameBased
+}
+
+// runStartupHTTP runs the HTTP-port startup sequence for TransportHTTPPort
+// harnesses (e.g. opencode). It is called from Run when the harness transport
+// shape is TransportHTTPPort (or when HarnessName is empty for back-compat).
+//
+// When Config.Container is nil (bwrap / host mode), this function is a no-op:
+// the harness is already running and the SSE loop connects directly. The
+// container startup sequence (mgr.Create → WaitHealthy → CreateSession →
+// OnReady → DeliverInitialPrompt) is only performed in podman container mode.
+func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
+	// Container mode: create and health-check the container before connecting.
+	if s.cfg.Container != nil {
+		sessionStart := time.Now()
+
+		// On Darwin, start a TCP listener on 0.0.0.0:0 BEFORE container creation
+		// so the OS-allocated port is known when the container env is configured.
+		// virtiofs returns ENOTSUP on connect() for Unix sockets mounted into the
+		// container VM, so TCP is used instead (#661). The listener must bind on
+		// 0.0.0.0 (not 127.0.0.1) so that gvproxy's bridge interface
+		// (192.168.127.254) can reach it from inside the container VM — loopback
+		// is not reachable from the VM network. No --publish flag is needed:
+		// the container reaches the sidecar via host.containers.internal:<port>,
+		// which routes through the gvproxy bridge directly to this listener.
+		//
+		// Failure to bind is FATAL. A silent fallback to Unix-socket-only mode would
+		// reproduce the ENOTSUP bug (#661) — the container would start without a
+		// working host-API channel. Returning an error here aborts container startup
+		// with a clear message rather than creating a silently broken session.
+		if runtime.GOOS == "darwin" && s.cfg.HostAPISockPath != "" {
+			tcpLn, tcpErr := net.Listen("tcp", "0.0.0.0:0")
+			if tcpErr != nil {
+				return fmt.Errorf("sidecar: host-API TCP listener: %w", tcpErr)
+			}
+			port := tcpLn.Addr().(*net.TCPAddr).Port
+			log.Printf("sidecar: host-API TCP listener bound on 0.0.0.0:%d", port)
+			s.cfg.HostAPITCPPort = port
+			s.cfg.Container.HostAPITCPPort = port
+			s.mu.Lock()
+			s.hostAPITCPListener = tcpLn
+			s.mu.Unlock()
+		}
+
+		// closeTCPListenerOnEarlyReturn closes the TCP listener (Darwin only) when
+		// Run() returns an error before the SSE loop — i.e. before Shutdown() has been
+		// (or will be) called by the signal handler. We use a flag rather than a
+		// defer-always so that the normal success path leaves the listener open for the
+		// running HTTP server (which is closed by Shutdown() later).
+		tcpListenerClosed := false
+		closeTCPListenerOnError := func() {
+			if tcpListenerClosed {
+				return
+			}
+			s.mu.Lock()
+			ln := s.hostAPITCPListener
+			s.mu.Unlock()
+			if ln != nil {
+				_ = ln.Close()
+				tcpListenerClosed = true
+			}
+		}
+
+		mgr := container.New(*s.cfg.Container)
+		s.mu.Lock()
+		s.container = &containerMgr{mgr: mgr}
+		s.mu.Unlock()
+
+		log.Printf("[timing] pre-Create: %s", time.Since(sessionStart).Round(time.Millisecond))
+		log.Printf("sidecar: creating container %q", mgr.Name())
+		t0 := time.Now()
+		if err := mgr.Create(ctx); err != nil {
+			closeTCPListenerOnError()
+			return fmt.Errorf("sidecar: container create: %w", err)
+		}
+		log.Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
+
+		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
+		t0 = time.Now()
+		if err := mgr.WaitHealthy(ctx); err != nil {
+			log.Printf("sidecar: health check failed: %v", err)
+			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
+			// must stop/remove the container here.
+			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
+			// sets shuttingDown=true and stops the container) then cancel(). In
+			// that case ctx may still be non-nil here (cancel fires after Shutdown),
+			// but we check shuttingDown to distinguish a SIGTERM-cancelled WaitHealthy
+			// (Shutdown already ran) from a genuine probe timeout (no Shutdown yet),
+			// avoiding a double-Shutdown with spurious log lines.
+			//
+			// shuttingDown is the reliable SIGTERM gate: Shutdown() sets it before
+			// calling ctr.mgr.Shutdown(), so even when the container exits early
+			// (WaitHealthy returns via hasExited before cancel fires), shuttingDown
+			// is already true. ctx.Err() is set only after Shutdown() returns, which
+			// is too late.
+			s.mu.Lock()
+			alreadyShutdown := s.shuttingDown
+			s.mu.Unlock()
+			startupErr := fmt.Errorf("sidecar: container health check: %w", err)
+			if !alreadyShutdown {
+				// Genuine probe timeout (not SIGTERM): clean up the container
+				// ourselves (Shutdown() has not run yet) and write StateError
+				// directly so the DB row is in the correct terminal state.
+				// On SIGTERM, Shutdown() handles cleanup and writes StateInterrupted.
+				mgr.Shutdown()
+				closeTCPListenerOnError()
+				// Gap 1 fix: write StateError directly so the DB row transitions
+				// to "error" (not relying on the fragile pane-died tmux hook).
+				// This is skipped on SIGTERM to avoid racing with Shutdown().
+				s.writeStartupError(startupErr)
+			}
+			return startupErr
+		}
+		healthyAt := time.Now()
+		log.Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
+		log.Printf("sidecar: container %q is healthy", mgr.Name())
+
+		// Signal readiness after the container is healthy (AC-7, AC-19).
+		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
+		// even if WaitHealthy returned a genuine 200 during podman stop's grace
+		// period. Shutdown() sets shuttingDown=true before starting podman stop,
+		// so this check is reliable regardless of ctx cancellation timing.
+		s.mu.Lock()
+		isShuttingDown := s.shuttingDown
+		s.mu.Unlock()
+		// Discover the session ID and deliver the initial prompt (#487).
+		// In container mode (opencode --prompt "text"), the prompt was already
+		// delivered via the CLI flag — opencode starts the session and begins
+		// processing immediately. The sidecar still needs the session ID for
+		// subsequent prism prompt follow-up delivery.
+		//
+		// 1. GET /session  — retrieve the session opencode already created
+		//    (via --prompt on CLI). In non-container mode, POST /session creates
+		//    a new session. The harness adapter handles both cases.
+		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
+		// 3. DeliverInitialPrompt — no-op in container mode (prompt already sent
+		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
+		//    so it only runs in container mode; host-mode sessions never reach here.
+		if !isShuttingDown && s.cfg.InitialPrompt != "" {
+			log.Printf("[timing] CreateSession start: %s after WaitHealthy", time.Since(healthyAt).Round(time.Millisecond))
+			_, createErr := s.harness.CreateSession(ctx)
+			if createErr != nil {
+				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
+				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
+				// Use shuttingDown (not ctx.Err()) as the SIGTERM guard — same
+				// rationale as the WaitHealthy path above. The outer isShuttingDown
+				// snapshot predates CreateSession, so re-read under the lock here.
+				s.mu.Lock()
+				alreadyShutdown := s.shuttingDown
+				s.mu.Unlock()
+				if !alreadyShutdown {
+					// Genuine CreateSession failure. Write StateError so the DB row
+					// is in the correct terminal state, regardless of tmux hook timing.
+					// On SIGTERM, Shutdown() handles the state write.
+					s.writeStartupError(startupErr)
+				}
+				return startupErr
+			}
+			log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
+			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			if !isShuttingDown && s.cfg.OnReady != nil {
+				s.cfg.OnReady()
+			}
+			initialPrompt := s.cfg.InitialPrompt
+			go func() {
+				if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
+					log.Printf("sidecar: deliverInitialPrompt: %v", err)
+				}
+				log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			}()
+		} else if !isShuttingDown {
+			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			if s.cfg.OnReady != nil {
+				s.cfg.OnReady()
+			}
+		}
+	}
+	return nil
+}
+
+// runStartupStdio is the startup stub for TransportStdioPipe harnesses.
+//
+// This stage (B.3 Stage 1) ships the transport-shape gate seam only. Real
+// stdio harness lifecycle integration (launching the child process, managing
+// its stdin/stdout pipes, handling process exit) lands in later stages once
+// the following open questions are resolved:
+//
+//   - TUI bridging: how does the user-facing PTY connect to the harness
+//     process's output? Options include a capture pipe, a tmux pane that
+//     attaches to the child PTY, or a dedicated log-tail view.
+//   - fd separation: stdout is the JSON-Lines protocol channel; a separate
+//     fd (stderr, or a dedicated pipe fd) must carry human-readable harness
+//     log output so the two streams do not interfere.
+//   - Readiness signal: HTTP harnesses use WaitHealthy (HTTP probe loop);
+//     stdio harnesses need a different readiness signal — either a sentinel
+//     line on stdout/stderr, a timeout heuristic, or a protocol-level
+//     handshake message.
+//   - Signal handling: SIGTERM must drain in-flight stdio messages before
+//     closing the pipe and waiting for the child process to exit; the
+//     current Shutdown() path is HTTP-centric.
+//
+// For now, this function writes a startup-error event and returns an error
+// so the sidecar exits cleanly rather than hanging.
+func (s *Sidecar) runStartupStdio(ctx context.Context) error {
+	const note = "stdio harness lifecycle not yet implemented; refusing to start"
+	startupErr := fmt.Errorf(note)
+	s.mu.Lock()
+	s.upsertState(agent.StateError, nil, nil)
+	s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": note}, nil)
+	s.lastState = agent.StateError
+	s.mu.Unlock()
+	log.Printf("sidecar: runStartupStdio: %v", startupErr)
+	return startupErr
 }
 
 // writeStartupError writes StateError to the DB and, when this session is a

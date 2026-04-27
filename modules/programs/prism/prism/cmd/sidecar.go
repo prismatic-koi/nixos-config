@@ -325,6 +325,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		Clock:           sidecar.RealClock(),
 		AgentRole:       agentRole,
 		AgentModel:      agentModel,
+		HarnessName:     harnessName,
 		InstanceID:      instanceID,
 		Container:       ctrCfg,
 		HostAPISockPath: hostAPISockPath,
