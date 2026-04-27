@@ -59,11 +59,6 @@ type MonitorOpts struct {
 	// Timeout is the maximum time to wait for the group to complete. Zero means
 	// no timeout (monitor runs until the group is complete).
 	Timeout time.Duration
-	// SizeBudget is the maximum inline size (bytes) for full per-agent findings.
-	// When the total findings exceed this budget they are written to a temp file
-	// and a pointer is included inline. Zero uses the default (20 KB).
-	// Can also be overridden via the PRISM_REVIEW_SIZE_BUDGET environment variable.
-	SizeBudget int
 }
 
 // defaultPollInterval is how often the monitor polls GroupCompleted.
@@ -149,9 +144,8 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Build AgentResult slice, handling "missing" sessions (row deleted mid-review).
 	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData)
 
-	// Format the delivery message. Pass round and sizeBudget so that
-	// overflow-to-file is handled when the total findings exceed the budget.
-	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, opts.SizeBudget)
+	// Format the delivery message.
+	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, 0)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
 
 	// Before delivery, clear the worker's `reviewing` state by writing `active`.
