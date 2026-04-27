@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
 )
 
@@ -49,7 +50,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		//     starts emitting events — the prompt is in flight by then.
 		//     Emitted at the same moment for symmetry with the podman line
 		//     at sidecar.go:489.
-		if s.cfg.Container == nil {
+		if !container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
 			log.Printf("[timing] opencode listening: %s from start", elapsed)
 			log.Printf("[timing] ready: %s from start", elapsed)
 			if s.cfg.InitialPrompt != "" {

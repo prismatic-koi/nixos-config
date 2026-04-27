@@ -140,17 +140,19 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		isolationMode = config.IsolationHost
 	}
 
-	// Derive the legacy bool for paths that still use it.
-	podmanMode := isolationMode == config.IsolationPodman
-	bwrapMode := isolationMode == config.IsolationBwrap
-	sandboxExecMode := isolationMode == config.IsolationSandboxExec
-	// needsHostAPI is true for podman, bwrap, and sandbox-exec (the agent runs
-	// in a sandbox without direct access to host tmux, so the host-API socket
-	// is required).
-	needsHostAPI := podmanMode || bwrapMode || sandboxExecMode
-	// useContainerHarness is true for podman, bwrap, and sandbox-exec
-	// (opencode is pre-created with --prompt at launch in all three cases).
-	useContainerHarness := podmanMode || bwrapMode || sandboxExecMode
+	// Look up the isolation capabilities for this mode. All per-mode branching
+	// below reads from isoCaps rather than comparing against raw mode constants.
+	isoCaps := container.CapabilitiesFor(isolationMode)
+
+	// needsHostAPI is true for any mode where the agent runs in a sandbox
+	// without direct access to host tmux — podman (IsContainer), bwrap, and
+	// sandbox-exec (NeedsHostAPISocket) all require the host-API Unix socket.
+	needsHostAPI := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
+
+	// useContainerHarness is true for modes where opencode is pre-created with
+	// --prompt at launch (podman, bwrap, sandbox-exec), so the harness uses
+	// GET /session to retrieve the existing session ID rather than POST /session.
+	useContainerHarness := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
 	// Derive repo and worktree from session name and environment.
 	// The session name format is "repo@branch". The worktree is expected
@@ -198,7 +200,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// fields remain at their zero values and no resource flags are emitted.
 	var containerResources config.ContainerResources
 	var agentEnvVars map[string]string
-	if podmanMode {
+	if isoCaps.IsContainer {
 		if pf, pfErr := config.LoadProfiles(); pfErr == nil {
 			containerResources = pf.ContainerResources
 			agentEnvVars = pf.AgentEnvVars
@@ -208,7 +210,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Build container config — only for podman mode. bwrap mode does not
 	// use a container.Config; the bwrap sandbox is owned by the tmux pane.
 	var ctrCfg *container.Config
-	if podmanMode {
+	if isoCaps.IsContainer {
 		if port == 0 {
 			return fmt.Errorf("sidecar: --port is required in podman container mode")
 		}
@@ -250,7 +252,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// CLI calls.
 	var hostAPISockPath string
 	if needsHostAPI {
-		if port == 0 && (bwrapMode || sandboxExecMode) {
+		if port == 0 && isoCaps.NeedsHostAPISocket {
 			return fmt.Errorf("sidecar: --port is required in bwrap/sandbox-exec mode")
 		}
 		sockPath, err := prismSession.SidecarHostAPIPath(sessionName)
@@ -272,7 +274,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// signal: "prism agent-run" in the tmux pane starts immediately without
 	// waiting. In host mode there is no readiness file at all.
 	var onReady func()
-	if podmanMode {
+	if isoCaps.IsContainer {
 		onReady = func() {
 			readyPath, pathErr := prismSession.SidecarReadyPath(sessionName)
 			if pathErr != nil {
@@ -333,6 +335,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		HarnessBinaryPath: harnessBinaryPath,
 		BwrapPath:         bwrapPath,
 		InstanceID:        instanceID,
+		IsolationMode:     isolationMode,
 		Container:         ctrCfg,
 		HostAPISockPath:   hostAPISockPath,
 		OnReady:           onReady,

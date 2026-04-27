@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
@@ -8505,8 +8506,9 @@ func newBwrapSidecarWithTimeout(t *testing.T, timeout time.Duration) (*Sidecar, 
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
+		IsolationMode:         config.IsolationBwrap,
 		StartupConnectTimeout: timeout,
-		// Container is nil — bwrap mode.
+		// Container is nil — bwrap mode has no container lifecycle.
 	}
 	sc := New(cfg)
 	return sc, d
@@ -8563,8 +8565,9 @@ func TestStartupConnectTimeout_DoesNotFireAfterFirstEvent(t *testing.T) {
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
+		IsolationMode:         config.IsolationBwrap,
 		StartupConnectTimeout: timeout,
-		// Container is nil — bwrap mode.
+		// Container is nil — bwrap mode has no container lifecycle.
 	}
 	sc := New(cfg)
 
@@ -8807,9 +8810,10 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
+		IsolationMode:         config.IsolationBwrap,
 		HTTPClient:            srv.Client(),
 		StartupConnectTimeout: timeout,
-		// Container is nil — bwrap mode.
+		// Container is nil — bwrap mode has no container lifecycle.
 	}
 	sc := New(cfg)
 
@@ -9420,13 +9424,14 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 func TestBwrapTimingMarkers_PodmanModeNotEmittedHere(t *testing.T) {
 	d := openTestDB(t)
 	cfg := Config{
-		SessionName: "test-repo@feature",
-		Repo:        "test-repo",
-		Worktree:    "/tmp/test-podman-worktree",
-		OpencodeURL: "http://localhost:19999",
-		DB:          d,
-		Clock:       newTestClock(),
-		Harness:     &harness.FakeHarness{},
+		SessionName:   "test-repo@feature",
+		Repo:          "test-repo",
+		Worktree:      "/tmp/test-podman-worktree",
+		OpencodeURL:   "http://localhost:19999",
+		DB:            d,
+		Clock:         newTestClock(),
+		Harness:       &harness.FakeHarness{},
+		IsolationMode: config.IsolationPodman,
 		// Non-nil Container → podman mode. The pointer doesn't have to be
 		// fully populated for HandleEvent's gate — it just needs to be non-nil.
 		Container: &container.Config{},
