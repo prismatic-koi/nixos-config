@@ -264,11 +264,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// The podman cap guards host memory against container overhead.
 	// The bwrap cap guards against process-count exhaustion from uncapped
 	// bwrap sessions (each is a host process with no per-session memory ceil).
+	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
 	if err := checkConcurrencyCap(cmd, "spawn", isoCaps.IsContainer); err != nil {
 		return err
 	}
 	if isolationMode == config.IsolationBwrap {
 		if err := checkBwrapConcurrencyCap(cmd, "spawn"); err != nil {
+			return err
+		}
+	}
+	if isolationMode == config.IsolationSandboxExec {
+		if err := checkSandboxExecConcurrencyCap(cmd, "spawn"); err != nil {
 			return err
 		}
 	}

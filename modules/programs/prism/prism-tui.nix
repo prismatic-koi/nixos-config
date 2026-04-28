@@ -55,6 +55,7 @@ let
     restore_stagger_delay_ms = config.nx.programs.prism.restoreStaggerDelayMs;
     sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
+    sandbox_exec_concurrency_cap = config.nx.programs.prism.sandboxExecConcurrencyCap;
   };
 in
 {
@@ -112,6 +113,18 @@ in
         ended_at IS NULL AND isolation_mode = 'bwrap') before new bwrap spawns
         are refused. 0 means uncapped. Default of 20 is conservative enough for
         any machine without an explicit per-machine override.
+      '';
+    };
+
+    nx.programs.prism.sandboxExecConcurrencyCap = lib.mkOption {
+      type = lib.types.int;
+      default = 20;
+      description = ''
+        Maximum number of concurrent sandbox-exec sessions (agent_status rows
+        with ended_at IS NULL AND isolation_mode = 'sandbox-exec') before new
+        sandbox-exec spawns are refused. 0 means uncapped. Default of 20
+        mirrors bwrapConcurrencyCap. Darwin-only isolation mode; this option
+        is rendered into config.json on all machines but only used on Darwin.
       '';
     };
   };
