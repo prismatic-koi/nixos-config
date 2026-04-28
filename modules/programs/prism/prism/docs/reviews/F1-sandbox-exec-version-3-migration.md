@@ -35,8 +35,8 @@ placeholders with runtime values from `generateProfile()`.
 ```scheme
 ; prism sandbox-exec (version 3) profile.
 ; Generated per-session by generateProfile() in internal/container/sandbox_exec.go.
-; Replace STAGING_HOME, WORKTREE, BARE_ROOT, HOST_API_SOCK_DIR, HOST_HOME_AWS
-; with actual runtime-computed values.
+; Replace STAGING_HOME, WORKTREE, BARE_ROOT, HOST_API_SOCK_DIR, HOST_HOME_AWS,
+; and HOST_HOME with actual runtime-computed values.
 (version 3)
 (deny default)
 
@@ -560,12 +560,15 @@ This section summarises every change required in `generateProfile()`:
 | `system-mac-syscall` | Not supported in v1 | **ADD**: `(allow system-mac-syscall)` — required for AMFI cert validation |
 | `system-fcntl` | Not supported in v1 | **ADD**: `(allow system-fcntl)` — required for code-sign fcntl calls |
 | `process-info*` | `(allow process-exec* process-fork signal mach-lookup mach-register sysctl-read iokit-open ipc-posix-shm)` | **ADD** `process-info*` to the process allow |
-| Cryptex paths | Not present | **ADD**: `(allow file-read* file-map-executable (subpath "/System/Volumes/Preboot/Cryptexes") (subpath "/System/Cryptexes"))` |
+| `/bin` and `/sbin` | Not present in v1 file-read allow (v1 only listed `/nix`, `/usr`, `/System`, `/Library`, `/etc`, `/private/etc`, `/private/var/db/dyld`, `/private/var/db/timezone`) | **ADD** `(subpath "/bin")` and `(subpath "/sbin")` — required for Apple-signed utility binaries |
+| System-root file operations | v1 uses only `file-read*` on system roots | **ADD** `file-test-existence`, `file-map-executable`, `file-read-metadata` alongside `file-read*` on system roots — required for dyld to probe and map code-signed binaries |
+| `/` (root literal) | Not present | **ADD** `(literal "/")` to the system reads — required by libignition, which uses `/` as an `openat(2)` root |
+| Cryptex paths | Not present | **ADD**: `(allow file-read* file-test-existence file-map-executable (subpath "/System/Volumes/Preboot/Cryptexes") (subpath "/System/Cryptexes"))` |
 | `/dev/dtracehelper` | Not present | **ADD**: `(literal "/dev/dtracehelper")` to read-only file list |
 | `/var/select`, `/var/db/dyld`, `/var/db/timezone` | Not present | **ADD** `/var/...` forms — symlink non-transparency (same pattern as `/etc` → PR #1193) |
-| `/var/folders` | Not present | **ADD**: `(allow file-read* file-write* (subpath "/private/var/folders") (subpath "/var/folders"))` |
+| `/var/folders` | Not present | **ADD**: `(allow file-read* file-test-existence (subpath "/private/var/folders") (subpath "/var/folders"))` — read-only; xcrun cache writes may fail due to SIP (non-fatal, see §4.4) |
 | `/Applications/Xcode.app` | Not present | **ADD**: needed for xcrun (called by /usr/bin/git shim) |
-| `/tmp` write | Not present explicitly | **ADD**: `(allow file-read* file-write* (subpath "/private/tmp") (subpath "/tmp"))` |
+| `/tmp` read-write | Not present explicitly | **ADD**: `(allow file-read* file-write* file-test-existence (subpath "/private/tmp") (subpath "/tmp"))` |
 | `/dev/null` write | Not present | **ADD**: `(allow file-write-data (literal "/dev/null"))` |
 
 ---
