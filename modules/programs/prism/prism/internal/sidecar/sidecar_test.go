@@ -7440,67 +7440,69 @@ func TestHostAPI_Review_CWDFallbackWhenWorktreeMissing(t *testing.T) {
 	}
 }
 
-// ── buildNotifyPromptBody tests (issue #848) ────────────────────────────────
+// ── buildNotifyPromptBody tests (issues #848, #1203) ────────────────────────
 
-// TestBuildNotifyPromptBody_OmitsAgentField verifies that the outgoing
-// notification body never carries an "agent" field. Setting this field lets an
-// incoming notification switch the receiving session's active-turn agent
-// context (e.g. a subagent gets promoted to the coordinator's agent). See
-// issue #848 — the "agent" override was a host-mode-era workaround that is no
-// longer needed and causes a real context-switch bug.
-func TestBuildNotifyPromptBody_OmitsAgentField(t *testing.T) {
-	rootAgent := "coordinator"
+// TestBuildNotifyPromptBody_AgentField verifies that the outgoing notification
+// body includes the "agent" field when the receiving session has a non-nil,
+// non-empty RootAgentName, and omits it otherwise.
+//
+// Background: issue #848 flagged setting "agent" as dangerous because it could
+// switch a subagent's context. The status passed to buildNotifyPromptBody is
+// the *receiving* session's own status; re-asserting root_agent_name is safe
+// and necessary to prevent opencode from defaulting to its last-active (wrong)
+// agent in host mode — see issue #1203.
+func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
+	coordinatorAgent := "coordinator"
+	workerAgent := "worker"
 	agentName := "explore"
 	rootModel := "anthropic/claude-opus-4"
 	modelID := "anthropic/claude-sonnet-4"
 
-	cases := []struct {
-		name   string
-		status *db.Status
-	}{
-		{
-			name: "root fields present",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-				RootModelID:   &rootModel,
-				AgentName:     &agentName,
-				ModelID:       &modelID,
-			},
-		},
-		{
-			name: "only legacy fields present",
-			status: &db.Status{
-				AgentName: &agentName,
-				ModelID:   &modelID,
-			},
-		},
-		{
-			name: "only root fields present",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-				RootModelID:   &rootModel,
-			},
-		},
-		{
-			name:   "no fields present",
-			status: &db.Status{},
-		},
-		{
-			name: "agent known but no model",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			body := buildNotifyPromptBody("hello", tc.status)
-			if _, ok := body["agent"]; ok {
-				t.Errorf("body must not contain \"agent\" field (got %v); setting it switches the receiving session's agent context — see issue #848", body["agent"])
-			}
+	t.Run("includes agent when RootAgentName is coordinator", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			RootAgentName: &coordinatorAgent,
+			RootModelID:   &rootModel,
+			AgentName:     &agentName,
+			ModelID:       &modelID,
 		})
-	}
+		agent, ok := body["agent"]
+		if !ok {
+			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
+		}
+		if agent != "coordinator" {
+			t.Errorf("body[\"agent\"] = %q, want \"coordinator\"", agent)
+		}
+	})
+
+	t.Run("includes agent when RootAgentName is worker", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			RootAgentName: &workerAgent,
+		})
+		agent, ok := body["agent"]
+		if !ok {
+			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
+		}
+		if agent != "worker" {
+			t.Errorf("body[\"agent\"] = %q, want \"worker\"", agent)
+		}
+	})
+
+	t.Run("omits agent when RootAgentName is nil", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			AgentName: &agentName,
+			ModelID:   &modelID,
+		})
+		if _, ok := body["agent"]; ok {
+			t.Errorf("body must not contain \"agent\" field when RootAgentName is nil (got %v)", body["agent"])
+		}
+	})
+
+	t.Run("omits agent when no fields present", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{})
+		if _, ok := body["agent"]; ok {
+			t.Errorf("body must not contain \"agent\" field when status is empty (got %v)", body["agent"])
+		}
+	})
 }
 
 // ── error-state debounce tests (issue #923) ─────────────────────────────────
