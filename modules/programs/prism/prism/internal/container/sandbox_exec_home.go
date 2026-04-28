@@ -246,6 +246,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		"tui.json",
 		".gitignore",
 		"mcp-atlassian-slim-proxy.mjs",
+		// node_modules and bun.lock are included so that bun finds the
+		// pre-installed plugin packages without running `bun install` from
+		// scratch on every session. In bwrap, the host ~/.config/opencode dir
+		// is bind-mounted so node_modules is implicitly available; in sandbox-exec
+		// the staging .config/opencode is a fresh directory built from this
+		// allowlist, so without these entries bun re-downloads and re-installs
+		// every plugin on cold start (~8s per session).
+		"node_modules",
+		"bun.lock",
 	}
 	// agents/ is role-conditional: mirror bwrap.go:447-448.
 	if !strings.HasPrefix(m.cfg.AgentRole, "review-") {
@@ -465,22 +474,44 @@ func RemoveSandboxExecStagingHome(instanceID string) {
 
 // StagingSymlinkTarget represents a resolved symlink target with metadata
 // about whether the target is a directory (requiring subpath) or a file
-// (allowing literal).
+// (allowing literal), and whether writes to the target must be allowed.
 type StagingSymlinkTarget struct {
 	// ResolvedPath is the resolved absolute path of the symlink target.
 	ResolvedPath string
 	// IsDir is true when the resolved target is a directory. Directory
 	// targets require (subpath ...) rules in SBPL; file targets use (literal ...).
 	IsDir bool
+	// Writable is true when the sandbox must be allowed to write to this
+	// target (and, for directories, its contents). Mirrors the bwrap --bind
+	// (RW) vs --ro-bind (RO) distinction:
+	//   RW: .cache/opencode, .cache/bun, .cache/nix, .cache/prism/clipboard,
+	//       .claude (write-through for credentials), .mcp-auth
+	//   RO: .ssh keys, .aws staged entries, .kube/config, .config/opencode/*
+	Writable bool
 }
 
 // collectStagingHomeSymlinkTargets resolves all symlinks in the staging HOME
 // directory and returns the unique set of resolved real paths. These are the
 // paths the SBPL profile must allow so the sandbox can read through the symlinks.
 //
-// The return value includes IsDir metadata so callers can emit (subpath ...)
-// rules for directory targets (allowing access to directory contents) and
-// (literal ...) rules for file targets (allowing access to specific files).
+// The return value includes IsDir and Writable metadata so callers can emit
+// the appropriate SBPL rules:
+//   - Directory targets → (subpath ...) rules.
+//   - File targets → (literal ...) rules.
+//   - Writable targets (cache dirs, write-through credential dirs) → file-write*
+//     alongside file-read*; RO targets → file-read* only.
+//
+// Writable classification mirrors the bwrap --bind (RW) vs --ro-bind (RO)
+// distinction from bwrap.go. The following staging HOME paths are treated as
+// writable, consistent with how PrepareSandboxExecHome populates them:
+//   - .cache/opencode  — opencode refreshes models.json and writes bin/ shims
+//   - .cache/bun       — bun writes transpile outputs and lockfile updates
+//   - .cache/nix       — unconditional RW (mirrors bwrap.go:333-335)
+//   - .cache/prism/    — prism clipboard cache
+//   - .claude          — write-through for .credentials.json on Darwin
+//   - .mcp-auth        — MCP auth token writes
+//
+// All other targets (.ssh, .aws, .kube, .config/opencode) are read-only.
 //
 // Symlink targets that fall under a path that will be denied by the profile
 // (e.g. host $HOME/.aws) are excluded from the results to avoid the
@@ -513,10 +544,27 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		return false
 	}
 
+	// writableStagingPaths is the set of staging HOME paths whose symlink
+	// targets must be granted write access in the SBPL profile. Keyed by the
+	// path relative to stagingHome (no leading slash). Matches the RW paths
+	// in PrepareSandboxExecHome and the bwrap --bind mounts in bwrap.go.
+	writableStagingPaths := map[string]bool{
+		".cache/opencode":                    true, // opencode models.json refresh + bin/ shims
+		".cache/bun":                         true, // bun transpile cache + lockfile
+		".cache/nix":                         true, // nix eval cache (unconditional RW)
+		".cache/prism/clipboard":             true, // prism clipboard
+		".claude":                            true, // write-through for .credentials.json
+		".mcp-auth":                          true, // MCP auth token writes
+		".config/opencode/node_modules":      true, // bun may update lockfile entries during plugin load
+	}
+
 	seen := map[string]bool{}
 	var targets []StagingSymlinkTarget
 
-	add := func(rawTarget string) {
+	// add resolves a symlink's raw target (the value of os.Readlink) and
+	// appends it to targets. entryRelPath is the path of the symlink entry
+	// relative to stagingHome, used to look up the Writable classification.
+	add := func(rawTarget, entryRelPath string) {
 		resolved, evalErr := filepath.EvalSymlinks(rawTarget)
 		if evalErr != nil {
 			return
@@ -532,14 +580,20 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		// Determine whether the target is a directory or a file.
 		info, statErr := os.Stat(resolved)
 		isDir := statErr == nil && info.IsDir()
-		targets = append(targets, StagingSymlinkTarget{ResolvedPath: resolved, IsDir: isDir})
+		writable := writableStagingPaths[entryRelPath]
+		targets = append(targets, StagingSymlinkTarget{
+			ResolvedPath: resolved,
+			IsDir:        isDir,
+			Writable:     writable,
+		})
 	}
 
 	// Use os.ReadDir for the top-level staging HOME entries only (no recursion).
 	// filepath.Walk doesn't follow symlinks, so a top-level walk would stop at
 	// symlinks pointing at directories — which is the behaviour we want (don't
 	// recurse into symlinked dirs). We use ReadDir instead for clarity.
-	scanDir := func(dir string) {
+	scanDir := func(dirRelPath string) {
+		dir := filepath.Join(stagingHome, dirRelPath)
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
 			return
@@ -555,20 +609,27 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 				if !filepath.IsAbs(linkTarget) {
 					linkTarget = filepath.Join(dir, linkTarget)
 				}
-				add(linkTarget)
+				// Compute entry path relative to stagingHome for writable lookup.
+				var relPath string
+				if dirRelPath == "" {
+					relPath = e.Name()
+				} else {
+					relPath = dirRelPath + "/" + e.Name()
+				}
+				add(linkTarget, relPath)
 			}
 		}
 	}
 
 	// Scan the top-level staging HOME and all immediate subdirectories that
 	// the staging HOME builder creates (one level deep).
-	scanDir(stagingHome)
+	scanDir("")
 	subDirs := []string{".ssh", ".aws", ".kube", ".config/opencode", ".cache"}
 	for _, sub := range subDirs {
-		scanDir(filepath.Join(stagingHome, sub))
+		scanDir(sub)
 	}
 	// Also scan .cache/prism if it exists.
-	scanDir(filepath.Join(stagingHome, ".cache", "prism"))
+	scanDir(".cache/prism")
 
 	return targets, nil
 }

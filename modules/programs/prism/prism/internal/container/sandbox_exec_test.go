@@ -239,8 +239,10 @@ func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
 	if !strings.Contains(profile, "/tmp/fake-worktree") {
 		t.Errorf("profile missing worktree path /tmp/fake-worktree; full profile:\n%s", profile)
 	}
-	if !strings.Contains(profile, "/tmp/fake-bare/.bare") {
-		t.Errorf("profile missing bare repo path /tmp/fake-bare/.bare; full profile:\n%s", profile)
+	// The profile allows the full BareRoot (not just .bare/) so opencode can
+	// probe for project config files (e.g. .opencode/) at the repo root.
+	if !strings.Contains(profile, "/tmp/fake-bare") {
+		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
 	}
 	// The staging home path must be present (namespaced by InstanceID).
 	if !strings.Contains(profile, "test-instance-id") {
@@ -868,10 +870,44 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 
 	profile := generateProfile(m)
 
-	// The profile must contain (allow file-read* with literal paths from the
-	// fake home's ssh dir or aws dir.
+	// The profile must contain (allow file-read* for RO targets (e.g. SSH keys)
+	// and (allow file-read* file-write* for RW targets (e.g. .cache/opencode).
 	if !strings.Contains(profile, "(allow file-read*") {
 		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
+	}
+
+	// .cache/opencode, .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
+	// profile must grant file-write* on their resolved targets.
+	rwPaths := []string{
+		filepath.Join(fakeHome, ".cache", "opencode"),
+		filepath.Join(fakeHome, ".cache", "bun"),
+		filepath.Join(fakeHome, ".cache", "nix"),
+		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".mcp-auth"),
+	}
+	for _, rwPath := range rwPaths {
+		resolved, evalErr := filepath.EvalSymlinks(rwPath)
+		if evalErr != nil {
+			// Path may not be in staging home for this test — skip.
+			continue
+		}
+		// Find the resolved path in the profile and verify file-write* precedes it
+		// in the same allow block.
+		idx := strings.Index(profile, resolved)
+		if idx < 0 {
+			t.Errorf("RW path %q (resolved: %q) missing from profile;\nfull profile:\n%s", rwPath, resolved, profile)
+			continue
+		}
+		// Look backward for the nearest (allow ... clause.
+		clauseStart := strings.LastIndex(profile[:idx], "(allow ")
+		if clauseStart < 0 {
+			t.Errorf("RW path %q: no preceding (allow clause found in profile", rwPath)
+			continue
+		}
+		clause := profile[clauseStart:idx]
+		if !strings.Contains(clause, "file-write*") {
+			t.Errorf("RW path %q is present in profile but NOT inside a file-write* allow block;\nclause: %q\nfull profile:\n%s", rwPath, clause, profile)
+		}
 	}
 }
 
