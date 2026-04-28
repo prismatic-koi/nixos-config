@@ -100,7 +100,7 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - Host ~/.aws deny (only staged entries accessible)
 //   - Staging HOME / worktree / bare repo / host-API socket dir (RW)
-//   - Symlink target allows (read-only) for every symlink in the staging HOME
+//   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
 //   - Process and IPC primitives required by dyld, AMFI, and opencode
 //   - (allow network*)
 //
@@ -147,10 +147,20 @@ func generateProfile(m *Manager) string {
 	//   /var is a symlink to /private/var; both forms needed. See F.1 §2.
 	// /private/var/db/timezone, /var/db/timezone — timezone data.
 	// /private/var/select, /var/select — xcode-select developer_dir.
-	// /private/var/folders, /var/folders — Darwin per-user TMPDIR (xcrun).
+	// /private/var/folders, /var/folders — Darwin per-user TMPDIR. Listed
+	//   here for read access; write access is granted separately below because
+	//   bun (opencode's runtime) extracts native dylibs (libopentui, etc.) to
+	//   hidden files under the user TMPDIR and dlopen()s them — requiring both
+	//   file-write* and file-map-executable on that subtree.
 	// /dev/null, /dev/random, /dev/urandom — device nodes.
 	// /dev/dtracehelper — Apple-signed binaries probe at startup.
 	// /             — required by libignition's openat(2) root probe.
+	// /$bunfs       — bun's virtual in-process asset filesystem. opencode is
+	//   packaged as a bun single-file executable; bun serves bundled assets
+	//   (locale files, etc.) from a synthetic /$bunfs/ path. The kernel
+	//   returns EPERM for open(2) calls on /$bunfs/* under deny-default even
+	//   though the path is not a real filesystem — the sandbox gates it at the
+	//   syscall level before bun's VFS intercept can handle it.
 	// file-test-existence, file-map-executable, file-read-metadata added
 	//   alongside file-read* for dyld to probe and map code-signed binaries.
 	//   See F.1 §2 rule 2 and migration delta §6.
@@ -172,20 +182,67 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (subpath \"/var/db/timezone\")\n")
 	sb.WriteString("  (subpath \"/var/select\")\n")
 	sb.WriteString("  (subpath \"/var/folders\")\n")
+	sb.WriteString("  (subpath \"/$bunfs\")\n")
 	sb.WriteString("  (literal \"/dev/null\")\n")
 	sb.WriteString("  (literal \"/dev/random\")\n")
 	sb.WriteString("  (literal \"/dev/urandom\")\n")
 	sb.WriteString("  (literal \"/dev/dtracehelper\")\n")
+	// /var itself — /var is a symlink to /private/var; sandbox-exec does not
+	// transparently follow top-level symlinks for stat(2) calls, so
+	// file-read-metadata on /var (not just its subdirs) must be explicit.
+	sb.WriteString("  (literal \"/var\")\n")
 	sb.WriteString("  (literal \"/\"))\n")
 	sb.WriteString("\n")
 
 	// ── 3. /tmp read-write ────────────────────────────────────────────────
 	// /tmp and /private/tmp are used by xcrun, git, and other tools for
 	// transient files. Both symlink forms needed. See F.1 §2 rule 3.
-	sb.WriteString("(allow file-read* file-write* file-test-existence\n")
+	//
+	// file-map-executable is required: opencode's TUI (OpenTUI) and the
+	// file-watcher binding extract native .dylib/.node files to /tmp and
+	// dlopen() them. dlopen calls mmap(PROT_EXEC) on the extracted file,
+	// which requires file-map-executable. Without it the sandbox returns
+	// EPERM on mmap, the TUI fails to initialise, and session.created is
+	// never emitted — causing the sidecar readiness gate to time out.
+	sb.WriteString("(allow file-read* file-write* file-test-existence file-map-executable\n")
 	sb.WriteString("  (subpath \"/private/tmp\")\n")
 	sb.WriteString("  (subpath \"/tmp\"))\n")
 	sb.WriteString("\n")
+
+	// ── 3b. Darwin per-user TMPDIR read-write ─────────────────────────────
+	// bun (opencode's runtime) extracts native dylibs — libopentui, the
+	// file-watcher binding, etc. — to hidden files under the Darwin per-user
+	// TMPDIR (/private/var/folders/<hash>/T/) and dlopen()s them. Without
+	// file-write* the extraction fails silently (EPERM) and the TUI library
+	// is never loaded, causing opencode to crash with exit 255.
+	// file-map-executable is required for the subsequent dlopen(PROT_EXEC).
+	//
+	// We allow only the specific per-user TMPDIR (os.TempDir()), NOT all of
+	// /private/var/folders, to avoid giving the sandbox read access to other
+	// users' temp directories. On Darwin, os.TempDir() may return either the
+	// /var/folders/... symlink form or the /private/var/folders/... canonical
+	// form depending on OS version. sandbox-exec does not follow the
+	// /var → /private/var symlink transparently, so both forms must be listed
+	// (same pattern as /etc → /private/etc, PR #1193). We emit whichever form
+	// os.TempDir() returns plus its counterpart.
+	tmpDir := os.TempDir()
+	if tmpDir != "" {
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-map-executable\n")
+		sb.WriteString("  (subpath " + quoteSBPL(tmpDir) + ")\n")
+		// Always emit both the /var/... and /private/var/... forms.
+		// os.TempDir() may return either form depending on the OS version;
+		// sandbox-exec does not follow the /var → /private/var symlink
+		// transparently, so both must be listed explicitly.
+		if strings.HasPrefix(tmpDir, "/private/var/") {
+			varAlias := strings.TrimPrefix(tmpDir, "/private")
+			sb.WriteString("  (subpath " + quoteSBPL(varAlias) + ")\n")
+		} else if strings.HasPrefix(tmpDir, "/var/") {
+			privateAlias := "/private" + tmpDir
+			sb.WriteString("  (subpath " + quoteSBPL(privateAlias) + ")\n")
+		}
+		sb.WriteString(")\n")
+		sb.WriteString("\n")
+	}
 
 	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
 	// These deny rules must follow the broad /etc and /private/etc allows
@@ -221,28 +278,91 @@ func generateProfile(m *Manager) string {
 		if m.cfg.Worktree != "" {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.Worktree) + ")\n")
 		}
-		// Bare repo — the .bare directory holding git objects and refs.
+		// Bare repo root — full RW access so opencode can probe for project
+		// config files (e.g. .opencode/, AGENTS.md) at the top level and git
+		// can write pack files, ref updates, etc. in .bare/.
 		if m.cfg.BareRoot != "" {
-			bareDir := filepath.Join(m.cfg.BareRoot, ".bare")
-			sb.WriteString("  (subpath " + quoteSBPL(bareDir) + ")\n")
+			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
 		}
-		// opencode shared state dir — ~/.local/share/opencode (SQLite DB, logs,
-		// snapshots). Must use (subpath ...) not (literal ...) so the sandbox can
-		// read/write files inside the directory (not just the directory node itself).
+		// opencode shared state dirs — both XDG locations opencode writes to:
+		//   ~/.local/share/opencode — SQLite DB, logs, snapshots (legacy + current)
+		//   ~/.local/state/opencode — frecency, kv store, model cache (added in recent opencode versions)
+		// Must use (subpath ...) not (literal ...) so the sandbox can
+		// read/write files inside the directories (not just the directory nodes).
 		if home != "" {
 			opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
 			sb.WriteString("  (subpath " + quoteSBPL(opencodeDataDir) + ")\n")
+			opencodeStateDir := filepath.Join(home, ".local", "state", "opencode")
+			sb.WriteString("  (subpath " + quoteSBPL(opencodeStateDir) + ")\n")
 		}
 		sb.WriteString(")\n")
 		sb.WriteString("\n")
 	}
 
-	// ── Symlink target allows (read-only) ─────────────────────────────────
+	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
+	// opencode's fs.up() walk probes multiple targets (.opencode, .git) at
+	// every ancestor of the worktree with no stop parameter. Under deny-default
+	// any EPERM (not ENOENT) is fatal. We grant file-test-existence on:
+	//   1. Every ancestor of BareRoot up to (not including) HOME — these are
+	//      sibling worktree directories with no sensitive data, so subpath is safe.
+	//   2. HOME itself and HOME/.opencode/.git — the walk reaches HOME and probes
+	//      these paths before stopping (HOME is the natural filesystem root for
+	//      a user repo checkout). We use literal rules for HOME-level paths to
+	//      avoid granting broad access to the real home directory.
+	if m.cfg.BareRoot != "" && home != "" {
+		dir := filepath.Dir(m.cfg.BareRoot)
+		var ancestors []string
+		for dir != "/" && dir != "." && dir != home {
+			ancestors = append(ancestors, dir)
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+		if len(ancestors) > 0 {
+			sb.WriteString("(allow file-test-existence file-read-metadata\n")
+			for _, a := range ancestors {
+				sb.WriteString("  (subpath " + quoteSBPL(a) + ")\n")
+			}
+			// opencode's fromDirectory walk has no stop parameter and walks all
+			// the way to filesystem root, probing .opencode and .git at each
+			// level. Emit literal allows for the probe targets at every ancestor
+			// from HOME up to / so the walk returns ENOENT rather than EPERM.
+			// We use literals (not subpath) for HOME and above to avoid granting
+			// broad read access to directories containing sensitive content.
+			// opencode probes many arbitrary filenames (opencode.json, tui.jsonc,
+			// .opencode, .git, etc.) at every ancestor directory all the way to
+			// filesystem root. Granting (subpath ...) for file-test-existence is
+			// safe: file-test-existence only allows stat()/access(F_OK), not reads.
+			// Sensitive paths (.aws, wireguard, etc.) are protected by explicit
+			// deny file-read*/file-write* rules which are not overridden by a
+			// file-test-existence allow.
+			// Use (subpath home) to cover all probes inside the home directory,
+			// and (subpath parent) for each ancestor above home up to root —
+			// these are OS-level directories (/Users, /) with no user-sensitive
+			// file contents.
+			sb.WriteString("  (subpath " + quoteSBPL(home) + ")\n")
+			cur := filepath.Dir(home)
+			for {
+				sb.WriteString("  (subpath " + quoteSBPL(cur) + ")\n")
+				parent := filepath.Dir(cur)
+				if parent == cur || parent == "" {
+					break
+				}
+				cur = parent
+			}
+			sb.WriteString(")\n")
+			sb.WriteString("\n")
+		}
+	}
+
+	// ── Symlink target allows (RW and RO) ────────────────────────────────
 	// For every symlink in the staging HOME, resolve its target via
 	// filepath.EvalSymlinks and emit an allow rule. Locked in #1012 and #1017.
 	//
@@ -250,6 +370,10 @@ func generateProfile(m *Manager) string {
 	//   - Directory targets → (subpath ...) so the sandbox can access files
 	//     within (not just the directory node itself).
 	//   - File targets → (literal ...) to allow the specific file.
+	//   - Writable targets (cache dirs, write-through credential dirs) →
+	//     file-read* file-write* file-test-existence. Mirrors bwrap --bind (RW).
+	//   - RO targets (.ssh, .aws entries, .kube, .config/opencode) →
+	//     file-read* only. Mirrors bwrap --ro-bind.
 	//
 	// Targets that fall under the denied ~HOME/.aws subtree are excluded from
 	// this block to avoid the Apple SBPL literal-over-subpath precedence issue
@@ -259,9 +383,33 @@ func generateProfile(m *Manager) string {
 		if targErr != nil {
 			log.Printf("container: sandbox-exec: collect symlink targets: %v", targErr)
 		}
-		if len(targets) > 0 {
+
+		// Split into RW and RO sets.
+		var rwTargets, roTargets []StagingSymlinkTarget
+		for _, t := range targets {
+			if t.Writable {
+				rwTargets = append(rwTargets, t)
+			} else {
+				roTargets = append(roTargets, t)
+			}
+		}
+
+		if len(rwTargets) > 0 {
+			sb.WriteString("(allow file-read* file-write* file-test-existence\n")
+			for _, t := range rwTargets {
+				if t.IsDir {
+					sb.WriteString("  (subpath " + quoteSBPL(t.ResolvedPath) + ")\n")
+				} else {
+					sb.WriteString("  (literal " + quoteSBPL(t.ResolvedPath) + ")\n")
+				}
+			}
+			sb.WriteString(")\n")
+			sb.WriteString("\n")
+		}
+
+		if len(roTargets) > 0 {
 			sb.WriteString("(allow file-read*\n")
-			for _, t := range targets {
+			for _, t := range roTargets {
 				if t.IsDir {
 					sb.WriteString("  (subpath " + quoteSBPL(t.ResolvedPath) + ")\n")
 				} else {
@@ -273,12 +421,38 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
-	// ── 8. /dev/null write access ─────────────────────────────────────────
+	// ── 8. /dev/null and /dev/dtracehelper write access ──────────────────
 	// Apple-signed binaries (git, ssh) open /dev/null for writing during
 	// startup. The file-read* above covers reads; writes need an explicit
 	// allow. See F.1 §2 rule 8.
+	// /dev/dtracehelper also requires file-write-data: Apple binaries call
+	// write(2) on it at startup to check for DTrace. The file-read* literal
+	// above covers the open(2); this covers the write(2).
 	sb.WriteString("(allow file-write-data\n")
-	sb.WriteString("  (literal \"/dev/null\"))\n")
+	sb.WriteString("  (literal \"/dev/null\")\n")
+	sb.WriteString("  (literal \"/dev/dtracehelper\"))\n")
+	sb.WriteString("\n")
+
+	// ── 8c. Apple-internal path probe ─────────────────────────────────────
+	// Apple-signed binaries probe /AppleInternal/XBS/.isChrooted at startup
+	// to detect build-farm environments. Under deny-default this returns
+	// EPERM (not ENOENT), which some binaries treat as fatal. Allowing
+	// file-test-existence lets the probe return ENOENT harmlessly.
+	sb.WriteString("(allow file-test-existence\n")
+	sb.WriteString("  (literal \"/AppleInternal/XBS/.isChrooted\"))\n")
+	sb.WriteString("\n")
+
+	// ── 8b. TTY ioctl ─────────────────────────────────────────────────────
+	// opencode calls tcsetattr(2) to put the terminal into raw mode for the
+	// TUI. Under deny-default this is blocked (errno EPERM) which prevents
+	// the TUI from rendering and causes the sidecar to never see a
+	// session.created event (opencode detects no TTY and exits the TUI path
+	// without emitting one). (allow file-ioctl (subpath "/dev")) covers the
+	// TIOCGETA/TIOCSETA ioctls on /dev/ttysXXX and /dev/ptmx without
+	// granting any file-read/file-write access to /dev beyond what the
+	// system-read allow above already provides.
+	sb.WriteString("(allow file-ioctl\n")
+	sb.WriteString("  (subpath \"/dev\"))\n")
 	sb.WriteString("\n")
 
 	// ── 9. Process operations ─────────────────────────────────────────────
@@ -329,6 +503,44 @@ func generateProfile(m *Manager) string {
 	// Unchanged from v1. Matches the bwrap baseline. Restriction to
 	// specific hosts/ports is a future concern per #1012.
 	sb.WriteString("(allow network*)\n")
+	sb.WriteString("\n")
+
+	// ── 18. Socket options ────────────────────────────────────────────────
+	// CRITICAL: (allow network*) in v3 does NOT cover setsockopt/getsockopt.
+	// opencode's HTTP server calls setsockopt(SOL_SOCKET, SO_REUSEADDR)
+	// when binding its listener port. Without this, setsockopt returns EPERM
+	// and the server never binds — the sidecar sees connection refused for
+	// the full 30-second readiness timeout. socket-option-get is included
+	// symmetrically (getsockopt is called by node's net module at startup).
+	sb.WriteString("(allow socket-option-set socket-option-get)\n")
+	sb.WriteString("\n")
+
+	// ── 19. Dynamic code generation ───────────────────────────────────────
+	// CRITICAL: Bun (opencode's runtime) uses a JIT compiler. Under
+	// deny-default in (version 3), JIT requires explicit permission via
+	// (allow dynamic-code-generation). Without it, the sandbox sends SIGABRT
+	// to the process the moment it attempts to mark pages executable for JIT
+	// output — before any JS code runs, making this a silent crash with no
+	// error output.
+	sb.WriteString("(allow dynamic-code-generation)\n")
+	sb.WriteString("\n")
+
+	// ── 20. /dev/tty and /dev/autofs_nowait reads ─────────────────────────
+	// /dev/tty — bash and other shells open /dev/tty for terminal control
+	//   at startup (isatty(2), tcgetattr). Without file-read-data the open
+	//   fails with EPERM causing shell init errors.
+	// /dev/autofs_nowait — probed by CoreFoundation/NSBundle at startup.
+	//   Non-fatal if denied but causes log noise; allow file-read-data only.
+	sb.WriteString("(allow file-read-data\n")
+	sb.WriteString("  (literal \"/dev/tty\")\n")
+	sb.WriteString("  (literal \"/dev/autofs_nowait\"))\n")
+	sb.WriteString("\n")
+
+	// ── 21. User preferences read ─────────────────────────────────────────
+	// CoreFoundation reads user preferences (CFPreferences) at startup for
+	// locale, font smoothing, and other settings. Without this the framework
+	// emits log warnings but continues; allowing it silences the denials.
+	sb.WriteString("(allow user-preference-read)\n")
 
 	return sb.String()
 }

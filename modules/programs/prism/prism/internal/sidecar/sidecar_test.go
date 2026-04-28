@@ -9483,3 +9483,89 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 		t.Errorf("timeout-path `[timing]` line should include `(timed out)` suffix to distinguish from success:\n%s", out)
 	}
 }
+
+// ── server.heartbeat tests ───────────────────────────────────────────────────
+
+// TestServerHeartbeat_FirstHeartbeat_WritesActive verifies that the first
+// server.heartbeat (when no state has been written yet) sets the session state
+// to active. This is the key readiness signal in --prompt (server-only) mode
+// where session.created is never emitted on the SSE stream.
+func TestServerHeartbeat_FirstHeartbeat_WritesActive(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// No state has been written yet (lastState == "").
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after first server.heartbeat, want %q", state, agent.StateActive)
+	}
+}
+
+// TestServerHeartbeat_WritesStateChange verifies that the first heartbeat
+// writes a state_change event to the DB (which unblocks WaitForReady's poll).
+func TestServerHeartbeat_WritesStateChange(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var hasStateChange bool
+	for _, ev := range events {
+		if ev.Type == "state_change" {
+			hasStateChange = true
+			break
+		}
+	}
+	if !hasStateChange {
+		t.Error("expected a state_change event after first server.heartbeat, got none")
+	}
+}
+
+// TestServerHeartbeat_SubsequentHeartbeat_IsNoop verifies that once a real
+// state has been written (lastState != ""), subsequent heartbeats are no-ops
+// and do not overwrite the existing state.
+func TestServerHeartbeat_SubsequentHeartbeat_IsNoop(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// Drive lastState to "active" via a session.status busy event.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	stateBefore := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+
+	// Now send a heartbeat — must be a no-op because lastState != "".
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	stateAfter := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if stateAfter != stateBefore {
+		t.Errorf("server.heartbeat after real state: state changed from %q to %q (want no-op)", stateBefore, stateAfter)
+	}
+}
+
+// TestServerHeartbeat_AfterSessionCreated_IsNoop verifies that a heartbeat
+// arriving after session.created (which sets lastState to "active") does not
+// clobber the state written by session.created.
+func TestServerHeartbeat_AfterSessionCreated_IsNoop(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	sc.HandleEvent(makeSSE("session.created", map[string]any{
+		"info": map[string]string{"id": "sess-abc", "title": "my session"},
+	}))
+
+	// Confirm state was set to active by session.created.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("state = %q after session.created, want %q", state, agent.StateActive)
+	}
+
+	// Heartbeat after session.created must be a no-op.
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	stateAfter := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if stateAfter != string(agent.StateActive) {
+		t.Errorf("state = %q after heartbeat (post session.created), want %q", stateAfter, agent.StateActive)
+	}
+}
