@@ -238,7 +238,16 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			// Resolve the real home directory for XDG_DATA_HOME and
 			// XDG_STATE_HOME. These must point to the host paths so all
 			// sessions share a single opencode DB and state store.
-			realHome, _ := os.UserHomeDir()
+			realHome, realHomeErr := os.UserHomeDir()
+			if realHomeErr != nil {
+				// os.UserHomeDir() failed: fall back to the staging HOME for
+				// XDG_DATA_HOME/XDG_STATE_HOME rather than emitting invalid
+				// paths like "/.local/state" that would write into a
+				// root-owned directory. This is extremely unlikely on macOS
+				// (the stagingHome derivation above also calls UserHomeDir and
+				// succeeded, so this path should be unreachable in practice).
+				realHome = stagingHome
+			}
 			env = append(filtered,
 				"HOME="+stagingHome,
 				// OPENCODE_TEST_HOME overrides os.homedir() inside opencode.

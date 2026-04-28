@@ -484,9 +484,10 @@ type StagingSymlinkTarget struct {
 	// Writable is true when the sandbox must be allowed to write to this
 	// target (and, for directories, its contents). Mirrors the bwrap --bind
 	// (RW) vs --ro-bind (RO) distinction:
-	//   RW: .cache/opencode, .cache/bun, .cache/nix, .cache/prism/clipboard,
+	//   RW: .cache/opencode, .cache/bun, .cache/nix,
 	//       .claude (write-through for credentials), .mcp-auth
-	//   RO: .ssh keys, .aws staged entries, .kube/config, .config/opencode/*
+	//   RO: .ssh keys, .aws staged entries, .kube/config, .config/opencode/*,
+	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
 	Writable bool
 }
 
@@ -507,11 +508,12 @@ type StagingSymlinkTarget struct {
 //   - .cache/opencode  — opencode refreshes models.json and writes bin/ shims
 //   - .cache/bun       — bun writes transpile outputs and lockfile updates
 //   - .cache/nix       — unconditional RW (mirrors bwrap.go:333-335)
-//   - .cache/prism/    — prism clipboard cache
 //   - .claude          — write-through for .credentials.json on Darwin
 //   - .mcp-auth        — MCP auth token writes
 //
-// All other targets (.ssh, .aws, .kube, .config/opencode) are read-only.
+// All other targets (.ssh, .aws, .kube, .config/opencode, .cache/prism/clipboard)
+// are read-only. .cache/prism/clipboard mirrors bwrap.go's --ro-bind treatment —
+// opencode only reads image files staged there by `prism clipboard paste-image`.
 //
 // Symlink targets that fall under a path that will be denied by the profile
 // (e.g. host $HOME/.aws) are excluded from the results to avoid the
@@ -549,13 +551,14 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// path relative to stagingHome (no leading slash). Matches the RW paths
 	// in PrepareSandboxExecHome and the bwrap --bind mounts in bwrap.go.
 	writableStagingPaths := map[string]bool{
-		".cache/opencode":                    true, // opencode models.json refresh + bin/ shims
-		".cache/bun":                         true, // bun transpile cache + lockfile
-		".cache/nix":                         true, // nix eval cache (unconditional RW)
-		".cache/prism/clipboard":             true, // prism clipboard
-		".claude":                            true, // write-through for .credentials.json
-		".mcp-auth":                          true, // MCP auth token writes
-		".config/opencode/node_modules":      true, // bun may update lockfile entries during plugin load
+		".cache/opencode":               true, // opencode models.json refresh + bin/ shims
+		".cache/bun":                    true, // bun transpile cache + lockfile
+		".cache/nix":                    true, // nix eval cache (unconditional RW)
+		// .cache/prism/clipboard is intentionally absent: opencode only reads
+		// images staged there; mirrors bwrap.go's --ro-bind treatment.
+		".claude":                       true, // write-through for .credentials.json
+		".mcp-auth":                     true, // MCP auth token writes
+		".config/opencode/node_modules": true, // bun may update lockfile entries during plugin load
 	}
 
 	seen := map[string]bool{}
