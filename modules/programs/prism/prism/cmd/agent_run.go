@@ -8,8 +8,8 @@ package cmd
 // Manager.Create() writes for podman sessions (SSH config, gitconfig,
 // opencode.json), and then runs:
 //
-//	bwrap <args...>       (bwrap mode)
-//	sandbox-exec <args...> (sandbox-exec mode — not yet implemented, see #1016)
+//	bwrap <args...>        (bwrap mode — supervised child with PTY, Linux-only)
+//	sandbox-exec <args...> (sandbox-exec mode — supervised child with kqueue lifecycle, Darwin-only; see #1018)
 //
 // as a child process (not a direct exec). A PTY pair is created so that bwrap
 // and opencode see a real terminal on all three fds (stdin/stdout/stderr).
@@ -462,8 +462,8 @@ func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}, onWinch fun
 // other secret a prism coordinator might export — is dropped.
 //
 // The implementation is a thin alias over container.MinimalIsolatedExecEnv
-// (the same logic is reused by the sandbox-exec path, see #1016). Both call
-// sites share a single helper because the filter is identical across modes.
+// (the same logic is reused by the sandbox-exec path). Both call sites share
+// a single helper because the filter is identical across modes.
 func minimalBwrapExecEnv(hostEnv []string) []string {
 	return container.MinimalIsolatedExecEnv(hostEnv)
 }

@@ -120,7 +120,7 @@ func checkSandboxExecConcurrencyCap(cmd *cobra.Command, callerName string) error
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "error: prism sandbox-exec concurrency cap reached (%d sandbox-exec sessions already in flight)\n", count)
+	fmt.Fprintf(&sb, "error: prism sandbox-exec concurrency cap reached (%d/%d sandbox-exec sessions in flight)\n", count, cap)
 	if listErr == nil {
 		sb.WriteString("\nActive sandbox-exec sessions:\n")
 		for _, s := range sessions {
