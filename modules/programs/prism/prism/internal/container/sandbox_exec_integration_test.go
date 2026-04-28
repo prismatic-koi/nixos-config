@@ -31,9 +31,14 @@ func writeProfileForIntegration(t *testing.T, m *Manager) string {
 	if err != nil {
 		t.Fatalf("create temp profile file: %v", err)
 	}
-	defer f.Close()
 	if _, err := f.WriteString(profileContent); err != nil {
+		_ = f.Close()
 		t.Fatalf("write profile: %v", err)
+	}
+	// Explicitly close (not deferred) so the OS flushes the file before
+	// /usr/bin/sandbox-exec opens it.
+	if err := f.Close(); err != nil {
+		t.Fatalf("close profile file: %v", err)
 	}
 	return f.Name()
 }
@@ -335,15 +340,22 @@ func TestSandboxExecIntegration_SSHKeyDenied(t *testing.T) {
 		t.Skip("cannot determine home directory")
 	}
 
-	// Prefer a real key if it exists; otherwise create a dummy file in a
-	// temp location that is NOT the staging home (so it is denied).
+	// Prefer a real key if it exists; otherwise create a dummy file under
+	// the real home directory (NOT in t.TempDir() which resolves to
+	// /var/folders/... and is inside the sandbox allow scope).
 	sshKeyPath := filepath.Join(realHome, ".ssh", "id_ed25519")
 	if _, err := os.Stat(sshKeyPath); err != nil {
-		// Create a dummy key file outside the staging HOME.
-		tmpKey := filepath.Join(t.TempDir(), "dummy_key")
-		if err := os.WriteFile(tmpKey, []byte("dummy ssh key"), 0o600); err != nil {
-			t.Fatalf("create dummy key: %v", err)
+		// Create a dummy key file under the real home's .ssh dir.
+		// This path is in the host home subtree which the profile denies.
+		sshDir := filepath.Join(realHome, ".ssh")
+		if mkErr := os.MkdirAll(sshDir, 0o700); mkErr != nil {
+			t.Skipf("cannot create ~/.ssh for dummy key: %v", mkErr)
 		}
+		tmpKey := filepath.Join(sshDir, ".sandbox-exec-test-dummy-key")
+		if err := os.WriteFile(tmpKey, []byte("dummy ssh key"), 0o600); err != nil {
+			t.Skipf("cannot create dummy key in ~/.ssh: %v", err)
+		}
+		defer os.Remove(tmpKey)
 		sshKeyPath = tmpKey
 	}
 
