@@ -87,7 +87,7 @@ type Params struct {
 	GroupID string
 	// PrismVersion is the git SHA or version of the prism binary. May be empty.
 	PrismVersion string
-	// IsolationMode is "podman", "bwrap", or "host".
+	// IsolationMode is "podman", "bwrap", "sandbox-exec", or "host".
 	IsolationMode string
 	// AgentRunLogPath is the absolute path to the bwrap harness log file
 	// (~/.local/state/prism/run/<session>/agent-run.log). When non-empty and the
@@ -245,17 +245,18 @@ func resolvePaths(p Params) (archiveRoot, storageRoot string, err error) {
 // resolveStorageRoot returns the host-side opencode storage root for the given
 // isolation mode and session name.
 //
-//   - host / bwrap: $HOME/.local/share/opencode/storage
+//   - host / bwrap / sandbox-exec: $HOME/.local/share/opencode/storage
 //   - podman: $HOME/.local/share/opencode/prism-sessions/<containerName>/storage
 //   - unknown / empty: returns an error
 //
-// bwrap note: bwrap sessions bind-mount the *shared* ~/.local/share/opencode/
-// directory (not a per-session sub-dir); see internal/container/bwrap.go.
-// The per-session isolation used by the podman path (Darwin virtiofs WAL-mode
-// workaround) does not apply to bwrap. The shared root is correct here because
-// copySessionFiles scopes its reads to the specific harness_session_id, so only
-// files belonging to this session are copied even when the storage pool
-// contains concurrent bwrap sessions.
+// bwrap / sandbox-exec note: both modes run on the host filesystem namespace
+// and bind-mount (bwrap) or use (sandbox-exec) the *shared*
+// ~/.local/share/opencode/ directory — not a per-session sub-dir. The
+// per-session isolation used by the podman path (Darwin virtiofs WAL-mode
+// workaround) does not apply to either mode. The shared root is correct here
+// because copySessionFiles scopes its reads to the specific harness_session_id,
+// so only files belonging to this session are copied even when the storage pool
+// contains concurrent sessions.
 func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -263,7 +264,7 @@ func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
 	}
 
 	switch isolationMode {
-	case "host", "bwrap":
+	case "host", "bwrap", "sandbox-exec":
 		return filepath.Join(home, ".local", "share", "opencode", "storage"), nil
 	case "podman":
 		containerName := containerNameForSession(sessionName)
