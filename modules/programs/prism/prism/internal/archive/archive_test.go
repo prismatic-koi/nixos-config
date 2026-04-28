@@ -560,10 +560,10 @@ func TestResolveStorageRootPodman(t *testing.T) {
 	}
 }
 
-// TestResolveStorageRootHost verifies the host/bwrap path does not use
-// prism-sessions.
+// TestResolveStorageRootHost verifies the host/bwrap/sandbox-exec path does not
+// use prism-sessions.
 func TestResolveStorageRootHost(t *testing.T) {
-	for _, mode := range []string{"host", "bwrap"} {
+	for _, mode := range []string{"host", "bwrap", "sandbox-exec"} {
 		got, err := resolveStorageRoot(mode, "nixos-config@main")
 		if err != nil {
 			t.Fatalf("resolveStorageRoot %s: %v", mode, err)
@@ -574,6 +574,57 @@ func TestResolveStorageRootHost(t *testing.T) {
 		if !strings.HasSuffix(got, filepath.Join("opencode", "storage")) {
 			t.Errorf("mode=%s storage root = %q, want suffix opencode/storage", mode, got)
 		}
+	}
+}
+
+// TestRunSandboxExec verifies that a session with isolation_mode "sandbox-exec"
+// archives successfully, using the same storage layout as bwrap/host modes.
+func TestRunSandboxExec(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+	storageRoot := filepath.Join(tmpDir, "storage")
+
+	projectID := "sbxproj"
+	sessionID := "ses_sbx001"
+	wantFiles := makeStorageTree(t, storageRoot, projectID, sessionID)
+
+	p := baseParams(archiveRoot, storageRoot)
+	p.HarnessSessionID = sessionID
+	p.InstanceID = "44444444-5555-6666-7777-888888888888"
+	p.IsolationMode = "sandbox-exec"
+
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() with sandbox-exec error: %v", err)
+	}
+
+	// Verify archive directory exists.
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("archive dir not found: %v", err)
+	}
+
+	// Verify raw/ directory exists.
+	rawDir := filepath.Join(archivePath, "raw")
+	if _, err := os.Stat(rawDir); err != nil {
+		t.Fatalf("raw/ dir not found: %v", err)
+	}
+
+	// Verify each file is present and byte-for-byte identical.
+	for rel, want := range wantFiles {
+		got := readFile(t, filepath.Join(rawDir, rel))
+		if got != want {
+			t.Errorf("raw/%s content = %q, want %q", rel, got, want)
+		}
+	}
+
+	// Verify manifest.json parses and has the correct isolation mode recorded.
+	var m manifest
+	mData := readFile(t, filepath.Join(archivePath, "manifest.json"))
+	if err := json.Unmarshal([]byte(mData), &m); err != nil {
+		t.Fatalf("manifest.json parse error: %v", err)
+	}
+	if m.InstanceID != p.InstanceID {
+		t.Errorf("manifest.instanceId = %q, want %q", m.InstanceID, p.InstanceID)
 	}
 }
 
