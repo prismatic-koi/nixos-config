@@ -145,7 +145,15 @@ func generateProfile(m *Manager) string {
 	// Symmetric to bwrap's --tmpfs shadow of /etc/wireguard and
 	// /etc/wpa_supplicant. Under sandbox-exec, an explicit (deny ...) inside
 	// an otherwise-allow scope wins by precedence rules.
+	//
+	// Both /etc/... and /private/etc/... forms must be denied: the same
+	// symlink non-transparency that required adding (subpath "/etc") to the
+	// allow list also means that (subpath "/private/etc/wireguard") alone does
+	// NOT block access via the /etc/wireguard path. Both path forms are
+	// independently evaluated by the kernel. See issue #1187.
 	sb.WriteString("(deny file-read* file-write*\n")
+	sb.WriteString("  (subpath \"/etc/wireguard\")\n")
+	sb.WriteString("  (subpath \"/etc/wpa_supplicant\")\n")
 	sb.WriteString("  (subpath \"/private/etc/wireguard\")\n")
 	sb.WriteString("  (subpath \"/private/etc/wpa_supplicant\"))\n")
 	sb.WriteString("\n")

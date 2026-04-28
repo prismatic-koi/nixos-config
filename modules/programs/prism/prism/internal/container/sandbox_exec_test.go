@@ -86,16 +86,20 @@ func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_SensitiveSubtreeDenies verifies that the two deny
-// subpaths from the AC appear inside a (deny file-read* file-write* ...)
-// clause. These mirror the bwrap --tmpfs shadows of /etc/wireguard and
-// /etc/wpa_supplicant.
+// TestGenerateProfile_SensitiveSubtreeDenies verifies that the sensitive-
+// subtree deny subpaths appear inside a (deny file-read* file-write* ...)
+// clause. Both the /etc/... and /private/etc/... forms must be denied:
+// the same symlink non-transparency that required (subpath "/etc") in the
+// allow list also means that denying only the /private/etc/... form leaves
+// the /etc/... path form accessible. See issue #1187.
 func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
 	denyBlock := extractClause(t, profile, "(deny file-read* file-write*")
 	expected := []string{
+		`(subpath "/etc/wireguard")`,
+		`(subpath "/etc/wpa_supplicant")`,
 		`(subpath "/private/etc/wireguard")`,
 		`(subpath "/private/etc/wpa_supplicant")`,
 	}
