@@ -87,17 +87,22 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 
 // generateProfile returns the SBPL profile content for this session.
 //
-// The profile shape is locked in by issue #1012. It includes:
-//   - Read-only system roots (/nix, /usr, /System, /Library, /private/etc, …)
-//   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant)
-//   - Process and IPC primitives required by node/opencode
+// This is a (version 3) SBPL profile — see the migration design doc at
+// docs/reviews/F1-sandbox-exec-version-3-migration.md and issue #1200.
+//
+// The profile shape includes:
+//   - Cryptex graft points (dyld shared cache, macOS 15+)
+//   - Read-only system roots with file-test-existence, file-map-executable,
+//     file-read-metadata alongside file-read* (required by dyld/AMFI)
+//   - /bin, /sbin, and /var/... symlink-alias forms (v3 additions)
+//   - /tmp read-write for xcrun and transient files
+//   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant),
+//     both /etc/... and /private/etc/... forms (symlink non-transparency)
+//   - Host ~/.aws deny (only staged entries accessible)
+//   - Staging HOME / worktree / bare repo / host-API socket dir (RW)
+//   - Symlink target allows (read-only) for every symlink in the staging HOME
+//   - Process and IPC primitives required by dyld, AMFI, and opencode
 //   - (allow network*)
-//   - (allow file-read* file-write* (subpath "<STAGING_HOME>") ...) for the
-//     staging HOME, worktree, bare repo, and host-API socket dir
-//   - (allow file-read* (literal "<resolved_target>") ...) for every symlink
-//     target in the staging HOME, resolved via filepath.EvalSymlinks
-//   - (deny file-read* file-write* (subpath "$HOME/.aws")) to keep the host
-//     ~/.aws invisible (only the staged entries are accessible)
 //
 // New top-level allow/deny clauses introduced beyond what is sketched in
 // #1012 require a comment in the generator pointing at the issue.
@@ -112,45 +117,81 @@ func generateProfile(m *Manager) string {
 	stagingHome, stagingErr := m.sandboxExecHomePath()
 
 	var sb strings.Builder
-	sb.WriteString("(version 1)\n")
+	// ── Version 3 header and deny-default ────────────────────────────────
+	// (version 3) unlocks syscall-unix, syscall-mach, system-mac-syscall,
+	// system-fcntl, and the split ipc-posix-shm-read*/write* operations —
+	// all required for Apple-signed binaries (dyld, AMFI). See #1200 / F.1.
+	sb.WriteString("(version 3)\n")
 	sb.WriteString("(deny default)\n")
 	sb.WriteString("\n")
 
-	// ── Read-only system roots ────────────────────────────────────────────
-	// Mirror the bwrap baseline ro-binds (/nix, /etc, /run/current-system,
-	// /bin, /run/wrappers) for the macOS layout: /nix on macOS is the Nix
-	// store; /usr, /System, /Library, /private/etc, /private/var/db/dyld,
-	// and /private/var/db/timezone are the read-only OS paths that node and
-	// opencode resolve at startup. See #1012 — Design — SBPL profile shape.
-	//
-	// Both /etc and /private/etc are required: on macOS /etc is a top-level
-	// symlink to /private/etc, but sandbox-exec does NOT transparently follow
-	// that symlink for access checks — paths starting with /etc/... are checked
-	// against the allow rules separately from paths starting with /private/etc/...
-	// This means execvp(2) on /etc/profiles/per-user/<user>/bin/opencode (the
-	// canonical Nix per-user profile path) would be denied if only /private/etc
-	// is allowed. Adding /etc here fixes issue #1187.
-	sb.WriteString("(allow file-read*\n")
-	sb.WriteString("  (subpath \"/nix\")\n")
-	sb.WriteString("  (subpath \"/usr\")\n")
-	sb.WriteString("  (subpath \"/System\")\n")
-	sb.WriteString("  (subpath \"/Library\")\n")
-	sb.WriteString("  (subpath \"/etc\")\n")
-	sb.WriteString("  (subpath \"/private/etc\")\n")
-	sb.WriteString("  (subpath \"/private/var/db/dyld\")\n")
-	sb.WriteString("  (subpath \"/private/var/db/timezone\"))\n")
+	// ── 1. Cryptex graft points ───────────────────────────────────────────
+	// macOS 15+ stores the dyld shared cache under:
+	//   /System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/
+	// Both /System/Volumes/Preboot/Cryptexes (the Preboot-volume graft) and
+	// /System/Cryptexes (the live-FS boot alias) must be readable AND
+	// map-executable for dyld to bootstrap any binary. See F.1 §2 rule 1.
+	sb.WriteString("(allow file-read* file-test-existence file-map-executable\n")
+	sb.WriteString("  (subpath \"/System/Volumes/Preboot/Cryptexes\")\n")
+	sb.WriteString("  (subpath \"/System/Cryptexes\"))\n")
 	sb.WriteString("\n")
 
-	// ── Selective shadowing of sensitive subtrees ─────────────────────────
-	// Symmetric to bwrap's --tmpfs shadow of /etc/wireguard and
-	// /etc/wpa_supplicant. Under sandbox-exec, an explicit (deny ...) inside
-	// an otherwise-allow scope wins by precedence rules.
-	//
-	// Both /etc/... and /private/etc/... forms must be denied: the same
-	// symlink non-transparency that required adding (subpath "/etc") to the
-	// allow list also means that (subpath "/private/etc/wireguard") alone does
-	// NOT block access via the /etc/wireguard path. Both path forms are
-	// independently evaluated by the kernel. See issue #1187.
+	// ── 2. Standard system read-only roots ───────────────────────────────
+	// /nix            — Nix store. All Nix-built binaries live here.
+	// /usr, /bin, /sbin — standard Apple-signed utility directories.
+	// /System, /Library — OS frameworks, dylibs, and shared data.
+	// /Applications/Xcode.app — xcrun (called by /usr/bin/git shim).
+	// /etc, /private/etc — both forms: sandbox-exec does NOT transparently
+	//   follow the /etc → /private/etc symlink (PR #1193 / issue #1187).
+	// /private/var/db/dyld, /var/db/dyld — dyld shared-cache DB;
+	//   /var is a symlink to /private/var; both forms needed. See F.1 §2.
+	// /private/var/db/timezone, /var/db/timezone — timezone data.
+	// /private/var/select, /var/select — xcode-select developer_dir.
+	// /private/var/folders, /var/folders — Darwin per-user TMPDIR (xcrun).
+	// /dev/null, /dev/random, /dev/urandom — device nodes.
+	// /dev/dtracehelper — Apple-signed binaries probe at startup.
+	// /             — required by libignition's openat(2) root probe.
+	// file-test-existence, file-map-executable, file-read-metadata added
+	//   alongside file-read* for dyld to probe and map code-signed binaries.
+	//   See F.1 §2 rule 2 and migration delta §6.
+	sb.WriteString("(allow file-read* file-test-existence file-map-executable file-read-metadata\n")
+	sb.WriteString("  (subpath \"/nix\")\n")
+	sb.WriteString("  (subpath \"/usr\")\n")
+	sb.WriteString("  (subpath \"/bin\")\n")
+	sb.WriteString("  (subpath \"/sbin\")\n")
+	sb.WriteString("  (subpath \"/System\")\n")
+	sb.WriteString("  (subpath \"/Library\")\n")
+	sb.WriteString("  (subpath \"/Applications/Xcode.app\")\n")
+	sb.WriteString("  (subpath \"/private/etc\")\n")
+	sb.WriteString("  (subpath \"/etc\")\n")
+	sb.WriteString("  (subpath \"/private/var/db/dyld\")\n")
+	sb.WriteString("  (subpath \"/private/var/db/timezone\")\n")
+	sb.WriteString("  (subpath \"/private/var/select\")\n")
+	sb.WriteString("  (subpath \"/private/var/folders\")\n")
+	sb.WriteString("  (subpath \"/var/db/dyld\")\n")
+	sb.WriteString("  (subpath \"/var/db/timezone\")\n")
+	sb.WriteString("  (subpath \"/var/select\")\n")
+	sb.WriteString("  (subpath \"/var/folders\")\n")
+	sb.WriteString("  (literal \"/dev/null\")\n")
+	sb.WriteString("  (literal \"/dev/random\")\n")
+	sb.WriteString("  (literal \"/dev/urandom\")\n")
+	sb.WriteString("  (literal \"/dev/dtracehelper\")\n")
+	sb.WriteString("  (literal \"/\"))\n")
+	sb.WriteString("\n")
+
+	// ── 3. /tmp read-write ────────────────────────────────────────────────
+	// /tmp and /private/tmp are used by xcrun, git, and other tools for
+	// transient files. Both symlink forms needed. See F.1 §2 rule 3.
+	sb.WriteString("(allow file-read* file-write* file-test-existence\n")
+	sb.WriteString("  (subpath \"/private/tmp\")\n")
+	sb.WriteString("  (subpath \"/tmp\"))\n")
+	sb.WriteString("\n")
+
+	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
+	// These deny rules must follow the broad /etc and /private/etc allows
+	// above. In SBPL, more-specific rules override broader ones. Both
+	// /etc/... and /private/etc/... forms needed due to symlink
+	// non-transparency (same pattern as PR #1193 for v1). See F.1 §2 rule 4.
 	sb.WriteString("(deny file-read* file-write*\n")
 	sb.WriteString("  (subpath \"/etc/wireguard\")\n")
 	sb.WriteString("  (subpath \"/etc/wpa_supplicant\")\n")
@@ -158,11 +199,10 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (subpath \"/private/etc/wpa_supplicant\"))\n")
 	sb.WriteString("\n")
 
-	// ── Host ~/.aws deny — keep host credentials invisible ────────────────
-	// Only the staged entries (symlinked through the staging HOME) are
-	// accessible to the sandbox. The host's raw ~/.aws subtree is explicitly
-	// denied so that accidental reads cannot bypass the staging remapping.
-	// This is a security requirement per issue #1017.
+	// ── 5. Host ~/.aws deny — keep host credentials invisible ─────────────
+	// The staging HOME contains symlinks to the staged .aws credential
+	// entries (per issue #1017). The host raw ~/.aws subtree must remain
+	// read-denied so that path traversal cannot bypass the staging map.
 	if home != "" {
 		awsPath := filepath.Join(home, ".aws")
 		sb.WriteString("(deny file-read* file-write*\n")
@@ -170,11 +210,12 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── Staging HOME + worktree + bare repo + host-API socket dir (RW) ───
-	// These are the paths the sandbox must be able to read and write.
-	// Locked in #1012 and #1017.
+	// ── 6. Staging HOME + worktree + bare repo + host-API socket (RW) ────
+	// Session-specific read-write paths. Locked in #1012 and #1017.
+	// file-test-existence and file-read-metadata added alongside file-read*
+	// and file-write* for dyld/AMFI compatibility in the v3 profile.
 	if stagingErr == nil {
-		sb.WriteString("(allow file-read* file-write*\n")
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(stagingHome) + ")\n")
 		// Worktree — the git checkout the agent works in.
 		if m.cfg.Worktree != "" {
@@ -232,16 +273,61 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
-	// ── Process and IPC primitives required by node/opencode ──────────────
-	// Locked in #1012. PID/UTS/IPC isolation is a documented gap on macOS;
-	// this is defence in depth, not adversarial workload isolation.
-	sb.WriteString("(allow process-exec* process-fork signal mach-lookup mach-register\n")
-	sb.WriteString("       sysctl-read iokit-open ipc-posix-shm)\n")
+	// ── 8. /dev/null write access ─────────────────────────────────────────
+	// Apple-signed binaries (git, ssh) open /dev/null for writing during
+	// startup. The file-read* above covers reads; writes need an explicit
+	// allow. See F.1 §2 rule 8.
+	sb.WriteString("(allow file-write-data\n")
+	sb.WriteString("  (literal \"/dev/null\"))\n")
 	sb.WriteString("\n")
 
-	// ── Network ───────────────────────────────────────────────────────────
-	// Locked in #1012 — match bwrap. Restriction to specific hosts is a
-	// future concern, applied symmetrically.
+	// ── 9. Process operations ─────────────────────────────────────────────
+	// process-exec*  — execvp(2). Required for any child process to launch.
+	// process-fork   — fork(2). git and ssh use it for child processes.
+	// process-info*  — required by AMFI when validating the certificate chain
+	//   of Apple-signed binaries (process-info-codesignature, process-info-pidinfo).
+	//   Without this, git and ssh abort with SIGABRT during dyld init. See F.1 §2.
+	// signal         — allow the sandboxed process to send signals to itself.
+	// mach-lookup    — bootstrap service lookups (logd, opendirectoryd, etc.).
+	// mach-register  — per-pid Mach name registration (opencode IPC).
+	// sysctl-read    — system library init queries (kern.*, hw.*, machdep.*).
+	// NOTE: iokit-open is REMOVED in v3 (not needed, see F.1 §4.1 / §2 note).
+	// NOTE: ipc-posix-shm is REMOVED (unbound variable in v3 — replaced below).
+	sb.WriteString("(allow process-exec* process-fork process-info* signal mach-lookup mach-register\n")
+	sb.WriteString("       sysctl-read)\n")
+	sb.WriteString("\n")
+
+	// ── 12. POSIX shared memory ────────────────────────────────────────────
+	// CRITICAL: The v1 (allow ipc-posix-shm) is an UNBOUND VARIABLE in v3.
+	// Use the split read*/write* variants instead. See F.1 §2 rule 12.
+	// ipc-posix-shm-read*  — required by dyld and notification_center.
+	// ipc-posix-shm-write* — required by CoreFoundation / libobjc init.
+	sb.WriteString("(allow ipc-posix-shm-read* ipc-posix-shm-write*)\n")
+	sb.WriteString("\n")
+
+	// ── 14. syscall-unix and syscall-mach ─────────────────────────────────
+	// CRITICAL: In (version 3) with deny-default, individual syscalls are
+	// gated by the sandbox policy. Without (allow syscall-unix), dyld aborts
+	// with SIGABRT during the libignition phase. See F.1 §2 rule 14.
+	// (allow syscall-mach) is required for Mach trap calls used by
+	// CoreFoundation and libdispatch.
+	sb.WriteString("(allow syscall-unix syscall-mach)\n")
+	sb.WriteString("\n")
+
+	// ── 15. system-mac-syscall ────────────────────────────────────────────
+	// Required for AMFI certificate chain validation. See F.1 §2 rule 15.
+	sb.WriteString("(allow system-mac-syscall)\n")
+	sb.WriteString("\n")
+
+	// ── 16. system-fcntl ──────────────────────────────────────────────────
+	// Required for F_ADDFILESIGS_RETURN, F_CHECK_LV, and F_GETPATH, which
+	// dyld calls when mapping code-signed executables. See F.1 §2 rule 16.
+	sb.WriteString("(allow system-fcntl)\n")
+	sb.WriteString("\n")
+
+	// ── 17. Network ───────────────────────────────────────────────────────
+	// Unchanged from v1. Matches the bwrap baseline. Restriction to
+	// specific hosts/ports is a future concern per #1012.
 	sb.WriteString("(allow network*)\n")
 
 	return sb.String()

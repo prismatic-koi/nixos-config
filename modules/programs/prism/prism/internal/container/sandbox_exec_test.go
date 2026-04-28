@@ -34,54 +34,67 @@ func newSandboxExecManagerWithInstance(cfg Config) *Manager {
 // ── generateProfile content assertions ──────────────────────────────────────
 
 // TestGenerateProfile_VersionAndDenyDefault verifies that the profile begins
-// with the SBPL header that locks deny-by-default semantics: (version 1)
-// followed by (deny default). This is non-negotiable per #1012 — every
-// other clause is interpreted relative to deny-by-default.
+// with the SBPL header that locks deny-by-default semantics: (version 3)
+// followed by (deny default). This is non-negotiable per #1012 and #1200 —
+// every other clause is interpreted relative to deny-by-default.
 func TestGenerateProfile_VersionAndDenyDefault(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
-	// (version 1) MUST be the first non-empty content.
-	if !strings.HasPrefix(profile, "(version 1)\n") {
-		t.Errorf("profile must begin with (version 1)\\n; got prefix %q", firstNChars(profile, 64))
+	// (version 3) MUST be the first non-empty content.
+	if !strings.HasPrefix(profile, "(version 3)\n") {
+		t.Errorf("profile must begin with (version 3)\\n; got prefix %q", firstNChars(profile, 64))
 	}
 
-	// (deny default) MUST follow immediately after (version 1).
-	if !strings.HasPrefix(profile, "(version 1)\n(deny default)\n") {
-		t.Errorf("profile must start with (version 1) then (deny default); got prefix %q", firstNChars(profile, 64))
+	// (deny default) MUST follow immediately after (version 3).
+	if !strings.HasPrefix(profile, "(version 3)\n(deny default)\n") {
+		t.Errorf("profile must start with (version 3) then (deny default); got prefix %q", firstNChars(profile, 64))
 	}
 }
 
 // TestGenerateProfile_ReadOnlySystemRoots verifies that every read-only
 // system root listed in the AC appears as a (subpath ...) inside an
-// (allow file-read* ...) clause.
+// (allow file-read* file-test-existence file-map-executable file-read-metadata ...)
+// clause, as required by the v3 migration (#1200 / F.1 §2 rule 2).
 //
 // Both /etc and /private/etc must be present: on macOS /etc is a symlink to
 // /private/etc but sandbox-exec does not follow it transparently, so both
 // shapes are required for execvp to succeed on /etc/profiles/per-user/...
 // paths. See issue #1187.
+//
+// /bin, /sbin and the /var/... alias forms are also required for the v3 profile.
 func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
-	// Locate the (allow file-read* ... block (the first one — there is only
-	// one in this PR, but extracting it explicitly insulates the assertion
-	// from accidental clauses appearing later in the file).
-	allowReadBlock := extractClause(t, profile, "(allow file-read*")
+	// The v3 system-roots block uses the broader verb set. Find that block.
+	// Use the literal full opener for disambiguation.
+	systemRootsBlock := extractClause(t, profile, "(allow file-read* file-test-existence file-map-executable file-read-metadata")
 
 	expected := []string{
 		`(subpath "/nix")`,
 		`(subpath "/usr")`,
+		`(subpath "/bin")`,
+		`(subpath "/sbin")`,
 		`(subpath "/System")`,
 		`(subpath "/Library")`,
+		`(subpath "/Applications/Xcode.app")`,
 		`(subpath "/etc")`,
 		`(subpath "/private/etc")`,
 		`(subpath "/private/var/db/dyld")`,
 		`(subpath "/private/var/db/timezone")`,
+		`(subpath "/private/var/select")`,
+		`(subpath "/private/var/folders")`,
+		`(subpath "/var/db/dyld")`,
+		`(subpath "/var/db/timezone")`,
+		`(subpath "/var/select")`,
+		`(subpath "/var/folders")`,
+		`(literal "/dev/dtracehelper")`,
+		`(literal "/")`,
 	}
 	for _, want := range expected {
-		if !strings.Contains(allowReadBlock, want) {
-			t.Errorf("(allow file-read* ...) block missing %q; block:\n%s", want, allowReadBlock)
+		if !strings.Contains(systemRootsBlock, want) {
+			t.Errorf("system-roots block missing %q; block:\n%s", want, systemRootsBlock)
 		}
 	}
 }
@@ -111,9 +124,17 @@ func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 }
 
 // TestGenerateProfile_ProcessAndIPCAllows verifies that the profile contains
-// the seven process/IPC primitives required for node and opencode to run.
-// These are listed verbatim in the AC; the test asserts substring presence
-// rather than coupling to the exact whitespace in the generator output.
+// the process/IPC/syscall primitives required for node, opencode, dyld, and
+// AMFI to run under the v3 profile. See #1200 / F.1 §2.
+//
+// v3 changes vs v1:
+//   - process-info* added (AMFI cert chain validation)
+//   - iokit-open REMOVED (unbound/unnecessary in v3 — see F.1 §4.1)
+//   - ipc-posix-shm REMOVED (unbound variable in v3 — replaced by split forms)
+//   - ipc-posix-shm-read* and ipc-posix-shm-write* added
+//   - syscall-unix syscall-mach added
+//   - system-mac-syscall added
+//   - system-fcntl added
 func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -121,17 +142,33 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	wantSubstrings := []string{
 		"(allow process-exec*",
 		"process-fork",
+		"process-info*",
 		"signal",
 		"mach-lookup",
 		"mach-register",
 		"sysctl-read",
-		"iokit-open",
-		"ipc-posix-shm",
+		"(allow ipc-posix-shm-read* ipc-posix-shm-write*)",
+		"(allow syscall-unix syscall-mach)",
+		"(allow system-mac-syscall)",
+		"(allow system-fcntl)",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(profile, want) {
 			t.Errorf("profile missing required substring %q; full profile:\n%s", want, profile)
 		}
+	}
+
+	// iokit-open must NOT be present (removed in v3 migration).
+	if strings.Contains(profile, "iokit-open") {
+		t.Errorf("profile must not contain iokit-open (removed in v3 migration); full profile:\n%s", profile)
+	}
+
+	// The bare ipc-posix-shm token must NOT appear (unbound variable in v3).
+	// Only ipc-posix-shm-read* and ipc-posix-shm-write* are valid.
+	// We check by looking for "ipc-posix-shm)" or "ipc-posix-shm " which
+	// would indicate the bare form.
+	if strings.Contains(profile, "ipc-posix-shm)") || strings.Contains(profile, "(allow ipc-posix-shm)") {
+		t.Errorf("profile must not contain bare ipc-posix-shm (unbound variable in v3); full profile:\n%s", profile)
 	}
 }
 
@@ -144,6 +181,38 @@ func TestGenerateProfile_NetworkAllow(t *testing.T) {
 
 	if !strings.Contains(profile, "(allow network*)") {
 		t.Errorf("profile missing (allow network*); full profile:\n%s", profile)
+	}
+}
+
+// TestGenerateProfile_V3CryptexAndTmpRules verifies the v3-specific additions
+// required for the dyld shared cache and transient files. See #1200 / F.1 §2.
+func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	// Cryptex graft points (rule 1).
+	cryptexBlock := extractClause(t, profile, "(allow file-read* file-test-existence file-map-executable\n  (subpath \"/System/Volumes/Preboot/Cryptexes\")")
+	if !strings.Contains(cryptexBlock, `(subpath "/System/Volumes/Preboot/Cryptexes")`) {
+		t.Errorf("Cryptex block missing /System/Volumes/Preboot/Cryptexes; block:\n%s", cryptexBlock)
+	}
+	if !strings.Contains(cryptexBlock, `(subpath "/System/Cryptexes")`) {
+		t.Errorf("Cryptex block missing /System/Cryptexes; block:\n%s", cryptexBlock)
+	}
+
+	// /tmp read-write rule (rule 3).
+	if !strings.Contains(profile, `(subpath "/private/tmp")`) {
+		t.Errorf("profile missing (subpath \"/private/tmp\"); full profile:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(subpath "/tmp")`) {
+		t.Errorf("profile missing (subpath \"/tmp\"); full profile:\n%s", profile)
+	}
+
+	// /dev/null write access (rule 8).
+	if !strings.Contains(profile, "(allow file-write-data") {
+		t.Errorf("profile missing (allow file-write-data ...); full profile:\n%s", profile)
+	}
+	if !strings.Contains(profile, `(literal "/dev/null")`) {
+		t.Errorf("profile missing (literal \"/dev/null\") in file-write-data; full profile:\n%s", profile)
 	}
 }
 
@@ -161,10 +230,11 @@ func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
 	})
 	profile := generateProfile(m)
 
-	// The profile must contain (allow file-read* file-write* ...) with the
-	// staging home, worktree, and bare repo subpaths.
-	if !strings.Contains(profile, "(allow file-read* file-write*") {
-		t.Errorf("profile missing (allow file-read* file-write* ...) clause; full profile:\n%s", profile)
+	// The profile must contain (allow file-read* file-write* file-test-existence
+	// file-read-metadata ...) with the staging home, worktree, and bare repo subpaths.
+	// The v3 profile adds file-test-existence and file-read-metadata to the RW block.
+	if !strings.Contains(profile, "(allow file-read* file-write* file-test-existence file-read-metadata") {
+		t.Errorf("profile missing (allow file-read* file-write* file-test-existence file-read-metadata ...) clause; full profile:\n%s", profile)
 	}
 	if !strings.Contains(profile, "/tmp/fake-worktree") {
 		t.Errorf("profile missing worktree path /tmp/fake-worktree; full profile:\n%s", profile)
