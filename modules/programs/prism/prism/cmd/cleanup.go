@@ -447,9 +447,11 @@ var cleanupCmd = &cobra.Command{
 }
 
 // headlessCleanup removes the worktree and session without any TUI interaction.
-// It always deletes the branch if it is already merged; if unmerged it skips
-// branch deletion (safe default — the orchestrator should only call this after
-// confirming the PR has been merged).
+// It always force-deletes the branch, relying on the orchestrator-trust
+// contract: the orchestrator should only call this after confirming the PR has
+// been merged. Force-delete is required because squash-merges produce a fresh
+// commit on main with a different SHA than the branch tip, so the conventional
+// "git branch --merged" check always returns false after a squash-merge.
 //
 // Both worktreePath and bareRoot may be empty when the caller could not
 // determine the worktree location (e.g. tmux session already gone and DB path
@@ -476,11 +478,9 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 	}
 
 	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
-		if git.BranchMerged(bareRoot, worktreeName, git.DefaultBranchFromBareRoot(bareRoot)) {
-			fmt.Printf("deleting merged branch %s...\n", worktreeName)
-			_ = git.DeleteBranch(bareRoot, worktreeName)
-		} else {
-			fmt.Printf("branch %s is not fully merged — skipping branch deletion\n", worktreeName)
+		fmt.Printf("deleting branch %s...\n", worktreeName)
+		if err := git.ForceDeleteBranch(bareRoot, worktreeName); err != nil {
+			fmt.Fprintf(os.Stderr, "[prism] warning: branch delete: %v — continuing cleanup\n", err)
 		}
 	}
 

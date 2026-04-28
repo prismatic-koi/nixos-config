@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,6 +193,209 @@ func TestHeadlessCleanup_InvalidWorktreePath(t *testing.T) {
 	}
 	if status.EndedAt == nil {
 		t.Errorf("ended_at is nil — session was not marked as ended")
+	}
+}
+
+// TestHeadlessCleanup_ForceDeletesSquashMergedBranch verifies AC-1:
+// after headlessCleanup on a session whose branch is NOT fully merged
+// (e.g. after a squash-merge), the branch is force-deleted rather than
+// skipped. This is the core regression test for the squash-merge fix.
+func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+
+	// Build a minimal bare repo with a feature branch that has commits NOT
+	// reachable from main (simulating a squash-merged branch: BranchMerged
+	// would return false, but the orchestrator knows it was merged).
+	baseDir := t.TempDir()
+	bareRoot := filepath.Join(baseDir, "myrepo")
+	bareDir := filepath.Join(bareRoot, ".bare")
+	branchName := "feature"
+
+	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
+		t.Fatalf("mkdir bareRoot: %v", err)
+	}
+	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	_ = exec.Command("git", "--git-dir", bareDir, "config", "advice.detachedHead", "false").Run()
+
+	// Create initial commit on main.
+	initDir := filepath.Join(baseDir, "init-checkout")
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"add", "--orphan", "-b", "main", initDir).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add (orphan): %v\n%s", err, out)
+	}
+	cfgArgs := []string{
+		"-C", initDir,
+		"-c", "user.email=test@test.com",
+		"-c", "user.name=Test",
+		"-c", "commit.gpgsign=false",
+		"-c", "tag.gpgsign=false",
+	}
+	if out, err := exec.Command("git", append(cfgArgs,
+		"commit", "--allow-empty", "-m", "init")...).CombinedOutput(); err != nil {
+		t.Fatalf("git commit (init): %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"remove", "--force", initDir).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree remove init: %v\n%s", err, out)
+	}
+
+	// Create a feature branch with a unique commit — not reachable from main.
+	featureDir := filepath.Join(baseDir, "feature-checkout")
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"add", "-b", branchName, featureDir, "main").CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add feature: %v\n%s", err, out)
+	}
+	featureCfgArgs := []string{
+		"-C", featureDir,
+		"-c", "user.email=test@test.com",
+		"-c", "user.name=Test",
+		"-c", "commit.gpgsign=false",
+		"-c", "tag.gpgsign=false",
+	}
+	if out, err := exec.Command("git", append(featureCfgArgs,
+		"commit", "--allow-empty", "-m", "feature work")...).CombinedOutput(); err != nil {
+		t.Fatalf("git commit (feature): %v\n%s", err, out)
+	}
+	// Remove the worktree so it can be cleaned up.
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"remove", "--force", featureDir).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree remove feature: %v\n%s", err, out)
+	}
+
+	// Sanity check: feature is NOT merged into main (BranchMerged would return false).
+	branchMergedOut, _ := exec.Command("git", "--git-dir", bareDir, "branch",
+		"--merged", "main").Output()
+	for _, line := range strings.Fields(string(branchMergedOut)) {
+		if strings.TrimLeft(strings.TrimSpace(line), "* ") == branchName {
+			t.Logf("unexpected: branch %q IS in --merged output before fix", branchName)
+		}
+	}
+
+	// Seed DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branchName
+	if err := d.UpsertStatus(session, "myrepo", featureDir, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Run headlessCleanup with an empty worktreePath (already removed above) —
+	// the branch-deletion path only needs bareRoot and the branch name.
+	err = headlessCleanup(session, branchName, "", bareRoot)
+	if err != nil {
+		t.Errorf("headlessCleanup returned error %v, want nil", err)
+	}
+
+	// The branch must no longer exist.
+	checkErr := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run()
+	if checkErr == nil {
+		t.Errorf("branch %q still exists after headlessCleanup — expected it to be force-deleted", branchName)
+	}
+}
+
+// TestHeadlessCleanup_BranchDeleteFailure verifies the edge-case AC:
+// if branch deletion fails (e.g. branch checked out in another worktree),
+// headlessCleanup logs a warning and returns nil rather than aborting.
+func TestHeadlessCleanup_BranchDeleteFailure(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+
+	// Build a repo where the feature branch is checked out in an active
+	// worktree — git branch -D will refuse to delete it.
+	baseDir := t.TempDir()
+	bareRoot := filepath.Join(baseDir, "myrepo")
+	bareDir := filepath.Join(bareRoot, ".bare")
+	branchName := "feature"
+
+	if err := os.MkdirAll(bareRoot, 0o755); err != nil {
+		t.Fatalf("mkdir bareRoot: %v", err)
+	}
+	if out, err := exec.Command("git", "init", "--bare", bareDir).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	_ = exec.Command("git", "--git-dir", bareDir, "config", "advice.detachedHead", "false").Run()
+
+	initDir := filepath.Join(baseDir, "init-checkout")
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"add", "--orphan", "-b", "main", initDir).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add (orphan): %v\n%s", err, out)
+	}
+	cfgArgs := []string{
+		"-C", initDir,
+		"-c", "user.email=test@test.com",
+		"-c", "user.name=Test",
+		"-c", "commit.gpgsign=false",
+		"-c", "tag.gpgsign=false",
+	}
+	if out, err := exec.Command("git", append(cfgArgs,
+		"commit", "--allow-empty", "-m", "init")...).CombinedOutput(); err != nil {
+		t.Fatalf("git commit (init): %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"remove", "--force", initDir).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree remove init: %v\n%s", err, out)
+	}
+
+	// Create a feature worktree that we do NOT remove — so the branch is still
+	// checked out and git branch -D will fail.
+	featureDir := filepath.Join(bareRoot, branchName)
+	if out, err := exec.Command("git", "--git-dir", bareDir, "worktree",
+		"add", "-b", branchName, featureDir, "main").CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add feature: %v\n%s", err, out)
+	}
+
+	// Seed DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branchName
+	if err := d.UpsertStatus(session, "myrepo", featureDir, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Pass empty worktreePath so worktree-removal step is skipped cleanly.
+	// The branch still exists in the worktree so ForceDeleteBranch will fail.
+	err = headlessCleanup(session, branchName, "", bareRoot)
+	if err != nil {
+		t.Errorf("headlessCleanup returned error %v, want nil (should warn and continue on branch-delete failure)", err)
+	}
+
+	// Session should still be marked ended in the DB (cleanup continued).
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — session was not marked as ended despite branch-delete failure")
 	}
 }
 
