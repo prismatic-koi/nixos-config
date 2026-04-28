@@ -122,11 +122,20 @@ func generateProfile(m *Manager) string {
 	// store; /usr, /System, /Library, /private/etc, /private/var/db/dyld,
 	// and /private/var/db/timezone are the read-only OS paths that node and
 	// opencode resolve at startup. See #1012 — Design — SBPL profile shape.
+	//
+	// Both /etc and /private/etc are required: on macOS /etc is a top-level
+	// symlink to /private/etc, but sandbox-exec does NOT transparently follow
+	// that symlink for access checks — paths starting with /etc/... are checked
+	// against the allow rules separately from paths starting with /private/etc/...
+	// This means execvp(2) on /etc/profiles/per-user/<user>/bin/opencode (the
+	// canonical Nix per-user profile path) would be denied if only /private/etc
+	// is allowed. Adding /etc here fixes issue #1187.
 	sb.WriteString("(allow file-read*\n")
 	sb.WriteString("  (subpath \"/nix\")\n")
 	sb.WriteString("  (subpath \"/usr\")\n")
 	sb.WriteString("  (subpath \"/System\")\n")
 	sb.WriteString("  (subpath \"/Library\")\n")
+	sb.WriteString("  (subpath \"/etc\")\n")
 	sb.WriteString("  (subpath \"/private/etc\")\n")
 	sb.WriteString("  (subpath \"/private/var/db/dyld\")\n")
 	sb.WriteString("  (subpath \"/private/var/db/timezone\"))\n")
