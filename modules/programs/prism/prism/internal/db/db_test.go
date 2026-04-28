@@ -6963,3 +6963,134 @@ func TestWriteSpawnOutcome_NoSession(t *testing.T) {
 		t.Fatalf("WriteSpawnOutcome on missing session: %v (want nil)", err)
 	}
 }
+
+// ── ActiveSandboxExecSessionCount / ActiveSandboxExecSessions ────────────────
+
+// TestActiveSandboxExecSessionCount_Empty verifies the count is 0 on a fresh DB.
+func TestActiveSandboxExecSessionCount_Empty(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	count, err := d.ActiveSandboxExecSessionCount()
+	if err != nil {
+		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0 on empty DB", count)
+	}
+}
+
+// TestActiveSandboxExecSessionCount_OnlySandboxExec verifies that only
+// sandbox-exec sessions (isolation_mode = 'sandbox-exec', ended_at IS NULL)
+// are counted.
+func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	// Insert a sandbox-exec session (active).
+	if err := d.UpsertStatus("repo@sandbox1", "repo", "/code/repo/sandbox1", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@sandbox1", "sandbox-exec"); err != nil {
+		t.Fatalf("SetIsolationMode sandbox-exec: %v", err)
+	}
+
+	// Insert a bwrap session (should not be counted).
+	if err := d.UpsertStatus("repo@bwrap1", "repo", "/code/repo/bwrap1", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus bwrap: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@bwrap1", "bwrap"); err != nil {
+		t.Fatalf("SetIsolationMode bwrap: %v", err)
+	}
+
+	// Insert a podman session (should not be counted).
+	if err := d.UpsertStatus("repo@podman1", "repo", "/code/repo/podman1", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus podman: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@podman1", "podman"); err != nil {
+		t.Fatalf("SetIsolationMode podman: %v", err)
+	}
+
+	count, err := d.ActiveSandboxExecSessionCount()
+	if err != nil {
+		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (only the sandbox-exec session)", count)
+	}
+}
+
+// TestActiveSandboxExecSessionCount_EndedNotCounted verifies that ended
+// sandbox-exec sessions (ended_at IS NOT NULL) are excluded from the count.
+func TestActiveSandboxExecSessionCount_EndedNotCounted(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	// Insert an active sandbox-exec session.
+	if err := d.UpsertStatus("repo@se-active", "repo", "/code/repo/se-active", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus active: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@se-active", "sandbox-exec"); err != nil {
+		t.Fatalf("SetIsolationMode active: %v", err)
+	}
+
+	// Insert an ended sandbox-exec session.
+	if err := d.UpsertStatus("repo@se-ended", "repo", "/code/repo/se-ended", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus ended: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@se-ended", "sandbox-exec"); err != nil {
+		t.Fatalf("SetIsolationMode ended: %v", err)
+	}
+	if err := d.SetEnded("repo@se-ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	count, err := d.ActiveSandboxExecSessionCount()
+	if err != nil {
+		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("count = %d, want 1 (ended session must not be counted)", count)
+	}
+}
+
+// TestActiveSandboxExecSessions_ReturnsList verifies that ActiveSandboxExecSessions
+// returns the correct session rows for active sandbox-exec sessions.
+func TestActiveSandboxExecSessions_ReturnsList(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	// Insert two active sandbox-exec sessions.
+	for _, name := range []string{"repo@se-a", "repo@se-b"} {
+		if err := d.UpsertStatus(name, "repo", "/code/repo/"+name, "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %q: %v", name, err)
+		}
+		if err := d.SetIsolationMode(name, "sandbox-exec"); err != nil {
+			t.Fatalf("SetIsolationMode %q: %v", name, err)
+		}
+	}
+
+	// Insert a non-sandbox-exec session (should not appear in results).
+	if err := d.UpsertStatus("repo@bwrap-x", "repo", "/code/repo/bwrap-x", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus bwrap-x: %v", err)
+	}
+	if err := d.SetIsolationMode("repo@bwrap-x", "bwrap"); err != nil {
+		t.Fatalf("SetIsolationMode bwrap-x: %v", err)
+	}
+
+	sessions, err := d.ActiveSandboxExecSessions()
+	if err != nil {
+		t.Fatalf("ActiveSandboxExecSessions: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("len(sessions) = %d, want 2", len(sessions))
+	}
+	for _, s := range sessions {
+		if s.IsolationMode != "sandbox-exec" {
+			t.Errorf("session %q has isolation_mode %q, want sandbox-exec", s.SessionName, s.IsolationMode)
+		}
+		if s.EndedAt != nil {
+			t.Errorf("session %q has non-nil ended_at, want nil (active)", s.SessionName)
+		}
+	}
+}

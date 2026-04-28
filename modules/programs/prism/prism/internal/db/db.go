@@ -2050,6 +2050,31 @@ WHERE ended_at IS NULL AND isolation_mode = 'bwrap'`
 	return d.queryStatuses(q)
 }
 
+// ActiveSandboxExecSessionCount returns the number of agent_status rows where
+// ended_at IS NULL AND isolation_mode = 'sandbox-exec'. Used by the
+// sandbox-exec concurrency cap check in cmd/concurrency.go.
+func (d *DB) ActiveSandboxExecSessionCount() (int, error) {
+	var n int
+	err := d.conn.QueryRow(
+		"SELECT COUNT(*) FROM agent_status WHERE ended_at IS NULL AND isolation_mode = 'sandbox-exec'",
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("db: active sandbox-exec session count: %w", err)
+	}
+	return n, nil
+}
+
+// ActiveSandboxExecSessions returns the agent_status rows for all active
+// sandbox-exec sessions (ended_at IS NULL AND isolation_mode = 'sandbox-exec').
+// Used to build the session list in the sandbox-exec concurrency cap error message.
+func (d *DB) ActiveSandboxExecSessions() ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE ended_at IS NULL AND isolation_mode = 'sandbox-exec'`
+	return d.queryStatuses(q)
+}
+
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
