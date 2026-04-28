@@ -55,6 +55,11 @@ func TestGenerateProfile_VersionAndDenyDefault(t *testing.T) {
 // TestGenerateProfile_ReadOnlySystemRoots verifies that every read-only
 // system root listed in the AC appears as a (subpath ...) inside an
 // (allow file-read* ...) clause.
+//
+// Both /etc and /private/etc must be present: on macOS /etc is a symlink to
+// /private/etc but sandbox-exec does not follow it transparently, so both
+// shapes are required for execvp to succeed on /etc/profiles/per-user/...
+// paths. See issue #1187.
 func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -69,6 +74,7 @@ func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 		`(subpath "/usr")`,
 		`(subpath "/System")`,
 		`(subpath "/Library")`,
+		`(subpath "/etc")`,
 		`(subpath "/private/etc")`,
 		`(subpath "/private/var/db/dyld")`,
 		`(subpath "/private/var/db/timezone")`,
@@ -80,16 +86,20 @@ func TestGenerateProfile_ReadOnlySystemRoots(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_SensitiveSubtreeDenies verifies that the two deny
-// subpaths from the AC appear inside a (deny file-read* file-write* ...)
-// clause. These mirror the bwrap --tmpfs shadows of /etc/wireguard and
-// /etc/wpa_supplicant.
+// TestGenerateProfile_SensitiveSubtreeDenies verifies that the sensitive-
+// subtree deny subpaths appear inside a (deny file-read* file-write* ...)
+// clause. Both the /etc/... and /private/etc/... forms must be denied:
+// the same symlink non-transparency that required (subpath "/etc") in the
+// allow list also means that denying only the /private/etc/... form leaves
+// the /etc/... path form accessible. See issue #1187.
 func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
 
 	denyBlock := extractClause(t, profile, "(deny file-read* file-write*")
 	expected := []string{
+		`(subpath "/etc/wireguard")`,
+		`(subpath "/etc/wpa_supplicant")`,
 		`(subpath "/private/etc/wireguard")`,
 		`(subpath "/private/etc/wpa_supplicant")`,
 	}
