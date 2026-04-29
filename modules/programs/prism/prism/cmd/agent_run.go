@@ -385,15 +385,6 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		stderrW.Close()
 	}
 
-	// Give the terminal foreground to bwrap's process group so that the host
-	// PTY routes keypresses and SIGWINCH to bwrap/opencode rather than to
-	// agent-run. Restore the original foreground pgid after bwrap exits.
-	origPgid := tcsetpgrpForeground(int(os.Stdin.Fd()), bwrapCmd.Process.Pid)
-
-	// Forward SIGTERM, SIGINT, SIGHUP, and SIGWINCH to the child process group.
-	doneCh := make(chan struct{})
-	go forwardSignalsToBwrap(bwrapCmd.Process, doneCh, nil)
-
 	// Tee bwrap's stderr to both the pane (os.Stderr) and the log file.
 	// This goroutine exits when stderrR reaches EOF (after bwrap exits and
 	// stderrW is closed).
@@ -412,14 +403,17 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		close(teeDone)
 	}
 
-	waitErr := bwrapCmd.Wait()
-	close(doneCh)
+	// Supervise the child: foreground the pgid, forward signals (including
+	// SIGWINCH for the bwrap path so resizes propagate to the sandbox), and
+	// wait. The shared SuperviseChild helper (supervise.go, A2.SUP) replaces
+	// the previous open-coded tcsetpgrpForeground / forwardSignalsToBwrap /
+	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
+	// implementation across the bwrap and sandbox-exec dispatch paths.
+	waitErr := SuperviseChild(bwrapCmd, int(os.Stdin.Fd()), SuperviseOpts{
+		ForwardWinch: true,
+		OnWinch:      nil,
+	})
 	<-teeDone
-
-	// Restore the original foreground process group.
-	if origPgid > 0 {
-		_ = tcsetpgrpRestore(int(os.Stdin.Fd()), origPgid)
-	}
 
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
