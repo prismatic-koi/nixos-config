@@ -303,14 +303,23 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
-	// ── ~/.claude (read-write) ──────────────────────────────────────────────
-	claudeDir := filepath.Join(home, ".claude")
-	args = append(args, "--bind", claudeDir, claudeDir)
-
-	// ── ~/.mcp-auth (read-write, conditional) ──────────────────────────────
-	mcpAuthDir := filepath.Join(home, ".mcp-auth")
-	if _, err := os.Stat(mcpAuthDir); err == nil {
-		args = append(args, "--bind", mcpAuthDir, mcpAuthDir)
+	// ── Standard sandbox mounts via the shared spec walk ─────────────────
+	// StandardSandboxMounts (mounts.go, A2.M1) returns the mode-agnostic
+	// mount set for ~/.claude, ~/.mcp-auth, ~/.cache/nix, AWS config, AWS
+	// credentials, AWS SSO/CLI cache, kube config, and the clipboard
+	// staging dir. The bwrap appendBind appender (mounts.go) translates
+	// each MountSpec into the correct --bind / --ro-bind triple.
+	//
+	// Note on ordering: StandardSandboxMounts emits ~/.claude, ~/.mcp-auth,
+	// ~/.cache/nix, AWS config, AWS credentials, AWS SSO, AWS CLI, kube
+	// config, clipboard-staging. The pre-A2.M1 bwrap order interleaved the
+	// AWS group with the SSH/known_hosts/SSH-config group; the new order
+	// keeps the AWS entries adjacent and emits all of them before the SSH
+	// keys. Bwrap argument order does not affect the runtime mount layout
+	// (bwrap evaluates arguments left-to-right but each --bind is
+	// independent), so this is a behaviour-preserving reordering.
+	for _, spec := range StandardSandboxMounts(cfg, home, home, isolationBwrap) {
+		args = b.appendBind(args, spec)
 	}
 
 	// ── opencode shared state dir (read-write) ─────────────────────────────
@@ -321,36 +330,20 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// Darwin — that path doesn't apply here because bwrap is Linux-only and
 	// SQLite WAL works correctly across concurrent processes on a shared
 	// filesystem.
+	//
+	// Kept inline: the mount semantics differ from podman's per-session
+	// state dir (which lives at /root/.local/share/opencode under a
+	// per-container subdir), so no shared spec entry exists.
 	opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
 	args = append(args, "--bind", opencodeDataDir, opencodeDataDir)
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
 	// Mount the parent directory, not the socket file directly (same pattern
 	// as the podman path — avoids statfs ENOTSUP on certain filesystems).
+	// Kept inline because the absolute system path (not HOME-relative) is
+	// outside the StandardSandboxMounts shape.
 	nixDaemonSocketDir := "/nix/var/nix/daemon-socket"
 	args = append(args, "--bind", nixDaemonSocketDir, nixDaemonSocketDir)
-
-	// ── ~/.cache/nix (read-write) ────────────────────────────────────────────
-	nixCacheDir := filepath.Join(home, ".cache", "nix")
-	args = append(args, "--bind", nixCacheDir, nixCacheDir)
-
-	// ── AWS readonly-config (read-only, conditional) ─────────────────────────
-	// Remapped: host ~/.config/aws/readonly-config → sandbox $HOME/.aws/config
-	// (the canonical path the AWS CLI reads by default). The symlink is resolved
-	// to the real Nix store path so the bwrap bind-mount source exists.
-	awsReadonlyConfig := filepath.Join(home, ".config", "aws", "readonly-config")
-	if resolved, err := filepath.EvalSymlinks(awsReadonlyConfig); err == nil {
-		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".aws", "config"))
-	}
-
-	// ── Kube agents-config (read-only, conditional) ─────────────────────────
-	// Remapped: host ~/.config/kube/agents-config → sandbox $HOME/.kube/config
-	// (the canonical path kubectl reads by default). Only the agents-readonly
-	// kubeconfig is exposed — the admin kubeconfig is never mounted.
-	kubeAgentsConfig := filepath.Join(home, ".config", "kube", "agents-config")
-	if resolved, err := filepath.EvalSymlinks(kubeAgentsConfig); err == nil {
-		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".kube", "config"))
-	}
 
 	// ── SSH keys (read-only, conditional) ───────────────────────────────────
 	// All SSH artefacts are remapped to canonical generic paths under
@@ -435,19 +428,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// For non-review containers (worker, coordinator, etc.) agents/ is mounted
 	// so that @review-* subagent invocation works and all agents are accessible.
 	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
-	opencodeAllowlist := []string{
-		"AGENTS.md",
-		"plugins",
-		"skills",
-		"command",
-		"tui.json",
-		".gitignore",
-		"mcp-atlassian-slim-proxy.mjs",
-	}
-	if !strings.HasPrefix(cfg.AgentRole, "review-") {
-		opencodeAllowlist = append(opencodeAllowlist, "agents")
-	}
-	for _, entry := range opencodeAllowlist {
+	isReviewBwrap := strings.HasPrefix(cfg.AgentRole, "review-")
+	for _, entry := range StandardOpencodeConfigAllowlist(isReviewBwrap) {
 		p := filepath.Join(opencodeConfigDir, entry)
 		if _, err := os.Stat(p); err == nil {
 			args = append(args, "--ro-bind", p, p)
@@ -461,6 +443,12 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// error (logged to ~/.local/share/opencode/log/*.log, NOT to stderr), so
 	// the sidecar loops on connection-refused and the pane stays blank. See
 	// the bwrap-spawn-hangs investigation for the full signature.
+	//
+	// Kept inline (not in StandardSandboxMounts): bwrap mounts this RW
+	// while podman mounts the same path RO. The audit (A2 §3.1) flagged
+	// these as podman-outliers; rather than thread a fourth per-mode flag
+	// through StandardSandboxMounts for one entry, the cache mounts stay
+	// per-mode-inline.
 	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
 	if _, err := os.Stat(opencodeCacheDir); err == nil {
 		args = append(args, "--bind", opencodeCacheDir, opencodeCacheDir)
@@ -476,33 +464,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--bind", bunCacheDir, bunCacheDir)
 	}
 
-	// ── Additional AWS mounts (read-only, conditional) ───────────────────────
-	// Match the podman buildRunArgs pattern: credentials file and SSO/CLI
-	// cache dirs are conditionally mounted when present on the host.
-	//
-	// Remapped: host ~/.config/aws/credentials → sandbox $HOME/.aws/credentials
-	// (the canonical path the AWS CLI reads by default).
-	awsCredentials := filepath.Join(home, ".config", "aws", "credentials")
-	if resolved, err := filepath.EvalSymlinks(awsCredentials); err == nil {
-		args = append(args, "--ro-bind", resolved, filepath.Join(home, ".aws", "credentials"))
-	}
-	awsSSOCacheDir := filepath.Join(home, ".aws", "sso")
-	if _, err := os.Stat(awsSSOCacheDir); err == nil {
-		args = append(args, "--bind", awsSSOCacheDir, awsSSOCacheDir)
-	}
-	awsCLICacheDir := filepath.Join(home, ".aws", "cli")
-	if _, err := os.Stat(awsCLICacheDir); err == nil {
-		args = append(args, "--bind", awsCLICacheDir, awsCLICacheDir)
-	}
-
-	// ── Clipboard staging dir (read-only, conditional) ───────────────────────
-	// Images staged by `prism clipboard paste-image` on the host are placed here
-	// and bind-mounted read-only so opencode's stat() call resolves without
-	// modification. Dst == Src (no remap needed).
-	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
-	if _, err := os.Stat(clipboardCacheDir); err == nil {
-		args = append(args, "--ro-bind", clipboardCacheDir, clipboardCacheDir)
-	}
+	// AWS credentials, AWS SSO cache, AWS CLI cache, kube config, and the
+	// clipboard staging dir are all emitted earlier in this function via the
+	// StandardSandboxMounts walk (A2.M1) — the inline blocks that previously
+	// duplicated those mounts here have been removed.
 
 	// ── Environment variables ────────────────────────────────────────────────
 	// Translate --env K=V (podman) → --setenv K V (bwrap).
