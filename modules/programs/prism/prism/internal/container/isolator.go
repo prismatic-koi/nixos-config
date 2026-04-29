@@ -37,9 +37,9 @@ type Capabilities struct {
 	// NeedsConfigBlob means the harness config blob must be supplied via
 	// env-var or on-disk file before the process starts. True for podman,
 	// bwrap, and sandbox-exec; false for host.
-	// Cites: cmd/spawn.go:311-357, cmd/switch.go:1069-1108,
-	//        cmd/restore.go:269-292, cmd/pr.go:77-170,
-	//        internal/review/review.go:1230.
+	// Cites: cmd/spawn.go:339-392, cmd/switch.go:308-348,
+	//        cmd/restore.go:346-393, cmd/pr.go:120-186,
+	//        internal/review/run.go:131-149, :356-374.
 	NeedsConfigBlob bool
 
 	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
