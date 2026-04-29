@@ -69,6 +69,15 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		agents = Agents()
 	}
 
+	// Resolve the runtime active profile once for the whole round so every
+	// agent in this fan-out spawns with the same models (#1207). Errors are
+	// surfaced — a corrupt state file would otherwise silently leak the
+	// pf.Default profile into review agents.
+	activeProfile, _, profErr := config.ResolveActiveProfile(opts.ProfilesFile, "")
+	if profErr != nil {
+		return nil, fmt.Errorf("resolve active profile: %w", profErr)
+	}
+
 	// Register a session group for this review round. Every spawned agent
 	// session will carry this group_id, enabling GroupCompleted-based
 	// termination detection and GroupResults-based result aggregation.
@@ -109,8 +118,10 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// In sandboxed mode (podman or bwrap) a missing or empty blob means the
 		// sandbox falls back to the host config (wrong agent identity).
 		// ResolveAgentConfigContent surfaces this as an explicit error to
-		// prevent silent wrong-agent spawns.
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name)
+		// prevent silent wrong-agent spawns. activeProfile (resolved above)
+		// is overlaid on the blob so review agents honour the runtime active
+		// profile (#1207).
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
@@ -330,6 +341,13 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
 	repo := deriveRepo(opts.ParentSession)
 
+	// Resolve the runtime active profile once for the round (#1207). See
+	// the matching block in Run() above for rationale.
+	activeProfile, _, profErr := config.ResolveActiveProfile(opts.ProfilesFile, "")
+	if profErr != nil {
+		return nil, fmt.Errorf("resolve active profile: %w", profErr)
+	}
+
 	// Register session group.
 	groupID, groupErr := d.RegisterGroup(opts.ParentSession)
 	if groupErr != nil {
@@ -352,7 +370,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
 
-		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name)
+		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {

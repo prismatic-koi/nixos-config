@@ -398,9 +398,22 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 		if roleConfig != "" {
 			// Role config governs agent identity and permissions (system prompt,
-			// tool allow-list). Re-apply any --model/--variant overrides on top
-			// so that user-supplied flags are not silently discarded.
-			patched, patchErr := config.ApplyModelOverrides(roleConfig, resolvedProfile, modelFlag, variantFlag, pf)
+			// tool allow-list, plugin list). The blob's model identifiers are
+			// pre-rendered from `pf.Default`, so when the runtime active profile
+			// differs we must overlay the active profile's model+variant on top
+			// — otherwise a `prism profile use gemini-hybrid && prism spawn`
+			// would silently launch with the anthropic-default models (#1207).
+			//
+			// ApplyProfileToBlob is a no-op when resolvedProfile == pf.Default
+			// or empty, so the legacy fast path is preserved.
+			profiled, profileErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
+			if profileErr != nil {
+				return profileErr
+			}
+			// Re-apply any --model/--variant overrides on top of the
+			// profile-targeted blob so that user-supplied flags are not
+			// silently discarded.
+			patched, patchErr := config.ApplyModelOverrides(profiled, resolvedProfile, modelFlag, variantFlag, pf)
 			if patchErr != nil {
 				return patchErr
 			}
