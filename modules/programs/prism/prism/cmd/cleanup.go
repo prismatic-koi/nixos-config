@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -992,26 +991,33 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 	for _, childSession := range childNames {
 		name := container.NameForSession(childSession)
 
-		// Stop (5-second grace). Independent context so a slow stop doesn't
-		// starve the rm --force that follows.
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		stopCmd := exec.CommandContext(stopCtx, "podman", "stop", "--time", "5", name)
-		if out, err := stopCmd.CombinedOutput(); err != nil {
-			if !container.IsNoSuchContainerError(string(out)) {
-				fmt.Fprintf(os.Stderr, "[prism] warning: stop review container %q (child of %q): %v — continuing\n", name, parentSession, err)
+		// Resolve the child session's persisted isolation mode. Most review
+		// children are podman today, but bwrap/sandbox-exec children are
+		// supported under #1197 — dispatching via the registry handles all
+		// modes uniformly. Fall back to podman when the DB row is missing or
+		// the column is empty (matches pre-refactor behaviour).
+		isoMode := config.IsolationPodman
+		if d != nil {
+			if modeStr := isolationModeFromDB(d, childSession); modeStr != "" {
+				isoMode = config.IsolationMode(modeStr)
 			}
 		}
-		stopCancel()
 
-		// Force-remove. Independent context ensures this always runs.
-		rmCtx, rmCancel := context.WithTimeout(context.Background(), 15*time.Second)
-		rmCmd := exec.CommandContext(rmCtx, "podman", "rm", "--force", name)
-		if out, err := rmCmd.CombinedOutput(); err != nil {
-			if !container.IsNoSuchContainerError(string(out)) {
-				fmt.Fprintf(os.Stderr, "[prism] warning: rm review container %q (child of %q): %v — continuing\n", name, parentSession, err)
+		iso, isoErr := container.For(isoMode, container.ConstructorOpts{Name: name})
+		if isoErr != nil {
+			// Unknown mode — fall back to podman.
+			if iso, isoErr = container.For(config.IsolationPodman, container.ConstructorOpts{Name: name}); isoErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: unknown mode %q for %q: %v\n", isoMode, childSession, isoErr)
+				continue
 			}
 		}
-		rmCancel()
+
+		// 30-second budget collapses the previous 15s stop + 15s rm split.
+		// The podman isolator internally issues stop (10s grace) followed
+		// by rm --force.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		iso.EnsureRemoved(ctx, nil)
+		cancel()
 	}
 }
 
@@ -1021,42 +1027,49 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 // Called after KillSidecar to handle the case where the sidecar is already dead.
 // For host-mode (non-container) sessions, the podman calls return "no such
 // container" which is silently ignored.
-// Each podman command gets its own independent context so that a slow or
-// hung stop does not consume the budget for the rm --force fallback.
+//
+// Post A1.L1 (issue #1140): the per-mode stop/rm + temp-file cleanup logic
+// moved into the registered Isolator's EnsureRemoved method. This function
+// resolves the session's persisted isolation mode (with podman as the
+// fallback for pre-migration rows) and dispatches via
+// registry.For(mode).EnsureRemoved. Both contexts (20s for stop, 15s for rm)
+// are kept by collapsing into a single 35s budget consumed by the isolator.
 func removeContainerIfExists(sessionName string) {
 	name := container.NameForSession(sessionName)
 
-	// Stop the container (10s grace period). Own context so that a slow stop
-	// cannot starve the rm --force that follows.
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer stopCancel()
-	stopCmd := exec.CommandContext(stopCtx, "podman", "stop", "--time", "10", name)
-	if out, err := stopCmd.CombinedOutput(); err != nil {
-		if !container.IsNoSuchContainerError(string(out)) {
-			fmt.Fprintf(os.Stderr, "[prism] stop container %q: %v\n", name, err)
+	// Resolve the session's persisted isolation mode. When the DB row is
+	// missing or has an empty isolation_mode, fall back to podman: that is
+	// the pre-refactor behaviour (the open-coded podman stop/rm always ran
+	// regardless of mode, and the "no such container" path was silently
+	// ignored).
+	isoMode := config.IsolationPodman
+	if d, dbErr := openDB(); dbErr == nil {
+		modeStr := isolationModeFromDB(d, sessionName)
+		d.Close()
+		if modeStr != "" {
+			isoMode = config.IsolationMode(modeStr)
 		}
 	}
 
-	// Force-remove the container. Independent context ensures this always runs
-	// even when podman stop timed out.
-	rmCtx, rmCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer rmCancel()
-	rmCmd := exec.CommandContext(rmCtx, "podman", "rm", "--force", name)
-	if out, err := rmCmd.CombinedOutput(); err != nil {
-		if !container.IsNoSuchContainerError(string(out)) {
-			fmt.Fprintf(os.Stderr, "[prism] rm container %q: %v\n", name, err)
+	// Per-mode dispatch: podman runs stop/rm + temp-file cleanup; bwrap and
+	// sandbox-exec do temp-file cleanup only; host is a no-op.
+	iso, isoErr := container.For(isoMode, container.ConstructorOpts{Name: name})
+	if isoErr != nil {
+		// Unknown mode — fall back to the podman path so the legacy
+		// behaviour (always try podman stop/rm) is preserved.
+		if iso, isoErr = container.For(config.IsolationPodman, container.ConstructorOpts{Name: name}); isoErr != nil {
+			fmt.Fprintf(os.Stderr, "[prism] removeContainerIfExists: unknown isolation mode %q for %q: %v\n", isoMode, sessionName, isoErr)
+			return
 		}
 	}
 
-	// Clean up temp files created by container.Manager.Create. This list must
-	// stay in sync with container.Manager.EnsureRemoved / Shutdown so that
-	// a direct cleanup path (sidecar already dead) leaves no stale files
-	// behind that a subsequent Create would otherwise overwrite.
-	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitdir-"+name))
-	_ = os.Remove(filepath.Join(os.TempDir(), "prism-wt-gitdir-"+name))
-	_ = os.Remove(filepath.Join(os.TempDir(), "prism-ssh-config-"+name))
-	_ = os.Remove(filepath.Join(os.TempDir(), "prism-gitconfig-"+name))
-	_ = os.Remove(filepath.Join(os.TempDir(), "prism-allowed-signers-"+name))
+	// Single 35s budget for the per-mode EnsureRemoved (was: 20s stop + 15s
+	// rm in two independent contexts). The isolator's EnsureRemoved owns the
+	// internal split; for podman it issues the same stop+rm sequence with
+	// the same 10s grace.
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	iso.EnsureRemoved(ctx, nil)
 
 	// Clean up the host-API Unix socket, the agent-run log, and their
 	// per-session directory. The sidecar's own shutdown path would normally

@@ -33,6 +33,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
 
 const (
@@ -574,58 +576,19 @@ func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFileP
 // Call this from "prism agent-run" in the tmux pane for bwrap mode. The
 // returned args slice is suitable for passing directly to exec.Exec("bwrap").
 //
-// Note: this method also calls prepareVolumeDirs() to ensure bind-mount
-// sources exist. bwrap (unlike podman) does not emit an exit-125 error for
-// missing sources — it simply fails to bind. Eagerly creating the directories
-// avoids confusing "No such file or directory" errors at bwrap startup.
+// Post A1.L4 (issue #1140): the body of this method moved into
+// bwrapIsolator.Prepare; this method is now a thin dispatcher that resolves
+// the bwrap isolator from the registry and forwards to its Prepare method.
 func (m *Manager) PrepareBwrap() ([]string, error) {
-	// Write a minimal SSH config for bwrap. The bwrap SSH key mount remaps
-	// the host signing/access keys to canonical generic paths under
-	// $HOME/.ssh/ inside the sandbox (see bwrap.go), so the IdentityFile path
-	// is $HOME/.ssh/access-key — same generic name as the podman path, just
-	// rooted at the host user's $HOME instead of /root.
-	if err := m.writeSshConfig(isolationBwrap); err != nil {
+	iso, err := For(config.IsolationBwrap, ConstructorOpts{Name: m.name})
+	if err != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
-
-	// Write the gitconfig. Mirrors the Create() path, but with bwrap-mode
-	// paths (signingKey and allowedSignersFile rooted at <hostHome>/.ssh/
-	// rather than /root/.ssh/).
-	if err := m.writeGitconfig(isolationBwrap); err != nil {
-		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
-	}
-
-	// Write the opencode config file, if provided.
-	if m.cfg.ConfigContent != "" {
-		if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
-			return nil, fmt.Errorf("container: bwrap: write opencode config: %w", err)
-		}
-	}
-
-	// Pre-create directories that BuildArgs will reference as bind-mount
-	// sources. bwrap silently fails rather than printing a clear error, so
-	// we create eagerly here.
-	if err := m.prepareVolumeDirs(false); err != nil {
-		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
-	}
-
-	// Build the bwrap args.
-	b := &bwrapIsolator{name: m.name}
-	return b.BuildArgs(m), nil
+	return iso.Prepare(context.Background(), m)
 }
 
 // PrepareSandboxExec prepares the per-session staging HOME, writes the SBPL
 // profile, and returns the complete sandbox-exec argument list.
-//
-// Steps:
-//  1. PrepareSandboxExecHome() — create the staging HOME directory tree and
-//     populate it with symlinks to the host credential, config, and cache
-//     paths. On Darwin this also calls writeClaudeCredentials() so that the
-//     Keychain-extracted credentials file is reachable at
-//     $HOME/.claude/.credentials.json via the .claude symlink.
-//  2. writeProfile() — generate the SBPL profile with staging HOME,
-//     worktree, credential, and AWS deny rules, and write it to a temp file.
-//  3. Build and return the sandbox-exec argument list.
 //
 // The returned args slice is suitable for passing directly to
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). The first element of
@@ -634,35 +597,15 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 // The env passed to syscall.Exec should set HOME=<staging_home> so that
 // opencode and its tools find credentials and config at their canonical paths
 // inside the staging HOME. agent_run.go constructs that env after this call.
+//
+// Post A1.L4 (issue #1140): the body of this method moved into
+// sandboxExecIsolator.Prepare; this method is now a thin dispatcher.
 func (m *Manager) PrepareSandboxExec() ([]string, error) {
-	// Populate the staging HOME with symlinks. This must happen before
-	// generateProfile() so the profile generator can call
-	// collectStagingHomeSymlinkTargets to emit (allow file-read* (literal ...))
-	// rules for every resolved symlink target.
-	//
-	// Non-fatal: if the staging HOME cannot be created (e.g. the home dir is
-	// read-only, as in the nix sandbox build environment), log a warning and
-	// continue with a degraded profile. The sandbox will still launch but will
-	// lack the staged credentials and caches.
-	stagingHome, err := m.PrepareSandboxExecHome()
+	iso, err := For(config.IsolationSandboxExec, ConstructorOpts{Name: m.name})
 	if err != nil {
-		log.Printf("container: sandbox-exec: prepare staging home: %v — launching with degraded profile", err)
+		return nil, fmt.Errorf("container: sandbox-exec: %w", err)
 	}
-	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
-
-	// On Darwin, extract Claude Code credentials from the macOS Keychain and
-	// write them to a temp file. The temp file path (m.claudeCredentialsFilePath())
-	// is reachable inside the sandbox at $HOME/.claude/.credentials.json via the
-	// .claude symlink in the staging HOME (which points at host ~/.claude).
-	// The writeClaudeCredentials helper sets m.claudeCredentialsReady on success.
-	m.writeClaudeCredentials()
-
-	if _, err := writeProfile(m); err != nil {
-		return nil, err
-	}
-
-	s := &sandboxExecIsolator{name: m.name}
-	return s.BuildArgs(m), nil
+	return iso.Prepare(context.Background(), m)
 }
 
 // prepareVolumeDirs eagerly creates host directories that buildRunArgs() will

@@ -43,6 +43,7 @@ package cmd
 //	--session <name>   prism session name (e.g. "nixos-config@feature")
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -63,6 +64,15 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// errAgentRunNoStatus is the error a registered AgentRun handler returns
+// when the dispatcher has not stashed a DB status in the per-session cache.
+// In practice this should not happen — runAgentRun stashes the status
+// before calling iso.AgentRun — but the handler surfaces a clear error
+// rather than panicking on a nil pointer.
+func errAgentRunNoStatus(sessionName string) error {
+	return fmt.Errorf("agent-run: session %q: status cache is empty (programming error)", sessionName)
+}
 
 var agentRunCmd = &cobra.Command{
 	Use:   "agent-run",
@@ -85,6 +95,23 @@ func init() {
 	agentRunCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	_ = agentRunCmd.MarkFlagRequired("session")
 	rootCmd.AddCommand(agentRunCmd)
+
+	// Register the per-mode AgentRun handlers with the container package
+	// (issue #1140 A1.L6). The dispatch in cmd/agent_run.go's runAgentRun
+	// resolves the persisted isolation mode from the DB, looks up the
+	// registered isolator via container.For(mode, ...), and calls
+	// iso.AgentRun(ctx, opts) — which routes back here via the registered
+	// handlers below.
+	//
+	// Keeping the handler bodies in the cmd package (rather than moving
+	// them into internal/container) is a deliberate scope decision: moving
+	// them would create a circular dependency with internal/session,
+	// internal/git, internal/harness, and internal/db, none of which the
+	// container package imports today. Registration at init() time keeps
+	// the dispatch shape (`iso.AgentRun(ctx, opts)`) without re-plumbing
+	// the dependency graph.
+	container.RegisterAgentRunHandler(config.IsolationBwrap, runAgentRunBwrapHandler)
+	container.RegisterAgentRunHandler(config.IsolationSandboxExec, runAgentRunSandboxExecHandler)
 }
 
 func runAgentRun(cmd *cobra.Command, args []string) error {
@@ -123,23 +150,61 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Dispatch based on the session's isolation mode.
-	isoMode := status.EffectiveIsolationMode()
-	switch config.IsolationMode(isoMode) {
+	//
+	// Post A1.L6 (issue #1140): the per-mode switch collapses to a single
+	// container.For(mode).AgentRun(ctx, opts) call. host and podman are not
+	// valid modes for `prism agent-run`; the registered isolator returns
+	// the original "this command is only for bwrap and sandbox-exec
+	// sessions" error verbatim, replacing the manual `else` arm.
+	isoMode := config.IsolationMode(status.EffectiveIsolationMode())
+
+	// Belt-and-braces platform guard. The container.For-resolved isolator's
+	// AgentRun body would also fail eventually (bubblewrap is Linux-only,
+	// sandbox-exec is macOS-only) but the platform check here surfaces a
+	// clearer error before the binary lookup. Mirrors the pre-refactor
+	// switch's runtime.GOOS gates.
+	switch isoMode {
 	case config.IsolationBwrap:
-		// Fail fast on non-Linux: bubblewrap is Linux-only.
 		if runtime.GOOS != "linux" {
 			return fmt.Errorf("prism agent-run: bwrap isolation requires Linux; current platform is %s", runtime.GOOS)
 		}
 	case config.IsolationSandboxExec:
-		// Fail fast on non-Darwin: sandbox-exec is macOS-only.
-		// The platform guard in spawn.go also catches this at spawn time;
-		// belt-and-braces guard for direct invocations of agent-run.
 		if runtime.GOOS != "darwin" {
 			return fmt.Errorf("prism agent-run: sandbox-exec isolation requires macOS (Darwin); current platform is %s", runtime.GOOS)
 		}
-		return runAgentRunSandboxExec(sessionName, status, agentRunStart, logFile)
-	default:
-		return fmt.Errorf("agent-run: session %q has isolation mode %q; this command is only for bwrap and sandbox-exec sessions", sessionName, isoMode)
+	}
+
+	iso, err := container.For(isoMode, container.ConstructorOpts{Name: sessionName})
+	if err != nil {
+		return fmt.Errorf("agent-run: %w", err)
+	}
+
+	// The handler stashes the looked-up status on the package-level cache
+	// so the registered handlers (which only get AgentRunOpts) can read it
+	// without re-querying the DB. The cache is per-session-name and is
+	// cleared by the handler when it is done.
+	storeAgentRunStatus(sessionName, status)
+	defer clearAgentRunStatus(sessionName)
+
+	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
+		SessionName: sessionName,
+		StartTime:   agentRunStart,
+		LogFile:     logFile,
+	})
+}
+
+// runAgentRunBwrapHandler is the registered AgentRun handler for the bwrap
+// isolation mode (issue #1140 A1.L6). It is the body that previously lived
+// in the bwrap arm of runAgentRun's switch statement. The handler reads the
+// pre-looked-up DB status from the package-level cache populated by
+// runAgentRun.
+func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) error {
+	sessionName := opts.SessionName
+	agentRunStart := opts.StartTime
+	logFile := opts.LogFile
+	status := loadAgentRunStatus(sessionName)
+	if status == nil {
+		return errAgentRunNoStatus(sessionName)
 	}
 
 	// Load prism config for git identity and SSH key names.
