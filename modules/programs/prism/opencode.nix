@@ -408,10 +408,15 @@
       '';
       currentProfile =
         config.nx.programs.prism.profiles.data.profiles.${config.nx.programs.prism.opencode.provider};
+      # Resolve a model from the role-keyed profile by picking the first role in
+      # each legacy tier (#1206). Profiles defined via profileFromTiers stamp the
+      # same slot value across every role in a tier, so any role from the tier
+      # gives the same model — coordinator/worker/explore are picked here as
+      # stable representatives.
       models = {
-        primary = currentProfile.primary.model;
-        secondary = currentProfile.secondary.model;
-        lightweight = currentProfile.lightweight.model;
+        primary = currentProfile.coordinator.model;
+        secondary = currentProfile.worker.model;
+        lightweight = currentProfile.explore.model;
       };
 
       # Authentication plugins — all provider auth plugins are always loaded so
