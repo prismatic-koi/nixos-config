@@ -284,10 +284,10 @@ prism cleanup --yes --session "nixos-config@update-plex"
 
 `prism cleanup --yes --session <name>` will:
 - Remove the git worktree
-- Delete the branch if it is already merged (skips deletion if not, safe default)
+- Force-delete the local branch (relies on the orchestrator-trust contract: call this only after confirming the PR is merged)
 - Kill the tmux session, redirecting any attached client to `scratchpad`
 
-Only call this after you have confirmed the PR is merged. If the branch is not yet merged, branch deletion is skipped automatically.
+Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
 ## Checking in on a running session
 

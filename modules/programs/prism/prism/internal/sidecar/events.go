@@ -62,6 +62,17 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	switch eventType {
 	case "server.connected":
 		s.handleServerConnected()
+	case "server.heartbeat":
+		// Periodic keep-alive emitted by opencode when running in --prompt
+		// (server-only) mode without an interactive TUI. In that mode
+		// session.created is never emitted on the SSE stream (the session
+		// pre-exists by the time the sidecar connects), so the heartbeat is
+		// the only signal that opencode is alive and the port is up.
+		// Write a state_change to agent_events so WaitForReady's DB poll
+		// unblocks — but only once, and only if no state has been written yet
+		// (i.e. lastState is still empty), to avoid stomping on a real state
+		// transition that arrives on a subsequent heartbeat.
+		s.handleServerHeartbeat()
 	case "session.status":
 		s.handleSessionStatus(evt)
 	case "session.idle":
@@ -108,6 +119,19 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 }
 
 // ── event handlers (must be called with s.mu held) ──────────────────────────
+
+// handleServerHeartbeat is called when opencode emits server.heartbeat.
+// In --prompt (server-only) mode the TUI is absent and session.created is
+// never emitted, so the heartbeat is the only liveness signal the sidecar
+// receives before the agent starts working. We treat the first heartbeat as
+// an "active" readiness signal so WaitForReady's DB poll unblocks.
+func (s *Sidecar) handleServerHeartbeat() {
+	if s.lastState != "" {
+		return // real state already written — don't overwrite
+	}
+	s.upsertState(agent.StateActive, nil, nil)
+	s.writeStateChange(agent.StateActive)
+}
 
 // handleServerConnected is called when opencode sends the server.connected
 // event on each new SSE connection. On the initial connection the sidecar has

@@ -7440,67 +7440,69 @@ func TestHostAPI_Review_CWDFallbackWhenWorktreeMissing(t *testing.T) {
 	}
 }
 
-// ── buildNotifyPromptBody tests (issue #848) ────────────────────────────────
+// ── buildNotifyPromptBody tests (issues #848, #1203) ────────────────────────
 
-// TestBuildNotifyPromptBody_OmitsAgentField verifies that the outgoing
-// notification body never carries an "agent" field. Setting this field lets an
-// incoming notification switch the receiving session's active-turn agent
-// context (e.g. a subagent gets promoted to the coordinator's agent). See
-// issue #848 — the "agent" override was a host-mode-era workaround that is no
-// longer needed and causes a real context-switch bug.
-func TestBuildNotifyPromptBody_OmitsAgentField(t *testing.T) {
-	rootAgent := "coordinator"
+// TestBuildNotifyPromptBody_AgentField verifies that the outgoing notification
+// body includes the "agent" field when the receiving session has a non-nil,
+// non-empty RootAgentName, and omits it otherwise.
+//
+// Background: issue #848 flagged setting "agent" as dangerous because it could
+// switch a subagent's context. The status passed to buildNotifyPromptBody is
+// the *receiving* session's own status; re-asserting root_agent_name is safe
+// and necessary to prevent opencode from defaulting to its last-active (wrong)
+// agent in host mode — see issue #1203.
+func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
+	coordinatorAgent := "coordinator"
+	workerAgent := "worker"
 	agentName := "explore"
 	rootModel := "anthropic/claude-opus-4"
 	modelID := "anthropic/claude-sonnet-4"
 
-	cases := []struct {
-		name   string
-		status *db.Status
-	}{
-		{
-			name: "root fields present",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-				RootModelID:   &rootModel,
-				AgentName:     &agentName,
-				ModelID:       &modelID,
-			},
-		},
-		{
-			name: "only legacy fields present",
-			status: &db.Status{
-				AgentName: &agentName,
-				ModelID:   &modelID,
-			},
-		},
-		{
-			name: "only root fields present",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-				RootModelID:   &rootModel,
-			},
-		},
-		{
-			name:   "no fields present",
-			status: &db.Status{},
-		},
-		{
-			name: "agent known but no model",
-			status: &db.Status{
-				RootAgentName: &rootAgent,
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			body := buildNotifyPromptBody("hello", tc.status)
-			if _, ok := body["agent"]; ok {
-				t.Errorf("body must not contain \"agent\" field (got %v); setting it switches the receiving session's agent context — see issue #848", body["agent"])
-			}
+	t.Run("includes agent when RootAgentName is coordinator", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			RootAgentName: &coordinatorAgent,
+			RootModelID:   &rootModel,
+			AgentName:     &agentName,
+			ModelID:       &modelID,
 		})
-	}
+		agent, ok := body["agent"]
+		if !ok {
+			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
+		}
+		if agent != "coordinator" {
+			t.Errorf("body[\"agent\"] = %q, want \"coordinator\"", agent)
+		}
+	})
+
+	t.Run("includes agent when RootAgentName is worker", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			RootAgentName: &workerAgent,
+		})
+		agent, ok := body["agent"]
+		if !ok {
+			t.Fatal("body must contain \"agent\" field when RootAgentName is set")
+		}
+		if agent != "worker" {
+			t.Errorf("body[\"agent\"] = %q, want \"worker\"", agent)
+		}
+	})
+
+	t.Run("omits agent when RootAgentName is nil", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{
+			AgentName: &agentName,
+			ModelID:   &modelID,
+		})
+		if _, ok := body["agent"]; ok {
+			t.Errorf("body must not contain \"agent\" field when RootAgentName is nil (got %v)", body["agent"])
+		}
+	})
+
+	t.Run("omits agent when no fields present", func(t *testing.T) {
+		body := buildNotifyPromptBody("hello", &db.Status{})
+		if _, ok := body["agent"]; ok {
+			t.Errorf("body must not contain \"agent\" field when status is empty (got %v)", body["agent"])
+		}
+	})
 }
 
 // ── error-state debounce tests (issue #923) ─────────────────────────────────
@@ -9481,5 +9483,91 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 	}
 	if !strings.Contains(out, "(timed out)") {
 		t.Errorf("timeout-path `[timing]` line should include `(timed out)` suffix to distinguish from success:\n%s", out)
+	}
+}
+
+// ── server.heartbeat tests ───────────────────────────────────────────────────
+
+// TestServerHeartbeat_FirstHeartbeat_WritesActive verifies that the first
+// server.heartbeat (when no state has been written yet) sets the session state
+// to active. This is the key readiness signal in --prompt (server-only) mode
+// where session.created is never emitted on the SSE stream.
+func TestServerHeartbeat_FirstHeartbeat_WritesActive(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// No state has been written yet (lastState == "").
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Errorf("state = %q after first server.heartbeat, want %q", state, agent.StateActive)
+	}
+}
+
+// TestServerHeartbeat_WritesStateChange verifies that the first heartbeat
+// writes a state_change event to the DB (which unblocks WaitForReady's poll).
+func TestServerHeartbeat_WritesStateChange(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var hasStateChange bool
+	for _, ev := range events {
+		if ev.Type == "state_change" {
+			hasStateChange = true
+			break
+		}
+	}
+	if !hasStateChange {
+		t.Error("expected a state_change event after first server.heartbeat, got none")
+	}
+}
+
+// TestServerHeartbeat_SubsequentHeartbeat_IsNoop verifies that once a real
+// state has been written (lastState != ""), subsequent heartbeats are no-ops
+// and do not overwrite the existing state.
+func TestServerHeartbeat_SubsequentHeartbeat_IsNoop(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// Drive lastState to "active" via a session.status busy event.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	sc.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	stateBefore := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+
+	// Now send a heartbeat — must be a no-op because lastState != "".
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	stateAfter := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if stateAfter != stateBefore {
+		t.Errorf("server.heartbeat after real state: state changed from %q to %q (want no-op)", stateBefore, stateAfter)
+	}
+}
+
+// TestServerHeartbeat_AfterSessionCreated_IsNoop verifies that a heartbeat
+// arriving after session.created (which sets lastState to "active") does not
+// clobber the state written by session.created.
+func TestServerHeartbeat_AfterSessionCreated_IsNoop(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	sc.HandleEvent(makeSSE("session.created", map[string]any{
+		"info": map[string]string{"id": "sess-abc", "title": "my session"},
+	}))
+
+	// Confirm state was set to active by session.created.
+	state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if state != string(agent.StateActive) {
+		t.Fatalf("state = %q after session.created, want %q", state, agent.StateActive)
+	}
+
+	// Heartbeat after session.created must be a no-op.
+	sc.HandleEvent(makeSSE("server.heartbeat", map[string]any{}))
+
+	stateAfter := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if stateAfter != string(agent.StateActive) {
+		t.Errorf("state = %q after heartbeat (post session.created), want %q", stateAfter, agent.StateActive)
 	}
 }

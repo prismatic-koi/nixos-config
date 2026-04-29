@@ -403,16 +403,28 @@ func deliverNotificationViaHTTP(port int, opencodeSID string, text string, statu
 // so the session continues using its root model. Falls back to model_id for
 // sessions created before the root fields migration.
 //
-// The receiving session's active-turn agent context is deliberately NOT
-// overridden: the notification is processed by whichever agent the session is
-// configured to run. Setting an "agent" field here would let an incoming
-// notification switch a subagent's context to the notifier's agent — a real
-// bug that caused subagent context-switch incidents. See issue #848.
+// The "agent" field is included when root_agent_name is non-nil and non-empty.
+// This re-asserts the correct agent on notification delivery, preventing
+// opencode from defaulting to its last-active (wrong) agent in host mode.
+//
+// Background: issue #848 showed that setting "agent" let an incoming
+// notification switch a subagent's context to the notifier's agent. That
+// concern does not apply here: the status passed in is the *receiving*
+// session's own status, not the sender's. Re-asserting root_agent_name on
+// delivery is safe and correct — it keeps the coordinator pinned to the right
+// agent persona regardless of what opencode last processed.
 func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
 	body := map[string]any{
 		"parts": []map[string]string{
 			{"type": "text", "text": text},
 		},
+	}
+
+	// Re-assert the receiving session's root agent so opencode does not default
+	// to its internally-tracked last-active agent (which may differ in host
+	// mode). Only set when root_agent_name is known and non-empty.
+	if status.RootAgentName != nil && *status.RootAgentName != "" {
+		body["agent"] = *status.RootAgentName
 	}
 
 	modelID := status.RootModelID

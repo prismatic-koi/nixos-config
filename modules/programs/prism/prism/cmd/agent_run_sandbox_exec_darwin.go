@@ -17,11 +17,14 @@ package cmd
 // non-Darwin via a runtime.GOOS check, so the stub is unreachable in practice.
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -158,6 +161,33 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		return err
 	}
 
+	// Write Claude Code credentials into the staging HOME.
+	//
+	// In bwrap/podman mode, writeClaudeCredentials() writes a temp file that
+	// is bind-mounted at /root/.claude/.credentials.json inside the container.
+	// sandbox-exec has no bind-mount mechanism, so we write the credentials
+	// directly to $STAGING_HOME/.claude/.credentials.json instead. The staging
+	// HOME's .claude/ is a symlink to the real ~/.claude/, so the write lands
+	// at the host path — which is in the SBPL profile's RW allow set for the
+	// .claude symlink target. On macOS, credentials live in the Keychain and
+	// ~/.claude/.credentials.json is absent or empty; opencode-claude-auth
+	// reads it at startup and fails silently if it is missing.
+	if stagingHomeCreds, credErr := m.SandboxExecHomePath(); credErr == nil && stagingHomeCreds != "" {
+		credsDst := filepath.Join(stagingHomeCreds, ".claude", ".credentials.json")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		out, keychainErr := exec.CommandContext(ctx, "security", "find-generic-password",
+			"-l", "Claude Code-credentials", "-w").Output()
+		if keychainErr == nil {
+			creds := strings.TrimSpace(string(out))
+			if creds != "" {
+				if writeErr := os.WriteFile(credsDst, []byte(creds), 0o600); writeErr != nil {
+					log.Printf("agent-run: sandbox-exec: write claude credentials: %v", writeErr)
+				}
+			}
+		}
+	}
+
 	// Build the env for sandbox-exec. The slice is K=V pairs (os/exec uses the
 	// same format as syscall.Exec).
 	//
@@ -170,16 +200,78 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Override HOME → staging HOME so the sandbox sees the staged layout.
 	// The staging HOME was created by PrepareSandboxExecHome() inside
 	// PrepareSandboxExec(). Only override when the staging dir exists on disk.
+	//
+	// Also inject OPENCODE_TEST_HOME with the same staging path. opencode's
+	// global.ts resolves Path.home via os.homedir() which on macOS calls
+	// NSHomeDirectory()/getpwuid() — both ignore the HOME env var and return
+	// the real home from the directory services database. OPENCODE_TEST_HOME
+	// is the official override hook in global.ts:
+	//   get home() { return process.env.OPENCODE_TEST_HOME ?? os.homedir() }
+	// Without it, opencode probes (and tries to mkdir) paths under the real
+	// $HOME even when HOME is overridden, causing EPERM under deny-default.
 	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
 		if _, statErr := os.Stat(stagingHome); statErr == nil {
+			// Strip any existing HOME and XDG vars from the filtered env —
+			// we replace them all with staging-HOME-relative paths below.
+			xdgKeys := map[string]bool{
+				"HOME":              true,
+				"XDG_CACHE_HOME":   true,
+				"XDG_DATA_HOME":    true,
+				"XDG_CONFIG_HOME":  true,
+				"XDG_STATE_HOME":   true,
+				"OPENCODE_TEST_HOME": true,
+			}
 			filtered := make([]string, 0, len(env))
 			for _, kv := range env {
-				if len(kv) >= 5 && kv[:5] == "HOME=" {
+				eq := -1
+				for i := 0; i < len(kv); i++ {
+					if kv[i] == '=' {
+						eq = i
+						break
+					}
+				}
+				if eq > 0 && xdgKeys[kv[:eq]] {
 					continue
 				}
 				filtered = append(filtered, kv)
 			}
-			env = append(filtered, "HOME="+stagingHome)
+			// Resolve the real home directory for XDG_DATA_HOME and
+			// XDG_STATE_HOME. These must point to the host paths so all
+			// sessions share a single opencode DB and state store.
+			realHome, realHomeErr := os.UserHomeDir()
+			if realHomeErr != nil {
+				// os.UserHomeDir() failed: fall back to the staging HOME for
+				// XDG_DATA_HOME/XDG_STATE_HOME rather than emitting invalid
+				// paths like "/.local/state" that would write into a
+				// root-owned directory. This is extremely unlikely on macOS
+				// (the stagingHome derivation above also calls UserHomeDir and
+				// succeeded, so this path should be unreachable in practice).
+				realHome = stagingHome
+			}
+			env = append(filtered,
+				"HOME="+stagingHome,
+				// OPENCODE_TEST_HOME overrides os.homedir() inside opencode.
+				// opencode's global.ts uses os.homedir() (which on macOS calls
+				// NSHomeDirectory()/getpwuid() and ignores $HOME) for Path.home.
+				// OPENCODE_TEST_HOME is the official escape hatch:
+				//   get home() { return process.env.OPENCODE_TEST_HOME ?? os.homedir() }
+				"OPENCODE_TEST_HOME="+stagingHome,
+				// XDG_CACHE_HOME and XDG_CONFIG_HOME point into the staging
+				// HOME so opencode's module-load mkdir calls land inside
+				// sandbox-allowed paths.
+				"XDG_CACHE_HOME="+filepath.Join(stagingHome, ".cache"),
+				"XDG_CONFIG_HOME="+filepath.Join(stagingHome, ".config"),
+				// XDG_DATA_HOME and XDG_STATE_HOME must be set explicitly to
+				// the real host paths. Without them, opencode derives these
+				// from OPENCODE_TEST_HOME (the staging HOME) and tries to
+				// mkdir ~/.local/state inside the staging directory — a path
+				// that is not in the SBPL profile's RW allow set. Setting them
+				// explicitly ensures opencode writes its DB and state to the
+				// shared host locations (both of which ARE in the profile's RW
+				// block).
+				"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
+				"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
+			)
 		}
 	}
 

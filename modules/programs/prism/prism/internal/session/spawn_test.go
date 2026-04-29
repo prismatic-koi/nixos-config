@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
@@ -358,21 +359,23 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt_Host verifies the legacy
-// path for the host-mode resolution: when opts.IsolationMode is empty and the
-// machine default resolves to "host", spawnAgentOnlyLayout sets the inline
-// PRISM_INITIAL_PROMPT env var on the agent pane (the pre-#1092 shape).
+// TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host verifies the
+// LayoutAgentOnly+host cell that was missing from the needsPromptFile gate
+// before issue #1195. Darwin coordinators running review fan-outs use
+// IsolationMode="host" with Layout=LayoutAgentOnly. Before the fix, this
+// combination fell through to the legacy PRISM_INITIAL_PROMPT inline path,
+// exceeding HostLaunchCmdSafeBound on non-trivial PRs.
 //
-// This is the regression test for #1042 carried forward: review agents in
-// host mode must receive their initial prompt via the PRISM_INITIAL_PROMPT
-// env var. The new file-based path (PRISM_INITIAL_PROMPT_FILE) is gated on
-// bwrap/sandbox-exec modes only — see
-// TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap below.
-func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt_Host(t *testing.T) {
+// Post-#1195: host mode also uses PRISM_INITIAL_PROMPT_FILE regardless of
+// layout. The legacy PRISM_INITIAL_PROMPT env var is no longer set by
+// SpawnSession for any mode — it remains as a fallback only for direct
+// callers of spawnAgentPaneEnvVars / agentPaneEnvVars that bypass SpawnSession.
+func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	argsFile := spyTmuxBin(t)
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
 
 	const sessionName = "myrepo@branch~review-1-review-code"
 	const prompt = "review this PR"
@@ -390,17 +393,31 @@ func TestSpawnSession_AgentOnly_PromptEnvVar_WithPrompt_Host(t *testing.T) {
 		t.Fatalf("SpawnSession: %v", err)
 	}
 
-	args := readSpyArgs(argsFile)
-	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT=" + prompt}) {
-		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT=%s] — host-mode review agents should still receive the inline env var (#1042)", args, prompt)
+	// Post-#1195: PRISM_INITIAL_PROMPT_FILE must appear (file-based delivery).
+	filePath, pathErr := InitialPromptPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("InitialPromptPath: %v", pathErr)
 	}
-	// The file-based env var must NOT appear for host mode — that path
-	// would route the prompt through `prism agent-run`, which only fires
-	// for bwrap/sandbox-exec.
+	args := readSpyArgs(argsFile)
+	if !containsSeq(args, []string{"-e", "PRISM_INITIAL_PROMPT_FILE=" + filePath}) {
+		t.Errorf("tmux args %v do not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] — host-mode LayoutAgentOnly must now use file-based delivery (#1195)", args, filePath)
+	}
+
+	// The legacy inline env var must NOT appear — that was the pre-#1195 broken path.
 	for i, a := range args {
-		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT_FILE=") {
-			t.Errorf("tmux args %v contain PRISM_INITIAL_PROMPT_FILE for host mode — should only fire for bwrap/sandbox-exec", args)
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT=") {
+			t.Errorf("tmux args contain inline PRISM_INITIAL_PROMPT for host mode — would re-introduce #1195 launch-cmd size failure: %v", args)
+			break
 		}
+	}
+
+	// The prompt file must exist and contain the prompt verbatim.
+	body, readErr := os.ReadFile(filePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%s): %v — prompt file must exist after host-mode SpawnSession (#1195)", filePath, readErr)
+	}
+	if string(body) != prompt {
+		t.Errorf("prompt round-trip mismatch: file=%q, want=%q", string(body), prompt)
 	}
 }
 
@@ -633,5 +650,173 @@ func TestSpawnSession_UnsupportedLayout_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "layout") {
 		t.Errorf("error %q does not mention layout", err.Error())
+	}
+}
+
+// TestSpawnSession_NeedsPromptFile_AllModesAndLayouts is a table-driven
+// regression test for issue #1195. It verifies that SpawnSession writes the
+// initial-prompt file for every (mode, layout) combination that carries a
+// non-empty prompt — including the LayoutAgentOnly+host cell that was missing
+// from the gate before #1195 and caused Darwin host-mode review fan-outs to
+// inline large prompts in the tmux argv.
+//
+// The test checks the observable outcome (file written to InitialPromptPath)
+// rather than the internal needsPromptFile variable, making it robust to
+// future refactors that rename or restructure the gate.
+func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
+	cases := []struct {
+		name          string
+		layout        Layout
+		isolationMode string
+	}{
+		// LayoutFull cases
+		{"LayoutFull+host", LayoutFull, "host"},
+		{"LayoutFull+bwrap", LayoutFull, "bwrap"},
+		{"LayoutFull+sandbox-exec", LayoutFull, "sandbox-exec"},
+
+		// LayoutAgentOnly cases (the #1195 regression was LayoutAgentOnly+host)
+		{"LayoutAgentOnly+host", LayoutAgentOnly, "host"},
+		{"LayoutAgentOnly+bwrap", LayoutAgentOnly, "bwrap"},
+		{"LayoutAgentOnly+sandbox-exec", LayoutAgentOnly, "sandbox-exec"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			// These tests cannot run in parallel: they rewrite TmuxBin and
+			// XDG_STATE_HOME (package-level globals).
+			d, _ := openSpawnTestDB(t)
+			_ = spyTmuxBin(t)
+			t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+			tmp := t.TempDir()
+			t.Setenv("XDG_STATE_HOME", tmp)
+
+			const prompt = "review this PR — this is the initial prompt"
+			sessionName := "myrepo@branch~review-1-review-code-" + strings.ReplaceAll(tc.name, "+", "-")
+
+			opts := SpawnOpts{
+				SessionName:   sessionName,
+				Repo:          "myrepo",
+				Worktree:      "/worktrees/myrepo",
+				AgentRole:     "review-code",
+				Prompt:        prompt,
+				Layout:        tc.layout,
+				IsolationMode: tc.isolationMode,
+			}
+
+			if err := SpawnSession(d, opts); err != nil {
+				t.Fatalf("SpawnSession(%s): %v", tc.name, err)
+			}
+
+			// The prompt file must exist and contain the prompt verbatim.
+			filePath, pathErr := InitialPromptPath(sessionName)
+			if pathErr != nil {
+				t.Fatalf("InitialPromptPath: %v", pathErr)
+			}
+			body, readErr := os.ReadFile(filePath)
+			if readErr != nil {
+				t.Fatalf("ReadFile(%s): %v — SpawnSession(%s) must write the prompt file for every mode/layout combination when Prompt is non-empty (#1195)", filePath, readErr, tc.name)
+			}
+			if string(body) != prompt {
+				t.Errorf("SpawnSession(%s): prompt round-trip mismatch: file len=%d, prompt len=%d", tc.name, len(body), len(prompt))
+			}
+		})
+	}
+}
+
+// TestSpawnSession_AgentOnly_PromptFile_WriteFails_ReturnsError is the AC5
+// edge-case test for issue #1195. When WriteInitialPrompt fails (e.g. because
+// the run directory is not writable), SpawnSession must return a clear error
+// naming the failed write target and must NOT create any tmux session.
+//
+// We force the failure by making XDG_STATE_HOME point to a read-only
+// directory after sidecarStateDir() would resolve the path, so the
+// MkdirAll inside WriteInitialPrompt fails.
+func TestSpawnSession_AgentOnly_PromptFile_WriteFails_ReturnsError(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+
+	// Create a read-only root so any attempt to mkdir or write under it fails.
+	roDir := t.TempDir()
+	if err := os.Chmod(roDir, 0o555); err != nil {
+		t.Skipf("could not chmod dir to read-only: %v (skipping on this platform)", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o755) }) // restore so t.Cleanup can remove it
+	t.Setenv("XDG_STATE_HOME", roDir)
+
+	const sessionName = "myrepo@branch~review-1-review-code-write-fail"
+	opts := SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      "/worktrees/myrepo",
+		AgentRole:     "review-code",
+		Prompt:        "review this PR",
+		Layout:        LayoutAgentOnly,
+		IsolationMode: "bwrap",
+	}
+
+	err := SpawnSession(d, opts)
+	if err == nil {
+		t.Fatal("SpawnSession with read-only XDG_STATE_HOME: got nil error, want write-failure error (AC5 edge-case)")
+	}
+
+	// Error must mention the write operation so the operator can diagnose it.
+	if !strings.Contains(err.Error(), "write initial prompt") &&
+		!strings.Contains(err.Error(), "initial-prompt") &&
+		!strings.Contains(err.Error(), "spawn session") {
+		t.Errorf("error %q does not identify the write-failure cause — expected 'write initial prompt' or similar (#1195 AC5)", err.Error())
+	}
+
+	// No tmux session must have been created (fail before tmux state).
+	args := readSpyArgs(argsFile)
+	for _, a := range args {
+		if a == "new-session" {
+			t.Errorf("tmux new-session was invoked despite write failure — AC5 requires the spawn to fail before any tmux state is created; args: %v", args)
+			break
+		}
+	}
+}
+
+// TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout verifies
+// AC6 (edge-case): the initial-prompt file is cleaned up when SpawnSession's
+// readiness gate trips on timeout. This ensures a second spawn attempt with the
+// same session name starts fresh rather than inheriting a stale prompt file.
+//
+// We rely on the existing readiness-gate-timeout path that fires when
+// ReadinessTimeout > 0 and no sidecar writes state_change events (the PRISM_TEST_SUBPROCESS
+// stub sidecar exits immediately, so no readiness signal ever arrives).
+func TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "myrepo@branch~review-1-review-code-cleanup"
+	opts := SpawnOpts{
+		SessionName:      sessionName,
+		Repo:             "myrepo",
+		Worktree:         "/worktrees/myrepo",
+		AgentRole:        "review-code",
+		Prompt:           "review this PR",
+		Layout:           LayoutAgentOnly,
+		IsolationMode:    "bwrap",
+		ReadinessTimeout: 300 * time.Millisecond, // short; stub sidecar never signals readiness
+	}
+
+	// The spawn will fail (readiness gate trips after 300ms).
+	if err := SpawnSession(d, opts); err == nil {
+		t.Fatal("SpawnSession with short ReadinessTimeout: got nil, want *ReadinessTimeoutError")
+	}
+
+	// AC6: the initial-prompt file must be removed after the readiness-gate
+	// timeout cleanup path runs removeInitialPrompt.
+	filePath, pathErr := InitialPromptPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("InitialPromptPath: %v", pathErr)
+	}
+	if _, err := os.Stat(filePath); err == nil {
+		t.Errorf("initial-prompt file %s still exists after readiness-gate timeout cleanup — AC6 requires it to be removed so a re-spawn with the same session name starts fresh (#1195)", filePath)
 	}
 }
