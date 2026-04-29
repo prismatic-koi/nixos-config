@@ -315,7 +315,10 @@ export interface InboundDispatchAPI {
     content:
       | string
       | Array<{ type: "text"; text: string } | Record<string, unknown>>,
-    options?: { deliverAs?: "steer" | "followUp" | "nextTurn" },
+    // The dispatcher only ever passes "steer" or "followUp"; for the wire
+    // protocol's `nextTurn` it omits options entirely so PI's idle-vs-
+    // streaming logic decides. The narrower union here documents that.
+    options?: { deliverAs?: "steer" | "followUp" },
   ) => void
   setModel: (model: unknown) => Promise<boolean>
   setThinkingLevel: (level: string) => void
@@ -695,9 +698,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
   }
 
   // ── Outbound hooks ────────────────────────────────────────────────────
-  // Track turn state so we can emit state_change:idle on turn_end when
-  // there's no pending message.
-  let agentRunning = false
 
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx
@@ -708,7 +708,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("before_agent_start", async (_event, ctx) => {
     lastCtx = ctx
-    agentRunning = true
     if (writer && handshakeComplete) {
       writer.write({ type: "state_change", state: "active" })
     }
@@ -905,7 +904,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     lastCtx = ctx
-    agentRunning = false
     if (writer && handshakeComplete) {
       writer.write({ type: "state_change", state: "finished" })
       writer.write({ type: "session_shutdown" })
@@ -919,9 +917,4 @@ export default function prismExtension(pi: ExtensionAPI): void {
       } catch {}
     }
   })
-
-  // Suppress the unused-variable warning for agentRunning — the variable is
-  // tracked for future use (e.g. waiting state) but currently only consulted
-  // implicitly via PI's own state.
-  void agentRunning
 }
