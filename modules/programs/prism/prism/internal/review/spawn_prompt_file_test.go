@@ -232,6 +232,103 @@ func TestSpawnReviewAgent_LargePrompt_UsesPromptFile(t *testing.T) {
 	t.Logf("initial-prompt file verified: %d bytes at %s", len(body), promptFilePath)
 }
 
+// TestSpawnReviewAgent_LargePrompt_HostMode is the AC integration test for the
+// LayoutAgentOnly+host cell that was missing from the needsPromptFile gate
+// before issue #1195. Darwin coordinators run review fan-outs with
+// IsolationMode="host" and Layout=LayoutAgentOnly. Before the fix, this
+// combination inlined the full prompt in the tmux argv, hitting
+// HostLaunchCmdSafeBound on any non-trivial PR.
+//
+// This test must NOT call t.Parallel(): it rewrites the global tmux.TmuxBin.
+func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
+	d, _ := openSpawnIntegTestDB(t)
+	argsFile := spawnSpyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	// Synthesise the same >100 KiB review prompt as the bwrap test, this time
+	// with IsolationMode="host" to exercise the previously-missing cell.
+	largeDiff := strings.Repeat("+// host-mode regression test for #1195\n", 3000) // ~120 KB
+
+	prCtx := &review.PRContext{
+		PRNumber:    "1195",
+		Title:       "review-agent-prompt-file host-mode test",
+		Body:        "Closes #1195\n\nHost-mode coordinator review fan-out.",
+		HeadRefName: "review-agent-prompt-file",
+		HeadRefOid:  "abc1234",
+		BaseRefName: "main",
+		BaseRefOid:  "def5678",
+		Diff:        largeDiff,
+		DiffLines:   3000,
+		DiffBytes:   len(largeDiff),
+	}
+
+	prompt := review.BuildReviewPromptForTest("1195", prCtx)
+	if len(prompt) < 100*1024 {
+		t.Fatalf("test setup: host-mode prompt is only %d bytes, need ≥ 100 KiB", len(prompt))
+	}
+	t.Logf("host-mode synthesised review prompt: %d bytes (%.1f KiB)", len(prompt), float64(len(prompt))/1024)
+
+	const sessionName = "nixos-config@review-agent-prompt-file~review-1-review-goal-host"
+	opts := session.SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "nixos-config",
+		Worktree:      "/worktrees/nixos-config/review-agent-prompt-file",
+		AgentRole:     "review-goal",
+		Prompt:        prompt,
+		Layout:        session.LayoutAgentOnly,
+		IsolationMode: "host", // the previously-broken cell
+	}
+
+	// (a) Spawn must succeed. Before the #1195 fix, this call would trip
+	// HostLaunchCmdSafeBound because PRISM_INITIAL_PROMPT=<120KB> would be
+	// inlined into the tmux new-window env var — a regression of #1092.
+	if err := session.SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession (host mode, LayoutAgentOnly) with >100 KiB prompt: %v — regression of #1195: host-mode review fan-out must not exceed HostLaunchCmdSafeBound", err)
+	}
+
+	// (b) Inspect the tmux argv.
+	args := spawnReadSpyArgs(argsFile)
+
+	promptFilePath, pathErr := session.InitialPromptPath(sessionName)
+	if pathErr != nil {
+		t.Fatalf("InitialPromptPath: %v", pathErr)
+	}
+
+	// PRISM_INITIAL_PROMPT_FILE must appear — the host-mode LayoutAgentOnly
+	// cell now goes through the same file-based path as bwrap/sandbox-exec.
+	found := false
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && args[i+1] == "PRISM_INITIAL_PROMPT_FILE="+promptFilePath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("tmux argv (host mode) does not contain [-e PRISM_INITIAL_PROMPT_FILE=%s] — the LayoutAgentOnly+host cell must now use file-based delivery (#1195)\nargs: %v",
+			promptFilePath, args)
+	}
+
+	// PRISM_INITIAL_PROMPT inline must NOT appear — that's the pre-fix path.
+	for i, a := range args {
+		if a == "-e" && i+1 < len(args) && strings.HasPrefix(args[i+1], "PRISM_INITIAL_PROMPT=") {
+			t.Errorf("tmux argv (host mode) contains inline PRISM_INITIAL_PROMPT — the LayoutAgentOnly+host cell was not fixed properly (#1195): %s", args[i+1])
+			break
+		}
+	}
+
+	// (c) File content must match.
+	body, readErr := os.ReadFile(promptFilePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%s): %v (host mode)", promptFilePath, readErr)
+	}
+	if string(body) != prompt {
+		t.Errorf("host-mode initial-prompt file: %d bytes, want %d", len(body), len(prompt))
+	}
+	t.Logf("host-mode initial-prompt file verified: %d bytes at %s", len(body), promptFilePath)
+}
+
 // TestSpawnReviewAgent_LargePrompt_SandboxExec mirrors the bwrap test for
 // sandbox-exec mode. Both modes delegate prompt delivery to `prism agent-run`
 // (which reads PRISM_INITIAL_PROMPT_FILE), so the file-based path must fire
