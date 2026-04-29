@@ -197,6 +197,78 @@ type Isolator interface {
 	// interface.
 	// Cites: A1 §3 (LogPaths future shape).
 	LogPaths() LogPaths
+
+	// ----- A1.L1-L6 lifecycle methods ----------------------------------------
+	//
+	// Implementations live in lifecycle_dispatch.go. Each method's body is
+	// mechanically equivalent to the per-mode branch it replaces — see the
+	// per-method comments in lifecycle_dispatch.go for the call-site citations.
+
+	// EnsureRemoved tears down any per-session state owned by this isolator
+	// (containers, sandbox processes, temp files, staging directories).
+	// It must use the supplied context for deadlines but proceed on
+	// best-effort — errors for "already gone" are silently swallowed by the
+	// implementation. m carries the Manager state (temp file paths,
+	// InstanceID) consulted by the implementation; it may be nil for
+	// callers that do not own a Manager (cmd/cleanup.go's
+	// removeContainerIfExists path), in which case implementations fall
+	// back to the per-session temp-path helpers in container.go.
+	// Cites: internal/container/lifecycle.go:24 (Manager.EnsureRemoved);
+	//        cmd/cleanup.go:1026 (removeContainerIfExists).
+	EnsureRemoved(ctx context.Context, m *Manager)
+
+	// WriteGitconfig generates a minimal .gitconfig for this isolator's
+	// sandbox layout and writes it to the per-session temp path. The
+	// in-sandbox $HOME differs per mode — podman runs as root (/root),
+	// bwrap/sandbox-exec run as the host user — so each isolator picks
+	// the correct $HOME prefix when emitting the signingKey and
+	// allowedSignersFile paths. Returns nil on success or a wrapped error.
+	// host: no-op (the agent reads the host gitconfig directly).
+	// Cites: internal/container/container.go:451 (writeGitconfig with mode);
+	//        internal/container/lifecycle.go:121 (Create caller);
+	//        internal/container/container.go:594 (PrepareBwrap caller).
+	WriteGitconfig(m *Manager) error
+
+	// Reset performs the heavier "wipe everything matching this mode"
+	// cleanup invoked by `prism reset`. For podman this is the existing
+	// `podman ps` / `podman rm -f prism-*` sweep. For bwrap, sandbox-exec,
+	// and host the implementation is a no-op stub today; orphan-agent-run
+	// reaping is a future implementation. `prism reset` iterates over the
+	// registered isolators and calls Reset on each.
+	// Cites: cmd/reset.go:126 (resetRemovePodmanContainers).
+	Reset(ctx context.Context) error
+
+	// Prepare materialises any per-session temp files (SSH config,
+	// gitconfig, harness config, sandbox staging HOME, SBPL profile) that
+	// the sandbox needs at start time and returns the complete argument
+	// list for the sandbox launcher. Bwrap returns the bwrap argv;
+	// sandbox-exec returns the sandbox-exec argv. Podman/host return nil
+	// args and a non-nil error — they do not use this dispatch path
+	// (podman uses Create; host runs opencode directly in the tmux pane).
+	// Cites: internal/container/container.go:581 (Manager.PrepareBwrap);
+	//        internal/container/container.go:637 (Manager.PrepareSandboxExec).
+	Prepare(ctx context.Context, m *Manager) ([]string, error)
+
+	// Create starts a new isolated session: writes any pre-launch temp
+	// files, builds the launcher arg list, and runs it under the supplied
+	// context. Today only podman implements a non-stub body — bwrap and
+	// sandbox-exec use Prepare + cmd/agent-run, and host runs opencode
+	// directly in the tmux pane. Non-podman implementations return nil
+	// (host) or an error noting that Create is not the right entry point
+	// for that mode (bwrap, sandbox-exec).
+	// Cites: internal/container/lifecycle.go:79 (Manager.Create body).
+	Create(ctx context.Context, m *Manager) error
+
+	// AgentRun executes the agent (opencode) inside this isolation mode.
+	// Bwrap and sandbox-exec own a real implementation: they reconstruct
+	// the container.Config from the supplied AgentRunOpts, materialise
+	// temp files, and exec/spawn the sandbox launcher with PTY and signal
+	// forwarding. Host and podman return errors because `prism agent-run`
+	// is not the entry point for those modes (host runs opencode directly
+	// in the tmux pane; podman is driven by the sidecar via podman attach).
+	// Cites: cmd/agent_run.go:90 (runAgentRun dispatch);
+	//        cmd/agent_run.go:128-143 (per-mode switch).
+	AgentRun(ctx context.Context, opts AgentRunOpts) error
 }
 
 // podmanIsolator implements Isolator using rootless podman.

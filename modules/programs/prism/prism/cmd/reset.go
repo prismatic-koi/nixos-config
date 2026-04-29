@@ -20,15 +20,18 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -86,10 +89,15 @@ func runReset(cmd *cobra.Command, _ []string) error {
 		fmt.Println("  tmux server killed.")
 	}
 
-	// ── Step 2: Remove prism- podman containers ───────────────────────────────
+	// ── Step 2: Reset every registered isolator ──────────────────────────────
+	// Post A1.L3 (issue #1140): the per-mode reset logic moved into each
+	// Isolator's Reset method. `prism reset` iterates over the registered
+	// modes and dispatches to each. Today only podman has a non-stub Reset
+	// body (the prism-* container sweep); bwrap, sandbox-exec, and host
+	// return nil — orphan-agent-run reaping is a future implementation.
 	fmt.Println("Removing prism- podman containers...")
-	if err := resetRemovePodmanContainers(); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism reset] podman cleanup: %v (continuing)\n", err)
+	if err := resetIsolators(); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism reset] isolator cleanup: %v (continuing)\n", err)
 	}
 
 	// ── Step 3: Mark all agent_status rows as ended ───────────────────────────
@@ -123,66 +131,38 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	return launchCmd.Run()
 }
 
-// resetRemovePodmanContainers lists all podman containers whose names start
-// with "prism-" and removes them. If podman is not available or returns no
-// containers, the function is a no-op.
-func resetRemovePodmanContainers() error {
-	podmanBin, err := exec.LookPath("podman")
-	if err != nil {
-		// podman not installed — nothing to do.
-		fmt.Println("  podman not found — skipping container cleanup.")
-		return nil
-	}
+// resetIsolators iterates over every registered isolation mode and calls
+// Reset on each one. Returns the first non-nil error encountered (other
+// modes still get a chance to run). Today only podmanIsolator.Reset has a
+// non-stub body — the prism-* container sweep (was: resetRemovePodmanContainers).
+//
+// Failures are logged at the call site (Step 2 in runReset); this function
+// returns the error verbatim so the caller can decide whether to continue.
+func resetIsolators() error {
+	// Use a generous per-mode timeout so a slow `podman ps` does not starve
+	// the rm step. The podman implementation issues two podman calls
+	// (`ps -a` then `rm -f <ids...>`); 60 s covers both with margin.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	// Fetch "name\tid" for every container (including stopped ones).
-	//
-	// We avoid --filter name=prism- because podman's name filter is a
-	// substring match, not a prefix match — it would incorrectly include
-	// containers like "not-prism-foo". Instead we do the prefix check
-	// client-side after fetching all names.
-	//
-	// We avoid --format {{.Names}} alone because podman emits comma-separated
-	// values for containers with multiple aliases (e.g. "prism-foo,prism-foo-alias"),
-	// which breaks `podman rm -f` when passed as a single argument. Using
-	// {{.ID}} gives a stable, unique identifier; we only use {{.Names}} here
-	// to decide which containers to target.
-	out, err := exec.Command(podmanBin, "ps", "-a", "--format", "{{.Names}}\t{{.ID}}").Output()
-	if err != nil {
-		// If podman fails (e.g. no running machine), treat as no containers.
-		fmt.Printf("  podman ps failed: %v — skipping container cleanup.\n", err)
-		return nil
-	}
-
-	var prismContainers []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
+	var firstErr error
+	for _, mode := range container.Names() {
+		iso, err := container.For(mode, container.ConstructorOpts{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[prism reset] %s: %v\n", mode, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		// parts[0] may be "name" or "name1,name2,..."; check the first name only.
-		firstName := strings.SplitN(parts[0], ",", 2)[0]
-		if strings.HasPrefix(firstName, "prism-") {
-			prismContainers = append(prismContainers, strings.TrimSpace(parts[1]))
+		if err := iso.Reset(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "[prism reset] %s: %v\n", mode, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-
-	if len(prismContainers) == 0 {
-		fmt.Println("  no prism- containers found.")
-		return nil
-	}
-
-	fmt.Printf("  removing %d container(s)\n", len(prismContainers))
-	args := append([]string{"rm", "-f"}, prismContainers...)
-	rmOut, err := exec.Command(podmanBin, args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("podman rm -f: %w\n%s", err, strings.TrimSpace(string(rmOut)))
-	}
-	fmt.Println("  containers removed.")
-	return nil
+	return firstErr
 }
 
 // resetMarkDBEnded opens the prism DB and calls MarkAllEnded to update all
