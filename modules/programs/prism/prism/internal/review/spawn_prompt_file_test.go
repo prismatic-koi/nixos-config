@@ -290,6 +290,7 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 
 	// (b) Inspect the tmux argv.
 	args := spawnReadSpyArgs(argsFile)
+	joined := strings.Join(args, " ")
 
 	promptFilePath, pathErr := session.InitialPromptPath(sessionName)
 	if pathErr != nil {
@@ -316,6 +317,15 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 			t.Errorf("tmux argv (host mode) contains inline PRISM_INITIAL_PROMPT — the LayoutAgentOnly+host cell was not fixed properly (#1195): %s", args[i+1])
 			break
 		}
+	}
+
+	// The agentCmd (the `sh -c <cmd>` argument) must use $(cat <path>) rather
+	// than inlining the prompt body. Verify the body snippet doesn't appear
+	// anywhere in the tmux argv — if it does, buildDirectOpencodeCmd inlined
+	// the prompt despite the PromptFilePath being set (#1195 review-code AC).
+	bodySnippet := largeDiff[:200]
+	if strings.Contains(joined, bodySnippet) {
+		t.Errorf("tmux argv (host mode) contains prompt body inline (snippet: %.50q…) — spawnAgentOnlyLayout must pass PromptFilePath to BuildOpencodeCmd (#1195)", bodySnippet)
 	}
 
 	// (c) File content must match.

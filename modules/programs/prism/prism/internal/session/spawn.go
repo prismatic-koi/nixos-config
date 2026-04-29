@@ -230,10 +230,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// Podman mode delivers the prompt through the sidecar (StartSidecarOpts
 	// .InitialPrompt → opencode --prompt inside the container), so it does
 	// not need a tmux-side env var at all and is intentionally skipped here.
-	// Host mode under LayoutAgentOnly is not produced by any caller today —
-	// review agents run under bwrap/sandbox-exec/podman — so it is also
-	// skipped; if that ever changes, extend the gate consciously rather
-	// than silently.
+	// All other modes (host and sandbox) write the prompt file regardless of
+	// layout — see the needsPromptFile gate below (#1195).
 	mode := resolveLayoutIsolationMode(opts)
 	var promptFilePath string
 	isSandbox := mode == "bwrap" || mode == "sandbox-exec"
@@ -699,6 +697,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// container.
 	buildOpts := Opts{
 		Prompt:           opts.Prompt,
+		PromptFilePath:   opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
 		Agent:            opts.AgentRole,
 		ConfigContent:    opts.ConfigContent,
 		SessionName:      opts.SessionName,
