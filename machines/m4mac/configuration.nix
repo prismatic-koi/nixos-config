@@ -41,6 +41,7 @@ in
       homeAutomation.enable = true;
       aws.enable = true;
       gitlab-cli.enable = true;
+      qutebrowser.enable = false; # broken, due to https://github.com/NixOS/nixpkgs/issues/514179
     };
     desktop = {
       theme = "onedark";
