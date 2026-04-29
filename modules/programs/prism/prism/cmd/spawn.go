@@ -292,7 +292,29 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			pf = nil
 		}
 	}
-	configContent, err := config.BuildConfigContent(pf, profileFlag, modelFlag, variantFlag)
+	// Resolve the active profile applying the runtime-state file precedence
+	// from #1207:
+	//
+	//   1. Explicit --profile flag (highest)
+	//   2. Runtime state file at $XDG_STATE_HOME/prism/active-profile
+	//   3. pf.Default (the nix-configured default, lowest)
+	//
+	// resolvedProfile threads through every downstream consumer that
+	// previously took profileFlag directly: BuildConfigContent (so the
+	// rendered OPENCODE_CONFIG_CONTENT carries the runtime profile),
+	// RequireSlot (so the spawn-time slot guard runs against the actually
+	// active profile), and ApplyModelOverrides (so --model overrides target
+	// the runtime profile's primary tier rather than the nix default's).
+	//
+	// Errors from the state-file read path are surfaced — corrupt state is
+	// a real problem, not a fallthrough condition.
+	resolvedProfile, profileSource, err := config.ResolveActiveProfile(pf, profileFlag)
+	if err != nil {
+		return err
+	}
+	_ = profileSource // intentionally unused — kept for future debug logging
+
+	configContent, err := config.BuildConfigContent(pf, resolvedProfile, modelFlag, variantFlag)
 	if err != nil {
 		return err
 	}
@@ -311,27 +333,32 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	// Validate the active profile defines a slot for the session's role
 	// before spending I/O on worktree creation (#1206 edge case AC). The
-	// active profile is the explicit --profile flag when set, otherwise
-	// whatever Nix wrote as the default. The session role is the explicit
-	// --agent flag when set, otherwise inferred from the branch name (main →
-	// coordinator, anything else → worker, mirroring session.DefaultAgent).
-	if pf != nil {
-		activeProfile := profileFlag
-		if activeProfile == "" {
-			activeProfile = pf.Default
+	// active profile here is whatever ResolveActiveProfile returned above —
+	// flag → state file → nix default — so a stale runtime state file
+	// pointing at an invalid profile is rejected here with the same shape
+	// of error as a bad --profile flag (#1207 edge-case AC).
+	//
+	// The session role is the explicit --agent flag when set, otherwise
+	// inferred from the branch name (main → coordinator, anything else →
+	// worker, mirroring session.DefaultAgent).
+	if pf != nil && resolvedProfile != "" {
+		plannedRole := agentFlag
+		if plannedRole == "" {
+			if branch == "main" {
+				plannedRole = "coordinator"
+			} else {
+				plannedRole = "worker"
+			}
 		}
-		if activeProfile != "" {
-			plannedRole := agentFlag
-			if plannedRole == "" {
-				if branch == "main" {
-					plannedRole = "coordinator"
-				} else {
-					plannedRole = "worker"
-				}
+		if err := config.RequireSlot(pf, resolvedProfile, plannedRole); err != nil {
+			// When the failure stems from the state file (not the flag),
+			// add a hint pointing at `prism profile use` so users have a
+			// clear recovery path (#1207 edge-case AC).
+			if profileFlag == "" && profileSource == "state-file" {
+				return fmt.Errorf("%w\nhint: the active profile is set via the runtime state file ($XDG_STATE_HOME/prism/active-profile). Run `prism profile use <name>` to switch to a valid profile",
+					err)
 			}
-			if err := config.RequireSlot(pf, activeProfile, plannedRole); err != nil {
-				return err
-			}
+			return err
 		}
 	}
 
@@ -373,7 +400,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			// Role config governs agent identity and permissions (system prompt,
 			// tool allow-list). Re-apply any --model/--variant overrides on top
 			// so that user-supplied flags are not silently discarded.
-			patched, patchErr := config.ApplyModelOverrides(roleConfig, profileFlag, modelFlag, variantFlag, pf)
+			patched, patchErr := config.ApplyModelOverrides(roleConfig, resolvedProfile, modelFlag, variantFlag, pf)
 			if patchErr != nil {
 				return patchErr
 			}

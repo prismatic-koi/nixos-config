@@ -656,15 +656,25 @@ func (a *Adapter) EffectiveModel(role string) string {
 // (loaded from ~/.config/prism/profiles.json) for the given role's model.
 // Returns "" when the profiles file is missing, malformed, has no default
 // profile, or the active profile defines no slot for that role.
+//
+// The active profile is resolved through config.ResolveActiveProfile so the
+// runtime state file ($XDG_STATE_HOME/prism/active-profile, #1207) takes
+// precedence over the nix-configured default. Calls to EffectiveModel
+// happen post-spawn (e.g. for stats display) and must reflect the same
+// profile the spawn flow used.
 func effectiveModelFromProfiles(role string) string {
 	pf, err := config.LoadProfiles()
 	if err != nil {
 		return ""
 	}
-	if pf == nil || pf.Default == "" {
+	if pf == nil {
 		return ""
 	}
-	if slot, ok := config.SlotForRole(pf, pf.Default, role); ok {
+	active, _, err := config.ResolveActiveProfile(pf, "")
+	if err != nil || active == "" {
+		return ""
+	}
+	if slot, ok := config.SlotForRole(pf, active, role); ok {
 		return slot.Model
 	}
 	return ""
