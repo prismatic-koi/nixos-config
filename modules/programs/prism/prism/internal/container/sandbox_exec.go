@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -37,12 +38,14 @@ type sandboxExecIsolator struct {
 	// name is the stable session identifier (used for log messages).
 	name string
 
-	// mu guards exited/exitCode. The sandbox-exec process for a session is
-	// launched by agent-run via syscall.Exec, so this Isolator's Run path is
-	// unused in the production flow — these fields exist solely to satisfy
-	// the Isolator interface and to give future tests a place to record
-	// terminal state.
+	// mu guards cmd, exited, and exitCode. The production sandbox-exec
+	// child is launched by cmd/agent_run_sandbox_exec_darwin.go (which
+	// owns its own Wait loop), so the cmd field is populated only when
+	// the Isolator's Run path is exercised — currently used by tests that
+	// want to verify Shutdown delivers SIGTERM/SIGKILL via the shared
+	// gracefulShutdown helper (shutdown.go, A2.GR).
 	mu       sync.Mutex
+	cmd      *exec.Cmd
 	exited   bool
 	exitCode int
 }
@@ -611,20 +614,53 @@ func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 	return args
 }
 
-// Run is a no-op stub for the production flow: agent-run launches
-// sandbox-exec via syscall.Exec, replacing its own process image, so this
-// Isolator's Run is never reached. The method exists to satisfy the
-// Isolator interface and is kept symmetric with bwrap.Run for future tests.
+// Run is unused in the production flow — agent-run launches sandbox-exec
+// directly as a supervised child of the tmux pane (see
+// cmd/agent_run_sandbox_exec_darwin.go) rather than going through the
+// Isolator's Run path. The method satisfies the Isolator interface and
+// stores the resulting *exec.Cmd in s.cmd so that Shutdown can deliver
+// SIGTERM/SIGKILL via the shared gracefulShutdown helper. Returns an
+// error after the child exits.
+//
+// The first argv element from BuildArgs is "sandbox-exec" (matching the
+// bwrap convention); we pass args[1:] to exec.CommandContext because Go
+// prepends argv[0] from the binary path.
 func (s *sandboxExecIsolator) Run(ctx context.Context, args []string) error {
-	return fmt.Errorf("container: sandbox-exec %q: Run is not implemented; agent-run uses syscall.Exec", s.name)
+	if len(args) < 1 {
+		return fmt.Errorf("container: sandbox-exec %q: Run called with empty args", s.name)
+	}
+	cmd := exec.CommandContext(ctx, "/usr/bin/sandbox-exec", args[1:]...)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+
+	s.mu.Lock()
+	s.cmd = cmd
+	s.mu.Unlock()
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("container: sandbox-exec run %q: %w", s.name, err)
+	}
+	return nil
 }
 
-// Shutdown is a no-op for sandbox-exec: the production flow uses
-// syscall.Exec from agent-run, so the sandbox-exec child is owned by the
-// tmux pane's process tree and terminates when the pane dies. Lifecycle
-// hardening (signal forwarding, kqueue parent-death watcher) is the
-// subject of PR 4 (#1018).
-func (s *sandboxExecIsolator) Shutdown() {}
+// Shutdown sends SIGTERM to the sandbox-exec child if it is still running,
+// waits up to 30 seconds, and sends SIGKILL if the process has not exited.
+// The SIGTERM-then-grace-then-SIGKILL body is shared with bwrap via the
+// gracefulShutdown helper (shutdown.go, A2.GR).
+//
+// In the production agent-run flow the sandbox-exec child is owned by
+// cmd/agent_run_sandbox_exec_darwin.go (which manages its own supervised
+// Wait loop with kqueue parent-death watching). The Isolator's Shutdown is
+// therefore a no-op when no Run-managed child has been registered (s.cmd
+// is nil) — preserving the pre-A2.GR behaviour. When a future test or
+// caller invokes Run on this isolator, Shutdown will deliver the same
+// SIGTERM-then-SIGKILL sequence as bwrap.
+func (s *sandboxExecIsolator) Shutdown() {
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
+	gracefulShutdown(cmd, defaultGracefulShutdownGrace)
+}
 
 // HasExited returns the recorded exit state. In the production flow this is
 // always (false, 0) because agent-run replaces its own process via

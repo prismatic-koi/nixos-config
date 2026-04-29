@@ -14,8 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
 )
@@ -633,32 +631,15 @@ func minimalBwrapExecEnv(hostEnv []string) []string {
 	return MinimalIsolatedExecEnv(hostEnv)
 }
 
-// Shutdown sends SIGTERM to the bwrap process if it is still running. It uses
-// a background context with a 30-second timeout so cleanup proceeds even after
-// the parent context has been cancelled.
+// Shutdown sends SIGTERM to the bwrap process if it is still running, waits
+// up to 30 seconds, and sends SIGKILL if the process has not exited. The
+// SIGTERM-then-grace-then-SIGKILL body is shared with sandbox-exec via the
+// gracefulShutdown helper (shutdown.go, A2.GR).
 func (b *bwrapIsolator) Shutdown() {
 	b.mu.Lock()
 	cmd := b.cmd
 	b.mu.Unlock()
-
-	if cmd == nil || cmd.Process == nil {
-		return
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = cmd.Wait()
-	}()
-
-	// Send SIGTERM and wait up to 30 seconds for the process to exit.
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		_ = cmd.Process.Kill()
-		<-done
-	}
+	gracefulShutdown(cmd, defaultGracefulShutdownGrace)
 }
 
 // HasExited returns (true, exitCode) when the bwrap process has terminated,
