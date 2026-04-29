@@ -54,6 +54,12 @@ func writeHarnessConfigBlobFor(mode config.IsolationMode, sessionName, content, 
 //
 // pf must be non-nil when called; callers are responsible for loading it when
 // the effective isolation mode is podman or bwrap.
+//
+// As of #1207, the runtime active profile is overlaid on the pre-rendered
+// blob via config.ApplyProfileToBlob so that `prism switch <project>` —
+// which creates new sessions — honours `prism profile use <name>` the same
+// way `prism spawn` does. The overlay is a no-op when the active profile
+// matches pf.Default.
 func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, cmdName string) error {
 	effectiveRole := session.DefaultAgent(path, opts.Agent)
 	// Non-worktree paths (effectiveRole == "") use the coordinator config blob
@@ -67,7 +73,18 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 		return err
 	}
 	if roleConfig != "" {
-		opts.ConfigContent = roleConfig
+		// Overlay the runtime active profile (#1207). Surfaces state-file
+		// read errors so a corrupt state file does not silently leak the
+		// pf.Default profile into the new session.
+		resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+		if profErr != nil {
+			return profErr
+		}
+		patched, applyErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
+		if applyErr != nil {
+			return applyErr
+		}
+		opts.ConfigContent = patched
 	} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
 		fmt.Fprintf(os.Stderr, "[%s] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", cmdName, effectiveRole)
 	}

@@ -359,7 +359,25 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 			if roleErr != nil {
 				fmt.Fprintf(os.Stderr, "restore %q: container config for role %q: %v — skipping config injection\n", s.SessionName, effectiveRole, roleErr)
 			} else if roleConfig != "" {
-				opts.ConfigContent = roleConfig
+				// Overlay the runtime active profile (#1207) so post-reboot
+				// `prism restore` re-spawns sessions with the user's currently
+				// active profile rather than the nix default baked into the
+				// blob. Profile-resolution errors here are non-fatal —
+				// consistent with the rest of restore's best-effort posture
+				// (load errors above are logged-and-skipped, not aborted).
+				resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+				if profErr != nil {
+					fmt.Fprintf(os.Stderr, "restore %q: resolve active profile: %v — using default profile blob\n", s.SessionName, profErr)
+					opts.ConfigContent = roleConfig
+				} else {
+					patched, applyErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
+					if applyErr != nil {
+						fmt.Fprintf(os.Stderr, "restore %q: apply runtime profile %q: %v — using default profile blob\n", s.SessionName, resolvedProfile, applyErr)
+						opts.ConfigContent = roleConfig
+					} else {
+						opts.ConfigContent = patched
+					}
+				}
 			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
 				fmt.Fprintf(os.Stderr, "[prism restore] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
 			}
