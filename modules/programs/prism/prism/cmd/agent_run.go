@@ -204,7 +204,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	logFile := opts.LogFile
 	status := loadAgentRunStatus(sessionName)
 	if status == nil {
-		return fmt.Errorf("agent-run: session %q not found in cached status", sessionName)
+		return errAgentRunNoStatus(sessionName)
 	}
 
 	// Load prism config for git identity and SSH key names.
