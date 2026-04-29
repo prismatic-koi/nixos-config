@@ -183,6 +183,95 @@ func TestEffectiveModel_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestEffectiveModel_PrefersProfilesFile is the #1206 behaviour gate:
+// EffectiveModel must consult prism's role-keyed profile data before falling
+// back to opencode's own opencode.json. When both files exist, the profile
+// data wins because it is the canonical input that produced opencode.json
+// in the first place.
+func TestEffectiveModel_PrefersProfilesFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	// profiles.json — anthropic profile carries claude-sonnet-4-6 for worker.
+	prismDir := filepath.Join(dir, "prism")
+	if err := os.MkdirAll(prismDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll prism: %v", err)
+	}
+	profiles := `{
+		"default": "anthropic",
+		"role_mapping": {"primary": ["coordinator"], "secondary": ["worker"]},
+		"profiles": {
+			"anthropic": {
+				"coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-7", "thinking": "none"},
+				"worker":      {"provider": "anthropic", "model": "anthropic/claude-sonnet-4-6", "thinking": "none"}
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(prismDir, "profiles.json"), []byte(profiles), 0o644); err != nil {
+		t.Fatalf("WriteFile profiles.json: %v", err)
+	}
+
+	// opencode.json — write a different (stale) value so we can prove the
+	// profile data is preferred when present.
+	configDir := filepath.Join(dir, "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll opencode: %v", err)
+	}
+	stale := `{"agent":{"worker":{"model":"anthropic/claude-stale"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "opencode.json"), []byte(stale), 0o644); err != nil {
+		t.Fatalf("WriteFile opencode.json: %v", err)
+	}
+
+	a := New("", nil, "", "")
+	if got := a.EffectiveModel("worker"); got != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("EffectiveModel(worker) = %q, want anthropic/claude-sonnet-4-6 (from profiles.json)", got)
+	}
+	if got := a.EffectiveModel("coordinator"); got != "anthropic/claude-opus-4-7" {
+		t.Errorf("EffectiveModel(coordinator) = %q, want anthropic/claude-opus-4-7 (from profiles.json)", got)
+	}
+}
+
+// TestEffectiveModel_FallsBackToOpencodeConfig verifies that when prism's
+// profile data does not resolve a model for the role (e.g. the profile has
+// no slot, or profiles.json is missing entirely), EffectiveModel falls back
+// to opencode's own config so manually-configured sessions still work.
+func TestEffectiveModel_FallsBackToOpencodeConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	// profiles.json defines anthropic but with no slot for "build".
+	prismDir := filepath.Join(dir, "prism")
+	if err := os.MkdirAll(prismDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll prism: %v", err)
+	}
+	profiles := `{
+		"default": "anthropic",
+		"role_mapping": {"primary": ["coordinator"]},
+		"profiles": {
+			"anthropic": {
+				"coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-7", "thinking": "none"}
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(prismDir, "profiles.json"), []byte(profiles), 0o644); err != nil {
+		t.Fatalf("WriteFile profiles.json: %v", err)
+	}
+
+	configDir := filepath.Join(dir, "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll opencode: %v", err)
+	}
+	cfg := `{"agent":{"build":{"model":"anthropic/claude-build-fallback"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "opencode.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatalf("WriteFile opencode.json: %v", err)
+	}
+
+	a := New("", nil, "", "")
+	if got := a.EffectiveModel("build"); got != "anthropic/claude-build-fallback" {
+		t.Errorf("EffectiveModel(build) = %q, want fallback from opencode.json", got)
+	}
+}
+
 // ── CreateSession retry ───────────────────────────────────────────────────────
 
 // sessionResponse is a helper that writes a JSON session list to the response.

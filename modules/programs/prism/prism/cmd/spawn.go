@@ -314,6 +314,32 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate the active profile defines a slot for the session's role
+	// before spending I/O on worktree creation (#1206 edge case AC). The
+	// active profile is the explicit --profile flag when set, otherwise
+	// whatever Nix wrote as the default. The session role is the explicit
+	// --agent flag when set, otherwise inferred from the branch name (main →
+	// coordinator, anything else → worker, mirroring session.DefaultAgent).
+	if pf != nil {
+		activeProfile := profileFlag
+		if activeProfile == "" {
+			activeProfile = pf.Default
+		}
+		if activeProfile != "" {
+			plannedRole := agentFlag
+			if plannedRole == "" {
+				if branch == "main" {
+					plannedRole = "coordinator"
+				} else {
+					plannedRole = "worker"
+				}
+			}
+			if err := config.RequireSlot(pf, activeProfile, plannedRole); err != nil {
+				return err
+			}
+		}
+	}
+
 	// Create the worktree (handles local, remote-tracking, and new branches).
 	worktreePath, err := git.CreateWorktree(bareRoot, branch)
 	if err != nil {
