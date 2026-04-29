@@ -145,8 +145,6 @@ in
       "vfkit"
     ];
     casks = [
-      "1password"
-      "1password-cli"
       "bitwarden"
       "firefox"
       "karabiner-elements"
