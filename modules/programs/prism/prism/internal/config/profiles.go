@@ -616,6 +616,127 @@ func ApplyModelOverrides(blob, profileName, modelOverride, variantOverride strin
 	return string(out), nil
 }
 
+// ApplyProfileToBlob overlays the named profile's role-keyed model and
+// variant values onto an existing role config blob (e.g.
+// ContainerWorkerConfig, ContainerCoordinatorConfig, ContainerReview*Config).
+//
+// Background (#1207): the container_*_config blobs are pre-rendered by Nix
+// from `pf.Default` and embed model identifiers in:
+//
+//   - The top-level "model" field (used as the session-default model).
+//   - Each agent's "agent.<name>.model" field.
+//   - Each agent's "agent.<name>.variant" field.
+//
+// When the runtime active profile differs from `pf.Default`, those baked
+// values are stale: a `prism profile use gemini-hybrid && prism spawn` in
+// any sandboxed isolation mode would otherwise launch with the
+// `pf.Default` profile's models. ApplyProfileToBlob re-targets the model
+// and variant fields to match the active profile while preserving every
+// other field — agent identity, system prompt, plugin list, tool
+// allow-list, permissions, $schema, etc.
+//
+// Rules:
+//   - profileName == "" or pf == nil → return blob unchanged.
+//   - profileName == pf.Default → return blob unchanged (the blob already
+//     reflects the default; re-marshalling is wasted work).
+//   - blob == "" → return blob unchanged (nothing to patch).
+//   - profileName not present in pf.Profiles → error (caller must validate
+//     before calling, but we double-check rather than silently passing
+//     through a stale blob).
+//   - For each role/slot pair in the named profile:
+//       agent.<role>.model   ← slot.Model
+//       agent.<role>.variant ← thinking value (mapped via variantFromThinking),
+//                              or removed entirely when the slot's thinking
+//                              is empty (so the agent inherits the session
+//                              default).
+//   - Top-level "model" ← coordinator slot's model, falling back to the
+//     first primary-tier role (mirrors BuildConfigContent's rule).
+//
+// The function preserves the JSON shape of every untouched field. It does
+// NOT add agent entries that the blob did not already declare, except for
+// roles that exist in the active profile — that is exactly the behaviour
+// needed to swap models without leaking subagents into a worker blob, etc.
+//
+// Returns ("", err) if blob is non-empty but not valid JSON.
+func ApplyProfileToBlob(blob, profileName string, pf *ProfilesFile) (string, error) {
+	if blob == "" || profileName == "" || pf == nil {
+		return blob, nil
+	}
+	if profileName == pf.Default {
+		// Blob already reflects the default profile — no-op.
+		return blob, nil
+	}
+	entry, ok := pf.Profiles[profileName]
+	if !ok {
+		return "", fmt.Errorf("profiles: ApplyProfileToBlob: unknown profile %q — available: %s",
+			profileName, strings.Join(AvailableProfileNames(pf), ", "))
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(blob), &cfg); err != nil {
+		return "", fmt.Errorf("profiles: ApplyProfileToBlob: parse blob: %w", err)
+	}
+
+	// Top-level "model": coordinator slot first, then first primary-tier
+	// role with a slot in this profile.
+	if slot, ok := entry["coordinator"]; ok && slot.Model != "" {
+		cfg["model"] = slot.Model
+	} else {
+		for _, name := range pf.RoleMapping["primary"] {
+			if slot, ok := entry[name]; ok && slot.Model != "" {
+				cfg["model"] = slot.Model
+				break
+			}
+		}
+	}
+
+	// Per-agent overlay. Only touch agent entries already declared in the
+	// blob (so a worker-only blob does not gain subagent entries it never
+	// had) PLUS any role with a slot in the named profile (so subagents
+	// like plan/explore/review-* receive their per-profile models when the
+	// blob already lists them).
+	agentObj, _ := cfg["agent"].(map[string]any)
+	if agentObj == nil {
+		agentObj = make(map[string]any)
+	}
+	for role := range entry {
+		// Only overlay roles that the blob already declares — staying
+		// conservative about expanding a blob's agent surface, which would
+		// otherwise silently widen worker blobs to include subagents.
+		raw, declared := agentObj[role]
+		if !declared {
+			continue
+		}
+		agentEntry, _ := raw.(map[string]any)
+		if agentEntry == nil {
+			agentEntry = make(map[string]any)
+		}
+		slot := entry[role]
+		if slot.Model != "" {
+			agentEntry["model"] = slot.Model
+		}
+		variant := variantFromThinking(slot.Thinking)
+		if variant != "" {
+			agentEntry["variant"] = variant
+		} else {
+			// Empty thinking ⇒ remove any baked variant so the agent uses
+			// opencode's default variant resolution (matches the omit-when-
+			// empty rule in marshalConfigContent).
+			delete(agentEntry, "variant")
+		}
+		agentObj[role] = agentEntry
+	}
+	if len(agentObj) > 0 {
+		cfg["agent"] = agentObj
+	}
+
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		return "", fmt.Errorf("profiles: ApplyProfileToBlob: marshal: %w", err)
+	}
+	return string(out), nil
+}
+
 // marshalConfigContent builds the JSON blob for OPENCODE_CONFIG_CONTENT.
 func marshalConfigContent(topModel string, agentMap map[string]agentCfg) (string, error) {
 	// Build the top-level map.

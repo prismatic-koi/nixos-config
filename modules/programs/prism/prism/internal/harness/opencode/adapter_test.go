@@ -272,6 +272,57 @@ func TestEffectiveModel_FallsBackToOpencodeConfig(t *testing.T) {
 	}
 }
 
+// TestEffectiveModel_HonoursRuntimeActiveProfile is the #1207 behaviour gate:
+// when the runtime active-profile state file selects a non-default profile,
+// EffectiveModel must return the model from THAT profile rather than from
+// the nix-configured default. This proves the lookup goes through
+// ResolveActiveProfile and not pf.Default directly.
+func TestEffectiveModel_HonoursRuntimeActiveProfile(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+
+	prismCfg := filepath.Join(cfgDir, "prism")
+	if err := os.MkdirAll(prismCfg, 0o755); err != nil {
+		t.Fatalf("MkdirAll prism config: %v", err)
+	}
+	// Two profiles: anthropic (the nix default) and gemini-hybrid (the
+	// runtime override). Different worker models so the test can tell which
+	// branch produced the result.
+	profiles := `{
+		"default": "anthropic",
+		"role_mapping": {"primary": ["coordinator"], "secondary": ["worker"]},
+		"profiles": {
+			"anthropic":     {
+				"coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-7", "thinking": "none"},
+				"worker":      {"provider": "anthropic", "model": "anthropic/claude-default-worker", "thinking": "none"}
+			},
+			"gemini-hybrid": {
+				"coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-7", "thinking": "none"},
+				"worker":      {"provider": "google", "model": "google/gemini-runtime-worker", "thinking": "medium"}
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(prismCfg, "profiles.json"), []byte(profiles), 0o644); err != nil {
+		t.Fatalf("WriteFile profiles.json: %v", err)
+	}
+
+	// Write the runtime state file pointing at gemini-hybrid.
+	prismState := filepath.Join(stateRoot, "prism")
+	if err := os.MkdirAll(prismState, 0o755); err != nil {
+		t.Fatalf("MkdirAll prism state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(prismState, "active-profile"), []byte("gemini-hybrid\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile active-profile: %v", err)
+	}
+
+	a := New("", nil, "", "")
+	if got := a.EffectiveModel("worker"); got != "google/gemini-runtime-worker" {
+		t.Errorf("EffectiveModel(worker) = %q, want google/gemini-runtime-worker (from runtime state file, not nix default)", got)
+	}
+}
+
 // ── CreateSession retry ───────────────────────────────────────────────────────
 
 // sessionResponse is a helper that writes a JSON session list to the response.

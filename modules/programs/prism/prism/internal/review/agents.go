@@ -126,11 +126,19 @@ func FormatAgentDisplayName(name string) string {
 //   - Returns an error if pf is nil (missing profiles file).
 //   - Returns an error if ContainerConfigForRole returns an error.
 //   - Returns an error if the resolved blob is empty (stale profiles.json).
-//   - Returns the non-empty blob when resolution succeeds.
+//   - Returns the non-empty blob when resolution succeeds, with the runtime
+//     active profile overlaid via config.ApplyProfileToBlob so that
+//     `prism profile use <name>` actually changes the models review agents
+//     spawn with (#1207).
 //
 // Exported so that cmd/review_test.go (and integration tests) can exercise the
 // config-resolution path without needing a live DB or tmux session.
-func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName string) (string, error) {
+//
+// activeProfile is the runtime active-profile name resolved by the caller
+// via config.ResolveActiveProfile. Pass "" to disable profile overlay (the
+// blob is then returned as pre-rendered from pf.Default). See Run() for the
+// canonical resolution path.
+func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName, activeProfile string) (string, error) {
 	needsConfig := isolationMode == string(config.IsolationPodman) || isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
 	if !needsConfig {
 		return "", nil
@@ -145,5 +153,13 @@ func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, ag
 	if blob == "" {
 		return "", fmt.Errorf("review: no container config blob for agent %q — profiles.json appears to be stale (missing container_review_*_config fields)\nhint: rebuild the system with the prism NixOS module to regenerate profiles.json", agentName)
 	}
-	return blob, nil
+	// Overlay the runtime active profile when it differs from pf.Default so
+	// that `prism profile use <name>` actually flows through to review agents.
+	// ApplyProfileToBlob is a no-op when activeProfile is empty or matches
+	// pf.Default, preserving the pre-#1207 fast path.
+	patched, applyErr := config.ApplyProfileToBlob(blob, activeProfile, pf)
+	if applyErr != nil {
+		return "", fmt.Errorf("review: apply runtime profile %q to %q blob: %w", activeProfile, agentName, applyErr)
+	}
+	return patched, nil
 }

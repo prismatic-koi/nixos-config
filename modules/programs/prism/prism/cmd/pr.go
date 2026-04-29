@@ -131,12 +131,23 @@ var prCmd = &cobra.Command{
 				return roleErr
 			}
 			if roleConfig != "" {
-				// Role config governs agent identity and permissions. Re-apply
-				// any --model/--variant overrides on top so they are not lost.
-				// prism pr has no --model/--profile/--variant flags today, but
-				// the call is a no-op when all overrides are empty, ensuring
-				// forward-compatibility if those flags are added later.
-				patched, patchErr := config.ApplyModelOverrides(roleConfig, "", "", "", pf)
+				// Role config governs agent identity and permissions. Overlay
+				// the runtime active profile (#1207) so `prism profile use
+				// <name>` flows through to `prism pr` spawns. ApplyProfileToBlob
+				// is a no-op when the resolved profile matches pf.Default.
+				resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+				if profErr != nil {
+					return profErr
+				}
+				profiled, profileErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
+				if profileErr != nil {
+					return profileErr
+				}
+				// Re-apply any --model/--variant overrides on top so they are
+				// not lost. prism pr has no --model/--profile/--variant flags
+				// today, but the call is a no-op when all overrides are empty,
+				// ensuring forward-compatibility if those flags are added later.
+				patched, patchErr := config.ApplyModelOverrides(profiled, "", "", "", pf)
 				if patchErr != nil {
 					return patchErr
 				}

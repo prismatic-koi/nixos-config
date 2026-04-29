@@ -2,6 +2,7 @@ package review_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1126,7 +1127,7 @@ func TestResolveAgentConfigContent_HostMode(t *testing.T) {
 	pf := sampleReviewProfilesFile()
 	for _, isolationMode := range []string{"host", ""} {
 		for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context", "review", "worker"} {
-			blob, err := review.ResolveAgentConfigContent(isolationMode, pf, agentName)
+			blob, err := review.ResolveAgentConfigContent(isolationMode, pf, agentName, "")
 			if err != nil {
 				t.Errorf("host mode %q, agent %q: unexpected error: %v", isolationMode, agentName, err)
 			}
@@ -1136,14 +1137,14 @@ func TestResolveAgentConfigContent_HostMode(t *testing.T) {
 		}
 	}
 	// nil ProfilesFile in host mode must also be safe.
-	blob, err := review.ResolveAgentConfigContent("host", nil, "review-goal")
+	blob, err := review.ResolveAgentConfigContent("host", nil, "review-goal", "")
 	if err != nil {
 		t.Errorf("host mode, nil pf: unexpected error: %v", err)
 	}
 	if blob != "" {
 		t.Errorf("host mode, nil pf: expected empty blob, got %q", blob)
 	}
-	blob, err = review.ResolveAgentConfigContent("", nil, "review-goal")
+	blob, err = review.ResolveAgentConfigContent("", nil, "review-goal", "")
 	if err != nil {
 		t.Errorf("empty isolation mode, nil pf: unexpected error: %v", err)
 	}
@@ -1157,7 +1158,7 @@ func TestResolveAgentConfigContent_HostMode(t *testing.T) {
 // This is the primary regression test for issue #784 (silent build-agent spawn).
 func TestResolveAgentConfigContent_ContainerMode_NilProfilesFile(t *testing.T) {
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("podman", nil, agentName)
+		_, err := review.ResolveAgentConfigContent("podman", nil, agentName, "")
 		if err == nil {
 			t.Errorf("podman mode, nil pf, agent %q: expected error, got nil", agentName)
 		}
@@ -1172,7 +1173,7 @@ func TestResolveAgentConfigContent_ContainerMode_NilProfilesFile(t *testing.T) {
 // the podman-mode error path (AC: edge-case from issue #1037).
 func TestResolveAgentConfigContent_BwrapMode_NilProfilesFile(t *testing.T) {
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("bwrap", nil, agentName)
+		_, err := review.ResolveAgentConfigContent("bwrap", nil, agentName, "")
 		if err == nil {
 			t.Errorf("bwrap mode, nil pf, agent %q: expected error, got nil", agentName)
 		}
@@ -1200,7 +1201,7 @@ func TestResolveAgentConfigContent_ContainerMode_EmptyBlob(t *testing.T) {
 		ContainerReviewContextConfig:  "",
 	}
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("podman", stale, agentName)
+		_, err := review.ResolveAgentConfigContent("podman", stale, agentName, "")
 		if err == nil {
 			t.Errorf("podman mode, empty blob, agent %q: expected error, got nil (would have silently spawned as build agent)", agentName)
 		}
@@ -1224,7 +1225,7 @@ func TestResolveAgentConfigContent_BwrapMode_EmptyBlob(t *testing.T) {
 		ContainerReviewContextConfig:  "",
 	}
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("bwrap", stale, agentName)
+		_, err := review.ResolveAgentConfigContent("bwrap", stale, agentName, "")
 		if err == nil {
 			t.Errorf("bwrap mode, empty blob, agent %q: expected error, got nil (would have fallen back to host config)", agentName)
 		}
@@ -1247,7 +1248,7 @@ func TestResolveAgentConfigContent_ContainerMode_Success(t *testing.T) {
 		"review-context":  pf.ContainerReviewContextConfig,
 	}
 	for agentName, wantBlob := range want {
-		blob, err := review.ResolveAgentConfigContent("podman", pf, agentName)
+		blob, err := review.ResolveAgentConfigContent("podman", pf, agentName, "")
 		if err != nil {
 			t.Errorf("podman mode, agent %q: unexpected error: %v", agentName, err)
 			continue
@@ -1273,7 +1274,7 @@ func TestResolveAgentConfigContent_BwrapMode_Success(t *testing.T) {
 		"review-context":  pf.ContainerReviewContextConfig,
 	}
 	for agentName, wantBlob := range want {
-		blob, err := review.ResolveAgentConfigContent("bwrap", pf, agentName)
+		blob, err := review.ResolveAgentConfigContent("bwrap", pf, agentName, "")
 		if err != nil {
 			t.Errorf("bwrap mode, agent %q: unexpected error: %v", agentName, err)
 			continue
@@ -1295,7 +1296,7 @@ func TestResolveAgentConfigContent_ContainerMode_WorkerRole(t *testing.T) {
 	// Worker and coordinator are not review agents — ContainerConfigForRole
 	// returns their blobs, but they are not set in sampleReviewProfilesFile.
 	// Empty blob should produce an error.
-	_, err := review.ResolveAgentConfigContent("podman", pf, "worker")
+	_, err := review.ResolveAgentConfigContent("podman", pf, "worker", "")
 	if err == nil {
 		t.Error("podman mode, agent 'worker': expected error for empty blob, got nil")
 	}
@@ -1305,9 +1306,79 @@ func TestResolveAgentConfigContent_ContainerMode_WorkerRole(t *testing.T) {
 // in bwrap mode also returns an empty-blob error (mirrors podman behaviour).
 func TestResolveAgentConfigContent_BwrapMode_WorkerRole(t *testing.T) {
 	pf := sampleReviewProfilesFile()
-	_, err := review.ResolveAgentConfigContent("bwrap", pf, "worker")
+	_, err := review.ResolveAgentConfigContent("bwrap", pf, "worker", "")
 	if err == nil {
 		t.Error("bwrap mode, agent 'worker': expected error for empty blob, got nil")
+	}
+}
+
+// TestResolveAgentConfigContent_OverlaysRuntimeActiveProfile is the #1207
+// behaviour gate for review fan-out: when a non-default activeProfile is
+// passed, the resolved blob must carry the active profile's models, not the
+// nix default's. This proves the review path actually honours
+// `prism profile use <name>` rather than silently falling through to
+// pf.Default.
+func TestResolveAgentConfigContent_OverlaysRuntimeActiveProfile(t *testing.T) {
+	pf := &config.ProfilesFile{
+		Default: "anthropic",
+		RoleMapping: map[string][]string{
+			"primary":   {"coordinator"},
+			"secondary": {"review-goal", "review-code", "review-security", "review-qa", "review-context"},
+		},
+		Profiles: map[string]config.ProfileEntry{
+			"anthropic": {
+				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
+				"review-goal": {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+			},
+			"gemini-hybrid": {
+				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
+				"review-goal": {Provider: "google", Model: "google/gemini-3.1-pro-preview", Thinking: "medium"},
+			},
+		},
+		// Pre-rendered blob carrying the anthropic-default model — exactly
+		// what Nix bakes for review-goal at build time.
+		ContainerReviewGoalConfig: `{"$schema":"https://opencode.ai/opencode.json","default_agent":"review-goal","model":"anthropic/claude-sonnet-4-6","agent":{"review-goal":{"model":"anthropic/claude-sonnet-4-6","variant":"none"}}}`,
+	}
+
+	blob, err := review.ResolveAgentConfigContent("podman", pf, "review-goal", "gemini-hybrid")
+	if err != nil {
+		t.Fatalf("ResolveAgentConfigContent: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(blob), &parsed); err != nil {
+		t.Fatalf("unmarshal patched blob: %v", err)
+	}
+	agents, _ := parsed["agent"].(map[string]any)
+	rg, _ := agents["review-goal"].(map[string]any)
+	if rg == nil {
+		t.Fatal("agent.review-goal missing from patched blob")
+	}
+	if got, want := rg["model"], "google/gemini-3.1-pro-preview"; got != want {
+		t.Errorf("agent.review-goal.model = %v, want %v (gemini-hybrid)", got, want)
+	}
+	if got, want := rg["variant"], "medium"; got != want {
+		t.Errorf("agent.review-goal.variant = %v, want %v", got, want)
+	}
+}
+
+// TestResolveAgentConfigContent_DefaultProfileIsByteIdentical verifies the
+// fast path: passing the nix-default profile name (or empty) must NOT
+// re-marshal the blob, so the resolved bytes are byte-identical to the
+// pre-rendered blob. This protects against accidental field reordering or
+// whitespace churn in the no-op path.
+func TestResolveAgentConfigContent_DefaultProfileIsByteIdentical(t *testing.T) {
+	pf := sampleReviewProfilesFile()
+	pf.Default = "anthropic"
+
+	cases := []string{"", "anthropic"}
+	for _, active := range cases {
+		blob, err := review.ResolveAgentConfigContent("podman", pf, "review-goal", active)
+		if err != nil {
+			t.Fatalf("active=%q: %v", active, err)
+		}
+		if blob != pf.ContainerReviewGoalConfig {
+			t.Errorf("active=%q: blob mutated; want byte-identical passthrough", active)
+		}
 	}
 }
 

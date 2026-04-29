@@ -819,6 +819,85 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 	}
 }
 
+// TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile is the
+// #1207 behaviour gate for `prism restore`: when the runtime state file
+// selects a non-default profile, restoreSession must produce a
+// ConfigContent whose model fields reflect the active profile, not the
+// nix default's. This is the post-reboot scenario from the AC discussion:
+// the user runs `prism profile use gemini-hybrid`, reboots, and expects
+// the restored sessions to spawn with gemini, not the nix default.
+func TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	stateRoot := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateRoot)
+	prismState := filepath.Join(stateRoot, "prism")
+	if err := os.MkdirAll(prismState, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prismState, "active-profile"), []byte("gemini-hybrid\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := newCmdTestServer(t)
+	withCmdServer(t, srv)
+	withRestoreConfig(t, config.Config{
+		DefaultIsolationMode: config.IsolationPodman,
+	})
+
+	pf := &config.ProfilesFile{
+		Default: "anthropic",
+		RoleMapping: map[string][]string{
+			"primary":   {"coordinator"},
+			"secondary": {"worker"},
+		},
+		Profiles: map[string]config.ProfileEntry{
+			"anthropic": {
+				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
+				"worker":      {Provider: "anthropic", Model: "anthropic/claude-default-worker"},
+			},
+			"gemini-hybrid": {
+				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
+				"worker":      {Provider: "google", Model: "google/gemini-runtime-worker", Thinking: "medium"},
+			},
+		},
+		ContainerWorkerConfig: `{"$schema":"https://opencode.ai/opencode.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
+	}
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	bareRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot, "feature-branch")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@runtime-overlay"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if capturedOpts.ConfigContent == "" {
+		t.Fatalf("opts.ConfigContent is empty — expected overlaid blob")
+	}
+	if !strings.Contains(capturedOpts.ConfigContent, "google/gemini-runtime-worker") {
+		t.Errorf("opts.ConfigContent = %q\nwant overlaid model google/gemini-runtime-worker (active runtime profile)", capturedOpts.ConfigContent)
+	}
+	if strings.Contains(capturedOpts.ConfigContent, "anthropic/claude-default-worker") {
+		t.Errorf("opts.ConfigContent still contains nix-default model — overlay did not apply: %q", capturedOpts.ConfigContent)
+	}
+}
+
 // TestRestoreSession_ContainerMode_ProfilesError verifies that a profiles.json
 // load error is non-fatal for restore: the session is still created and
 // opts.ConfigContent is left empty (no injection), rather than aborting the
