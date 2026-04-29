@@ -230,15 +230,27 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// Podman mode delivers the prompt through the sidecar (StartSidecarOpts
 	// .InitialPrompt → opencode --prompt inside the container), so it does
 	// not need a tmux-side env var at all and is intentionally skipped here.
-	// Host mode under LayoutAgentOnly is not produced by any caller today —
-	// review agents run under bwrap/sandbox-exec/podman — so it is also
-	// skipped; if that ever changes, extend the gate consciously rather
-	// than silently.
+	// All other modes (host and sandbox) write the prompt file regardless of
+	// layout — see the needsPromptFile gate below (#1195).
 	mode := resolveLayoutIsolationMode(opts)
 	var promptFilePath string
 	isSandbox := mode == "bwrap" || mode == "sandbox-exec"
-	needsPromptFile := opts.Prompt != "" && (opts.Layout == LayoutFull && mode == "host" ||
-		isSandbox)
+	// needsPromptFile is true for every mode/layout combination that carries a
+	// non-empty prompt. Before #1195, the gate was:
+	//
+	//   (LayoutFull && host) || isSandbox
+	//
+	// which silently excluded LayoutAgentOnly+host — the Darwin coordinator's
+	// review fan-out path. That left `spawnAgentPaneEnvVars` to fall back to
+	// the legacy PRISM_INITIAL_PROMPT=<blob> env var, re-introducing the
+	// HostLaunchCmdSafeBound failure that #1092 fixed for other modes.
+	//
+	// Post-#1195: the invariant is universal — **every** mode/layout
+	// combination with a non-empty prompt uses the file path. LayoutBare and
+	// LayoutScratchpad never carry prompts (those layouts are for shells and
+	// dashboards, not agent panes), so the `opts.Prompt != ""` guard already
+	// excludes them without needing an explicit carve-out.
+	needsPromptFile := opts.Prompt != "" && (mode == "host" || isSandbox)
 	if needsPromptFile {
 		path, writeErr := WriteInitialPrompt(opts.SessionName, opts.Prompt)
 		if writeErr != nil {
@@ -253,18 +265,24 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: wrote initial-prompt file (%d bytes) to %s", len(opts.Prompt), path)
 	}
 
-	// #1064 AC-6 / #1092: pre-spawn size check. Build the launch command
-	// preview using the same Opts shape that the layout spawner will reuse
-	// below, and reject any session whose tmux-bound command exceeds the
-	// safe bound. Doing this BEFORE any tmux state is created means a
+	// #1064 AC-6 / #1092 / #1195: pre-spawn size check. Build the launch
+	// command preview using the same Opts shape that the layout spawner will
+	// reuse below, and reject any session whose tmux-bound command exceeds
+	// the safe bound. Doing this BEFORE any tmux state is created means a
 	// rejected spawn has no observable side effects on the tmux server.
 	//
-	// Three combinations are guarded:
+	// Four combinations are guarded:
 	//
 	//   - LayoutFull + host: BuildOpencodeCmd returns the direct opencode
 	//     invocation. Without the prompt-file plumbing the prompt body
 	//     would be inlined onto `sh -c <cmd>`; with it the cmd stays O(1)
 	//     in prompt size.
+	//
+	//   - LayoutAgentOnly + host (#1195): review agents on Darwin coordinators
+	//     run in host mode. Pre-#1195 this cell was missing from the gate and
+	//     from the needsPromptFile logic above, causing PRISM_INITIAL_PROMPT
+	//     inline delivery with its HostLaunchCmdSafeBound failure mode. Now
+	//     covered by the unified gate below.
 	//
 	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec:
 	//     BuildOpencodeCmd returns `prism agent-run --session <name>`,
@@ -279,7 +297,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// podman path is intentionally not guarded.
 	hostLaunchCmdSize := 0
 	switch {
-	case opts.Layout == LayoutFull && mode == "host":
+	case mode == "host" && opts.Layout == LayoutFull:
 		previewOpts := buildOptsForLayout(opts, 0, promptFilePath)
 		hostLaunchCmd := BuildOpencodeCmd(previewOpts)
 		hostLaunchCmdSize = len(hostLaunchCmd)
@@ -298,6 +316,48 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		}
 		startup.log("spawn-session: host launch command size %d (safe bound %d, warn threshold %d)",
 			hostLaunchCmdSize, HostLaunchCmdSafeBound, HostLaunchCmdWarnThreshold)
+
+	case mode == "host" && opts.Layout == LayoutAgentOnly:
+		// LayoutAgentOnly + host: Darwin coordinator review fan-out (#1195).
+		// The agent command is `prism agent-run --session <name>` in bwrap
+		// and sandbox-exec, but for host mode it is a direct opencode
+		// invocation — same as LayoutFull + host but without the sidecar-
+		// managed 3-window layout. The env-var map carries PRISM_INITIAL_PROMPT_FILE
+		// (post-#1195 path); measure the full contribution so any exotic
+		// ConfigContent or large session name is caught here.
+		previewEnvs := spawnAgentPaneEnvVars(SpawnOpts{
+			Prompt:         opts.Prompt,
+			PromptFilePath: promptFilePath,
+		})
+		size := 0
+		for k, v := range previewEnvs {
+			size += len(k) + len(v) + 4
+		}
+		// The host-mode LayoutAgentOnly command is built inside
+		// spawnAgentOnlyLayout; approximate via buildDirectOpencodeCmd.
+		previewOpts := Opts{
+			Prompt:           opts.Prompt,
+			PromptFilePath:   promptFilePath,
+			Agent:            opts.AgentRole,
+			SessionName:      opts.SessionName,
+			Port:             0,
+			IsolationMode:    mode,
+			ConfigEnvVarName: opts.ConfigEnvVarName,
+		}
+		size += len(BuildOpencodeCmd(previewOpts))
+		hostLaunchCmdSize = size
+		if size > HostLaunchCmdSafeBound {
+			startup.log("spawn-session: host/LayoutAgentOnly launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
+				size, HostLaunchCmdSafeBound)
+			removeInitialPrompt(opts.SessionName)
+			return &HostLaunchCmdTooLargeError{
+				SessionName: opts.SessionName,
+				CmdSize:     size,
+				SafeBound:   HostLaunchCmdSafeBound,
+			}
+		}
+		startup.log("spawn-session: host/LayoutAgentOnly launch command size %d (safe bound %d)",
+			size, HostLaunchCmdSafeBound)
 
 	case isSandbox && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly):
 		// Mirror what the layout spawner will hand to tmux: the agentCmd
@@ -559,18 +619,17 @@ func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
 // tmux pane. It mirrors session.agentPaneEnvVars but takes SpawnOpts directly,
 // since the two layout paths use different opts structs.
 //
-// When opts.PromptFilePath is non-empty (the post-#1092 path), PRISM_INITIAL_PROMPT_FILE
-// carries the path to the prompt file and the prompt body itself is NOT
-// inlined into tmux's argv. `prism agent-run` reads the file when it sees
-// the env var and feeds the contents to bwrap's --prompt CLI-append path.
-// This keeps the tmux launch command O(1) in prompt size — the failure mode
-// the role prompt was hitting in #1092.
+// When opts.PromptFilePath is non-empty (the post-#1092/#1195 path),
+// PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the prompt
+// body itself is NOT inlined into tmux's argv. `prism agent-run` reads the
+// file when it sees the env var and feeds the contents to the agent's --prompt
+// path. This keeps the tmux launch command O(1) in prompt size.
 //
-// When opts.PromptFilePath is empty but opts.Prompt is non-empty, fall back
-// to the legacy PRISM_INITIAL_PROMPT env var (used by callers that have not
-// opted into the file path; SpawnSession itself always writes the file for
-// bwrap/sandbox-exec, so this branch is exercised only by direct callers
-// of the helper or future modes added without prompt-file plumbing).
+// SpawnSession always writes the prompt file when there is a non-empty prompt,
+// regardless of isolation mode or layout, so the legacy PRISM_INITIAL_PROMPT
+// inline branch below is exercised only by direct callers of this helper (e.g.
+// test code) that pass Prompt without going through SpawnSession. Every
+// production callsite goes through SpawnSession and receives a file path.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux
 // (an empty-string entry would override an inherited value, which is not
@@ -638,6 +697,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// container.
 	buildOpts := Opts{
 		Prompt:           opts.Prompt,
+		PromptFilePath:   opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
 		Agent:            opts.AgentRole,
 		ConfigContent:    opts.ConfigContent,
 		SessionName:      opts.SessionName,

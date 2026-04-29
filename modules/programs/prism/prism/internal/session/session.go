@@ -572,19 +572,19 @@ func Create(name, directory string, opts Opts) error {
 
 // agentPaneEnvVars builds the env-var map for the agent tmux pane.
 //
-// When opts.PromptFilePath is non-empty (the post-#1092 path),
+// When opts.PromptFilePath is non-empty (the post-#1092/#1195 path),
 // PRISM_INITIAL_PROMPT_FILE carries the path to the prompt file and the
 // prompt body itself is NOT inlined into tmux's argv. `prism agent-run`
 // reads the file when it sees the env var and feeds the contents to
-// bwrap's --prompt CLI-append path. This keeps the launch-command size
-// O(1) in prompt size — the failure mode #1092 hit on review fan-outs.
+// the agent's --prompt path. This keeps the launch-command size O(1) in
+// prompt size.
 //
-// When opts.PromptFilePath is empty but opts.Prompt is non-empty, fall
-// back to the legacy inline PRISM_INITIAL_PROMPT env var. SpawnSession
-// always writes the prompt file for bwrap/sandbox-exec, so this branch
-// is exercised only by direct callers that have not opted into the file
-// path (e.g. test code or future modes added without prompt-file
-// plumbing).
+// SpawnSession always writes the prompt file when there is a non-empty
+// prompt, regardless of isolation mode or layout, so the legacy
+// PRISM_INITIAL_PROMPT inline branch below is exercised only by direct
+// callers that have not opted into the file path (e.g. test code).
+// Every production callsite goes through SpawnSession and receives a
+// file path.
 //
 // Skipped entirely for host mode: the host-mode launch path reads the
 // prompt directly via $(cat …) (see buildDirectOpencodeCmd / #1064), so
