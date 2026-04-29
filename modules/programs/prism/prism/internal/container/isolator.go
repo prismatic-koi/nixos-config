@@ -37,9 +37,9 @@ type Capabilities struct {
 	// NeedsConfigBlob means the harness config blob must be supplied via
 	// env-var or on-disk file before the process starts. True for podman,
 	// bwrap, and sandbox-exec; false for host.
-	// Cites: cmd/spawn.go:311-357, cmd/switch.go:1069-1108,
-	//        cmd/restore.go:269-292, cmd/pr.go:77-170,
-	//        internal/review/review.go:1230.
+	// Cites: cmd/spawn.go:339-392, cmd/switch.go:308-348,
+	//        cmd/restore.go:346-393, cmd/pr.go:120-186,
+	//        internal/review/run.go:131-149, :356-374.
 	NeedsConfigBlob bool
 
 	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for
@@ -124,6 +124,79 @@ type Isolator interface {
 	// DumpLogs writes the isolated process's stdout/stderr to the sidecar log
 	// so startup failures are visible without racing the cleanup path.
 	DumpLogs()
+
+	// ----- A1.D1-D7 dispatch methods -----------------------------------------
+	//
+	// Implementations live in dispatch.go. Each method's body is mechanically
+	// equivalent to the per-mode switch/if branch it replaces — see the
+	// per-method comments in dispatch.go for the call-site citations.
+
+	// Available reports whether this isolator can run on the current host.
+	// Returns nil for "yes" or a wrapped, user-facing error describing the
+	// missing prerequisite. For platform-only checks (bwrap → Linux,
+	// sandbox-exec → Darwin) the error names the required platform.
+	// Cites: cmd/spawn.go:190-204 (checkBwrapPlatform / checkSandboxExecPlatform);
+	//        internal/container/container.go:1315 (CheckAvailability for podman).
+	Available() error
+
+	// Cap returns the soft concurrency-cap descriptor for this isolator.
+	// The existing per-mode helpers in cmd/concurrency.go remain the source
+	// of truth for message rendering until A.3 (#1132) unifies them; today
+	// every implementation returns a zero-value CapStatus. The method exists
+	// so callers can route through registry.For(mode).Cap(...) without
+	// branching on the literal mode value.
+	// Cites: cmd/concurrency.go:35-57 (podman), :72-140 (sandbox-exec),
+	//        :155-223 (bwrap).
+	Cap(in CapInputs) CapStatus
+
+	// WriteHarnessConfigBlob writes the harness configuration blob (the
+	// role-specific opencode.json) to the deterministic per-session temp
+	// path so it can be read back by the sandbox at start time. The same
+	// gate that the call site applies (NeedsConfigBlob && content != "")
+	// is encoded here as: empty content is a no-op, host returns nil.
+	// sessionName is the prism session name; the isolator translates it
+	// to the container name internally so the path matches the read site
+	// (Manager.opencodeConfigFilePath).
+	// Cites: cmd/spawn.go:386-392, cmd/pr.go:171-177, cmd/restore.go:385-388,
+	//        cmd/switch.go:316-348 / :400-403, cmd/switch_project.go:161-503.
+	WriteHarnessConfigBlob(sessionName, content string) error
+
+	// AgentPaneCmd returns the shell command string emitted into the tmux
+	// agent pane for this session.
+	//   - podman:                "podman attach --sig-proxy=false <container>"
+	//   - bwrap, sandbox-exec:   "prism agent-run --session <session>"
+	//   - host:                  the DirectCmd supplied by the caller
+	// Cites: internal/session/session.go:265-298 (BuildOpencodeCmd switch).
+	AgentPaneCmd(opts AgentPaneOpts) string
+
+	// SidecarFlags returns the per-mode argv extensions appended to the
+	// `prism sidecar` command line for sessions that use this mode. The
+	// non-conditional --isolation-mode flag is added by the caller (the
+	// sidecar still needs to look up its own isolator after re-exec); this
+	// method returns the rest.
+	// Cites: internal/session/sidecar.go:311-353 (StartSidecarWithOpts argv).
+	SidecarFlags(opts SidecarFlagOpts) []string
+
+	// ArchivePaths returns the per-mode storage-root and extra-file set the
+	// archive copy step consumes. home is the value of os.UserHomeDir(); it
+	// is passed in rather than resolved here so callers can inject a temp
+	// directory under test. sessionName is the prism session name (used
+	// to derive the per-container storage path on podman and the agent-run
+	// log path on bwrap / sandbox-exec).
+	//
+	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface): once that
+	// lands, the archive-side dispatch moves to ArchiveAdapter and this
+	// method may be removed.
+	// Cites: internal/archive/archive.go:260-275 (resolveStorageRoot switch).
+	ArchivePaths(home, sessionName string) ArchivePaths
+
+	// LogPaths returns the per-mode log-file set for this session. Today
+	// the values are zero-initialised — no caller dispatches per-mode for
+	// log-path resolution. The method exists so future call sites can
+	// route through registry.For(mode).LogPaths() without re-touching the
+	// interface.
+	// Cites: A1 §3 (LogPaths future shape).
+	LogPaths() LogPaths
 }
 
 // podmanIsolator implements Isolator using rootless podman.
@@ -152,15 +225,15 @@ func (p *podmanIsolator) Name() config.IsolationMode {
 //   - EmitsTmuxStatusColumns: podman sessions seed the tmux status columns.
 func (p *podmanIsolator) Capabilities() Capabilities {
 	return Capabilities{
-		IsContainer:            true,
-		OwnsContainerLifecycle: true,
-		NeedsConfigBlob:        true,
-		NeedsHostAPISocket:     false,
-		UsesContainerHarness:   true,
-		RestartOnExit:          true,
+		IsContainer:                true,
+		OwnsContainerLifecycle:     true,
+		NeedsConfigBlob:            true,
+		NeedsHostAPISocket:         false,
+		UsesContainerHarness:       true,
+		RestartOnExit:              true,
 		NeedsStartupConnectTimeout: false,
-		NeedsReadinessWait:     true,
-		EmitsTmuxStatusColumns: true,
+		NeedsReadinessWait:         true,
+		EmitsTmuxStatusColumns:     true,
 	}
 }
 

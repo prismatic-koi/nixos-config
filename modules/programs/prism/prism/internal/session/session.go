@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
@@ -262,40 +263,22 @@ func effectiveIsolationMode(opts Opts) string {
 //   - "bwrap":        "prism agent-run --session <session-name>"
 //   - "sandbox-exec": "prism agent-run --session <session-name>"
 //   - "host":         direct opencode invocation (default)
+//
+// D4 (issue #1133): the per-mode switch collapses into a single
+// Isolator.AgentPaneCmd dispatch. Unknown / unregistered modes fall back to
+// the direct (host-shape) command — matching the pre-refactor "default" arm.
 func BuildOpencodeCmd(opts Opts) string {
-	mode := effectiveIsolationMode(opts)
-	switch mode {
-	case "podman":
-		if opts.SessionName == "" {
-			// Shouldn't happen — callers must set SessionName before enabling
-			// container mode. Fall back to the non-container command.
-			return buildDirectOpencodeCmd(opts)
-		}
-		// Use podman attach to bridge the tmux pane to the container's PTY.
-		// The container runs opencode in combined TUI + HTTP mode; "podman attach"
-		// connects stdin/stdout to the container PTY so the TUI is fully interactive.
-		// --sig-proxy=false prevents podman from forwarding signals (e.g. SIGINT from
-		// Ctrl-C) to the container process; instead the ^C byte reaches opencode's TUI
-		// as literal stdin input, which it handles as an interrupt keystroke — matching
-		// host-mode behaviour where Ctrl-C interrupts the current turn, not the process.
-		// The container name is shell-quoted so that any unexpected characters in
-		// the session name cannot be interpreted as shell metacharacters when
-		// buildReadinessWaitCmd embeds this string in the readiness shell script.
-		return "podman attach --sig-proxy=false " + shellQuote(container.NameForSession(opts.SessionName))
-
-	case "bwrap", "sandbox-exec":
-		if opts.SessionName == "" {
-			// Shouldn't happen — fall back to direct opencode command.
-			return buildDirectOpencodeCmd(opts)
-		}
-		// Both bwrap and sandbox-exec sandboxes are owned by the tmux pane,
-		// not the sidecar. "prism agent-run" reads the session's isolation mode
-		// from the DB and dispatches to the appropriate sandbox invocation.
-		return "prism agent-run --session " + shellQuote(opts.SessionName)
-
-	default: // "host" or any unknown value
-		return buildDirectOpencodeCmd(opts)
+	mode := config.IsolationMode(effectiveIsolationMode(opts))
+	direct := buildDirectOpencodeCmd(opts)
+	iso, err := container.For(mode, container.ConstructorOpts{Name: opts.SessionName})
+	if err != nil {
+		// Unknown mode: behave like the pre-refactor default arm.
+		return direct
 	}
+	return iso.AgentPaneCmd(container.AgentPaneOpts{
+		SessionName: opts.SessionName,
+		DirectCmd:   direct,
+	})
 }
 
 // buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).

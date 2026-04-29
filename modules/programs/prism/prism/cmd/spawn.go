@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -162,6 +161,12 @@ func init() {
 // --isolation has an unknown value, or if the resolved mode is "bwrap" on
 // a non-Linux platform, or if the resolved mode is "sandbox-exec" on a
 // non-Darwin platform.
+//
+// D1 (issue #1133): platform availability is checked via the registered
+// Isolator's Available() method — but only for non-container modes. The
+// podman binary/socket/image checks live in the runSpawn caller (gated by
+// isoCaps.IsContainer) so resolveIsolationMode keeps its pre-refactor
+// surface (no podman daemon required to resolve the mode under test).
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
@@ -176,31 +181,21 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	if err != nil {
 		return "", err
 	}
-	if err := checkBwrapPlatform(mode); err != nil {
+	// Skip Available() for container modes — the container availability
+	// check (podman binary, socket, image) runs later in runSpawn so it
+	// happens after the worktree-irrelevant pre-flight is complete and so
+	// resolveIsolationMode itself stays usable on hosts without podman.
+	if container.CapabilitiesFor(mode).IsContainer {
+		return mode, nil
+	}
+	iso, err := container.For(mode, container.ConstructorOpts{})
+	if err != nil {
 		return "", err
 	}
-	if err := checkSandboxExecPlatform(mode); err != nil {
+	if err := iso.Available(); err != nil {
 		return "", err
 	}
 	return mode, nil
-}
-
-// checkBwrapPlatform returns an error if the isolation mode is "bwrap" on a
-// non-Linux platform (bubblewrap is Linux-only).
-func checkBwrapPlatform(mode config.IsolationMode) error {
-	if mode == config.IsolationBwrap && runtime.GOOS != "linux" {
-		return fmt.Errorf("isolation mode %q requires Linux; current platform is %s", mode, runtime.GOOS)
-	}
-	return nil
-}
-
-// checkSandboxExecPlatform returns an error if the isolation mode is
-// "sandbox-exec" on a non-Darwin platform (sandbox-exec is macOS-only).
-func checkSandboxExecPlatform(mode config.IsolationMode) error {
-	if mode == config.IsolationSandboxExec && runtime.GOOS != "darwin" {
-		return fmt.Errorf("isolation mode %q requires macOS (Darwin); current platform is %s", mode, runtime.GOOS)
-	}
-	return nil
 }
 
 func runSpawn(cmd *cobra.Command, args []string) error {
@@ -252,9 +247,16 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	isoCaps := container.CapabilitiesFor(isolationMode)
 
 	// Container availability check: when container mode is active verify
-	// podman is available before touching anything.
+	// podman is available before touching anything. resolveIsolationMode
+	// has already validated platform availability for bwrap / sandbox-exec
+	// (D1: iso.Available()); the podman binary/socket/image checks remain
+	// here because they fire only when isoCaps.IsContainer.
 	if isoCaps.IsContainer {
-		if err := container.CheckAvailability(); err != nil {
+		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{})
+		if isoErr != nil {
+			return isoErr
+		}
+		if err := iso.Available(); err != nil {
 			return err
 		}
 	}
@@ -265,18 +267,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// The bwrap cap guards against process-count exhaustion from uncapped
 	// bwrap sessions (each is a host process with no per-session memory ceil).
 	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
-	if err := checkConcurrencyCap(cmd, "spawn", isoCaps.IsContainer); err != nil {
+	//
+	// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
+	// single runConcurrencyCap dispatch.
+	if err := runConcurrencyCap(cmd, "spawn", isolationMode, isoCaps); err != nil {
 		return err
-	}
-	if isolationMode == config.IsolationBwrap {
-		if err := checkBwrapConcurrencyCap(cmd, "spawn"); err != nil {
-			return err
-		}
-	}
-	if isolationMode == config.IsolationSandboxExec {
-		if err := checkSandboxExecConcurrencyCap(cmd, "spawn"); err != nil {
-			return err
-		}
 	}
 
 	// Load the profiles file. It carries container role configs, model profile
@@ -407,12 +402,16 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// IMPORTANT: the path key used here must match the one used by Manager
 	// internally. Manager.name = container.NameForSession(tmuxSessionName)
 	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
-	// calls OpencodeConfigFilePath(m.name). So we must pass the container name
-	// (not the raw tmux session name) to WriteOpencodeConfig.
+	// calls OpencodeConfigFilePath(m.name). The Isolator.WriteHarnessConfigBlob
+	// method translates the prism session name to the container name internally
+	// so this call site stays mode-agnostic (D3, issue #1133).
 	if isoCaps.NeedsConfigBlob && configContent != "" {
 		tmuxSessionName := session.NameFor(worktreePath, bareRoot)
-		containerName := container.NameForSession(tmuxSessionName)
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{Name: tmuxSessionName})
+		if isoErr != nil {
+			return fmt.Errorf("spawn: %w", isoErr)
+		}
+		if err := iso.WriteHarnessConfigBlob(tmuxSessionName, configContent); err != nil {
 			return fmt.Errorf("spawn: %w", err)
 		}
 	}

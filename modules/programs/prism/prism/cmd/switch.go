@@ -25,6 +25,28 @@ import (
 
 // ── session management ────────────────────────────────────────────────────────
 
+// writeHarnessConfigBlobFor dispatches the per-mode "write opencode.json blob
+// to the deterministic per-session temp path" step through the registered
+// Isolator (D3, issue #1133). cmdName is used in the error wrapper so the
+// caller's command name surfaces in user-facing messages.
+//
+// content == "" is treated as a no-op so callers can call this unconditionally
+// after the NeedsConfigBlob gate; the gate / empty-content combination is
+// what each pre-refactor branch checked before calling WriteOpencodeConfig.
+func writeHarnessConfigBlobFor(mode config.IsolationMode, sessionName, content, cmdName string) error {
+	if content == "" {
+		return nil
+	}
+	iso, err := container.For(mode, container.ConstructorOpts{Name: sessionName})
+	if err != nil {
+		return fmt.Errorf("%s: %w", cmdName, err)
+	}
+	if err := iso.WriteHarnessConfigBlob(sessionName, content); err != nil {
+		return fmt.Errorf("%s: %w", cmdName, err)
+	}
+	return nil
+}
+
 // injectContainerConfig loads the role-specific opencode.json blob from
 // profiles.json and sets opts.ConfigContent when sandboxed mode is active.
 // This mirrors the pattern in spawn.go and must be called after the final
@@ -310,11 +332,9 @@ var switchCmd = &cobra.Command{
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
-					tmuxSessionName := session.NameFor(worktrees[0], p)
-					containerName := container.NameForSession(tmuxSessionName)
-					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
-						return fmt.Errorf("switch: %w", err)
+				if isoCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(worktrees[0], p), o.ConfigContent, "switch"); err != nil {
+						return err
 					}
 				}
 				return ensureAndSwitch(worktrees[0], p, o)
@@ -326,11 +346,9 @@ var switchCmd = &cobra.Command{
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
-					tmuxSessionName := session.NameFor(p, bareRoot)
-					containerName := container.NameForSession(tmuxSessionName)
-					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
-						return fmt.Errorf("switch: %w", err)
+				if isoCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, bareRoot), o.ConfigContent, "switch"); err != nil {
+						return err
 					}
 				}
 				return ensureAndSwitch(p, bareRoot, o)
@@ -341,11 +359,9 @@ var switchCmd = &cobra.Command{
 					return err
 				}
 			}
-			if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
-				tmuxSessionName := session.NameFor(p, "")
-				containerName := container.NameForSession(tmuxSessionName)
-				if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
-					return fmt.Errorf("switch: %w", err)
+			if isoCaps.NeedsConfigBlob {
+				if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
+					return err
 				}
 			}
 			return ensureAndSwitch(p, "", o)
@@ -394,11 +410,9 @@ var switchCmd = &cobra.Command{
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob && o.ConfigContent != "" {
-					tmuxSessionName := session.NameFor(p, "")
-					containerName := container.NameForSession(tmuxSessionName)
-					if err := container.WriteOpencodeConfig(containerName, o.ConfigContent); err != nil {
-						return fmt.Errorf("switch: %w", err)
+				if isoCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
+						return err
 					}
 				}
 				return ensureAndSwitch(p, "", o)

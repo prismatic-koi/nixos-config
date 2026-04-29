@@ -87,13 +87,10 @@ var prCmd = &cobra.Command{
 
 		// Concurrency cap checks: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
-		if err := checkConcurrencyCap(cmd, "pr", isoCaps.IsContainer); err != nil {
+		// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
+		// single runConcurrencyCap dispatch.
+		if err := runConcurrencyCap(cmd, "pr", isoMode, isoCaps); err != nil {
 			return err
-		}
-		if isoMode == config.IsolationBwrap {
-			if err := checkBwrapConcurrencyCap(cmd, "pr"); err != nil {
-				return err
-			}
 		}
 
 		branch, err := resolveBranch(bareRoot, "", prNumber)
@@ -166,12 +163,16 @@ var prCmd = &cobra.Command{
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(tmuxSessionName),
 		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
-		// So we must pass the container name (not the raw tmux session name) to
-		// WriteOpencodeConfig. This mirrors the pattern in spawn.go.
+		// Isolator.WriteHarnessConfigBlob translates the prism session name to the
+		// container name internally so this call site stays mode-agnostic (D3,
+		// issue #1133). Mirrors the pattern in spawn.go.
 		if isoCaps.NeedsConfigBlob && configContent != "" {
 			tmuxSessionName := session.NameFor(worktreePath, bareRoot)
-			containerName := container.NameForSession(tmuxSessionName)
-			if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+			iso, isoIsoErr := container.For(isoMode, container.ConstructorOpts{Name: tmuxSessionName})
+			if isoIsoErr != nil {
+				return fmt.Errorf("prism pr: %w", isoIsoErr)
+			}
+			if err := iso.WriteHarnessConfigBlob(tmuxSessionName, configContent); err != nil {
 				return fmt.Errorf("prism pr: %w", err)
 			}
 		}

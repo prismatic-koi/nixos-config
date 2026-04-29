@@ -379,11 +379,11 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(s.SessionName),
 		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
-		// So we must pass the container name (not the raw tmux session name) to
-		// WriteOpencodeConfig. This mirrors the pattern in spawn.go.
+		// Isolator.WriteHarnessConfigBlob translates the prism session name to
+		// the container name internally so this call site stays mode-agnostic
+		// (D3, issue #1133). Mirrors the pattern in spawn.go.
 		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			containerName := container.NameForSession(s.SessionName)
-			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
+			if err := writeHarnessConfigBlobFor(isoMode, s.SessionName, opts.ConfigContent, "restore"); err != nil {
 				// Non-fatal: log and continue with restore. The session will
 				// still be re-spawned; it just won't have the opencode.json
 				// mounted. This matches the general "restore is best-effort"
