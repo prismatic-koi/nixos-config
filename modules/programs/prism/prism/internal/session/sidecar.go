@@ -22,6 +22,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // sessionDirHashLen is the number of hex characters used as the per-session
@@ -310,45 +313,30 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 
 	// Pass --isolation-mode when set; the sidecar uses this to branch on
 	// container creation, harness selection, and host-API socket setup.
+	// The flag survives the registry move because the spawned sidecar still
+	// needs to look up its own isolator after re-exec.
 	if opts.IsolationMode != "" {
 		cmdArgs = append(cmdArgs, "--isolation-mode", opts.IsolationMode)
 	}
 
-	// --container enables the full container lifecycle (podman create/stop/rm).
-	// For bwrap and sandbox-exec modes the sidecar is started but --container
-	// is NOT passed — the sandbox's process lifecycle is owned by the tmux pane
-	// (prism agent-run).
-	if opts.IsolationMode == "podman" {
-		cmdArgs = append(cmdArgs, "--container")
-		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
-		if opts.AgentRole != "" {
-			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)
-		}
-		if opts.PluginHostPath != "" {
-			cmdArgs = append(cmdArgs, "--plugin-path", opts.PluginHostPath)
-		}
-		if opts.InitialPrompt != "" {
-			cmdArgs = append(cmdArgs, "--initial-prompt", opts.InitialPrompt)
-		}
-		if opts.ConfigContent != "" {
-			cmdArgs = append(cmdArgs, "--config-content", opts.ConfigContent)
-		}
-	} else if opts.IsolationMode == "bwrap" || opts.IsolationMode == "sandbox-exec" {
-		// bwrap and sandbox-exec modes: pass --port and common options but not
-		// --container. The sidecar sets up the host-API socket and harness but
-		// does not create a container.
-		cmdArgs = append(cmdArgs, "--port", strconv.Itoa(opts.Port))
-		if opts.AgentRole != "" {
-			cmdArgs = append(cmdArgs, "--agent-role", opts.AgentRole)
-		}
-		if opts.PluginHostPath != "" {
-			cmdArgs = append(cmdArgs, "--plugin-path", opts.PluginHostPath)
-		}
-		if opts.InitialPrompt != "" {
-			cmdArgs = append(cmdArgs, "--initial-prompt", opts.InitialPrompt)
-		}
-		if opts.ConfigContent != "" {
-			cmdArgs = append(cmdArgs, "--config-content", opts.ConfigContent)
+	// D5 (issue #1133): the per-mode argv branches collapse into a single
+	// Isolator.SidecarFlags dispatch.
+	//
+	//   - podman:               --container --port --agent-role --plugin-path …
+	//   - bwrap, sandbox-exec:  --port --agent-role --plugin-path …  (no --container)
+	//   - host:                 nil (the sidecar is not started for host)
+	//
+	// The pre-refactor branch lived at internal/session/sidecar.go:317-352.
+	if opts.IsolationMode != "" {
+		iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: sessionName})
+		if isoErr == nil {
+			cmdArgs = append(cmdArgs, iso.SidecarFlags(container.SidecarFlagOpts{
+				Port:           opts.Port,
+				AgentRole:      opts.AgentRole,
+				PluginHostPath: opts.PluginHostPath,
+				InitialPrompt:  opts.InitialPrompt,
+				ConfigContent:  opts.ConfigContent,
+			})...)
 		}
 	}
 	if opts.InstanceID != "" {

@@ -188,13 +188,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// decisions reflect the session's actual mode rather than the machine
 	// default. The PRISM_HOST_API proxy-out branch above already returned, so
 	// by this point we are guaranteed to be on the host.
-	if err := checkConcurrencyCap(cmd, "review", isoCaps.IsContainer); err != nil {
+	//
+	// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
+	// single runConcurrencyCap dispatch.
+	if err := runConcurrencyCap(cmd, "review", isoMode, isoCaps); err != nil {
 		return err
-	}
-	if isoMode == config.IsolationBwrap {
-		if err := checkBwrapConcurrencyCap(cmd, "review"); err != nil {
-			return err
-		}
 	}
 
 	if len(agents) == 0 {

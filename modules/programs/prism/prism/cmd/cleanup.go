@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/archive"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
@@ -846,10 +847,42 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if sess.PrismVersion != nil {
 		params.PrismVersion = *sess.PrismVersion
 	}
-	// Include the agent-run log when it exists. Non-fatal if the path cannot
-	// be resolved — non-bwrap sessions never create this file.
-	if agentRunLogPath, arLogErr := prismSession.AgentRunLogPath(sessionName); arLogErr == nil {
-		params.AgentRunLogPath = agentRunLogPath
+	// D6 (issue #1133): pre-resolve the per-mode storage root and extra-file
+	// set via the registered Isolator, then pass them in via params. This
+	// keeps the per-mode dispatch out of the archive package (which cannot
+	// import internal/container without a circular dependency). When
+	// statusIsolationMode is empty or unregistered, params.StorageRoot is
+	// left empty and archive.resolveStorageRoot falls back to the legacy
+	// IsolationMode-keyed switch — matching the pre-refactor behaviour.
+	//
+	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface). Once that
+	// lands, the archive-side resolution moves to ArchiveAdapter.
+	if statusIsolationMode != "" {
+		if home, homeErr := os.UserHomeDir(); homeErr == nil {
+			if iso, isoErr := container.For(config.IsolationMode(statusIsolationMode), container.ConstructorOpts{Name: sessionName}); isoErr == nil {
+				ap := iso.ArchivePaths(home, sessionName)
+				if params.StorageRoot == "" {
+					params.StorageRoot = ap.StorageRoot
+				}
+				if params.AgentRunLogPath == "" && len(ap.ExtraFiles) > 0 {
+					// Today ExtraFiles for bwrap / sandbox-exec contains a
+					// single agent-run.log path; archive's manifest schema
+					// has a dedicated AgentRunLogPath field that we
+					// continue to populate. Once #1142 lands the archive
+					// package will consume ExtraFiles directly.
+					params.AgentRunLogPath = ap.ExtraFiles[0]
+				}
+			}
+		}
+	}
+	// Fallback: include the agent-run log via the legacy lookup when the
+	// registry path did not populate it (e.g. statusIsolationMode == "" on
+	// pre-migration rows). Non-fatal if the path cannot be resolved — non-
+	// bwrap sessions never create this file.
+	if params.AgentRunLogPath == "" {
+		if agentRunLogPath, arLogErr := prismSession.AgentRunLogPath(sessionName); arLogErr == nil {
+			params.AgentRunLogPath = agentRunLogPath
+		}
 	}
 
 	archivePath, archiveErr := archive.Run(params)

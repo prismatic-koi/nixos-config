@@ -155,11 +155,9 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			tmuxSessionName := session.NameFor(worktreePath, projectPath)
-			containerName := container.NameForSession(tmuxSessionName)
-			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-				return fmt.Errorf("switch: %w", err)
+		if isoCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktreePath, projectPath), opts.ConfigContent, "switch"); err != nil {
+				return err
 			}
 		}
 		return ensureAndSwitch(worktreePath, projectPath, opts)
@@ -170,11 +168,9 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 			return err
 		}
 	}
-	if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-		tmuxSessionName := session.NameFor(chosen.path, projectPath)
-		containerName := container.NameForSession(tmuxSessionName)
-		if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-			return fmt.Errorf("switch: %w", err)
+	if isoCaps.NeedsConfigBlob {
+		if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(chosen.path, projectPath), opts.ConfigContent, "switch"); err != nil {
+			return err
 		}
 	}
 	return ensureAndSwitch(chosen.path, projectPath, opts)
@@ -360,11 +356,9 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			tmuxSessionName := session.NameFor(path, "")
-			containerName := container.NameForSession(tmuxSessionName)
-			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-				return fmt.Errorf("switch: %w", err)
+		if isoCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+				return err
 			}
 		}
 		return ensureAndSwitch(path, "", opts)
@@ -392,11 +386,9 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 					return err
 				}
 			}
-			if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-				tmuxSessionName := session.NameFor(path, "")
-				containerName := container.NameForSession(tmuxSessionName)
-				if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-					return fmt.Errorf("switch: %w", err)
+			if isoCaps.NeedsConfigBlob {
+				if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+					return err
 				}
 			}
 			return ensureAndSwitch(path, "", opts)
@@ -433,11 +425,9 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			tmuxSessionName := session.NameFor(worktreePath, path)
-			containerName := container.NameForSession(tmuxSessionName)
-			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-				return fmt.Errorf("switch: %w", err)
+		if isoCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktreePath, path), opts.ConfigContent, "switch"); err != nil {
+				return err
 			}
 		}
 		return ensureAndSwitch(worktreePath, path, opts)
@@ -447,11 +437,9 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-			tmuxSessionName := session.NameFor(path, "")
-			containerName := container.NameForSession(tmuxSessionName)
-			if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-				return fmt.Errorf("switch: %w", err)
+		if isoCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+				return err
 			}
 		}
 		return ensureAndSwitch(path, "", opts)
@@ -496,11 +484,9 @@ func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoCaps contain
 			return err
 		}
 	}
-	if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
-		tmuxSessionName := session.NameFor(worktrees[0], targetDir)
-		containerName := container.NameForSession(tmuxSessionName)
-		if err := container.WriteOpencodeConfig(containerName, opts.ConfigContent); err != nil {
-			return fmt.Errorf("switch: %w", err)
+	if isoCaps.NeedsConfigBlob {
+		if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktrees[0], targetDir), opts.ConfigContent, "switch"); err != nil {
+			return err
 		}
 	}
 	return ensureAndSwitch(worktrees[0], targetDir, opts)

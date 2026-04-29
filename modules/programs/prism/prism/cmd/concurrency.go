@@ -6,6 +6,12 @@ package cmd
 // checkBwrapConcurrencyCap enforces the bwrap session cap.
 // checkSandboxExecConcurrencyCap enforces the sandbox-exec session cap.
 // All honour the --ignore-concurrency-cap flag on the supplied cobra.Command.
+//
+// runConcurrencyCap is the unified entry point used by D2 (issue #1133): it
+// dispatches to the per-mode helper based on the resolved isolation mode so
+// callers no longer branch on the literal mode value. The per-mode message
+// rendering inside each helper is the deliverable of A.3 (#1132); D2 just
+// collapses the dispatch.
 
 import (
 	"fmt"
@@ -18,6 +24,28 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 )
+
+// runConcurrencyCap dispatches the concurrency-cap check for the given
+// resolved isolation mode. It is the single call site every spawn / pr /
+// review path uses; the per-mode if-mode-X branches it replaces lived at
+// cmd/spawn.go:268-280, cmd/pr.go:90-97, cmd/review.go:191-198 before #1133.
+//
+// Today the dispatch routes to the existing per-mode helpers in this file
+// (each owns its own message rendering). A.3 (#1132) is the issue that
+// unifies the rendering; D2's mechanical refactor only collapses the
+// dispatch shape.
+func runConcurrencyCap(cmd *cobra.Command, callerName string, mode config.IsolationMode, caps container.Capabilities) error {
+	if err := checkConcurrencyCap(cmd, callerName, caps.IsContainer); err != nil {
+		return err
+	}
+	switch mode {
+	case config.IsolationBwrap:
+		return checkBwrapConcurrencyCap(cmd, callerName)
+	case config.IsolationSandboxExec:
+		return checkSandboxExecConcurrencyCap(cmd, callerName)
+	}
+	return nil
+}
 
 // checkConcurrencyCap checks the soft container concurrency cap.
 // Returns a non-nil error when the cap is exceeded and ignoreCap is false.
