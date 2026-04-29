@@ -9,26 +9,45 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 )
 
-// sampleProfilesFile returns a minimal ProfilesFile for testing.
+// sampleProfilesFile returns a minimal ProfilesFile for testing under the
+// role-keyed profile schema (#1206). Each profile is expanded into per-role
+// slots so coordinator/plan share the primary-tier slot, worker/review/ac
+// share the secondary-tier slot, and explore/title/summary/compaction share
+// the lightweight-tier slot — mirroring the migration shape produced by
+// profileFromTiers in profiles.nix.
 func sampleProfilesFile() *config.ProfilesFile {
+	roleMapping := map[string][]string{
+		"primary":     {"coordinator", "plan"},
+		"secondary":   {"worker", "review", "ac"},
+		"lightweight": {"explore", "title", "summary", "compaction"},
+	}
+	expand := func(primary, secondary, lightweight config.RoleSlot) config.ProfileEntry {
+		entry := config.ProfileEntry{}
+		for _, name := range roleMapping["primary"] {
+			entry[name] = primary
+		}
+		for _, name := range roleMapping["secondary"] {
+			entry[name] = secondary
+		}
+		for _, name := range roleMapping["lightweight"] {
+			entry[name] = lightweight
+		}
+		return entry
+	}
 	return &config.ProfilesFile{
-		Default: "anthropic",
-		RoleMapping: map[string][]string{
-			"primary":     {"coordinator", "plan"},
-			"secondary":   {"worker", "review", "ac"},
-			"lightweight": {"explore", "title", "summary", "compaction"},
-		},
+		Default:     "anthropic",
+		RoleMapping: roleMapping,
 		Profiles: map[string]config.ProfileEntry{
-			"anthropic": {
-				"primary":     {Model: "anthropic/claude-opus-4-6"},
-				"secondary":   {Model: "anthropic/claude-sonnet-4-6"},
-				"lightweight": {Model: "anthropic/claude-haiku-4-5"},
-			},
-			"gemini-hybrid": {
-				"primary":     {Model: "anthropic/claude-opus-4-6"},
-				"secondary":   {Model: "google/gemini-3.1-pro-preview-customtools", Variant: "medium"},
-				"lightweight": {Model: "anthropic/claude-haiku-4-5"},
-			},
+			"anthropic": expand(
+				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-opus-4-6"},
+				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-haiku-4-5"},
+			),
+			"gemini-hybrid": expand(
+				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-opus-4-6"},
+				config.RoleSlot{Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools", Thinking: "medium"},
+				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-haiku-4-5"},
+			),
 		},
 	}
 }
@@ -794,4 +813,309 @@ func TestLoadProfiles_ValidFile(t *testing.T) {
 	if _, ok := loaded.Profiles["gemini-hybrid"]; !ok {
 		t.Error("missing gemini-hybrid profile")
 	}
+}
+
+// ── Role-keyed schema (#1206) ─────────────────────────────────────────────────
+
+// TestSlotForRole_HitsAndMisses verifies that the role-keyed lookup returns
+// the slot for known roles and reports a clean miss for unknown roles. This
+// is the canonical accessor introduced by #1206 — every other helper that
+// resolves "what does role X get under profile Y" goes through it.
+func TestSlotForRole_HitsAndMisses(t *testing.T) {
+	pf := sampleProfilesFile()
+
+	// coordinator is in the primary tier of "anthropic".
+	slot, ok := config.SlotForRole(pf, "anthropic", "coordinator")
+	if !ok {
+		t.Fatal("expected coordinator slot for anthropic")
+	}
+	if slot.Model != "anthropic/claude-opus-4-6" {
+		t.Errorf("coordinator model: got %q, want anthropic/claude-opus-4-6", slot.Model)
+	}
+	if slot.Provider != "anthropic" {
+		t.Errorf("coordinator provider: got %q, want anthropic", slot.Provider)
+	}
+
+	// explore is in the lightweight tier of "anthropic".
+	slot, ok = config.SlotForRole(pf, "anthropic", "explore")
+	if !ok {
+		t.Fatal("expected explore slot for anthropic")
+	}
+	if slot.Model != "anthropic/claude-haiku-4-5" {
+		t.Errorf("explore model: got %q, want anthropic/claude-haiku-4-5", slot.Model)
+	}
+
+	// "build" is intentionally not in any tier — it inherits the top-level
+	// model rather than carrying a per-role override.
+	if _, ok := config.SlotForRole(pf, "anthropic", "build"); ok {
+		t.Error("build should not have a slot in the anthropic profile")
+	}
+
+	// Unknown profile: clean miss.
+	if _, ok := config.SlotForRole(pf, "nonexistent", "coordinator"); ok {
+		t.Error("expected miss for unknown profile, got hit")
+	}
+
+	// Nil pf: clean miss, no panic.
+	if _, ok := config.SlotForRole(nil, "anthropic", "coordinator"); ok {
+		t.Error("expected miss for nil pf, got hit")
+	}
+}
+
+// TestRequireSlot_PassesWhenPresent verifies that RequireSlot returns nil
+// when the active profile defines the requested slot.
+func TestRequireSlot_PassesWhenPresent(t *testing.T) {
+	pf := sampleProfilesFile()
+	if err := config.RequireSlot(pf, "anthropic", "coordinator"); err != nil {
+		t.Errorf("RequireSlot(anthropic, coordinator): unexpected error: %v", err)
+	}
+	if err := config.RequireSlot(pf, "gemini-hybrid", "worker"); err != nil {
+		t.Errorf("RequireSlot(gemini-hybrid, worker): unexpected error: %v", err)
+	}
+}
+
+// TestRequireSlot_FailsWhenSlotMissing verifies the spawn-time edge case
+// from #1206: a profile missing the slot the session needs must fail with a
+// clear error message that lists the slots the profile currently defines so
+// the operator can see the gap immediately.
+func TestRequireSlot_FailsWhenSlotMissing(t *testing.T) {
+	pf := &config.ProfilesFile{
+		Default: "minimal",
+		RoleMapping: map[string][]string{
+			"primary":   {"coordinator"},
+			"secondary": {"worker"},
+		},
+		Profiles: map[string]config.ProfileEntry{
+			"minimal": {
+				// only worker is defined — no coordinator slot.
+				"worker": {Model: "anthropic/claude-sonnet-4-6"},
+			},
+		},
+	}
+	err := config.RequireSlot(pf, "minimal", "coordinator")
+	if err == nil {
+		t.Fatal("expected error for missing coordinator slot, got nil")
+	}
+	msg := err.Error()
+	// Error must name the missing role …
+	if !contains(msg, "coordinator") {
+		t.Errorf("error %q does not mention the missing role 'coordinator'", msg)
+	}
+	// … the profile being checked …
+	if !contains(msg, "minimal") {
+		t.Errorf("error %q does not mention the profile 'minimal'", msg)
+	}
+	// … and list the slots the profile currently defines.
+	if !contains(msg, "worker") {
+		t.Errorf("error %q does not list defined slots (expected to see 'worker')", msg)
+	}
+}
+
+// TestRequireSlot_FailsWhenProfileUnknown verifies that an unknown profile
+// produces a clear error listing available profile names.
+func TestRequireSlot_FailsWhenProfileUnknown(t *testing.T) {
+	pf := sampleProfilesFile()
+	err := config.RequireSlot(pf, "nonexistent", "coordinator")
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+	if !contains(err.Error(), "anthropic") {
+		t.Errorf("error %q does not list available profiles", err.Error())
+	}
+}
+
+// TestRequireSlot_NilProfilesFile verifies that a nil profiles file produces
+// a descriptive error rather than panicking.
+func TestRequireSlot_NilProfilesFile(t *testing.T) {
+	err := config.RequireSlot(nil, "anthropic", "coordinator")
+	if err == nil {
+		t.Fatal("expected error for nil pf, got nil")
+	}
+}
+
+// TestLegacyOpencodeConfigFor_AnthropicProfile verifies the compatibility
+// shim renders the role-keyed "anthropic" profile into the legacy opencode
+// config blob shape: a top-level "model" plus per-agent "model" entries
+// matching the role-keyed slot for each role in role_mapping.
+func TestLegacyOpencodeConfigFor_AnthropicProfile(t *testing.T) {
+	pf := sampleProfilesFile()
+	out, err := config.LegacyOpencodeConfigFor(pf, "anthropic")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out == "" {
+		t.Fatal("expected non-empty output")
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if cfg["model"] != "anthropic/claude-opus-4-6" {
+		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-6", cfg["model"])
+	}
+
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("missing 'agent' map in output")
+	}
+	// Primary tier — coordinator/plan get the primary slot model.
+	for _, name := range []string{"coordinator", "plan"} {
+		entry, ok := agents[name].(map[string]any)
+		if !ok {
+			t.Errorf("missing agent %q", name)
+			continue
+		}
+		if entry["model"] != "anthropic/claude-opus-4-6" {
+			t.Errorf("%s model: got %v, want anthropic/claude-opus-4-6", name, entry["model"])
+		}
+	}
+	// Secondary tier — worker/review/ac get the secondary slot model.
+	for _, name := range []string{"worker", "review", "ac"} {
+		entry, ok := agents[name].(map[string]any)
+		if !ok {
+			t.Errorf("missing agent %q", name)
+			continue
+		}
+		if entry["model"] != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("%s model: got %v, want anthropic/claude-sonnet-4-6", name, entry["model"])
+		}
+	}
+	// Lightweight tier — explore/title/summary/compaction get the lightweight slot.
+	for _, name := range []string{"explore", "title", "summary", "compaction"} {
+		entry, ok := agents[name].(map[string]any)
+		if !ok {
+			t.Errorf("missing agent %q", name)
+			continue
+		}
+		if entry["model"] != "anthropic/claude-haiku-4-5" {
+			t.Errorf("%s model: got %v, want anthropic/claude-haiku-4-5", name, entry["model"])
+		}
+	}
+}
+
+// TestLegacyOpencodeConfigFor_GeminiHybridPropagatesThinking verifies that a
+// non-empty `thinking` value is rendered as opencode's `variant` field, while
+// roles without a thinking value omit `variant` entirely (preserving
+// opencode's default variant resolution).
+func TestLegacyOpencodeConfigFor_GeminiHybridPropagatesThinking(t *testing.T) {
+	pf := sampleProfilesFile()
+	out, err := config.LegacyOpencodeConfigFor(pf, "gemini-hybrid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	agents := cfg["agent"].(map[string]any)
+	worker := agents["worker"].(map[string]any)
+	if worker["variant"] != "medium" {
+		t.Errorf("worker variant: got %v, want medium", worker["variant"])
+	}
+	coordinator := agents["coordinator"].(map[string]any)
+	if _, hasVariant := coordinator["variant"]; hasVariant {
+		t.Error("coordinator should have no variant when thinking is empty")
+	}
+}
+
+// TestLegacyOpencodeConfigFor_BitIdenticalToBuildConfigContent is the gate
+// from #1206: applying the role-keyed profile via the compat shim must
+// produce the same opencode config blob as BuildConfigContent for the same
+// profile with no overrides. Identical means "the same JSON object" —
+// compared after re-decode so key ordering does not affect the result.
+func TestLegacyOpencodeConfigFor_BitIdenticalToBuildConfigContent(t *testing.T) {
+	pf := sampleProfilesFile()
+	for _, profile := range []string{"anthropic", "gemini-hybrid"} {
+		shim, err := config.LegacyOpencodeConfigFor(pf, profile)
+		if err != nil {
+			t.Fatalf("LegacyOpencodeConfigFor(%s): %v", profile, err)
+		}
+		built, err := config.BuildConfigContent(pf, profile, "", "")
+		if err != nil {
+			t.Fatalf("BuildConfigContent(%s): %v", profile, err)
+		}
+
+		var shimMap, builtMap map[string]any
+		if err := json.Unmarshal([]byte(shim), &shimMap); err != nil {
+			t.Fatalf("shim output for %s is not valid JSON: %v", profile, err)
+		}
+		if err := json.Unmarshal([]byte(built), &builtMap); err != nil {
+			t.Fatalf("built output for %s is not valid JSON: %v", profile, err)
+		}
+		if !jsonDeepEqual(shimMap, builtMap) {
+			t.Errorf("profile %s: shim and BuildConfigContent diverged\n  shim:  %s\n  built: %s",
+				profile, shim, built)
+		}
+	}
+}
+
+// TestLegacyOpencodeConfigFor_UnknownProfile verifies that the shim returns
+// an error for unknown profiles (rather than silently producing an empty
+// blob), so callers can surface the misconfiguration.
+func TestLegacyOpencodeConfigFor_UnknownProfile(t *testing.T) {
+	pf := sampleProfilesFile()
+	_, err := config.LegacyOpencodeConfigFor(pf, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+}
+
+// TestLegacyOpencodeConfigFor_NilProfilesFile verifies that nil pf returns
+// an empty string with no error (matches the behaviour of other helpers
+// that gracefully degrade when the profiles file is unavailable).
+func TestLegacyOpencodeConfigFor_NilProfilesFile(t *testing.T) {
+	out, err := config.LegacyOpencodeConfigFor(nil, "anthropic")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if out != "" {
+		t.Errorf("expected empty output, got %q", out)
+	}
+}
+
+// jsonDeepEqual compares two decoded JSON values for structural equality.
+// It is a minimal implementation tuned for the shapes BuildConfigContent
+// emits: nested map[string]any with string/number leaves.
+func jsonDeepEqual(a, b any) bool {
+	switch av := a.(type) {
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			if !jsonDeepEqual(v, bv[k]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !jsonDeepEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a == b
+	}
+}
+
+// contains is a substring helper duplicated locally so the test file does
+// not need to import strings just for one call site.
+func contains(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

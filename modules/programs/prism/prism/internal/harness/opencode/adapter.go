@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/sse"
 )
@@ -632,12 +633,48 @@ func agentsDir() string {
 }
 
 // EffectiveModel returns the model identifier configured for the given
-// agent role in opencode's config file (~/.config/opencode/opencode.json).
-// Returns an empty string if the config cannot be read or the role has no
-// explicit model override.
+// agent role.
+//
+// As of #1206 the lookup consults prism's role-keyed profile data first
+// (~/.config/prism/profiles.json → active profile → role slot's model). The
+// profile-driven map is the canonical source: it is what was used to render
+// opencode's own config in the first place, so prism's value is always at
+// least as authoritative as opencode's. Falls back to opencode's
+// ~/.config/opencode/opencode.json when the profile data does not resolve a
+// model for the role (no profiles file, unknown profile, or missing slot) so
+// manually-configured opencode sessions still work.
 //
 // It satisfies the harness.Harness interface.
 func (a *Adapter) EffectiveModel(role string) string {
+	if model := effectiveModelFromProfiles(role); model != "" {
+		return model
+	}
+	return effectiveModelFromOpencodeConfig(role)
+}
+
+// effectiveModelFromProfiles consults prism's role-keyed profile data
+// (loaded from ~/.config/prism/profiles.json) for the given role's model.
+// Returns "" when the profiles file is missing, malformed, has no default
+// profile, or the active profile defines no slot for that role.
+func effectiveModelFromProfiles(role string) string {
+	pf, err := config.LoadProfiles()
+	if err != nil {
+		return ""
+	}
+	if pf == nil || pf.Default == "" {
+		return ""
+	}
+	if slot, ok := config.SlotForRole(pf, pf.Default, role); ok {
+		return slot.Model
+	}
+	return ""
+}
+
+// effectiveModelFromOpencodeConfig reads ~/.config/opencode/opencode.json
+// and returns the per-agent model for the given role. Preserved as a
+// fallback for manually-configured opencode sessions where the prism
+// profile data is absent or does not cover the role.
+func effectiveModelFromOpencodeConfig(role string) string {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		home, err := os.UserHomeDir()
