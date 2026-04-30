@@ -222,11 +222,25 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 
 		switch mr.State {
 		case "interrupted", "error":
-			results[i] = AgentResult{
-				Agent:   ag,
-				Passed:  false,
-				Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s)", mr.State),
-				IsError: true,
+			// Distinguish a no-start failure from a mid-run crash: when a
+			// startup_error event was written by the sidecar's writeStartupError,
+			// StartupError is non-empty and indicates the container never bound
+			// its port. Label it clearly so the coordinator treats it as an
+			// infrastructure failure rather than a code-quality verdict (#1222).
+			if mr.StartupError != "" {
+				results[i] = AgentResult{
+					Agent:   ag,
+					Passed:  false,
+					Output:  fmt.Sprintf("ERROR: agent failed to start (no-start): %s", mr.StartupError),
+					IsError: true,
+				}
+			} else {
+				results[i] = AgentResult{
+					Agent:   ag,
+					Passed:  false,
+					Output:  fmt.Sprintf("ERROR: agent did not complete cleanly (state: %s)", mr.State),
+					IsError: true,
+				}
 			}
 		case "finished":
 			if mr.LastMessage == "" {
@@ -274,8 +288,25 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 
 	sb.WriteString(fmt.Sprintf("## Review complete: PR #%s (round %d)\n\n", prNumber, round))
 
+	// Count no-start failures: agents whose sidecar wrote a startup_error event
+	// (container never bound its port). These are infrastructure failures, not
+	// code-quality signals, and must be treated differently from FAIL verdicts.
+	var noStartSessions []string
+	for _, sess := range agentSessions {
+		if mr, ok := groupData[sess]; ok && mr.StartupError != "" {
+			noStartSessions = append(noStartSessions, sess)
+		}
+	}
+
 	if allPassed {
 		sb.WriteString("**All 5 review agents passed.** You may proceed with announcing completion.\n\n")
+	} else if len(noStartSessions) > 0 {
+		// One or more agents failed to start — the review is incomplete.
+		// This is an infrastructure failure: re-run prism review rather than
+		// treating it as a code-quality FAIL.
+		sb.WriteString("**One or more review agents failed to start (infrastructure failure).** ")
+		sb.WriteString("This is NOT a code-quality verdict — the agents never ran. ")
+		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
 	} else {
 		sb.WriteString("**One or more review agents failed.** Fix the blocking issues and re-run `prism review`.\n\n")
 	}

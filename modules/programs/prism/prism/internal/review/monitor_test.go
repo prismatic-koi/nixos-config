@@ -678,3 +678,76 @@ func setHarnessInfo(t *testing.T, d *db.DB, sessionName string, port int, sessio
 	).Scan(&dummy)
 	return err
 }
+
+// ── no-start error distinction (#1222) ───────────────────────────────────────
+
+// TestBuildMonitorResults_NoStartError verifies that an agent in error state
+// with a StartupError reason produces an output containing "no-start" to
+// distinguish it from a mid-run crash.
+func TestBuildMonitorResults_NoStartError(t *testing.T) {
+	agents := []review.Agent{{Name: "review-code"}}
+	sess := "nixos-config@parent~review-1-review-code"
+	sessions := []string{sess}
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName:  sess,
+			State:        "error",
+			LastMessage:  "",
+			StartupError: "opencode: health check timed out after 60s on port 14004",
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Passed {
+		t.Errorf("no-start error: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("no-start error: IsError=false, want true")
+	}
+	if !findSubstring(r.Output, "no-start") {
+		t.Errorf("no-start error: output should contain 'no-start': %q", r.Output)
+	}
+	if !findSubstring(r.Output, "health check timed out") {
+		t.Errorf("no-start error: output should contain the startup error reason: %q", r.Output)
+	}
+}
+
+// TestBuildMonitorResults_ErrorNoCrashMidRun verifies that an agent in error
+// state WITHOUT a StartupError reason produces a generic "did not complete
+// cleanly" message (mid-run crash, not a no-start failure).
+func TestBuildMonitorResults_ErrorNoCrashMidRun(t *testing.T) {
+	agents := []review.Agent{{Name: "review-code"}}
+	sess := "nixos-config@parent~review-1-review-code"
+	sessions := []string{sess}
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName:  sess,
+			State:        "error",
+			LastMessage:  "",
+			StartupError: "", // no startup_error event — mid-run crash
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Passed {
+		t.Errorf("mid-run error: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("mid-run error: IsError=false, want true")
+	}
+	// Must NOT say no-start — this was a mid-run crash.
+	if findSubstring(r.Output, "no-start") {
+		t.Errorf("mid-run error: output should NOT contain 'no-start': %q", r.Output)
+	}
+	if !findSubstring(r.Output, "did not complete cleanly") {
+		t.Errorf("mid-run error: output should contain 'did not complete cleanly': %q", r.Output)
+	}
+}

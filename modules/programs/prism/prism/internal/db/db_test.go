@@ -2830,6 +2830,61 @@ func TestGroupResults(t *testing.T) {
 	}
 }
 
+// TestGroupResults_StartupError verifies that GroupResults populates StartupError
+// from the startup_error event written by writeStartupError when a container
+// fails to start (#1222).
+func TestGroupResults_StartupError(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	noStartSession := "nixos-config@feature~review-1-review-code"
+	if err := d.UpsertStatus(noStartSession, "nixos-config", "/wt", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %s: %v", noStartSession, err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+		groupID, noStartSession,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("set group_id for %s: %v", noStartSession, err)
+	}
+
+	// Write the startup_error event that writeStartupError emits.
+	const startupReason = "opencode: health check timed out after 60s on port 14004"
+	if err := d.WriteEvent(db.Event{
+		ID:          "evt-startup-err-1",
+		SessionName: noStartSession,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "startup_error",
+		Payload:     `{"reason":"` + startupReason + `"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent startup_error: %v", err)
+	}
+
+	results, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	r, ok := results[noStartSession]
+	if !ok {
+		t.Fatalf("GroupResults: missing entry for %q", noStartSession)
+	}
+	if r.State != "error" {
+		t.Errorf("StartupError test: State = %q, want \"error\"", r.State)
+	}
+	if r.StartupError != startupReason {
+		t.Errorf("StartupError = %q, want %q", r.StartupError, startupReason)
+	}
+	if r.LastMessage != "" {
+		t.Errorf("LastMessage = %q, want \"\" (no msg_assistant written)", r.LastMessage)
+	}
+}
+
 // ── Foreign key enforcement tests ─────────────────────────────────────────────
 
 // TestGroupFK_Violation verifies that attempting to set agent_status.group_id to
