@@ -362,72 +362,54 @@ func (m *Manager) writeSshConfigToDir(stagingHome string) error {
 	return nil
 }
 
-// writeGitconfigToDir writes a generated .gitconfig file into the given
-// staging HOME directory. It reuses the existing writeGitconfig logic but
-// substitutes stagingHome as the in-sandbox $HOME so signingKey and
-// allowedSignersFile paths resolve correctly inside the sandbox.
+// writeGitconfigToDir generates a .gitconfig and (when signing is available)
+// allowed_signers for the sandbox-exec staging HOME. It is a thin wrapper
+// around writeGitconfig(isolationSandboxExec) — the canonical helper used
+// by podman and bwrap — and then materialises the resulting temp files into
+// the staging HOME at the canonical paths the agent expects:
+//
+//	<stagingHome>/.gitconfig
+//	<stagingHome>/.ssh/allowed_signers   (when signing is configured)
+//
+// The temp files written by writeGitconfig (m.gitconfigFilePath() and
+// m.allowedSignersFilePath()) embed sandbox-relative paths derived from
+// sandboxHome(m, isolationSandboxExec) — which resolves to stagingHome — so
+// the file content is identical whether read from the temp path or from the
+// staging HOME copy. We materialise into the staging HOME because
+// sandbox-exec has no bind-mount mechanism: the agent reads the file
+// directly from $HOME inside the sandbox.
 func (m *Manager) writeGitconfigToDir(stagingHome string) error {
-	home, err := os.UserHomeDir()
+	if err := m.writeGitconfig(isolationSandboxExec); err != nil {
+		return fmt.Errorf("write gitconfig: %w", err)
+	}
+
+	// Copy the generated gitconfig into the staging HOME at the canonical
+	// path the agent expects (<stagingHome>/.gitconfig).
+	gitconfigContent, err := os.ReadFile(m.gitconfigFilePath())
 	if err != nil {
-		home = os.Getenv("HOME")
+		return fmt.Errorf("read generated gitconfig %s: %w", m.gitconfigFilePath(), err)
 	}
-	sshDir := filepath.Join(home, ".ssh")
-
-	signingKeyName := m.cfg.SshSigningKeyName
-	if signingKeyName == "" {
-		signingKeyName = "prismatic-koi-ed25519-signingkey"
+	gitconfigDst := filepath.Join(stagingHome, ".gitconfig")
+	_ = os.Remove(gitconfigDst) // idempotent: replace any prior symlink/file
+	if err := os.WriteFile(gitconfigDst, gitconfigContent, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", gitconfigDst, err)
 	}
-	signingKeyPriv := filepath.Join(sshDir, signingKeyName)
-	signingKeyPub := filepath.Join(sshDir, signingKeyName+".pub")
-	_, errPriv := filepath.EvalSymlinks(signingKeyPriv)
-	_, errPub := filepath.EvalSymlinks(signingKeyPub)
-	hasSigning := errPriv == nil && errPub == nil
 
-	// The staging HOME's .ssh/ paths are what the agent will see inside the
-	// sandbox. The gitconfig must reference those canonical generic names.
-	sandboxSshDir := filepath.Join(stagingHome, ".ssh")
-	sandboxSigningKeyPub := filepath.Join(sandboxSshDir, "signing-key.pub")
-	sandboxAllowedSigners := filepath.Join(sandboxSshDir, "allowed_signers")
-
-	var sb strings.Builder
-
-	if m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
-		sb.WriteString("[user]\n")
-		sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
-		sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
-		if hasSigning {
-			sb.WriteString("    signingKey = " + sandboxSigningKeyPub + "\n")
+	// When writeGitconfig produced an allowed_signers file (i.e. signing is
+	// configured and the public key was readable), copy it into the staging
+	// HOME's .ssh directory so git verify-commit succeeds inside the sandbox.
+	if m.allowedSignersReady {
+		signersContent, readErr := os.ReadFile(m.allowedSignersFilePath())
+		if readErr != nil {
+			return fmt.Errorf("read generated allowed_signers %s: %w", m.allowedSignersFilePath(), readErr)
+		}
+		signersDst := filepath.Join(stagingHome, ".ssh", "allowed_signers")
+		_ = os.Remove(signersDst) // idempotent: replace prior symlink/file
+		if err := os.WriteFile(signersDst, signersContent, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", signersDst, err)
 		}
 	}
 
-	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
-		pubKeyContent, readErr := os.ReadFile(signingKeyPub)
-		if readErr == nil {
-			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
-			allowedSignersDst := filepath.Join(stagingHome, ".ssh", "allowed_signers")
-			// Write the generated allowed_signers file (replaces any existing symlink).
-			_ = os.Remove(allowedSignersDst)
-			if writeErr := os.WriteFile(allowedSignersDst, []byte(allowedSignersContent), 0o644); writeErr == nil {
-				sb.WriteString("\n[commit]\n")
-				sb.WriteString("    gpgsign = true\n")
-				sb.WriteString("\n[gpg]\n")
-				sb.WriteString("    format = ssh\n")
-				sb.WriteString("\n[gpg \"ssh\"]\n")
-				sb.WriteString("    allowedSignersFile = " + sandboxAllowedSigners + "\n")
-			}
-		}
-	}
-
-	sb.WriteString("\n[push]\n")
-	sb.WriteString("    autoSetupRemote = true\n")
-	sb.WriteString("\n[init]\n")
-	sb.WriteString("    defaultBranch = main\n")
-
-	dst := filepath.Join(stagingHome, ".gitconfig")
-	_ = os.Remove(dst) // idempotent
-	if err := os.WriteFile(dst, []byte(sb.String()), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
 	return nil
 }
 
