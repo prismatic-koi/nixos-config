@@ -25,7 +25,7 @@
     # profiles.json under container_worker_config / container_coordinator_config.
     # The Go CLI reads those keys and passes the appropriate blob to the sidecar
     # as --config-content, which writes it to a temp file and mounts it as
-    # /root/.config/opencode/opencode.json inside the container.
+    # ~/.config/opencode/opencode.json inside the container.
     nx.programs.prism.opencode.containerWorkerConfigJson = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -561,7 +561,7 @@
       ];
 
       # Relative paths resolve from the opencode.json config file location
-      # (/root/.config/opencode/) where the plugins/ directory is mounted.
+      # (~/.config/opencode/) where the plugins/ directory is mounted.
       containerPlugins = [
         "opencode-claude-auth@latest"
         "./plugins/prism-hooks.ts"
@@ -627,7 +627,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "./mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -770,7 +770,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "./mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -1075,7 +1075,7 @@
             atlasian = {
               type = "local";
               enabled = true;
-              command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+              command = [ "./mcp-atlassian-slim-proxy.mjs" ];
               environment = {
                 ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
               };
