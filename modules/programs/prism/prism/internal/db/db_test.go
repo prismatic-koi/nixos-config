@@ -7019,26 +7019,25 @@ func TestWriteSpawnOutcome_NoSession(t *testing.T) {
 	}
 }
 
-// ── ActiveSandboxExecSessionCount / ActiveSandboxExecSessions ────────────────
+// ── ActiveSessionCountForMode / ActiveSessionsForMode ────────────────────────
 
-// TestActiveSandboxExecSessionCount_Empty verifies the count is 0 on a fresh DB.
-func TestActiveSandboxExecSessionCount_Empty(t *testing.T) {
+// TestActiveSessionCountForMode_Empty verifies the count is 0 on a fresh DB.
+func TestActiveSessionCountForMode_Empty(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 0 {
 		t.Errorf("count = %d, want 0 on empty DB", count)
 	}
 }
 
-// TestActiveSandboxExecSessionCount_OnlySandboxExec verifies that only
-// sandbox-exec sessions (isolation_mode = 'sandbox-exec', ended_at IS NULL)
-// are counted.
-func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
+// TestActiveSessionCountForMode_OnlyMatchingMode verifies that only sessions
+// matching the given mode (isolation_mode = mode, ended_at IS NULL) are counted.
+func TestActiveSessionCountForMode_OnlyMatchingMode(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -7050,7 +7049,7 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode sandbox-exec: %v", err)
 	}
 
-	// Insert a bwrap session (should not be counted).
+	// Insert a bwrap session (should not be counted for sandbox-exec).
 	if err := d.UpsertStatus("repo@bwrap1", "repo", "/code/repo/bwrap1", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus bwrap: %v", err)
 	}
@@ -7058,7 +7057,7 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode bwrap: %v", err)
 	}
 
-	// Insert a podman session (should not be counted).
+	// Insert a podman session (should not be counted for sandbox-exec).
 	if err := d.UpsertStatus("repo@podman1", "repo", "/code/repo/podman1", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus podman: %v", err)
 	}
@@ -7066,18 +7065,27 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode podman: %v", err)
 	}
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1 (only the sandbox-exec session)", count)
 	}
+
+	// Also verify bwrap count is 1.
+	bwrapCount, err := d.ActiveSessionCountForMode("bwrap")
+	if err != nil {
+		t.Fatalf("ActiveSessionCountForMode bwrap: %v", err)
+	}
+	if bwrapCount != 1 {
+		t.Errorf("bwrap count = %d, want 1", bwrapCount)
+	}
 }
 
-// TestActiveSandboxExecSessionCount_EndedNotCounted verifies that ended
-// sandbox-exec sessions (ended_at IS NOT NULL) are excluded from the count.
-func TestActiveSandboxExecSessionCount_EndedNotCounted(t *testing.T) {
+// TestActiveSessionCountForMode_EndedNotCounted verifies that ended sessions
+// (ended_at IS NOT NULL) are excluded from the count.
+func TestActiveSessionCountForMode_EndedNotCounted(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -7100,18 +7108,18 @@ func TestActiveSandboxExecSessionCount_EndedNotCounted(t *testing.T) {
 		t.Fatalf("SetEnded: %v", err)
 	}
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1 (ended session must not be counted)", count)
 	}
 }
 
-// TestActiveSandboxExecSessions_ReturnsList verifies that ActiveSandboxExecSessions
-// returns the correct session rows for active sandbox-exec sessions.
-func TestActiveSandboxExecSessions_ReturnsList(t *testing.T) {
+// TestActiveSessionsForMode_ReturnsList verifies that ActiveSessionsForMode
+// returns the correct session rows for active sessions of the given mode.
+func TestActiveSessionsForMode_ReturnsList(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -7133,9 +7141,9 @@ func TestActiveSandboxExecSessions_ReturnsList(t *testing.T) {
 		t.Fatalf("SetIsolationMode bwrap-x: %v", err)
 	}
 
-	sessions, err := d.ActiveSandboxExecSessions()
+	sessions, err := d.ActiveSessionsForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessions: %v", err)
+		t.Fatalf("ActiveSessionsForMode: %v", err)
 	}
 	if len(sessions) != 2 {
 		t.Errorf("len(sessions) = %d, want 2", len(sessions))

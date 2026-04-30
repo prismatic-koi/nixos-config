@@ -87,9 +87,8 @@ var prCmd = &cobra.Command{
 
 		// Concurrency cap checks: BEFORE any container-creation side effects
 		// (no worktree, no tmux session, no DB row on refusal).
-		// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
-		// single runConcurrencyCap dispatch.
-		if err := runConcurrencyCap(cmd, "pr", isoMode, isoCaps); err != nil {
+		// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
+		if err := checkConcurrencyCap(cmd, "pr", isoMode); err != nil {
 			return err
 		}
 
