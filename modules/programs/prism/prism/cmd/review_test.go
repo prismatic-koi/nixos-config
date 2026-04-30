@@ -433,7 +433,9 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 
 	agents := review.Agents()
 	for _, ag := range agents {
-		path := agentsDir + "/" + ag.Name + ".md"
+		// Pre-flight checks <ValidationName>.md (i.e. "review-goal-subagent.md"),
+		// not <Name>.md — see #1231.
+		path := agentsDir + "/" + ag.ValidationName + ".md"
 		if err := os.WriteFile(path, []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile %s: %v", path, err)
 		}

@@ -206,7 +206,7 @@ A new helper, e.g. `internal/skills/manifest.go` `ComputeManifest(skillsDir stri
 
 ## 5. Agent-role system prompt — in or out of the manifest
 
-The agent-role system prompts live at `modules/programs/prism/opencode/agents/*.md` (one per role: `worker.md`, `coordinator.md`, `review-code.md`, …). They are mounted into `~/.config/opencode/agents/` by the same nix-build pattern as the skills directory (per `opencode.nix`'s `xdg.configFile."opencode/agents"` configuration; see the agents-directory `dr-xr-xr-x … nobody nogroup` pattern matching the skills directory).
+The agent-role system prompts live at `modules/programs/prism/opencode/agents/*.md` (one per role: `worker.md`, `coordinator.md`, `review-code-subagent.md`, …). They are mounted into `~/.config/opencode/agents/` by the same nix-build pattern as the skills directory (per `opencode.nix`'s `xdg.configFile."opencode/agents"` configuration; see the agents-directory `dr-xr-xr-x … nobody nogroup` pattern matching the skills directory).
 
 Two questions to answer:
 
