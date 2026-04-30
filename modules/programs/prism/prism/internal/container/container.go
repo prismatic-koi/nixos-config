@@ -848,14 +848,13 @@ func (m *Manager) buildRunArgs() []string {
 	// ignores it). Per-mode RO divergence for AWS SSO/CLI is captured
 	// inside StandardSandboxMounts via the mode argument.
 	//
-	// We use a fresh podmanIsolator value here rather than casting
-	// m.isolator: tests construct a Manager with a bwrapIsolator and
-	// then exercise buildRunArgs (the podman path) directly to verify
-	// host-API roundtripping. The appender is a stateless method, so
-	// instantiating one ad-hoc is safe.
-	pAppender := podmanIsolator{}
+	// appendPodmanVolume is a free function (not a method on
+	// podmanIsolator) so that tests which construct a Manager with a
+	// non-podman isolator and call buildRunArgs directly continue to work
+	// without a type-cast. The emitter is stateless — there is no podman
+	// state to consult — so a free function is the natural shape.
 	for _, spec := range StandardSandboxMounts(cfg, "/root", home, isolationPodman) {
-		args = pAppender.appendVolume(args, spec)
+		args = appendPodmanVolume(args, spec)
 	}
 
 	// auth.json overlay: bind-mount the host's opencode auth.json over the

@@ -263,7 +263,7 @@ func StandardOpencodeConfigAllowlist(isReview bool) []string {
 	return allowlist
 }
 
-// appendVolume appends a podman --volume argument pair for the given
+// appendPodmanVolume appends a podman --volume argument pair for the given
 // MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via
 // resolveMountHostPath and emits "--volume SRC:DST[:Z][:ro]" when the mount
 // should be active. Returns args unchanged when the mount is skipped.
@@ -274,7 +274,13 @@ func StandardOpencodeConfigAllowlist(isReview bool) []string {
 // StandardSandboxMounts (where DST is created lazily by podman), --volume
 // SRC:DST[:Z][:ro] works for both files and directories. The existing
 // container.go always used --volume for these, so we keep that.
-func (p *podmanIsolator) appendVolume(args []string, spec MountSpec) []string {
+//
+// Free function (not a method on podmanIsolator) because the emitter is
+// stateless and the podman mount block is exercised by tests that build a
+// Manager with a non-podman isolator, then call buildRunArgs directly. A
+// free function lets those tests continue to work without an awkward
+// type-cast or fresh-isolator instantiation.
+func appendPodmanVolume(args []string, spec MountSpec) []string {
 	src, ok := resolveMountHostPath(spec)
 	if !ok {
 		return args
@@ -289,12 +295,15 @@ func (p *podmanIsolator) appendVolume(args []string, spec MountSpec) []string {
 	return append(args, "--volume", src+":"+spec.SandboxPath+flags)
 }
 
-// appendBind appends a bwrap --ro-bind or --bind argument triple for the
+// appendBwrapBind appends a bwrap --ro-bind or --bind argument triple for the
 // given MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via
 // resolveMountHostPath and emits the correct flag based on spec.ReadOnly.
 // SELinuxRelabel is ignored — bwrap does not participate in SELinux labelling.
 // Returns args unchanged when the mount is skipped.
-func (b *bwrapIsolator) appendBind(args []string, spec MountSpec) []string {
+//
+// Free function (not a method on bwrapIsolator) — the emitter is stateless
+// and a free function is symmetric with appendPodmanVolume above.
+func appendBwrapBind(args []string, spec MountSpec) []string {
 	src, ok := resolveMountHostPath(spec)
 	if !ok {
 		return args
