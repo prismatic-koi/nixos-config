@@ -388,11 +388,25 @@ var cleanupCmd = &cobra.Command{
 		// supported in the headless (--yes) path; interactive cleanup needs a
 		// real worktree to display info.
 		if worktreePath == "" {
-			if yesFlag {
-				fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+			// Primary lookup failed (tmux gone, DB path missing or not on
+			// disk).  Attempt a filesystem probe at the conventional location
+			// <bare-root>/<branch>/ before giving up.
+			probed, probedBareRoot := probeConventionalWorktreePath(session, worktreeName)
+			if probed != "" {
+				worktreePath = probed
+			} else if yesFlag {
+				if probedBareRoot != "" {
+					// We know where the worktree *should* be but it isn't
+					// there — log an actionable message and continue.
+					fmt.Fprintf(os.Stderr, "[prism] warning: worktree not found at conventional path %s — skipping worktree removal\n",
+						filepath.Join(probedBareRoot, worktreeName))
+				} else {
+					fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+				}
 				return headlessCleanup(session, worktreeName, "", "")
+			} else {
+				return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 			}
-			return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 		}
 
 		bareRoot := git.BareRoot(worktreePath)
@@ -756,6 +770,43 @@ func worktreePathFromSession(session string) string {
 		}
 	}
 	return ""
+}
+
+// probeConventionalWorktreePath attempts to locate a worktree for the given
+// session at the conventional bare-root layout location: <bare-root>/<branch>/.
+//
+// It derives the bare-root hint from the DB row's worktree_path column (using
+// the parent directory of the stored path, even if that path no longer exists
+// on disk).  This handles the case where the session died before its worktree
+// was visible to the normal worktreePathFromSession lookup (e.g. the stored
+// path points at a now-deleted directory, but the worktree was re-created at
+// the conventional sibling location).
+//
+// Return values:
+//   - (probed, bareRoot) where probed is non-empty when a worktree was found at
+//     the conventional location, and bareRoot is non-empty whenever we could
+//     derive a candidate bare-root from the DB (even when the probe failed).
+//   - ("", "") when there is no DB row or the row contains no worktree path.
+func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, bareRoot string) {
+	d, err := openDB()
+	if err != nil {
+		return "", ""
+	}
+	defer d.Close()
+	status, err := d.CurrentStatus(session)
+	if err != nil || status == nil || status.Worktree == "" {
+		return "", ""
+	}
+	// Derive the bare-root as the parent of the stored worktree path.
+	// E.g. if the DB contains "/code/nixos-config/sandbox-exec-smoke", the
+	// bare root is "/code/nixos-config" and we probe
+	// "/code/nixos-config/<worktreeName>/.git".
+	candidateBareRoot := filepath.Dir(status.Worktree)
+	candidate := filepath.Join(candidateBareRoot, worktreeName)
+	if _, statErr := os.Stat(filepath.Join(candidate, ".git")); statErr == nil {
+		return candidate, candidateBareRoot
+	}
+	return "", candidateBareRoot
 }
 
 // runSessionArchive performs the opencode-storage copy for the session identified by
