@@ -376,7 +376,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// (sandbox-exec deliberately does not subscribe SIGWINCH — see
 	// SuperviseOpts.ForwardWinch godoc for the rationale), and wait for exit.
 	// The shared SuperviseChild helper (supervise.go, A2.SUP) replaces the
-	// previous open-coded tcsetpgrpForeground / forwardSignalsToSandboxExec /
+	// previous open-coded tcsetpgrpForeground / per-mode signal forwarding /
 	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
 	// implementation across the bwrap and sandbox-exec dispatch paths.
 	waitErr := SuperviseChild(sandboxCmd, int(os.Stdin.Fd()), SuperviseOpts{
