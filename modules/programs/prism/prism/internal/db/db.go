@@ -8,6 +8,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -2776,10 +2777,11 @@ LIMIT ?`
 // GroupMemberResult holds the terminal state and last assistant message for a
 // single member of a session group. Used by GroupResults to aggregate outcomes.
 type GroupMemberResult struct {
-	SessionName string
-	RootAgent   string // from root_agent_name; empty when not set
-	State       string // terminal state: finished / interrupted / error / deleted
-	LastMessage string // last assistant turn from agent_events; empty when none
+	SessionName  string
+	RootAgent    string // from root_agent_name; empty when not set
+	State        string // terminal state: finished / interrupted / error / deleted
+	LastMessage  string // last assistant turn from agent_events; empty when none
+	StartupError string // reason from startup_error event; empty when not a no-start failure
 }
 
 // terminalStates is the set of agent states that indicate a session has stopped
@@ -2880,6 +2882,30 @@ LIMIT 1`
 			return nil, fmt.Errorf("db: group results: last message for %q: %w", name, err)
 		}
 		r.LastMessage = payload
+
+		// Fetch the startup_error event reason when present. This is written by
+		// writeStartupError in the sidecar when WaitHealthy or CreateSession
+		// fails, allowing the review monitor to distinguish a no-start failure
+		// from a mid-run crash (#1222).
+		const startupErrQ = `
+SELECT payload FROM agent_events
+WHERE session_name = ? AND type = 'startup_error'
+ORDER BY created_at DESC, rowid DESC
+LIMIT 1`
+		var startupErrPayload string
+		seErr := d.conn.QueryRow(startupErrQ, name).Scan(&startupErrPayload)
+		if seErr == nil && startupErrPayload != "" {
+			// Extract the "reason" field from the JSON payload.
+			var p struct {
+				Reason string `json:"reason"`
+			}
+			if jsonErr := json.Unmarshal([]byte(startupErrPayload), &p); jsonErr == nil && p.Reason != "" {
+				r.StartupError = p.Reason
+			} else {
+				r.StartupError = startupErrPayload
+			}
+		}
+
 		results[name] = r
 	}
 

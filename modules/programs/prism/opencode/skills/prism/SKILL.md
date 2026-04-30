@@ -165,6 +165,20 @@ prism review <pr-number>
 **Do NOT commit, merge, or announce completion** until the review-complete
 prompt arrives. When it does, handle PASS/FAIL per the worker agent instructions.
 
+### Handling no-start errors in review-complete prompts
+
+When a review-complete prompt says **"One or more review agents failed to start
+(infrastructure failure)"**, treat it as a failed review run — not a
+code-quality FAIL verdict. The agents never ran, so no conclusions about the PR
+quality can be drawn. Re-run `prism review <pr>` to retry the infrastructure
+that failed. Do not treat a no-start error the same as a FAIL verdict from a
+review agent that ran and found issues.
+
+Signs of a no-start error in the per-agent findings:
+- `**Verdict:** ERROR`
+- Output contains `ERROR: agent failed to start (no-start):`
+- The delivery message header mentions "infrastructure failure" and instructs you to re-run
+
 If no review-complete prompt arrives within 30 minutes, check progress with:
 
 ```bash

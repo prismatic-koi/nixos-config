@@ -159,6 +159,10 @@ func (s *Sidecar) writeStartupError(startupErr error) {
 	log.Printf("sidecar: startup failure — writing error state: %v", startupErr)
 	s.upsertState(agent.StateError, nil, nil)
 	s.writeStateChange(agent.StateError)
+	// Write a startup_error event recording the failure reason so the review
+	// monitor can distinguish a no-start failure from a mid-run crash when
+	// formatting the review-complete prompt (#1222).
+	s.writeEvent("startup_error", map[string]string{"reason": startupErr.Error()}, nil)
 	s.mu.Unlock()
 
 	// Gap 2 fix: notify the parent worker when this is a review-agent session.
