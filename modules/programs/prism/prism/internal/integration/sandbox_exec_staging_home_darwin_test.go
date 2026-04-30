@@ -104,18 +104,20 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 		return strings.ReplaceAll(p, stagingHomeRule, "")
 	})
 
-	// Sanity check: the mutated profile must still be syntactically valid
-	// SBPL — assert the close-paren of the parent (allow ...) block is
-	// still present and balanced. This guards against a future generator
-	// change that puts stagingHome in a different block shape: if the
-	// ReplaceAll above ever truncates the block close, parens would not
-	// balance and sandbox-exec would reject the profile, making the test
-	// pass for the wrong reason.
+	// Belt-and-suspenders check on top of withMutatedProfile's no-op
+	// detection: confirm the mutated profile is syntactically valid SBPL
+	// by counting open/close parens. By construction, removing a balanced
+	// (...)\n line preserves balance, so this check fires only if a
+	// future generator change alters the block shape such that the
+	// ReplaceAll target accidentally spans the close-paren of the parent
+	// (allow ...) block (e.g. multi-line subpath expressions, embedded
+	// nested forms). withMutatedProfile catches exact no-op substitutions
+	// but not "matched but produced malformed SBPL" — that's this check.
 	if mutatedContent, readErr := os.ReadFile(mutatedPath); readErr != nil {
 		t.Fatalf("read mutated profile: %v", readErr)
-	} else if open, close := strings.Count(string(mutatedContent), "("), strings.Count(string(mutatedContent), ")"); open != close {
+	} else if opens, closes := strings.Count(string(mutatedContent), "("), strings.Count(string(mutatedContent), ")"); opens != closes {
 		t.Fatalf("mutated profile has unbalanced parentheses (%d open, %d close) — mutation produced malformed SBPL.\nProfile: %s",
-			open, close, mutatedPath)
+			opens, closes, mutatedPath)
 	}
 
 	target := filepath.Join(stagingHome, "prism-1192-write-probe-denied.tmp")

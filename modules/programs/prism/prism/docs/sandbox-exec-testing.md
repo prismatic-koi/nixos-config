@@ -92,7 +92,10 @@ negative test mutates the profile to remove the rule under test, then runs
 the same operation, and asserts failure. This proves the positive test is
 not green by accident.
 
-The `withMutatedProfile` helper exists to make this pattern easy to write:
+The `withMutatedProfile` helper exists to make this pattern easy to write.
+The pattern below mirrors the actual
+`TestSandboxExecProfile_StagingHomeWriteDenied` in
+`internal/integration/sandbox_exec_staging_home_darwin_test.go`:
 
 ```go
 func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
@@ -109,11 +112,19 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
     }
     t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-    // Remove the staging-HOME write allow block. Replace the leading
-    // `(allow file-read* file-write* file-test-existence file-read-metadata`
-    // block with a denial so writes inside stagingHome are blocked.
+    // Remove only the indented (subpath "<stagingHome>") line from the
+    // staging-HOME write allow block, leaving the rest of the block
+    // (worktree, bare repo, opencode shared dirs) intact so the profile
+    // remains syntactically valid SBPL. The only behaviour change is
+    // that writes to <stagingHome> are no longer covered by any allow.
+    //
+    // Removing the entire (allow ...) block instead would leave orphaned
+    // (subpath ...) lines from the trailing entries — sandbox-exec would
+    // reject the malformed profile at parse time and the negative test
+    // would pass for the wrong reason.
+    stagingHomeRule := "  (subpath " + sbplQuoteForTest(stagingHome) + ")\n"
     profilePath := withMutatedProfile(t, m, func(p string) string {
-        return removeStagingHomeWriteAllow(p, stagingHome)
+        return strings.ReplaceAll(p, stagingHomeRule, "")
     })
 
     // Attempt to write a file inside the staging HOME. Without the
