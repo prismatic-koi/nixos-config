@@ -58,31 +58,59 @@ const (
 // isolationMode identifies which sandbox layer will consume the temp files
 // (gitconfig, ssh config) that writeGitconfig / writeSshConfig generate.
 //
-// The two sandboxes mount the SSH artefacts at different in-sandbox paths:
+// The three sandboxes mount the SSH artefacts at different in-sandbox paths:
 //
 //   - podman runs as root, so canonical paths are /root/.ssh/{access-key,
 //     signing-key,signing-key.pub,allowed_signers} — the agent's $HOME is /root.
 //   - bwrap runs as the host user, so canonical paths are
 //     $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
 //     where $HOME is the host user's home directory.
+//   - sandbox-exec also runs as the host user but with a per-session staging
+//     HOME (e.g. ~/.local/state/prism/sandbox-exec/<instance>) — the agent
+//     sees this as $HOME and the SSH artefacts are referenced under it.
 //
-// Agents inside both sandboxes see the same generic filenames (access-key,
-// signing-key, …); only the $HOME prefix differs. The isolation mode lets the
-// generators substitute the correct prefix into the config files they write.
+// Agents inside all three sandboxes see the same generic filenames
+// (access-key, signing-key, …); only the $HOME prefix differs. The isolation
+// mode lets the generators substitute the correct prefix into the config
+// files they write.
 type isolationMode int
 
 const (
 	isolationPodman isolationMode = iota
 	isolationBwrap
+	isolationSandboxExec
 )
 
 // sandboxHome returns the in-sandbox $HOME directory for the given isolation
-// mode. For podman this is always /root (the image's user). For bwrap this is
-// the host user's home directory, because bwrap shares the host user namespace
-// and does not switch to root.
-func sandboxHome(mode isolationMode) string {
+// mode and Manager. For podman this is always /root (the image's user). For
+// bwrap this is the host user's home directory, because bwrap shares the host
+// user namespace. For sandbox-exec it is the per-session staging HOME (which
+// is what the agent sees as $HOME inside the sandbox); when the staging HOME
+// cannot be resolved the helper falls back to the host home so that callers
+// always receive a non-empty path.
+//
+// m may be nil for callers that do not yet have a Manager (e.g. early
+// dispatch paths that only need the static podman/bwrap mapping); in that
+// case sandbox-exec falls back to the host home.
+func sandboxHome(m *Manager, mode isolationMode) string {
 	switch mode {
 	case isolationBwrap:
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			home = os.Getenv("HOME")
+		}
+		return home
+	case isolationSandboxExec:
+		if m != nil {
+			if stagingHome, err := m.sandboxExecHomePath(); err == nil && stagingHome != "" {
+				return stagingHome
+			}
+		}
+		// Fallback: host home. Used in the rare case where the staging
+		// HOME cannot be derived (no instance ID, no UserHomeDir). The
+		// resulting gitconfig still points at $HOME-relative SSH paths,
+		// matching the bwrap layout — which is the closest valid mapping
+		// for sandbox-exec when staging is unavailable.
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			home = os.Getenv("HOME")
@@ -413,7 +441,7 @@ func (m *Manager) claudeCredentialsFilePath() string {
 // used by both the podman volume mount (/root/.ssh/access-key) and the bwrap
 // bind-mount (<hostHome>/.ssh/access-key).
 func (m *Manager) writeSshConfig(mode isolationMode) error {
-	identityFile := filepath.Join(sandboxHome(mode), ".ssh", "access-key")
+	identityFile := filepath.Join(sandboxHome(m, mode), ".ssh", "access-key")
 	sshConfig := "Host github.com\n" +
 		"  StrictHostKeyChecking accept-new\n" +
 		"  IdentityFile " + identityFile + "\n" +
@@ -446,10 +474,15 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //   - isolationBwrap: signingKey = <hostHome>/.ssh/signing-key.pub,
 //     allowedSignersFile = <hostHome>/.ssh/allowed_signers (paths inside
 //     the bwrap sandbox, where the agent runs as the host user).
+//   - isolationSandboxExec: signingKey = <stagingHome>/.ssh/signing-key.pub,
+//     allowedSignersFile = <stagingHome>/.ssh/allowed_signers (paths inside
+//     the sandbox-exec staging HOME, which is what the agent sees as $HOME
+//     under sandbox-exec).
 //
-// Both sandboxes mount the same underlying host key files — only the $HOME
-// prefix differs. Generic filenames (signing-key.pub, allowed_signers, …)
-// are used in both cases so agents see a uniform layout regardless of mode.
+// All three sandboxes mount or stage the same underlying host key files —
+// only the $HOME prefix differs. Generic filenames (signing-key.pub,
+// allowed_signers, …) are used in every case so agents see a uniform layout
+// regardless of mode.
 func (m *Manager) writeGitconfig(mode isolationMode) error {
 	// Reset allowedSignersReady so that a retry or second call doesn't carry
 	// stale state from a previous successful write into a new call that may fail.
@@ -489,7 +522,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 	// (see sandboxHome). Agents inside the sandbox see generic filenames —
 	// signing-key.pub / allowed_signers — regardless of which sandbox layer
 	// they're running under.
-	sandboxSshDir := filepath.Join(sandboxHome(mode), ".ssh")
+	sandboxSshDir := filepath.Join(sandboxHome(m, mode), ".ssh")
 	sandboxSigningKeyPub := filepath.Join(sandboxSshDir, "signing-key.pub")
 	sandboxAllowedSigners := filepath.Join(sandboxSshDir, "allowed_signers")
 
@@ -739,58 +772,25 @@ func (m *Manager) buildRunArgs() []string {
 	// opencode cache — mount the whole directory so plugins, models.json,
 	// package.json, and bun.lock are all available without network access.
 	// Pre-created by prepareVolumeDirs().
+	//
+	// Kept inline (not in StandardSandboxMounts): podman mounts this RO
+	// while bwrap mounts the same path RW. The audit (A2 §3.1) flagged
+	// the cache dirs as podman-outliers; rather than thread a fourth
+	// per-mode flag through StandardSandboxMounts for two entries, the
+	// cache mounts stay per-mode-inline.
 	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
 	opencodeCacheMount := opencodeCacheDir + ":/root/.cache/opencode:ro"
 	// bun transpiler cache — required for bun to load plugins without
 	// re-transpiling on every container start. Pre-created by prepareVolumeDirs().
+	// Same RO/RW divergence as the opencode cache above — kept inline.
 	bunCacheDir := filepath.Join(home, ".cache", "bun")
 	bunCacheMount := bunCacheDir + ":/root/.cache/bun:ro"
-	// Claude credentials — required for Anthropic provider auth. Mounted
-	// read-write so the opencode-claude-auth plugin can write back refreshed
-	// OAuth tokens to .credentials.json inside the container.
-	claudeMount := filepath.Join(home, ".claude") + ":/root/.claude"
-	// MCP auth — OAuth tokens written by mcp-remote (used by the Atlassian MCP
-	// shim and other MCP servers that use OAuth). Mounted read-write so that
-	// token refresh inside the container persists back to the host directory.
-	// Source path: ${home}/.mcp-auth — only mounted when it exists on the host.
-	mcpAuthDir := filepath.Join(home, ".mcp-auth")
-	// Nix eval cache — pre-populated git cache from the host so flake input
-	// tarballs (nixpkgs, home-manager, etc.) don't need to be re-fetched and
-	// unpacked on every container start. Read-write because nix writes to
-	// SQLite databases (fetcher-cache, binary-cache, eval-cache) during
-	// evaluation; the :Z label handles SELinux relabeling.
-	nixCacheMount := filepath.Join(home, ".cache", "nix") + ":/root/.cache/nix:Z"
 
-	// AWS — individual files mounted at /root/.aws (the default location the
-	// AWS CLI looks in) so `aws` works inside the container without any env var
-	// configuration. Only least-privilege files are mounted:
-	//
-	//   ~/.config/aws/readonly-config  → /root/.aws/config      (profiles/settings)
-	//   ~/.config/aws/credentials      → /root/.aws/credentials  (static creds, if present)
-	//   ~/.aws/sso                     → /root/.aws/sso          (SSO token cache from `aws sso login`)
-	//   ~/.aws/cli                     → /root/.aws/cli          (CLI session cache)
-	//
-	// The config and credentials files live in the XDG location (managed by
-	// sops-nix). The sso/ and cli/ cache dirs are always written to ~/.aws/ by
-	// the AWS CLI regardless of AWS_CONFIG_FILE, so they are sourced from there.
-	// Admin credentials (the full config, credentials with write-capable roles)
-	// are never mounted — only the readonly-config is exposed.
-	awsReadonlyConfig := filepath.Join(home, ".config", "aws", "readonly-config")
-	awsCredentials := filepath.Join(home, ".config", "aws", "credentials")
-	awsSSOCacheDir := filepath.Join(home, ".aws", "sso")
-	awsCLICacheDir := filepath.Join(home, ".aws", "cli")
-	// Kube agents config — the host stores this at ~/.config/kube/agents-config
-	// (XDG-compliant, managed by sops-nix). Mount it at /root/.kube/config (the
-	// default path kubectl reads) so `kubectl` works inside the container without
-	// any env var configuration. Only the agents/readonly kubeconfig is mounted —
-	// the admin kubeconfig is never exposed to agents.
-	kubeAgentsConfig := filepath.Join(home, ".config", "kube", "agents-config")
-	// Clipboard staging directory — images staged by `prism clipboard paste-image`
-	// on the host are placed here and bind-mounted read-only into the container at
-	// the identical absolute path so that opencode's stat() call resolves without
-	// modification. No clipboard tool, socket, or env var is exposed inside the
-	// container — clipboard read occurs entirely host-side.
-	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
+	// Mounts for ~/.claude, ~/.mcp-auth, ~/.cache/nix, AWS readonly-config,
+	// AWS credentials, AWS SSO/CLI cache, kube agents-config, and the
+	// clipboard staging dir are all emitted by the StandardSandboxMounts
+	// walk below (A2.M1) — the inline blocks that previously declared
+	// each path here have been replaced by that walk.
 
 	args := []string{
 		"run",
@@ -826,18 +826,36 @@ func (m *Manager) buildRunArgs() []string {
 		// opencode state — per-session isolated dir, read-write.
 		"--volume", opencodeStateMount,
 		// opencode cache — plugins, models, bun.lock from host, read-only.
+		// Kept inline (not in StandardSandboxMounts): podman mounts this
+		// RO while bwrap mounts the same path RW. See bwrap.go for the
+		// matching inline block — the audit (A2 §3.1) flagged the cache
+		// dirs as podman-outliers.
 		"--volume", opencodeCacheMount,
 		// bun transpiler cache — pre-compiled plugin modules from host.
+		// Same RO/RW divergence as the opencode cache above — kept inline.
 		"--volume", bunCacheMount,
-		// Claude credentials directory — read-write for auth plugin token refresh.
-		// On Linux, ~/.claude/.credentials.json lives here.
-		// On Darwin, .credentials.json is absent (credentials are in the macOS
-		// Keychain); writeClaudeCredentials() extracts and writes it to a temp
-		// file that is bind-mounted below at /root/.claude/.credentials.json.
-		"--volume", claudeMount,
-		// Nix eval cache — flake input tarballs pre-unpacked from the host.
-		"--volume", nixCacheMount,
 	)
+
+	// ── Standard sandbox mounts via the shared spec walk ─────────────────
+	// StandardSandboxMounts (mounts.go, A2.M1) returns the mode-agnostic
+	// mount set for ~/.claude, ~/.cache/nix, ~/.mcp-auth, AWS readonly-config,
+	// AWS credentials, AWS SSO/CLI cache, kube config, and the clipboard
+	// staging dir. The podman appendVolume appender (mounts.go) translates
+	// each MountSpec into the correct --volume "SRC:DST[:Z][:ro]" pair.
+	//
+	// SandboxPath uses /root as the in-sandbox $HOME prefix (sandboxHome
+	// for podman). SELinuxRelabel is honoured here (the bwrap appender
+	// ignores it). Per-mode RO divergence for AWS SSO/CLI is captured
+	// inside StandardSandboxMounts via the mode argument.
+	//
+	// appendPodmanVolume is a free function (not a method on
+	// podmanIsolator) so that tests which construct a Manager with a
+	// non-podman isolator and call buildRunArgs directly continue to work
+	// without a type-cast. The emitter is stateless — there is no podman
+	// state to consult — so a free function is the natural shape.
+	for _, spec := range StandardSandboxMounts(cfg, "/root", home, isolationPodman) {
+		args = appendPodmanVolume(args, spec)
+	}
 
 	// auth.json overlay: bind-mount the host's opencode auth.json over the
 	// per-session dir so OAuth tokens are shared across sessions without sharing
@@ -852,57 +870,13 @@ func (m *Manager) buildRunArgs() []string {
 	// visible to subsequent sessions — the intended shared-credentials behaviour.
 	// :Z applies the SELinux label so podman can bind-mount it on
 	// SELinux-enforcing hosts (Fedora/RHEL).
+	//
+	// Kept inline (not in StandardSandboxMounts): the SandboxPath is
+	// /root/.local/share/opencode/auth.json — it shadows a file inside the
+	// per-session opencode state mount above, which is a podman-specific
+	// pattern (bwrap shares the host opencode dir directly, no overlay).
 	if _, err := os.Stat(opencodeAuthJSON); err == nil {
 		args = append(args, "--volume", opencodeAuthJSON+":/root/.local/share/opencode/auth.json:Z")
-	}
-
-	// MCP auth: bind-mount ~/.mcp-auth into the container at /root/.mcp-auth
-	// so mcp-remote OAuth tokens obtained on the host are available inside the
-	// container. Mounted read-write so token refresh inside the container
-	// persists back to the host. Only mounted when the directory exists — hosts
-	// without Atlassian MCP configured are unaffected.
-	if _, err := os.Stat(mcpAuthDir); err == nil {
-		args = append(args, "--volume", mcpAuthDir+":/root/.mcp-auth")
-	}
-
-	// AWS: mount individual files/dirs into /root/.aws so the AWS CLI works at
-	// its default paths with no env var configuration. Each mount is conditional
-	// on the source path existing — hosts without AWS configured are unaffected.
-	if resolved, err := filepath.EvalSymlinks(awsReadonlyConfig); err == nil {
-		args = append(args, "--volume", resolved+":/root/.aws/config:ro")
-	}
-	if resolved, err := filepath.EvalSymlinks(awsCredentials); err == nil {
-		args = append(args, "--volume", resolved+":/root/.aws/credentials:ro")
-	}
-	// SSO and CLI cache dirs — written to ~/.aws/ by the AWS CLI regardless of
-	// AWS_CONFIG_FILE. Mount read-only so the container can use SSO tokens
-	// obtained on the host via `aws sso login` without needing network access
-	// to re-authenticate. Mounted as directories (conditional on existence).
-	if _, err := os.Stat(awsSSOCacheDir); err == nil {
-		args = append(args, "--volume", awsSSOCacheDir+":/root/.aws/sso:ro")
-	}
-	if _, err := os.Stat(awsCLICacheDir); err == nil {
-		args = append(args, "--volume", awsCLICacheDir+":/root/.aws/cli:ro")
-	}
-
-	// Kube agents config: mount ~/.config/kube/agents-config at
-	// /root/.kube/config (the default file kubectl reads) when the file exists
-	// on the host. Only the agents/readonly kubeconfig is exposed — the admin
-	// kubeconfig is never mounted into agent containers.
-	if resolved, err := filepath.EvalSymlinks(kubeAgentsConfig); err == nil {
-		args = append(args, "--volume", resolved+":/root/.kube/config:ro")
-	}
-
-	// Clipboard staging directory: bind-mount ~/.cache/prism/clipboard/ at
-	// the identical host path inside the container, read-only. Images staged
-	// by `prism clipboard paste-image` (running host-side via the tmux keybind)
-	// are written here; opencode's drag-drop handler stat()s the path and reads
-	// the bytes. The read-only mount ensures the container cannot write to the
-	// host's staging directory. Only mounted when the directory exists — skipped
-	// silently at container spawn time when no paste has occurred yet (consistent
-	// with the conditional-mount pattern used for AWS/MCP-auth/kube config).
-	if _, err := os.Stat(clipboardCacheDir); err == nil {
-		args = append(args, "--volume", clipboardCacheDir+":"+clipboardCacheDir+":ro")
 	}
 
 	// Darwin: bind-mount the extracted Keychain credentials over

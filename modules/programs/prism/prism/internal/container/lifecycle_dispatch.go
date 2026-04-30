@@ -412,13 +412,15 @@ func (s *sandboxExecIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 }
 
 // WriteGitconfig generates a minimal .gitconfig for the sandbox-exec sandbox.
-// sandbox-exec shares the host user's $HOME, so the signingKey and
-// allowedSignersFile paths embed the host user's $HOME (not /root). The
-// existing isolationBwrap branch in container.go's writeGitconfig already
-// handles the "host $HOME" path layout — sandbox-exec is structurally the
-// same here, so we re-use it.
+// sandbox-exec runs as the host user but with a per-session staging HOME, so
+// the signingKey and allowedSignersFile paths embed <stagingHome>/.ssh/...
+// (post A2.G1: writeGitconfig now covers sandbox-exec via the third
+// isolationSandboxExec mode value, with sandboxHome(m, isolationSandboxExec)
+// resolving to the staging HOME). The temp file written here is then
+// materialised into <stagingHome>/.gitconfig by writeGitconfigToDir, which
+// is invoked from PrepareSandboxExecHome.
 func (s *sandboxExecIsolator) WriteGitconfig(m *Manager) error {
-	return m.writeGitconfig(isolationBwrap)
+	return m.writeGitconfig(isolationSandboxExec)
 }
 
 // Reset is a no-op for sandbox-exec today — same rationale as bwrap.Reset.

@@ -341,12 +341,9 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		sandboxStderrW.Close()
 	}
 
-	// Give the terminal foreground to sandbox-exec's process group so that
-	// the host PTY routes keypresses to sandbox-exec/opencode, not agent-run.
-	origPgid := tcsetpgrpForeground(int(os.Stdin.Fd()), sandboxCmd.Process.Pid)
-
-	// childExited is closed when cmd.Wait() returns — used by the parent-death
-	// watcher to avoid sending spurious signals after the child has already exited.
+	// childExited is closed once sandboxCmd has been waited on. The
+	// parent-death watcher consumes this channel to avoid sending spurious
+	// signals after the child has already exited.
 	childExited := make(chan struct{})
 
 	// Install the parent-death watcher in a goroutine. parentPID was captured
@@ -358,10 +355,6 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// the 1-second heartbeat fallback is used instead (see lifecycle_darwin.go).
 	const parentDeathGrace = 3 * time.Second
 	go watchParentDeathAndKill(parentPID, sandboxCmd.Process, childExited, parentDeathGrace)
-
-	// Forward SIGTERM, SIGINT, and SIGHUP to the sandbox-exec process group.
-	stopForward := make(chan struct{})
-	go forwardSignalsToSandboxExec(sandboxCmd.Process, stopForward)
 
 	// Tee sandbox-exec's stderr to both the pane and the log file.
 	teeDone := make(chan struct{})
@@ -379,17 +372,21 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		close(teeDone)
 	}
 
-	waitErr := sandboxCmd.Wait()
+	// Supervise the child: foreground the pgid, forward SIGTERM/SIGINT/SIGHUP
+	// (sandbox-exec deliberately does not subscribe SIGWINCH — see
+	// SuperviseOpts.ForwardWinch godoc for the rationale), and wait for exit.
+	// The shared SuperviseChild helper (supervise.go, A2.SUP) replaces the
+	// previous open-coded tcsetpgrpForeground / per-mode signal forwarding /
+	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
+	// implementation across the bwrap and sandbox-exec dispatch paths.
+	waitErr := SuperviseChild(sandboxCmd, int(os.Stdin.Fd()), SuperviseOpts{
+		ForwardWinch: false,
+		OnWinch:      nil,
+	})
 
-	// Signal goroutines that the child has exited.
+	// Signal the parent-death watcher that the child has exited.
 	close(childExited)
-	close(stopForward)
 	<-teeDone
-
-	// Restore the original foreground process group.
-	if origPgid > 0 {
-		_ = tcsetpgrpRestore(int(os.Stdin.Fd()), origPgid)
-	}
 
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {

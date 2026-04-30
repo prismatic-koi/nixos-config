@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"syscall"
 	"time"
 )
@@ -178,27 +177,5 @@ func killChild(childProc *os.Process, graceTimeout time.Duration) {
 	case <-time.After(graceTimeout):
 		// Grace period expired — send SIGKILL.
 		_ = childProc.Signal(syscall.SIGKILL)
-	}
-}
-
-// forwardSignalsToSandboxExec forwards SIGTERM, SIGINT, and SIGHUP from
-// agent-run to the sandbox-exec child process group until stopCh is closed.
-// This is the sandbox-exec equivalent of forwardSignalsToBwrap in agent_run.go.
-func forwardSignalsToSandboxExec(proc *os.Process, stopCh <-chan struct{}) {
-	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-	defer signal.Stop(sigCh)
-
-	for {
-		select {
-		case <-stopCh:
-			return
-		case sig := <-sigCh:
-			if proc == nil {
-				continue
-			}
-			// Send to the process group (negative PGID = group of sandbox-exec).
-			_ = syscall.Kill(-proc.Pid, sig.(syscall.Signal))
-		}
 	}
 }
