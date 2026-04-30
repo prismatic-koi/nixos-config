@@ -29,19 +29,22 @@
               "podman"
               "bwrap"
               "host"
+              "sandbox-exec"
             ];
             default = if pkgs.stdenv.hostPlatform.isLinux then "podman" else "host";
             example = "bwrap";
             description = ''
               Default isolation mode for new agent sessions. Valid values:
-              - "podman": run opencode inside a rootless podman container (default on Linux).
-              - "bwrap":  run opencode inside a bubblewrap sandbox (Linux-only).
-              - "host":   run opencode directly in the tmux pane with no isolation (default on Darwin).
+              - "podman":       run opencode inside a rootless podman container (default on Linux).
+              - "bwrap":        run opencode inside a bubblewrap sandbox (Linux-only).
+              - "host":         run opencode directly in the tmux pane with no isolation (default on Darwin).
+              - "sandbox-exec": run opencode inside a macOS sandbox-exec profile (Darwin-only).
 
               This value is written to ~/.config/prism/config.json as default_isolation_mode.
               It can be overridden per-spawn via `prism spawn --isolation <mode>`.
 
               Setting "bwrap" on a Darwin host fails at eval time.
+              Setting "sandbox-exec" on a Linux host fails at eval time.
             '';
           };
         };
@@ -163,6 +166,18 @@
               nx.programs.prism.agent.isolation.default = "bwrap" requires Linux.
               bubblewrap is not available on ${pkgs.stdenv.hostPlatform.system}.
               Use "podman" or "host" instead, or only set "bwrap" on Linux hosts.
+            '';
+          }
+          {
+            assertion =
+              !(
+                config.nx.programs.prism.agent.isolation.default == "sandbox-exec"
+                && !pkgs.stdenv.hostPlatform.isDarwin
+              );
+            message = ''
+              nx.programs.prism.agent.isolation.default = "sandbox-exec" requires Darwin.
+              sandbox-exec is not available on ${pkgs.stdenv.hostPlatform.system}.
+              Use "podman" or "bwrap" instead, or only set "sandbox-exec" on Darwin hosts.
             '';
           }
         ];
