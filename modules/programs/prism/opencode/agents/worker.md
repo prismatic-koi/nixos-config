@@ -93,6 +93,18 @@ is written to `/tmp` — the full agent reasoning is available via
 5. Non-blocking observations on a failed round MAY also be actioned alongside
    the mandatory fix — the worker decides what to include.
 
+**On ERROR (one or more agents failed to start):**
+
+The review-complete header will say "infrastructure failure" and instruct you
+to re-run. This is **not** a code-quality verdict — the agent never ran, so
+there are no blocking issues to fix. Simply re-run `prism review <pr>`.
+
+If the prompt is mixed — some agents returned FAIL verdicts **and** some
+failed to start — fix the blocking issues from the agents that ran, then
+re-run `prism review <pr>` to cover the agents that never started. Count
+re-run cycles from the first round that had a full set of agent results; do
+not count infrastructure-failure rounds toward your 3-cycle limit.
+
 **On PASS:**
 
 Non-blocking observations MAY be actioned if they represent a genuine
