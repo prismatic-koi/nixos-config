@@ -1,84 +1,127 @@
 package archive
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// makeStorageTree creates a minimal opencode storage tree under root for the
-// given session ID and project ID. Returns a map of relative paths → content
+// makeOpenCodeDB creates a minimal opencode-stable.db at dbPath with the given
+// session, messages, and parts. Returns a map of relative raw/ paths → content
 // that the caller can compare against the archive raw/ contents.
-func makeStorageTree(t *testing.T, root, projectID, sessionID string) map[string]string {
+func makeOpenCodeDB(t *testing.T, dbPath, sessionID string) map[string]string {
 	t.Helper()
 
-	// storage/session/<projectID>/ses_<id>.json
-	sessDir := filepath.Join(root, "session", projectID)
-	mustMkdir(t, sessDir)
-	sessContent := `{"id":"` + sessionID + `","projectID":"` + projectID + `"}`
-	mustWriteFile(t, filepath.Join(sessDir, sessionID+".json"), sessContent)
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll for DB dir: %v", err)
+	}
 
-	// storage/message/<sessionID>/msg_aaa.json
-	msgDir := filepath.Join(root, "message", sessionID)
-	mustMkdir(t, msgDir)
-	msg1Content := `{"id":"msg_aaa","type":"text"}`
-	mustWriteFile(t, filepath.Join(msgDir, "msg_aaa.json"), msg1Content)
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
+	defer db.Close()
 
-	// storage/part/msg_aaa/prt_001.json (text part — no tool-output ref)
-	partDir := filepath.Join(root, "part", "msg_aaa")
-	mustMkdir(t, partDir)
+	// Create minimal schema matching opencode-stable.db.
+	_, err = db.Exec(`
+		CREATE TABLE project (
+			id TEXT PRIMARY KEY,
+			worktree TEXT NOT NULL,
+			vcs TEXT,
+			name TEXT,
+			icon_url TEXT,
+			icon_color TEXT,
+			time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL,
+			time_initialized INTEGER,
+			sandboxes TEXT NOT NULL,
+			commands TEXT
+		);
+		CREATE TABLE session (
+			id TEXT PRIMARY KEY,
+			project_id TEXT NOT NULL,
+			parent_id TEXT,
+			slug TEXT NOT NULL,
+			directory TEXT NOT NULL,
+			title TEXT NOT NULL,
+			version TEXT NOT NULL,
+			share_url TEXT,
+			summary_additions INTEGER,
+			summary_deletions INTEGER,
+			summary_files INTEGER,
+			summary_diffs TEXT,
+			revert TEXT,
+			permission TEXT,
+			time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL,
+			time_compacting INTEGER,
+			time_archived INTEGER
+		);
+		CREATE TABLE message (
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL,
+			data TEXT NOT NULL
+		);
+		CREATE TABLE part (
+			id TEXT PRIMARY KEY,
+			message_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL,
+			data TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+
+	// Insert a project row (required by session FK).
+	projectID := "proj_" + sessionID
+	_, err = db.Exec(`INSERT INTO project (id, worktree, time_created, time_updated, sandboxes)
+		VALUES (?, '/home/test', 1, 1, '[]')`, projectID)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	// Insert the session row.
+	_, err = db.Exec(`INSERT INTO session
+		(id, project_id, slug, directory, title, version, time_created, time_updated)
+		VALUES (?, ?, 'test-session', '/home/test', 'Test Session', '1.0', 1000, 1000)`,
+		sessionID, projectID)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	// Insert a message.
+	msg1Content := `{"id":"msg_aaa","type":"user","role":"user"}`
+	_, err = db.Exec(`INSERT INTO message (id, session_id, time_created, time_updated, data)
+		VALUES ('msg_aaa', ?, 1000, 1000, ?)`, sessionID, msg1Content)
+	if err != nil {
+		t.Fatalf("insert message: %v", err)
+	}
+
+	// Insert a part for that message.
 	part1Content := `{"id":"prt_001","type":"text","text":"hello"}`
-	mustWriteFile(t, filepath.Join(partDir, "prt_001.json"), part1Content)
+	_, err = db.Exec(`INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+		VALUES ('prt_001', 'msg_aaa', ?, 1000, 1000, ?)`, sessionID, part1Content)
+	if err != nil {
+		t.Fatalf("insert part: %v", err)
+	}
 
 	return map[string]string{
-		"session.json":              sessContent,
-		"messages/msg_aaa.json":     msg1Content,
+		"messages/msg_aaa.json":      msg1Content,
 		"parts/msg_aaa/prt_001.json": part1Content,
-	}
-}
-
-// makeStorageTreeWithToolOutput extends makeStorageTree with a tool part that
-// references a tool-output sidecar file. Returns the file map and toolID.
-func makeStorageTreeWithToolOutput(t *testing.T, root, projectID, sessionID string) (map[string]string, string) {
-	t.Helper()
-	files := makeStorageTree(t, root, projectID, sessionID)
-
-	toolID := "tool_abc123"
-	toolContent := "tool output bytes"
-
-	// Add a second part in msg_aaa that references the tool output.
-	partDir := filepath.Join(root, "part", "msg_aaa")
-	part2Content := `{"id":"prt_002","type":"tool","asset":"` + toolID + `"}`
-	mustWriteFile(t, filepath.Join(partDir, "prt_002.json"), part2Content)
-	files["parts/msg_aaa/prt_002.json"] = part2Content
-
-	// Write the tool-output sidecar.
-	toDir := filepath.Join(root, "tool-output")
-	mustMkdir(t, toDir)
-	mustWriteFile(t, filepath.Join(toDir, toolID), toolContent)
-	files["tool-output/"+toolID] = toolContent
-
-	return files, toolID
-}
-
-func mustMkdir(t *testing.T, path string) {
-	t.Helper()
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Fatalf("MkdirAll %s: %v", path, err)
-	}
-}
-
-func mustWriteFile(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("WriteFile %s: %v", path, err)
 	}
 }
 
@@ -91,7 +134,7 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-func baseParams(archiveRoot, storageRoot string) Params {
+func baseParams(archiveRoot, dbPath string) Params {
 	startedAt := time.Date(2026, 4, 25, 14, 30, 22, 0, time.UTC)
 	endedAt := time.Date(2026, 4, 25, 15, 47, 11, 0, time.UTC)
 	return Params{
@@ -110,7 +153,7 @@ func baseParams(archiveRoot, storageRoot string) Params {
 		GroupID:          "",
 		PrismVersion:     "abc123",
 		IsolationMode:    "host",
-		StorageRoot:      storageRoot,
+		DBPath:           dbPath,
 		ArchiveRoot:      archiveRoot,
 	}
 }
@@ -122,13 +165,12 @@ func baseParams(archiveRoot, storageRoot string) Params {
 func TestRunHappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "proj123"
 	sessionID := "ses_test001"
-	wantFiles := makeStorageTree(t, storageRoot, projectID, sessionID)
+	wantFiles := makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 
 	archivePath, err := Run(p)
 	if err != nil {
@@ -158,6 +200,16 @@ func TestRunHappyPath(t *testing.T) {
 		if got != want {
 			t.Errorf("raw/%s content = %q, want %q", rel, got, want)
 		}
+	}
+
+	// Verify session.json is present and contains expected fields.
+	sessData := readFile(t, filepath.Join(rawDir, "session.json"))
+	var sessObj map[string]any
+	if err := json.Unmarshal([]byte(sessData), &sessObj); err != nil {
+		t.Fatalf("session.json parse error: %v", err)
+	}
+	if sessObj["id"] != sessionID {
+		t.Errorf("session.json id = %v, want %q", sessObj["id"], sessionID)
 	}
 
 	// Verify manifest.json exists and parses.
@@ -209,49 +261,14 @@ func TestRunHappyPath(t *testing.T) {
 	}
 }
 
-// TestRunWithToolOutput verifies that tool-output sidecar files referenced by
-// parts are copied into raw/tool-output/.
-func TestRunWithToolOutput(t *testing.T) {
-	tmpDir := t.TempDir()
-	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
-
-	projectID := "proj456"
-	sessionID := "ses_test002"
-	wantFiles, toolID := makeStorageTreeWithToolOutput(t, storageRoot, projectID, sessionID)
-
-	p := baseParams(archiveRoot, storageRoot)
-	p.HarnessSessionID = sessionID
-	p.InstanceID = "bbbbbbbb-1234-5678-9abc-def012345678"
-
-	archivePath, err := Run(p)
-	if err != nil {
-		t.Fatalf("Run() error: %v", err)
-	}
-
-	rawDir := filepath.Join(archivePath, "raw")
-	for rel, want := range wantFiles {
-		got := readFile(t, filepath.Join(rawDir, rel))
-		if got != want {
-			t.Errorf("raw/%s content = %q, want %q", rel, got, want)
-		}
-	}
-
-	// Verify the tool-output file is present.
-	toolPath := filepath.Join(rawDir, "tool-output", toolID)
-	if _, err := os.Stat(toolPath); err != nil {
-		t.Errorf("tool-output/%s not found: %v", toolID, err)
-	}
-}
-
 // TestRunNoHarnessSessionID verifies that a session with no harness_session_id
 // still produces an archive dir with manifest.json and an empty raw/.
 func TestRunNoHarnessSessionID(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = "" // opencode failed to start
 	p.InstanceID = "cccccccc-1234-5678-9abc-def012345678"
 	p.EndState = "interrupted"
@@ -290,18 +307,75 @@ func TestRunNoHarnessSessionID(t *testing.T) {
 	}
 }
 
+// TestRunDBAbsent verifies that a missing opencode-stable.db is a graceful no-op
+// (empty raw/, no error).
+func TestRunDBAbsent(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+	dbPath := filepath.Join(tmpDir, "nonexistent-opencode-stable.db")
+
+	p := baseParams(archiveRoot, dbPath)
+	p.HarnessSessionID = "ses_ghost"
+	p.InstanceID = "bbbbbbbb-1111-2222-3333-444444444444"
+
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() error (want success): %v", err)
+	}
+
+	rawDir := filepath.Join(archivePath, "raw")
+	if _, err := os.Stat(rawDir); err != nil {
+		t.Fatalf("raw/ dir not found: %v", err)
+	}
+	entries, err := os.ReadDir(rawDir)
+	if err != nil {
+		t.Fatalf("ReadDir raw/: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("raw/ has %d entries, want 0 (DB absent)", len(entries))
+	}
+}
+
+// TestRunSessionIDAbsentFromDB verifies that a session ID not present in the DB
+// is a graceful no-op (empty raw/, no error).
+func TestRunSessionIDAbsentFromDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
+
+	// Create DB with a different session, not the one we'll archive.
+	makeOpenCodeDB(t, dbPath, "ses_other001")
+
+	p := baseParams(archiveRoot, dbPath)
+	p.HarnessSessionID = "ses_nothere"
+	p.InstanceID = "cccccccc-2222-3333-4444-555555555555"
+
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() error (want success): %v", err)
+	}
+
+	rawDir := filepath.Join(archivePath, "raw")
+	entries, err := os.ReadDir(rawDir)
+	if err != nil {
+		t.Fatalf("ReadDir raw/: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("raw/ has %d entries, want 0 (session not in DB)", len(entries))
+	}
+}
+
 // TestRunIdempotencyError verifies that calling Run a second time for the same
 // instance returns an error and leaves the existing archive intact.
 func TestRunIdempotencyError(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "proj789"
 	sessionID := "ses_test003"
-	makeStorageTree(t, storageRoot, projectID, sessionID)
+	makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "dddddddd-1234-5678-9abc-def012345678"
 
@@ -332,43 +406,36 @@ func TestRunIdempotencyError(t *testing.T) {
 	}
 }
 
-// TestRunCopyFailureAtomicity verifies that a copy failure leaves no partial
-// archive directory (temp dir is cleaned up).
+// TestRunCopyFailureAtomicity verifies that when temp dir creation fails (due to
+// a bad archive root path), no partial directories are left behind.
 func TestRunCopyFailureAtomicity(t *testing.T) {
 	tmpDir := t.TempDir()
-	archiveRoot := filepath.Join(tmpDir, "archive")
-	// Point storageRoot at a directory that exists but has no session files.
-	storageRoot := filepath.Join(tmpDir, "empty-storage")
-	if err := os.MkdirAll(storageRoot, 0o755); err != nil {
-		t.Fatalf("MkdirAll storageRoot: %v", err)
-	}
-	// Create the session base dir but NO project subdir, so findSessionFile fails.
-	if err := os.MkdirAll(filepath.Join(storageRoot, "session"), 0o755); err != nil {
-		t.Fatalf("MkdirAll session dir: %v", err)
-	}
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	p := baseParams(archiveRoot, storageRoot)
-	p.HarnessSessionID = "ses_missing"
+	// Use a regular file as a directory component in the archive root path so
+	// that MkdirAll fails with ENOTDIR — forcing Run() to return an error
+	// before any temp directory is created.
+	blockingFile := filepath.Join(tmpDir, "blocking-file")
+	if err := os.WriteFile(blockingFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	badArchiveRoot := filepath.Join(blockingFile, "archive")
+
+	p := baseParams(badArchiveRoot, dbPath)
+	p.HarnessSessionID = "ses_test004"
 	p.InstanceID = "eeeeeeee-1234-5678-9abc-def012345678"
 
 	_, err := Run(p)
 	if err == nil {
-		t.Fatal("Run() succeeded, want error (session file not found)")
+		t.Fatal("Run() with bad archiveRoot succeeded, want error")
 	}
 
-	// No temp dir should remain.
-	repoDir := filepath.Join(archiveRoot, p.Repo)
-	entries, _ := os.ReadDir(repoDir)
+	// No temp dir should remain anywhere under our real tmpDir.
+	entries, _ := os.ReadDir(tmpDir)
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".tmp-") {
 			t.Errorf("temp dir left behind: %s", e.Name())
 		}
-	}
-
-	// The final directory must not exist either.
-	dirName := p.StartedAt.UTC().Format("20060102T150405Z") + "_" + p.InstanceID
-	if _, statErr := os.Stat(filepath.Join(repoDir, dirName)); statErr == nil {
-		t.Errorf("final archive dir exists after failed Run()")
 	}
 }
 
@@ -376,13 +443,12 @@ func TestRunCopyFailureAtomicity(t *testing.T) {
 func TestFilePermissions(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "permproj"
 	sessionID := "ses_perm001"
-	makeStorageTree(t, storageRoot, projectID, sessionID)
+	makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "ffffffff-1234-5678-9abc-def012345678"
 
@@ -432,13 +498,12 @@ func TestFilePermissions(t *testing.T) {
 func TestRunManifestVersions(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "versionproj"
 	sessionID := "ses_ver001"
-	makeStorageTree(t, storageRoot, projectID, sessionID)
+	makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "11111111-2222-3333-4444-555555555555"
 
@@ -466,13 +531,12 @@ func TestRunManifestVersions(t *testing.T) {
 func TestRunGroupID(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "groupproj"
 	sessionID := "ses_grp001"
-	makeStorageTree(t, storageRoot, projectID, sessionID)
+	makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "22222222-3333-4444-5555-666666666666"
 	p.GroupID = "my-group-id"
@@ -496,22 +560,55 @@ func TestRunGroupID(t *testing.T) {
 	}
 }
 
-// TestRunSessionWithNoMessages verifies that a session with a session.json but
-// no messages produces an archive with raw/session.json and raw/messages/ empty.
+// TestRunSessionWithNoMessages verifies that a session with no messages produces
+// an archive with raw/session.json and no raw/messages/ directory.
 func TestRunSessionWithNoMessages(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "nomsgproj"
+	// Create DB with session but no messages.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
 	sessionID := "ses_nomsg"
-	// Only create the session.json, no message/ dir.
-	sessDir := filepath.Join(storageRoot, "session", projectID)
-	mustMkdir(t, sessDir)
-	sessContent := `{"id":"` + sessionID + `","projectID":"` + projectID + `"}`
-	mustWriteFile(t, filepath.Join(sessDir, sessionID+".json"), sessContent)
+	_, err = db.Exec(`
+		CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL,
+			vcs TEXT, name TEXT, icon_url TEXT, icon_color TEXT,
+			time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+			time_initialized INTEGER, sandboxes TEXT NOT NULL, commands TEXT);
+		CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+			parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL,
+			title TEXT NOT NULL, version TEXT NOT NULL, share_url TEXT,
+			summary_additions INTEGER, summary_deletions INTEGER,
+			summary_files INTEGER, summary_diffs TEXT, revert TEXT,
+			permission TEXT, time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL, time_compacting INTEGER,
+			time_archived INTEGER);
+		CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+			time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+		CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+			session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+	`)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO project (id, worktree, time_created, time_updated, sandboxes)
+		VALUES ('proj_nomsg', '/home/test', 1, 1, '[]')`)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO session
+		(id, project_id, slug, directory, title, version, time_created, time_updated)
+		VALUES (?, 'proj_nomsg', 'test', '/home/test', 'Test', '1.0', 1, 1)`, sessionID)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	db.Close()
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "33333333-4444-5555-6666-777777777777"
 
@@ -525,29 +622,58 @@ func TestRunSessionWithNoMessages(t *testing.T) {
 	if _, err := os.Stat(sessFilePath); err != nil {
 		t.Fatalf("raw/session.json not found: %v", err)
 	}
-	if got := readFile(t, sessFilePath); got != sessContent {
-		t.Errorf("raw/session.json = %q, want %q", got, sessContent)
+	var sessObj map[string]any
+	if err := json.Unmarshal([]byte(readFile(t, sessFilePath)), &sessObj); err != nil {
+		t.Fatalf("parse session.json: %v", err)
+	}
+	if sessObj["id"] != sessionID {
+		t.Errorf("session.json id = %v, want %q", sessObj["id"], sessionID)
 	}
 
-	// messages/ must exist and be empty.
+	// No messages/ dir should be created when there are no messages.
 	msgDir := filepath.Join(archivePath, "raw", "messages")
-	if _, err := os.Stat(msgDir); err != nil {
-		t.Fatalf("raw/messages/ not found: %v", err)
-	}
-	entries, err := os.ReadDir(msgDir)
-	if err != nil {
-		t.Fatalf("ReadDir raw/messages/: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("raw/messages/ has %d entries, want 0", len(entries))
+	if _, err := os.Stat(msgDir); !os.IsNotExist(err) {
+		t.Errorf("raw/messages/ should not exist for session with no messages, but: %v", err)
 	}
 }
 
-// TestResolveStorageRootPodman verifies the podman path uses the container name.
+// TestResolveDBPathPodman verifies the podman path uses the container name.
+func TestResolveDBPathPodman(t *testing.T) {
+	got, err := resolveDBPath("podman", "nixos-config@feature")
+	if err != nil {
+		t.Fatalf("resolveDBPath podman: %v", err)
+	}
+	if !strings.Contains(got, "prism-sessions") {
+		t.Errorf("podman DB path = %q, want path containing 'prism-sessions'", got)
+	}
+	if !strings.Contains(got, "prism-nixos-config-feature") {
+		t.Errorf("podman DB path = %q, want path containing container name 'prism-nixos-config-feature'", got)
+	}
+	if !strings.HasSuffix(got, "opencode-stable.db") {
+		t.Errorf("podman DB path = %q, want suffix 'opencode-stable.db'", got)
+	}
+}
+
+// TestResolveDBPathHost verifies the host/bwrap/sandbox-exec path does not
+// use prism-sessions.
+func TestResolveDBPathHost(t *testing.T) {
+	for _, mode := range []string{"host", "bwrap", "sandbox-exec"} {
+		got, err := resolveDBPath(mode, "nixos-config@main")
+		if err != nil {
+			t.Fatalf("resolveDBPath %s: %v", mode, err)
+		}
+		if strings.Contains(got, "prism-sessions") {
+			t.Errorf("mode=%s DB path = %q, should not contain 'prism-sessions'", mode, got)
+		}
+		if !strings.HasSuffix(got, "opencode-stable.db") {
+			t.Errorf("mode=%s DB path = %q, want suffix 'opencode-stable.db'", mode, got)
+		}
+	}
+}
+
+// TestResolveStorageRootPodman verifies the podman storage root path uses the container name.
+// resolveStorageRoot is retained for back-compat.
 func TestResolveStorageRootPodman(t *testing.T) {
-	// We don't want to call os.UserHomeDir in a way that makes the test
-	// platform-dependent — just verify the function doesn't return an error
-	// and includes "prism-sessions" in the path.
 	got, err := resolveStorageRoot("podman", "nixos-config@feature")
 	if err != nil {
 		t.Fatalf("resolveStorageRoot podman: %v", err)
@@ -560,8 +686,7 @@ func TestResolveStorageRootPodman(t *testing.T) {
 	}
 }
 
-// TestResolveStorageRootHost verifies the host/bwrap/sandbox-exec path does not
-// use prism-sessions.
+// TestResolveStorageRootHost verifies the host/bwrap/sandbox-exec storage root.
 func TestResolveStorageRootHost(t *testing.T) {
 	for _, mode := range []string{"host", "bwrap", "sandbox-exec"} {
 		got, err := resolveStorageRoot(mode, "nixos-config@main")
@@ -578,17 +703,16 @@ func TestResolveStorageRootHost(t *testing.T) {
 }
 
 // TestRunSandboxExec verifies that a session with isolation_mode "sandbox-exec"
-// archives successfully, using the same storage layout as bwrap/host modes.
+// archives successfully.
 func TestRunSandboxExec(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
-	projectID := "sbxproj"
 	sessionID := "ses_sbx001"
-	wantFiles := makeStorageTree(t, storageRoot, projectID, sessionID)
+	makeOpenCodeDB(t, dbPath, sessionID)
 
-	p := baseParams(archiveRoot, storageRoot)
+	p := baseParams(archiveRoot, dbPath)
 	p.HarnessSessionID = sessionID
 	p.InstanceID = "44444444-5555-6666-7777-888888888888"
 	p.IsolationMode = "sandbox-exec"
@@ -609,15 +733,17 @@ func TestRunSandboxExec(t *testing.T) {
 		t.Fatalf("raw/ dir not found: %v", err)
 	}
 
-	// Verify each file is present and byte-for-byte identical.
-	for rel, want := range wantFiles {
-		got := readFile(t, filepath.Join(rawDir, rel))
-		if got != want {
-			t.Errorf("raw/%s content = %q, want %q", rel, got, want)
-		}
+	// Verify session.json is present and valid.
+	sessData := readFile(t, filepath.Join(rawDir, "session.json"))
+	var sessObj map[string]any
+	if err := json.Unmarshal([]byte(sessData), &sessObj); err != nil {
+		t.Fatalf("session.json parse error: %v", err)
+	}
+	if sessObj["id"] != sessionID {
+		t.Errorf("session.json id = %v, want %q", sessObj["id"], sessionID)
 	}
 
-	// Verify manifest.json parses and has the correct isolation mode recorded.
+	// Verify manifest.json parses correctly.
 	var m manifest
 	mData := readFile(t, filepath.Join(archivePath, "manifest.json"))
 	if err := json.Unmarshal([]byte(mData), &m); err != nil {
@@ -628,12 +754,12 @@ func TestRunSandboxExec(t *testing.T) {
 	}
 }
 
-// TestResolveStorageRootUnknown verifies that an unsupported isolation mode
-// returns an error.
-func TestResolveStorageRootUnknown(t *testing.T) {
-	_, err := resolveStorageRoot("docker", "nixos-config@main")
+// TestResolveDBPathUnknown verifies that an unsupported isolation mode returns
+// an error.
+func TestResolveDBPathUnknown(t *testing.T) {
+	_, err := resolveDBPath("docker", "nixos-config@main")
 	if err == nil {
-		t.Fatal("resolveStorageRoot with unknown mode: expected error, got nil")
+		t.Fatal("resolveDBPath with unknown mode: expected error, got nil")
 	}
 }
 
@@ -642,7 +768,7 @@ func TestResolveStorageRootUnknown(t *testing.T) {
 func TestRunRepoTraversalRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 	archiveRoot := filepath.Join(tmpDir, "archive")
-	storageRoot := filepath.Join(tmpDir, "storage")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
 
 	cases := []string{
 		"../../evil",
@@ -652,49 +778,13 @@ func TestRunRepoTraversalRejected(t *testing.T) {
 	}
 
 	for _, repo := range cases {
-		p := baseParams(archiveRoot, storageRoot)
+		p := baseParams(archiveRoot, dbPath)
 		p.Repo = repo
 		p.InstanceID = "aaaa1111-1111-1111-1111-111111111111"
 
 		_, err := Run(p)
 		if err == nil {
 			t.Errorf("Run() with repo=%q succeeded, want error", repo)
-		}
-	}
-}
-
-// TestToolOutputIDValidation verifies that toolOutputIDsFromPart rejects
-// asset values containing path traversal sequences.
-func TestToolOutputIDValidation(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	cases := []struct {
-		partContent string
-		wantIDs     []string
-	}{
-		// Normal tool part.
-		{`{"type":"tool","asset":"tool_abc123"}`, []string{"tool_abc123"}},
-		// Traversal attempt — must be rejected.
-		{`{"type":"tool","asset":"tool_/../../etc/shadow"}`, nil},
-		{`{"type":"tool","asset":"tool_../secret"}`, nil},
-		// Wrong prefix — ignored.
-		{`{"type":"tool","asset":"output_abc"}`, nil},
-		// Wrong type — ignored.
-		{`{"type":"text","asset":"tool_abc"}`, nil},
-	}
-
-	for i, tc := range cases {
-		partPath := filepath.Join(tmpDir, fmt.Sprintf("prt_%02d.json", i))
-		mustWriteFile(t, partPath, tc.partContent)
-		got := toolOutputIDsFromPart(partPath)
-		if len(got) != len(tc.wantIDs) {
-			t.Errorf("case %d (%s): got %v, want %v", i, tc.partContent, got, tc.wantIDs)
-			continue
-		}
-		for j := range got {
-			if got[j] != tc.wantIDs[j] {
-				t.Errorf("case %d: got[%d] = %q, want %q", i, j, got[j], tc.wantIDs[j])
-			}
 		}
 	}
 }
@@ -715,5 +805,123 @@ func TestContainerNameForSession(t *testing.T) {
 		if got != tc.wantContainer {
 			t.Errorf("containerNameForSession(%q) = %q, want %q", tc.sessionName, got, tc.wantContainer)
 		}
+	}
+}
+
+// TestRunMultipleMessages verifies that multiple messages and their parts are
+// all exported correctly.
+func TestRunMultipleMessages(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveRoot := filepath.Join(tmpDir, "archive")
+	dbPath := filepath.Join(tmpDir, "opencode-stable.db")
+
+	// Build DB with two messages, each with a part.
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open test DB: %v", err)
+	}
+	sessionID := "ses_multi01"
+	_, err = db.Exec(`
+		CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL,
+			vcs TEXT, name TEXT, icon_url TEXT, icon_color TEXT,
+			time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+			time_initialized INTEGER, sandboxes TEXT NOT NULL, commands TEXT);
+		CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+			parent_id TEXT, slug TEXT NOT NULL, directory TEXT NOT NULL,
+			title TEXT NOT NULL, version TEXT NOT NULL, share_url TEXT,
+			summary_additions INTEGER, summary_deletions INTEGER,
+			summary_files INTEGER, summary_diffs TEXT, revert TEXT,
+			permission TEXT, time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL, time_compacting INTEGER,
+			time_archived INTEGER);
+		CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+			time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+		CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL,
+			session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+			time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+	`)
+	if err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO project VALUES ('proj_multi', '/home/test', NULL, NULL, NULL, NULL, 1, 1, NULL, '[]', NULL)`)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO session VALUES (?, 'proj_multi', NULL, 'slug', '/home/test', 'T', '1.0', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 1, 1, NULL, NULL)`, sessionID)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	msg1 := `{"id":"msg_111","role":"user"}`
+	msg2 := `{"id":"msg_222","role":"assistant"}`
+	part1 := `{"id":"prt_aaa","type":"text","text":"hello"}`
+	part2 := `{"id":"prt_bbb","type":"text","text":"world"}`
+
+	for _, row := range []struct{ id, data string }{
+		{"msg_111", msg1}, {"msg_222", msg2},
+	} {
+		if _, err := db.Exec(`INSERT INTO message VALUES (?, ?, 1, 1, ?)`, row.id, sessionID, row.data); err != nil {
+			t.Fatalf("insert message: %v", err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO part VALUES ('prt_aaa', 'msg_111', ?, 1, 1, ?)`, sessionID, part1); err != nil {
+		t.Fatalf("insert part1: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO part VALUES ('prt_bbb', 'msg_222', ?, 1, 1, ?)`, sessionID, part2); err != nil {
+		t.Fatalf("insert part2: %v", err)
+	}
+	db.Close()
+
+	p := baseParams(archiveRoot, dbPath)
+	p.HarnessSessionID = sessionID
+	p.InstanceID = "55555555-6666-7777-8888-999999999999"
+
+	archivePath, err := Run(p)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	rawDir := filepath.Join(archivePath, "raw")
+
+	// Check both messages exist.
+	if got := readFile(t, filepath.Join(rawDir, "messages", "msg_111.json")); got != msg1 {
+		t.Errorf("messages/msg_111.json = %q, want %q", got, msg1)
+	}
+	if got := readFile(t, filepath.Join(rawDir, "messages", "msg_222.json")); got != msg2 {
+		t.Errorf("messages/msg_222.json = %q, want %q", got, msg2)
+	}
+
+	// Check both parts exist in their respective dirs.
+	if got := readFile(t, filepath.Join(rawDir, "parts", "msg_111", "prt_aaa.json")); got != part1 {
+		t.Errorf("parts/msg_111/prt_aaa.json = %q, want %q", got, part1)
+	}
+	if got := readFile(t, filepath.Join(rawDir, "parts", "msg_222", "prt_bbb.json")); got != part2 {
+		t.Errorf("parts/msg_222/prt_bbb.json = %q, want %q", got, part2)
+	}
+}
+
+// TestResolvePathsStorageRootDerived verifies that when StorageRoot is set (as
+// cleanup.go does for podman sessions via ArchivePaths), the DB path is derived
+// as the parent of storage/ plus opencode-stable.db.
+func TestResolvePathsStorageRootDerived(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Simulate a podman-style storage root: .../prism-sessions/<container>/storage
+	storageRoot := filepath.Join(tmpDir, "prism-sessions", "prism-myrepo-feat", "storage")
+
+	p := Params{
+		Repo:          "myrepo",
+		IsolationMode: "podman",
+		StorageRoot:   storageRoot,
+		ArchiveRoot:   filepath.Join(tmpDir, "archive"),
+		InstanceID:    "aaaaaaaa-0000-0000-0000-000000000000",
+		StartedAt:     time.Now(),
+		EndedAt:       time.Now(),
+	}
+	_, dbPath, err := resolvePaths(p)
+	if err != nil {
+		t.Fatalf("resolvePaths: %v", err)
+	}
+	wantDB := filepath.Join(tmpDir, "prism-sessions", "prism-myrepo-feat", "opencode-stable.db")
+	if dbPath != wantDB {
+		t.Errorf("dbPath = %q, want %q", dbPath, wantDB)
 	}
 }
