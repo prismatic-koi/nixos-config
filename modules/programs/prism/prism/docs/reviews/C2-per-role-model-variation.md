@@ -11,7 +11,7 @@
 
 Inventory §8.7 summarises the per-axis variation surface. On the **model axis** specifically, it observes:
 
-> Today `--model` / `--variant` apply at the spawn (and review-fan-out) level, not at the role level. To vary `@review-context with claude-opus-4-7 vs @review-context with gemini-2.5-pro` within one spawn would require either:
+> Today `--model` / `--variant` apply at the spawn (and review-fan-out) level, not at the role level. To vary `@review-context-subagent with claude-opus-4-7 vs @review-context-subagent with gemini-2.5-pro` within one spawn would require either:
 > - a per-role override map in the spawn flags (absent), or
 > - an internal `harness.Harness.EffectiveModel(role)` implementation that consults a map keyed by role (the interface method exists; the opencode adapter resolves a single `agentModel` field passed at construction time).
 
@@ -41,7 +41,7 @@ internal/harness/opencode/adapter.go:49    // agentModel string — single field
 
 ### 2.3 Review fan-out uses a single model for all five agents
 
-`internal/review/review.go` `Opts` (`:572-634`) has no `Model` field. Review agents are spawned with the profiles file's container config blobs (`ContainerReviewGoalConfig`, etc.) which are pre-baked by Nix. If a user wants to run `@review-context` with a different model from the other four review agents, there is currently no mechanism.
+`internal/review/review.go` `Opts` (`:572-634`) has no `Model` field. Review agents are spawned with the profiles file's container config blobs (`ContainerReviewGoalConfig`, etc.) which are pre-baked by Nix. If a user wants to run `@review-context-subagent` with a different model from the other four review agents, there is currently no mechanism.
 
 ### 2.4 Proxy-spawn path gap
 
@@ -53,7 +53,7 @@ internal/harness/opencode/adapter.go:49    // agentModel string — single field
 
 ### 3.1 CLI surface
 
-**The problem.** `cmd/spawn.go:144` defines `--model` as a single string flag that overrides all agents' model or just the primary-role agents (depending on whether `--profile` is also set, via `BuildConfigContent` at `:318`). There is no mechanism to express "use model A for `@review-context` and model B for all others."
+**The problem.** `cmd/spawn.go:144` defines `--model` as a single string flag that overrides all agents' model or just the primary-role agents (depending on whether `--profile` is also set, via `BuildConfigContent` at `:318`). There is no mechanism to express "use model A for `@review-context-subagent` and model B for all others."
 
 **Three candidate shapes** are analysed in §4.
 

@@ -113,11 +113,11 @@ If `prism review` is unavailable or the environment does not support it, invoke
 the five review subagents **in parallel** (in a single response with 5 Task tool
 calls) as a fallback:
 
-1. `@review-goal` — pass the original issue/ACs and the PR number
-2. `@review-code` — pass the PR number
-3. `@review-security` — pass the PR number
-4. `@review-qa` — pass the PR number
-5. `@review-context` — pass the PR number
+1. `@review-goal-subagent` — pass the original issue/ACs and the PR number
+2. `@review-code-subagent` — pass the PR number
+3. `@review-security-subagent` — pass the PR number
+4. `@review-qa-subagent` — pass the PR number
+5. `@review-context-subagent` — pass the PR number
 
 Wait for all 5 to complete. **ALL must return `<verdict>PASS</verdict>` for the
 review to pass.**

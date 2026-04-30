@@ -1775,7 +1775,7 @@ From the sidecar's `writeEvent` call sites (`internal/sidecar/sidecar.go`) and `
 
 Per the issue framing this is a descriptive observation about absences, not a proposal:
 
-- Today `--model` / `--variant` apply at the spawn (and review-fan-out) level, not at the role level. To vary `@review-context with claude-opus-4-7 vs @review-context with gemini-2.5-pro` within one spawn would require either:
+- Today `--model` / `--variant` apply at the spawn (and review-fan-out) level, not at the role level. To vary `@review-context-subagent with claude-opus-4-7 vs @review-context-subagent with gemini-2.5-pro` within one spawn would require either:
   - a per-role override map in the spawn flags (absent), or
   - an internal `harness.Harness.EffectiveModel(role)` implementation that consults a map keyed by role (the interface method exists; the opencode adapter resolves a single `agentModel` field passed at construction time — see `internal/harness/opencode/adapter.go:67-99`, `:640-665`).
 - Persistence of "the variation that was applied" — today the only persisted shape is the resolved `model_id`. There is no flag-input shape persisted alongside, so a comparison requires reconstructing intent from logs.
