@@ -189,9 +189,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// default. The PRISM_HOST_API proxy-out branch above already returned, so
 	// by this point we are guaranteed to be on the host.
 	//
-	// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
-	// single runConcurrencyCap dispatch.
-	if err := runConcurrencyCap(cmd, "review", isoMode, isoCaps); err != nil {
+	// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
+	if err := checkConcurrencyCap(cmd, "review", isoMode); err != nil {
 		return err
 	}
 

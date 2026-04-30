@@ -1,251 +1,42 @@
 package cmd
 
-// concurrency.go — shared concurrency-cap checks used by spawn, pr, and review.
+// concurrency.go — unified concurrency-cap check used by spawn, pr, and review.
 //
-// checkConcurrencyCap enforces the podman container cap.
-// checkBwrapConcurrencyCap enforces the bwrap session cap.
-// checkSandboxExecConcurrencyCap enforces the sandbox-exec session cap.
-// All honour the --ignore-concurrency-cap flag on the supplied cobra.Command.
+// checkConcurrencyCap enforces the per-isolator soft concurrency cap via
+// iso.Cap(ctx, dbPath).Check(ignoreCap). It is the single entry point that
+// replaces the per-mode helpers (checkConcurrencyCap, checkBwrapConcurrencyCap,
+// checkSandboxExecConcurrencyCap) and their inline message-rendering blocks.
 //
-// runConcurrencyCap is the unified entry point used by D2 (issue #1133): it
-// dispatches to the per-mode helper based on the resolved isolation mode so
-// callers no longer branch on the literal mode value. The per-mode message
-// rendering inside each helper is the deliverable of A.3 (#1132); D2 just
-// collapses the dispatch.
+// A.3 (#1134): unified cap via Isolator.Cap().
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
-	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// runConcurrencyCap dispatches the concurrency-cap check for the given
-// resolved isolation mode. It is the single call site every spawn / pr /
-// review path uses; the per-mode if-mode-X branches it replaces lived at
-// cmd/spawn.go:268-280, cmd/pr.go:90-97, cmd/review.go:191-198 before #1133.
-//
-// Today the dispatch routes to the existing per-mode helpers in this file
-// (each owns its own message rendering). A.3 (#1132) is the issue that
-// unifies the rendering; D2's mechanical refactor only collapses the
-// dispatch shape.
-func runConcurrencyCap(cmd *cobra.Command, callerName string, mode config.IsolationMode, caps container.Capabilities) error {
-	if err := checkConcurrencyCap(cmd, callerName, caps.IsContainer); err != nil {
-		return err
-	}
-	switch mode {
-	case config.IsolationBwrap:
-		return checkBwrapConcurrencyCap(cmd, callerName)
-	case config.IsolationSandboxExec:
-		return checkSandboxExecConcurrencyCap(cmd, callerName)
-	}
-	return nil
-}
-
-// checkConcurrencyCap checks the soft container concurrency cap.
-// Returns a non-nil error when the cap is exceeded and ignoreCap is false.
-// When ignoreCap is true and the cap is exceeded, writes a warning to stderr
-// and returns nil (the caller should proceed with the spawn).
-// When the cap is not exceeded, returns nil without side effects.
-//
-// Must be called BEFORE any container-creation side effects (no worktree, no
-// DB row, no tmux session on refusal).
-//
-// cmd is the cobra.Command that owns the --ignore-concurrency-cap flag.
-// callerName is used in warning/error messages (e.g. "spawn", "pr", "review").
-// conCapped must be true for modes that consume a container slot —
-// currently "podman" only. Pass false for "host" and "bwrap" modes (no cap needed).
-func checkConcurrencyCap(cmd *cobra.Command, callerName string, conCapped bool) error {
-	if !conCapped {
-		return nil
-	}
-
-	ignoreCap, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
-	res := container.CheckCap(dbPath(), container.DefaultConcurrencyCap, nil)
-
-	if res.PodmanFailed {
-		fmt.Fprintf(os.Stderr, "[prism %s] warning: podman ps failed — concurrency check is using DB-only count (may be imprecise)\n", callerName)
-	}
-
-	if !res.Exceeded {
-		return nil
-	}
-
-	if ignoreCap {
-		fmt.Fprint(os.Stderr, container.FormatExceededWarning(res))
-		return nil
-	}
-
-	return fmt.Errorf("%s", container.FormatExceededError(res))
-}
-
-// checkSandboxExecConcurrencyCap checks the soft sandbox-exec session concurrency cap.
+// checkConcurrencyCap enforces the per-isolator soft concurrency cap.
 // Returns a non-nil error when the cap is exceeded and --ignore-concurrency-cap
-// is not set. When the flag is set and the cap is exceeded, writes a warning to
-// stderr and returns nil.
-//
-// The cap value is read from config.Load().SandboxExecConcurrencyCap. A value
-// of 0 means uncapped — the check always passes.
+// is not set. Writes a stderr warning and returns nil when the flag is set and
+// the cap is exceeded. When the cap is not exceeded, returns nil without side
+// effects.
 //
 // Must be called BEFORE any session-creation side effects (no worktree, no DB
 // row, no tmux session on refusal).
 //
 // cmd is the cobra.Command that owns the --ignore-concurrency-cap flag.
-// callerName is used in warning/error messages (e.g. "spawn").
-func checkSandboxExecConcurrencyCap(cmd *cobra.Command, callerName string) error {
-	cap := config.Load().SandboxExecConcurrencyCap
-	if cap == 0 {
-		// 0 means uncapped.
-		return nil
-	}
-
-	d, err := db.Open(dbPath())
+// mode is the resolved isolation mode. callerName is used in error/warning
+// messages (e.g. "spawn", "pr", "review").
+func checkConcurrencyCap(cmd *cobra.Command, callerName string, mode config.IsolationMode) error {
+	iso, err := container.For(mode, container.ConstructorOpts{})
 	if err != nil {
-		// Non-fatal: if we can't open the DB we skip the cap check rather than
-		// blocking spawn on a DB error.
-		fmt.Fprintf(os.Stderr, "[prism %s] warning: could not open DB for sandbox-exec cap check: %v\n", callerName, err)
-		return nil
+		return fmt.Errorf("[prism %s] could not look up isolator for mode %q: %w", callerName, mode, err)
 	}
-	defer d.Close()
-
-	count, err := d.ActiveSandboxExecSessionCount()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[prism %s] warning: could not count active sandbox-exec sessions: %v\n", callerName, err)
-		return nil
-	}
-
-	if count < cap {
-		return nil
-	}
-
-	// Cap exceeded — fetch session list for the error/warning message.
-	sessions, listErr := d.ActiveSandboxExecSessions()
 
 	ignoreCap, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
-	if ignoreCap {
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "[prism] warning: sandbox-exec concurrency cap exceeded (%d/%d sandbox-exec sessions in flight) — proceeding because --ignore-concurrency-cap was passed\n", count, cap)
-		if listErr == nil {
-			sb.WriteString("[prism] active sandbox-exec sessions:\n")
-			for _, s := range sessions {
-				role := s.RootAgentName
-				roleStr := "unknown"
-				if role != nil && *role != "" {
-					roleStr = *role
-				} else if strings.HasSuffix(s.SessionName, "@main") {
-					roleStr = "coordinator"
-				}
-				fmt.Fprintf(&sb, "[prism]   %-40s (%s)\n", s.SessionName, roleStr)
-			}
-		}
-		fmt.Fprint(os.Stderr, sb.String())
-		return nil
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "error: prism sandbox-exec concurrency cap reached (%d/%d sandbox-exec sessions in flight)\n", count, cap)
-	if listErr == nil {
-		sb.WriteString("\nActive sandbox-exec sessions:\n")
-		for _, s := range sessions {
-			role := s.RootAgentName
-			roleStr := "unknown"
-			if role != nil && *role != "" {
-				roleStr = *role
-			} else if strings.HasSuffix(s.SessionName, "@main") {
-				roleStr = "coordinator"
-			}
-			fmt.Fprintf(&sb, "  %-40s (%s)\n", s.SessionName, roleStr)
-		}
-	}
-	sb.WriteString("\nHint: wait for a worker to finish and be cleaned up, or re-run with\n")
-	sb.WriteString("      --ignore-concurrency-cap to bypass this guard.")
-	return fmt.Errorf("%s", sb.String())
-}
-
-// checkBwrapConcurrencyCap checks the soft bwrap session concurrency cap.
-// Returns a non-nil error when the cap is exceeded and --ignore-concurrency-cap
-// is not set. When the flag is set and the cap is exceeded, writes a warning to
-// stderr and returns nil.
-//
-// The cap value is read from config.Load().BwrapConcurrencyCap. A value of 0
-// means uncapped — the check always passes.
-//
-// Must be called BEFORE any session-creation side effects (no worktree, no DB
-// row, no tmux session on refusal).
-//
-// cmd is the cobra.Command that owns the --ignore-concurrency-cap flag.
-// callerName is used in warning/error messages (e.g. "spawn", "pr", "review").
-func checkBwrapConcurrencyCap(cmd *cobra.Command, callerName string) error {
-	cap := config.Load().BwrapConcurrencyCap
-	if cap == 0 {
-		// 0 means uncapped.
-		return nil
-	}
-
-	d, err := db.Open(dbPath())
-	if err != nil {
-		// Non-fatal: if we can't open the DB we skip the cap check rather than
-		// blocking spawn on a DB error.
-		fmt.Fprintf(os.Stderr, "[prism %s] warning: could not open DB for bwrap cap check: %v\n", callerName, err)
-		return nil
-	}
-	defer d.Close()
-
-	count, err := d.ActiveBwrapSessionCount()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[prism %s] warning: could not count active bwrap sessions: %v\n", callerName, err)
-		return nil
-	}
-
-	if count < cap {
-		return nil
-	}
-
-	// Cap exceeded — fetch session list for the error/warning message.
-	sessions, listErr := d.ActiveBwrapSessions()
-
-	ignoreCap, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
-	if ignoreCap {
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "[prism] warning: bwrap concurrency cap exceeded (%d/%d bwrap sessions in flight) — proceeding because --ignore-concurrency-cap was passed\n", count, cap)
-		if listErr == nil {
-			sb.WriteString("[prism] active bwrap sessions:\n")
-			for _, s := range sessions {
-				role := s.RootAgentName
-				roleStr := "unknown"
-				if role != nil && *role != "" {
-					roleStr = *role
-				} else if strings.HasSuffix(s.SessionName, "@main") {
-					roleStr = "coordinator"
-				}
-				fmt.Fprintf(&sb, "[prism]   %-40s (%s)\n", s.SessionName, roleStr)
-			}
-		}
-		fmt.Fprint(os.Stderr, sb.String())
-		return nil
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "error: prism bwrap concurrency cap reached (%d bwrap sessions already in flight)\n", count)
-	if listErr == nil {
-		sb.WriteString("\nActive bwrap sessions:\n")
-		for _, s := range sessions {
-			role := s.RootAgentName
-			roleStr := "unknown"
-			if role != nil && *role != "" {
-				roleStr = *role
-			} else if strings.HasSuffix(s.SessionName, "@main") {
-				roleStr = "coordinator"
-			}
-			fmt.Fprintf(&sb, "  %-40s (%s)\n", s.SessionName, roleStr)
-		}
-	}
-	sb.WriteString("\nHint: wait for a worker to finish and be cleaned up, or re-run with\n")
-	sb.WriteString("      --ignore-concurrency-cap to bypass this guard.")
-	return fmt.Errorf("%s", sb.String())
+	return iso.Cap(context.Background(), dbPath()).Check(ignoreCap)
 }
