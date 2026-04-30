@@ -116,7 +116,7 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 	if mutatedContent, readErr := os.ReadFile(mutatedPath); readErr != nil {
 		t.Fatalf("read mutated profile: %v", readErr)
 	} else if opens, closes := strings.Count(string(mutatedContent), "("), strings.Count(string(mutatedContent), ")"); opens != closes {
-		t.Fatalf("mutated profile has unbalanced parentheses (%d open, %d close) — mutation produced malformed SBPL.\nProfile: %s",
+		t.Fatalf("mutated profile has unbalanced parentheses (%d opens, %d closes) — mutation produced malformed SBPL.\nProfile: %s",
 			opens, closes, mutatedPath)
 	}
 
