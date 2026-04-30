@@ -300,13 +300,20 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 
 	if allPassed {
 		sb.WriteString("**All 5 review agents passed.** You may proceed with announcing completion.\n\n")
-	} else if len(noStartSessions) > 0 {
-		// One or more agents failed to start — the review is incomplete.
-		// This is an infrastructure failure: re-run prism review rather than
-		// treating it as a code-quality FAIL.
-		sb.WriteString("**One or more review agents failed to start (infrastructure failure).** ")
-		sb.WriteString("This is NOT a code-quality verdict — the agents never ran. ")
+	} else if len(noStartSessions) > 0 && len(noStartSessions) == len(agentSessions) {
+		// Every agent failed to start — pure infrastructure failure with no
+		// code-quality signal at all.
+		sb.WriteString("**All review agents failed to start (infrastructure failure).** ")
+		sb.WriteString("This is NOT a code-quality verdict — no agents ran. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
+	} else if len(noStartSessions) > 0 {
+		// Mixed: some agents returned FAIL/PASS verdicts; others failed to start.
+		// Surface both signals so the coordinator knows to both fix code issues
+		// AND re-run for the agents that never ran.
+		sb.WriteString("**One or more review agents failed AND one or more failed to start.** ")
+		sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
+		sb.WriteString("to cover the agents that failed to start (infrastructure failure). ")
+		sb.WriteString("Do not treat no-start errors as code-quality verdicts.\n\n")
 	} else {
 		sb.WriteString("**One or more review agents failed.** Fix the blocking issues and re-run `prism review`.\n\n")
 	}

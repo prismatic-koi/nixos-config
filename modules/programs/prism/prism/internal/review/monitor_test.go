@@ -751,3 +751,78 @@ func TestBuildMonitorResults_ErrorNoCrashMidRun(t *testing.T) {
 		t.Errorf("mid-run error: output should contain 'did not complete cleanly': %q", r.Output)
 	}
 }
+
+// ── buildDeliveryMessage (#1222) ─────────────────────────────────────────────
+
+// TestBuildDeliveryMessage_AllPassed verifies the all-passed header.
+func TestBuildDeliveryMessage_AllPassed(t *testing.T) {
+	sess := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sess: {SessionName: sess, State: "finished"},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", true, groupData, []string{sess})
+	if !findSubstring(msg, "All 5 review agents passed") {
+		t.Errorf("all-passed: header missing 'All 5 review agents passed': %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_PureFailNoStart verifies that when ALL agents have
+// no-start errors, the header says "infrastructure failure" with no mention of
+// code-quality FAIL.
+func TestBuildDeliveryMessage_PureFailNoStart(t *testing.T) {
+	sess := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sess: {SessionName: sess, State: "error", StartupError: "health check timed out"},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sess})
+	if !findSubstring(msg, "infrastructure failure") {
+		t.Errorf("pure no-start: header should mention 'infrastructure failure': %q", msg)
+	}
+	if !findSubstring(msg, "Re-run") {
+		t.Errorf("pure no-start: header should instruct re-run: %q", msg)
+	}
+	// Must NOT say "Fix the blocking issues" (no code ran).
+	if findSubstring(msg, "Fix the blocking issues") {
+		t.Errorf("pure no-start: header should NOT say 'Fix the blocking issues': %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_MixedNoStartAndFail verifies that when some agents
+// had FAIL verdicts and some had no-start errors, both signals appear — the
+// coordinator must both fix code issues AND re-run for the failed starts.
+func TestBuildDeliveryMessage_MixedNoStartAndFail(t *testing.T) {
+	sess1 := "nixos-config@parent~review-1-review-code"
+	sess2 := "nixos-config@parent~review-1-review-goal"
+	groupData := map[string]db.GroupMemberResult{
+		sess1: {SessionName: sess1, State: "error", StartupError: "health check timed out"},
+		sess2: {SessionName: sess2, State: "finished", LastMessage: `{"text":"<verdict>FAIL</verdict>"}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sess1, sess2})
+	if !findSubstring(msg, "infrastructure failure") {
+		t.Errorf("mixed: header should mention 'infrastructure failure': %q", msg)
+	}
+	if !findSubstring(msg, "Re-run") && !findSubstring(msg, "re-run") {
+		t.Errorf("mixed: header should instruct re-run: %q", msg)
+	}
+	// Must also call out blocking issues so coordinator doesn't skip fixing code.
+	if !findSubstring(msg, "blocking issues") {
+		t.Errorf("mixed: header should mention 'blocking issues': %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_PureCodeFail verifies that when all failures are
+// code-quality FAILs (no no-start errors), the standard "Fix the blocking
+// issues" header is shown with no infrastructure-failure mention.
+func TestBuildDeliveryMessage_PureCodeFail(t *testing.T) {
+	sess := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sess: {SessionName: sess, State: "finished", LastMessage: `{"text":"<verdict>FAIL</verdict>"}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sess})
+	if !findSubstring(msg, "Fix the blocking issues") {
+		t.Errorf("pure code fail: header should say 'Fix the blocking issues': %q", msg)
+	}
+	if findSubstring(msg, "infrastructure failure") {
+		t.Errorf("pure code fail: header should NOT mention 'infrastructure failure': %q", msg)
+	}
+}
