@@ -1,5 +1,5 @@
-// Package archive copies opencode's on-disk session subtree into a prism
-// archive directory at cleanup time.
+// Package archive exports opencode session state from opencode-stable.db into a
+// prism archive directory at cleanup time.
 //
 // # Directory layout
 //
@@ -10,8 +10,14 @@
 //	        session.json
 //	        messages/msg_*.json
 //	        parts/msg_<id>/prt_*.json
-//	        tool-output/tool_*         (only when parts reference sidecar files)
 //	      manifest.json
+//
+// # Storage backend
+//
+// opencode stores all session state in a single SQLite database
+// (~/.local/share/opencode/opencode-stable.db). The archive package queries
+// that database directly — per-file JSON under storage/session/ is the legacy
+// layout and is no longer written by current opencode releases.
 //
 // # Atomicity
 //
@@ -21,18 +27,22 @@
 //
 // # File permissions
 //
-// Archive directories are created with mode 0700; individual files are copied
+// Archive directories are created with mode 0700; individual files are written
 // with mode 0600. These are personal session traces that may contain secrets.
 package archive
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
 // ErrAlreadyExists is returned by Run when the final archive directory already
@@ -95,20 +105,26 @@ type Params struct {
 	// are silently skipped — bwrap sessions that never reached agent-run will not
 	// have this file.
 	AgentRunLogPath string
-	// StorageRoot overrides the host opencode storage root. When empty the
-	// default (~/.local/share/opencode/storage) is used. Tests inject this to
-	// point at a temp dir.
+	// StorageRoot is retained for podman DB path resolution. For podman sessions
+	// the DB lives at <StorageRoot>/../opencode-stable.db (i.e. the parent of the
+	// per-container storage/ directory). For host/bwrap/sandbox-exec it is
+	// unused when DBPath is also empty. Tests may inject this alongside DBPath.
 	StorageRoot string
+	// DBPath overrides the path to opencode-stable.db. When empty the default
+	// path (~/.local/share/opencode/opencode-stable.db) is used for
+	// host/bwrap/sandbox-exec, or the per-container equivalent for podman.
+	// Tests inject this to point at a temp file.
+	DBPath string
 	// ArchiveRoot overrides the archive root (~/.local/share/prism/archive).
 	// When empty the XDG-derived default is used. Tests inject this.
 	ArchiveRoot string
 }
 
-// Run copies the opencode session subtree for p into the archive directory and
+// Run exports the opencode session state for p into the archive directory and
 // returns the absolute path of the archive directory on success.
 //
-// Atomicity: the copy is written to a temp directory under <archiveRoot>/<repo>/
-// and renamed to the final name only when the entire copy succeeds. On any
+// Atomicity: the export is written to a temp directory under <archiveRoot>/<repo>/
+// and renamed to the final name only when the entire export succeeds. On any
 // error the temp directory is removed and Run returns a non-nil error.
 //
 // Idempotency: if the target archive directory already exists when Run is
@@ -118,7 +134,7 @@ type Params struct {
 // Sessions with no HarnessSessionID (opencode failed to start) still produce
 // an archive directory containing manifest.json and an empty raw/ directory.
 func Run(p Params) (archivePath string, err error) {
-	archiveRoot, storageRoot, err := resolvePaths(p)
+	archiveRoot, dbPath, err := resolvePaths(p)
 	if err != nil {
 		return "", err
 	}
@@ -179,10 +195,10 @@ func Run(p Params) (archivePath string, err error) {
 		return "", fmt.Errorf("archive: create raw dir: %w", mkErr)
 	}
 
-	// Copy opencode session files (only when we have a harness_session_id).
+	// Export opencode session data from SQLite (only when we have a harness_session_id).
 	if p.HarnessSessionID != "" {
-		if copyErr := copySessionFiles(p.HarnessSessionID, storageRoot, rawDir); copyErr != nil {
-			return "", copyErr
+		if exportErr := exportSessionFromDB(p.HarnessSessionID, dbPath, rawDir); exportErr != nil {
+			return "", exportErr
 		}
 	}
 
@@ -211,9 +227,9 @@ func Run(p Params) (archivePath string, err error) {
 	return finalDir, nil
 }
 
-// resolvePaths returns (archiveRoot, storageRoot) for the params, applying
-// XDG defaults when the override fields are empty.
-func resolvePaths(p Params) (archiveRoot, storageRoot string, err error) {
+// resolvePaths returns (archiveRoot, dbPath) for the params, applying XDG
+// defaults when the override fields are empty.
+func resolvePaths(p Params) (archiveRoot, dbPath string, err error) {
 	// Archive root: $XDG_DATA_HOME/prism/archive
 	if p.ArchiveRoot != "" {
 		archiveRoot = p.ArchiveRoot
@@ -229,34 +245,54 @@ func resolvePaths(p Params) (archiveRoot, storageRoot string, err error) {
 		archiveRoot = filepath.Join(dataHome, "prism", "archive")
 	}
 
-	// Storage root: $HOME/.local/share/opencode/storage or per-container path.
-	if p.StorageRoot != "" {
-		storageRoot = p.StorageRoot
+	// DB path: explicit override wins, then derive from StorageRoot (for
+	// callers that pre-resolve via ArchivePaths, e.g. podman), then fall back
+	// to the isolation-mode switch.
+	if p.DBPath != "" {
+		dbPath = p.DBPath
+	} else if p.StorageRoot != "" {
+		// StorageRoot is <dataDir>/storage; the DB lives at <dataDir>/opencode-stable.db.
+		dbPath = filepath.Join(filepath.Dir(p.StorageRoot), "opencode-stable.db")
 	} else {
-		storageRoot, err = resolveStorageRoot(p.IsolationMode, p.SessionName)
+		dbPath, err = resolveDBPath(p.IsolationMode, p.SessionName)
 		if err != nil {
 			return "", "", err
 		}
 	}
 
-	return archiveRoot, storageRoot, nil
+	return archiveRoot, dbPath, nil
 }
 
-// resolveStorageRoot returns the host-side opencode storage root for the given
-// isolation mode and session name.
+// resolveDBPath returns the path to opencode-stable.db for the given isolation
+// mode and session name.
 //
-//   - host / bwrap / sandbox-exec: $HOME/.local/share/opencode/storage
-//   - podman: $HOME/.local/share/opencode/prism-sessions/<containerName>/storage
+//   - host / bwrap / sandbox-exec: $HOME/.local/share/opencode/opencode-stable.db
+//   - podman: $HOME/.local/share/opencode/prism-sessions/<containerName>/opencode-stable.db
 //   - unknown / empty: returns an error
 //
-// bwrap / sandbox-exec note: both modes run on the host filesystem namespace
-// and bind-mount (bwrap) or use (sandbox-exec) the *shared*
-// ~/.local/share/opencode/ directory — not a per-session sub-dir. The
-// per-session isolation used by the podman path (Darwin virtiofs WAL-mode
-// workaround) does not apply to either mode. The shared root is correct here
-// because copySessionFiles scopes its reads to the specific harness_session_id,
-// so only files belonging to this session are copied even when the storage pool
-// contains concurrent sessions.
+// bwrap and sandbox-exec both use the host-shared opencode data directory.
+// exportSessionFromDB scopes all queries to the specific harness_session_id, so
+// concurrent sessions in the same DB are not affected.
+func resolveDBPath(isolationMode, sessionName string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("archive: resolve home for db path: %w", err)
+	}
+
+	switch isolationMode {
+	case "host", "bwrap", "sandbox-exec":
+		return filepath.Join(home, ".local", "share", "opencode", "opencode-stable.db"), nil
+	case "podman":
+		containerName := containerNameForSession(sessionName)
+		return filepath.Join(home, ".local", "share", "opencode", "prism-sessions", containerName, "opencode-stable.db"), nil
+	default:
+		return "", fmt.Errorf("archive: unsupported isolation mode %q", isolationMode)
+	}
+}
+
+// resolveStorageRoot is retained for back-compat with callers that still
+// reference the storage root path (e.g. tests). It returns the host-side
+// opencode storage root for the given isolation mode.
 func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -285,102 +321,87 @@ func containerNameForSession(sessionName string) string {
 	return "prism-" + safe
 }
 
-// copySessionFiles copies the opencode session subtree rooted at storageRoot
-// into rawDir. The subtree consists of:
+// exportSessionFromDB queries opencode-stable.db for the session identified by
+// harnessSessionID and writes JSON files into rawDir:
 //
-//   - storage/session/<projectID>/ses_<id>.json  → raw/session.json
-//   - storage/message/ses_<id>/*.json             → raw/messages/msg_*.json
-//   - storage/part/msg_<id>/prt_*.json           → raw/parts/msg_<id>/prt_*.json
-//   - storage/tool-output/tool_*                 → raw/tool-output/tool_* (referenced by parts)
-func copySessionFiles(harnessSessionID, storageRoot, rawDir string) error {
-	sessionFile, projectID, err := findSessionFile(harnessSessionID, storageRoot)
+//   - raw/session.json        — the session row
+//   - raw/messages/msg_*.json — one file per message row
+//   - raw/parts/msg_<id>/prt_*.json — one file per part row, grouped by message
+//
+// Graceful no-ops:
+//   - If the DB file does not exist, a single info log is emitted and raw/ is
+//     left empty (not an error).
+//   - If harnessSessionID is not found in the DB, a single info log is emitted
+//     and raw/ is left empty (not an error).
+func exportSessionFromDB(harnessSessionID, dbPath, rawDir string) error {
+	// If the DB doesn't exist at all (fresh install, never run) — graceful no-op.
+	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
+		log.Printf("[prism] archive: opencode DB not found at %s — skipping session export", dbPath)
+		return nil
+	}
+
+	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=5000")
 	if err != nil {
-		return err
+		return fmt.Errorf("archive: open opencode DB: %w", err)
+	}
+	defer db.Close()
+
+	// Export session row.
+	sessionData, err := querySessionJSON(db, harnessSessionID)
+	if err != nil {
+		return fmt.Errorf("archive: query session: %w", err)
+	}
+	if sessionData == nil {
+		// Session not in DB — log and leave raw/ empty.
+		log.Printf("[prism] archive: session %q not found in opencode DB — skipping session export", harnessSessionID)
+		return nil
 	}
 
-	// Copy session.json → raw/session.json
-	if copyErr := copyFile(sessionFile, filepath.Join(rawDir, "session.json")); copyErr != nil {
-		return fmt.Errorf("archive: copy session.json: %w", copyErr)
-	}
-	_ = projectID // projectID found but not needed further; session path was already determined
-
-	// Copy messages.
-	msgDir := filepath.Join(storageRoot, "message", harnessSessionID)
-	rawMsgDir := filepath.Join(rawDir, "messages")
-	if err := copyDirFlat(msgDir, rawMsgDir); err != nil {
-		return fmt.Errorf("archive: copy messages: %w", err)
+	// Write raw/session.json.
+	if writeErr := writeJSONFile(filepath.Join(rawDir, "session.json"), sessionData); writeErr != nil {
+		return fmt.Errorf("archive: write session.json: %w", writeErr)
 	}
 
-	// Copy parts — one subdirectory per message ID.
-	partBaseDir := filepath.Join(storageRoot, "part")
-	rawPartDir := filepath.Join(rawDir, "parts")
-
-	// List message IDs from the messages we just copied — these are the
-	// subdirectory names under storage/part/ that belong to this session.
-	// Rather than globbing message IDs from the DB, we enumerate the
-	// part directories that are prefixed by our message files.
-	msgIDs, msgListErr := listDirEntries(msgDir)
-	if msgListErr != nil {
-		// Non-fatal: if there are no messages, there are no parts.
-		msgIDs = nil
+	// Export messages.
+	messages, err := queryMessagesJSON(db, harnessSessionID)
+	if err != nil {
+		return fmt.Errorf("archive: query messages: %w", err)
 	}
 
-	// Build the set of msg_* IDs by stripping the .json suffix from message filenames.
-	type partRef struct {
-		msgID string
-		srcDir string
-	}
-	var partDirs []partRef
-	for _, f := range msgIDs {
-		msgID := strings.TrimSuffix(f, ".json")
-		srcDir := filepath.Join(partBaseDir, msgID)
-		if _, statErr := os.Stat(srcDir); statErr == nil {
-			partDirs = append(partDirs, partRef{msgID: msgID, srcDir: srcDir})
+	if len(messages) > 0 {
+		msgDir := filepath.Join(rawDir, "messages")
+		if mkErr := os.Mkdir(msgDir, archiveDirMode); mkErr != nil {
+			return fmt.Errorf("archive: create messages dir: %w", mkErr)
 		}
-	}
-
-	// Collect tool-output references while copying parts.
-	toolOutputIDs := map[string]bool{}
-
-	for _, pd := range partDirs {
-		destDir := filepath.Join(rawPartDir, pd.msgID)
-		if mkErr := os.MkdirAll(destDir, archiveDirMode); mkErr != nil {
-			return fmt.Errorf("archive: create parts/%s dir: %w", pd.msgID, mkErr)
-		}
-		partFiles, listErr := listDirEntries(pd.srcDir)
-		if listErr != nil {
-			return fmt.Errorf("archive: list parts/%s: %w", pd.msgID, listErr)
-		}
-		for _, pf := range partFiles {
-			src := filepath.Join(pd.srcDir, pf)
-			dst := filepath.Join(destDir, pf)
-			if copyErr := copyFile(src, dst); copyErr != nil {
-				return fmt.Errorf("archive: copy part %s/%s: %w", pd.msgID, pf, copyErr)
-			}
-			// Scan the part file for tool-output references.
-			ids := toolOutputIDsFromPart(src)
-			for _, id := range ids {
-				toolOutputIDs[id] = true
+		for msgID, msgData := range messages {
+			fname := msgID + ".json"
+			if writeErr := writeJSONFile(filepath.Join(msgDir, fname), msgData); writeErr != nil {
+				return fmt.Errorf("archive: write messages/%s: %w", fname, writeErr)
 			}
 		}
 	}
 
-	// Copy tool-output files referenced by parts.
-	if len(toolOutputIDs) > 0 {
-		toolOutputSrcDir := filepath.Join(storageRoot, "tool-output")
-		toolOutputDstDir := filepath.Join(rawDir, "tool-output")
-		if mkErr := os.MkdirAll(toolOutputDstDir, archiveDirMode); mkErr != nil {
-			return fmt.Errorf("archive: create tool-output dir: %w", mkErr)
+	// Export parts — grouped by message_id.
+	partsByMsg, err := queryPartsJSON(db, harnessSessionID)
+	if err != nil {
+		return fmt.Errorf("archive: query parts: %w", err)
+	}
+
+	if len(partsByMsg) > 0 {
+		partsDir := filepath.Join(rawDir, "parts")
+		if mkErr := os.Mkdir(partsDir, archiveDirMode); mkErr != nil {
+			return fmt.Errorf("archive: create parts dir: %w", mkErr)
 		}
-		for toolID := range toolOutputIDs {
-			src := filepath.Join(toolOutputSrcDir, toolID)
-			dst := filepath.Join(toolOutputDstDir, toolID)
-			if _, statErr := os.Stat(src); os.IsNotExist(statErr) {
-				// Tool output file missing — not fatal, just skip.
-				continue
+		for msgID, parts := range partsByMsg {
+			msgPartDir := filepath.Join(partsDir, msgID)
+			if mkErr := os.Mkdir(msgPartDir, archiveDirMode); mkErr != nil {
+				return fmt.Errorf("archive: create parts/%s dir: %w", msgID, mkErr)
 			}
-			if copyErr := copyFile(src, dst); copyErr != nil {
-				return fmt.Errorf("archive: copy tool-output %s: %w", toolID, copyErr)
+			for partID, partData := range parts {
+				fname := partID + ".json"
+				if writeErr := writeJSONFile(filepath.Join(msgPartDir, fname), partData); writeErr != nil {
+					return fmt.Errorf("archive: write parts/%s/%s: %w", msgID, fname, writeErr)
+				}
 			}
 		}
 	}
@@ -388,65 +409,127 @@ func copySessionFiles(harnessSessionID, storageRoot, rawDir string) error {
 	return nil
 }
 
-// findSessionFile scans the storage/session/ subtree to locate the session JSON
-// file for harnessSessionID (a ses_<ULID> value). Returns the absolute path and
-// projectID (directory name under storage/session/).
-func findSessionFile(harnessSessionID, storageRoot string) (path, projectID string, err error) {
-	sessionBaseDir := filepath.Join(storageRoot, "session")
-	projectDirs, listErr := listDirEntries(sessionBaseDir)
-	if listErr != nil {
-		return "", "", fmt.Errorf("archive: list session base dir: %w", listErr)
-	}
+// querySessionJSON fetches the session row for harnessSessionID from the
+// opencode DB and returns it as raw JSON bytes. Returns (nil, nil) when the
+// session is not found.
+func querySessionJSON(db *sql.DB, harnessSessionID string) ([]byte, error) {
+	var dataStr string
+	// The session table stores the full row; we select the columns we need and
+	// marshal them to JSON rather than reading a pre-serialised blob.
+	row := db.QueryRow(`
+		SELECT id, project_id, parent_id, slug, directory, title, version,
+		       share_url, summary_additions, summary_deletions, summary_files,
+		       summary_diffs, revert, permission, time_created, time_updated,
+		       time_compacting, time_archived
+		  FROM session
+		 WHERE id = ?`, harnessSessionID)
 
-	fileName := harnessSessionID + ".json"
-	for _, proj := range projectDirs {
-		candidate := filepath.Join(sessionBaseDir, proj, fileName)
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			return candidate, proj, nil
-		}
+	var (
+		id, projectID, slug, directory, title, version string
+		parentID, shareURL, summaryDiffs, revert, permission *string
+		summaryAdditions, summaryDeletions, summaryFiles    *int64
+		timeCreated, timeUpdated                            int64
+		timeCompacting, timeArchived                        *int64
+	)
+	err := row.Scan(
+		&id, &projectID, &parentID, &slug, &directory, &title, &version,
+		&shareURL, &summaryAdditions, &summaryDeletions, &summaryFiles,
+		&summaryDiffs, &revert, &permission, &timeCreated, &timeUpdated,
+		&timeCompacting, &timeArchived,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-	return "", "", fmt.Errorf("archive: session file for %q not found under %s", harnessSessionID, sessionBaseDir)
-}
-
-// copyDirFlat copies all regular files in srcDir into dstDir (created if
-// absent). Subdirectories within srcDir are ignored. If srcDir does not exist,
-// a (possibly empty) dstDir is still created and nil is returned. A real I/O
-// error (e.g. permission denied) reading srcDir is returned to the caller.
-func copyDirFlat(srcDir, dstDir string) error {
-	if mkErr := os.MkdirAll(dstDir, archiveDirMode); mkErr != nil {
-		return fmt.Errorf("create %s: %w", dstDir, mkErr)
-	}
-	entries, err := listDirEntries(srcDir)
 	if err != nil {
-		// listDirEntries returns nil for os.IsNotExist; any remaining error is
-		// a real I/O failure (e.g. EACCES) that we propagate.
-		return fmt.Errorf("read %s: %w", srcDir, err)
-	}
-	for _, name := range entries {
-		src := filepath.Join(srcDir, name)
-		dst := filepath.Join(dstDir, name)
-		if copyErr := copyFile(src, dst); copyErr != nil {
-			return copyErr
-		}
-	}
-	return nil
-}
-
-// listDirEntries returns the names of all directory entries directly under dir.
-// Returns nil (not an error) when dir does not exist.
-func listDirEntries(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
+	_ = dataStr // unused; we use individual fields
+
+	out := map[string]any{
+		"id":               id,
+		"projectId":        projectID,
+		"parentId":         parentID,
+		"slug":             slug,
+		"directory":        directory,
+		"title":            title,
+		"version":          version,
+		"shareUrl":         shareURL,
+		"summaryAdditions": summaryAdditions,
+		"summaryDeletions": summaryDeletions,
+		"summaryFiles":     summaryFiles,
+		"summaryDiffs":     summaryDiffs,
+		"revert":           revert,
+		"permission":       permission,
+		"timeCreated":      timeCreated,
+		"timeUpdated":      timeUpdated,
+		"timeCompacting":   timeCompacting,
+		"timeArchived":     timeArchived,
 	}
-	return names, nil
+	return json.Marshal(out)
+}
+
+// queryMessagesJSON returns all messages for the session as a map of
+// messageID → raw JSON bytes. The data column already contains the full
+// message JSON as stored by opencode.
+func queryMessagesJSON(db *sql.DB, sessionID string) (map[string][]byte, error) {
+	rows, err := db.Query(`
+		SELECT id, data FROM message WHERE session_id = ?
+		ORDER BY time_created, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string][]byte)
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		result[id] = []byte(data)
+	}
+	return result, rows.Err()
+}
+
+// queryPartsJSON returns all parts for the session as a nested map of
+// messageID → (partID → raw JSON bytes). The data column already contains
+// the full part JSON as stored by opencode.
+func queryPartsJSON(db *sql.DB, sessionID string) (map[string]map[string][]byte, error) {
+	rows, err := db.Query(`
+		SELECT id, message_id, data FROM part WHERE session_id = ?
+		ORDER BY message_id, time_created, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make(map[string]map[string][]byte)
+	for rows.Next() {
+		var id, messageID, data string
+		if err := rows.Scan(&id, &messageID, &data); err != nil {
+			return nil, err
+		}
+		if result[messageID] == nil {
+			result[messageID] = make(map[string][]byte)
+		}
+		result[messageID][id] = []byte(data)
+	}
+	return result, rows.Err()
+}
+
+// writeJSONFile writes data to path with mode 0600. The destination directory
+// must already exist.
+func writeJSONFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, archiveFileMode)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return f.Close()
 }
 
 // copyFile copies the file at src to dst with mode 0600.
@@ -471,61 +554,24 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// toolOutputIDsFromPart parses the part JSON at path and returns any
-// tool-output file IDs referenced (e.g. "tool_<ulid>"). Returns nil on any
-// parse error (best-effort; caller handles missing tool-output gracefully).
-//
-// The returned IDs are validated to be plain file names (no path separator,
-// no ".." components) to prevent path traversal when used in filepath.Join.
-// Any crafted asset value containing "/" or ".." is silently dropped.
-func toolOutputIDsFromPart(path string) []string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-
-	// We only need the "type" and "asset" (or similar) fields — use a
-	// minimal struct rather than full unmarshalling.
-	var part struct {
-		Type  string `json:"type"`
-		Asset string `json:"asset"` // tool-output references: "tool_<ulid>"
-	}
-	if err := json.Unmarshal(data, &part); err != nil {
-		return nil
-	}
-
-	if part.Type != "tool" || !strings.HasPrefix(part.Asset, "tool_") {
-		return nil
-	}
-
-	// Validate: toolID must be a plain filename with no path separators or
-	// ".." to prevent traversal outside the tool-output directory.
-	toolID := part.Asset
-	if toolID != filepath.Base(toolID) || strings.ContainsRune(toolID, os.PathSeparator) {
-		return nil
-	}
-
-	return []string{toolID}
-}
-
 // manifest is the JSON structure written to manifest.json.
 type manifest struct {
-	ArchiveVersion  int     `json:"archiveVersion"`
-	PiMonoVersion   int     `json:"piMonoVersion"`
-	InstanceID      string  `json:"instanceId"`
-	SessionName     string  `json:"sessionName"`
-	AgentRole       string  `json:"agentRole"`
-	RootAgentName   string  `json:"rootAgentName"`
-	Harness         string  `json:"harness"`
-	HarnessSessionID string `json:"harnessSessionId"`
-	HarnessVersion  string  `json:"harnessVersion"`
-	Repo            string  `json:"repo"`
-	Worktree        string  `json:"worktree"`
-	StartedAt       string  `json:"startedAt"`
-	EndedAt         string  `json:"endedAt"`
-	EndState        string  `json:"endState"`
-	GroupID         *string `json:"groupId"`
-	PrismVersion    string  `json:"prismVersion"`
+	ArchiveVersion   int     `json:"archiveVersion"`
+	PiMonoVersion    int     `json:"piMonoVersion"`
+	InstanceID       string  `json:"instanceId"`
+	SessionName      string  `json:"sessionName"`
+	AgentRole        string  `json:"agentRole"`
+	RootAgentName    string  `json:"rootAgentName"`
+	Harness          string  `json:"harness"`
+	HarnessSessionID string  `json:"harnessSessionId"`
+	HarnessVersion   string  `json:"harnessVersion"`
+	Repo             string  `json:"repo"`
+	Worktree         string  `json:"worktree"`
+	StartedAt        string  `json:"startedAt"`
+	EndedAt          string  `json:"endedAt"`
+	EndState         string  `json:"endState"`
+	GroupID          *string `json:"groupId"`
+	PrismVersion     string  `json:"prismVersion"`
 }
 
 // writeManifest serialises the manifest and writes it to <dir>/manifest.json
