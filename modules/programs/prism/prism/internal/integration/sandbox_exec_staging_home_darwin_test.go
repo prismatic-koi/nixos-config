@@ -25,46 +25,6 @@ import (
 	"testing"
 )
 
-// stagingHomeWriteAllowHeader is the exact opening of the staging-HOME write
-// block emitted by generateProfile. The negative test removes everything
-// from this header up to (and including) the matching closing parenthesis,
-// effectively dropping the staging-HOME write allow.
-//
-// We pin the entire opening line (verbatim) so a future reformat of the
-// generator immediately fails the negative test rather than silently passing
-// because the substring no longer matches.
-const stagingHomeWriteAllowHeader = "(allow file-read* file-write* file-test-existence file-read-metadata\n"
-
-// removeBlockStartingAt finds the first occurrence of header in profile
-// and strips everything from that header through the next ')\n' line that
-// closes the block. SBPL allow/deny blocks are written by the generator as:
-//
-//	(allow ...
-//	  (subpath ...)
-//	  ...
-//	)\n
-//
-// so a literal ")\n" terminator matches the close of the block. Returns the
-// (potentially) mutated profile string.
-//
-// If header is not found, returns the input unchanged — withMutatedProfile
-// will then fail the test (silent no-op detection).
-func removeBlockStartingAt(profile, header string) string {
-	start := strings.Index(profile, header)
-	if start < 0 {
-		return profile
-	}
-	// Find the closing line. SBPL blocks end with ")\n" on its own line.
-	// We look for the first ")\n" after the header.
-	tail := profile[start+len(header):]
-	end := strings.Index(tail, ")\n")
-	if end < 0 {
-		return profile // malformed — withMutatedProfile catches the no-op
-	}
-	// Remove from header start through closing ")\n".
-	return profile[:start] + profile[start+len(header)+end+len(")\n"):]
-}
-
 // TestSandboxExecProfile_StagingHomeWritable is the positive integration
 // test for the staging-HOME write allow. It generates the production
 // profile, prepares the staging HOME, and runs `bash -c 'echo hi > $HOME/foo'`
@@ -106,12 +66,24 @@ func TestSandboxExecProfile_StagingHomeWritable(t *testing.T) {
 }
 
 // TestSandboxExecProfile_StagingHomeWriteDenied is the paired negative test.
-// It removes the staging-HOME write allow block from the profile and
-// asserts the same write operation fails with a non-zero exit.
+// It removes the single (subpath "<stagingHome>") line from the
+// staging-HOME write allow block and asserts the same write operation
+// fails with a non-zero exit.
+//
+// Mutation strategy: targeted single-line ReplaceAll on the indented
+// `  (subpath "<stagingHome>")\n` form. This leaves the rest of the
+// (allow file-read* file-write* ...) block intact (worktree, bare repo,
+// host-API socket dir, opencode shared dirs) so the profile remains
+// syntactically valid SBPL — the only behaviour change is that the
+// staging-HOME path itself is no longer covered by the write allow,
+// which is exactly the rule we are testing. Removing the entire block
+// would make the profile malformed (orphaned subpath lines from the
+// trailing entries in the block) and sandbox-exec would reject the
+// profile at parse time, making the test pass for the wrong reason.
 //
 // This proves StagingHomeWritable is not green by accident — the staging
-// HOME is writable specifically because of the (allow file-read* file-write*
-// ...) block emitted by generateProfile, not because of some unrelated rule.
+// HOME is writable specifically because of the (subpath "<stagingHome>")
+// entry in the write allow block, not because of some unrelated rule.
 func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -127,9 +99,24 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
+	stagingHomeRule := "  (subpath " + sbplQuoteForTest(stagingHome) + ")\n"
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return removeBlockStartingAt(p, stagingHomeWriteAllowHeader)
+		return strings.ReplaceAll(p, stagingHomeRule, "")
 	})
+
+	// Sanity check: the mutated profile must still be syntactically valid
+	// SBPL — assert the close-paren of the parent (allow ...) block is
+	// still present and balanced. This guards against a future generator
+	// change that puts stagingHome in a different block shape: if the
+	// ReplaceAll above ever truncates the block close, parens would not
+	// balance and sandbox-exec would reject the profile, making the test
+	// pass for the wrong reason.
+	if mutatedContent, readErr := os.ReadFile(mutatedPath); readErr != nil {
+		t.Fatalf("read mutated profile: %v", readErr)
+	} else if open, close := strings.Count(string(mutatedContent), "("), strings.Count(string(mutatedContent), ")"); open != close {
+		t.Fatalf("mutated profile has unbalanced parentheses (%d open, %d close) — mutation produced malformed SBPL.\nProfile: %s",
+			open, close, mutatedPath)
+	}
 
 	target := filepath.Join(stagingHome, "prism-1192-write-probe-denied.tmp")
 	t.Cleanup(func() { _ = os.Remove(target) })
@@ -138,7 +125,7 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", "echo hi > "+shQuote(target))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
-		t.Errorf("write to staging HOME succeeded WITHOUT the staging-HOME write allow block.\n"+
+		t.Errorf("write to staging HOME succeeded WITHOUT the staging-HOME (subpath ...) entry.\n"+
 			"The negative test is not catching the regression — investigate.\n"+
 			"Output: %s\nMutated profile: %s", string(out), mutatedPath)
 	} else {
@@ -263,8 +250,11 @@ func TestSandboxExecProfile_StagingCredentialReadable(t *testing.T) {
 //
 // The mutation strategy is to delete the entire line containing the
 // resolved path under the (allow file-read* ...) block emitted by the
-// symlink-target collector. We rely on the fact that the resolved path is a
-// /private/var/folders/... temp file, which is unique to this test.
+// symlink-target collector. We rely on the fact that the resolved path is
+// a per-test directory under HOME (planted by hostCredentialDir, which
+// places the credential under HOME deliberately so the broadly-allowed
+// /private/var/folders subtree does NOT cover it — see the helper's
+// commentary). The path is unique to this test invocation.
 func TestSandboxExecProfile_StagingCredentialDeniedWithoutTargetAllow(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

@@ -116,8 +116,8 @@ const denyMechanismMarker = ";; --- prism-1192 deny-mechanism test rules ---"
 // for the dir subtree.
 //
 // Returns the mutated profile content with the new rules appended after
-// a marker comment so injectDenyMechanismRules_RemoveDeny can strip just
-// the deny half for the negative test.
+// a marker comment so the negative test can omit the deny half via
+// injectAllowOnly.
 func injectDenyMechanismRules(profile, dir string) string {
 	suffix := "\n" + denyMechanismMarker + "\n" +
 		"(allow file-read* (subpath " + sbplQuoteForTest(dir) + "))\n" +
@@ -125,9 +125,11 @@ func injectDenyMechanismRules(profile, dir string) string {
 	return profile + suffix
 }
 
-// injectDenyMechanismRules_RemoveDeny is the negative-test variant. It
-// appends only the allow (no deny), so reads of files under dir succeed.
-func injectDenyMechanismRules_RemoveDeny(profile, dir string) string {
+// injectAllowOnly is the negative-test variant of injectDenyMechanismRules.
+// It appends only the allow (no deny), so reads of files under dir
+// succeed — proving that the deny half of the positive test was the
+// load-bearing rule.
+func injectAllowOnly(profile, dir string) string {
 	suffix := "\n" + denyMechanismMarker + "\n" +
 		"(allow file-read* (subpath " + sbplQuoteForTest(dir) + "))\n"
 	return profile + suffix
@@ -230,7 +232,7 @@ func TestSandboxExecProfile_DenyOverridesAllow_NegationAllowsReads(t *testing.T)
 	m := newProfileManagerWithBareRoot(t)
 	prepared, _ := preparePositiveProfile(t, m)
 
-	mutated := injectDenyMechanismRules_RemoveDeny(prepared.content, subjectDir)
+	mutated := injectAllowOnly(prepared.content, subjectDir)
 	augmented := augmentProfileForTest(mutated)
 	testProfilePath := prepared.path + ".integ-deny-neg"
 	if err := os.WriteFile(testProfilePath, []byte(augmented), 0o600); err != nil {
