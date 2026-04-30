@@ -644,6 +644,10 @@ func TestAgents_AgentNames(t *testing.T) {
 		if agents[i].OpencodeName != name {
 			t.Errorf("agents[%d].OpencodeName = %q, want %q", i, agents[i].OpencodeName, name)
 		}
+		wantValidation := name + "-subagent"
+		if agents[i].ValidationName != wantValidation {
+			t.Errorf("agents[%d].ValidationName = %q, want %q", i, agents[i].ValidationName, wantValidation)
+		}
 	}
 }
 
@@ -661,7 +665,9 @@ func TestCheckAgentAvailability_AllPresent(t *testing.T) {
 
 	agents := review.Agents()
 	for _, ag := range agents {
-		if err := os.WriteFile(agentsDir+"/"+ag.Name+".md", []byte("# "+ag.Name), 0o644); err != nil {
+		// Pre-flight checks <ValidationName>.md (i.e. "review-goal-subagent.md"),
+		// not <Name>.md — see #1231.
+		if err := os.WriteFile(agentsDir+"/"+ag.ValidationName+".md", []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
@@ -682,8 +688,10 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	// Only create review-goal.md; the other 4 are missing.
-	if err := os.WriteFile(agentsDir+"/review-goal.md", []byte("# review-goal"), 0o644); err != nil {
+	// Only create review-goal-subagent.md; the other 4 are missing.
+	// Pre-flight checks <ValidationName>.md (i.e. the "-subagent" form),
+	// not <Name>.md — see #1231.
+	if err := os.WriteFile(agentsDir+"/review-goal-subagent.md", []byte("# review-goal"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -693,15 +701,19 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents, got nil")
 	}
-	// Error should mention the missing agents.
+	// Error should mention the missing agents (by Name, not ValidationName).
 	for _, ag := range agents[1:] {
 		if !findSubstring(err.Error(), ag.Name) {
 			t.Errorf("CheckAgentAvailability error does not mention missing agent %q: %v", ag.Name, err)
 		}
 	}
-	// Error should NOT mention review-goal (it is present).
-	if findSubstring(err.Error(), "review-goal") {
-		t.Errorf("CheckAgentAvailability error unexpectedly mentions present agent review-goal: %v", err)
+	// Error should NOT mention review-goal as missing (it is present).
+	// We check against the bare role name appearing in the comma-separated
+	// "not available" list, not against the file path which incidentally
+	// contains the name.
+	notAvailable := strings.SplitN(err.Error(), "\n", 2)[0]
+	if findSubstring(notAvailable, "review-goal") {
+		t.Errorf("CheckAgentAvailability error unexpectedly lists present agent review-goal as not available: %v", err)
 	}
 }
 
