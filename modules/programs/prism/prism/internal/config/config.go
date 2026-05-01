@@ -119,6 +119,12 @@ type Config struct {
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
 	ProjectSpecific  []string `json:"project_specific"`
+
+	// PIExtensionDir is the absolute host path to the directory containing
+	// the prism PI extension file (prism.ts). Written by Nix to config.json
+	// so that agent-run knows where to find the extension at runtime.
+	// When empty, agent-run falls back to a relative-to-executable heuristic.
+	PIExtensionDir string `json:"pi_extension_dir"`
 }
 
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or

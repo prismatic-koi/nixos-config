@@ -464,6 +464,14 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 		if err := d.SetEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-end: set ended: %w", err)
 		}
+		// Update sessions.ended_at for the current instance so that
+		// prism stats no longer shows this session as active.
+		if s.InstanceID != nil {
+			if err := d.UpdateSessionEnded(*s.InstanceID, "finished"); err != nil {
+				// Non-fatal: log and continue.
+				fmt.Fprintf(os.Stderr, "prism event tmux-session-end: update session ended: %v\n", err)
+			}
+		}
 		// Clear instance_id so the session is no longer associated with a
 		// specific incarnation. Any undelivered bus messages for this instance
 		// are purged below via PurgeBusMessages.

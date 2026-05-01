@@ -588,11 +588,29 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
+	// ── PI-specific bind mounts (harness=pi only) ────────────────────────────
+	// These must be appended before the "--" terminator so bwrap processes
+	// them as namespace arguments rather than as parts of the inner command.
+	if cfg.Harness == "pi" {
+		var piErr error
+		args, piErr = appendPIBwrapMounts(args, cfg)
+		if piErr != nil {
+			// appendPIBwrapMounts already returns a descriptive error; wrap
+			// with the bwrap context. BuildArgs cannot return an error (no
+			// error return value in this method). Store on the Manager so
+			// that Prepare can surface it after calling BuildArgs.
+			m.piBwrapErr = piErr
+		}
+	}
+
 	// ── Working directory ────────────────────────────────────────────────────
 	// --chdir points at the worktree source path (not /workspace).
 	args = append(args, "--chdir", cfg.Worktree)
 
-	// ── Terminator: -- opencode --port <port> --hostname 127.0.0.1 ──────────
+	// ── Terminator: -- <harness invocation> ─────────────────────────────────
+	// For opencode: opencode --port <port> --hostname 127.0.0.1
+	// For PI:       pi --provider <p> --model <m> --append-system-prompt ...
+	//
 	// bwrap uses 127.0.0.1 (not 0.0.0.0): the host network namespace is shared
 	// (no --unshare-net), so binding to 0.0.0.0 would be overly broad.
 	//
@@ -606,7 +624,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// row); in normal operation cfg.AllocatedPort is always populated by
 	// agent-run from the DB's harness_port column.
 	args = append(args, "--")
-	args = append(args, HarnessInvocation(cfg)...)
+	if cfg.Harness == "pi" {
+		args = append(args, PIInvocation(cfg)...)
+	} else {
+		args = append(args, HarnessInvocation(cfg)...)
+	}
 
 	return args
 }
