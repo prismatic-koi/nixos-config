@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
@@ -174,19 +175,22 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// WorktreeReadOnly=true ensures review containers cannot modify the
 		// branch under review (satisfies the [security] acceptance criterion).
 		spawnOpts := session.SpawnOpts{
-			SessionName:      agentSession,
-			Repo:             repo,
-			Worktree:         worktree,
-			AgentRole:        ag.Name,
-			Prompt:           prompt,
-			ConfigContent:    agentConfigContent,
-			Layout:           session.LayoutAgentOnly,
-			IsolationMode:    opts.IsolationMode,
-			PluginHostPath:   opts.PluginHostPath,
-			WorktreeReadOnly: true,
-			GroupID:          groupID,
-			RuntimeEnvVars:   opts.RuntimeEnvVars,
-			HarnessName:      opts.Harness,
+			InstanceID:         uuid.New().String(),
+			SessionName:        agentSession,
+			Repo:               repo,
+			Worktree:           worktree,
+			AgentRole:          ag.Name,
+			Prompt:             prompt,
+			PromptSource:       "review-fanout",
+			PromptTemplateHash: ReviewPromptTemplateHash(),
+			ConfigContent:      agentConfigContent,
+			Layout:             session.LayoutAgentOnly,
+			IsolationMode:      opts.IsolationMode,
+			PluginHostPath:     opts.PluginHostPath,
+			WorktreeReadOnly:   true,
+			GroupID:            groupID,
+			RuntimeEnvVars:     opts.RuntimeEnvVars,
+			HarnessName:        opts.Harness,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -411,19 +415,22 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 
 		spawnOpts := session.SpawnOpts{
-			SessionName:      agentSession,
-			Repo:             repo,
-			Worktree:         worktree,
-			AgentRole:        ag.Name,
-			Prompt:           prompt,
-			ConfigContent:    agentConfigContent,
-			Layout:           session.LayoutAgentOnly,
-			IsolationMode:    opts.IsolationMode,
-			PluginHostPath:   opts.PluginHostPath,
-			WorktreeReadOnly: true,
-			GroupID:          groupID,
-			RuntimeEnvVars:   opts.RuntimeEnvVars,
-			HarnessName:      opts.Harness,
+			InstanceID:         uuid.New().String(),
+			SessionName:        agentSession,
+			Repo:               repo,
+			Worktree:           worktree,
+			AgentRole:          ag.Name,
+			Prompt:             prompt,
+			PromptSource:       "review-fanout",
+			PromptTemplateHash: ReviewPromptTemplateHash(),
+			ConfigContent:      agentConfigContent,
+			Layout:             session.LayoutAgentOnly,
+			IsolationMode:      opts.IsolationMode,
+			PluginHostPath:     opts.PluginHostPath,
+			WorktreeReadOnly:   true,
+			GroupID:            groupID,
+			RuntimeEnvVars:     opts.RuntimeEnvVars,
+			HarnessName:        opts.Harness,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

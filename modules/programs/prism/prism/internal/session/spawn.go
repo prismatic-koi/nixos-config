@@ -61,6 +61,20 @@ type SpawnOpts struct {
 	// (container/bwrap mode).
 	Prompt string
 
+	// PromptSource is the C.4.SRC discriminator written to
+	// spawn_inputs.prompt_source. Values: "cli-positional", "cli-stdin",
+	// "proxy-spawn", "review-fanout", or "" (NULL) when not applicable.
+	// Set by cmd/spawn.go for CLI spawns; set directly by review fan-out.
+	PromptSource string
+
+	// PromptTemplateHash is the C.4.PT identifier written to
+	// spawn_inputs.prompt_template_hash. For review fan-out this is
+	// "review-fanout:<sha>" where <sha> is the build-time SHA of
+	// internal/review/review.go (embedded via -ldflags). For all other
+	// spawn paths this is "" (NULL), because the prompt is a free-form
+	// user-supplied string with no fixed template.
+	PromptTemplateHash string
+
 	// PromptFilePath is set internally by SpawnSession when it has written
 	// the prompt to the per-session run directory (#1064 / #1092). Callers
 	// should leave this empty; SpawnSession populates it from opts.Prompt
@@ -444,6 +458,64 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 				"warning: could not set instance_id for %q: %v\n",
 				opts.SessionName, err)
 			opts.InstanceID = ""
+		}
+	}
+
+	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148). Non-fatal:
+	// spawn_inputs is best-effort telemetry; a failure here must never block
+	// session creation. The write requires a non-empty instance_id.
+	//
+	// LayoutFull (CLI) spawns: the richer writeSpawnInputs call in cmd/spawn.go
+	// carries all flag-value columns (profile, model, variant, agent, harness,
+	// branch, skills hash, etc.) and will write the row after SpawnSession
+	// returns. Avoid writing here so INSERT OR IGNORE does not silently drop
+	// that richer payload.
+	//
+	// LayoutAgentOnly (review fan-out) spawns: the caller pre-populates
+	// InstanceID; there is no subsequent writeSpawnInputs call, so SpawnSession
+	// owns the only write.
+	if opts.InstanceID != "" && opts.Layout != LayoutFull {
+		// Pre-seed the sessions row so the FK constraint on spawn_inputs is
+		// satisfied. InsertSession uses INSERT OR IGNORE so the call in the
+		// tmux-session-start hook is a safe no-op when the row already exists.
+		var agentRolePtr *string
+		if opts.AgentRole != "" {
+			agentRolePtr = &opts.AgentRole
+		}
+		var groupIDPtr *string
+		if opts.GroupID != "" {
+			groupIDPtr = &opts.GroupID
+		}
+		if insertErr := d.InsertSession(db.Session{
+			InstanceID:  opts.InstanceID,
+			SessionName: opts.SessionName,
+			AgentRole:   agentRolePtr,
+			Repo:        opts.Repo,
+			Worktree:    opts.Worktree,
+			GroupID:     groupIDPtr,
+		}); insertErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: could not pre-seed sessions row for %q: %v\n",
+				opts.SessionName, insertErr)
+		}
+
+		si := db.SpawnInputs{
+			InstanceID: opts.InstanceID,
+			CreatedAt:  time.Now().UnixMilli(),
+		}
+		if opts.Prompt != "" {
+			si.PromptText = &opts.Prompt
+		}
+		if opts.PromptSource != "" {
+			si.PromptSource = &opts.PromptSource
+		}
+		if opts.PromptTemplateHash != "" {
+			si.PromptTemplateHash = &opts.PromptTemplateHash
+		}
+		if insertErr := d.InsertSpawnInputs(si); insertErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: could not write spawn_inputs for %q: %v\n",
+				opts.SessionName, insertErr)
 		}
 	}
 

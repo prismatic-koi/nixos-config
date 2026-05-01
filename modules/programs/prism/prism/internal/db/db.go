@@ -1384,7 +1384,6 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 			}
 		}
 	}
-
 	// Add spawn_outcome table and indexes (idempotent: IF NOT EXISTS).
 	spawnOutcomeSteps := []string{
 		`CREATE TABLE IF NOT EXISTS spawn_outcome (

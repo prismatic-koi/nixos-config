@@ -699,6 +699,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		args := []string{"spawn", "--branch", req.Branch}
+		// Pass --prompt-source proxy-spawn unconditionally so the host-side spawn
+		// records the correct C.4.SRC discriminator regardless of whether a prompt
+		// is included (C.4.SRC, issue #1148).
+		args = append(args, "--prompt-source", "proxy-spawn")
 		if req.Prompt != "" {
 			args = append(args, "--prompt", req.Prompt)
 		}
