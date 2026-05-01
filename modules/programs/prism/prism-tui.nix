@@ -56,6 +56,7 @@ let
     sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
     sandbox_exec_concurrency_cap = config.nx.programs.prism.sandboxExecConcurrencyCap;
+    pi_extension_dir = config.nx.programs.prism.piExtensionDir;
   };
 in
 {
@@ -125,6 +126,19 @@ in
         sandbox-exec spawns are refused. 0 means uncapped. Default of 20
         mirrors bwrapConcurrencyCap. Darwin-only isolation mode; this option
         is rendered into config.json on all machines but only used on Darwin.
+      '';
+    };
+
+    nx.programs.prism.piExtensionDir = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      description = ''
+        Absolute host path to the directory containing the prism PI extension
+        file(s) (prism.ts). When non-empty, this path is written to config.json
+        as pi_extension_dir and bind-mounted read-only into the bwrap sandbox
+        at /etc/prism/pi-extensions/ for harness=pi sessions. Must be set when
+        using harness=pi isolation. Defaults to "" (unset; PI sessions will fail
+        with a clear error until this is configured).
       '';
     };
   };
