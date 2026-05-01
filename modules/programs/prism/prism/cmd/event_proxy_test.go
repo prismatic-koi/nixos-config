@@ -289,6 +289,83 @@ func TestEventProxy_ServerReturns400ForUnknownKindSurfacesError(t *testing.T) {
 	}
 }
 
+// TestEventProxy_StateChangeProxies verifies the state-change subcommand
+// proxies to the host API when PRISM_HOST_API is set.
+func TestEventProxy_StateChangeProxies(t *testing.T) {
+	server, apiURL := startFakeEventAPIServer(t)
+	t.Setenv("PRISM_HOST_API", apiURL)
+
+	_ = eventStateChangeCmd.Flags().Set("session", "myrepo@main")
+	_ = eventStateChangeCmd.Flags().Set("state", "active")
+	_ = eventStateChangeCmd.Flags().Set("worktree", t.TempDir())
+	t.Cleanup(func() {
+		_ = eventStateChangeCmd.Flags().Set("session", "")
+		_ = eventStateChangeCmd.Flags().Set("state", "")
+		_ = eventStateChangeCmd.Flags().Set("worktree", "")
+	})
+
+	if err := eventStateChangeCmd.RunE(eventStateChangeCmd, nil); err != nil {
+		t.Fatalf("state-change RunE: %v", err)
+	}
+
+	if len(server.requests) == 0 {
+		t.Fatal("server received no requests — proxy did not fire")
+	}
+	if !strings.Contains(server.requests[0].Body, `"kind":"state-change"`) {
+		t.Errorf("body %q does not contain kind=state-change", server.requests[0].Body)
+	}
+}
+
+// TestEventProxy_PaneDiedProxies verifies the pane-died subcommand proxies to
+// the host API when PRISM_HOST_API is set.
+func TestEventProxy_PaneDiedProxies(t *testing.T) {
+	server, apiURL := startFakeEventAPIServer(t)
+	t.Setenv("PRISM_HOST_API", apiURL)
+
+	_ = eventPaneDiedCmd.Flags().Set("session", "myrepo@main")
+	_ = eventPaneDiedCmd.Flags().Set("window", "agent")
+	t.Cleanup(func() {
+		_ = eventPaneDiedCmd.Flags().Set("session", "")
+		_ = eventPaneDiedCmd.Flags().Set("window", "")
+	})
+
+	if err := eventPaneDiedCmd.RunE(eventPaneDiedCmd, nil); err != nil {
+		t.Fatalf("pane-died RunE: %v", err)
+	}
+
+	if len(server.requests) == 0 {
+		t.Fatal("server received no requests — proxy did not fire")
+	}
+	if !strings.Contains(server.requests[0].Body, `"kind":"pane-died"`) {
+		t.Errorf("body %q does not contain kind=pane-died", server.requests[0].Body)
+	}
+}
+
+// TestEventProxy_TmuxSessionStartProxies verifies the tmux-session-start
+// subcommand proxies to the host API when PRISM_HOST_API is set.
+func TestEventProxy_TmuxSessionStartProxies(t *testing.T) {
+	server, apiURL := startFakeEventAPIServer(t)
+	t.Setenv("PRISM_HOST_API", apiURL)
+
+	_ = eventTmuxSessionStartCmd.Flags().Set("session", "myrepo@main")
+	_ = eventTmuxSessionStartCmd.Flags().Set("worktree", t.TempDir())
+	t.Cleanup(func() {
+		_ = eventTmuxSessionStartCmd.Flags().Set("session", "")
+		_ = eventTmuxSessionStartCmd.Flags().Set("worktree", "")
+	})
+
+	if err := eventTmuxSessionStartCmd.RunE(eventTmuxSessionStartCmd, nil); err != nil {
+		t.Fatalf("tmux-session-start RunE: %v", err)
+	}
+
+	if len(server.requests) == 0 {
+		t.Fatal("server received no requests — proxy did not fire")
+	}
+	if !strings.Contains(server.requests[0].Body, `"kind":"tmux-session-start"`) {
+		t.Errorf("body %q does not contain kind=tmux-session-start", server.requests[0].Body)
+	}
+}
+
 // ── host path unchanged ───────────────────────────────────────────────────────
 
 // TestEventProxy_NoProxyWhenHostAPIUnset verifies that when PRISM_HOST_API is
