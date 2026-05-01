@@ -79,6 +79,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
 	}
 
+	// RequireSlot gate: validate that the active profile defines a slot for
+	// every review agent before spawning any. This is an all-or-nothing check
+	// (#1224): if any slot is missing we fail the entire fan-out with a clear
+	// error rather than silently falling back to the legacy model chain.
+	for _, ag := range agents {
+		if slotErr := config.RequireSlot(opts.ProfilesFile, activeProfile, ag.Name); slotErr != nil {
+			return nil, fmt.Errorf("review fan-out aborted: profile %q is missing a required slot: %w", activeProfile, slotErr)
+		}
+	}
+
 	// Register a session group for this review round. Every spawned agent
 	// session will carry this group_id, enabling GroupCompleted-based
 	// termination detection and GroupResults-based result aggregation.
@@ -371,6 +381,14 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	activeProfile, _, profErr := config.ResolveActiveProfile(opts.ProfilesFile, "")
 	if profErr != nil {
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
+	}
+
+	// RequireSlot gate: same all-or-nothing check as in Run() (#1224). Validate
+	// every review agent slot before registering a group or spawning anything.
+	for _, ag := range agents {
+		if slotErr := config.RequireSlot(opts.ProfilesFile, activeProfile, ag.Name); slotErr != nil {
+			return nil, fmt.Errorf("review fan-out aborted: profile %q is missing a required slot: %w", activeProfile, slotErr)
+		}
 	}
 
 	// Register session group.
