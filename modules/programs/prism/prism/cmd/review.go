@@ -59,6 +59,7 @@ func init() {
 	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
+	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -81,6 +82,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 	onlyFlag, _ := cmd.Flags().GetString("only")
 	onlyChanged := cmd.Flags().Changed("only")
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
+	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
+	modelsByRole := parseModelOverrides(modelOverrideRaw)
 
 	// Validate harness BEFORE any session state is created.
 	if _, ok := harness.Lookup(harnessFlag); !ok {
@@ -268,6 +271,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,
 		RuntimeEnvVars: h.RuntimeEnv(),
+		ModelsByRole:   modelsByRole,
 	}
 
 	// Load profiles for any sandboxed mode (podman, bwrap, or sandbox-exec) —

@@ -262,6 +262,14 @@ type Opts struct {
 	// When empty, spawnAgentOnlyLayout resolves the machine default from
 	// cfg.DefaultIsolationMode rather than silently falling back to host.
 	IsolationMode string
+	// ModelsByRole is an optional per-role model override map (C.2,
+	// issue #1122). When a role appears in the map, its model entry overrides
+	// the profile default for that agent's opencode.json config blob.
+	// The map is applied in run.go via config.ApplyModelOverrides after the
+	// per-agent blob is resolved from ProfilesFile.
+	// Nil or empty means no per-role overrides — all agents use the profile
+	// default (equivalent to pre-C.2 behaviour).
+	ModelsByRole map[string]string
 	// ReadinessTimeout is the per-agent deadline for the post-spawn
 	// readiness gate (#1051 Piece A). Zero falls back to
 	// DefaultReviewReadinessTimeout (30s). The gate runs concurrently per

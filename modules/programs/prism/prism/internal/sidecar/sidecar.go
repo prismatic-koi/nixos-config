@@ -137,6 +137,10 @@ type Config struct {
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
 	AgentModel string
+	// ModelsByRole is the per-role model override map (C.2). When non-nil
+	// it takes precedence over AgentModel for any role present in the map.
+	// The map is passed directly to the harness adapter at construction time.
+	ModelsByRole map[string]string
 	// HarnessName is the registered harness name (e.g. "opencode"). When
 	// non-empty, Run consults harness.ShapeOf(HarnessName) at the top of the
 	// function to determine the transport shape and route to the appropriate

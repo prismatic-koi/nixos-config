@@ -5,19 +5,21 @@ package cmd
 //
 // Flags:
 //
-//	--branch <name>       use a specific branch name instead of a timestamp
-//	--pr <number>         check out the branch for a given PR number
-//	--repo <name>         repo shorthand name or absolute path (default: inferred from current pane)
-//	--prompt <text>       pass an initial prompt to opencode on launch
-//	--prompt-file <path>  read the initial prompt from a file
-//	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
-//	--profile <name>      model profile to use from ~/.config/prism/profiles.json
-//	--model <name>        model identifier override (overrides profile's primary model)
-//	--variant <name>      model variant override (overrides all agents' variant)
-//	--isolation <mode>    isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
-//	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
+//	--branch <name>              use a specific branch name instead of a timestamp
+//	--pr <number>                check out the branch for a given PR number
+//	--repo <name>                repo shorthand name or absolute path (default: inferred from current pane)
+//	--prompt <text>              pass an initial prompt to opencode on launch
+//	--prompt-file <path>         read the initial prompt from a file
+//	--agent <name>               opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--profile <name>             model profile to use from ~/.config/prism/profiles.json
+//	--model <name>               model identifier override (overrides profile's primary model)
+//	--variant <name>             model variant override (overrides all agents' variant)
+//	--model-override role=model  per-role model override (repeatable); overrides --model for that role
+//	--isolation <mode>           isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
+//	--harness <name>             agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,6 +67,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
+	modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
 
 	isolationChanged := cmd.Flags().Changed("isolation")
 
@@ -102,6 +105,14 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"harness":                harnessFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}
+	if len(modelOverrideFlag) > 0 {
+		modelsByRole := parseModelOverrides(modelOverrideFlag)
+		if len(modelsByRole) > 0 {
+			if encoded, err := json.Marshal(modelsByRole); err == nil {
+				body["model_variant_overrides"] = string(encoded)
+			}
+		}
+	}
 	// Only forward "isolation" when explicitly set. An empty value would tell
 	// the host-side spawn to fall back to config.json, which is correct only
 	// when the user really did not pass the flag — we must distinguish the
@@ -132,6 +143,7 @@ func init() {
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
+	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
@@ -204,6 +216,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
+	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
+	modelsByRole := parseModelOverrides(modelOverrideRaw)
 
 	// Validate harness BEFORE any session state is created (no worktree, no
 	// tmux session, no DB row).
@@ -482,6 +496,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		ConfigEnvVarName: h.ConfigEnvVar(),
 		RuntimeEnvVars:   h.RuntimeEnv(),
 		HarnessName:      harnessFlag,
+		ModelsByRole:     modelsByRole,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
@@ -551,6 +566,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		agentPromptHash:    agentPromptHash,
 		promptText:         promptText,
 		promptSource:       promptSource,
+		modelsByRole:       modelsByRole,
 	})
 
 	if headless {
@@ -600,6 +616,7 @@ type spawnInputsArgs struct {
 	agentPromptHash    string
 	promptText         string
 	promptSource       string
+	modelsByRole       map[string]string
 }
 
 // writeSpawnInputs looks up the instance_id for sessionName and inserts a row
@@ -659,6 +676,12 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	}
 	if args.promptText != "" {
 		si.PromptText = &args.promptText
+	}
+	if len(args.modelsByRole) > 0 {
+		if encoded, encErr := json.Marshal(args.modelsByRole); encErr == nil {
+			s := string(encoded)
+			si.ModelVariantOverrides = &s
+		}
 	}
 
 	if err := d.InsertSpawnInputs(si); err != nil {
@@ -767,4 +790,25 @@ func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
 
 	// Default: zettelkasten timestamp.
 	return time.Now().Format("20060102T1504"), nil
+}
+
+// parseModelOverrides converts a slice of "role=model" strings into a map.
+// Malformed entries (no "=" separator, empty role, or empty model) are silently
+// skipped. Returns nil when no valid entries are found.
+func parseModelOverrides(raw []string) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		role, model, ok := strings.Cut(entry, "=")
+		if !ok || role == "" || model == "" {
+			continue
+		}
+		m[role] = model
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
