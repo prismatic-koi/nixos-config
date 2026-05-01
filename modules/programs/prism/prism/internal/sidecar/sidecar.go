@@ -647,6 +647,9 @@ func (s *Sidecar) Shutdown() {
 		} else {
 			log.Printf("sidecar: watching merge rows abandoned (instance=%s)", s.cfg.InstanceID)
 		}
+		if err := s.cfg.DB.UpdateSessionEnded(s.cfg.InstanceID, "finished"); err != nil {
+			log.Printf("sidecar: UpdateSessionEnded: %v", err)
+		}
 	}
 
 	// Stop and remove the container before writing state — this ensures
