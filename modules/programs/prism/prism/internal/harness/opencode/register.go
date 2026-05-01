@@ -28,5 +28,8 @@ func init() {
 		ContainerFactory: func(endpoint string, c *http.Client, role, model string) harness.Harness {
 			return NewContainerMode(endpoint, c, role, model)
 		},
+		ArchiveAdapterFactory: func() harness.ArchiveAdapter {
+			return NewArchiveAdapter()
+		},
 	})
 }

@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
 
 // TransportShape declares the wire-level shape a harness uses to talk to
@@ -114,7 +116,22 @@ type Registration struct {
 	//
 	// When nil, NewContainer falls back to Factory.
 	ContainerFactory Factory
+
+	// ArchiveAdapterFactory, when non-nil, constructs an ArchiveAdapter for
+	// this harness. It is called once per cleanup session by ArchiveAdapterFor.
+	// When nil, ArchiveAdapterFor returns a (nil, error) indicating that no
+	// archive adapter is registered for the harness.
+	ArchiveAdapterFactory func() ArchiveAdapter
 }
+
+// ArchiveAdapter is a re-export of harness/archive.ArchiveAdapter for
+// consumers that import only the harness package. It allows Registration
+// to use ArchiveAdapter directly without requiring a separate import of
+// internal/harness/archive in every caller.
+type ArchiveAdapter = harnessarchive.ArchiveAdapter
+
+// SourceParams is a re-export of harness/archive.SourceParams.
+type SourceParams = harnessarchive.SourceParams
 
 // globalRegistry is the package-level singleton. All fields are
 // protected by mu after process start; init() functions run
@@ -249,4 +266,18 @@ func ShapeOf(name string) (TransportShape, bool) {
 // string, for use in error messages.
 func joinNames() string {
 	return strings.Join(Names(), ", ")
+}
+
+// ArchiveAdapterFor returns the ArchiveAdapter for the named harness.
+// Returns an error when the harness is not registered or has no
+// ArchiveAdapterFactory (i.e. the harness does not support archiving).
+func ArchiveAdapterFor(name string) (ArchiveAdapter, error) {
+	reg, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q is not registered; valid harnesses: %s", name, joinNames())
+	}
+	if reg.ArchiveAdapterFactory == nil {
+		return nil, fmt.Errorf("harness %q has no registered archive adapter", name)
+	}
+	return reg.ArchiveAdapterFactory(), nil
 }
