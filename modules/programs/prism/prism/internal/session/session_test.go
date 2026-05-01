@@ -294,7 +294,7 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 //
 // These tests verify that the DB writes performed by setupFullLayout BEFORE
 // tmux.NewWindow opens window 1 produce the correct agent_status values.
-// They exercise the same openDB() + SetIsolationMode/SetHostMode path that the
+// They exercise the same openDB() + SetIsolationMode path that the
 // fix adds to setupFullLayout, ensuring the mode is persisted correctly for all
 // three isolation modes ("bwrap", "host", "podman").
 //
@@ -305,7 +305,8 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 
 // openIsolationTestDB creates a fresh temp DB and registers cleanup.
 // It also seeds an agent_status row for sessionName so that SetIsolationMode
-// and SetHostMode have a row to UPDATE.
+// It also seeds an agent_status row for sessionName so that SetIsolationMode
+// has a row to UPDATE.
 func openIsolationTestDB(t *testing.T, sessionName string) *db.DB {
 	t.Helper()
 	dbFile := filepath.Join(t.TempDir(), "prism.db")

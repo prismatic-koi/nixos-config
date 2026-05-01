@@ -312,7 +312,7 @@ CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harn
 // v22→v23 is a one-shot backfill that populates agent_status.isolation_mode
 // for every row where it is currently NULL (pre-v10 archived rows that were
 // added before the column existed). The value mirrors the runtime fallback in
-// the old EffectiveIsolationMode(): host_mode=1 → 'host', otherwise →
+// the old EffectiveIsolationMode() (since deleted): host_mode=1 → 'host', otherwise →
 // 'podman'. The WHERE clause makes the migration idempotent: rows already set
 // are skipped on any subsequent open. This is the Phase A prerequisite for the
 // A4 deprecation-removal sequence (#1129).
@@ -1290,8 +1290,8 @@ func migrateV22toV23(conn *sql.DB, version *int) error {
 	// Migration v22 → v23: backfill isolation_mode for pre-v10 rows.
 	// Rows inserted before v9→v10 landed (the migration that added the
 	// isolation_mode column as NULLABLE) have isolation_mode IS NULL.
-	// The CASE expression mirrors the runtime fallback in
-	// (db.Status).EffectiveIsolationMode(): host_mode=1 → 'host', else →
+	// The CASE expression mirrors the runtime fallback in the old
+	// (db.Status).EffectiveIsolationMode() (since deleted): host_mode=1 → 'host', else →
 	// 'podman'. The WHERE clause skips rows already set, making the
 	// migration idempotent. Fresh databases have no rows so this is a
 	// no-op. (#1129)
@@ -1499,45 +1499,62 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 		return fmt.Errorf("db: migration v25→v26: check host_mode column: %w", err)
 	}
 	if hmColExists > 0 {
-		rebuildSteps := []string{
-			`PRAGMA foreign_keys = OFF`,
-			`ALTER TABLE agent_status RENAME TO agent_status_old_v25`,
-			`CREATE TABLE agent_status (
-			  session_name      TEXT PRIMARY KEY,
-			  repo              TEXT NOT NULL,
-			  worktree          TEXT NOT NULL,
-			  state             TEXT NOT NULL,
-			  title             TEXT,
-			  agent_name        TEXT,
-			  model_id          TEXT,
-			  root_agent_name   TEXT,
-			  root_model_id     TEXT,
-			  isolation_mode    TEXT,
-			  instance_id       TEXT,
-			  last_seen         INTEGER NOT NULL,
-			  ended_at          INTEGER,
-			  harness           TEXT NOT NULL DEFAULT 'opencode',
-			  harness_session_id TEXT,
-			  harness_port      INTEGER,
-			  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
-			)`,
-			`INSERT INTO agent_status
-			  SELECT session_name, repo, worktree, state, title,
-			         agent_name, model_id, root_agent_name, root_model_id,
-			         COALESCE(isolation_mode, 'podman'),
-			         instance_id, last_seen, ended_at,
-			         harness, harness_session_id, harness_port, group_id
-			  FROM agent_status_old_v25`,
-			`DROP TABLE agent_status_old_v25`,
-			`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
-			   ON agent_status (repo)
-			   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL`,
-			`PRAGMA foreign_keys = ON`,
+		// Wrap the rename-copy-drop in a transaction so the intermediate
+		// state is never visible to concurrent readers. PRAGMA foreign_keys
+		// must be set outside the transaction (SQLite requirement).
+		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("db: migration v25→v26: disable FK: %w", err)
 		}
-		for _, step := range rebuildSteps {
-			if _, err := conn.Exec(step); err != nil {
-				return fmt.Errorf("db: migration v25→v26: rebuild agent_status: %w", err)
+		if err := func() error {
+			tx, err := conn.Begin()
+			if err != nil {
+				return fmt.Errorf("begin tx: %w", err)
 			}
+			defer tx.Rollback() //nolint:errcheck
+			steps := []string{
+				`ALTER TABLE agent_status RENAME TO agent_status_old_v25`,
+				`CREATE TABLE agent_status (
+				  session_name      TEXT PRIMARY KEY,
+				  repo              TEXT NOT NULL,
+				  worktree          TEXT NOT NULL,
+				  state             TEXT NOT NULL,
+				  title             TEXT,
+				  agent_name        TEXT,
+				  model_id          TEXT,
+				  root_agent_name   TEXT,
+				  root_model_id     TEXT,
+				  isolation_mode    TEXT,
+				  instance_id       TEXT,
+				  last_seen         INTEGER NOT NULL,
+				  ended_at          INTEGER,
+				  harness           TEXT NOT NULL DEFAULT 'opencode',
+				  harness_session_id TEXT,
+				  harness_port      INTEGER,
+				  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+				)`,
+				`INSERT INTO agent_status
+				  SELECT session_name, repo, worktree, state, title,
+				         agent_name, model_id, root_agent_name, root_model_id,
+				         COALESCE(isolation_mode, 'podman'),
+				         instance_id, last_seen, ended_at,
+				         harness, harness_session_id, harness_port, group_id
+				  FROM agent_status_old_v25`,
+				`DROP TABLE agent_status_old_v25`,
+				`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+				   ON agent_status (repo)
+				   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL`,
+			}
+			for _, s := range steps {
+				if _, err := tx.Exec(s); err != nil {
+					return fmt.Errorf("step %q: %w", s[:min(40, len(s))], err)
+				}
+			}
+			return tx.Commit()
+		}(); err != nil {
+			return fmt.Errorf("db: migration v25→v26: rebuild agent_status: %w", err)
+		}
+		if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			return fmt.Errorf("db: migration v25→v26: re-enable FK: %w", err)
 		}
 	}
 	if _, err := conn.Exec("UPDATE schema_version SET version = 26"); err != nil {

@@ -42,16 +42,6 @@ type Status struct {
 	GroupID *string
 }
 
-// EffectiveIsolationMode returns the effective isolation mode for this session.
-// When IsolationMode is non-empty it is returned directly. Otherwise it
-// defaults to "podman" for back-compat with pre-v10 DB rows.
-func (s Status) EffectiveIsolationMode() string {
-	if s.IsolationMode != "" {
-		return s.IsolationMode
-	}
-	return "podman"
-}
-
 // BusMessage represents a row in the bus_messages table.
 type BusMessage struct {
 	ID           string
