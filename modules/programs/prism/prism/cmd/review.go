@@ -83,7 +83,10 @@ func runReview(cmd *cobra.Command, args []string) error {
 	onlyChanged := cmd.Flags().Changed("only")
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
 	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
-	modelsByRole := parseModelOverrides(modelOverrideRaw)
+	modelsByRole, err := parseModelOverrides(modelOverrideRaw)
+	if err != nil {
+		return err
+	}
 
 	// Validate harness BEFORE any session state is created.
 	if _, ok := harness.Lookup(harnessFlag); !ok {

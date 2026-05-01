@@ -106,7 +106,10 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}
 	if len(modelOverrideFlag) > 0 {
-		modelsByRole := parseModelOverrides(modelOverrideFlag)
+		modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
+		if parseErr != nil {
+			return parseErr
+		}
 		if len(modelsByRole) > 0 {
 			if encoded, err := json.Marshal(modelsByRole); err == nil {
 				body["model_variant_overrides"] = string(encoded)
@@ -217,7 +220,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
-	modelsByRole := parseModelOverrides(modelOverrideRaw)
+	modelsByRole, err := parseModelOverrides(modelOverrideRaw)
+	if err != nil {
+		return err
+	}
 
 	// Validate harness BEFORE any session state is created (no worktree, no
 	// tmux session, no DB row).
@@ -793,22 +799,19 @@ func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
 }
 
 // parseModelOverrides converts a slice of "role=model" strings into a map.
-// Malformed entries (no "=" separator, empty role, or empty model) are silently
-// skipped. Returns nil when no valid entries are found.
-func parseModelOverrides(raw []string) map[string]string {
+// Returns an error if any entry is malformed (missing "=", empty role, or empty
+// model). Returns nil map when raw is empty.
+func parseModelOverrides(raw []string) (map[string]string, error) {
 	if len(raw) == 0 {
-		return nil
+		return nil, nil
 	}
 	m := make(map[string]string, len(raw))
 	for _, entry := range raw {
 		role, model, ok := strings.Cut(entry, "=")
 		if !ok || role == "" || model == "" {
-			continue
+			return nil, fmt.Errorf("invalid --model-override %q: expected role=model (e.g. review-context=google/gemini-2.5-pro)", entry)
 		}
 		m[role] = model
 	}
-	if len(m) == 0 {
-		return nil
-	}
-	return m
+	return m, nil
 }

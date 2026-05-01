@@ -636,6 +636,8 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		Layout:           LayoutFull,
 		ForceFresh:       opts.ForceFresh,
 		Headless:         opts.Headless,
+		HarnessName:      opts.HarnessName,
+		ModelsByRole:     opts.ModelsByRole,
 	}
 }
 
