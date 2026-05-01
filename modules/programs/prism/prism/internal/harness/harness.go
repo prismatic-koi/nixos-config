@@ -13,6 +13,7 @@ package harness
 
 import (
 	"context"
+	"io"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 )
@@ -123,6 +124,48 @@ type HarnessEvent struct {
 type StateTransition struct {
 	// State is the new agent state indicated by the event.
 	State agent.AgentState
+}
+
+// FrameNormaliser is an optional interface that a harness.Harness implementation
+// may satisfy to hook into the sidecar's stdio JSONL frame processing loop.
+//
+// When the harness passed to a sidecar's Config implements FrameNormaliser, the
+// sidecar calls NormaliseFrame for each raw JSONL line instead of writing the raw
+// bytes as the event payload. This is the mechanism used by the PI harness adapter
+// to implement the B5.TR Translate payload strategy: PI's native JSONL frames are
+// normalised to opencode-shaped payload.* structs at write time, so downstream
+// consumers (cmd/checkin, cmd/stats, cmd/audit) require no harness-specific branches.
+//
+// Returning (_, _, false) from NormaliseFrame means the frame should be skipped
+// (the adapter is responsible for logging at info level — not silently dropping).
+// Returning (_, _, true) with a non-empty eventType means the frame is written
+// to agent_events normally.
+//
+// The interface is defined here (in the harness package) so that the sidecar can
+// do a type-assertion against it without importing any concrete harness package.
+type FrameNormaliser interface {
+	// NormaliseFrame maps a raw JSONL line to a canonical (eventType, payload,
+	// shouldWrite) tuple.
+	//
+	//   - rawLine is a single JSONL record (no trailing newline).
+	//   - eventType is the canonical agent_events type string (e.g. "msg_assistant").
+	//   - normPayload is a value suitable for json.Marshal (typically a payload.* struct).
+	//   - shouldWrite is false when the frame is intentionally skipped.
+	NormaliseFrame(rawLine []byte) (eventType string, normPayload any, shouldWrite bool)
+}
+
+// StdinReceiver is an optional interface that a stdio-pipe Harness may implement
+// to receive the process's stdin pipe after the harness process has been started.
+//
+// When the harness passed to a sidecar implements StdinReceiver, the sidecar calls
+// SetStdinPipe immediately after cmd.StdinPipe() succeeds and before cmd.Start(),
+// so that DeliverInitialPrompt / DeliverPrompt can write to the running process.
+// Harnesses that do not use stdin delivery (e.g. those that receive prompts on the
+// command line) do not need to implement this interface.
+type StdinReceiver interface {
+	// SetStdinPipe hands the harness the open stdin pipe for the running process.
+	// The harness must close the pipe when the session ends.
+	SetStdinPipe(pipe io.WriteCloser)
 }
 
 // Message represents an assistant or user message extracted from a HarnessEvent.

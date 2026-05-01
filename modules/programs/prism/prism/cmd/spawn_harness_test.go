@@ -41,7 +41,7 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 	addPromptFlags(cmd)
 
 	// Set an unknown harness.
-	_ = cmd.Flags().Set("harness", "pi")
+	_ = cmd.Flags().Set("harness", "not-a-real-harness")
 
 	// runSpawn must return an error. We must ensure PRISM_HOST_API is unset
 	// so the proxy guard is not triggered (which would try to contact a server).
@@ -49,10 +49,10 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 
 	err := runSpawn(cmd, nil)
 	if err == nil {
-		t.Fatal("runSpawn with --harness pi: expected non-nil error, got nil")
+		t.Fatal("runSpawn with --harness not-a-real-harness: expected non-nil error, got nil")
 	}
-	if !strings.Contains(err.Error(), `unknown harness "pi"`) {
-		t.Errorf("error %q does not contain expected text 'unknown harness \"pi\"'", err.Error())
+	if !strings.Contains(err.Error(), `unknown harness "not-a-real-harness"`) {
+		t.Errorf("error %q does not contain expected text 'unknown harness \"not-a-real-harness\"'", err.Error())
 	}
 	if !strings.Contains(err.Error(), "valid harnesses:") {
 		t.Errorf("error %q does not mention 'valid harnesses:'", err.Error())
