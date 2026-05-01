@@ -5854,6 +5854,128 @@ exit 1
 	}
 }
 
+// ── /spawn model-override forwarding (C2.PROXY, issue #1263) ─────────────────
+
+// TestHostAPI_Spawn_ModelOverrideForwarded verifies that when the request body
+// contains model_variant_overrides (a JSON-encoded map[string]string as produced
+// by proxySpawn), the handler decodes it and forwards each entry as a
+// --model-override role=model flag to the prism spawn subprocess.
+// This is the regression test for issue #1263: previously the /spawn handler
+// did not decode model_variant_overrides, so --model-override from a coordinator
+// running inside a container was silently dropped.
+func TestHostAPI_Spawn_ModelOverrideForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@override-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	// model_variant_overrides encodes {"review-context":"google/gemini-2.5-pro"}
+	// as a JSON string, matching what proxySpawn (cmd/spawn.go) sends.
+	body := `{"branch":"override-branch","model_variant_overrides":"{\"review-context\":\"google/gemini-2.5-pro\"}"}`
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	want := "--model-override review-context=google/gemini-2.5-pro"
+	if !strings.Contains(string(capturedArgs), want) {
+		t.Errorf("captured args %q do not contain %q; model_variant_overrides was not forwarded (regression for issue #1263)",
+			string(capturedArgs), want)
+	}
+}
+
+// TestHostAPI_Spawn_ModelOverrideAbsentBehavesAsToday verifies the edge-case
+// AC for issue #1263: a /spawn request with no model_variant_overrides field
+// behaves identically to before the fix — no --model-override flags are added.
+func TestHostAPI_Spawn_ModelOverrideAbsentBehavesAsToday(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@no-override-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@main",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@main",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"no-override-branch"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if strings.Contains(string(capturedArgs), "--model-override") {
+		t.Errorf("captured args %q must not contain --model-override when model_variant_overrides is absent",
+			string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Spawn_ModelOverrideMalformedReturns400 verifies the edge-case
+// AC for issue #1263: a /spawn request with a malformed model_variant_overrides
+// value (not valid JSON) returns HTTP 400 rather than silently ignoring it.
+func TestHostAPI_Spawn_ModelOverrideMalformedReturns400(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+
+	// malformed: not valid JSON-encoded map
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"x","model_variant_overrides":"not-json"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for malformed model_variant_overrides; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "model_variant_overrides") {
+		t.Errorf("error %q should mention 'model_variant_overrides'", errResp["error"])
+	}
+}
+
 func TestHostAPI_Cleanup_CoordinatorCrossRepoForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)

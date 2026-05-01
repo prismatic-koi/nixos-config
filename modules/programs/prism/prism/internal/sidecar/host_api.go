@@ -651,6 +651,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// its own repo (derived from its session name) so that a client sending a
 	// mount-path name (e.g. "prism-git") still spawns into the correct repo
 	// (e.g. "nixos-config"). See issue #616.
+	//
+	// Optional field "model_variant_overrides" accepts a JSON-encoded
+	// map[string]string produced by proxySpawn (cmd/spawn.go). Each entry is
+	// forwarded as a --model-override role=model flag to the host-side prism
+	// spawn invocation. A malformed JSON value is rejected with HTTP 400.
+	// Absence of the field (the pre-#1263 behaviour) is treated as an empty map.
+	// See issue #1263 (C2.PROXY proxy-spawn model-override parity).
+	//
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
@@ -660,22 +668,34 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Repo                 string `json:"repo"` // accepted but ignored — ownRepo is always used
-			Branch               string `json:"branch"`
-			Prompt               string `json:"prompt"`
-			Agent                string `json:"agent"`
-			Profile              string `json:"profile"`
-			Model                string `json:"model"`
-			Variant              string `json:"variant"`
-			Isolation            string `json:"isolation"`
-			Harness              string `json:"harness"`
-			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
+			Repo                  string `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch                string `json:"branch"`
+			Prompt                string `json:"prompt"`
+			Agent                 string `json:"agent"`
+			Profile               string `json:"profile"`
+			Model                 string `json:"model"`
+			Variant               string `json:"variant"`
+			Isolation             string `json:"isolation"`
+			Harness               string `json:"harness"`
+			IgnoreConcurrencyCap  bool   `json:"ignore_concurrency_cap"`
+			ModelVariantOverrides string `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
 		}
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
+		}
+
+		// Parse model_variant_overrides when present. An empty string is
+		// treated as no overrides (backwards-compatible). A non-empty string
+		// must decode to map[string]string — a malformed value returns 400.
+		var modelsByRole map[string]string
+		if req.ModelVariantOverrides != "" {
+			if err := json.Unmarshal([]byte(req.ModelVariantOverrides), &modelsByRole); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid model_variant_overrides: must be a JSON-encoded map[string]string: "+err.Error())
+				return
+			}
 		}
 		if req.Branch == "" {
 			writeError(w, http.StatusBadRequest, "branch is required")
@@ -740,6 +760,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")
 		}
+		// Forward per-role model overrides as repeating --model-override flags.
+		for role, model := range modelsByRole {
+			args = append(args, "--model-override", role+"="+model)
+		}
 		args = append(args, "--harness", req.Harness)
 		args = append(args, "--repo", ownRepo)
 
@@ -765,6 +789,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.IgnoreConcurrencyCap {
 			logArgs = append(logArgs, "--ignore-concurrency-cap")
+		}
+		for role, model := range modelsByRole {
+			logArgs = append(logArgs, "--model-override", role+"="+model)
 		}
 		logArgs = append(logArgs, "--harness", req.Harness)
 		logArgs = append(logArgs, "--repo", ownRepo)
