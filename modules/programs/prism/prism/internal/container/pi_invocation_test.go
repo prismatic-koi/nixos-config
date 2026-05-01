@@ -200,3 +200,78 @@ func TestValidatePIExtensionDir_MissingExtFile(t *testing.T) {
 		t.Errorf("error message does not mention prism.ts: %v", err)
 	}
 }
+
+// ── appendPIBwrapMounts ──────────────────────────────────────────────────────
+
+func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
+	// Regression test for the bug where --dir was skipped for /etc-prefixed
+	// parent paths. /etc/prism does not exist on the host, so bwrap would
+	// fail at runtime if --dir /etc/prism is omitted.
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	promptFile := filepath.Join(t.TempDir(), "system-prompt.md")
+	if err := os.WriteFile(promptFile, []byte("# prompt"), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := Config{
+		PISystemPromptHostPath: promptFile,
+		PIExtensionHostDir:     extDir,
+		// Use default sandbox paths so /etc/prism/pi-extensions is the target.
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// Must contain --dir /etc/prism (the parent of the default sandbox ext dir).
+	expectedParent := filepath.Dir(piExtensionSandboxDefault) // /etc/prism
+	if !hasPair(args, "--dir", expectedParent) {
+		t.Errorf("expected --dir %q in args (parent dir); got %v", expectedParent, args)
+	}
+	// Must also contain --dir /etc/prism/pi-extensions (the target dir itself).
+	if !hasPair(args, "--dir", piExtensionSandboxDefault) {
+		t.Errorf("expected --dir %q in args (target dir); got %v", piExtensionSandboxDefault, args)
+	}
+}
+
+// ── piHarnessPipePath ────────────────────────────────────────────────────────
+
+func TestPIHarnessPipePath_UsesXDGStateHome(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	path := piHarnessPipePath("test-session@main")
+
+	if !strings.HasSuffix(path, "pipe.sock") {
+		t.Errorf("expected path to end with pipe.sock, got %q", path)
+	}
+	if !strings.HasPrefix(path, stateHome) {
+		t.Errorf("expected path to start with %q, got %q", stateHome, path)
+	}
+	// Must contain the prism/run/<hash>/ component.
+	if !strings.Contains(path, "prism/run/") {
+		t.Errorf("expected prism/run/ in path, got %q", path)
+	}
+}
+
+func TestPIHarnessPipePath_DeterministicForSameName(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	p1 := piHarnessPipePath("nixos-config@feature")
+	p2 := piHarnessPipePath("nixos-config@feature")
+	if p1 != p2 {
+		t.Errorf("expected same path for same session name, got %q and %q", p1, p2)
+	}
+}
+
+func TestPIHarnessPipePath_DifferentForDifferentNames(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	p1 := piHarnessPipePath("nixos-config@feature-a")
+	p2 := piHarnessPipePath("nixos-config@feature-b")
+	if p1 == p2 {
+		t.Errorf("expected different paths for different session names, got same: %q", p1)
+	}
+}

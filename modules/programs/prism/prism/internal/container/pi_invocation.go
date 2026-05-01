@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/prismatic-koi/prism/internal/config"
 )
@@ -170,6 +169,27 @@ func ValidatePIExtensionDir(hostDir string) error {
 	return nil
 }
 
+// piHarnessPipePath returns the per-session pipe socket path
+// (~/.local/state/prism/run/<sessionDirName>/pipe.sock).
+//
+// This is the path the PI extension connects to for the sidecar wire protocol
+// (P2.SIDECAR). It is inlined here (mirroring sessionRunDir) to avoid a
+// circular import with internal/session.
+func piHarnessPipePath(sessionName string) string {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Fallback: use /tmp — better than an empty string.
+			return "/tmp/prism-pipe-" + sessionName + ".sock"
+		}
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	sum := sha256.Sum256([]byte(sessionName))
+	dirName := hex.EncodeToString(sum[:])[:12]
+	return filepath.Join(stateHome, "prism", "run", dirName, "pipe.sock")
+}
+
 // sessionRunDir returns the per-session run directory path
 // (~/.local/state/prism/run/<sessionDirName>/).
 //
@@ -237,15 +257,14 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	if sandboxExtDir == "" {
 		sandboxExtDir = piExtensionSandboxDefault
 	}
-	// The parent directory (/etc/prism) may not exist inside the sandbox.
-	// bwrap requires the mount-point parent to exist; we create it via
-	// --dir before the bind mount.
+	// The parent directory (/etc/prism when using the default) may not exist
+	// inside the sandbox. /etc is ro-bind-mounted from the host, but
+	// /etc/prism is a prism-specific directory that does not exist on the
+	// host, so it will not appear inside the sandbox either. bwrap requires
+	// the mount-point parent to exist before the bind mount is applied, so
+	// we create both the parent and the target with --dir unconditionally.
 	parent := filepath.Dir(sandboxExtDir)
-	if !strings.HasPrefix(parent, "/etc") {
-		// /etc is already ro-bind mounted from the host, so /etc-relative
-		// parents exist. For any other prefix, ensure the parent exists.
-		args = append(args, "--dir", parent)
-	}
+	args = append(args, "--dir", parent)
 	args = append(args, "--dir", sandboxExtDir)
 	args = append(args, "--ro-bind", cfg.PIExtensionHostDir, sandboxExtDir)
 
