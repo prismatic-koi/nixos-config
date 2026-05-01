@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -76,22 +77,37 @@ func stripEnvPayload(s string) string {
 	return s[:idx] + "[PRISM_INITIAL_PROMPT redacted]"
 }
 
-// truncateProgressMsg truncates msg to maxProgressMsgBytes. When truncated, a
-// suffix is appended that names a forensic log path where the full message can
-// be read. The log path includes both prNumber and agentName so concurrent
-// review runs do not overwrite each other's forensic output. The returned
-// string is always ≤ maxProgressMsgBytes+len(suffix).
+// truncateProgressMsg truncates msg to maxProgressMsgBytes, respecting UTF-8
+// boundaries. When truncated, a suffix is appended that names a forensic log
+// path where the full message can be read. The log path includes both prNumber
+// and agentName so concurrent review runs do not overwrite each other's
+// forensic output. The returned string is always ≤ maxProgressMsgBytes+len(suffix).
 func truncateProgressMsg(prNumber, agentName, msg string) string {
 	if len(msg) <= maxProgressMsgBytes {
 		return msg
 	}
+
+	// Truncate at a UTF-8 boundary to avoid splitting multi-byte characters.
+	// Walk the string rune-by-rune, stopping when the next rune would exceed
+	// maxProgressMsgBytes.
+	truncated := msg
+	byteCount := 0
+	for i, r := range msg {
+		runeBytes := utf8.RuneLen(r)
+		if byteCount+runeBytes > maxProgressMsgBytes {
+			truncated = msg[:i]
+			break
+		}
+		byteCount += runeBytes
+	}
+
 	safePR := sanitisePRNumber(prNumber)
 	safeAgent := sanitisePRNumber(agentName)
 	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s-%s.log", safePR, safeAgent))
 	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
 	// Write full message to the forensic path (best-effort, non-fatal).
 	_ = os.WriteFile(logPath, []byte(msg), 0o600)
-	return msg[:maxProgressMsgBytes] + suffix
+	return truncated + suffix
 }
 
 // VerdictKind describes what kind of verdict marker was found by AssessPassed.
