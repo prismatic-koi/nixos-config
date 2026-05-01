@@ -8,10 +8,12 @@ package integration_test
 //   - (deny file-read* file-write* (subpath "<HOME>/.aws"))
 //   - (deny file-read* file-write* (subpath "/etc/wireguard"))
 //   - (deny file-read* file-write* (subpath "/etc/wpa_supplicant"))
+//   - (deny file-read* file-write* (subpath "/etc/ssh"))
 //   - (deny file-read* file-write* (subpath "/private/etc/wireguard"))
 //   - (deny file-read* file-write* (subpath "/private/etc/wpa_supplicant"))
+//   - (deny file-read* file-write* (subpath "/private/etc/ssh"))
 //
-// Approach: the wireguard/wpa_supplicant directories typically do not
+// Approach: the wireguard/wpa_supplicant/ssh directories typically do not
 // exist on developer macOS workstations, so a literal stat on those paths
 // is dominated by ENOENT rather than EPERM and does not distinguish "denied
 // by sandbox" from "absent on disk". The ~/.aws deny is defensive — it
@@ -78,8 +80,10 @@ func TestSandboxExecProfile_Denies_Present(t *testing.T) {
 	expected := []string{
 		"  (subpath \"/etc/wireguard\")",
 		"  (subpath \"/etc/wpa_supplicant\")",
+		"  (subpath \"/etc/ssh\")",
 		"  (subpath \"/private/etc/wireguard\")",
-		"  (subpath \"/private/etc/wpa_supplicant\"))",
+		"  (subpath \"/private/etc/wpa_supplicant\")",
+		"  (subpath \"/private/etc/ssh\"))",
 		"  (subpath \"" + home + "/.aws\"))",
 	}
 
