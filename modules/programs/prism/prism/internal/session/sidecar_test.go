@@ -491,3 +491,116 @@ func TestSessionDirName_StableFormula(t *testing.T) {
 			"(formula drift: must remain first 12 hex chars of SHA-256)", got, want)
 	}
 }
+
+// ── SidecarHarnessPipePath tests ─────────────────────────────────────────────
+
+func TestSidecarHarnessPipePath_DefaultXDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	const sess = "myrepo@feature"
+	got, err := SidecarHarnessPipePath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHarnessPipePath: %v", err)
+	}
+
+	// Socket path: $HOME/.local/state/prism/run/<12-hex>/pipe.sock
+	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "pipe.sock")
+	if got != want {
+		t.Errorf("SidecarHarnessPipePath = %q, want %q", got, want)
+	}
+}
+
+func TestSidecarHarnessPipePath_CustomXDG(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sess = "myrepo@main"
+	got, err := SidecarHarnessPipePath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHarnessPipePath: %v", err)
+	}
+
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "pipe.sock")
+	if got != want {
+		t.Errorf("SidecarHarnessPipePath = %q, want %q", got, want)
+	}
+}
+
+// realisticHarnessPipePath builds the pipe socket path a production system
+// with the given $HOME would produce, without depending on test-time XDG_STATE_HOME.
+func realisticHarnessPipePath(home, sessionName string) string {
+	return filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sessionName), "pipe.sock")
+}
+
+// TestSidecarHarnessPipePath_LengthInvariant_WorstCaseSession asserts that the
+// harness pipe socket path fits within the cross-platform sun_path budget (104 bytes).
+func TestSidecarHarnessPipePath_LengthInvariant_WorstCaseSession(t *testing.T) {
+	const home = "/home/prismatic-koi"
+	worstCase := "nixos-config@" + strings.Repeat("x", 80) + "~review-99-review-context"
+
+	got := realisticHarnessPipePath(home, worstCase)
+	if len(got) > sunPathBudget {
+		t.Errorf("worst-case pipe socket path is %d bytes (limit %d): %q",
+			len(got), sunPathBudget, got)
+	}
+}
+
+// TestSidecarHarnessPipePath_LengthInvariant_PlausibleShapes asserts path-length
+// invariant for common session name shapes.
+func TestSidecarHarnessPipePath_LengthInvariant_PlausibleShapes(t *testing.T) {
+	const home = "/home/prismatic-koi"
+	cases := []struct {
+		name    string
+		session string
+	}{
+		{
+			name:    "short coordinator",
+			session: "nixos-config@main",
+		},
+		{
+			name:    "long branch name",
+			session: "nixos-config@fix-something-with-a-fairly-long-branch-name",
+		},
+		{
+			name:    "long branch + review suffix",
+			session: "nixos-config@fix-something-with-a-fairly-long-branch-name~review-1-review-security",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := realisticHarnessPipePath(home, tc.session)
+			if len(got) > sunPathBudget {
+				t.Errorf("session %q produced %d-byte pipe path (limit %d): %q",
+					tc.session, len(got), sunPathBudget, got)
+			}
+		})
+	}
+}
+
+// TestSidecarHarnessPipePath_CoLocatesWithHostAPI asserts that the harness pipe
+// socket lives in the same directory as the host-API socket, so the existing
+// bind-mount for that directory covers both sockets.
+func TestSidecarHarnessPipePath_CoLocatesWithHostAPI(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sess = "nixos-config@main"
+	hostAPIPath, err := SidecarHostAPIPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	pipePath, err := SidecarHarnessPipePath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHarnessPipePath: %v", err)
+	}
+
+	if filepath.Dir(hostAPIPath) != filepath.Dir(pipePath) {
+		t.Errorf("host-API dir %q != pipe dir %q — bind-mount assumption violated",
+			filepath.Dir(hostAPIPath), filepath.Dir(pipePath))
+	}
+}

@@ -140,6 +140,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		AgentEnvVars:      agentEnvVars,
 	}
 
+	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it
+	// allocated in harness_port. Propagate it so PRISM_HARNESS_PIPE is injected.
+	if hShape, hOK := harness.ShapeOf(sandboxHarnessName); hOK && hShape == harness.TransportSocketPipe {
+		if status.HarnessPort != nil {
+			ctrCfg.HarnessPipeTCPPort = *status.HarnessPort
+		}
+	}
+
 	applyInitialPromptEnvVar(&ctrCfg)
 
 	m := container.New(ctrCfg)
@@ -292,6 +300,12 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	env = append(env, "PRISM_SESSION_NAME="+ctrCfg.SessionName)
 	if ctrCfg.HostAPISockPath != "" {
 		env = append(env, "PRISM_HOST_API=unix://"+ctrCfg.HostAPISockPath)
+	}
+	// For socket-pipe harnesses (PI) on Darwin, the sidecar allocates a TCP
+	// port at startup and stores it in harness_port. Expose it here so the
+	// harness can connect back to the sidecar's pipe listener.
+	if ctrCfg.HarnessPipeTCPPort != 0 {
+		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://host.containers.internal:%d", ctrCfg.HarnessPipeTCPPort))
 	}
 
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path

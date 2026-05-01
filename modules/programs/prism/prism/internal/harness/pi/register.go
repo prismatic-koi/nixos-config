@@ -19,12 +19,13 @@ import (
 func init() {
 	harness.MustRegister(harness.Registration{
 		Name:  "pi",
-		Shape: harness.TransportStdioPipe,
+		Shape: harness.TransportSocketPipe,
 		Factory: func(endpoint string, _ *http.Client, role, model string) harness.Harness {
-			// endpoint is the harness binary path for stdio harnesses.
+			// endpoint is unused for socket-pipe harnesses; the pipe socket
+			// path is managed by the sidecar independently of the harness adapter.
 			return New(endpoint, role, model)
 		},
-		// ContainerFactory is nil — PI uses the same stdio transport in both
+		// ContainerFactory is nil — PI uses the same socket-pipe transport in both
 		// host and container modes; the single Factory is sufficient.
 		ArchiveAdapterFactory: func() harness.ArchiveAdapter {
 			return NewArchiveAdapter()

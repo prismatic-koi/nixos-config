@@ -566,9 +566,26 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// once the sidecar calls net.Listen (same inode-transparency behaviour as
 		// a directory mount). The per-session directory is pre-created by
 		// prepareVolumeDirs before this code runs.
+		//
+		// P2.SIDECAR: the harness pipe socket (pipe.sock) co-locates with the
+		// host-API socket in the same per-session directory. This single bind-mount
+		// covers both sockets — no additional bind-mount is needed.
 		sockDir := filepath.Dir(cfg.HostAPISockPath)
 		args = append(args, "--bind", sockDir, sockDir)
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
+	}
+
+	// Harness pipe env var (P2.SIDECAR #1209).
+	// On Linux the pipe socket lives in the same per-session directory as the
+	// host-API socket, so the bind-mount above already exposes it. No extra
+	// bind is needed. On Darwin (HarnessPipeTCPPort != 0), TCP is used instead.
+	if cfg.HarnessPipeTCPPort != 0 {
+		args = append(args,
+			"--setenv", "PRISM_HARNESS_PIPE",
+			fmt.Sprintf("tcp://host.containers.internal:%d", cfg.HarnessPipeTCPPort),
+		)
+	} else if cfg.HarnessPipeSockPath != "" {
+		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
 	// ── Working directory ────────────────────────────────────────────────────
