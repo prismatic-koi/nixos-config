@@ -52,6 +52,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 )
 
@@ -943,6 +944,14 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		return startupErr
 	}
 
+	// Check whether the harness implements FrameNormaliser (B5.TR Translate
+	// strategy). When it does, NormaliseFrame is called for each raw JSONL line
+	// to produce opencode-shaped payloads before writing to agent_events. When
+	// the harness does not implement FrameNormaliser, the legacy fallback path
+	// below is used (which writes raw frames for state_change and msg_assistant,
+	// and raw JSON bytes for all other event types).
+	normaliser, hasNormaliser := s.harness.(harness.FrameNormaliser)
+
 	// Read JSONL frames from the harness's stdout. Each line is a JSON object.
 	var framesRead int
 	var lastState string
@@ -970,6 +979,38 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 		log.Printf("sidecar: runStartupStdio: frame type=%q", frame.Type)
 
+		if hasNormaliser {
+			// B5.TR path: the harness adapter normalises PI frames to
+			// opencode-shaped payloads at write time. The normaliser is
+			// responsible for logging unknown event types at info level
+			// (not silently dropping them) per the edge-case AC.
+			eventType, normPayload, shouldWrite := normaliser.NormaliseFrame(line)
+			if !shouldWrite {
+				continue
+			}
+			if eventType == "state_change" {
+				// State-change events must also drive the in-memory state
+				// machine and the circuit-breaker, not just the DB row.
+				var sc struct {
+					State string `json:"state"`
+				}
+				if err := json.Unmarshal(line, &sc); err == nil && sc.State != "" {
+					st := agent.AgentState(sc.State)
+					s.mu.Lock()
+					s.upsertState(st, nil, nil)
+					s.writeEvent(eventType, normPayload, nil)
+					s.mu.Unlock()
+					lastState = sc.State
+					continue
+				}
+			}
+			s.mu.Lock()
+			s.writeEvent(eventType, normPayload, nil)
+			s.mu.Unlock()
+			continue
+		}
+
+		// Legacy fallback path (harness does not implement FrameNormaliser).
 		switch frame.Type {
 		case "state_change":
 			st := agent.AgentState(frame.State)

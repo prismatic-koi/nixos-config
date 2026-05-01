@@ -6642,14 +6642,14 @@ exit 0
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"feature","harness":"pi"}`)
+		`{"branch":"feature","harness":"not-a-real-harness"}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for unknown harness; body = %s", rr.Code, rr.Body.String())
 	}
 	var errResp map[string]string
 	decodeJSONBody(t, rr, &errResp)
-	if !strings.Contains(errResp["error"], `unknown harness "pi"`) {
-		t.Errorf("error %q should mention 'unknown harness \"pi\"'", errResp["error"])
+	if !strings.Contains(errResp["error"], `unknown harness "not-a-real-harness"`) {
+		t.Errorf("error %q should mention 'unknown harness \"not-a-real-harness\"'", errResp["error"])
 	}
 	if !strings.Contains(errResp["error"], "valid harnesses:") {
 		t.Errorf("error %q should mention 'valid harnesses:'", errResp["error"])
