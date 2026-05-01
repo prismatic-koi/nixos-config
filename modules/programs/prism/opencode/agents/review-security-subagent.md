@@ -1,5 +1,5 @@
 ---
-name: review-security
+name: review-security-subagent
 description: Security audit subagent — exclusively reviews for security vulnerabilities. Invoke in parallel with other review-* agents before merging.
 mode: subagent
 hidden: true

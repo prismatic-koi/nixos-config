@@ -25,6 +25,7 @@ in
   nx = {
     programs = {
       prism.opencode.provider = "anthropic";
+      prism.agent.isolation.default = "sandbox-exec";
       # Disable programs that default to enabled but aren't needed/available on Darwin
       podman.enable = false;
       dragon-drop.enable = false;

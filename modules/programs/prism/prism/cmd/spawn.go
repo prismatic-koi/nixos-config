@@ -15,13 +15,13 @@ package cmd
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
 //	--isolation <mode>    isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
-//	--host-mode           deprecated alias for --isolation host
 //	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,10 +29,12 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/skills"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -59,24 +61,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
-	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 
-	// Detect explicit-set state for the mutually-exclusive isolation flags so
-	// the proxy mirrors the validation behaviour of the direct (host-shell)
-	// path in resolveIsolationMode.
 	isolationChanged := cmd.Flags().Changed("isolation")
-	hostModeChanged := cmd.Flags().Changed("host-mode")
-
-	// Reject simultaneous use of --isolation and --host-mode at the proxy
-	// boundary so the user gets the same error as the direct path. Without
-	// this, the host-API server would still see both fields populated and
-	// would have to re-run the same check.
-	if isolationChanged && hostModeChanged {
-		return fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
-	}
 
 	// Validate --isolation client-side so unknown values fail fast with the
 	// same error message as the direct path. The platform guards in
@@ -109,7 +98,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"profile":                profileFlag,
 		"model":                  modelFlag,
 		"variant":                variantFlag,
-		"host_mode":              hostModeFlag,
 		"harness":                harnessFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}
@@ -144,9 +132,13 @@ func init() {
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host; bypass container mode and run opencode directly in the tmux pane")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	// --prompt-source is an internal flag used by the host-API /spawn handler
+	// to override the auto-detected prompt source (C.4.SRC, issue #1148).
+	// It is hidden from --help because end users should never pass it directly.
+	spawnCmd.Flags().String("prompt-source", "", "")
+	_ = spawnCmd.Flags().MarkHidden("prompt-source")
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -154,13 +146,11 @@ func init() {
 // invocation, applying flag precedence and validation via registry.Resolve:
 //
 //  1. --isolation flag (explicit override), validated against known values
-//  2. --host-mode flag (deprecated alias for "host")
-//  3. cfg.DefaultIsolationMode (from config.json; compiled-in default "host")
+//  2. cfg.DefaultIsolationMode (from config.json; compiled-in default "host")
 //
-// Returns an error if both --isolation and --host-mode are set, or if
-// --isolation has an unknown value, or if the resolved mode is "bwrap" on
-// a non-Linux platform, or if the resolved mode is "sandbox-exec" on a
-// non-Darwin platform.
+// Returns an error if --isolation has an unknown value, or if the resolved
+// mode is "bwrap" on a non-Linux platform, or if the resolved mode is
+// "sandbox-exec" on a non-Darwin platform.
 //
 // D1 (issue #1133): platform availability is checked via the registered
 // Isolator's Available() method — but only for non-container modes. The
@@ -169,13 +159,10 @@ func init() {
 // surface (no podman daemon required to resolve the mode under test).
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
-	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 
 	mode, err := container.Resolve(container.ResolveInput{
 		IsolationFlag:        isolationFlag,
 		IsolationFlagChanged: cmd.Flags().Changed("isolation"),
-		HostModeFlag:         hostModeFlag,
-		HostModeFlagChanged:  cmd.Flags().Changed("host-mode"),
 		ConfigDefault:        cfg.DefaultIsolationMode,
 	})
 	if err != nil {
@@ -223,9 +210,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
 	}
 
-	promptFlag, err := resolvePrompt(cmd)
+	promptText, promptSource, err := resolvePromptWithSource(cmd)
 	if err != nil {
 		return err
+	}
+	// --prompt-source is a hidden internal flag set by the host-API /spawn
+	// handler so that proxy-spawned sessions carry "proxy-spawn" instead of
+	// the auto-detected "cli-positional" (C.4.SRC, issue #1148).
+	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
+		promptSource = overrideSource
 	}
 
 	attachFlag, _ := cmd.Flags().GetBool("attach")
@@ -234,8 +227,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
 
-	// Resolve the effective isolation mode. This validates --isolation,
-	// maps --host-mode to "host", and falls back to config.json.
+	// Resolve the effective isolation mode. This validates --isolation
+	// and falls back to config.json.
 	// Done BEFORE any side effects (no worktree, no tmux session, no DB row).
 	isolationMode, err := resolveIsolationMode(cmd, cfg)
 	if err != nil {
@@ -268,9 +261,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// bwrap sessions (each is a host process with no per-session memory ceil).
 	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
 	//
-	// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
-	// single runConcurrencyCap dispatch.
-	if err := runConcurrencyCap(cmd, "spawn", isolationMode, isoCaps); err != nil {
+	// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
+	if err := checkConcurrencyCap(cmd, "spawn", isolationMode); err != nil {
 		return err
 	}
 
@@ -480,7 +472,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Repo:             deriveRepo(worktreePath),
 		Worktree:         worktreePath,
 		AgentRole:        agentRole,
-		Prompt:           promptFlag,
+		Prompt:           promptText,
+		PromptSource:     promptSource,
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
 		IsolationMode:    string(isolationMode),
@@ -514,9 +507,50 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
+	// C4.SK: compute skills manifest hash before spawn so it is available for
+	// spawn_inputs. Read skills from XDG_CONFIG_HOME/opencode/skills/ (with the
+	// standard ~/.config fallback). Errors are non-fatal: a missing or
+	// unreadable skills directory produces an empty hash (caller writes NULL).
+	skillsDir := opencodeSkillsDir()
+	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
+	if skillsHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		skillsManifestHash = ""
+	}
+
+	// C4.AP: compute agent role file hash. The role file is resolved from
+	// XDG_CONFIG_HOME/opencode/agents/<role>.md. Errors are non-fatal.
+	agentRoleFilePath := opencodeAgentRolePath(agentRole)
+	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
+	if agentHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		agentPromptHash = ""
+	}
+
 	if err := session.SpawnSession(d, spawnOpts); err != nil {
 		return err
 	}
+
+	// Write spawn_inputs row. This is best-effort: a failure is logged but
+	// does not roll back the session (the session is already live).
+	// We read instance_id back from the DB because SpawnSession generates it
+	// internally and we do not want to thread it back through SpawnOpts just
+	// for this write path.
+	writeSpawnInputs(d, spawnInputsArgs{
+		sessionName:        sessionName,
+		profileName:        resolvedProfile,
+		modelFlag:          modelFlag,
+		variantFlag:        variantFlag,
+		agentFlag:          agentFlag,
+		harnessFlag:        harnessFlag,
+		cmd:                cmd,
+		prFlag:             prFlag,
+		branchFlag:         branchFlag,
+		skillsManifestHash: skillsManifestHash,
+		agentPromptHash:    agentPromptHash,
+		promptText:         promptText,
+		promptSource:       promptSource,
+	})
 
 	if headless {
 		fmt.Printf("session %q created\n", sessionName)
@@ -524,6 +558,115 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	return session.Attach(sessionName)
 }
+
+// opencodeSkillsDir returns the path to the opencode skills directory,
+// respecting XDG_CONFIG_HOME with a ~/.config fallback.
+func opencodeSkillsDir() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "opencode", "skills")
+}
+
+// opencodeAgentRolePath returns the path to the opencode agent role file for
+// the given role name, respecting XDG_CONFIG_HOME with a ~/.config fallback.
+func opencodeAgentRolePath(role string) string {
+	if role == "" {
+		return ""
+	}
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "opencode", "agents", role+".md")
+}
+
+// spawnInputsArgs bundles the flag values needed to build a db.SpawnInputs row.
+type spawnInputsArgs struct {
+	sessionName        string
+	profileName        string
+	modelFlag          string
+	variantFlag        string
+	agentFlag          string
+	harnessFlag        string
+	cmd                *cobra.Command
+	prFlag             string
+	branchFlag         string
+	skillsManifestHash string
+	agentPromptHash    string
+	promptText         string
+	promptSource       string
+}
+
+// writeSpawnInputs looks up the instance_id for sessionName and inserts a row
+// into spawn_inputs. All errors are non-fatal and logged to stderr.
+func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
+	st, err := d.CurrentStatus(args.sessionName)
+	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not read instance_id for spawn_inputs: %v\n", err)
+		return
+	}
+
+	si := db.SpawnInputs{
+		InstanceID: *st.InstanceID,
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	if args.promptSource != "" {
+		si.PromptSource = spawnStrPtr(args.promptSource)
+	}
+
+	if args.profileName != "" {
+		si.ProfileName = &args.profileName
+	}
+	if args.modelFlag != "" {
+		si.ModelFlag = &args.modelFlag
+	}
+	if args.variantFlag != "" {
+		si.VariantFlag = &args.variantFlag
+	}
+	if args.agentFlag != "" {
+		si.AgentFlag = &args.agentFlag
+	}
+	if args.harnessFlag != "" {
+		si.HarnessFlag = &args.harnessFlag
+	}
+	if isolationFlag, _ := args.cmd.Flags().GetString("isolation"); isolationFlag != "" {
+		si.IsolationFlag = &isolationFlag
+	}
+	if hostModeFlag, _ := args.cmd.Flags().GetBool("host-mode"); hostModeFlag {
+		si.HostModeFlag = true
+	}
+	if args.prFlag != "" {
+		if n, err := strconv.Atoi(args.prFlag); err == nil {
+			si.PRNumber = &n
+		}
+	}
+	if args.branchFlag != "" {
+		si.BranchFlag = &args.branchFlag
+	}
+	if ignoreCap, _ := args.cmd.Flags().GetBool("ignore-concurrency-cap"); ignoreCap {
+		si.IgnoreConcurrencyCap = true
+	}
+	if args.skillsManifestHash != "" {
+		si.SkillsManifestHash = &args.skillsManifestHash
+	}
+	if args.agentPromptHash != "" {
+		si.AgentPromptHash = &args.agentPromptHash
+	}
+	if args.promptText != "" {
+		si.PromptText = &args.promptText
+	}
+
+	if err := d.InsertSpawnInputs(si); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not write spawn_inputs: %v\n", err)
+	}
+}
+
+// spawnStrPtr returns a pointer to s, for optional string fields in SpawnInputs.
+func spawnStrPtr(s string) *string { return &s }
 
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a

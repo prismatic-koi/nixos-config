@@ -20,6 +20,7 @@
 package container
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -29,43 +30,155 @@ import (
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
-// CapInputs carries the per-call inputs that the unified Cap() dispatch needs
-// without coupling the container package to cobra. Each Cap() implementation
-// reads the fields it needs and ignores the rest.
-type CapInputs struct {
-	// IgnoreCap is true when --ignore-concurrency-cap was passed on the
-	// caller's CLI. When the cap is exceeded and IgnoreCap is true the
-	// implementation should write a warning and return CapStatus{Exceeded:
-	// false} so the caller proceeds.
-	IgnoreCap bool
-
-	// CallerName is used in warning/error messages — currently "spawn",
-	// "pr", or "review". Mirrors the callerName argument of the
-	// pre-refactor functions in cmd/concurrency.go.
-	CallerName string
-}
-
-// CapStatus is the result of an Isolator.Cap() check. Today only the Err
-// field is read — when non-nil, the caller surfaces it verbatim. Future
-// callers may read Current/Limit/Exceeded to render their own UI; the
-// fields are exported for that purpose.
+// CapStatus is the outcome of an Isolator.Cap probe. It generalises
+// container.CheckResult over all isolation modes.
+//
+// Replaces the previous CapInputs/CapStatus pair that embedded IgnoreCap and
+// CallerName in the inputs — those concerns are now handled by Check().
 type CapStatus struct {
-	// Current is the count of in-flight sessions for this mode. May be 0
-	// when the underlying counter could not be queried.
-	Current int
+	// Mode is the isolation mode that produced this status. Used by
+	// RenderError / RenderWarning for the noun in messages.
+	Mode config.IsolationMode
 
-	// Limit is the configured cap (0 means uncapped).
+	// Limit is the configured cap. Zero means uncapped. For podman:
+	// DefaultConcurrencyCap. For bwrap: Config.BwrapConcurrencyCap.
+	// For sandbox-exec: Config.SandboxExecConcurrencyCap. For host: 0.
 	Limit int
 
-	// Exceeded is true when Current >= Limit and Limit > 0.
+	// Count is the number of in-flight sessions of this mode at probe time.
+	Count int
+
+	// Exceeded is true when Count >= Limit and Limit > 0. False when
+	// Limit == 0 regardless of Count.
 	Exceeded bool
 
-	// Err is the error to surface to the caller, or nil to proceed. When
-	// IgnoreCap was true and the cap was exceeded, Err is nil but
-	// Exceeded is true.
-	Err error
+	// InFlight is the per-session detail list rendered into the warning/error
+	// message. May be empty if the probe failed and the implementation chose
+	// not to enumerate; in that case Note carries the explanatory message.
+	InFlight []InFlightSession
+
+	// Note carries any non-fatal context from the probe — e.g. the podman
+	// implementation sets Note to "podman ps failed — using DB-only count"
+	// when runPodmanPS returns false. Empty when the probe ran cleanly.
+	Note string
+}
+
+// modeNoun returns the user-facing noun for the isolation mode, used in
+// cap warning/error messages.
+func modeNoun(mode config.IsolationMode) string {
+	switch mode {
+	case config.IsolationPodman:
+		return "agent containers"
+	case config.IsolationBwrap:
+		return "bwrap sessions"
+	case config.IsolationSandboxExec:
+		return "sandbox-exec sessions"
+	default:
+		return string(mode) + " sessions"
+	}
+}
+
+// RenderError returns the error string shown when Exceeded is true and
+// --ignore-concurrency-cap was NOT passed.
+//
+// Replaces container.FormatExceededError (internal/container/concurrency.go)
+// and the inline strings.Builder block at cmd/concurrency.go for bwrap/sandbox-exec.
+func (s CapStatus) RenderError() string {
+	noun := modeNoun(s.Mode)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "error: prism concurrency cap reached (%d %s already in flight)\n", s.Count, noun)
+	if len(s.InFlight) > 0 {
+		sb.WriteString("\nActive ")
+		sb.WriteString(noun)
+		sb.WriteString(":\n")
+		for _, sess := range s.InFlight {
+			fmt.Fprintf(&sb, "  %-40s (%s)\n", sess.Name, sess.Role)
+		}
+	}
+	sb.WriteString("\nHint: wait for a worker to finish and be cleaned up, or re-run with\n")
+	sb.WriteString("      --ignore-concurrency-cap to bypass this guard.")
+	return sb.String()
+}
+
+// RenderWarning returns the warning string shown when Exceeded is true and
+// --ignore-concurrency-cap WAS passed.
+//
+// Replaces container.FormatExceededWarning and the inline strings.Builder
+// blocks in cmd/concurrency.go for bwrap/sandbox-exec.
+func (s CapStatus) RenderWarning() string {
+	noun := modeNoun(s.Mode)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[prism] warning: concurrency cap exceeded (%d/%d %s in flight) — proceeding because --ignore-concurrency-cap was passed\n", s.Count, s.Limit, noun)
+	if len(s.InFlight) > 0 {
+		sb.WriteString("[prism] in-flight ")
+		sb.WriteString(noun)
+		sb.WriteString(":\n")
+		for _, sess := range s.InFlight {
+			fmt.Fprintf(&sb, "[prism]   %-40s (%s)\n", sess.Name, sess.Role)
+		}
+	}
+	return sb.String()
+}
+
+// Check applies the --ignore-concurrency-cap policy to the CapStatus.
+//
+// If Note is non-empty, it is written to stderr as a warning first.
+// If Exceeded is false (or Limit == 0), nil is returned.
+// If Exceeded is true and ignoreCap is false, returns a non-nil error with
+// the RenderError message.
+// If Exceeded is true and ignoreCap is true, writes the RenderWarning message
+// to stderr and returns nil.
+//
+// This is the unified entry point that replaces the per-mode cap-check
+// helpers in cmd/concurrency.go. Call sites become:
+//
+//	if err := iso.Cap(ctx, dbPath()).Check(ignoreCap); err != nil { return err }
+func (s CapStatus) Check(ignoreCap bool) error {
+	if s.Note != "" {
+		fmt.Fprintf(os.Stderr, "[prism] warning: %s\n", s.Note)
+	}
+	if !s.Exceeded {
+		return nil
+	}
+	if ignoreCap {
+		fmt.Fprint(os.Stderr, s.RenderWarning())
+		return nil
+	}
+	return fmt.Errorf("%s", s.RenderError())
+}
+
+// dbSessionsForMode opens the DB at dbPath, counts active sessions for the
+// given mode, fetches the session list, and returns a slice of InFlightSession.
+// Non-fatal: on DB error returns (nil, nil, warning string).
+func dbSessionsForMode(dbPath string, mode config.IsolationMode) (count int, sessions []InFlightSession, note string) {
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return 0, nil, fmt.Sprintf("could not open DB for %s cap check: %v", mode, err)
+	}
+	defer d.Close()
+
+	n, err := d.ActiveSessionCountForMode(string(mode))
+	if err != nil {
+		return 0, nil, fmt.Sprintf("could not count active %s sessions: %v", mode, err)
+	}
+
+	rows, listErr := d.ActiveSessionsForMode(string(mode))
+	if listErr != nil {
+		// Count succeeded but listing failed — return count with empty list.
+		return n, nil, ""
+	}
+
+	var inFlight []InFlightSession
+	for _, s := range rows {
+		inFlight = append(inFlight, InFlightSession{
+			Name: s.SessionName,
+			Role: roleFor(s.SessionName, s.RootAgentName),
+		})
+	}
+	return n, inFlight, ""
 }
 
 // SidecarFlagOpts carries the per-spawn inputs that SidecarFlags consumes.
@@ -148,18 +261,27 @@ func (p *podmanIsolator) Available() error {
 	return CheckAvailability()
 }
 
-// Cap is unimplemented for podman — the existing caller still uses
-// checkConcurrencyCap directly via cmd/concurrency.go. The unified message
-// rendering is the deliverable of A.3 (issue #1132); A.1.D2 leaves the
-// per-mode message-building functions in place and only collapses the
-// dispatch.
+// Cap probes the podman concurrency cap by merging DB-active sessions with
+// live podman ps output. Sets Note when podman ps fails so Check can emit
+// the "podman ps failed — using DB-only count (may be imprecise)" warning.
 //
-// Returning a zero-value CapStatus is correct here because A1.D2's call sites
-// (cmd/spawn.go:268, cmd/pr.go:90, cmd/review.go:191) already short-circuit
-// when isoCaps.IsContainer is false; for podman they continue calling the
-// existing checkConcurrencyCap helper.
-func (p *podmanIsolator) Cap(in CapInputs) CapStatus {
-	return CapStatus{}
+// Limit is DefaultConcurrencyCap (6).
+func (p *podmanIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
+	inFlight, podmanFailed := ListInFlight(dbPath, nil)
+	limit := DefaultConcurrencyCap
+	count := len(inFlight)
+	note := ""
+	if podmanFailed {
+		note = "podman ps failed — concurrency check is using DB-only count (may be imprecise)"
+	}
+	return CapStatus{
+		Mode:     config.IsolationPodman,
+		Limit:    limit,
+		Count:    count,
+		Exceeded: count >= limit,
+		InFlight: inFlight,
+		Note:     note,
+	}
 }
 
 // WriteHarnessConfigBlob writes the harness config blob to the deterministic
@@ -249,11 +371,26 @@ func (b *bwrapIsolator) Available() error {
 	return nil
 }
 
-// Cap is unimplemented for bwrap — see podmanIsolator.Cap for the rationale.
-// The existing checkBwrapConcurrencyCap helper in cmd/concurrency.go remains
-// the source of truth until A.3 (#1132) unifies the message rendering.
-func (b *bwrapIsolator) Cap(in CapInputs) CapStatus {
-	return CapStatus{}
+// Cap probes the bwrap concurrency cap from the DB only. Reads the cap value
+// from config.Load().BwrapConcurrencyCap; returns CapStatus{Limit: 0} when
+// the cap is configured to 0 (uncapped sentinel).
+//
+// Calls db.ActiveSessionCountForMode("bwrap") and
+// db.ActiveSessionsForMode("bwrap").
+func (b *bwrapIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
+	limit := config.Load().BwrapConcurrencyCap
+	if limit == 0 {
+		return CapStatus{Mode: config.IsolationBwrap, Limit: 0}
+	}
+	count, inFlight, note := dbSessionsForMode(dbPath, config.IsolationBwrap)
+	return CapStatus{
+		Mode:     config.IsolationBwrap,
+		Limit:    limit,
+		Count:    count,
+		Exceeded: count >= limit,
+		InFlight: inFlight,
+		Note:     note,
+	}
 }
 
 // WriteHarnessConfigBlob writes the opencode.json config blob to the
@@ -321,11 +458,26 @@ func (s *sandboxExecIsolator) Available() error {
 	return nil
 }
 
-// Cap is unimplemented for sandbox-exec — see podmanIsolator.Cap for the
-// rationale. The existing checkSandboxExecConcurrencyCap helper in
-// cmd/concurrency.go remains the source of truth until A.3 (#1132).
-func (s *sandboxExecIsolator) Cap(in CapInputs) CapStatus {
-	return CapStatus{}
+// Cap probes the sandbox-exec concurrency cap from the DB only. Reads the cap
+// value from config.Load().SandboxExecConcurrencyCap; returns CapStatus{Limit:
+// 0} when the cap is configured to 0 (uncapped sentinel).
+//
+// Calls db.ActiveSessionCountForMode("sandbox-exec") and
+// db.ActiveSessionsForMode("sandbox-exec").
+func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
+	limit := config.Load().SandboxExecConcurrencyCap
+	if limit == 0 {
+		return CapStatus{Mode: config.IsolationSandboxExec, Limit: 0}
+	}
+	count, inFlight, note := dbSessionsForMode(dbPath, config.IsolationSandboxExec)
+	return CapStatus{
+		Mode:     config.IsolationSandboxExec,
+		Limit:    limit,
+		Count:    count,
+		Exceeded: count >= limit,
+		InFlight: inFlight,
+		Note:     note,
+	}
 }
 
 // WriteHarnessConfigBlob writes the opencode.json config blob to the
@@ -384,10 +536,10 @@ func (h *hostIsolator) Available() error {
 	return nil
 }
 
-// Cap is always a zero-value pass for host mode (no concurrency cap applies
-// — host sessions consume neither container slots nor sandbox slots).
-func (h *hostIsolator) Cap(in CapInputs) CapStatus {
-	return CapStatus{}
+// Cap always returns an uncapped CapStatus for host mode (no concurrency cap
+// applies — host sessions consume neither container slots nor sandbox slots).
+func (h *hostIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
+	return CapStatus{Mode: config.IsolationHost, Limit: 0}
 }
 
 // WriteHarnessConfigBlob is a no-op for host mode: opencode reads

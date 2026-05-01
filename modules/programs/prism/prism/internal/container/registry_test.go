@@ -268,32 +268,6 @@ func TestResolve_IsolationFlagTakesPrecedence(t *testing.T) {
 	}
 }
 
-func TestResolve_HostModeFlag_MapsToHost(t *testing.T) {
-	mode, err := Resolve(ResolveInput{
-		HostModeFlag:        true,
-		HostModeFlagChanged: true,
-		ConfigDefault:       config.IsolationPodman,
-	})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v", err)
-	}
-	if mode != config.IsolationHost {
-		t.Errorf("mode = %q, want %q", mode, config.IsolationHost)
-	}
-}
-
-func TestResolve_BothFlags_ReturnsError(t *testing.T) {
-	_, err := Resolve(ResolveInput{
-		IsolationFlag:        "bwrap",
-		IsolationFlagChanged: true,
-		HostModeFlag:         true,
-		HostModeFlagChanged:  true,
-	})
-	if err == nil {
-		t.Fatal("expected error when both --isolation and --host-mode are set")
-	}
-}
-
 func TestResolve_DBIsolationMode_UsedWhenFlagsAbsent(t *testing.T) {
 	mode, err := Resolve(ResolveInput{
 		DBIsolationMode: "bwrap",
@@ -304,19 +278,6 @@ func TestResolve_DBIsolationMode_UsedWhenFlagsAbsent(t *testing.T) {
 	}
 	if mode != config.IsolationBwrap {
 		t.Errorf("mode = %q, want %q", mode, config.IsolationBwrap)
-	}
-}
-
-func TestResolve_DBHostMode_MapsToHost(t *testing.T) {
-	mode, err := Resolve(ResolveInput{
-		DBHostMode:    true,
-		ConfigDefault: config.IsolationPodman,
-	})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v", err)
-	}
-	if mode != config.IsolationHost {
-		t.Errorf("mode = %q, want %q", mode, config.IsolationHost)
 	}
 }
 

@@ -140,14 +140,27 @@ type Isolator interface {
 	Available() error
 
 	// Cap returns the soft concurrency-cap descriptor for this isolator.
-	// The existing per-mode helpers in cmd/concurrency.go remain the source
-	// of truth for message rendering until A.3 (#1132) unifies them; today
-	// every implementation returns a zero-value CapStatus. The method exists
-	// so callers can route through registry.For(mode).Cap(...) without
-	// branching on the literal mode value.
-	// Cites: cmd/concurrency.go:35-57 (podman), :72-140 (sandbox-exec),
-	//        :155-223 (bwrap).
-	Cap(in CapInputs) CapStatus
+	// It is the unified replacement for cmd/concurrency.go's parallel
+	// checkConcurrencyCap (podman), checkBwrapConcurrencyCap (bwrap), and
+	// checkSandboxExecConcurrencyCap (sandbox-exec) functions.
+	//
+	// dbPath is the path to prism.db; the implementation uses it to count
+	// active sessions of this isolation mode, may merge with a live process
+	// probe (podman), or may ignore it entirely (host: uncapped).
+	//
+	// The returned CapStatus carries the count, limit, exceeded flag, the
+	// in-flight session list (for inclusion in the user-facing message), and
+	// any per-mode probe-failure context. The caller uses CapStatus.Check(...)
+	// to apply the --ignore-concurrency-cap policy.
+	//
+	// Reads Status.IsolationMode directly (NOT Status.EffectiveIsolationMode())
+	// for forward-compatibility with A4.PE's removal.
+	//
+	// Implementations must NOT have side effects: Cap is called speculatively
+	// before any worktree, DB row, or tmux session is created.
+	//
+	// Cites: cmd/concurrency.go (podman, bwrap, sandbox-exec per-mode helpers).
+	Cap(ctx context.Context, dbPath string) CapStatus
 
 	// WriteHarnessConfigBlob writes the harness configuration blob (the
 	// role-specific opencode.json) to the deterministic per-session temp

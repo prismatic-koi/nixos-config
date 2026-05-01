@@ -25,7 +25,7 @@
     # profiles.json under container_worker_config / container_coordinator_config.
     # The Go CLI reads those keys and passes the appropriate blob to the sidecar
     # as --config-content, which writes it to a temp file and mounts it as
-    # /root/.config/opencode/opencode.json inside the container.
+    # ~/.config/opencode/opencode.json inside the container.
     nx.programs.prism.opencode.containerWorkerConfigJson = lib.mkOption {
       type = lib.types.str;
       default = "";
@@ -296,6 +296,9 @@
         "gh issue close *" = "allow";
         "gh issue edit *" = "allow";
         "gh issue comment *" = "allow";
+        "gh issue list" = "allow";
+        "gh issue list *" = "allow";
+        "gh issue view *" = "allow";
         # nix build validation (read-only result)
         "nix build *" = "allow";
         # system switch — requires sudo, will be caught by permission prompt
@@ -362,7 +365,7 @@
           On PASS: non-blocking observations MAY be actioned if they align with repo conventions or add defence-in-depth at low cost. You are NOT required to action them — shipping the PR is not gated on non-blocking observations.
           If no review-complete prompt arrives within 30 minutes, investigate with `prism checkin <session>~review-<N>-review-goal`.
           After 3 full review cycles without convergence, stop and escalate — do not run a 4th cycle.
-          Invoke `@review-goal`, `@review-code`, `@review-security`, `@review-qa`, and `@review-context` as parallel Task calls (all five in a single response) as a fallback when `prism review` is unavailable.
+          Invoke `@review-goal-subagent`, `@review-code-subagent`, `@review-security-subagent`, `@review-qa-subagent`, and `@review-context-subagent` as parallel Task calls (all five in a single response) as a fallback when `prism review` is unavailable.
           **This fallback is for worker and spawned sessions only. Review agents must never follow it — they must never spawn further review sessions of any kind.**
           **Coordinator agents must not call `prism review` or this fallback directly — use `prism pr <number> --prompt 'review this PR'` instead (see coordinator agent instructions).**
 
@@ -561,7 +564,7 @@
       ];
 
       # Relative paths resolve from the opencode.json config file location
-      # (/root/.config/opencode/) where the plugins/ directory is mounted.
+      # (~/.config/opencode/) where the plugins/ directory is mounted.
       containerPlugins = [
         "opencode-claude-auth@latest"
         "./plugins/prism-hooks.ts"
@@ -627,7 +630,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -770,7 +773,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -1075,7 +1078,7 @@
             atlasian = {
               type = "local";
               enabled = true;
-              command = [ "/root/.config/opencode/mcp-atlassian-slim-proxy.mjs" ];
+              command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
               environment = {
                 ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
               };

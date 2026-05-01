@@ -33,7 +33,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
-	"github.com/prismatic-koi/prism/internal/piexport"
+	"github.com/prismatic-koi/prism/internal/harness"
+	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -229,7 +230,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
 			review.CleanupReviewSessionsForParent(d, m.session)
-			if !hostModeFromDB(d, m.session) {
+			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
@@ -388,11 +389,25 @@ var cleanupCmd = &cobra.Command{
 		// supported in the headless (--yes) path; interactive cleanup needs a
 		// real worktree to display info.
 		if worktreePath == "" {
-			if yesFlag {
-				fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+			// Primary lookup failed (tmux gone, DB path missing or not on
+			// disk).  Attempt a filesystem probe at the conventional location
+			// <bare-root>/<branch>/ before giving up.
+			probed, probedBareRoot := probeConventionalWorktreePath(session, worktreeName)
+			if probed != "" {
+				worktreePath = probed
+			} else if yesFlag {
+				if probedBareRoot != "" {
+					// We know where the worktree *should* be but it isn't
+					// there — log an actionable message and continue.
+					fmt.Fprintf(os.Stderr, "[prism] warning: worktree not found at conventional path %s — skipping worktree removal\n",
+						filepath.Join(probedBareRoot, worktreeName))
+				} else {
+					fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+				}
 				return headlessCleanup(session, worktreeName, "", "")
+			} else {
+				return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 			}
-			return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 		}
 
 		bareRoot := git.BareRoot(worktreePath)
@@ -511,7 +526,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -580,7 +595,7 @@ func closeSession(session string) error {
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -657,7 +672,7 @@ func headlessCloseSession(session string) error {
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -758,7 +773,44 @@ func worktreePathFromSession(session string) string {
 	return ""
 }
 
-// runSessionArchive performs the opencode-storage copy for the session identified by
+// probeConventionalWorktreePath attempts to locate a worktree for the given
+// session at the conventional bare-root layout location: <bare-root>/<branch>/.
+//
+// It derives the bare-root hint from the DB row's worktree_path column (using
+// the parent directory of the stored path, even if that path no longer exists
+// on disk).  This handles the case where the session died before its worktree
+// was visible to the normal worktreePathFromSession lookup (e.g. the stored
+// path points at a now-deleted directory, but the worktree was re-created at
+// the conventional sibling location).
+//
+// Return values:
+//   - (probed, bareRoot) where probed is non-empty when a worktree was found at
+//     the conventional location, and bareRoot is non-empty whenever we could
+//     derive a candidate bare-root from the DB (even when the probe failed).
+//   - ("", "") when there is no DB row or the row contains no worktree path.
+func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, bareRoot string) {
+	d, err := openDB()
+	if err != nil {
+		return "", ""
+	}
+	defer d.Close()
+	status, err := d.CurrentStatus(session)
+	if err != nil || status == nil || status.Worktree == "" {
+		return "", ""
+	}
+	// Derive the bare-root as the parent of the stored worktree path.
+	// E.g. if the DB contains "/code/nixos-config/sandbox-exec-smoke", the
+	// bare root is "/code/nixos-config" and we probe
+	// "/code/nixos-config/<worktreeName>/.git".
+	candidateBareRoot := filepath.Dir(status.Worktree)
+	candidate := filepath.Join(candidateBareRoot, worktreeName)
+	if _, statErr := os.Stat(filepath.Join(candidate, ".git")); statErr == nil {
+		return candidate, candidateBareRoot
+	}
+	return "", candidateBareRoot
+}
+
+// runSessionArchive performs the harness-storage copy for the session identified by
 // instanceID using the already-open DB d and the agent_status isolation mode
 // from statusIsolationMode. It is called after UpdateSessionEnded so the
 // sessions row has ended_at and end_state populated.
@@ -772,6 +824,8 @@ func worktreePathFromSession(session string) string {
 //     to exit non-zero when the archive directory already exists on a re-run.
 //   - Other errors are treated as non-fatal (logged + cleanup continues).
 //
+// Sessions with an unknown harness (no adapter registered) return a clear error
+// and are skipped (AC: edge-case — unknown harness); returns nil.
 // Sessions with unknown or unsupported isolation modes log a clear warning and
 // are skipped (AC: edge-case — unknown isolation mode); returns nil.
 func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
@@ -802,6 +856,33 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		return nil
 	}
 
+	// Resolve the archive adapter for the session's harness. A missing or
+	// unregistered harness is a clear error (not a nil-pointer panic).
+	archiveAdapter, adapterErr := harness.ArchiveAdapterFor(sess.Harness)
+	if adapterErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — %v\n", sessionName, adapterErr)
+		return nil
+	}
+
+	// Resolve source path (harness-specific storage root) via the adapter.
+	ctx := context.Background()
+	srcParams := harnessarchive.SourceParams{
+		SessionName:   sessionName,
+		InstanceID:    instanceID,
+		IsolationMode: statusIsolationMode,
+	}
+	if sess.HarnessSessionID != nil {
+		srcParams.HarnessSessionID = *sess.HarnessSessionID
+	}
+	srcPath, srcErr := archiveAdapter.SourcePath(srcParams)
+	if srcErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
+		return nil
+	}
+
+	// Resolve harness version via the adapter (replaces archive.HarnessVersion()).
+	harnessVersion, _ := archiveAdapter.Version(ctx)
+
 	// Build archive params from DB fields.
 	params := archive.Params{
 		InstanceID:     sess.InstanceID,
@@ -813,7 +894,14 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		EndedAt:        time.Now(), // EndedAt was just set in DB; use now as fallback
 		IsolationMode:  statusIsolationMode,
 		PrismVersion:   archive.PrismGitSHA(),
-		HarnessVersion: archive.HarnessVersion(),
+		HarnessVersion: harnessVersion,
+		StorageRoot:    srcPath,
+		// Copier delegates the harness-specific file-copy to the adapter's Archive
+		// method. This removes the hard-coded opencode copySessionFiles call from
+		// archive.Run and allows any registered harness to provide its own copy logic.
+		Copier: func(copyCtx context.Context, rawDir string) error {
+			return archiveAdapter.Archive(copyCtx, srcPath, rawDir, srcParams)
+		},
 	}
 	if sess.AgentRole != nil {
 		params.AgentRole = *sess.AgentRole
@@ -832,6 +920,8 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 			fmt.Fprintf(os.Stderr, "[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
 		} else if sid != "" {
 			params.HarnessSessionID = sid
+			// Also update srcParams so the Copier closure uses the resolved ID.
+			srcParams.HarnessSessionID = sid
 		}
 	}
 	if sess.GroupID != nil {
@@ -846,29 +936,16 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if sess.PrismVersion != nil {
 		params.PrismVersion = *sess.PrismVersion
 	}
-	// D6 (issue #1133): pre-resolve the per-mode storage root and extra-file
-	// set via the registered Isolator, then pass them in via params. This
-	// keeps the per-mode dispatch out of the archive package (which cannot
-	// import internal/container without a circular dependency). When
-	// statusIsolationMode is empty or unregistered, params.StorageRoot is
-	// left empty and archive.resolveStorageRoot falls back to the legacy
-	// IsolationMode-keyed switch — matching the pre-refactor behaviour.
-	//
-	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface). Once that
-	// lands, the archive-side resolution moves to ArchiveAdapter.
+
+	// Pre-resolve extra files (e.g. agent-run.log for bwrap/sandbox-exec) via
+	// the container isolator registry. This path pre-dates #1142 and is kept
+	// as-is: the isolator's ExtraFiles are harness-agnostic filesystem paths
+	// that complement the harness adapter's storage root resolution.
 	if statusIsolationMode != "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
 			if iso, isoErr := container.For(config.IsolationMode(statusIsolationMode), container.ConstructorOpts{Name: sessionName}); isoErr == nil {
 				ap := iso.ArchivePaths(home, sessionName)
-				if params.StorageRoot == "" {
-					params.StorageRoot = ap.StorageRoot
-				}
 				if params.AgentRunLogPath == "" && len(ap.ExtraFiles) > 0 {
-					// Today ExtraFiles for bwrap / sandbox-exec contains a
-					// single agent-run.log path; archive's manifest schema
-					// has a dedicated AgentRunLogPath field that we
-					// continue to populate. Once #1142 lands the archive
-					// package will consume ExtraFiles directly.
 					params.AgentRunLogPath = ap.ExtraFiles[0]
 				}
 			}
@@ -894,10 +971,10 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
 
-	// Translate the raw archive to pi-mono v3 JSONL. Failure is non-fatal:
-	// the raw archive remains intact for re-translation later.
-	if translateErr := piexport.Translate(archivePath); translateErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, translateErr)
+	// Translate the raw archive via the adapter's Export method.
+	// Failure is non-fatal: the raw archive remains intact for re-translation later.
+	if exportErr := archiveAdapter.Export(ctx, archivePath, srcParams); exportErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, exportErr)
 	}
 
 	return nil
@@ -921,26 +998,15 @@ func instanceIDFromStatus(d *db.DB, sessionName string) string {
 	return *status.InstanceID
 }
 
-// hostModeFromDB queries the already-open database d and returns true when
-// the agent_status row for sessionName has host_mode = 1. Returns false when
-// the row is missing, host_mode is NULL (pre-migration), or on any error.
-func hostModeFromDB(d *db.DB, sessionName string) bool {
-	status, err := d.CurrentStatus(sessionName)
-	if err != nil || status == nil {
-		return false
-	}
-	return status.HostMode
-}
-
 // isolationModeFromDB queries the already-open database d and returns the
-// effective isolation mode for sessionName using Status.EffectiveIsolationMode.
+// isolation mode for sessionName by reading Status.IsolationMode directly.
 // Returns "" when the row is missing or on any error.
 func isolationModeFromDB(d *db.DB, sessionName string) string {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
 		return ""
 	}
-	return status.EffectiveIsolationMode()
+	return status.IsolationMode
 }
 
 // stopAndRemoveChildContainers stops and removes podman containers for all

@@ -13,11 +13,23 @@ buildGoModule {
 
   vendorHash = "sha256-tU+rnXKz3ALl7pJx7GYTo1hdr3CFMQS4Ih3UYLr4v54=";
 
-  ldflags = [
-    "-s"
-    "-w"
-    "-X github.com/prismatic-koi/prism/internal/tmux.TmuxBin=${tmux}/bin/tmux"
-  ];
+  # reviewGoSHA is the SHA-256 of internal/review/review.go, computed at
+  # build time via builtins.hashFile so it is content-addressed and changes
+  # whenever the file changes (C.4.PT, issue #1148). The first 12 characters
+  # mirror the git short-SHA convention: short enough to be human-readable,
+  # long enough to be unambiguous in practice.
+  ldflags =
+    let
+      reviewGoHash = builtins.hashFile "sha256" ../modules/programs/prism/prism/internal/review/review.go;
+    in
+    [
+      "-s"
+      "-w"
+      "-X github.com/prismatic-koi/prism/internal/tmux.TmuxBin=${tmux}/bin/tmux"
+      "-X github.com/prismatic-koi/prism/internal/review.reviewGoSHA=${
+        builtins.substring 0 12 reviewGoHash
+      }"
+    ];
 
   # tmux is NOT in nativeCheckInputs.
   #

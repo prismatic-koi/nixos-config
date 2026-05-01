@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=24 (all migrations applied on Open).
+	// Verify schema_version=25 (all migrations applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version: got %d, want 26", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -1018,8 +1018,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1093,8 +1093,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1594,8 +1594,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1660,8 +1660,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1671,9 +1671,9 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if s == nil {
 		t.Fatal("CurrentStatus: got nil, want existing row")
 	}
-	// host_mode should default to false for migrated rows.
-	if s.HostMode {
-		t.Errorf("HostMode: got true, want false (default for migrated rows)")
+	// host_mode column no longer exists; isolation_mode is set by v22→v23 backfill.
+	if s.IsolationMode == "" {
+		t.Errorf("IsolationMode: got empty, want non-empty (backfilled for migrated rows)")
 	}
 	if s.AgentName == nil || *s.AgentName != "worker" {
 		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
@@ -1730,8 +1730,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1825,8 +1825,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1918,8 +1918,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2113,53 +2113,6 @@ func TestUpdateHarnessSessionID_NoopWhenNoRow(t *testing.T) {
 	// Must not error when no row exists.
 	if err := d.UpdateHarnessSessionID("nonexistent@branch", "some-sid"); err != nil {
 		t.Errorf("UpdateHarnessSessionID on non-existent session: %v (want nil)", err)
-	}
-}
-
-// TestSetHostMode verifies that SetHostMode sets and clears the host_mode flag.
-func TestSetHostMode(t *testing.T) {
-	d := openTestDB(t)
-
-	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "idle", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus: %v", err)
-	}
-
-	// Initially host_mode should be false.
-	s, err := d.CurrentStatus("repo@main")
-	if err != nil {
-		t.Fatalf("CurrentStatus: %v", err)
-	}
-	if s.HostMode {
-		t.Error("HostMode: got true initially, want false")
-	}
-
-	// Set host_mode to true.
-	if err := d.SetHostMode("repo@main", true); err != nil {
-		t.Fatalf("SetHostMode(true): %v", err)
-	}
-	s2, err := d.CurrentStatus("repo@main")
-	if err != nil {
-		t.Fatalf("CurrentStatus after SetHostMode(true): %v", err)
-	}
-	if !s2.HostMode {
-		t.Error("HostMode: got false after SetHostMode(true), want true")
-	}
-
-	// Set host_mode back to false.
-	if err := d.SetHostMode("repo@main", false); err != nil {
-		t.Fatalf("SetHostMode(false): %v", err)
-	}
-	s3, err := d.CurrentStatus("repo@main")
-	if err != nil {
-		t.Fatalf("CurrentStatus after SetHostMode(false): %v", err)
-	}
-	if s3.HostMode {
-		t.Error("HostMode: got true after SetHostMode(false), want false")
-	}
-
-	// SetHostMode on a non-existent session should be a no-op (not an error).
-	if err := d.SetHostMode("repo@nonexistent", true); err != nil {
-		t.Fatalf("SetHostMode on nonexistent session: %v", err)
 	}
 }
 
@@ -2502,8 +2455,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2591,8 +2544,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// isolation_mode column must exist and be backfilled by v22→v23.
@@ -2620,10 +2573,6 @@ func TestMigration_V9ToV10(t *testing.T) {
 	// (host_mode=0 default → 'podman').
 	if s.IsolationMode != "podman" {
 		t.Errorf("IsolationMode: got %q, want %q (backfilled by v22→v23)", s.IsolationMode, "podman")
-	}
-	// EffectiveIsolationMode returns 'podman' (now from the populated field).
-	if s.EffectiveIsolationMode() != "podman" {
-		t.Errorf("EffectiveIsolationMode: got %q, want %q", s.EffectiveIsolationMode(), "podman")
 	}
 }
 
@@ -2827,6 +2776,61 @@ func TestGroupResults(t *testing.T) {
 	}
 	if codeResult.LastMessage != "" {
 		t.Errorf("code LastMessage: got %q, want \"\" (no msg_assistant)", codeResult.LastMessage)
+	}
+}
+
+// TestGroupResults_StartupError verifies that GroupResults populates StartupError
+// from the startup_error event written by writeStartupError when a container
+// fails to start (#1222).
+func TestGroupResults_StartupError(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	noStartSession := "nixos-config@feature~review-1-review-code"
+	if err := d.UpsertStatus(noStartSession, "nixos-config", "/wt", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %s: %v", noStartSession, err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+		groupID, noStartSession,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("set group_id for %s: %v", noStartSession, err)
+	}
+
+	// Write the startup_error event that writeStartupError emits.
+	const startupReason = "opencode: health check timed out after 60s on port 14004"
+	if err := d.WriteEvent(db.Event{
+		ID:          "evt-startup-err-1",
+		SessionName: noStartSession,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "startup_error",
+		Payload:     `{"reason":"` + startupReason + `"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent startup_error: %v", err)
+	}
+
+	results, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	r, ok := results[noStartSession]
+	if !ok {
+		t.Fatalf("GroupResults: missing entry for %q", noStartSession)
+	}
+	if r.State != "error" {
+		t.Errorf("StartupError test: State = %q, want \"error\"", r.State)
+	}
+	if r.StartupError != startupReason {
+		t.Errorf("StartupError = %q, want %q", r.StartupError, startupReason)
+	}
+	if r.LastMessage != "" {
+		t.Errorf("LastMessage = %q, want \"\" (no msg_assistant written)", r.LastMessage)
 	}
 }
 
@@ -4196,8 +4200,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// Check each row.
@@ -4624,8 +4628,8 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4899,8 +4903,8 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -5120,8 +5124,8 @@ func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// sessions table must exist.
@@ -5274,8 +5278,8 @@ func TestMigration_V15ToV16_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 }
 
@@ -5828,8 +5832,8 @@ func TestMigration_V17ToV18_BackfillsStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// iid-has-events: started_at must be updated to 1600000000000 (min event ts).
@@ -5886,8 +5890,8 @@ func TestMigration_V17ToV18_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 
 	// iid-has-events should still have the corrected timestamp.
@@ -6188,8 +6192,8 @@ func TestMigration_V20ToV21_BackfillsHarnessSessionID(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// iid-with-sid: harness_session_id must have been backfilled.
@@ -6250,8 +6254,8 @@ func TestMigration_V20ToV21_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 
 	// iid-with-sid must still have the backfilled value.
@@ -6409,8 +6413,8 @@ func TestMigration_V21ToV22_BackfillsZeroStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// iid-zero-has-events: started_at must be updated to the minimum event ts.
@@ -6463,8 +6467,8 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 
 	var startedAt int64
@@ -6617,8 +6621,8 @@ func TestMigration_V22ToV23_BackfillsIsolationMode(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// host-null: host_mode=1, was NULL → must now be 'host'.
@@ -6690,8 +6694,8 @@ func TestMigration_V22ToV23_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 
 	// Values must be stable after a second open.
@@ -6810,7 +6814,7 @@ func seedV23DB(t *testing.T, dbPath string) {
 //  1. Drops sessions.outcome_summary from a DB that has it.
 //  2. Creates the spawn_outcome table with the expected columns.
 //  3. Preserves all existing sessions rows (the data is not lost).
-//  4. Sets schema_version = 24.
+//  4. Sets schema_version = 26.
 func TestMigration_V23ToV24_DropsOutcomeSummaryAndCreatesSpawnOutcome(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v23_spawn_outcome.db")
 	seedV23DB(t, dbPath)
@@ -6821,13 +6825,13 @@ func TestMigration_V23ToV24_DropsOutcomeSummaryAndCreatesSpawnOutcome(t *testing
 	}
 	defer d.Close()
 
-	// schema_version must be 24.
+	// schema_version must be 25.
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after migration: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after migration: got %d, want 26", version)
 	}
 
 	// outcome_summary column must no longer exist on sessions.
@@ -6880,8 +6884,8 @@ func TestMigration_V23ToV24_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 24 {
-		t.Errorf("schema_version after second open: got %d, want 24", version)
+	if version != 26 {
+		t.Errorf("schema_version after second open: got %d, want 26", version)
 	}
 
 	// spawn_outcome must still exist.
@@ -6964,26 +6968,25 @@ func TestWriteSpawnOutcome_NoSession(t *testing.T) {
 	}
 }
 
-// ── ActiveSandboxExecSessionCount / ActiveSandboxExecSessions ────────────────
+// ── ActiveSessionCountForMode / ActiveSessionsForMode ────────────────────────
 
-// TestActiveSandboxExecSessionCount_Empty verifies the count is 0 on a fresh DB.
-func TestActiveSandboxExecSessionCount_Empty(t *testing.T) {
+// TestActiveSessionCountForMode_Empty verifies the count is 0 on a fresh DB.
+func TestActiveSessionCountForMode_Empty(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 0 {
 		t.Errorf("count = %d, want 0 on empty DB", count)
 	}
 }
 
-// TestActiveSandboxExecSessionCount_OnlySandboxExec verifies that only
-// sandbox-exec sessions (isolation_mode = 'sandbox-exec', ended_at IS NULL)
-// are counted.
-func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
+// TestActiveSessionCountForMode_OnlyMatchingMode verifies that only sessions
+// matching the given mode (isolation_mode = mode, ended_at IS NULL) are counted.
+func TestActiveSessionCountForMode_OnlyMatchingMode(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -6995,7 +6998,7 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode sandbox-exec: %v", err)
 	}
 
-	// Insert a bwrap session (should not be counted).
+	// Insert a bwrap session (should not be counted for sandbox-exec).
 	if err := d.UpsertStatus("repo@bwrap1", "repo", "/code/repo/bwrap1", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus bwrap: %v", err)
 	}
@@ -7003,7 +7006,7 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode bwrap: %v", err)
 	}
 
-	// Insert a podman session (should not be counted).
+	// Insert a podman session (should not be counted for sandbox-exec).
 	if err := d.UpsertStatus("repo@podman1", "repo", "/code/repo/podman1", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus podman: %v", err)
 	}
@@ -7011,18 +7014,27 @@ func TestActiveSandboxExecSessionCount_OnlySandboxExec(t *testing.T) {
 		t.Fatalf("SetIsolationMode podman: %v", err)
 	}
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1 (only the sandbox-exec session)", count)
 	}
+
+	// Also verify bwrap count is 1.
+	bwrapCount, err := d.ActiveSessionCountForMode("bwrap")
+	if err != nil {
+		t.Fatalf("ActiveSessionCountForMode bwrap: %v", err)
+	}
+	if bwrapCount != 1 {
+		t.Errorf("bwrap count = %d, want 1", bwrapCount)
+	}
 }
 
-// TestActiveSandboxExecSessionCount_EndedNotCounted verifies that ended
-// sandbox-exec sessions (ended_at IS NOT NULL) are excluded from the count.
-func TestActiveSandboxExecSessionCount_EndedNotCounted(t *testing.T) {
+// TestActiveSessionCountForMode_EndedNotCounted verifies that ended sessions
+// (ended_at IS NOT NULL) are excluded from the count.
+func TestActiveSessionCountForMode_EndedNotCounted(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -7045,18 +7057,18 @@ func TestActiveSandboxExecSessionCount_EndedNotCounted(t *testing.T) {
 		t.Fatalf("SetEnded: %v", err)
 	}
 
-	count, err := d.ActiveSandboxExecSessionCount()
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessionCount: %v", err)
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
 	}
 	if count != 1 {
 		t.Errorf("count = %d, want 1 (ended session must not be counted)", count)
 	}
 }
 
-// TestActiveSandboxExecSessions_ReturnsList verifies that ActiveSandboxExecSessions
-// returns the correct session rows for active sandbox-exec sessions.
-func TestActiveSandboxExecSessions_ReturnsList(t *testing.T) {
+// TestActiveSessionsForMode_ReturnsList verifies that ActiveSessionsForMode
+// returns the correct session rows for active sessions of the given mode.
+func TestActiveSessionsForMode_ReturnsList(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 
@@ -7078,9 +7090,9 @@ func TestActiveSandboxExecSessions_ReturnsList(t *testing.T) {
 		t.Fatalf("SetIsolationMode bwrap-x: %v", err)
 	}
 
-	sessions, err := d.ActiveSandboxExecSessions()
+	sessions, err := d.ActiveSessionsForMode("sandbox-exec")
 	if err != nil {
-		t.Fatalf("ActiveSandboxExecSessions: %v", err)
+		t.Fatalf("ActiveSessionsForMode: %v", err)
 	}
 	if len(sessions) != 2 {
 		t.Errorf("len(sessions) = %d, want 2", len(sessions))

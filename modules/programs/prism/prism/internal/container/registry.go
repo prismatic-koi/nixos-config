@@ -170,22 +170,10 @@ type ResolveInput struct {
 	// user (cobra's cmd.Flags().Changed("isolation")).
 	IsolationFlagChanged bool
 
-	// HostModeFlag is the value of the deprecated --host-mode CLI flag.
-	// Deprecated: use IsolationFlag with "host" instead.
-	HostModeFlag bool
-
-	// HostModeFlagChanged is true when --host-mode was explicitly set.
-	// Deprecated: A.4 removes this flag.
-	HostModeFlagChanged bool
-
 	// DBIsolationMode is the isolation_mode column value from an
 	// agent_status DB row. Empty string means the column was not recorded
-	// (pre-v10 rows) — fall back to DBHostMode.
+	// (pre-v10 rows).
 	DBIsolationMode string
-
-	// DBHostMode is the host_mode column value from an agent_status DB row.
-	// Deprecated: A.4 removes this column after backfilling isolation_mode.
-	DBHostMode bool
 
 	// ConfigDefault is the machine-level default from config.json
 	// (cfg.DefaultIsolationMode). Always set to a valid mode; the compiled-in
@@ -197,22 +185,13 @@ type ResolveInput struct {
 //
 // Resolution order:
 //  1. --isolation flag (explicit override, validated).
-//  2. --host-mode flag (deprecated alias for "host"). Errors if --isolation
-//     is also set.
-//  3. DB isolation_mode column (from a restored session row).
-//  4. DB host_mode column → "host" (back-compat for pre-v10 rows).
-//  5. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
+//  2. DB isolation_mode column (from a restored session row).
+//  3. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
 //
 // Cites: cmd/spawn.go:resolveIsolationMode; cmd/switch.go, cmd/pr.go,
 //
-//	cmd/review.go, cmd/restore.go (ConfigDefault path);
-//	internal/db/db.go (Status.EffectiveIsolationMode, DB back-compat path).
+//	cmd/review.go, cmd/restore.go (ConfigDefault path).
 func Resolve(input ResolveInput) (config.IsolationMode, error) {
-	// Reject simultaneous --isolation and --host-mode.
-	if input.IsolationFlagChanged && input.HostModeFlagChanged {
-		return "", fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
-	}
-
 	// 1. --isolation flag.
 	if input.IsolationFlagChanged && input.IsolationFlag != "" {
 		mode := config.IsolationMode(input.IsolationFlag)
@@ -223,22 +202,12 @@ func Resolve(input ResolveInput) (config.IsolationMode, error) {
 		return mode, nil
 	}
 
-	// 2. --host-mode (deprecated alias).
-	if input.HostModeFlagChanged && input.HostModeFlag {
-		return config.IsolationHost, nil
-	}
-
-	// 3. DB isolation_mode column (non-empty → use directly).
+	// 2. DB isolation_mode column (non-empty → use directly).
 	if input.DBIsolationMode != "" {
 		return config.IsolationMode(input.DBIsolationMode), nil
 	}
 
-	// 4. DB host_mode column → "host" (pre-v10 back-compat).
-	if input.DBHostMode {
-		return config.IsolationHost, nil
-	}
-
-	// 5. Machine-level config default (always set; compiled-in default "host").
+	// 3. Machine-level config default (always set; compiled-in default "host").
 	if input.ConfigDefault != "" {
 		return input.ConfigDefault, nil
 	}

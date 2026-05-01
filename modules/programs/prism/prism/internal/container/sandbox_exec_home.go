@@ -234,6 +234,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".mcp-auth"),
 	)
 
+	// ── .npm/ ─────────────────────────────────────────────────────────────────
+	// npx caches downloaded packages (e.g. mcp-remote) under ~/.npm/_npx/.
+	// Without this symlink, npx cannot find its cache and attempts to re-download
+	// packages, which fails due to network restrictions in the sandbox.
+	symlinkIfExists(
+		filepath.Join(home, ".npm"),
+		filepath.Join(stagingHome, ".npm"),
+	)
+
 	// ── .config/opencode/ ─────────────────────────────────────────────────────
 	// Mirror bwrap.go:438-455 allowlist. opencode.json is a generated regular
 	// file (written below), not a symlink.
@@ -540,6 +549,7 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		// images staged there; mirrors bwrap.go's --ro-bind treatment.
 		".claude":                       true, // write-through for .credentials.json
 		".mcp-auth":                     true, // MCP auth token writes
+		".npm":                          true, // npx package cache (mcp-remote et al.)
 		".config/opencode/node_modules": true, // bun may update lockfile entries during plugin load
 	}
 

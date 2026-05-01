@@ -40,9 +40,9 @@ func addPromptFlags(cmd *cobra.Command) {
 }
 
 // requirePromptInput is used by commands where a prompt is mandatory (prism
-// prompt). It calls resolvePrompt and then errors if the result is empty.
+// prompt). It calls resolvePromptWithSource and then errors if the result is empty.
 func requirePromptInput(cmd *cobra.Command) (string, error) {
-	text, err := resolvePrompt(cmd)
+	text, _, err := resolvePromptWithSource(cmd)
 	if err != nil {
 		return "", err
 	}
@@ -57,35 +57,50 @@ func requirePromptInput(cmd *cobra.Command) (string, error) {
 	return text, nil
 }
 
-// resolvePrompt reads the prompt text from whichever source was provided:
-//   - --prompt-file <path>  → read file contents
-//   - --prompt -            → read from stdin
-//   - --prompt <text>       → use text directly
+// resolvePrompt reads the prompt text from whichever source was provided.
+// It is a thin wrapper around resolvePromptWithSource for callers that do not
+// need the source discriminator.
+func resolvePrompt(cmd *cobra.Command) (string, error) {
+	text, _, err := resolvePromptWithSource(cmd)
+	return text, err
+}
+
+// resolvePromptWithSource reads the prompt text from whichever source was
+// provided and also returns the prompt_source discriminator for C.4.SRC:
+//
+//   - --prompt-file <path>  → (text, "cli-positional", nil)
+//   - --prompt -            → (text, "cli-stdin", nil)
+//   - --prompt <text>       → (text, "cli-positional", nil)
+//   - no prompt flag        → ("", "", nil)
 //
 // Note: cobra enforces mutual exclusion of --prompt and --prompt-file before
 // RunE is called, so no manual check is needed here.
 // A single trailing newline is stripped from file/stdin input to match the
 // behaviour of most Unix text tools (editors append a final newline that is
 // not part of the intended content).
-func resolvePrompt(cmd *cobra.Command) (string, error) {
+func resolvePromptWithSource(cmd *cobra.Command) (text, source string, err error) {
 	promptFile, _ := cmd.Flags().GetString("prompt-file")
 	promptText, _ := cmd.Flags().GetString("prompt")
 
 	if promptFile != "" {
-		data, err := os.ReadFile(promptFile)
-		if err != nil {
-			return "", fmt.Errorf("read prompt file %q: %w", promptFile, err)
+		data, readErr := os.ReadFile(promptFile)
+		if readErr != nil {
+			return "", "", fmt.Errorf("read prompt file %q: %w", promptFile, readErr)
 		}
-		return strings.TrimSuffix(string(data), "\n"), nil
+		return strings.TrimSuffix(string(data), "\n"), "cli-positional", nil
 	}
 
 	if promptText == "-" {
-		data, err := io.ReadAll(os.Stdin)
-		if err != nil {
-			return "", fmt.Errorf("read prompt from stdin: %w", err)
+		data, readErr := io.ReadAll(os.Stdin)
+		if readErr != nil {
+			return "", "", fmt.Errorf("read prompt from stdin: %w", readErr)
 		}
-		return strings.TrimSuffix(string(data), "\n"), nil
+		return strings.TrimSuffix(string(data), "\n"), "cli-stdin", nil
 	}
 
-	return promptText, nil
+	if promptText != "" {
+		return promptText, "cli-positional", nil
+	}
+
+	return "", "", nil
 }

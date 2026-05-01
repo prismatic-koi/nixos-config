@@ -229,14 +229,13 @@ func TestParseUnixSocketURL_ValidAndInvalid(t *testing.T) {
 // server substitutes its own repo name.
 func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	type spawnReq struct {
-		Repo     string `json:"repo"`
-		Branch   string `json:"branch"`
-		Prompt   string `json:"prompt"`
-		Agent    string `json:"agent"`
-		Profile  string `json:"profile"`
-		Model    string `json:"model"`
-		Variant  string `json:"variant"`
-		HostMode bool   `json:"host_mode"`
+		Repo    string `json:"repo"`
+		Branch  string `json:"branch"`
+		Prompt  string `json:"prompt"`
+		Agent   string `json:"agent"`
+		Profile string `json:"profile"`
+		Model   string `json:"model"`
+		Variant string `json:"variant"`
 	}
 
 	reqCh := make(chan spawnReq, 1)
@@ -268,7 +267,6 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().Bool("host-mode", false, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
 	_ = cmd.Flags().Set("agent", "worker")
@@ -276,7 +274,6 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	_ = cmd.Flags().Set("profile", "gemini-hybrid")
 	_ = cmd.Flags().Set("model", "anthropic/claude-sonnet-4-6")
 	_ = cmd.Flags().Set("variant", "high")
-	_ = cmd.Flags().Set("host-mode", "true")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -305,9 +302,6 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 		}
 		if req.Variant != "high" {
 			t.Errorf("variant = %q, want %q", req.Variant, "high")
-		}
-		if !req.HostMode {
-			t.Errorf("host_mode = false, want true")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
@@ -347,7 +341,6 @@ func TestProxySpawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().Bool("host-mode", false, "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 	cmd.Flags().String("harness", "opencode", "")
 	addPromptFlags(cmd)
@@ -410,7 +403,6 @@ func TestProxySpawn_IsolationForwarded(t *testing.T) {
 			cmd.Flags().String("profile", "", "")
 			cmd.Flags().String("model", "", "")
 			cmd.Flags().String("variant", "", "")
-			cmd.Flags().Bool("host-mode", false, "")
 			cmd.Flags().String("isolation", "", "")
 			cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 			cmd.Flags().String("harness", "opencode", "")
@@ -461,7 +453,6 @@ func TestProxySpawn_IsolationOmittedWhenUnset(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().Bool("host-mode", false, "")
 	cmd.Flags().String("isolation", "", "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 	cmd.Flags().String("harness", "opencode", "")
@@ -503,7 +494,6 @@ func TestProxySpawn_IsolationUnknownValueRejectedClientSide(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().Bool("host-mode", false, "")
 	cmd.Flags().String("isolation", "", "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
 	cmd.Flags().String("harness", "opencode", "")
@@ -523,42 +513,6 @@ func TestProxySpawn_IsolationUnknownValueRejectedClientSide(t *testing.T) {
 		if !strings.Contains(err.Error(), m) {
 			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
 		}
-	}
-}
-
-// TestProxySpawn_IsolationAndHostModeRejected verifies that passing both
-// --isolation and --host-mode at the same time fails fast at the proxy
-// boundary with the same mutual-exclusion message as the direct path.
-func TestProxySpawn_IsolationAndHostModeRejected(t *testing.T) {
-	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("server should not receive a request when both flags are set; got %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
-	})
-
-	t.Setenv("PRISM_HOST_API", srv.apiURL())
-	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
-
-	cmd := &cobra.Command{Use: "spawn"}
-	cmd.Flags().String("branch", "", "")
-	cmd.Flags().String("agent", "", "")
-	cmd.Flags().String("profile", "", "")
-	cmd.Flags().String("model", "", "")
-	cmd.Flags().String("variant", "", "")
-	cmd.Flags().Bool("host-mode", false, "")
-	cmd.Flags().String("isolation", "", "")
-	cmd.Flags().Bool("ignore-concurrency-cap", false, "")
-	cmd.Flags().String("harness", "opencode", "")
-	addPromptFlags(cmd)
-	_ = cmd.Flags().Set("branch", "both-flags-branch")
-	_ = cmd.Flags().Set("isolation", "host")
-	_ = cmd.Flags().Set("host-mode", "true")
-
-	err := proxySpawn(srv.apiURL(), cmd)
-	if err == nil {
-		t.Fatal("expected error when both --isolation and --host-mode are set, got nil")
-	}
-	if !strings.Contains(err.Error(), "--isolation and --host-mode") {
-		t.Errorf("error %q does not mention both flags", err.Error())
 	}
 }
 

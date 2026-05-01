@@ -406,7 +406,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 		// operations are best-effort: errors are logged but do not prevent
 		// the switch to the new worktree session.
 		if d, dbErr := openDB(); dbErr == nil {
-			if !hostModeFromDB(d, oldSessionName) {
+			if isolationModeFromDB(d, oldSessionName) != "host" {
 				removeContainerIfExists(oldSessionName)
 			}
 			if releaseErr := d.ReleasePort(oldSessionName); releaseErr != nil {

@@ -208,43 +208,38 @@ func TestResolveParentIsolationMode_Podman(t *testing.T) {
 	}
 }
 
-// TestResolveParentIsolationMode_PreV10HostModeTrue verifies that a pre-v10
-// back-compat row with isolation_mode="" but host_mode=true returns "host" from
-// resolveParentIsolationMode via status.EffectiveIsolationMode(). This is the
-// back-compat behaviour established in PR #882 / restore.go.
+// TestResolveParentIsolationMode_IsolationModeHost verifies that a session with
+// isolation_mode="host" returns "host" from resolveParentIsolationMode.
 func TestResolveParentIsolationMode_PreV10HostModeTrue(t *testing.T) {
 	d := openReviewTestDB(t)
 
 	const session = "nixos-config@legacy-host-session"
-	// UpsertStatus leaves isolation_mode NULL. SetHostMode sets host_mode=1.
 	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	if err := d.SetHostMode(session, true); err != nil {
-		t.Fatalf("SetHostMode: %v", err)
+	if err := d.SetIsolationMode(session, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
 	}
 
 	got := resolveParentIsolationMode(session)
 	if got != "host" {
-		t.Errorf("resolveParentIsolationMode for host_mode=true, isolation_mode=NULL = %q, want %q", got, "host")
+		t.Errorf("resolveParentIsolationMode for isolation_mode=host = %q, want %q", got, "host")
 	}
 }
 
-// TestResolveParentIsolationMode_PreV10HostModeFalse verifies that a pre-v10
-// back-compat row with isolation_mode="" and host_mode=false returns "podman"
-// (the EffectiveIsolationMode default for legacy container sessions).
+// TestResolveParentIsolationMode_IsolationModePodman verifies that a session with
+// isolation_mode="podman" returns "podman" from resolveParentIsolationMode.
 func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
 	d := openReviewTestDB(t)
 
 	const session = "nixos-config@legacy-podman-session"
-	// UpsertStatus leaves both isolation_mode NULL and host_mode=0.
 	if err := d.UpsertStatus(session, "nixos-config", "/worktree/legacy", "idle", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
 	got := resolveParentIsolationMode(session)
 	if got != "podman" {
-		t.Errorf("resolveParentIsolationMode for host_mode=false, isolation_mode=NULL = %q, want %q", got, "podman")
+		t.Errorf("resolveParentIsolationMode for isolation_mode=podman = %q, want %q", got, "podman")
 	}
 }
 
@@ -433,7 +428,9 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 
 	agents := review.Agents()
 	for _, ag := range agents {
-		path := agentsDir + "/" + ag.Name + ".md"
+		// Pre-flight checks <ValidationName>.md (i.e. "review-goal-subagent.md"),
+		// not <Name>.md — see #1231.
+		path := agentsDir + "/" + ag.ValidationName + ".md"
 		if err := os.WriteFile(path, []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile %s: %v", path, err)
 		}

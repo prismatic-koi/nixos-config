@@ -341,7 +341,7 @@ export const PrismHooks: Plugin = async (pluginInput) => {
       pendingReviewReminder = false;
 
       output.system.push(
-        "You just ran git push. If this was in the context of an open PR, invoke @review-goal, @review-code, @review-security, @review-qa, and @review-context as parallel Task calls (all five in a single response) to review the updated changes before the PR is merged. ALL 5 agents must pass before the PR can be merged.",
+        "You just ran git push. If this was in the context of an open PR, invoke @review-goal-subagent, @review-code-subagent, @review-security-subagent, @review-qa-subagent, and @review-context-subagent as parallel Task calls (all five in a single response) to review the updated changes before the PR is merged. ALL 5 agents must pass before the PR can be merged.",
       );
       return output;
     },

@@ -1,5 +1,5 @@
 ---
-name: review-goal
+name: review-goal-subagent
 description: Requirements verification subagent — validates that the implementation satisfies the original issue and acceptance criteria. Invoke in parallel with other review-* agents before merging.
 mode: subagent
 hidden: true
