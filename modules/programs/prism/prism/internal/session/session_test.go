@@ -305,7 +305,6 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 
 // openIsolationTestDB creates a fresh temp DB and registers cleanup.
 // It also seeds an agent_status row for sessionName so that SetIsolationMode
-// It also seeds an agent_status row for sessionName so that SetIsolationMode
 // has a row to UPDATE.
 func openIsolationTestDB(t *testing.T, sessionName string) *db.DB {
 	t.Helper()
@@ -330,7 +329,7 @@ func openIsolationTestDB(t *testing.T, sessionName string) *db.DB {
 
 // TestIsolationMode_BwrapWrittenBeforeWindow verifies that after the DB writes
 // performed by setupFullLayout (before tmux.NewWindow), the agent_status row
-// has isolation_mode = "bwrap" and host_mode = false.
+// has isolation_mode = "bwrap".
 //
 // This is the primary regression test for issue #894: prism agent-run reads
 // isolation_mode immediately on start; it must be "bwrap" before window 1 opens.
