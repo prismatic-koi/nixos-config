@@ -1234,7 +1234,7 @@ func CheckAvailability() error {
 	if _, err := exec.LookPath("podman"); err != nil {
 		return fmt.Errorf(
 			"container mode requires podman but it was not found on PATH\n" +
-				"hint: use --host-mode to run opencode directly without a container",
+				"hint: use --isolation host to run opencode directly without a container",
 		)
 	}
 
@@ -1246,7 +1246,7 @@ func CheckAvailability() error {
 		msg := strings.TrimSpace(string(out))
 		return fmt.Errorf(
 			"container mode requires the podman socket to be running but it is not reachable: %s\n"+
-				"hint: use --host-mode to run opencode directly without a container",
+				"hint: use --isolation host to run opencode directly without a container",
 			msg,
 		)
 	}
@@ -1260,14 +1260,14 @@ func CheckAvailability() error {
 		msg := strings.TrimSpace(string(out))
 		return fmt.Errorf(
 			"container mode requires the %q image but the check failed: %s\n"+
-				"hint: use --host-mode to run opencode directly without a container",
+				"hint: use --isolation host to run opencode directly without a container",
 			Image, msg,
 		)
 	}
 	if strings.TrimSpace(string(out)) == "" {
 		return fmt.Errorf(
 			"container mode requires the %q image but it is not loaded\n"+
-				"hint: use --host-mode to run opencode directly without a container",
+				"hint: use --isolation host to run opencode directly without a container",
 			Image,
 		)
 	}

@@ -5577,53 +5577,29 @@ echo "session \"${last}@cross-branch\" created"
 	}
 }
 
-// TestHostAPI_Spawn_HostModeForwarded verifies that when a client sends
-// {"host_mode":true}, the sidecar includes "--host-mode" in the args passed to
-// the prism binary. This ensures the HostMode field added in issue #616 is
-// actually forwarded to the spawned process.
-func TestHostAPI_Spawn_HostModeForwarded(t *testing.T) {
+// TestHostAPI_Spawn_HostModeProduces400 verifies that sending {"host_mode":true}
+// in a /spawn request produces a 400 error, since the host_mode field has been
+// removed (Phase D-2 of the deprecation cycle; issue #1147).
+func TestHostAPI_Spawn_HostModeProduces400(t *testing.T) {
 	d := openTestDB(t)
 
-	// Use a stub that writes all its arguments to a temp file so we can
-	// assert that --host-mode was included, then prints the success line
-	// expected by parseSpawnSessionName.
-	argsFile := filepath.Join(t.TempDir(), "captured-args")
-	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	stubScript := `#!/bin/sh
-echo "$*" > ` + argsFile + `
-last=""
-for arg; do last="$arg"; done
-echo "session \"${last}@host-mode-branch\" created"
-`
-	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
-		DB:              d,
-		Clock:           clk,
-		AgentRole:       "coordinator",
-		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		SessionName: "nixos-config@main",
+		Repo:        "nixos-config",
+		Worktree:    "/tmp/nixos-config@main",
+		OpencodeURL: "http://localhost:14000",
+		DB:          d,
+		Clock:       clk,
+		AgentRole:   "coordinator",
+		Harness:     opencode.New("http://localhost:14000", nil, "coordinator", ""),
 	}
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
 		`{"branch":"host-mode-branch","host_mode":true}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
-	}
-
-	capturedArgs, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatalf("read captured args: %v", err)
-	}
-	if !strings.Contains(string(capturedArgs), "--host-mode") {
-		t.Errorf("captured args %q do not contain --host-mode; host_mode:true was not forwarded", string(capturedArgs))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -5823,47 +5799,6 @@ exit 99
 		if !strings.Contains(errMsg, m) {
 			t.Errorf("error %q does not list valid mode %q", errMsg, m)
 		}
-	}
-}
-
-// TestHostAPI_Spawn_IsolationAndHostModeRejected verifies that a /spawn
-// request that sets both isolation and host_mode is rejected at the API
-// boundary, mirroring the resolveIsolationMode mutual-exclusion rule.
-func TestHostAPI_Spawn_IsolationAndHostModeRejected(t *testing.T) {
-	d := openTestDB(t)
-
-	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	stubScript := `#!/bin/sh
-echo "stub should not be invoked" >&2
-exit 99
-`
-	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	clk := newTestClock()
-	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
-		DB:              d,
-		Clock:           clk,
-		AgentRole:       "coordinator",
-		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
-	}
-	sc := New(cfg)
-
-	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"both-branch","isolation":"host","host_mode":true}`)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
-	}
-	var errResp map[string]string
-	decodeJSONBody(t, rr, &errResp)
-	errMsg := errResp["error"]
-	if !strings.Contains(errMsg, "--isolation and --host-mode") {
-		t.Errorf("error %q does not mention both flags", errMsg)
 	}
 }
 

@@ -15,7 +15,6 @@ package cmd
 //	--model <name>        model identifier override (overrides profile's primary model)
 //	--variant <name>      model variant override (overrides all agents' variant)
 //	--isolation <mode>    isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
-//	--host-mode           deprecated alias for --isolation host
 //	--harness <name>      agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
@@ -62,24 +61,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	profileFlag, _ := cmd.Flags().GetString("profile")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
-	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 
-	// Detect explicit-set state for the mutually-exclusive isolation flags so
-	// the proxy mirrors the validation behaviour of the direct (host-shell)
-	// path in resolveIsolationMode.
 	isolationChanged := cmd.Flags().Changed("isolation")
-	hostModeChanged := cmd.Flags().Changed("host-mode")
-
-	// Reject simultaneous use of --isolation and --host-mode at the proxy
-	// boundary so the user gets the same error as the direct path. Without
-	// this, the host-API server would still see both fields populated and
-	// would have to re-run the same check.
-	if isolationChanged && hostModeChanged {
-		return fmt.Errorf("--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
-	}
 
 	// Validate --isolation client-side so unknown values fail fast with the
 	// same error message as the direct path. The platform guards in
@@ -112,7 +98,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"profile":                profileFlag,
 		"model":                  modelFlag,
 		"variant":                variantFlag,
-		"host_mode":              hostModeFlag,
 		"harness":                harnessFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}
@@ -147,7 +132,6 @@ func init() {
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host; bypass container mode and run opencode directly in the tmux pane")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	rootCmd.AddCommand(spawnCmd)
@@ -157,13 +141,11 @@ func init() {
 // invocation, applying flag precedence and validation via registry.Resolve:
 //
 //  1. --isolation flag (explicit override), validated against known values
-//  2. --host-mode flag (deprecated alias for "host")
-//  3. cfg.DefaultIsolationMode (from config.json; compiled-in default "host")
+//  2. cfg.DefaultIsolationMode (from config.json; compiled-in default "host")
 //
-// Returns an error if both --isolation and --host-mode are set, or if
-// --isolation has an unknown value, or if the resolved mode is "bwrap" on
-// a non-Linux platform, or if the resolved mode is "sandbox-exec" on a
-// non-Darwin platform.
+// Returns an error if --isolation has an unknown value, or if the resolved
+// mode is "bwrap" on a non-Linux platform, or if the resolved mode is
+// "sandbox-exec" on a non-Darwin platform.
 //
 // D1 (issue #1133): platform availability is checked via the registered
 // Isolator's Available() method — but only for non-container modes. The
@@ -172,13 +154,10 @@ func init() {
 // surface (no podman daemon required to resolve the mode under test).
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
-	hostModeFlag, _ := cmd.Flags().GetBool("host-mode")
 
 	mode, err := container.Resolve(container.ResolveInput{
 		IsolationFlag:        isolationFlag,
 		IsolationFlagChanged: cmd.Flags().Changed("isolation"),
-		HostModeFlag:         hostModeFlag,
-		HostModeFlagChanged:  cmd.Flags().Changed("host-mode"),
 		ConfigDefault:        cfg.DefaultIsolationMode,
 	})
 	if err != nil {
@@ -237,8 +216,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
 
-	// Resolve the effective isolation mode. This validates --isolation,
-	// maps --host-mode to "host", and falls back to config.json.
+	// Resolve the effective isolation mode. This validates --isolation
+	// and falls back to config.json.
 	// Done BEFORE any side effects (no worktree, no tmux session, no DB row).
 	isolationMode, err := resolveIsolationMode(cmd, cfg)
 	if err != nil {
