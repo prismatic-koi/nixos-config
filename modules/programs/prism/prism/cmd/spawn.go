@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,10 +30,12 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/skills"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -513,9 +516,49 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
+	// C4.SK: compute skills manifest hash before spawn so it is available for
+	// spawn_inputs. Read skills from XDG_CONFIG_HOME/opencode/skills/ (with the
+	// standard ~/.config fallback). Errors are non-fatal: a missing or
+	// unreadable skills directory produces an empty hash (caller writes NULL).
+	skillsDir := opencodeSkillsDir()
+	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
+	if skillsHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		skillsManifestHash = ""
+	}
+
+	// C4.AP: compute agent role file hash. The role file is resolved from
+	// XDG_CONFIG_HOME/opencode/agents/<role>.md. Errors are non-fatal.
+	agentRoleFilePath := opencodeAgentRolePath(agentRole)
+	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
+	if agentHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		agentPromptHash = ""
+	}
+
 	if err := session.SpawnSession(d, spawnOpts); err != nil {
 		return err
 	}
+
+	// Write spawn_inputs row. This is best-effort: a failure is logged but
+	// does not roll back the session (the session is already live).
+	// We read instance_id back from the DB because SpawnSession generates it
+	// internally and we do not want to thread it back through SpawnOpts just
+	// for this write path.
+	writeSpawnInputs(d, spawnInputsArgs{
+		sessionName:        sessionName,
+		profileName:        resolvedProfile,
+		modelFlag:          modelFlag,
+		variantFlag:        variantFlag,
+		agentFlag:          agentFlag,
+		harnessFlag:        harnessFlag,
+		cmd:                cmd,
+		prFlag:             prFlag,
+		branchFlag:         branchFlag,
+		skillsManifestHash: skillsManifestHash,
+		agentPromptHash:    agentPromptHash,
+		promptFlag:         promptFlag,
+	})
 
 	if headless {
 		fmt.Printf("session %q created\n", sessionName)
@@ -523,6 +566,112 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	return session.Attach(sessionName)
 }
+
+// opencodeSkillsDir returns the path to the opencode skills directory,
+// respecting XDG_CONFIG_HOME with a ~/.config fallback.
+func opencodeSkillsDir() string {
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "opencode", "skills")
+}
+
+// opencodeAgentRolePath returns the path to the opencode agent role file for
+// the given role name, respecting XDG_CONFIG_HOME with a ~/.config fallback.
+func opencodeAgentRolePath(role string) string {
+	if role == "" {
+		return ""
+	}
+	base := os.Getenv("XDG_CONFIG_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, ".config")
+	}
+	return filepath.Join(base, "opencode", "agents", role+".md")
+}
+
+// spawnInputsArgs bundles the flag values needed to build a db.SpawnInputs row.
+type spawnInputsArgs struct {
+	sessionName        string
+	profileName        string
+	modelFlag          string
+	variantFlag        string
+	agentFlag          string
+	harnessFlag        string
+	cmd                *cobra.Command
+	prFlag             string
+	branchFlag         string
+	skillsManifestHash string
+	agentPromptHash    string
+	promptFlag         string
+}
+
+// writeSpawnInputs looks up the instance_id for sessionName and inserts a row
+// into spawn_inputs. All errors are non-fatal and logged to stderr.
+func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
+	st, err := d.CurrentStatus(args.sessionName)
+	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not read instance_id for spawn_inputs: %v\n", err)
+		return
+	}
+
+	si := db.SpawnInputs{
+		InstanceID:   *st.InstanceID,
+		CreatedAt:    time.Now().UnixMilli(),
+		PromptSource: spawnStrPtr("cli-positional"),
+	}
+
+	if args.profileName != "" {
+		si.ProfileName = &args.profileName
+	}
+	if args.modelFlag != "" {
+		si.ModelFlag = &args.modelFlag
+	}
+	if args.variantFlag != "" {
+		si.VariantFlag = &args.variantFlag
+	}
+	if args.agentFlag != "" {
+		si.AgentFlag = &args.agentFlag
+	}
+	if args.harnessFlag != "" {
+		si.HarnessFlag = &args.harnessFlag
+	}
+	if isolationFlag, _ := args.cmd.Flags().GetString("isolation"); isolationFlag != "" {
+		si.IsolationFlag = &isolationFlag
+	}
+	if hostModeFlag, _ := args.cmd.Flags().GetBool("host-mode"); hostModeFlag {
+		si.HostModeFlag = true
+	}
+	if args.prFlag != "" {
+		if n, err := strconv.Atoi(args.prFlag); err == nil {
+			si.PRNumber = &n
+		}
+	}
+	if args.branchFlag != "" {
+		si.BranchFlag = &args.branchFlag
+	}
+	if ignoreCap, _ := args.cmd.Flags().GetBool("ignore-concurrency-cap"); ignoreCap {
+		si.IgnoreConcurrencyCap = true
+	}
+	if args.skillsManifestHash != "" {
+		si.SkillsManifestHash = &args.skillsManifestHash
+	}
+	if args.agentPromptHash != "" {
+		si.AgentPromptHash = &args.agentPromptHash
+	}
+	if args.promptFlag != "" {
+		si.PromptText = &args.promptFlag
+	}
+
+	if err := d.InsertSpawnInputs(si); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not write spawn_inputs: %v\n", err)
+	}
+}
+
+// spawnStrPtr returns a pointer to s, for optional string fields in SpawnInputs.
+func spawnStrPtr(s string) *string { return &s }
 
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
