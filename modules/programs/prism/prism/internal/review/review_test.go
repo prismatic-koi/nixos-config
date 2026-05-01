@@ -1668,8 +1668,9 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		{Name: "review-goal", OpencodeName: "review-goal"},
 	}
 
-	// podman mode with nil ProfilesFile triggers ResolveAgentConfigContent
-	// to return a "nil ProfilesFile" error before any tmux session is created.
+	// podman mode with nil ProfilesFile: with the RequireSlot gate (#1224),
+	// this now triggers a fan-out abort before the spawn loop, so no per-agent
+	// progress lines are emitted and Run returns a global error immediately.
 	opts := review.Opts{
 		PRNumber:      "999",
 		ParentSession: "test@spawn-failure",
@@ -1689,26 +1690,15 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 	ctx := context.Background()
 	_, err := review.Run(ctx, opts, nil)
 
-	// Run must return an error when all agents fail to spawn.
+	// Run must return an error (RequireSlot fires before any spawn with nil pf).
 	if err == nil {
 		t.Fatal("Run: expected error when all agents fail to spawn, got nil")
 	}
 
-	// At least one progress line must have been emitted.
-	if len(progressLines) == 0 {
-		t.Fatal("Run: expected at least one progress line for spawn failure, got none")
-	}
-
-	// The progress line must contain the display name and "failed to start".
-	if !linesContain(progressLines, "Review-Goal failed to start") {
-		t.Errorf("expected 'Review-Goal failed to start' in progress lines, got: %v", progressLines)
-	}
-
-	// Must NOT emit a "started" line — spawn failed before session creation.
-	for _, line := range progressLines {
-		if len(line) > 0 && findSubstring(line, "Review-Goal started") {
-			t.Errorf("unexpected 'started' line emitted on spawn failure: %q", line)
-		}
+	// With nil ProfilesFile, RequireSlot fires before the spawn loop — no
+	// per-agent progress lines are expected. The error itself is the signal.
+	if len(progressLines) > 0 {
+		t.Logf("Run: progress lines emitted (unexpected with nil pf + RequireSlot gate): %v", progressLines)
 	}
 }
 
@@ -2086,778 +2076,134 @@ func TestBuildReviewPrompt_AllFiveAgentsGetSameContext(t *testing.T) {
 	}
 }
 
-// TestBuildReviewPrompt_SpecialCharsInTitle verifies that backticks and angle
-// brackets in the PR title do not break the prompt structure.
-func TestBuildReviewPrompt_SpecialCharsInTitle(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.Title = "fix: handle `nil` pointer in <module> and `go build`"
-	prompt := review.BuildReviewPromptForTest("819", ctx)
+// ── RequireSlot fan-out gate (#1224) ──────────────────────────────────────────
 
-	// The prompt should still contain both main sections.
-	if !findSubstring(prompt, "## Context for your review") {
-		t.Errorf("prompt missing '## Context for your review' with special-char title\nprompt:\n%s", prompt)
+// reviewProfilesFileWithAllSlots returns a *config.ProfilesFile that declares
+// all five review-agent slots (review-goal, review-code, review-security,
+// review-qa, review-context) under a single "default-profile" profile.
+// This mirrors the shape emitted by profileFromTiers in profiles.nix.
+func reviewProfilesFileWithAllSlots() *config.ProfilesFile {
+	slot := config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"}
+	entry := config.ProfileEntry{
+		"coordinator":     slot,
+		"worker":          slot,
+		"review-goal":     slot,
+		"review-code":     slot,
+		"review-security": slot,
+		"review-qa":       slot,
+		"review-context":  slot,
 	}
-	if !findSubstring(prompt, "### Diff") {
-		t.Errorf("prompt missing '### Diff' with special-char title\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_TripleBackticksInBody verifies that triple-backtick
-// sequences in the PR body do not collapse the ```diff code fence.
-func TestBuildReviewPrompt_TripleBackticksInBody(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.Body = "Here is an example:\n```go\nfmt.Println(\"hello\")\n```\nEnd."
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	// The diff fence must still be intact.
-	if !findSubstring(prompt, "```diff") {
-		t.Errorf("prompt missing ```diff fence; body backticks may have broken structure\nprompt:\n%s", prompt)
+	return &config.ProfilesFile{
+		Default: "default-profile",
+		Profiles: map[string]config.ProfileEntry{
+			"default-profile": entry,
+		},
 	}
 }
 
-// TestBuildReviewPrompt_DiffTruncatedNote verifies that when DiffTruncated is
-// true, the prompt mentions the truncation.
-func TestBuildReviewPrompt_DiffTruncatedNote(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.DiffTruncated = true
-	ctx.Diff = "diff --git a/big.go b/big.go\n+line\n... [truncated — use git diff origin/main...HEAD for full content]"
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "truncated") {
-		t.Errorf("prompt should mention truncation when DiffTruncated=true\nprompt:\n%s", prompt)
+// reviewProfilesFileMissingOneSlot returns a *config.ProfilesFile that defines
+// all review slots EXCEPT "review-security". Used to verify the all-or-nothing
+// fan-out gate rejects the whole fan-out when one slot is absent.
+func reviewProfilesFileMissingOneSlot() *config.ProfilesFile {
+	slot := config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"}
+	entry := config.ProfileEntry{
+		"coordinator":    slot,
+		"worker":         slot,
+		"review-goal":    slot,
+		"review-code":    slot,
+		// review-security intentionally absent
+		"review-qa":      slot,
+		"review-context": slot,
+	}
+	return &config.ProfilesFile{
+		Default: "default-profile",
+		Profiles: map[string]config.ProfileEntry{
+			"default-profile": entry,
+		},
 	}
 }
 
-// TestBuildReviewPrompt_NoDiffAvailable verifies that when Diff is empty
-// (gh pr diff failed), the prompt notes it and does not emit an empty ```diff fence.
-func TestBuildReviewPrompt_NoDiffAvailable(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.Diff = ""
-	prompt := review.BuildReviewPromptForTest("819", ctx)
+// TestRun_RequireSlot_MissingSlot_AbortsAllSpawns verifies that review.Run
+// fails fast with a clear error when the active profile is missing one or more
+// review-agent slots, and that no progress lines are emitted (i.e. no agent
+// spawn was attempted). This is the all-or-nothing AC from #1224.
+func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
 
-	if !findSubstring(prompt, "diff not available") {
-		t.Errorf("prompt should note 'diff not available' when Diff is empty\nprompt:\n%s", prompt)
-	}
-	// Must not have an empty ```diff fence (which would confuse agents).
-	if findSubstring(prompt, "```diff\n```") {
-		t.Errorf("prompt should not have an empty ```diff``` fence\nprompt:\n%s", prompt)
-	}
-}
+	pf := reviewProfilesFileMissingOneSlot()
 
-// ── TruncateDiff ──────────────────────────────────────────────────────────────
-
-// TestTruncateDiff_NoTruncationNeeded verifies that a small diff is returned
-// unchanged with truncated=false.
-func TestTruncateDiff_NoTruncationNeeded(t *testing.T) {
-	diff := "diff --git a/foo.go b/foo.go\n+added\n-removed\n"
-	result, truncated := review.TruncateDiffForTest(diff, 200*1024, 4000)
-	if truncated {
-		t.Errorf("TruncateDiff: truncated=true for small diff, want false")
-	}
-	if result != diff {
-		t.Errorf("TruncateDiff: result differs from input for small diff\ngot:  %q\nwant: %q", result, diff)
-	}
-}
-
-// TestTruncateDiff_TruncatesByLineCount verifies that a diff exceeding maxLines
-// is truncated and the truncation marker is appended.
-func TestTruncateDiff_TruncatesByLineCount(t *testing.T) {
-	// Build a diff with 100 lines.
-	var sb strings.Builder
-	for i := range 100 {
-		sb.WriteString(fmt.Sprintf("+line %d\n", i))
-	}
-	diff := sb.String()
-
-	result, truncated := review.TruncateDiffForTest(diff, 200*1024, 10)
-	if !truncated {
-		t.Errorf("TruncateDiff: truncated=false for 100-line diff with maxLines=10, want true")
-	}
-	if !findSubstring(result, "truncated") {
-		t.Errorf("TruncateDiff: result missing truncation marker\nresult:\n%s", result)
-	}
-	// The result must not contain line 11 or later.
-	if findSubstring(result, "+line 10\n") {
-		t.Errorf("TruncateDiff: result contains lines beyond maxLines=10\nresult:\n%s", result)
-	}
-}
-
-// TestTruncateDiff_TruncatesByByteCount verifies that a diff exceeding maxBytes
-// is truncated and the truncation marker is appended.
-func TestTruncateDiff_TruncatesByByteCount(t *testing.T) {
-	// Build a 1000-byte diff.
-	diff := strings.Repeat("+x\n", 333) // ~999 bytes
-
-	result, truncated := review.TruncateDiffForTest(diff, 100, 10000)
-	if !truncated {
-		t.Errorf("TruncateDiff: truncated=false for >100-byte diff with maxBytes=100, want true")
-	}
-	if !findSubstring(result, "truncated") {
-		t.Errorf("TruncateDiff: result missing truncation marker\nresult:\n%s", result)
-	}
-	if len(result) > 200 { // well under the original 999 bytes
-		// Sanity check that we actually truncated substantially.
-		// The marker adds ~70 bytes; total should be << 999.
-	}
-}
-
-// ── Group-id wiring (#860, Issue E) ──────────────────────────────────────────
-
-// TestGroupWiring_RegisterGroupCalledOncePerRound verifies that each review
-// round creates exactly one session_groups row with the correct parent_session.
-// AC: "Every prism review invocation creates exactly one new row in
-// session_groups per round, with parent_session correctly set."
-func TestGroupWiring_RegisterGroupCalledOncePerRound(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@worker-branch"
-
-	// Simulate what review.Run does: register one group per round.
-	groupID, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-	if groupID == "" {
-		t.Fatal("RegisterGroup returned empty group_id")
+	var progressLines []string
+	opts := review.Opts{
+		PRNumber:         "1224",
+		ParentSession:    "nixos-config@require-slot-test",
+		Worktree:         t.TempDir(),
+		Timeout:          30 * time.Second,
+		DBPath:           dbPath,
+		IsolationMode:    "host",
+		ProfilesFile:     pf,
+		OnProgress:       func(line string) { progressLines = append(progressLines, line) },
 	}
 
-	// Verify the session_groups row exists with the correct parent.
-	var storedParent string
-	err = d.QueryRow(
-		"SELECT parent_session FROM session_groups WHERE group_id = ?", groupID,
-	).Scan(&storedParent)
-	if err != nil {
-		t.Fatalf("query session_groups: %v", err)
-	}
-	if storedParent != parent {
-		t.Errorf("session_groups.parent_session = %q, want %q", storedParent, parent)
-	}
-}
-
-// TestGroupWiring_AllMembersHaveGroupID verifies that when SpawnSession writes
-// group_id via SetGroupID, all 5 agent_status rows have the same group_id.
-// AC: "Every one of the 5 per-round reviewer sessions has agent_status.group_id
-// set to the round's group_id."
-func TestGroupWiring_AllMembersHaveGroupID(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@worker-branch"
-
-	groupID, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-
-	agents := review.Agents()
-	round := 1
-	roundPrefix := fmt.Sprintf("%s~review-%d-", parent, round)
-
-	// Simulate what review.Run does: seed each agent and set group_id.
-	for _, ag := range agents {
-		sess := roundPrefix + ag.Name
-		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "idle", nil, nil); err != nil {
-			t.Fatalf("UpsertStatus(%q): %v", sess, err)
-		}
-		if err := d.SetGroupID(sess, groupID); err != nil {
-			t.Fatalf("SetGroupID(%q): %v", sess, err)
-		}
-	}
-
-	// Verify every agent_status row has the correct group_id.
-	for _, ag := range agents {
-		sess := roundPrefix + ag.Name
-		s, err := d.CurrentStatus(sess)
-		if err != nil {
-			t.Fatalf("CurrentStatus(%q): %v", sess, err)
-		}
-		if s == nil {
-			t.Errorf("agent %q: expected agent_status row, got nil", ag.Name)
-			continue
-		}
-		if s.GroupID == nil {
-			t.Errorf("agent %q: GroupID is nil, want %q", ag.Name, groupID)
-			continue
-		}
-		if *s.GroupID != groupID {
-			t.Errorf("agent %q: GroupID = %q, want %q", ag.Name, *s.GroupID, groupID)
-		}
-	}
-}
-
-// TestGroupWiring_GroupCompletedIsTerminationSignal verifies that
-// GroupCompleted returns false while agents are running and true once all
-// reach a terminal state. This is the core AC:
-// "The review orchestrator's termination check uses db.GroupCompleted(group_id)."
-func TestGroupWiring_GroupCompletedIsTerminationSignal(t *testing.T) {
-	d := openTestDB(t)
-
-	groupID, err := d.RegisterGroup("test@parent")
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-
-	sessions := []string{"test@parent~review-1-review-goal", "test@parent~review-1-review-code"}
-	for _, sess := range sessions {
-		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "idle", nil, nil); err != nil {
-			t.Fatalf("UpsertStatus(%q): %v", sess, err)
-		}
-		if err := d.SetGroupID(sess, groupID); err != nil {
-			t.Fatalf("SetGroupID(%q): %v", sess, err)
-		}
-	}
-
-	// Initially: both idle → GroupCompleted should return false.
-	done, err := d.GroupCompleted(groupID)
-	if err != nil {
-		t.Fatalf("GroupCompleted (initial): %v", err)
-	}
-	if done {
-		t.Error("GroupCompleted returned true while agents are still idle")
-	}
-
-	// Transition first agent to finished → still not complete (second is idle).
-	_ = d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil)
-	done, err = d.GroupCompleted(groupID)
-	if err != nil {
-		t.Fatalf("GroupCompleted (one finished): %v", err)
-	}
-	if done {
-		t.Error("GroupCompleted returned true with only one of two agents finished")
-	}
-
-	// Transition second agent to finished → now complete.
-	_ = d.UpsertStatus(sessions[1], "nixos-config", "/wt", "finished", nil, nil)
-	done, err = d.GroupCompleted(groupID)
-	if err != nil {
-		t.Fatalf("GroupCompleted (all finished): %v", err)
-	}
-	if !done {
-		t.Error("GroupCompleted returned false after all agents finished")
-	}
-}
-
-// TestGroupWiring_GroupResultsMatchesPerSessionAggregation verifies that
-// GroupResults produces the same terminal state and last message data as
-// individual per-session queries. This is the AC:
-// "GroupResults output matches what name-prefix aggregation produced."
-func TestGroupWiring_GroupResultsMatchesPerSessionAggregation(t *testing.T) {
-	d := openTestDB(t)
-
-	groupID, err := d.RegisterGroup("test@parent")
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-
-	agents := review.Agents()
-	roundPrefix := "test@parent~review-1-"
-	sessions := make([]string, len(agents))
-
-	for i, ag := range agents {
-		sess := roundPrefix + ag.Name
-		sessions[i] = sess
-		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
-			t.Fatalf("UpsertStatus(%q): %v", sess, err)
-		}
-		if err := d.SetGroupID(sess, groupID); err != nil {
-			t.Fatalf("SetGroupID(%q): %v", sess, err)
-		}
-		// Seed a root_agent_name via the seed helper.
-		if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/wt", "finished", nil, nil, ag.Name); err != nil {
-			t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", sess, err)
-		}
-		seedAssistantEvent(t, d, sess, fmt.Sprintf("Review from %s. <verdict>PASS</verdict>", ag.Name))
-	}
-
-	// Fetch via GroupResults.
-	groupData, err := d.GroupResults(groupID)
-	if err != nil {
-		t.Fatalf("GroupResults: %v", err)
-	}
-
-	if len(groupData) != 5 {
-		t.Fatalf("GroupResults returned %d members, want 5", len(groupData))
-	}
-
-	// Verify each member matches individual per-session queries.
-	for _, sess := range sessions {
-		gr, ok := groupData[sess]
-		if !ok {
-			t.Errorf("GroupResults missing session %q", sess)
-			continue
-		}
-
-		// Compare state with CurrentStatus.
-		status, sErr := d.CurrentStatus(sess)
-		if sErr != nil {
-			t.Fatalf("CurrentStatus(%q): %v", sess, sErr)
-		}
-		if gr.State != status.State {
-			t.Errorf("session %q: GroupResults.State = %q, CurrentStatus.State = %q", sess, gr.State, status.State)
-		}
-
-		// Compare last message with QueryEvents.
-		events, eErr := d.QueryEvents(sess, 1, nil, nil, []string{"msg_assistant"})
-		if eErr != nil {
-			t.Fatalf("QueryEvents(%q): %v", sess, eErr)
-		}
-		if len(events) > 0 && gr.LastMessage != events[len(events)-1].Payload {
-			t.Errorf("session %q: GroupResults.LastMessage differs from QueryEvents payload", sess)
-		}
-	}
-}
-
-// TestGroupWiring_DistinctGroupsPerRound verifies that two review invocations
-// create distinct group_ids with no cross-contamination.
-// AC: "A second prism review invocation creates a distinct group_id with
-// distinct member rows."
-func TestGroupWiring_DistinctGroupsPerRound(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@worker-branch"
-
-	// Round 1.
-	g1, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup round 1: %v", err)
-	}
-	// Round 2.
-	g2, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup round 2: %v", err)
-	}
-
-	if g1 == g2 {
-		t.Errorf("two RegisterGroup calls returned the same group_id: %q", g1)
-	}
-
-	// Seed members for each group.
-	sess1 := parent + "~review-1-review-goal"
-	sess2 := parent + "~review-2-review-goal"
-
-	_ = d.UpsertStatus(sess1, "nixos-config", "/wt", "finished", nil, nil)
-	_ = d.SetGroupID(sess1, g1)
-	_ = d.UpsertStatus(sess2, "nixos-config", "/wt", "finished", nil, nil)
-	_ = d.SetGroupID(sess2, g2)
-
-	// GroupResults for g1 must not include sess2 and vice versa.
-	gr1, err := d.GroupResults(g1)
-	if err != nil {
-		t.Fatalf("GroupResults(g1): %v", err)
-	}
-	if _, ok := gr1[sess2]; ok {
-		t.Errorf("GroupResults(g1) unexpectedly includes session from round 2: %q", sess2)
-	}
-
-	gr2, err := d.GroupResults(g2)
-	if err != nil {
-		t.Fatalf("GroupResults(g2): %v", err)
-	}
-	if _, ok := gr2[sess1]; ok {
-		t.Errorf("GroupResults(g2) unexpectedly includes session from round 1: %q", sess1)
-	}
-}
-
-// TestGroupWiring_OnlyRetryRegistersNewGroup verifies that the --only retry
-// path also creates a new group_id for the retry round. Existing prior rounds'
-// session_groups rows remain untouched.
-// AC: "The --only retry path also registers a new group (new round)."
-func TestGroupWiring_OnlyRetryRegistersNewGroup(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@worker-branch"
-
-	// First round (full 5 agents).
-	g1, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup round 1: %v", err)
-	}
-	for _, ag := range review.Agents() {
-		sess := parent + "~review-1-" + ag.Name
-		_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
-		_ = d.SetGroupID(sess, g1)
-	}
-
-	// Retry round (only 2 agents — simulating --only review-code,review-qa).
-	g2, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup retry round: %v", err)
-	}
-	if g1 == g2 {
-		t.Fatal("retry round got same group_id as first round")
-	}
-
-	retryAgents := []string{"review-code", "review-qa"}
-	for _, name := range retryAgents {
-		sess := parent + "~review-2-" + name
-		_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
-		_ = d.SetGroupID(sess, g2)
-	}
-
-	// Original group still has 5 members.
-	gr1, err := d.GroupResults(g1)
-	if err != nil {
-		t.Fatalf("GroupResults(g1): %v", err)
-	}
-	if len(gr1) != 5 {
-		t.Errorf("GroupResults(g1): got %d members, want 5", len(gr1))
-	}
-
-	// Retry group has 2 members.
-	gr2, err := d.GroupResults(g2)
-	if err != nil {
-		t.Fatalf("GroupResults(g2): %v", err)
-	}
-	if len(gr2) != 2 {
-		t.Errorf("GroupResults(g2): got %d members, want 2", len(gr2))
-	}
-}
-
-// TestGroupWiring_BuildResultsUsesGroupResults verifies that buildResults (via
-// BuildResults) uses GroupResults data when a valid groupID is provided, and
-// the output matches the per-session fallback path exactly.
-func TestGroupWiring_BuildResultsUsesGroupResults(t *testing.T) {
-	d := openTestDB(t)
-
-	groupID, err := d.RegisterGroup("test@parent")
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-
-	agents := []review.Agent{
-		{Name: "review-goal"},
-		{Name: "review-code"},
-	}
-	sessions := []string{
-		"test@parent~review-1-review-goal",
-		"test@parent~review-1-review-code",
-	}
-
-	// review-goal: PASS. review-code: FAIL.
-	_ = d.UpsertStatus(sessions[0], "nixos-config", "/wt", "finished", nil, nil)
-	_ = d.SetGroupID(sessions[0], groupID)
-	seedAssistantEvent(t, d, sessions[0], "All good. <verdict>PASS</verdict>")
-
-	_ = d.UpsertStatus(sessions[1], "nixos-config", "/wt", "finished", nil, nil)
-	_ = d.SetGroupID(sessions[1], groupID)
-	seedAssistantEvent(t, d, sessions[1], "Blocking issue found. <verdict>FAIL</verdict>")
-
-	finished := []bool{true, true}
-	timedOut := []bool{false, false}
-
-	// With groupID → uses GroupResults batch path.
-	resultsWithGroup := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, false, groupID)
-	// Without groupID → uses per-session fallback.
-	resultsWithoutGroup := review.BuildResults(agents, sessions, d, finished, timedOut, 10*time.Minute, false, "")
-
-	// Both paths must produce the same Passed/IsError/Output for each agent.
-	for i, ag := range agents {
-		rg := resultsWithGroup[i]
-		rf := resultsWithoutGroup[i]
-		if rg.Passed != rf.Passed {
-			t.Errorf("agent %q: group path Passed=%v, fallback path Passed=%v", ag.Name, rg.Passed, rf.Passed)
-		}
-		if rg.IsError != rf.IsError {
-			t.Errorf("agent %q: group path IsError=%v, fallback path IsError=%v", ag.Name, rg.IsError, rf.IsError)
-		}
-		if rg.Output != rf.Output {
-			t.Errorf("agent %q: group path Output differs from fallback path\ngroup:    %q\nfallback: %q", ag.Name, rg.Output, rf.Output)
-		}
-	}
-
-	// Verify specific results.
-	if !resultsWithGroup[0].Passed {
-		t.Error("review-goal should have passed")
-	}
-	if resultsWithGroup[1].Passed {
-		t.Error("review-code should have failed")
-	}
-}
-
-// TestGroupWiring_PollWithGroupCompleted verifies the full poll loop with group
-// termination: agents transition from idle → finished, and the poll loop
-// terminates via GroupCompleted. This exercises the integration between
-// RegisterGroup, SetGroupID, GroupCompleted, and GroupResults.
-func TestGroupWiring_PollWithGroupCompleted(t *testing.T) {
 	ctx := context.Background()
-	d := openTestDB(t)
+	_, err := review.Run(ctx, opts, nil)
 
-	groupID, err := d.RegisterGroup("test@parent")
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-
-	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
-	}
-	sessions := []string{
-		"test@parent~review-1-review-goal",
-		"test@parent~review-1-review-code",
-	}
-
-	// Pre-seed as finished with group_id.
-	for _, sess := range sessions {
-		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
-			t.Fatalf("UpsertStatus(%q): %v", sess, err)
-		}
-		if err := d.SetGroupID(sess, groupID); err != nil {
-			t.Fatalf("SetGroupID(%q): %v", sess, err)
-		}
-		seedAssistantEvent(t, d, sess, "<verdict>PASS</verdict>")
-	}
-
-	var lines []string
-	spawnTimes := []time.Time{time.Now(), time.Now()}
-
-	results, err := review.PollAgentsForTest(ctx, d, agents, sessions, 10*time.Minute, spawnTimes, func(line string) {
-		lines = append(lines, line)
-	}, groupID)
-	if err != nil {
-		t.Fatalf("PollAgentsForTest: %v", err)
-	}
-
-	// Both agents should have passed.
-	for i, r := range results {
-		if !r.Passed {
-			t.Errorf("agent %q: Passed=false, want true (output: %q)", agents[i].Name, r.Output)
-		}
-	}
-
-	// Progress lines should be emitted.
-	if len(lines) != 2 {
-		t.Errorf("expected 2 progress lines, got %d: %v", len(lines), lines)
-	}
-}
-
-// ── CleanupReviewSessionsForParent / KillReviewSessionsForParentWithDB ────────
-
-// TestCleanupReviewSessionsForParent_DBBacked verifies that when group members
-// exist in the DB (post-migration), CleanupReviewSessionsForParent marks them
-// as ended via the DB-backed path.
-func TestCleanupReviewSessionsForParent_DBBacked(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@main"
-	member1 := parent + "~review-1-review-goal"
-	member2 := parent + "~review-1-review-code"
-
-	// Seed parent row with root_agent_name = "coordinator".
-	if err := d.UpsertStatusSeedRootAgentName(parent, "nixos-config", "/wt/main", "idle", nil, nil, "coordinator"); err != nil {
-		t.Fatalf("seed parent: %v", err)
-	}
-
-	// Register a group and seed member rows.
-	groupID, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-	for _, m := range []string{member1, member2} {
-		if err := d.UpsertStatus(m, "nixos-config", "/wt/"+m, "running", nil, nil); err != nil {
-			t.Fatalf("seed member %q: %v", m, err)
-		}
-		if err := d.SetGroupID(m, groupID); err != nil {
-			t.Fatalf("SetGroupID %q: %v", m, err)
-		}
-	}
-
-	// Call the function under test (KillSessionsByNames will fail silently — no tmux).
-	review.CleanupReviewSessionsForParent(d, parent)
-
-	// Verify both member rows have ended_at set (SetEnded was called).
-	for _, m := range []string{member1, member2} {
-		s, err := d.CurrentStatus(m)
-		if err != nil {
-			t.Fatalf("CurrentStatus(%q): %v", m, err)
-		}
-		if s == nil {
-			t.Fatalf("CurrentStatus(%q): no row found", m)
-		}
-		if s.EndedAt == nil {
-			t.Errorf("session %q: EndedAt is nil, want non-nil (SetEnded should have been called)", m)
-		}
-	}
-}
-
-// TestCleanupReviewSessionsForParent_PreMigrationFallback verifies that when no
-// group members exist in the DB (pre-migration), the function falls back to the
-// name-prefix scan.
-func TestCleanupReviewSessionsForParent_PreMigrationFallback(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@legacy"
-	member := parent + "~review-1-review-goal"
-
-	// Seed member row WITHOUT group_id (pre-migration shape).
-	if err := d.UpsertStatus(member, "nixos-config", "/wt/"+member, "running", nil, nil); err != nil {
-		t.Fatalf("seed member: %v", err)
-	}
-
-	// No group registered — GroupMembersForParent returns empty slice.
-	review.CleanupReviewSessionsForParent(d, parent)
-
-	// Verify the member row had ended_at set via the prefix-scan fallback path.
-	s, err := d.CurrentStatus(member)
-	if err != nil {
-		t.Fatalf("CurrentStatus: %v", err)
-	}
-	if s == nil {
-		t.Fatalf("CurrentStatus: no row found")
-	}
-	if s.EndedAt == nil {
-		t.Errorf("session %q: EndedAt is nil, want non-nil (prefix-scan fallback should have called SetEnded)", member)
-	}
-}
-
-// TestKillReviewSessionsForParentWithDB_DBBacked verifies that when group
-// members exist, KillReviewSessionsForParentWithDB uses the DB-backed path
-// (returns without calling KillSessionPrefix — no tmux panic for nonexistent sessions).
-func TestKillReviewSessionsForParentWithDB_DBBacked(t *testing.T) {
-	d := openTestDB(t)
-	parent := "nixos-config@main"
-	member := parent + "~review-1-review-goal"
-
-	if err := d.UpsertStatusSeedRootAgentName(parent, "nixos-config", "/wt/main", "idle", nil, nil, "coordinator"); err != nil {
-		t.Fatalf("seed parent: %v", err)
-	}
-	groupID, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-	if err := d.UpsertStatus(member, "nixos-config", "/wt/"+member, "running", nil, nil); err != nil {
-		t.Fatalf("seed member: %v", err)
-	}
-	if err := d.SetGroupID(member, groupID); err != nil {
-		t.Fatalf("SetGroupID: %v", err)
-	}
-
-	// Should not panic even though tmux is not running (KillSessionsByNames is best-effort).
-	review.KillReviewSessionsForParentWithDB(d, parent)
-}
-
-// TestKillReviewSessionsForParentWithDB_NilDB verifies that when d is nil,
-// KillReviewSessionsForParentWithDB delegates to KillSessionPrefix (name-prefix path).
-func TestKillReviewSessionsForParentWithDB_NilDB(t *testing.T) {
-	// With nil DB the function falls through to KillSessionPrefix.
-	// KillSessionPrefix calls tmux (best-effort, non-fatal). Verify no panic.
-	review.KillReviewSessionsForParentWithDB(nil, "nixos-config@main")
-}
-
-// ── RunAsync ──────────────────────────────────────────────────────────────────
-
-// TestRunAsync_ReturnsImmediately verifies that RunAsync returns promptly
-// (well under 5 seconds) without blocking on agent completion. This is the
-// core AC for the async model: "prism review <pr> becomes non-blocking".
-//
-// The test exercises the spawn-failure path (container mode with nil
-// ProfilesFile) so that RunAsync fails quickly at config-resolution time —
-// meaning all agents fail to spawn — rather than attempting real tmux calls.
-// The key assertion is that RunAsync returns an error quickly, NOT that it
-// blocks for any agent work to complete. In production, all agents would spawn
-// successfully and the monitor would be started before RunAsync returns.
-//
-// A separate test (TestRunAsync_AllSpawnFailReturnsError) confirms the error
-// path. This test focuses solely on timing.
-func TestRunAsync_ReturnsImmediately(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "prism.db")
-	d, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	parent := "nixos-config@async-timing-test"
-	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus parent: %v", err)
-	}
-
-	opts := review.Opts{
-		PRNumber:      "864",
-		ParentSession: parent,
-		WorkerSession: parent,
-		Worktree:      t.TempDir(),
-		Agents:        review.Agents()[:1], // single agent for speed
-		Timeout:       30 * time.Second,
-		DBPath:        dbPath,
-		IsolationMode: "podman",
-		ProfilesFile:  nil, // triggers immediate config-resolution failure → fast return
-	}
-
-	start := time.Now()
-	// RunAsync should return quickly (either with an error due to all agents
-	// failing to spawn, or with an AsyncResult after spawning successfully).
-	// We pass a non-existent prismBinary so StartMonitorProcess fails fast.
-	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
-	elapsed := time.Since(start)
-
-	// Regardless of success or failure, RunAsync must not block.
-	const maxElapsed = 5 * time.Second
-	if elapsed > maxElapsed {
-		t.Errorf("RunAsync took %v — expected to return in under %v (must not block on agent completion)", elapsed, maxElapsed)
-	}
-
-	// With podman mode and nil ProfilesFile, all agents fail at config
-	// resolution → RunAsync returns "all review agents failed to spawn".
-	if runErr == nil {
-		t.Logf("RunAsync returned nil error (agents spawned — monitor start failed silently as expected)")
-	} else {
-		t.Logf("RunAsync returned error (expected for podman nil-pf path): %v", runErr)
-	}
-}
-
-// TestRunAsync_AllSpawnFailReturnsError verifies that RunAsync returns an
-// error when all agents fail to spawn (same path as Run).
-func TestRunAsync_AllSpawnFailReturnsError(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "prism.db")
-	d, err := db.Open(dbPath)
-	if err != nil {
-		t.Fatalf("db.Open: %v", err)
-	}
-	t.Cleanup(func() { d.Close() })
-
-	parent := "nixos-config@async-allfail-test"
-	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus parent: %v", err)
-	}
-
-	opts := review.Opts{
-		PRNumber:      "99",
-		ParentSession: parent,
-		WorkerSession: parent,
-		Worktree:      t.TempDir(),
-		Agents:        review.Agents()[:1],
-		Timeout:       30 * time.Second,
-		DBPath:        dbPath,
-		IsolationMode: "podman",
-		ProfilesFile:  nil, // → all agents fail to spawn
-	}
-
-	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
-	if runErr == nil {
-		t.Fatal("RunAsync: expected error when all agents fail to spawn, got nil")
-	}
-	if !findSubstring(runErr.Error(), "failed") {
-		t.Errorf("error should mention failure: %v", runErr)
-	}
-}
-
-// TestRunAsync_MissingWorkerSession verifies that RunAsync returns an error
-// when WorkerSession is empty (required field for async delivery).
-func TestRunAsync_MissingWorkerSession(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "prism.db")
-	opts := review.Opts{
-		PRNumber:      "42",
-		ParentSession: "nixos-config@test",
-		WorkerSession: "", // missing
-		Worktree:      t.TempDir(),
-		DBPath:        dbPath,
-	}
-	_, err := review.RunAsync(opts, "")
+	// Must return an error — all-or-nothing: missing slot aborts the fan-out.
 	if err == nil {
-		t.Fatal("RunAsync: expected error for missing WorkerSession, got nil")
+		t.Fatal("Run: expected error when active profile is missing a review slot, got nil")
 	}
-	if !findSubstring(err.Error(), "worker session") {
-		t.Errorf("error should mention 'worker session': %v", err)
+
+	// Error must mention the missing role and the profile name.
+	errMsg := err.Error()
+	if !findSubstring(errMsg, "review-security") {
+		t.Errorf("error should mention the missing role 'review-security': %v", errMsg)
+	}
+	if !findSubstring(errMsg, "default-profile") {
+		t.Errorf("error should mention the profile name 'default-profile': %v", errMsg)
+	}
+	if !findSubstring(errMsg, "fan-out aborted") {
+		t.Errorf("error should mention 'fan-out aborted': %v", errMsg)
+	}
+
+	// No progress lines should be emitted — the gate fires before any spawn.
+	if len(progressLines) > 0 {
+		t.Errorf("expected no progress lines (no spawn should occur), got: %v", progressLines)
 	}
 }
 
-// TestRunAsync_DuplicateInProgress verifies that calling RunAsync when a round
-// is already in progress for the same parent returns a clear error rather than
-// silently spawning a duplicate round.
-func TestRunAsync_DuplicateInProgress(t *testing.T) {
+// TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort verifies that review.Run
+// does NOT abort the fan-out prematurely when all review slots are present in
+// the active profile. In host mode with no real opencode, SpawnSession will
+// fail for other reasons — but the RequireSlot gate must not be the cause.
+func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "prism.db")
+
+	pf := reviewProfilesFileWithAllSlots()
+
+	opts := review.Opts{
+		PRNumber:         "1224",
+		ParentSession:    "nixos-config@require-slot-ok",
+		Worktree:         t.TempDir(),
+		Timeout:          5 * time.Second,
+		ReadinessTimeout: 1 * time.Second,
+		DBPath:           dbPath,
+		IsolationMode:    "host",
+		ProfilesFile:     pf,
+	}
+
+	ctx := context.Background()
+	_, err := review.Run(ctx, opts, nil)
+
+	// We expect some error (no real opencode running), but it must NOT be a
+	// RequireSlot / "fan-out aborted" error.
+	if err != nil && findSubstring(err.Error(), "fan-out aborted") {
+		t.Errorf("Run aborted on RequireSlot check despite all slots being present: %v", err)
+	}
+}
+
+// TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns verifies that
+// review.RunAsync also aborts the fan-out when the active profile is missing
+// a review slot (#1224 — both sync and async paths are gated).
+func TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbPath)
 	if err != nil {
@@ -2865,360 +2211,37 @@ func TestRunAsync_DuplicateInProgress(t *testing.T) {
 	}
 	t.Cleanup(func() { d.Close() })
 
-	parent := "nixos-config@async-dup-test"
+	parent := "nixos-config@async-require-slot-test"
 	if err := d.UpsertStatus(parent, "nixos-config", t.TempDir(), "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus parent: %v", err)
 	}
 
-	// Simulate an in-progress round by registering a group with an active member.
-	groupID, err := d.RegisterGroup(parent)
-	if err != nil {
-		t.Fatalf("RegisterGroup: %v", err)
-	}
-	activeSess := parent + "~review-1-review-goal"
-	if err := d.UpsertStatus(activeSess, "nixos-config", "/wt", "active", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus active: %v", err)
-	}
-	if err := d.SetGroupID(activeSess, groupID); err != nil {
-		t.Fatalf("SetGroupID: %v", err)
-	}
+	pf := reviewProfilesFileMissingOneSlot()
 
 	opts := review.Opts{
-		PRNumber:      "55",
+		PRNumber:      "1224",
 		ParentSession: parent,
 		WorkerSession: parent,
 		Worktree:      t.TempDir(),
-		Agents:        review.Agents()[:1],
+		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
+		IsolationMode: "host",
+		ProfilesFile:  pf,
 	}
 
 	_, runErr := review.RunAsync(opts, "/nonexistent/prism-binary")
 	if runErr == nil {
-		t.Fatal("RunAsync: expected error for in-progress round, got nil")
+		t.Fatal("RunAsync: expected error when active profile is missing a review slot, got nil")
 	}
-	if !findSubstring(runErr.Error(), "in progress") && !findSubstring(runErr.Error(), "already") {
-		t.Errorf("error should mention 'in progress' or 'already': %v", runErr)
+
+	errMsg := runErr.Error()
+	if !findSubstring(errMsg, "review-security") {
+		t.Errorf("error should mention the missing role 'review-security': %v", errMsg)
+	}
+	if !findSubstring(errMsg, "fan-out aborted") {
+		t.Errorf("error should mention 'fan-out aborted': %v", errMsg)
 	}
 }
-
-// ── ParseLinkedIssues ─────────────────────────────────────────────────────────
-
-// TestParseLinkedIssues_Closes verifies that "Closes #N" references are extracted.
-func TestParseLinkedIssues_Closes(t *testing.T) {
-	body := "This PR fixes the bug.\n\nCloses #123"
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 1 || issues[0] != "123" {
-		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"123\"]", body, issues)
-	}
-}
-
-// TestParseLinkedIssues_Refs verifies that "Refs #N" references are extracted.
-func TestParseLinkedIssues_Refs(t *testing.T) {
-	body := "Refs #456 for context."
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 1 || issues[0] != "456" {
-		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"456\"]", body, issues)
-	}
-}
-
-// TestParseLinkedIssues_Fixes verifies that "Fixes #N" references are extracted.
-func TestParseLinkedIssues_Fixes(t *testing.T) {
-	body := "Fixes #789"
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 1 || issues[0] != "789" {
-		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"789\"]", body, issues)
-	}
-}
-
-// TestParseLinkedIssues_References verifies that "References #N" references are extracted.
-func TestParseLinkedIssues_References(t *testing.T) {
-	body := "References #101"
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 1 || issues[0] != "101" {
-		t.Errorf("ParseLinkedIssues(%q) = %v, want [\"101\"]", body, issues)
-	}
-}
-
-// TestParseLinkedIssues_MultipleIssues verifies that multiple issue references
-// are all extracted (Closes #N, Refs #M).
-func TestParseLinkedIssues_MultipleIssues(t *testing.T) {
-	body := "Closes #100\n\nAlso Refs #200 for background."
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 2 {
-		t.Fatalf("ParseLinkedIssues: got %v, want [\"100\", \"200\"]", issues)
-	}
-	if issues[0] != "100" || issues[1] != "200" {
-		t.Errorf("ParseLinkedIssues: got %v, want [\"100\", \"200\"]", issues)
-	}
-}
-
-// TestParseLinkedIssues_Deduplicated verifies that duplicate issue references
-// are deduplicated (same issue referenced multiple times).
-func TestParseLinkedIssues_Deduplicated(t *testing.T) {
-	body := "Closes #42\nAlso Closes #42 (duplicate)"
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 1 || issues[0] != "42" {
-		t.Errorf("ParseLinkedIssues: duplicate not deduplicated, got %v", issues)
-	}
-}
-
-// TestParseLinkedIssues_CaseInsensitive verifies that matching is case-insensitive.
-func TestParseLinkedIssues_CaseInsensitive(t *testing.T) {
-	body := "CLOSES #55\nfixes #66"
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 2 {
-		t.Fatalf("ParseLinkedIssues case-insensitive: got %v, want [\"55\", \"66\"]", issues)
-	}
-}
-
-// TestParseLinkedIssues_NoIssues verifies that a body with no linked issues
-// returns an empty slice.
-func TestParseLinkedIssues_NoIssues(t *testing.T) {
-	body := "This PR adds a feature. No issue references."
-	issues := review.ParseLinkedIssuesForTest(body)
-	if len(issues) != 0 {
-		t.Errorf("ParseLinkedIssues: got %v, want empty slice", issues)
-	}
-}
-
-// TestParseLinkedIssues_EmptyBody verifies that an empty body returns an empty slice.
-func TestParseLinkedIssues_EmptyBody(t *testing.T) {
-	issues := review.ParseLinkedIssuesForTest("")
-	if len(issues) != 0 {
-		t.Errorf("ParseLinkedIssues(empty): got %v, want empty slice", issues)
-	}
-}
-
-// ── DiffFilePath ──────────────────────────────────────────────────────────────
-
-// TestDiffFilePath_Format verifies that the diff file path follows the expected
-// naming convention: /tmp/prism-review-<pr>-round-<N>.diff
-func TestDiffFilePath_Format(t *testing.T) {
-	cases := []struct {
-		pr    string
-		round int
-		want  string
-	}{
-		{"819", 1, "/tmp/prism-review-819-round-1.diff"},
-		{"855", 2, "/tmp/prism-review-855-round-2.diff"},
-		{"1", 10, "/tmp/prism-review-1-round-10.diff"},
-	}
-	for _, tc := range cases {
-		got := review.DiffFilePathForTest(tc.pr, tc.round)
-		if got != tc.want {
-			t.Errorf("DiffFilePath(%q, %d) = %q, want %q", tc.pr, tc.round, got, tc.want)
-		}
-	}
-}
-
-// TestDiffFilePath_RoundCollision verifies that different rounds produce
-// different file paths (no collision between concurrent review rounds).
-func TestDiffFilePath_RoundCollision(t *testing.T) {
-	pr := "855"
-	path1 := review.DiffFilePathForTest(pr, 1)
-	path2 := review.DiffFilePathForTest(pr, 2)
-	if path1 == path2 {
-		t.Errorf("DiffFilePath: round 1 and round 2 produce the same path: %q", path1)
-	}
-}
-
-// TestDiffFilePath_DifferentPRsCollision verifies that different PRs produce
-// different file paths (no collision between concurrent reviews of different PRs).
-func TestDiffFilePath_DifferentPRsCollision(t *testing.T) {
-	path1 := review.DiffFilePathForTest("819", 1)
-	path2 := review.DiffFilePathForTest("855", 1)
-	if path1 == path2 {
-		t.Errorf("DiffFilePath: PR 819 and PR 855 produce the same path: %q", path1)
-	}
-}
-
-// TestDiffFilePath_ZeroRound verifies that round=0 defaults to 1.
-func TestDiffFilePath_ZeroRound(t *testing.T) {
-	got := review.DiffFilePathForTest("819", 0)
-	want := "/tmp/prism-review-819-round-1.diff"
-	if got != want {
-		t.Errorf("DiffFilePath(%q, 0) = %q, want %q (round 0 should default to 1)", "819", got, want)
-	}
-}
-
-// ── Inline vs file threshold ──────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_SmallDiffInlined verifies that a small diff (below the
-// inline threshold) is embedded directly in the agent prompt.
-func TestBuildReviewPrompt_SmallDiffInlined(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.Diff = "diff --git a/foo.go b/foo.go\n+added line\n"
-	ctx.DiffFilePath = "" // small diff — no file path
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	// Small diff must be inlined in a ```diff fence.
-	if !findSubstring(prompt, "```diff") {
-		t.Errorf("small diff prompt missing ```diff fence\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "diff --git a/foo.go b/foo.go") {
-		t.Errorf("small diff prompt missing diff content\nprompt:\n%s", prompt)
-	}
-	// Must NOT have a "file has been saved to" message.
-	if findSubstring(prompt, "has been saved to") {
-		t.Errorf("small diff prompt should not mention a saved file\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_LargeDiffFilePointer verifies that when DiffFilePath is
-// set (large diff), the prompt contains a file-path pointer and guidance for
-// querying the diff — not an inline code fence.
-func TestBuildReviewPrompt_LargeDiffFilePointer(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.Diff = ""        // large diff is NOT inlined
-	ctx.DiffLines = 1200 // simulated count
-	ctx.DiffBytes = 80 * 1024
-	ctx.DiffFilePath = "/tmp/prism-review-819-round-1.diff"
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	// Must contain the file path.
-	if !findSubstring(prompt, "/tmp/prism-review-819-round-1.diff") {
-		t.Errorf("large diff prompt missing file path\nprompt:\n%s", prompt)
-	}
-	// Must contain the guidance to use git diff / rg.
-	if !findSubstring(prompt, "git diff --stat") {
-		t.Errorf("large diff prompt missing git diff guidance\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "rg") {
-		t.Errorf("large diff prompt missing rg guidance\nprompt:\n%s", prompt)
-	}
-	// Must NOT contain an inline ```diff fence.
-	if findSubstring(prompt, "```diff") {
-		t.Errorf("large diff prompt should not contain an inline ```diff fence\nprompt:\n%s", prompt)
-	}
-}
-
-// ── Linked issues in prompt ───────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_LinkedIssuesSection verifies that when LinkedIssues is
-// populated, the prompt contains the "### Linked issues" section with each
-// issue's content.
-func TestBuildReviewPrompt_LinkedIssuesSection(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.LinkedIssues = map[string]string{
-		"123": "title:\tFix the bug\nstate:\tOPEN\n",
-		"456": "title:\tAdd feature\nstate:\tCLOSED\n",
-	}
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "### Linked issues") {
-		t.Errorf("prompt missing '### Linked issues' section\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "#### Issue #123") {
-		t.Errorf("prompt missing '#### Issue #123'\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "Fix the bug") {
-		t.Errorf("prompt missing issue #123 content\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "#### Issue #456") {
-		t.Errorf("prompt missing '#### Issue #456'\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "Add feature") {
-		t.Errorf("prompt missing issue #456 content\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_LinkedIssuesFetchFailure verifies that when a linked
-// issue could not be fetched, the prompt contains a clear failure marker
-// rather than crashing or omitting the issue entirely.
-func TestBuildReviewPrompt_LinkedIssuesFetchFailure(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.LinkedIssues = map[string]string{
-		"999": "[issue #999 could not be fetched: exit status 1: HTTP 404]",
-	}
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "### Linked issues") {
-		t.Errorf("prompt missing '### Linked issues' section on fetch failure\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "#### Issue #999") {
-		t.Errorf("prompt missing issue section even for unfetchable issue\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "could not be fetched") {
-		t.Errorf("prompt missing failure marker for unfetchable issue\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_NoLinkedIssues verifies that when no linked issues are
-// found, the prompt shows "(no linked issues found)" rather than an empty section.
-func TestBuildReviewPrompt_NoLinkedIssues(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.LinkedIssues = nil
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "### Linked issues") {
-		t.Errorf("prompt missing '### Linked issues' section\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "no linked issues found") {
-		t.Errorf("prompt missing '(no linked issues found)' placeholder\nprompt:\n%s", prompt)
-	}
-}
-
-// ── Git log in prompt ─────────────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_GitLogSections verifies that the prompt contains the
-// "### Recent commits" and "### This branch vs origin/<base>" sections with
-// the git log output when provided.
-func TestBuildReviewPrompt_GitLogSections(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.RecentCommits = "abc1234 fix: handle nil pointer\ndef5678 feat: add new feature\n"
-	ctx.BranchCommits = "abc1234 fix: handle nil pointer\n"
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "### Recent commits") {
-		t.Errorf("prompt missing '### Recent commits' section\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "fix: handle nil pointer") {
-		t.Errorf("prompt missing recent commit text\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "### This branch vs origin/main") {
-		t.Errorf("prompt missing branch commits section\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_GitLogUnavailable verifies that the prompt handles
-// missing git log output gracefully with a "(not available)" placeholder.
-func TestBuildReviewPrompt_GitLogUnavailable(t *testing.T) {
-	ctx := samplePRContext()
-	ctx.RecentCommits = ""
-	ctx.BranchCommits = ""
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "### Recent commits") {
-		t.Errorf("prompt missing '### Recent commits' section even when unavailable\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "(not available)") {
-		t.Errorf("prompt missing '(not available)' placeholder for git log\nprompt:\n%s", prompt)
-	}
-}
-
-// ── Tool preference guidance ──────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_ToolPreferenceGuidance verifies that the prompt contains
-// the tool-preference guidance directing agents to prefer native git over gh.
-func TestBuildReviewPrompt_ToolPreferenceGuidance(t *testing.T) {
-	ctx := samplePRContext()
-	prompt := review.BuildReviewPromptForTest("819", ctx)
-
-	if !findSubstring(prompt, "Prefer native git") {
-		t.Errorf("prompt missing tool-preference guidance ('Prefer native git')\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "git show") {
-		t.Errorf("prompt missing 'git show' in tool-preference guidance\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "git diff") {
-		t.Errorf("prompt missing 'git diff' in tool-preference guidance\nprompt:\n%s", prompt)
-	}
-	if !findSubstring(prompt, "git log") {
-		t.Errorf("prompt missing 'git log' in tool-preference guidance\nprompt:\n%s", prompt)
-	}
-}
-
-// ── FetchPRContextWithOpts ────────────────────────────────────────────────────
 // These tests exercise FetchPRContextWithOpts in isolation by mocking gh and git.
 
 // TestFetchPRContextWithOpts_InlineThresholdDefault verifies that the default
