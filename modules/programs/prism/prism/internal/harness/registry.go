@@ -231,6 +231,25 @@ func New(name, endpoint string, httpClient *http.Client, agentRole, agentModel s
 	return reg.Factory(endpoint, httpClient, agentRole, agentModel), nil
 }
 
+// NewWithModelOverrides constructs a host-mode harness adapter with a
+// full per-role model override map (C.2). It calls the registered Factory with
+// an empty agentModel then applies the map via the ModelOverridesSetter
+// interface if the adapter implements it. Harnesses that do not implement
+// ModelOverridesSetter receive the single-entry agentModel from
+// modelsByRole[agentRole] as a best-effort fallback.
+func NewWithModelOverrides(name, endpoint string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) (Harness, error) {
+	reg, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q is not registered; valid harnesses: %s", name, joinNames())
+	}
+	singleModel := modelsByRole[agentRole]
+	h := reg.Factory(endpoint, httpClient, agentRole, singleModel)
+	if setter, ok := h.(ModelOverridesSetter); ok {
+		setter.SetModelOverrides(modelsByRole)
+	}
+	return h, nil
+}
+
 // NewContainer constructs a container-mode harness adapter for the
 // named harness. If the registration has a ContainerFactory it is used;
 // otherwise Factory is used. Returns an error if the name is not
@@ -248,6 +267,25 @@ func NewContainer(name, endpoint string, httpClient *http.Client, agentRole, age
 		f = reg.Factory
 	}
 	return f(endpoint, httpClient, agentRole, agentModel), nil
+}
+
+// NewContainerWithModelOverrides constructs a container-mode harness adapter
+// with a full per-role model override map (C.2).
+func NewContainerWithModelOverrides(name, endpoint string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) (Harness, error) {
+	reg, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q is not registered; valid harnesses: %s", name, joinNames())
+	}
+	f := reg.ContainerFactory
+	if f == nil {
+		f = reg.Factory
+	}
+	singleModel := modelsByRole[agentRole]
+	h := f(endpoint, httpClient, agentRole, singleModel)
+	if setter, ok := h.(ModelOverridesSetter); ok {
+		setter.SetModelOverrides(modelsByRole)
+	}
+	return h, nil
 }
 
 // ShapeOf returns the declared TransportShape for the named harness,

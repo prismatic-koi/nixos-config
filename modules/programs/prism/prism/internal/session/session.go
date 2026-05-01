@@ -168,6 +168,10 @@ type Opts struct {
 	// can call harness.ShapeOf to determine its own transport shape. When
 	// empty, the sidecar defaults to "opencode".
 	HarnessName string
+	// ModelsByRole is the per-role model override map (C.2). When non-empty
+	// it is forwarded to the sidecar via repeated --model-override flags.
+	// Nil means no per-role overrides.
+	ModelsByRole map[string]string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -629,6 +633,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 			ConfigContent:  opts.ConfigContent,
 			InstanceID:     opts.InstanceID,
 			HarnessName:    opts.HarnessName,
+			ModelsByRole:   opts.ModelsByRole,
 		}
 		if err := StartSidecarWithOpts(name, sidecarOpts); err != nil {
 			// Non-fatal: log and continue. The session is created regardless.

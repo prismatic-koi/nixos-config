@@ -130,6 +130,23 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			}
 			continue
 		}
+		// Apply per-role model override (C.2, issue #1122) when a model was
+		// explicitly specified for this agent. This is a no-op for host-mode
+		// sessions (agentConfigContent is empty) — host-mode model selection
+		// happens via the sidecar's --model-override flags instead.
+		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
+			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
+				patched, patchErr := config.ApplyModelOverrides(agentConfigContent, activeProfile, roleModel, "", opts.ProfilesFile)
+				if patchErr != nil {
+					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
+					if opts.OnProgress != nil {
+						opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					}
+					continue
+				}
+				agentConfigContent = patched
+			}
+		}
 
 		// For bwrap sessions, write the opencode.json config file to disk now
 		// so it is present before the agent pane opens. The bwrap harness
@@ -191,6 +208,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			GroupID:            groupID,
 			RuntimeEnvVars:     opts.RuntimeEnvVars,
 			HarnessName:        opts.Harness,
+			ModelsByRole:       opts.ModelsByRole,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -385,6 +403,20 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			}
 			continue
 		}
+		// Apply per-role model override (C.2, issue #1122).
+		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
+			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
+				patched, patchErr := config.ApplyModelOverrides(agentConfigContent, activeProfile, roleModel, "", opts.ProfilesFile)
+				if patchErr != nil {
+					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
+					if opts.OnProgress != nil {
+						opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					}
+					continue
+				}
+				agentConfigContent = patched
+			}
+		}
 
 		// For bwrap and sandbox-exec sessions, write the opencode.json config
 		// file to disk now so it is present before the agent pane opens.
@@ -431,6 +463,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			GroupID:            groupID,
 			RuntimeEnvVars:     opts.RuntimeEnvVars,
 			HarnessName:        opts.Harness,
+			ModelsByRole:       opts.ModelsByRole,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

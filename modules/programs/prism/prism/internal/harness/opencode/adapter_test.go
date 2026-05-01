@@ -469,3 +469,72 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// ── EffectiveModel per-role override (C.2 §3.2) ───────────────────────────────
+
+// TestEffectiveModel_PerRoleOverrideTakesPrecedence verifies that when a model
+// is set for a role via NewWithModelOverrides, EffectiveModel returns that
+// model ahead of the profile/opencode.json lookup.
+func TestEffectiveModel_PerRoleOverrideTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	configDir := filepath.Join(dir, "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// opencode.json has a "worker" model — it must NOT be returned when the
+	// per-role override map contains an entry for "worker".
+	config := `{"agent":{"worker":{"model":"anthropic/claude-from-opencode-json"},"coordinator":{"model":"anthropic/claude-coordinator"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "opencode.json"), []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	overrides := map[string]string{
+		"review-context": "google/gemini-2.5-pro",
+		"worker":         "anthropic/claude-override",
+	}
+	a := NewWithModelOverrides("", nil, "worker", overrides)
+
+	// "worker" role: per-role override must win.
+	if got := a.EffectiveModel("worker"); got != "anthropic/claude-override" {
+		t.Errorf("EffectiveModel(worker) = %q, want %q (per-role override)", got, "anthropic/claude-override")
+	}
+	// "review-context" role: per-role override must win.
+	if got := a.EffectiveModel("review-context"); got != "google/gemini-2.5-pro" {
+		t.Errorf("EffectiveModel(review-context) = %q, want %q (per-role override)", got, "google/gemini-2.5-pro")
+	}
+	// "coordinator" role: no override → falls back to opencode.json.
+	if got := a.EffectiveModel("coordinator"); got != "anthropic/claude-coordinator" {
+		t.Errorf("EffectiveModel(coordinator) = %q, want %q (opencode.json fallback)", got, "anthropic/claude-coordinator")
+	}
+}
+
+// TestEffectiveModel_SetModelOverridesApplied verifies SetModelOverrides updates
+// the adapter's per-role map and subsequent EffectiveModel calls reflect it.
+func TestEffectiveModel_SetModelOverridesApplied(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	configDir := filepath.Join(dir, "opencode")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	config := `{"agent":{"worker":{"model":"anthropic/claude-default"}}}`
+	if err := os.WriteFile(filepath.Join(configDir, "opencode.json"), []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	a := New("", nil, "worker", "")
+	// Before SetModelOverrides — falls back to opencode.json.
+	if got := a.EffectiveModel("worker"); got != "anthropic/claude-default" {
+		t.Errorf("before SetModelOverrides: EffectiveModel(worker) = %q, want %q", got, "anthropic/claude-default")
+	}
+
+	a.SetModelOverrides(map[string]string{"worker": "google/gemini-overridden"})
+	// After SetModelOverrides — per-role map wins.
+	if got := a.EffectiveModel("worker"); got != "google/gemini-overridden" {
+		t.Errorf("after SetModelOverrides: EffectiveModel(worker) = %q, want %q", got, "google/gemini-overridden")
+	}
+}

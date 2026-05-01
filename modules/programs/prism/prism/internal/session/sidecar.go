@@ -256,6 +256,10 @@ type StartSidecarOpts struct {
 	// can call harness.ShapeOf to determine its own transport shape. When
 	// empty, the sidecar defaults to "opencode".
 	HarnessName string
+	// ModelsByRole is the per-role model override map (C.2). When non-empty
+	// it is forwarded to the sidecar via repeated --model-override role=model
+	// flags so the harness adapter applies per-role overrides.
+	ModelsByRole map[string]string
 }
 
 // StartSidecar launches a detached `prism sidecar` process for the given
@@ -347,6 +351,9 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	}
 	if opts.HarnessName != "" {
 		cmdArgs = append(cmdArgs, "--harness", opts.HarnessName)
+	}
+	for role, model := range opts.ModelsByRole {
+		cmdArgs = append(cmdArgs, "--model-override", role+"="+model)
 	}
 
 	cmd := exec.Command(self, cmdArgs...)

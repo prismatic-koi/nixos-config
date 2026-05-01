@@ -163,6 +163,11 @@ type SpawnOpts struct {
 	// can call harness.ShapeOf to determine its own transport shape.
 	HarnessName string
 
+	// ModelsByRole is the per-role model override map (C.2). When non-empty
+	// it is forwarded to the sidecar via repeated --model-override flags so
+	// the harness adapter applies per-role model overrides.
+	ModelsByRole map[string]string
+
 	// ReadinessTimeout, when > 0, causes SpawnSession to gate its return on
 	// the agent reaching a readiness signal in the prism DB (see
 	// WaitForReady). If the gate trips with a timeout, SpawnSession cleans
@@ -631,6 +636,8 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		Layout:           LayoutFull,
 		ForceFresh:       opts.ForceFresh,
 		Headless:         opts.Headless,
+		HarnessName:      opts.HarnessName,
+		ModelsByRole:     opts.ModelsByRole,
 	}
 }
 
@@ -734,6 +741,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		InstanceID:       opts.InstanceID,
 		WorktreeReadOnly: opts.WorktreeReadOnly,
 		HarnessName:      opts.HarnessName,
+		ModelsByRole:     opts.ModelsByRole,
 	}
 	if err := StartSidecarWithOpts(opts.SessionName, sidecarOpts); err != nil {
 		// Non-fatal: log and continue, matching the LayoutFull behaviour
