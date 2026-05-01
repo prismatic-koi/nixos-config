@@ -63,6 +63,93 @@ describe("similarityKey — bash similarity", () => {
     const key = similarityKey("bash", { command: "go test ./..." });
     expect(key).toMatch(/^bash:/);
   });
+
+  // ── Subcommand-driven CLI tests ──────────────────────────────────────────
+
+  test("gh issue view with different issue numbers produces different keys", () => {
+    const keys = [1, 2, 3, 4, 5].map((n) =>
+      similarityKey("bash", { command: `gh issue view ${n}` })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(5);
+  });
+
+  test("gh pr view with different PR numbers produces different keys", () => {
+    const keys = [10, 11, 12, 13, 14].map((n) =>
+      similarityKey("bash", { command: `gh pr view ${n}` })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(5);
+  });
+
+  test("git show with different ref:path values produces different keys", () => {
+    const paths = ["foo.go", "bar.go", "baz.go", "qux.go", "quux.go"];
+    const keys = paths.map((p) =>
+      similarityKey("bash", { command: `git show abc123:${p}` })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(5);
+  });
+
+  test("kubectl get pod with different pod names produces different keys", () => {
+    const pods = ["pod-a", "pod-b", "pod-c", "pod-d", "pod-e"];
+    const keys = pods.map((p) =>
+      similarityKey("bash", { command: `kubectl get pod ${p}` })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(5);
+  });
+
+  test("five identical gh issue view 1131 calls produce the same key (loop case)", () => {
+    const keys = Array(5).fill(null).map(() =>
+      similarityKey("bash", { command: "gh issue view 1131" })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(1);
+  });
+
+  test("five identical git show abc123:foo.go calls produce the same key (loop case)", () => {
+    const keys = Array(5).fill(null).map(() =>
+      similarityKey("bash", { command: "git show abc123:foo.go" })
+    );
+    const unique = new Set(keys);
+    expect(unique.size).toBe(1);
+  });
+
+  test("gh alone (no subcommand) falls back gracefully — no error", () => {
+    expect(() => similarityKey("bash", { command: "gh" })).not.toThrow();
+    const key = similarityKey("bash", { command: "gh" });
+    expect(key).toMatch(/^bash:/);
+  });
+
+  test("git alone falls back gracefully — no error", () => {
+    expect(() => similarityKey("bash", { command: "git" })).not.toThrow();
+    const key = similarityKey("bash", { command: "git" });
+    expect(key).toMatch(/^bash:/);
+  });
+
+  test("gh auth (one positional) falls back gracefully — no error", () => {
+    expect(() => similarityKey("bash", { command: "gh auth login" })).not.toThrow();
+    const key = similarityKey("bash", { command: "gh auth login" });
+    expect(key).toMatch(/^bash:gh auth/);
+  });
+
+  test("git status (one positional, no operand) falls back gracefully", () => {
+    const key = similarityKey("bash", { command: "git status" });
+    expect(key).toMatch(/^bash:git status/);
+  });
+
+  test("subcommand CLI key is human-readable (not a hash)", () => {
+    const key = similarityKey("bash", { command: "gh issue view 1255" });
+    expect(key).toBe("bash:gh issue view 1255");
+  });
+
+  test("grep (non-subcommand CLI) behaves as before — same first positional collapses", () => {
+    const a = similarityKey("bash", { command: "grep -r foo ." });
+    const b = similarityKey("bash", { command: "grep -r foo src/" });
+    // Both have same base "grep" and first positional "foo"
+    expect(a).toBe(b);
+  });
 });
 
 describe("similarityKey — edit similarity", () => {
