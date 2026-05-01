@@ -172,12 +172,8 @@ type ResolveInput struct {
 
 	// DBIsolationMode is the isolation_mode column value from an
 	// agent_status DB row. Empty string means the column was not recorded
-	// (pre-v10 rows) — fall back to DBHostMode.
+	// (pre-v10 rows).
 	DBIsolationMode string
-
-	// DBHostMode is the host_mode column value from an agent_status DB row.
-	// Deprecated: A.4 removes this column after backfilling isolation_mode.
-	DBHostMode bool
 
 	// ConfigDefault is the machine-level default from config.json
 	// (cfg.DefaultIsolationMode). Always set to a valid mode; the compiled-in
@@ -190,13 +186,11 @@ type ResolveInput struct {
 // Resolution order:
 //  1. --isolation flag (explicit override, validated).
 //  2. DB isolation_mode column (from a restored session row).
-//  3. DB host_mode column → "host" (back-compat for pre-v10 rows).
-//  4. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
+//  3. ConfigDefault (cfg.DefaultIsolationMode; compiled-in default: "host").
 //
 // Cites: cmd/spawn.go:resolveIsolationMode; cmd/switch.go, cmd/pr.go,
 //
-//	cmd/review.go, cmd/restore.go (ConfigDefault path);
-//	internal/db/db.go (Status.EffectiveIsolationMode, DB back-compat path).
+//	cmd/review.go, cmd/restore.go (ConfigDefault path).
 func Resolve(input ResolveInput) (config.IsolationMode, error) {
 	// 1. --isolation flag.
 	if input.IsolationFlagChanged && input.IsolationFlag != "" {
@@ -213,12 +207,7 @@ func Resolve(input ResolveInput) (config.IsolationMode, error) {
 		return config.IsolationMode(input.DBIsolationMode), nil
 	}
 
-	// 3. DB host_mode column → "host" (pre-v10 back-compat).
-	if input.DBHostMode {
-		return config.IsolationHost, nil
-	}
-
-	// 4. Machine-level config default (always set; compiled-in default "host").
+	// 3. Machine-level config default (always set; compiled-in default "host").
 	if input.ConfigDefault != "" {
 		return input.ConfigDefault, nil
 	}

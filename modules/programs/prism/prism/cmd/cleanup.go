@@ -230,7 +230,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
 			review.CleanupReviewSessionsForParent(d, m.session)
-			if !hostModeFromDB(d, m.session) {
+			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
@@ -526,7 +526,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -595,7 +595,7 @@ func closeSession(session string) error {
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -672,7 +672,7 @@ func headlessCloseSession(session string) error {
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -998,26 +998,15 @@ func instanceIDFromStatus(d *db.DB, sessionName string) string {
 	return *status.InstanceID
 }
 
-// hostModeFromDB queries the already-open database d and returns true when
-// the agent_status row for sessionName has host_mode = 1. Returns false when
-// the row is missing, host_mode is NULL (pre-migration), or on any error.
-func hostModeFromDB(d *db.DB, sessionName string) bool {
-	status, err := d.CurrentStatus(sessionName)
-	if err != nil || status == nil {
-		return false
-	}
-	return status.HostMode
-}
-
 // isolationModeFromDB queries the already-open database d and returns the
-// effective isolation mode for sessionName using Status.EffectiveIsolationMode.
+// isolation mode for sessionName by reading Status.IsolationMode directly.
 // Returns "" when the row is missing or on any error.
 func isolationModeFromDB(d *db.DB, sessionName string) string {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
 		return ""
 	}
-	return status.EffectiveIsolationMode()
+	return status.IsolationMode
 }
 
 // stopAndRemoveChildContainers stops and removes podman containers for all

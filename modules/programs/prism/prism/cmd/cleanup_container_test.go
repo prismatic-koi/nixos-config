@@ -179,13 +179,13 @@ func TestRemoveContainerIfExists_NoSuchContainer(t *testing.T) {
 	}
 }
 
-// TestHeadlessCleanup_HostMode_SkipsPodman verifies that when host_mode is set
-// for a session in the DB, headlessCleanup does NOT invoke podman at all —
+// TestHeadlessCleanup_HostMode_SkipsPodman verifies that when isolation_mode is
+// "host" for a session in the DB, headlessCleanup does NOT invoke podman at all —
 // host-mode sessions run opencode directly on the host with no container.
 //
 // This test calls headlessCleanup with an empty worktreePath so that the git
 // operations are skipped and only the sidecar/container/DB teardown runs.
-// Covers the host_mode short-circuit added in #471.
+// Covers the host isolation_mode short-circuit.
 func TestHeadlessCleanup_HostMode_SkipsPodman(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "") // run host-side logic directly, not via proxy
 	// Redirect TmuxBin to a no-op so headlessCleanup's scratchpad-ensure
@@ -203,8 +203,8 @@ func TestHeadlessCleanup_HostMode_SkipsPodman(t *testing.T) {
 	if err := d.UpsertStatus(session, "myrepo", "", "running", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	if err := d.SetHostMode(session, true); err != nil {
-		t.Fatalf("SetHostMode: %v", err)
+	if err := d.SetIsolationMode(session, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
 	}
 	d.Close()
 

@@ -281,19 +281,6 @@ func TestResolve_DBIsolationMode_UsedWhenFlagsAbsent(t *testing.T) {
 	}
 }
 
-func TestResolve_DBHostMode_MapsToHost(t *testing.T) {
-	mode, err := Resolve(ResolveInput{
-		DBHostMode:    true,
-		ConfigDefault: config.IsolationPodman,
-	})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v", err)
-	}
-	if mode != config.IsolationHost {
-		t.Errorf("mode = %q, want %q", mode, config.IsolationHost)
-	}
-}
-
 func TestResolve_ConfigDefault_Podman(t *testing.T) {
 	// ConfigDefault=podman: without any flags, should resolve to podman.
 	mode, err := Resolve(ResolveInput{

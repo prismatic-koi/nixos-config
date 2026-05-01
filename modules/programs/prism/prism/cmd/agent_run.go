@@ -156,7 +156,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// valid modes for `prism agent-run`; the registered isolator returns
 	// the original "this command is only for bwrap and sandbox-exec
 	// sessions" error verbatim, replacing the manual `else` arm.
-	isoMode := config.IsolationMode(status.EffectiveIsolationMode())
+	isoMode := config.IsolationMode(status.IsolationMode)
 
 	// Belt-and-braces platform guard. The container.For-resolved isolator's
 	// AgentRun body would also fail eventually (bubblewrap is Linux-only,

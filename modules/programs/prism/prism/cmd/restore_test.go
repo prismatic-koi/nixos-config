@@ -573,9 +573,9 @@ func TestRestoreSession_ContainerMode(t *testing.T) {
 }
 
 // TestRestoreSession_HostModeOverride verifies that when a session was
-// explicitly spawned in host mode (host_mode=1 in agent_status), restore
-// preserves that mode even when cfg.DefaultIsolationMode is "podman". The
-// agent pane must run "opencode --agent ..." rather than "podman attach".
+// explicitly spawned in host mode (isolation_mode="host" in agent_status),
+// restore preserves that mode even when cfg.DefaultIsolationMode is "podman".
+// The agent pane must run "opencode --agent ..." rather than "podman attach".
 func TestRestoreSession_HostModeOverride(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -583,18 +583,18 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 	withCmdServer(t, s)
 
 	// Enable podman mode globally — the test verifies the per-session
-	// host_mode flag still overrides it.
+	// isolation_mode still overrides it.
 	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationPodman})
 
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
 	sessionName := "myrepo@host-mode"
-	// Seed the row first, then mark it as host_mode=true. Re-read so the
-	// Status passed to restoreSession has the correct HostMode value.
+	// Seed the row first, then mark it as host isolation_mode. Re-read so the
+	// Status passed to restoreSession has the correct IsolationMode value.
 	_ = seedStatus(t, d, sessionName, worktreeDir, nil)
-	if err := d.SetHostMode(sessionName, true); err != nil {
-		t.Fatalf("SetHostMode: %v", err)
+	if err := d.SetIsolationMode(sessionName, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
 	}
 	statuses, err := d.AllActiveStatus()
 	if err != nil {
@@ -607,8 +607,8 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 			break
 		}
 	}
-	if !status.HostMode {
-		t.Fatalf("seeded status HostMode = false, want true")
+	if status.IsolationMode != "host" {
+		t.Fatalf("seeded status IsolationMode = %q, want \"host\"", status.IsolationMode)
 	}
 
 	if err := callRestoreSession(d, status); err != nil {

@@ -657,24 +657,18 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		}
 	}
 
-	// Persist isolation_mode (and host_mode for "host") BEFORE opening the
-	// agent window. This is the critical ordering fix: prism agent-run in
-	// window 1 reads isolation_mode from agent_status immediately on start.
-	// If we write isolation_mode only after the window exists (as the old
-	// post-ensureAndSwitch block in cmd/spawn.go did), prism agent-run
-	// races and sees NULL → falls back to "podman" → dies with a mode
-	// mismatch error. Writing here, synchronously before NewWindow, removes
-	// the race entirely. See issue #894.
+	// Persist isolation_mode BEFORE opening the agent window. This is the
+	// critical ordering fix: prism agent-run in window 1 reads isolation_mode
+	// from agent_status immediately on start. If we write isolation_mode only
+	// after the window exists (as the old post-ensureAndSwitch block in
+	// cmd/spawn.go did), prism agent-run races and sees NULL → falls back to
+	// "podman" → dies with a mode mismatch error. Writing here, synchronously
+	// before NewWindow, removes the race entirely. See issue #894.
 	if mode != "" {
 		// Always write isolation_mode when we have a non-empty mode.
 		if d, dbErr := openDB(); dbErr == nil {
 			if setErr := d.SetIsolationMode(name, mode); setErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: setupFullLayout: set isolation_mode for %q: %v\n", name, setErr)
-			}
-			if mode == "host" {
-				if setErr := d.SetHostMode(name, true); setErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: setupFullLayout: set host_mode for %q: %v\n", name, setErr)
-				}
 			}
 			d.Close()
 		} else {

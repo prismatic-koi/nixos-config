@@ -726,24 +726,16 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// prism agent-run (the bwrap entry point) reads isolation_mode from
 	// agent_status immediately on startup to validate the session mode. If the
 	// write happens after tmux.NewWindow, agent-run races and sees NULL →
-	// EffectiveIsolationMode() returns "podman" → agent-run rejects the bwrap
-	// session with "has isolation mode 'podman', not bwrap". Writing here,
-	// synchronously before NewWindow, removes the race. Mirrors the identical
-	// write in setupFullLayout (session.go:558–581). Non-fatal: a DB failure
-	// is logged and spawn continues — the worst-case is the pre-fix behavior.
+	// agent-run rejects the bwrap session with "has isolation mode 'podman',
+	// not bwrap". Writing here, synchronously before NewWindow, removes the
+	// race. Mirrors the identical write in setupFullLayout (session.go).
+	// Non-fatal: a DB failure is logged and spawn continues.
 	if mode != "" {
 		if d, dbErr := openDB(); dbErr == nil {
 			if setErr := d.SetIsolationMode(opts.SessionName, mode); setErr != nil {
 				fmt.Fprintf(os.Stderr,
 					"warning: spawnAgentOnlyLayout: set isolation_mode for %q: %v\n",
 					opts.SessionName, setErr)
-			}
-			if mode == "host" {
-				if setErr := d.SetHostMode(opts.SessionName, true); setErr != nil {
-					fmt.Fprintf(os.Stderr,
-						"warning: spawnAgentOnlyLayout: set host_mode for %q: %v\n",
-						opts.SessionName, setErr)
-				}
 			}
 			d.Close()
 		} else {

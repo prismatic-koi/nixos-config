@@ -163,11 +163,6 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// mode. resolveParentIsolationMode returns "" only when the DB cannot be
 	// read or the session has no row; the caller falls back to the machine
 	// default in that case.
-	//
-	// resolveParentIsolationMode calls status.EffectiveIsolationMode() which
-	// handles pre-v10 back-compat: when isolation_mode is "" but host_mode is
-	// true, it returns "host"; when both are unset it returns "podman". This
-	// mirrors the restore.go precedent established in PR #882.
 	isoMode, isoErr := container.Resolve(container.ResolveInput{
 		ConfigDefault: cfg.DefaultIsolationMode,
 	})
@@ -347,12 +342,6 @@ func resolveReviewWorktree(parentSession string) (string, error) {
 // parentSession by looking it up in the prism DB. It returns "" only when the
 // DB cannot be opened or the session has no row, signalling to the caller that
 // it should fall back to cfg.DefaultIsolationMode.
-//
-// When a row exists, status.EffectiveIsolationMode() is used rather than
-// status.IsolationMode directly. This handles pre-v10 back-compat rows where
-// isolation_mode is NULL but host_mode is 1 (true): EffectiveIsolationMode
-// returns "host" in that case rather than propagating the empty string.
-// This mirrors the pattern established in restore.go (PR #882).
 func resolveParentIsolationMode(parentSession string) string {
 	d, dbErr := openDB()
 	if dbErr != nil {
@@ -363,7 +352,12 @@ func resolveParentIsolationMode(parentSession string) string {
 	if stErr != nil || status == nil {
 		return ""
 	}
-	return status.EffectiveIsolationMode()
+	if status.IsolationMode == "" {
+		// Pre-v10 rows have no isolation_mode; default to podman (safe default
+		// for legacy rows that pre-date the isolation_mode column, #1137).
+		return "podman"
+	}
+	return status.IsolationMode
 }
 
 // splitCSV splits a comma-separated string and trims whitespace.

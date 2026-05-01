@@ -242,7 +242,7 @@ WHERE a.session_name = ?`
 // to a session_groups row with parent_session = parentSession.
 func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
 	return d.queryStatuses(q, parentSession)
