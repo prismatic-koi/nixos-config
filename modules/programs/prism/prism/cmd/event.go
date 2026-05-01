@@ -410,6 +410,12 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			// Non-fatal — log but don't fail the command.
 			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: prune: %v\n", err)
 		}
+		// harness_frames retention is shorter (7d) — the raw JSONL archive is
+		// voluminous on a busy PI session and only useful for near-term wire-
+		// protocol debugging. agent_events stays at 90d above.
+		if err := d.PruneHarnessFrames(7 * 24 * time.Hour); err != nil {
+			fmt.Fprintf(os.Stderr, "prism event tmux-session-start: prune harness_frames: %v\n", err)
+		}
 
 		return nil
 	},

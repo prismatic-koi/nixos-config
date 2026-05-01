@@ -105,6 +105,10 @@ func Restore(dryRun bool) error {
 		fmt.Fprintf(os.Stderr, "prism restore: prune: %v\n", err)
 		// Non-fatal — continue with restore.
 	}
+	// Shorter retention for the raw harness wire archive (P5.LOGS / #1218).
+	if err := d.PruneHarnessFrames(7 * 24 * time.Hour); err != nil {
+		fmt.Fprintf(os.Stderr, "prism restore: prune harness_frames: %v\n", err)
+	}
 
 	// Remove any stale dashboard socket left behind by a crashed dashboard.
 	// Non-fatal: a stale socket only affects real-time push delivery.

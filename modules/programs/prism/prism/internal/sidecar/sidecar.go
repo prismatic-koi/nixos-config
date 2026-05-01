@@ -1294,6 +1294,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		s.writeStartupError(err2)
 		return err2
 	}
+	// Archive the raw hello bytes (P5.LOGS / #1218) so `prism logs --harness-events`
+	// can replay the full handshake. archiveInboundFrame strips the trailing newline.
+	if n := len(helloLine); n > 0 && helloLine[n-1] == '\n' {
+		s.archiveInboundFrame(helloLine[:n-1])
+	} else {
+		s.archiveInboundFrame(helloLine)
+	}
 
 	var helloFrame struct {
 		Type            string `json:"type"`
@@ -1341,6 +1348,9 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	}
 	ackBytes, _ := json.Marshal(ackFrame)
 	ackBytes = append(ackBytes, '\n')
+	// Archive hello_ack (P5.LOGS / #1218) before sending so we record what we
+	// tried to send even if the write fails.
+	s.archiveOutboundFrame(ackBytes)
 	if _, err := conn.Write(ackBytes); err != nil {
 		startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: write hello_ack: %w", err)
 		s.writeStartupError(startupErr)
@@ -1366,6 +1376,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	go func() {
 		defer close(writerDone)
 		for frame := range outCh {
+			// Archive the outbound frame BEFORE Write so a failed write
+			// (connection closed) still leaves an audit trail of what we
+			// tried to send. archiveOutboundFrame strips the trailing '\n'.
+			s.archiveOutboundFrame(frame)
 			if _, err := conn.Write(frame); err != nil {
 				log.Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
 				return
@@ -1383,8 +1397,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			if len(line) > 1 && line[len(line)-2] == '\r' {
 				line = append(line[:len(line)-2], '\n')
 			}
-			cleanShutdown := s.handlePipeFrame(line[:len(line)-1]) // strip trailing \n
-			_ = maxLineBytes                                         // silence unused-var lint if buf not used
+			frameBytes := line[:len(line)-1] // strip trailing \n
+			// Archive the raw inbound frame (P5.LOGS / #1218) BEFORE
+			// handlePipeFrame so a frame that triggers a clean shutdown
+			// (session_shutdown) is still recorded.
+			s.archiveInboundFrame(frameBytes)
+			cleanShutdown := s.handlePipeFrame(frameBytes)
+			_ = maxLineBytes // silence unused-var lint if buf not used
 			if cleanShutdown {
 				break
 			}
@@ -1492,6 +1511,9 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 	}
 	b, _ := json.Marshal(errFrame)
 	b = append(b, '\n')
+	// Archive the outbound error (P5.LOGS / #1218) so handshake failures show
+	// up in `prism logs --harness-events`.
+	s.archiveOutboundFrame(b)
 	_, _ = conn.Write(b)
 	_ = conn.Close()
 }

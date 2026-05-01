@@ -8,6 +8,11 @@ import (
 // Prune deletes agent_events older than olderThan, and delivered or failed
 // bus_messages older than olderThan. It does NOT delete agent_status rows or
 // undelivered/unfailed bus_messages.
+//
+// harness_frames is pruned separately via PruneHarnessFrames so callers can
+// pick a different (typically shorter) retention window for the raw wire
+// archive — the JSONL frames are voluminous on a busy session, while
+// agent_events stays at the historical 90-day default.
 func (d *DB) Prune(olderThan time.Duration) error {
 	threshold := time.Now().Add(-olderThan).UnixMilli()
 

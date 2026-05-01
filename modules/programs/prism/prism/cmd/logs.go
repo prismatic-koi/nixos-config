@@ -60,6 +60,15 @@ session.SpawnSession before tmux send-keys):
 
   prism logs nixos-config@feat --startup
 
+Use --harness-events to print the raw PI JSONL frames recorded for a
+socket-pipe session (P5.LOGS / #1218). One JSON object per line in
+chronological order; pipe to jq for pretty-printing:
+
+  prism logs nixos-config@feat --harness-events
+  prism logs nixos-config@feat --harness-events --follow
+  prism logs nixos-config@feat --harness-events --direction in
+  prism logs nixos-config@feat --harness-events --types tool_call,tool_result
+
 Works identically from the host or inside a coordinator container — in
 container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).`,
 	Args:         cobra.ExactArgs(1),
@@ -72,6 +81,9 @@ func init() {
 	logsCmd.Flags().BoolP("follow", "f", false, "Stream new lines as they are written; exits when session ends or Ctrl-C")
 	logsCmd.Flags().Bool("agent-run", false, "Read the agent-run log (bwrap harness stdout/stderr) instead of the sidecar log")
 	logsCmd.Flags().Bool("startup", false, "Read the agent-startup log (spawn-time breadcrumbs written by session.SpawnSession)")
+	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session (P5.LOGS / #1218)")
+	logsCmd.Flags().String("direction", "", "With --harness-events: filter frames by direction (in|out)")
+	logsCmd.Flags().String("types", "", "With --harness-events: comma-separated list of frame types to include")
 	rootCmd.AddCommand(logsCmd)
 }
 
@@ -83,6 +95,26 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	tailSet := cmd.Flags().Changed("tail")
 	agentRun, _ := cmd.Flags().GetBool("agent-run")
 	startup, _ := cmd.Flags().GetBool("startup")
+	harnessEvents, _ := cmd.Flags().GetBool("harness-events")
+	direction, _ := cmd.Flags().GetString("direction")
+	typesCSV, _ := cmd.Flags().GetString("types")
+
+	// --harness-events is its own pipeline (DB-backed, not a log file). It
+	// supersedes --agent-run / --startup / --tail and only honours --follow,
+	// --direction, and --types.
+	if harnessEvents {
+		if agentRun || startup {
+			return fmt.Errorf("--harness-events cannot be combined with --agent-run or --startup")
+		}
+		if tailSet {
+			return fmt.Errorf("--harness-events does not support --tail (use --follow to stream new frames)")
+		}
+		return runHarnessEvents(sessionName, direction, typesCSV, follow, os.Stdout)
+	}
+
+	if direction != "" || typesCSV != "" {
+		return fmt.Errorf("--direction and --types require --harness-events")
+	}
 
 	if tailSet && follow {
 		return fmt.Errorf("--tail and --follow are mutually exclusive")

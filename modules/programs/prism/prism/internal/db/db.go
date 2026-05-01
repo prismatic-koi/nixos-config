@@ -218,6 +218,18 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
 );
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_profile         ON spawn_inputs(profile_name);
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harness_flag, profile_name);
+
+CREATE TABLE IF NOT EXISTS harness_frames (
+  id            TEXT PRIMARY KEY,
+  session_name  TEXT NOT NULL,
+  instance_id   TEXT,
+  direction     TEXT NOT NULL,
+  type          TEXT,
+  payload       TEXT NOT NULL,
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_harness_frames_session ON harness_frames(session_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(session_name, direction, created_at);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -338,6 +350,12 @@ CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harn
 // across. isolation_mode remains nullable TEXT in the new schema. The migration
 // is conditional: it checks whether host_mode still exists before rebuilding,
 // making it idempotent (#1137).
+// v26→v27 adds the harness_frames table for the raw PI JSONL frame archive
+// (P5.LOGS / #1218). The table stores every inbound and outbound frame on a
+// socket-pipe session keyed by session_name + created_at, with a denormalised
+// type column for fast --types filtering. CREATE TABLE IF NOT EXISTS and
+// CREATE INDEX IF NOT EXISTS make the migration idempotent; fresh databases
+// already have the table from the declarative schema block above.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -421,7 +439,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v26.
+// migrations in order from v1 to v27.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -500,6 +518,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV25toV26(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV26toV27(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1560,6 +1581,55 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 		return fmt.Errorf("db: migration v25→v26: bump version: %w", err)
 	}
 	*version = 26
+	return nil
+}
+
+func migrateV26toV27(conn *sql.DB, version *int) error {
+	if *version != 26 {
+		return nil
+	}
+	// Migration v26 → v27: introduce the harness_frames table for the PI
+	// raw JSONL frame archive (P5.LOGS / #1218). The table stores every
+	// inbound (extension→sidecar) and outbound (sidecar→extension) frame
+	// for socket-pipe sessions, keyed by session_name and created_at, so
+	// `prism logs --harness-events <session>` can replay the wire-protocol
+	// stream for debugging without grepping the sidecar log.
+	//
+	// Direction is one of 'in' (extension→sidecar) or 'out' (sidecar→
+	// extension). type is the JSON "type" field of the frame, denormalised
+	// so --types filtering can be a simple WHERE clause without parsing
+	// payload JSON. Payload is the raw JSONL bytes (excluding the trailing
+	// newline) so consumers can pipe the output of `prism logs --harness-events`
+	// directly into a JSONL parser.
+	//
+	// CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS make this
+	// migration idempotent. Fresh databases already have the table from the
+	// declarative schema block, so the CREATE statements are no-ops there.
+	//
+	// Rollback: DROP TABLE harness_frames. The table holds no data referenced
+	// by other tables (the optional instance_id column has no FK to keep frame
+	// writes cheap and to allow legacy frames whose instance_id is NULL), so a
+	// drop is non-destructive to the rest of the schema.
+	steps := []string{
+		`CREATE TABLE IF NOT EXISTS harness_frames (
+		  id            TEXT PRIMARY KEY,
+		  session_name  TEXT NOT NULL,
+		  instance_id   TEXT,
+		  direction     TEXT NOT NULL,
+		  type          TEXT,
+		  payload       TEXT NOT NULL,
+		  created_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_harness_frames_session ON harness_frames(session_name, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(session_name, direction, created_at)`,
+		`UPDATE schema_version SET version = 27`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v26→v27: %w", err)
+		}
+	}
+	*version = 27
 	return nil
 }
 
