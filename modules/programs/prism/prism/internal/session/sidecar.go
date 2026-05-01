@@ -124,7 +124,29 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", SessionDirName(sessionName), "hostapi.sock"), nil
 }
 
-// AgentRunLogPath returns the agent-run log file path for the named session.
+// SidecarHarnessPipePath returns the Unix socket path for the session's
+// PI harness pipe socket. This socket is the sidecar-side end of the
+// bidirectional JSONL protocol defined in P2.WIRE (#1208).
+//
+// The socket lives in the same per-session directory as the host-API socket
+// (hostapi.sock), so the existing bind-mount entry in bwrap (which exposes
+// the per-session run directory inside the sandbox) covers this socket too —
+// no additional bind-mount is needed (see internal/container/bwrap.go,
+// the PRISM_HOST_API block). The same applies to the Darwin sandbox-exec
+// SBPL subpath rule.
+//
+// The directory name is the same SessionDirName-derived 12-hex prefix used
+// by SidecarHostAPIPath, keeping the socket path well under sun_path limits
+// on both Linux (108 bytes) and Darwin (104 bytes) — see #1050.
+//
+// Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/pipe.sock
+func SidecarHarnessPipePath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", SessionDirName(sessionName), "pipe.sock"), nil
+}
 // The log captures the stdout and stderr of the bwrap sandbox (and the opencode
 // harness running inside it) for the lifetime of the session. It lives alongside
 // hostapi.sock in the per-session run directory so that the directory is already

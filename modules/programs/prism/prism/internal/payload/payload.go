@@ -200,3 +200,44 @@ type Audit struct {
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
 	MessageID        string `json:"messageId,omitempty"`
 }
+
+// TurnStart is the payload for turn_start events (P2.WIRE §5.7).
+// Emitted by the PI extension at the start of each assistant turn.
+// TokenBudget is the total token budget for the turn (may be zero if unavailable).
+type TurnStart struct {
+	TurnID      string `json:"turn_id,omitempty"`
+	TokenBudget int    `json:"token_budget,omitempty"`
+}
+
+// TurnEnd is the payload for turn_end events (P2.WIRE §5.7).
+// Emitted by the PI extension at the end of each assistant turn with
+// token usage and cost data when available.
+type TurnEnd struct {
+	TurnID       string  `json:"turn_id,omitempty"`
+	InputTokens  int     `json:"input_tokens,omitempty"`
+	OutputTokens int     `json:"output_tokens,omitempty"`
+	CostUsd      float64 `json:"cost_usd,omitempty"`
+	DurationMs   int64   `json:"duration_ms,omitempty"`
+}
+
+// ProviderError is the payload for provider_error events (P2.WIRE §5.8).
+// Emitted by the PI extension when the underlying LLM provider returns an error.
+type ProviderError struct {
+	Provider   string `json:"provider"`
+	StatusCode int    `json:"status_code,omitempty"`
+	Message    string `json:"message"`
+}
+
+// AutoRetryStart is the payload for auto_retry_start events (P2.WIRE §5.9).
+// Emitted by the PI extension when it begins an automatic retry.
+type AutoRetryStart struct {
+	Attempt int    `json:"attempt"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// AutoRetryEnd is the payload for auto_retry_end events (P2.WIRE §5.9).
+// Emitted by the PI extension when an automatic retry cycle concludes.
+type AutoRetryEnd struct {
+	Attempt bool   `json:"succeeded"`
+	Reason  string `json:"reason,omitempty"`
+}
