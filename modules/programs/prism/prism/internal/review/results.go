@@ -141,9 +141,9 @@ func AssessPassed(text string) (bool, VerdictKind) {
 
 // failureReason returns the user-facing reason string for a spawn / readiness
 // failure. For *session.ReadinessTimeoutError it produces "not ready within
-// <timeout>" (matching the AC-5 example text exactly); other errors are
-// passed through verbatim.
-func failureReason(err error) string {
+// <timeout>" (matching the AC-5 example text exactly). All other errors are
+// sanitized to prevent exposing PRISM_INITIAL_PROMPT payloads.
+func failureReason(prNumber, agentName string, err error) string {
 	if err == nil {
 		return ""
 	}
@@ -157,7 +157,8 @@ func failureReason(err error) string {
 			return rte.Error()
 		}
 	}
-	return err.Error()
+	// Sanitize spawn-machinery errors to prevent PRISM_INITIAL_PROMPT leakage.
+	return sanitizeSpawnError(prNumber, agentName, err)
 }
 
 // sanitisePRNumber returns a version of prNumber safe for use in a filename by

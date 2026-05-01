@@ -289,7 +289,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
-				Output:  fmt.Sprintf("ERROR: failed to spawn agent: %v", spawnErr[i]),
+				Output:  fmt.Sprintf("ERROR: failed to spawn agent: %s", sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])),
 				IsError: true,
 			}
 		} else {
@@ -520,7 +520,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		} else {
 			failures = append(failures, failedAgent{
 				name:   agents[i].Name,
-				reason: failureReason(se),
+				reason: failureReason(opts.PRNumber, agents[i].Name, se),
 			})
 		}
 	}
