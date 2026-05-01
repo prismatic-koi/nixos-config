@@ -1246,8 +1246,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//
 	// Validation:
 	//   - kind must be a known subcommand name (400 for unknown kinds).
-	//   - session must be non-empty and must match a known session in the DB
-	//     (400 for empty; 400 for unknown session).
+	//   - session must be non-empty (400 for empty or whitespace).
+	//     NOTE: we intentionally do NOT require the session to already exist in
+	//     the host DB. tmux-session-start is called for brand-new sessions that
+	//     have no agent_status row yet; a DB-existence check would reject the
+	//     very first event that creates the session record. #1254 originally
+	//     required "matches a known session", but that AC item was relaxed to
+	//     non-empty-only to allow tmux-session-start to work correctly.
 	//   - All role levels (worker and coordinator) are permitted — lifecycle
 	//     events are emitted by both.
 	//
