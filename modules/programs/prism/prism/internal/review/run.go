@@ -136,7 +136,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, configErr)))
 			}
 			continue
 		}
@@ -150,7 +150,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {
-						opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+						opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 					}
 					continue
 				}
@@ -181,14 +181,14 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			if isoErr != nil {
 				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
 				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
 				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}
 				continue
 			}
@@ -222,7 +222,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnSessErr))
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))
 			}
 			// Clean up this agent's resources (sidecar, DB row, tmux session).
 			// SpawnSession may have partially progressed; be defensive so a
@@ -299,7 +299,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
-				Output:  fmt.Sprintf("ERROR: failed to spawn agent: %v", spawnErr[i]),
+				Output:  fmt.Sprintf("ERROR: failed to spawn agent: %s", sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])),
 				IsError: true,
 			}
 		} else {
@@ -417,7 +417,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		if configErr != nil {
 			spawnErr[i] = configErr
 			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), configErr))
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, configErr)))
 			}
 			continue
 		}
@@ -428,7 +428,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {
-						opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+						opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 					}
 					continue
 				}
@@ -451,14 +451,14 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			if isoErr != nil {
 				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
 				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
 				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
-					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
+					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}
 				continue
 			}
@@ -485,7 +485,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
-				opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnSessErr))
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))
 			}
 			session.KillSidecar(agentSession)
 			cleanupAgentSession(d, agentSession)
@@ -538,7 +538,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		} else {
 			failures = append(failures, failedAgent{
 				name:   agents[i].Name,
-				reason: failureReason(se),
+				reason: failureReason(opts.PRNumber, agents[i].Name, se),
 			})
 		}
 	}
