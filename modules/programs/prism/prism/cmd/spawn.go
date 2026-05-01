@@ -611,9 +611,11 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	}
 
 	si := db.SpawnInputs{
-		InstanceID:   *st.InstanceID,
-		CreatedAt:    time.Now().UnixMilli(),
-		PromptSource: spawnStrPtr(args.promptSource),
+		InstanceID: *st.InstanceID,
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	if args.promptSource != "" {
+		si.PromptSource = spawnStrPtr(args.promptSource)
 	}
 
 	if args.profileName != "" {

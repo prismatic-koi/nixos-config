@@ -463,10 +463,18 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 
 	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148). Non-fatal:
 	// spawn_inputs is best-effort telemetry; a failure here must never block
-	// session creation. The write requires a non-empty instance_id — skip
-	// silently for LayoutAgentOnly sessions that do not generate one here
-	// (the sidecar generates one downstream for those sessions).
-	if opts.InstanceID != "" {
+	// session creation. The write requires a non-empty instance_id.
+	//
+	// LayoutFull (CLI) spawns: the richer writeSpawnInputs call in cmd/spawn.go
+	// carries all flag-value columns (profile, model, variant, agent, harness,
+	// branch, skills hash, etc.) and will write the row after SpawnSession
+	// returns. Avoid writing here so INSERT OR IGNORE does not silently drop
+	// that richer payload.
+	//
+	// LayoutAgentOnly (review fan-out) spawns: the caller pre-populates
+	// InstanceID; there is no subsequent writeSpawnInputs call, so SpawnSession
+	// owns the only write.
+	if opts.InstanceID != "" && opts.Layout != LayoutFull {
 		// Pre-seed the sessions row so the FK constraint on spawn_inputs is
 		// satisfied. InsertSession uses INSERT OR IGNORE so the call in the
 		// tmux-session-start hook is a safe no-op when the row already exists.

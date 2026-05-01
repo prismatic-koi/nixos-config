@@ -88,14 +88,19 @@ var linkedIssueRe = regexp.MustCompile(`(?i)(?:closes|fixes|refs|references)\s+#
 // via -ldflags '-X github.com/prismatic-koi/prism/internal/review.reviewGoSHA=<sha>'
 // during the Nix build. It is the SHA suffix in spawn_inputs.prompt_template_hash
 // for review fan-out sessions (C.4.PT, issue #1148). An empty value means the
-// binary was not built with the ldflag (e.g. in development); the hash is then
-// recorded as "review-fanout:" with an empty suffix.
+// binary was not built with the ldflag (e.g. in development); prompt_template_hash
+// is then recorded as NULL (consistent with free-form CLI spawns).
 var reviewGoSHA string
 
 // ReviewPromptTemplateHash returns the prompt_template_hash value for review
 // fan-out spawns: "review-fanout:<sha>" where <sha> is the build-time SHA of
-// this file. Used by run.go's spawn loops (C.4.PT, issue #1148).
+// this file. Returns "" when the binary was not built with the ldflag (dev
+// builds), causing the caller to write NULL to the DB.
+// Used by run.go's spawn loops (C.4.PT, issue #1148).
 func ReviewPromptTemplateHash() string {
+	if reviewGoSHA == "" {
+		return ""
+	}
 	return "review-fanout:" + reviewGoSHA
 }
 
