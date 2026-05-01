@@ -245,6 +245,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// /etc/wpa_supplicant/ — wpa_supplicant configs may contain Wi-Fi
 	// credentials and network identifiers. Agents have no need for these.
 	//
+	// /etc/ssh/ — contains SSH host private keys (ssh_host_*_key) and
+	// system-wide ssh_config. On NixOS the system ssh_config includes a
+	// nobody-owned systemd drop-in via Include; OpenSSH enforces strict
+	// ownership and rejects it, causing git push over SSH to fail. Shadowing
+	// the entire subtree is safe: the generated ~/.ssh/config already
+	// provides all the SSH configuration an agent needs.
+	//
 	// The --tmpfs mounts are conditional on the directory existing on the
 	// host: bwrap requires the mount-point to already exist inside the
 	// namespace (the /etc ro-bind makes the host tree visible, so the check
