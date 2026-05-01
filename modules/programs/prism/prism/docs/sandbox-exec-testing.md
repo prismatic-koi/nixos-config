@@ -150,7 +150,7 @@ integration test coverage exists for:
   time (e.g. `~/.config/aws/readonly-config`, the SSH access key) accessed
   via the in-sandbox `$HOME` path.
 - **Explicit denies** — `~/.aws`, `/private/etc/wireguard`,
-  `/private/etc/wpa_supplicant` are blocked.
+  `/private/etc/wpa_supplicant`, `/private/etc/ssh` are blocked.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to

@@ -25,21 +25,29 @@ package integration_test
 //
 // We therefore split the coverage into:
 //
-//   1. Profile-content assertions
-//      (`TestSandboxExecProfile_Denies_Present`) that the five expected
-//      deny rules are emitted. These guard against the rules being
-//      silently dropped from the generator — the regression mode the
-//      backfilling convention exists to catch.
+//  1. Profile-content assertions
+//     (`TestSandboxExecProfile_Denies_Present`) that the seven expected
+//     deny rules are emitted. These guard against the rules being
+//     silently dropped from the generator — the regression mode the
+//     backfilling convention exists to catch.
 //
-//   2. A deny-mechanism integration test pair
-//      (`TestSandboxExecProfile_DenyOverridesAllow_BlocksReads` /
-//      `TestSandboxExecProfile_DenyOverridesAllow_NegationAllowsReads`)
-//      that proves the deny precedence works end-to-end against
-//      sandbox-exec. The positive test mutates the generated profile to
-//      add an allow + deny pair on a controlled host path and asserts the
-//      deny wins. The negative test removes only the deny and asserts the
-//      same read now succeeds — proving the deny rule itself is what
-//      blocked the read in the positive case.
+//  2. A deny-mechanism integration test pair
+//     (`TestSandboxExecProfile_DenyOverridesAllow_BlocksReads` /
+//     `TestSandboxExecProfile_DenyOverridesAllow_NegationAllowsReads`)
+//     that proves the deny precedence works end-to-end against
+//     sandbox-exec. The positive test mutates the generated profile to
+//     add an allow + deny pair on a controlled host path and asserts the
+//     deny wins. The negative test removes only the deny and asserts the
+//     same read now succeeds — proving the deny rule itself is what
+//     blocked the read in the positive case.
+//
+//  3. A production /etc/ssh deny test pair
+//     (`TestSandboxExecProfile_EtcSSHDenied_BlocksReads` /
+//     `TestSandboxExecProfile_EtcSSHDenied_NegationAllowsReads`)
+//     that tests the production deny rules directly against a real file
+//     on the host (/private/etc/ssh/ssh_config). Unlike wireguard/
+//     wpa_supplicant (which may not exist on developer machines), /etc/ssh
+//     is present on macOS, so the deny vs. ENOENT ambiguity is resolved.
 //
 // This is more precise than testing ~/.aws or wireguard directly: it
 // isolates the deny mechanism (allow + deny → deny wins) from the
@@ -257,5 +265,92 @@ func TestSandboxExecProfile_DenyOverridesAllow_NegationAllowsReads(t *testing.T)
 	if !strings.Contains(string(out), sentinelData) {
 		t.Errorf("read of %s exited 0 but output does not contain the sentinel marker.\nOutput: %s",
 			sentinel, string(out))
+	}
+}
+
+// TestSandboxExecProfile_EtcSSHDenied_BlocksReads is the positive half of the
+// /etc/ssh deny coverage (issue #1260). /private/etc/ssh exists on macOS and
+// is covered by the broad (allow file-read* (subpath "/private/etc")) rule in
+// section 2 of the profile. The deny rule for /private/etc/ssh must override
+// it so that reads of files under /private/etc/ssh (e.g. ssh_config, host
+// keys) are blocked inside the sandbox.
+//
+// If /private/etc/ssh or /private/etc/ssh/ssh_config does not exist on the
+// host, this test is skipped — the read-block would be indistinguishable from
+// ENOENT.
+func TestSandboxExecProfile_EtcSSHDenied_BlocksReads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	target := "/private/etc/ssh/ssh_config"
+	if _, err := os.Stat(target); err != nil {
+		t.Skipf("%s does not exist on this host — cannot distinguish sandbox deny from ENOENT: %v", target, err)
+	}
+
+	// Use BareRoot so the profile's ancestor block grants traversal to /
+	// (needed for /private/etc/ssh path resolution).
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+
+	augmented := augmentProfileForTest(prepared.content)
+	testProfilePath := prepared.path + ".integ-ssh-pos"
+	if err := os.WriteFile(testProfilePath, []byte(augmented), 0o600); err != nil {
+		t.Fatalf("write test profile: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(testProfilePath) })
+
+	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
+		nixBash, "-c", "cat "+shQuote(target))
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Errorf("read of %s succeeded (exit 0) even with the (deny file-read* (subpath \"/private/etc/ssh\")) rule in the profile.\n"+
+			"The /etc/ssh deny is not load-bearing — sandboxed agents can read SSH host keys.\n"+
+			"Output: %s\nProfile: %s", target, string(out), testProfilePath)
+	} else {
+		t.Logf("ka pai — /private/etc/ssh read correctly blocked (exit: %v)", runErr)
+	}
+}
+
+// TestSandboxExecProfile_EtcSSHDenied_NegationAllowsReads is the paired
+// negative test. It removes the /etc/ssh and /private/etc/ssh deny rules and
+// asserts that the same read succeeds — proving the deny rules are what block
+// the read in the positive test, not the default-deny posture.
+func TestSandboxExecProfile_EtcSSHDenied_NegationAllowsReads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	target := "/private/etc/ssh/ssh_config"
+	if _, err := os.Stat(target); err != nil {
+		t.Skipf("%s does not exist on this host — cannot distinguish sandbox deny from ENOENT: %v", target, err)
+	}
+
+	m := newProfileManagerWithBareRoot(t)
+	profilePath := withMutatedProfile(t, m, func(p string) string {
+		// Remove the /etc/ssh subpath line from the deny block.
+		p = strings.ReplaceAll(p, "  (subpath \"/etc/ssh\")\n", "")
+		// The /private/etc/ssh line is the last in the block (has closing "))").
+		// Promote /private/etc/wpa_supplicant to be the last entry instead.
+		p = strings.ReplaceAll(p, "  (subpath \"/private/etc/wpa_supplicant\")\n  (subpath \"/private/etc/ssh\"))\n",
+			"  (subpath \"/private/etc/wpa_supplicant\"))\n")
+		return p
+	})
+
+	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
+		nixBash, "-c", "cat "+shQuote(target))
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Errorf("read of %s failed even with the /etc/ssh deny rules removed.\n"+
+			"The profile's (allow file-read* (subpath \"/private/etc\")) should permit this read.\n"+
+			"If it doesn't, the negative test is not isolating the right rules.\n"+
+			"Exit: %v\nOutput: %s\nProfile: %s",
+			target, runErr, string(out), profilePath)
+	} else {
+		t.Logf("ka pai — read succeeded without deny rules (expected)")
 	}
 }
