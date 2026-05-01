@@ -26,6 +26,28 @@ import (
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+// maxSunPath is the POSIX limit for sockaddr_un.sun_path (104 on macOS, 108 on Linux).
+// We use 104 as the conservative cross-platform ceiling.
+const maxSunPath = 104
+
+// shortSockPath creates a temp directory under os.TempDir() with a short
+// prefix and returns a socket path whose total length is guaranteed to be
+// within the 104-character POSIX limit for sockaddr_un.sun_path.
+// The directory is automatically removed when the test ends.
+func shortSockPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sp")
+	if err != nil {
+		t.Fatalf("shortSockPath MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	p := filepath.Join(dir, "p.sock")
+	if len(p) > maxSunPath {
+		t.Fatalf("socket path too long (%d > %d): %s", len(p), maxSunPath, p)
+	}
+	return p
+}
+
 // newSocketPipeSidecar creates a Sidecar configured for socket-pipe testing.
 // The caller must set cfg.HarnessPipeSockPath before calling runStartupSocketPipe.
 func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
@@ -141,7 +163,7 @@ func runSocketPipeSidecar(sc *Sidecar) (wait func() error) {
 // TestSocketPipe_Handshake_HelloAck verifies that after a valid hello the
 // sidecar sends hello_ack with the correct fields.
 func TestSocketPipe_Handshake_HelloAck(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 
 	wait := runSocketPipeSidecar(sc)
@@ -171,7 +193,7 @@ func TestSocketPipe_Handshake_HelloAck(t *testing.T) {
 
 // TestSocketPipe_StateChange drives state_change frames and verifies DB state.
 func TestSocketPipe_StateChange(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -217,7 +239,7 @@ func TestSocketPipe_StateChange(t *testing.T) {
 // TestSocketPipe_EventFrames verifies that tool_call, tool_result, and
 // msg_assistant frames are persisted to agent_events.
 func TestSocketPipe_EventFrames(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -260,7 +282,7 @@ func TestSocketPipe_EventFrames(t *testing.T) {
 // TestSocketPipe_SessionShutdown verifies that session_shutdown marks the
 // session finished.
 func TestSocketPipe_SessionShutdown(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -281,7 +303,7 @@ func TestSocketPipe_SessionShutdown(t *testing.T) {
 // TestSocketPipe_ProtocolVersionMismatch verifies that a hello with the wrong
 // protocol version is rejected with a clear error frame, not a hang.
 func TestSocketPipe_ProtocolVersionMismatch(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -330,7 +352,7 @@ func TestSocketPipe_ProtocolVersionMismatch(t *testing.T) {
 // TestSocketPipe_ProtocolVersionTooOld verifies that protocol_version < 1
 // yields a "too old" error code.
 func TestSocketPipe_ProtocolVersionTooOld(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -367,7 +389,7 @@ func TestSocketPipe_ProtocolVersionTooOld(t *testing.T) {
 // TestSocketPipe_MalformedFrame verifies that a malformed JSONL frame is
 // logged and skipped — the session continues, not fatal.
 func TestSocketPipe_MalformedFrame(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -390,7 +412,7 @@ func TestSocketPipe_MalformedFrame(t *testing.T) {
 // TestSocketPipe_PrematureDisconnect verifies that an unexpected disconnect
 // marks the session as error state.
 func TestSocketPipe_PrematureDisconnect(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -413,7 +435,7 @@ func TestSocketPipe_PrematureDisconnect(t *testing.T) {
 // TestSocketPipe_DeliverPrompt verifies that Sidecar.DeliverPrompt enqueues
 // a prompt frame that the extension can receive.
 func TestSocketPipe_DeliverPrompt(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -460,7 +482,7 @@ func TestSocketPipe_DeliverPrompt(t *testing.T) {
 // TestSocketPipe_UnknownFramePersisted verifies that unknown frame types are
 // persisted to agent_events for forward compatibility.
 func TestSocketPipe_UnknownFramePersisted(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
@@ -530,8 +552,7 @@ func TestSocketPipe_TransportShapeRegistered(t *testing.T) {
 // We check this indirectly: Run() with a socket-pipe harness should bind
 // the socket (creating the file) shortly after start.
 func TestSocketPipe_SidecarDispatchesSocketPipe(t *testing.T) {
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "pipe.sock")
+	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
 
 	ctx, cancel := context.WithCancel(context.Background())

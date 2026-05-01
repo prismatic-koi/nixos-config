@@ -1203,3 +1203,116 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 		t.Errorf("error %q should mention 'review process failed'", callErr.Error())
 	}
 }
+
+// ── proxySpawn model-override forwarding (C2.PROXY, issue #1263) ─────────────
+
+// TestProxySpawn_ModelOverrideForwarded verifies that when --model-override
+// flags are passed, proxySpawn includes model_variant_overrides as a
+// JSON-encoded map[string]string in the request body (AC: functional —
+// proxy-spawn honours --model-override).
+func TestProxySpawn_ModelOverrideForwarded(t *testing.T) {
+	type spawnReq struct {
+		Branch                string `json:"branch"`
+		ModelVariantOverrides string `json:"model_variant_overrides"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spawn" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		var req spawnReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@test-branch"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().StringArray("model-override", nil, "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "test-branch")
+	_ = cmd.Flags().Set("model-override", "review-context=google/gemini-2.5-pro")
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.ModelVariantOverrides == "" {
+			t.Fatal("model_variant_overrides not sent in request body")
+		}
+		var overrides map[string]string
+		if err := json.Unmarshal([]byte(req.ModelVariantOverrides), &overrides); err != nil {
+			t.Fatalf("model_variant_overrides is not valid JSON: %v", err)
+		}
+		if overrides["review-context"] != "google/gemini-2.5-pro" {
+			t.Errorf("overrides[review-context] = %q, want %q", overrides["review-context"], "google/gemini-2.5-pro")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+// TestProxySpawn_NoModelOverrideOmitsField verifies that when no --model-override
+// flags are passed, model_variant_overrides is absent from the request body
+// (AC: edge-case — absence behaves identically to today).
+func TestProxySpawn_NoModelOverrideOmitsField(t *testing.T) {
+	type spawnReq struct {
+		Branch                string `json:"branch"`
+		ModelVariantOverrides string `json:"model_variant_overrides"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spawn" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		// Decode into raw map to detect presence of the key.
+		var raw map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		// Encode back to typed struct for assertions.
+		b, _ := json.Marshal(raw)
+		var req spawnReq
+		_ = json.Unmarshal(b, &req)
+		// Store whether key was present in raw body.
+		if _, ok := raw["model_variant_overrides"]; ok {
+			req.ModelVariantOverrides = "__present__"
+		}
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@test-branch"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().StringArray("model-override", nil, "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "test-branch")
+	// No --model-override flag set.
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.ModelVariantOverrides == "__present__" {
+			t.Error("model_variant_overrides must not be present in request body when no overrides are set")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
