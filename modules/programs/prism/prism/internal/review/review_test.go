@@ -14,6 +14,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 func openTestDB(t *testing.T) *db.DB {
@@ -2274,5 +2275,96 @@ func TestBuildReviewPrompt_AllFiveAgentsGetSameContextWithLinkedIssues(t *testin
 		if prompts[i] != prompts[0] {
 			t.Errorf("prompt[%d] differs from prompt[0]; all agents must receive identical context", i)
 		}
+	}
+}
+
+// ── sanitizeSpawnError / truncateProgressMsg tests (issue #1194) ──────────────
+
+// TestSanitizeSpawnError_CommandTooLong verifies that a HostLaunchCmdTooLargeError
+// produces a structured message ≤ 1 KB that does not contain PRISM_INITIAL_PROMPT.
+func TestSanitizeSpawnError_CommandTooLong(t *testing.T) {
+	const prNumber = "1194"
+	const agentName = "review-goal"
+	const safeBound = 16 * 1024
+	const cmdSize = safeBound + 300*1024 // ~316 KB — realistic for a 315-line PR
+
+	syntheticErr := &session.HostLaunchCmdTooLargeError{
+		SessionName: "nixos-config@worker~review-1-review-goal",
+		CmdSize:     cmdSize,
+		SafeBound:   safeBound,
+	}
+
+	msg := review.SanitizeSpawnErrorForTest(prNumber, agentName, syntheticErr)
+
+	// AC: printed message ≤ 1 KiB.
+	if len(msg) > 1024 {
+		t.Errorf("sanitizeSpawnError: message length = %d, want ≤ 1024 bytes\nmessage:\n%s", len(msg), msg)
+	}
+
+	// AC: does not contain PRISM_INITIAL_PROMPT.
+	if strings.Contains(msg, "PRISM_INITIAL_PROMPT=") {
+		t.Errorf("sanitizeSpawnError: message contains PRISM_INITIAL_PROMPT= — argv payload must not appear in stdout")
+	}
+
+	// AC: contains the failure category.
+	if !strings.Contains(msg, "HostLaunchCmdSafeBound") {
+		t.Errorf("sanitizeSpawnError: message does not mention HostLaunchCmdSafeBound\nmessage:\n%s", msg)
+	}
+
+	// AC: contains the bound exceeded.
+	if !strings.Contains(msg, fmt.Sprintf("%d", safeBound)) {
+		t.Errorf("sanitizeSpawnError: message does not contain safe bound %d\nmessage:\n%s", safeBound, msg)
+	}
+
+	// AC: contains a hint.
+	if !strings.Contains(msg, "hint:") {
+		t.Errorf("sanitizeSpawnError: message does not contain a 'hint:'\nmessage:\n%s", msg)
+	}
+}
+
+// TestSanitizeSpawnError_OtherError_NoPromptPayload verifies that a non-oversized
+// error that embeds PRISM_INITIAL_PROMPT in its string does not pass that payload
+// through to the caller.
+func TestSanitizeSpawnError_OtherError_NoPromptPayload(t *testing.T) {
+	const prNumber = "1194"
+	const agentName = "review-code"
+	// Simulate an error whose string includes PRISM_INITIAL_PROMPT payload.
+	rawPromptValue := strings.Repeat("sensitive context", 1000)
+	err := fmt.Errorf("tmux new-window failed: PRISM_INITIAL_PROMPT=%s: exit status 1: command too long", rawPromptValue)
+
+	msg := review.SanitizeSpawnErrorForTest(prNumber, agentName, err)
+
+	// AC: the raw PRISM_INITIAL_PROMPT value must not appear verbatim.
+	if strings.Contains(msg, "PRISM_INITIAL_PROMPT="+rawPromptValue) {
+		t.Errorf("sanitizeSpawnError: message contains raw PRISM_INITIAL_PROMPT payload")
+	}
+
+	// AC: hard cap (message ≤ maxProgressMsgBytes + len of truncation suffix).
+	if len(msg) > review.MaxProgressMsgBytesForTest+200 {
+		t.Errorf("sanitizeSpawnError: message length = %d, want ≤ %d+200", len(msg), review.MaxProgressMsgBytesForTest)
+	}
+}
+
+// TestTruncateProgressMsg_Cap verifies that a message longer than 4 KiB is
+// truncated with a suffix naming a forensic path.
+func TestTruncateProgressMsg_Cap(t *testing.T) {
+	const prNumber = "1194"
+	const agentName = "review-code"
+	long := strings.Repeat("x", review.MaxProgressMsgBytesForTest+1)
+	out := review.TruncateProgressMsgForTest(prNumber, agentName, long)
+	if !strings.Contains(out, "[...truncated; full error in ") {
+		t.Errorf("truncateProgressMsg: truncated message does not contain expected suffix\nmessage:\n%s", out)
+	}
+}
+
+// TestTruncateProgressMsg_ShortPassthrough verifies that a short message is
+// returned unchanged.
+func TestTruncateProgressMsg_ShortPassthrough(t *testing.T) {
+	const prNumber = "1194"
+	const agentName = "review-security"
+	short := "tmux not running"
+	out := review.TruncateProgressMsgForTest(prNumber, agentName, short)
+	if out != short {
+		t.Errorf("truncateProgressMsg: short message modified unexpectedly\ngot: %q\nwant: %q", out, short)
 	}
 }

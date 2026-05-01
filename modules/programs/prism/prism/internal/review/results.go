@@ -3,17 +3,112 @@ package review
 // results.go — result formatting and assessment.
 //
 // This file contains the pure post-processing functions that turn raw polling
-// outcomes into human-readable reports. None of the code here has any
-// dependency on DB, tmux, or spawn machinery.
+// outcomes into human-readable reports. It imports session to detect
+// HostLaunchCmdTooLargeError (for spawn-failure sanitization); otherwise
+// it has no dependency on DB, tmux, or runtime spawn machinery.
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// maxProgressMsgBytes is the hard cap on any per-agent error message printed
+// to stdout by prism review. Messages longer than this are truncated and a
+// forensic path is appended. 4 KiB is large enough for any structured error
+// but small enough to be safe for LLM context windows.
+const maxProgressMsgBytes = 4 * 1024
+
+// sanitizeSpawnError returns a short, safe error string for a per-agent spawn
+// failure. It never includes the failed argv or env-injected payload
+// (PRISM_INITIAL_PROMPT) in the returned string.
+//
+// Two tiers:
+//  1. *session.HostLaunchCmdTooLargeError — always produces a ≤1 KB structured
+//     message naming the agent, the failure category, the bound exceeded, and a
+//     hint. This is the "command too long" case described in issue #1194.
+//  2. All other errors — the raw error string is stripped of any
+//     PRISM_INITIAL_PROMPT= content, then hard-capped at maxProgressMsgBytes
+//     via truncateProgressMsg.
+//
+// prNumber is used to scope the forensic log path so concurrent review runs do
+// not overwrite each other's error logs.
+func sanitizeSpawnError(prNumber, agentName string, err error) string {
+	if err == nil {
+		return ""
+	}
+
+	// Tier 1: launch-command-too-large — structured short message.
+	var hltl *session.HostLaunchCmdTooLargeError
+	if errors.As(err, &hltl) {
+		return fmt.Sprintf(
+			"agent %s: launch command exceeded HostLaunchCmdSafeBound (%d bytes, limit %d bytes) — diff too large to inline\n"+
+				"hint: try `prism review <pr> --diff-inline-max 0` to skip diff inlining, or reduce the PR diff size.",
+			agentName, hltl.CmdSize, hltl.SafeBound,
+		)
+	}
+
+	// Tier 2: any other error — strip env payload, then truncate.
+	raw := err.Error()
+	raw = stripEnvPayload(raw)
+	return truncateProgressMsg(prNumber, agentName, raw)
+}
+
+// stripEnvPayload removes the value of PRISM_INITIAL_PROMPT from an error
+// string so that launch-argv content does not reach stdout. The stripping is
+// conservative: it looks for "PRISM_INITIAL_PROMPT=" and truncates at that
+// point, appending a redaction note to indicate content was removed.
+func stripEnvPayload(s string) string {
+	const marker = "PRISM_INITIAL_PROMPT="
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		return s
+	}
+	// Replace from the marker to the end-of-token (next whitespace after the
+	// marker that is NOT inside the value) with a redacted placeholder.
+	// Because the value may itself contain whitespace (it is a multi-line
+	// prompt), we simply truncate at the marker and append a note.
+	return s[:idx] + "[PRISM_INITIAL_PROMPT redacted]"
+}
+
+// truncateProgressMsg truncates msg to maxProgressMsgBytes, respecting UTF-8
+// boundaries. When truncated, a suffix is appended that names a forensic log
+// path where the full message can be read. The log path includes both prNumber
+// and agentName so concurrent review runs do not overwrite each other's
+// forensic output. The returned string is always ≤ maxProgressMsgBytes+len(suffix).
+func truncateProgressMsg(prNumber, agentName, msg string) string {
+	if len(msg) <= maxProgressMsgBytes {
+		return msg
+	}
+
+	// Truncate at a UTF-8 boundary to avoid splitting multi-byte characters.
+	// Walk the string rune-by-rune, stopping when the next rune would exceed
+	// maxProgressMsgBytes.
+	truncated := msg
+	byteCount := 0
+	for i, r := range msg {
+		runeBytes := utf8.RuneLen(r)
+		if byteCount+runeBytes > maxProgressMsgBytes {
+			truncated = msg[:i]
+			break
+		}
+		byteCount += runeBytes
+	}
+
+	safePR := sanitisePRNumber(prNumber)
+	safeAgent := sanitisePRNumber(agentName)
+	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s-%s.log", safePR, safeAgent))
+	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
+	// Write full message to the forensic path (best-effort, non-fatal).
+	_ = os.WriteFile(logPath, []byte(msg), 0o600)
+	return truncated + suffix
+}
 
 // VerdictKind describes what kind of verdict marker was found by AssessPassed.
 type VerdictKind int
@@ -62,9 +157,9 @@ func AssessPassed(text string) (bool, VerdictKind) {
 
 // failureReason returns the user-facing reason string for a spawn / readiness
 // failure. For *session.ReadinessTimeoutError it produces "not ready within
-// <timeout>" (matching the AC-5 example text exactly); other errors are
-// passed through verbatim.
-func failureReason(err error) string {
+// <timeout>" (matching the AC-5 example text exactly). All other errors are
+// sanitized to prevent exposing PRISM_INITIAL_PROMPT payloads.
+func failureReason(prNumber, agentName string, err error) string {
 	if err == nil {
 		return ""
 	}
@@ -78,7 +173,8 @@ func failureReason(err error) string {
 			return rte.Error()
 		}
 	}
-	return err.Error()
+	// Sanitize spawn-machinery errors to prevent PRISM_INITIAL_PROMPT leakage.
+	return sanitizeSpawnError(prNumber, agentName, err)
 }
 
 // sanitisePRNumber returns a version of prNumber safe for use in a filename by
