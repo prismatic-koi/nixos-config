@@ -199,6 +199,20 @@ type Config struct {
 	// is needed. On Linux this field is zero and the Unix socket is used.
 	HostAPITCPPort int
 
+	// HarnessPipeSockPath is the host-side path to the PI harness pipe Unix
+	// socket (Linux only). When non-empty and HarnessPipeTCPPort is zero,
+	// PRISM_HARNESS_PIPE is set to unix://<HarnessPipeSockPath>.
+	// The socket lives in the same per-session directory as the host-API socket
+	// so the existing bind-mount for that directory covers it too — no new
+	// bind-mount is needed. On Darwin this field is still set but
+	// HarnessPipeTCPPort takes precedence.
+	HarnessPipeSockPath string
+
+	// HarnessPipeTCPPort is the host-side TCP port for the PI harness pipe
+	// listener (Darwin only). When non-zero, PRISM_HARNESS_PIPE is set to
+	// tcp://host.containers.internal:<HarnessPipeTCPPort>. On Linux this is zero.
+	HarnessPipeTCPPort int
+
 	// InstanceID is the UUID instance identifier for the prism session that owns
 	// this container. When non-empty it is written as a
 	// "prism.instance-id=<uuid>" label on the container so that EnsureRemoved

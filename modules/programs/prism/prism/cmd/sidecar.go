@@ -52,6 +52,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -295,6 +296,37 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
+	// The socket co-locates with the host-API socket in the same per-session
+	// directory, so the existing bind-mount for that directory covers it too.
+	// On Darwin, sandbox-exec cannot reliably access Unix sockets; allocate a
+	// TCP port instead and expose it via PRISM_HARNESS_PIPE.
+	var harnessPipeSockPath string
+	var harnessPipeTCPPort int
+	if harnessShape, shapeOK := harness.ShapeOf(harnessName); shapeOK && harnessShape == harness.TransportSocketPipe {
+		if runtime.GOOS == "darwin" {
+			// Darwin: allocate a TCP port and store it in harness_port so that
+			// agent-run (sandbox-exec) can read it and inject PRISM_HARNESS_PIPE.
+			tcpPort, portErr := d.AllocatePort(sessionName)
+			if portErr != nil {
+				return fmt.Errorf("sidecar: allocate harness pipe TCP port: %w", portErr)
+			}
+			harnessPipeTCPPort = tcpPort
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeTCPPort = tcpPort
+			}
+		} else {
+			pipePath, pipeErr := prismSession.SidecarHarnessPipePath(sessionName)
+			if pipeErr != nil {
+				return fmt.Errorf("sidecar: resolve harness pipe path: %w", pipeErr)
+			}
+			harnessPipeSockPath = pipePath
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeSockPath = pipePath
+			}
+		}
+	}
+
 	// Build the OnReady callback — only for podman mode (AC-18, AC-19).
 	// In bwrap and sandbox-exec modes the sidecar does NOT write the readiness
 	// signal: "prism agent-run" in the tmux pane starts immediately without
@@ -373,8 +405,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		InstanceID:        instanceID,
 		IsolationMode:     isolationMode,
 		Container:         ctrCfg,
-		HostAPISockPath:   hostAPISockPath,
-		OnReady:           onReady,
+		HostAPISockPath:     hostAPISockPath,
+		HarnessPipeSockPath: harnessPipeSockPath,
+		HarnessPipeTCPPort:  harnessPipeTCPPort,
+		OnReady:             onReady,
 		InitialPrompt:     initialPrompt,
 		Harness:           h,
 	}
