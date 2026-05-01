@@ -52,6 +52,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -298,15 +299,31 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
 	// The socket co-locates with the host-API socket in the same per-session
 	// directory, so the existing bind-mount for that directory covers it too.
+	// On Darwin, sandbox-exec cannot reliably access Unix sockets; allocate a
+	// TCP port instead and expose it via PRISM_HARNESS_PIPE.
 	var harnessPipeSockPath string
+	var harnessPipeTCPPort int
 	if harnessShape, shapeOK := harness.ShapeOf(harnessName); shapeOK && harnessShape == harness.TransportSocketPipe {
-		pipePath, pipeErr := prismSession.SidecarHarnessPipePath(sessionName)
-		if pipeErr != nil {
-			return fmt.Errorf("sidecar: resolve harness pipe path: %w", pipeErr)
-		}
-		harnessPipeSockPath = pipePath
-		if ctrCfg != nil {
-			ctrCfg.HarnessPipeSockPath = pipePath
+		if runtime.GOOS == "darwin" {
+			// Darwin: allocate a TCP port and store it in harness_port so that
+			// agent-run (sandbox-exec) can read it and inject PRISM_HARNESS_PIPE.
+			tcpPort, portErr := d.AllocatePort(sessionName)
+			if portErr != nil {
+				return fmt.Errorf("sidecar: allocate harness pipe TCP port: %w", portErr)
+			}
+			harnessPipeTCPPort = tcpPort
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeTCPPort = tcpPort
+			}
+		} else {
+			pipePath, pipeErr := prismSession.SidecarHarnessPipePath(sessionName)
+			if pipeErr != nil {
+				return fmt.Errorf("sidecar: resolve harness pipe path: %w", pipeErr)
+			}
+			harnessPipeSockPath = pipePath
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeSockPath = pipePath
+			}
 		}
 	}
 
@@ -390,6 +407,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		Container:         ctrCfg,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
+		HarnessPipeTCPPort:  harnessPipeTCPPort,
 		OnReady:             onReady,
 		InitialPrompt:     initialPrompt,
 		Harness:           h,

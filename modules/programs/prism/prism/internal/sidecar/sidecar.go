@@ -1398,6 +1398,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		}
 	}
 
+	// Nil out the outbound channel under the lock before closing it, so that
+	// any concurrent enqueueHarnessPipeFrame call sees nil (returns false)
+	// rather than sending to a closed channel and panicking.
+	s.mu.Lock()
+	s.harnessPipeOutCh = nil
+	s.mu.Unlock()
+
 	// Close outCh to drain the writer goroutine.
 	close(outCh)
 	<-writerDone
