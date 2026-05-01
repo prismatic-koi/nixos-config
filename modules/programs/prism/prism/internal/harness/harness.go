@@ -13,6 +13,7 @@ package harness
 
 import (
 	"context"
+	"io"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 )
@@ -151,6 +152,20 @@ type FrameNormaliser interface {
 	//   - normPayload is a value suitable for json.Marshal (typically a payload.* struct).
 	//   - shouldWrite is false when the frame is intentionally skipped.
 	NormaliseFrame(rawLine []byte) (eventType string, normPayload any, shouldWrite bool)
+}
+
+// StdinReceiver is an optional interface that a stdio-pipe Harness may implement
+// to receive the process's stdin pipe after the harness process has been started.
+//
+// When the harness passed to a sidecar implements StdinReceiver, the sidecar calls
+// SetStdinPipe immediately after cmd.StdinPipe() succeeds and before cmd.Start(),
+// so that DeliverInitialPrompt / DeliverPrompt can write to the running process.
+// Harnesses that do not use stdin delivery (e.g. those that receive prompts on the
+// command line) do not need to implement this interface.
+type StdinReceiver interface {
+	// SetStdinPipe hands the harness the open stdin pipe for the running process.
+	// The harness must close the pipe when the session ends.
+	SetStdinPipe(pipe io.WriteCloser)
 }
 
 // Message represents an assistant or user message extracted from a HarnessEvent.

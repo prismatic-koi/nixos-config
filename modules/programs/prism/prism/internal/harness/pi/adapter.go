@@ -44,6 +44,9 @@ var _ harness.Harness = (*Adapter)(nil)
 // Compile-time assertion that *Adapter implements harness.FrameNormaliser.
 var _ harness.FrameNormaliser = (*Adapter)(nil)
 
+// Compile-time assertion that *Adapter implements harness.StdinReceiver.
+var _ harness.StdinReceiver = (*Adapter)(nil)
+
 // Adapter implements harness.Harness for the PI runtime.
 //
 // PI uses TransportStdioPipe: the harness binary writes JSONL frames to stdout;
@@ -125,6 +128,16 @@ func (a *Adapter) DeliverPrompt(_ context.Context, prompt string) error {
 	}
 	_, err := fmt.Fprintln(pipe, prompt)
 	return err
+}
+
+// SetStdinPipe hands the adapter the open stdin pipe for the running PI process.
+// Called by the sidecar immediately after cmd.StdinPipe() succeeds, before
+// cmd.Start(). After this call, DeliverInitialPrompt and DeliverPrompt write
+// directly to the PI process's stdin.
+func (a *Adapter) SetStdinPipe(pipe io.WriteCloser) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.stdinPipe = pipe
 }
 
 // Subscribe is not used for stdio harnesses: the sidecar reads the JSONL

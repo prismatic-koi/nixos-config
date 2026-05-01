@@ -938,6 +938,19 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		s.writeStartupError(startupErr)
 		return startupErr
 	}
+
+	// If the harness implements StdinReceiver, wire up a stdin pipe so that
+	// DeliverInitialPrompt / DeliverPrompt can write to the running process.
+	if sr, ok := s.harness.(harness.StdinReceiver); ok {
+		stdinPipe, stdinErr := cmd.StdinPipe()
+		if stdinErr != nil {
+			startupErr := fmt.Errorf("sidecar: runStartupStdio: stdin pipe: %w", stdinErr)
+			s.writeStartupError(startupErr)
+			return startupErr
+		}
+		sr.SetStdinPipe(stdinPipe)
+	}
+
 	if err := cmd.Start(); err != nil {
 		startupErr := fmt.Errorf("sidecar: runStartupStdio: start %q: %w", s.cfg.HarnessBinaryPath, err)
 		s.writeStartupError(startupErr)
