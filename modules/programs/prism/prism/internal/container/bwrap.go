@@ -255,6 +255,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	for _, sensitiveEtcDir := range []string{
 		"/etc/wireguard",
 		"/etc/wpa_supplicant",
+		"/etc/ssh", // systemd drop-ins are nobody-owned; OpenSSH rejects them
 	} {
 		if _, err := os.Stat(sensitiveEtcDir); err == nil {
 			args = append(args, "--tmpfs", sensitiveEtcDir)
