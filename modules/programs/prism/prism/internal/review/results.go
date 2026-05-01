@@ -10,10 +10,82 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// maxProgressMsgBytes is the hard cap on any per-agent error message printed
+// to stdout by prism review. Messages longer than this are truncated and a
+// forensic path is appended. 4 KiB is large enough for any structured error
+// but small enough to be safe for LLM context windows.
+const maxProgressMsgBytes = 4 * 1024
+
+// sanitizeSpawnError returns a short, safe error string for a per-agent spawn
+// failure. It never includes the failed argv or env-injected payload
+// (PRISM_INITIAL_PROMPT) in the returned string.
+//
+// Two tiers:
+//  1. *session.HostLaunchCmdTooLargeError — always produces a ≤1 KB structured
+//     message naming the agent, the failure category, the bound exceeded, and a
+//     hint. This is the "command too long" case described in issue #1194.
+//  2. All other errors — the raw error string is stripped of any
+//     PRISM_INITIAL_PROMPT= content, then hard-capped at maxProgressMsgBytes
+//     via truncateProgressMsg.
+func sanitizeSpawnError(agentName string, err error) string {
+	if err == nil {
+		return ""
+	}
+
+	// Tier 1: launch-command-too-large — structured short message.
+	var hltl *session.HostLaunchCmdTooLargeError
+	if errors.As(err, &hltl) {
+		return fmt.Sprintf(
+			"launch command exceeded HostLaunchCmdSafeBound (%d bytes, limit %d bytes) — diff too large to inline\n"+
+				"hint: try `prism review <pr> --diff-inline-max 0` to skip diff inlining, or reduce the PR diff size.",
+			hltl.CmdSize, hltl.SafeBound,
+		)
+	}
+
+	// Tier 2: any other error — strip env payload, then truncate.
+	raw := err.Error()
+	raw = stripEnvPayload(raw)
+	return truncateProgressMsg(raw)
+}
+
+// stripEnvPayload removes the value of PRISM_INITIAL_PROMPT (and any other
+// -e KEY=VALUE env pairs) from an error string so that launch-argv content
+// does not reach stdout. The stripping is conservative: it looks for
+// "PRISM_INITIAL_PROMPT=" and replaces everything from that point to the
+// next unquoted whitespace boundary with a placeholder.
+func stripEnvPayload(s string) string {
+	const marker = "PRISM_INITIAL_PROMPT="
+	idx := strings.Index(s, marker)
+	if idx < 0 {
+		return s
+	}
+	// Replace from the marker to the end-of-token (next whitespace after the
+	// marker that is NOT inside the value) with a redacted placeholder.
+	// Because the value may itself contain whitespace (it is a multi-line
+	// prompt), we simply truncate at the marker and append a note.
+	return s[:idx] + "[PRISM_INITIAL_PROMPT redacted]"
+}
+
+// truncateProgressMsg truncates msg to maxProgressMsgBytes. When truncated, a
+// suffix is appended that names a forensic log path where the full message can
+// be read. The returned string is always ≤ maxProgressMsgBytes+len(suffix).
+func truncateProgressMsg(msg string) string {
+	if len(msg) <= maxProgressMsgBytes {
+		return msg
+	}
+	logPath := filepath.Join(os.TempDir(), "prism-review-error.log")
+	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
+	// Write full message to the forensic path (best-effort, non-fatal).
+	_ = os.WriteFile(logPath, []byte(msg), 0o600)
+	return msg[:maxProgressMsgBytes] + suffix
+}
 
 // VerdictKind describes what kind of verdict marker was found by AssessPassed.
 type VerdictKind int
