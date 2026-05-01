@@ -480,7 +480,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		} else {
 			minted := uuid.New().String()
 			// Defensively ensure the row exists before writing instance_id.
-			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, "", "", "idle", nil, nil)
+			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, s.cfg.Repo, s.cfg.Worktree, "idle", nil, nil)
 			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
 				log.Printf("sidecar: warning: could not write minted instance_id: %v", err)
 			} else {
