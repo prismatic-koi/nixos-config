@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
@@ -170,34 +169,6 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// ForceFresh=true so session.Create kills unconditionally without a
 		// second DB query that would see the freshly-written UpsertStatus row.
 		opts.ForceFresh = true
-	}
-
-	// Pre-generate a UUID instance_id and write it to agent_status before
-	// starting the sidecar. The sidecar is launched inside session.Create
-	// (before tmux-session-start fires), so the instance_id must be in the DB
-	// before the sidecar reads it. We also pass it via opts.InstanceID so
-	// StartSidecarWithOpts can forward it as --instance-id to the sidecar
-	// process without needing a DB read.
-	//
-	// This block is reached only for new sessions or stale zombies (the live
-	// early-exit above handles the attach-to-live case).
-	if d != nil && opts.Layout == session.LayoutFull {
-		instanceID := uuid.New().String()
-		// Ensure the agent_status row exists before writing instance_id.
-		// allocatePortForSession already upserts it, but call UpsertStatus
-		// here defensively in case port allocation is skipped.
-		repo := deriveRepo(directory)
-		if repo == "" {
-			if idx := strings.Index(sessionName, "@"); idx > 0 {
-				repo = sessionName[:idx]
-			}
-		}
-		_ = d.UpsertStatus(sessionName, repo, directory, "idle", nil, nil)
-		if err := d.SetInstanceID(sessionName, instanceID); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not set instance_id for %q: %v\n", sessionName, err)
-		} else {
-			opts.InstanceID = instanceID
-		}
 	}
 
 	// Allocate a port for full-layout sessions. The agent_status row must

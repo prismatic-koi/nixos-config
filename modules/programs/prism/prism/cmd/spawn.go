@@ -534,8 +534,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	// Write spawn_inputs row. This is best-effort: a failure is logged but
 	// does not roll back the session (the session is already live).
-	// We read instance_id back from the DB because SpawnSession generates it
-	// internally and we do not want to thread it back through SpawnOpts just
+	// We read instance_id back from the DB because the sidecar mints it
+	// at startup and we do not want to thread it back through SpawnOpts just
 	// for this write path.
 	writeSpawnInputs(d, spawnInputsArgs{
 		sessionName:        sessionName,

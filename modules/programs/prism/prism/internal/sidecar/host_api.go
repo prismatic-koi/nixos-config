@@ -153,6 +153,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /merge         — enqueue a PR for the merge queue (coordinator only)
 //	GET  /merges        — list merge queue entries (coordinator only)
 //	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
+//	POST /event         — write a lifecycle event to the host DB (all roles)
 //
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
@@ -1122,8 +1123,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merge: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot enqueue merge without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
@@ -1158,8 +1160,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merges: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot list merges without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
@@ -1204,8 +1207,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merges/cancel: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot cancel merge without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
@@ -1231,7 +1235,131 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		})
 	})
 
+	// POST /event
+	// Request:  {"kind":"<kind>","session":"<session>","args":{...kind-specific...}}
+	// Response: {} | {"error":"..."}
+	//
+	// Writes a lifecycle event to the host DB by running `prism event <kind>`
+	// with the supplied args on the host. This is the proxy path for every
+	// `prism event <kind>` subcommand invoked from inside a container where
+	// dbPath() resolves to a per-container shadow DB invisible to the host (#1254).
+	//
+	// Allowed kinds: state-change, pane-died, tmux-session-start, tmux-session-end,
+	// compaction, error, doom-loop-detected.
+	//
+	// Validation:
+	//   - kind must be a known subcommand name (400 for unknown kinds).
+	//   - session must be non-empty (400 for empty or whitespace).
+	//     NOTE: we intentionally do NOT require the session to already exist in
+	//     the host DB. tmux-session-start is called for brand-new sessions that
+	//     have no agent_status row yet; a DB-existence check would reject the
+	//     very first event that creates the session record. #1254 originally
+	//     required "matches a known session", but that AC item was relaxed to
+	//     non-empty-only to allow tmux-session-start to work correctly.
+	//   - All role levels (worker and coordinator) are permitted — lifecycle
+	//     events are emitted by both.
+	//
+	// Security: accessible only over the Unix socket (consistent with all other
+	// host-API endpoints — no network exposure).
+	mux.HandleFunc("/event", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req struct {
+			Kind    string            `json:"kind"`
+			Session string            `json:"session"`
+			Args    map[string]string `json:"args"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+
+		// Validate kind against the known allowlist.
+		if !isKnownEventKind(req.Kind) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"unknown event kind %q — must be one of: %s",
+				req.Kind, knownEventKindsStr()))
+			return
+		}
+
+		// Validate session: must be non-empty.
+		if strings.TrimSpace(req.Session) == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Build the prism event <kind> [flags] invocation.
+		// Always include --session from the top-level field; remaining args
+		// come from the Args map as --key value pairs. Empty-value entries
+		// are skipped so that optional flags remain at their defaults on the
+		// host side (e.g. --agent-role "" behaves the same as omitting it).
+		args := []string{"event", req.Kind, "--session", req.Session}
+		for k, v := range req.Args {
+			if v != "" {
+				args = append(args, "--"+k, v)
+			}
+		}
+
+		log.Printf("sidecar: host-API /event: kind=%s session=%s", req.Kind, req.Session)
+		cmd := exec.Command(prismBinary(), args...)
+		// Propagate PRISM_SESSION_NAME so that any internal lookup resolves correctly.
+		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+req.Session)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("sidecar: host-API /event: %v: %s", err, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("event write failed: %v\n%s", err, strings.TrimSpace(string(out))))
+			return
+		}
+
+		log.Printf("sidecar: host-API /event: kind=%s session=%s written to host DB", req.Kind, req.Session)
+		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
 	return mux
+}
+
+// eventKindAllowlist is the set of valid kind values accepted by the /event
+// host-API endpoint. These match the subcommand names in cmd/event.go.
+var eventKindAllowlist = map[string]bool{
+	"state-change":       true,
+	"pane-died":          true,
+	"tmux-session-start": true,
+	"tmux-session-end":   true,
+	"compaction":         true,
+	"error":              true,
+	"doom-loop-detected": true,
+}
+
+// isKnownEventKind returns true if kind is a recognised event subcommand name.
+func isKnownEventKind(kind string) bool {
+	return eventKindAllowlist[kind]
+}
+
+// knownEventKindsStr returns a sorted comma-separated list of known event kinds
+// for use in error messages.
+func knownEventKindsStr() string {
+	names := make([]string, 0, len(eventKindAllowlist))
+	for name := range eventKindAllowlist {
+		names = append(names, name)
+	}
+	// Simple insertion sort for stable error messages.
+	for i := 0; i < len(names); i++ {
+		for j := i + 1; j < len(names); j++ {
+			if names[i] > names[j] {
+				names[i], names[j] = names[j], names[i]
+			}
+		}
+	}
+	result := ""
+	for i, n := range names {
+		if i > 0 {
+			result += ", "
+		}
+		result += n
+	}
+	return result
 }
 
 // worktreePathForSession looks up the worktree path for a session from the DB.

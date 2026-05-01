@@ -10,7 +10,11 @@ import type { Plugin } from "@opencode-ai/plugin";
 // into the next LLM turn via experimental.chat.messages.transform.
 //
 // Similarity rules (per tool):
-//   bash      — compare command + first positional argument only (strips flags).
+//   bash      — for subcommand-driven CLIs (gh, git, kubectl, helm, docker,
+//               podman), include the base command + subcommand + operand in the
+//               key so that "gh issue view 1" and "gh issue view 2" are treated
+//               as different calls. For all other commands, compare the base
+//               command + first positional argument only (strips flags).
 //               "git log -1" and "git log -3" match; "go test ./cmd/..." and
 //               "go build ./..." do not.
 //   edit/write — same file path (first argument), ignoring content.
@@ -60,6 +64,36 @@ export function similarityKey(tool: string, args: any): string | null {
         baseIdx++;
       }
       const base = meaningful[baseIdx] ?? "";
+
+      // Subcommand-driven CLIs: include subcommand + operand in the key so
+      // that calls with different operands are treated as distinct.
+      // e.g. "gh issue view 1" → "bash:gh issue view 1"
+      //      "git show abc:foo.go" → "bash:git show abc:foo.go"
+      const SUBCOMMAND_CLIS = new Set([
+        "gh",
+        "git",
+        "kubectl",
+        "helm",
+        "docker",
+        "podman",
+      ]);
+
+      if (SUBCOMMAND_CLIS.has(base)) {
+        // Collect all non-flag tokens after the base command.
+        const positionals: string[] = [];
+        for (let i = baseIdx + 1; i < meaningful.length; i++) {
+          if (!meaningful[i].startsWith("-")) {
+            positionals.push(meaningful[i]);
+          }
+        }
+        // Include base + up to three positionals (subcommand + sub-subcommand + operand).
+        // e.g. "gh issue view 1" → positionals=["issue","view","1"] → "bash:gh issue view 1"
+        //      "git show abc:foo.go" → positionals=["show","abc:foo.go"] → "bash:git show abc:foo.go"
+        // If fewer positionals exist, fall back gracefully.
+        const parts = [base, ...positionals.slice(0, 3)];
+        return `bash:${parts.join(" ")}`.trimEnd();
+      }
+
       // Find the first positional argument after the base command (skip flags).
       let firstPos = "";
       for (let i = baseIdx + 1; i < meaningful.length; i++) {
