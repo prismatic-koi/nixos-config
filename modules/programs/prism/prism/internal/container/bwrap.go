@@ -245,6 +245,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// /etc/wpa_supplicant/ — wpa_supplicant configs may contain Wi-Fi
 	// credentials and network identifiers. Agents have no need for these.
 	//
+	// /etc/ssh/ — contains SSH host private keys (ssh_host_*_key) and
+	// system-wide ssh_config. On NixOS the system ssh_config includes a
+	// nobody-owned systemd drop-in via Include; OpenSSH enforces strict
+	// ownership and rejects it, causing git push over SSH to fail. Shadowing
+	// the entire subtree is safe: the generated ~/.ssh/config already
+	// provides all the SSH configuration an agent needs.
+	//
 	// The --tmpfs mounts are conditional on the directory existing on the
 	// host: bwrap requires the mount-point to already exist inside the
 	// namespace (the /etc ro-bind makes the host tree visible, so the check
@@ -255,6 +262,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	for _, sensitiveEtcDir := range []string{
 		"/etc/wireguard",
 		"/etc/wpa_supplicant",
+		"/etc/ssh", // systemd drop-ins are nobody-owned; OpenSSH rejects them
 	} {
 		if _, err := os.Stat(sensitiveEtcDir); err == nil {
 			args = append(args, "--tmpfs", sensitiveEtcDir)
@@ -558,16 +566,51 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// once the sidecar calls net.Listen (same inode-transparency behaviour as
 		// a directory mount). The per-session directory is pre-created by
 		// prepareVolumeDirs before this code runs.
+		//
+		// P2.SIDECAR: the harness pipe socket (pipe.sock) co-locates with the
+		// host-API socket in the same per-session directory. This single bind-mount
+		// covers both sockets — no additional bind-mount is needed.
 		sockDir := filepath.Dir(cfg.HostAPISockPath)
 		args = append(args, "--bind", sockDir, sockDir)
 		args = append(args, "--setenv", "PRISM_HOST_API", "unix://"+cfg.HostAPISockPath)
+	}
+
+	// Harness pipe env var (P2.SIDECAR #1209).
+	// On Linux the pipe socket lives in the same per-session directory as the
+	// host-API socket, so the bind-mount above already exposes it. No extra
+	// bind is needed. On Darwin (HarnessPipeTCPPort != 0), TCP is used instead.
+	if cfg.HarnessPipeTCPPort != 0 {
+		args = append(args,
+			"--setenv", "PRISM_HARNESS_PIPE",
+			fmt.Sprintf("tcp://host.containers.internal:%d", cfg.HarnessPipeTCPPort),
+		)
+	} else if cfg.HarnessPipeSockPath != "" {
+		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
+	}
+
+	// ── PI-specific bind mounts (harness=pi only) ────────────────────────────
+	// These must be appended before the "--" terminator so bwrap processes
+	// them as namespace arguments rather than as parts of the inner command.
+	if cfg.Harness == "pi" {
+		var piErr error
+		args, piErr = appendPIBwrapMounts(args, cfg)
+		if piErr != nil {
+			// appendPIBwrapMounts already returns a descriptive error; wrap
+			// with the bwrap context. BuildArgs cannot return an error (no
+			// error return value in this method). Store on the Manager so
+			// that Prepare can surface it after calling BuildArgs.
+			m.piBwrapErr = piErr
+		}
 	}
 
 	// ── Working directory ────────────────────────────────────────────────────
 	// --chdir points at the worktree source path (not /workspace).
 	args = append(args, "--chdir", cfg.Worktree)
 
-	// ── Terminator: -- opencode --port <port> --hostname 127.0.0.1 ──────────
+	// ── Terminator: -- <harness invocation> ─────────────────────────────────
+	// For opencode: opencode --port <port> --hostname 127.0.0.1
+	// For PI:       pi --provider <p> --model <m> --append-system-prompt ...
+	//
 	// bwrap uses 127.0.0.1 (not 0.0.0.0): the host network namespace is shared
 	// (no --unshare-net), so binding to 0.0.0.0 would be overly broad.
 	//
@@ -581,7 +624,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// row); in normal operation cfg.AllocatedPort is always populated by
 	// agent-run from the DB's harness_port column.
 	args = append(args, "--")
-	args = append(args, HarnessInvocation(cfg)...)
+	if cfg.Harness == "pi" {
+		args = append(args, PIInvocation(cfg)...)
+	} else {
+		args = append(args, HarnessInvocation(cfg)...)
+	}
 
 	return args
 }

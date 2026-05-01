@@ -52,6 +52,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -103,6 +104,7 @@ func init() {
 	sidecarCmd.Flags().String("harness", "opencode", "Agent harness to use (e.g. opencode)")
 	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
 	sidecarCmd.Flags().String("bwrap-path", "", "Override path to the bwrap binary used to sandbox stdio-pipe harnesses (default: resolved via PATH)")
+	sidecarCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable; C.2)")
 	_ = sidecarCmd.MarkFlagRequired("session")
 	_ = sidecarCmd.MarkFlagRequired("opencode-url")
 	rootCmd.AddCommand(sidecarCmd)
@@ -123,11 +125,28 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	harnessName, _ := cmd.Flags().GetString("harness")
 	harnessBinaryPath, _ := cmd.Flags().GetString("harness-binary")
 	bwrapPath, _ := cmd.Flags().GetString("bwrap-path")
+	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
 	if harnessName == "" {
 		harnessName = "opencode"
 	}
 	if _, ok := harness.Lookup(harnessName); !ok {
 		return fmt.Errorf("sidecar: unknown harness %q: valid harnesses: %s", harnessName, strings.Join(harness.Names(), ", "))
+	}
+
+	// Parse --model-override flags into a role→model map (C.2).
+	// Each entry is expected to be "role=model"; malformed entries are logged
+	// and skipped rather than causing a hard failure at sidecar startup.
+	modelsByRole := make(map[string]string, len(modelOverrideRaw))
+	for _, entry := range modelOverrideRaw {
+		role, model, ok := strings.Cut(entry, "=")
+		if !ok || role == "" || model == "" {
+			fmt.Fprintf(os.Stderr, "[prism sidecar] warning: ignoring malformed --model-override %q (expected role=model)\n", entry)
+			continue
+		}
+		modelsByRole[role] = model
+	}
+	if len(modelsByRole) == 0 {
+		modelsByRole = nil
 	}
 
 	// Resolve the effective isolation mode. When --isolation-mode is set it
@@ -193,8 +212,15 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Resolve the agent model once via the harness adapter. The adapter is
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
-	modelProbe, _ := harness.New(harnessName, "", nil, agentRole, "")
-	agentModel := modelProbe.EffectiveModel(agentRole)
+	// When modelsByRole contains an entry for agentRole, that takes precedence
+	// over the profile/opencode.json lookup (C.2 §6.3).
+	var agentModel string
+	if m, ok := modelsByRole[agentRole]; ok && m != "" {
+		agentModel = m
+	} else {
+		modelProbe, _ := harness.New(harnessName, "", nil, agentRole, "")
+		agentModel = modelProbe.EffectiveModel(agentRole)
+	}
 
 	// Load profiles to extract container resource caps and agent env vars.
 	// Non-fatal if missing (e.g. running without the nix module) — resource
@@ -270,6 +296,37 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
+	// The socket co-locates with the host-API socket in the same per-session
+	// directory, so the existing bind-mount for that directory covers it too.
+	// On Darwin, sandbox-exec cannot reliably access Unix sockets; allocate a
+	// TCP port instead and expose it via PRISM_HARNESS_PIPE.
+	var harnessPipeSockPath string
+	var harnessPipeTCPPort int
+	if harnessShape, shapeOK := harness.ShapeOf(harnessName); shapeOK && harnessShape == harness.TransportSocketPipe {
+		if runtime.GOOS == "darwin" {
+			// Darwin: allocate a TCP port and store it in harness_port so that
+			// agent-run (sandbox-exec) can read it and inject PRISM_HARNESS_PIPE.
+			tcpPort, portErr := d.AllocatePort(sessionName)
+			if portErr != nil {
+				return fmt.Errorf("sidecar: allocate harness pipe TCP port: %w", portErr)
+			}
+			harnessPipeTCPPort = tcpPort
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeTCPPort = tcpPort
+			}
+		} else {
+			pipePath, pipeErr := prismSession.SidecarHarnessPipePath(sessionName)
+			if pipeErr != nil {
+				return fmt.Errorf("sidecar: resolve harness pipe path: %w", pipeErr)
+			}
+			harnessPipeSockPath = pipePath
+			if ctrCfg != nil {
+				ctrCfg.HarnessPipeSockPath = pipePath
+			}
+		}
+	}
+
 	// Build the OnReady callback — only for podman mode (AC-18, AC-19).
 	// In bwrap and sandbox-exec modes the sidecar does NOT write the readiness
 	// signal: "prism agent-run" in the tmux pane starts immediately without
@@ -306,8 +363,17 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	//   - CreateSession uses GET /session to retrieve the existing session ID
 	//     (opencode already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
+	//
+	// When modelsByRole is non-nil (C.2 --model-override), pass the full map
+	// so DeliverInitialPrompt and EffectiveModel use per-role models.
 	var h harness.Harness
-	if useContainerHarness {
+	if len(modelsByRole) > 0 {
+		if useContainerHarness {
+			h, err = harness.NewContainerWithModelOverrides(harnessName, opencodeURL, nil, agentRole, modelsByRole)
+		} else {
+			h, err = harness.NewWithModelOverrides(harnessName, opencodeURL, nil, agentRole, modelsByRole)
+		}
+	} else if useContainerHarness {
 		h, err = harness.NewContainer(harnessName, opencodeURL, nil, agentRole, agentModel)
 	} else {
 		h, err = harness.New(harnessName, opencodeURL, nil, agentRole, agentModel)
@@ -332,14 +398,17 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		Clock:             sidecar.RealClock(),
 		AgentRole:         agentRole,
 		AgentModel:        agentModel,
+		ModelsByRole:      modelsByRole,
 		HarnessName:       harnessName,
 		HarnessBinaryPath: harnessBinaryPath,
 		BwrapPath:         bwrapPath,
 		InstanceID:        instanceID,
 		IsolationMode:     isolationMode,
 		Container:         ctrCfg,
-		HostAPISockPath:   hostAPISockPath,
-		OnReady:           onReady,
+		HostAPISockPath:     hostAPISockPath,
+		HarnessPipeSockPath: harnessPipeSockPath,
+		HarnessPipeTCPPort:  harnessPipeTCPPort,
+		OnReady:             onReady,
 		InitialPrompt:     initialPrompt,
 		Harness:           h,
 	}

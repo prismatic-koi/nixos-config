@@ -137,6 +137,10 @@ type Config struct {
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
 	AgentModel string
+	// ModelsByRole is the per-role model override map (C.2). When non-nil
+	// it takes precedence over AgentModel for any role present in the map.
+	// The map is passed directly to the harness adapter at construction time.
+	ModelsByRole map[string]string
 	// HarnessName is the registered harness name (e.g. "opencode"). When
 	// non-empty, Run consults harness.ShapeOf(HarnessName) at the top of the
 	// function to determine the transport shape and route to the appropriate
@@ -204,6 +208,18 @@ type Config struct {
 	// path in tests that want to exercise the no-bwrap fallback, or to a custom
 	// bwrap wrapper for test isolation.
 	BwrapPath string
+	// HarnessPipeSockPath is the Unix socket path at which the sidecar binds
+	// the PI harness pipe for TransportSocketPipe sessions. When non-empty and
+	// HarnessName resolves to TransportSocketPipe, runStartupSocketPipe binds
+	// this path. Must be empty on Darwin (use HarnessPipeTCPPort instead).
+	// Set by cmd/sidecar.go from session.SidecarHarnessPipePath.
+	HarnessPipeSockPath string
+	// HarnessPipeTCPPort is the OS-allocated TCP port for the harness pipe
+	// listener on Darwin (where Unix socket bind-mounts inside sandbox-exec
+	// are not reliable). The sidecar binds 0.0.0.0:<port> and exposes it to
+	// the sandboxed extension as tcp://host.containers.internal:<port> via
+	// PRISM_HARNESS_PIPE. Zero means no TCP listener (Linux path).
+	HarnessPipeTCPPort int
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -308,6 +324,19 @@ type Sidecar struct {
 	// Run() when this is a coordinator session (AgentRole == "coordinator").
 	// Protected by mu; nil when no watcher is running.
 	mergeWatcherCancel context.CancelFunc
+
+	// harnessPipeListener is the Unix socket (Linux) or TCP (Darwin) listener
+	// for the PI harness pipe. Set in runStartupSocketPipe, closed in Shutdown.
+	// Protected by mu.
+	harnessPipeListener net.Listener
+	// harnessPipeConn is the accepted connection from the PI extension.
+	// Set after the first Accept() in runStartupSocketPipe. Protected by mu.
+	harnessPipeConn net.Conn
+	// harnessPipeOutCh is the channel carrying outbound frames to the extension.
+	// runStartupSocketPipe drains it in a writer goroutine. Protected by mu
+	// on set (before the goroutine starts); after that only the writer goroutine
+	// reads from it; callers enqueue via enqueueHarnessPipeFrame.
+	harnessPipeOutCh chan []byte
 }
 
 // New creates a Sidecar with the given configuration.
@@ -381,6 +410,8 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			}
 		case harness.TransportStdioPipe:
 			return s.runStartupStdio(ctx)
+		case harness.TransportSocketPipe:
+			return s.runStartupSocketPipe(ctx)
 		default:
 			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
 		}
@@ -689,6 +720,23 @@ func (s *Sidecar) Shutdown() {
 		_ = tcpSrv.Shutdown(shutCtx2)
 	} else if tcpLn != nil {
 		_ = tcpLn.Close()
+	}
+
+	// Close the harness pipe listener and connection (socket-pipe transport).
+	s.mu.Lock()
+	pipeLn := s.harnessPipeListener
+	pipeConn := s.harnessPipeConn
+	s.harnessPipeListener = nil
+	s.harnessPipeConn = nil
+	s.mu.Unlock()
+	if pipeConn != nil {
+		_ = pipeConn.Close()
+	}
+	if pipeLn != nil {
+		_ = pipeLn.Close()
+		if s.cfg.HarnessPipeSockPath != "" {
+			_ = os.Remove(s.cfg.HarnessPipeSockPath)
+		}
 	}
 
 	s.mu.Lock()
@@ -1105,6 +1153,462 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 	log.Printf("sidecar: runStartupStdio: harness finished cleanly (%d frames)", framesRead)
 	return nil
+}
+
+// piWireProtocolVersion is the protocol version this sidecar implementation
+// supports. Matches the value in P2.WIRE (#1208) §4.
+const piWireProtocolVersion = 1
+
+// pipeDisconnectTimeout is the window the sidecar waits after an unexpected
+// connection drop before marking the session as error. See P2.WIRE §7.2.
+const pipeDisconnectTimeout = 30 * time.Second
+
+// runStartupSocketPipe binds the per-session Unix socket (Linux) or TCP
+// listener (Darwin), accepts the PI extension's connection, performs the
+// P2.WIRE hello/hello_ack handshake, then enters the bidirectional frame loop.
+//
+// # Readiness signal
+//
+// The hello frame from the extension serves as the readiness signal that would
+// otherwise be provided by WaitHealthy / CreateSession in the HTTP path. Once
+// hello is received and hello_ack is sent, OnReady is called (if set) and the
+// sidecar enters the frame loop.
+//
+// # Duplex loop
+//
+// A reader goroutine consumes inbound frames; a writer goroutine drains the
+// harnessPipeOutCh channel. Both goroutines run concurrently after the
+// handshake. The function blocks until the reader goroutine finishes (i.e.
+// until the connection is closed or session_shutdown is received).
+//
+// # Inbound frame handling
+//
+//   - state_change → existing state machine via upsertState + writeStateChange
+//   - tool_call, tool_result, msg_assistant, turn_start, turn_end → agent_events
+//   - provider_error, auto_retry_start, auto_retry_end → agent_events (raw JSON)
+//   - session_shutdown → marks session finished, closes connection
+//   - unknown types → logged and written to agent_events for forward-compat
+//
+// # Error handling
+//
+//   - Protocol version mismatch: error frame sent to extension, session → error
+//   - Unexpected disconnect: session → error after pipeDisconnectTimeout
+//   - Malformed JSONL frame: logged and skipped, connection not torn down
+func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
+	// --- Bind the listener -----------------------------------------------
+	var ln net.Listener
+	var listenErr error
+
+	startupTimeout := s.cfg.StartupConnectTimeout
+	if startupTimeout == 0 {
+		startupTimeout = DefaultStartupConnectTimeout
+	}
+
+	if s.cfg.HarnessPipeTCPPort != 0 {
+		// Darwin: TCP fallback.
+		ln, listenErr = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", s.cfg.HarnessPipeTCPPort))
+		if listenErr != nil {
+			err := fmt.Errorf("sidecar: runStartupSocketPipe: TCP listen :%d: %w", s.cfg.HarnessPipeTCPPort, listenErr)
+			s.writeStartupError(err)
+			return err
+		}
+		log.Printf("sidecar: runStartupSocketPipe: listening on TCP :%d", s.cfg.HarnessPipeTCPPort)
+	} else if s.cfg.HarnessPipeSockPath != "" {
+		// Linux: Unix socket.
+		if err := os.MkdirAll(filepath.Dir(s.cfg.HarnessPipeSockPath), 0o700); err != nil {
+			err2 := fmt.Errorf("sidecar: runStartupSocketPipe: mkdir socket dir: %w", err)
+			s.writeStartupError(err2)
+			return err2
+		}
+		_ = os.Remove(s.cfg.HarnessPipeSockPath)
+		ln, listenErr = net.Listen("unix", s.cfg.HarnessPipeSockPath)
+		if listenErr != nil {
+			err := fmt.Errorf("sidecar: runStartupSocketPipe: unix listen %q: %w", s.cfg.HarnessPipeSockPath, listenErr)
+			s.writeStartupError(err)
+			return err
+		}
+		log.Printf("sidecar: runStartupSocketPipe: listening on unix %s", s.cfg.HarnessPipeSockPath)
+	} else {
+		err := fmt.Errorf("sidecar: runStartupSocketPipe: neither HarnessPipeSockPath nor HarnessPipeTCPPort configured")
+		s.writeStartupError(err)
+		return err
+	}
+
+	s.mu.Lock()
+	s.harnessPipeListener = ln
+	s.mu.Unlock()
+
+	// --- Wait for the extension to connect --------------------------------
+	// Use a separate goroutine to respect ctx cancellation during Accept.
+	type acceptResult struct {
+		conn net.Conn
+		err  error
+	}
+	acceptCh := make(chan acceptResult, 1)
+	go func() {
+		conn, err := ln.Accept()
+		acceptCh <- acceptResult{conn, err}
+	}()
+
+	// Wait for accept with startup timeout.
+	acceptTimer := time.NewTimer(startupTimeout)
+	defer acceptTimer.Stop()
+	var conn net.Conn
+	select {
+	case <-ctx.Done():
+		_ = ln.Close()
+		err := fmt.Errorf("sidecar: runStartupSocketPipe: context cancelled while waiting for extension")
+		s.writeStartupError(err)
+		return err
+	case <-acceptTimer.C:
+		_ = ln.Close()
+		err := fmt.Errorf("sidecar: runStartupSocketPipe: timed out waiting for extension to connect (timeout=%s)", startupTimeout)
+		s.writeStartupError(err)
+		return err
+	case ar := <-acceptCh:
+		if ar.err != nil {
+			err := fmt.Errorf("sidecar: runStartupSocketPipe: accept: %w", ar.err)
+			s.writeStartupError(err)
+			return err
+		}
+		conn = ar.conn
+	}
+
+	log.Printf("sidecar: runStartupSocketPipe: extension connected from %s", conn.RemoteAddr())
+	s.mu.Lock()
+	s.harnessPipeConn = conn
+	s.mu.Unlock()
+
+	// --- Protocol version handshake ---------------------------------------
+	// Use a large-buffer reader so we honour the P2.WIRE §3 requirement
+	// that line length is unbounded (≥ 16 MiB).
+	const maxLineBytes = 16 * 1024 * 1024
+	reader := bufio.NewReader(conn)
+
+	// Read hello frame with a generous deadline (same as startup timeout).
+	_ = conn.SetReadDeadline(time.Now().Add(startupTimeout))
+	helloLine, err := reader.ReadBytes('\n')
+	_ = conn.SetReadDeadline(time.Time{}) // reset
+	if err != nil {
+		err2 := fmt.Errorf("sidecar: runStartupSocketPipe: reading hello: %w", err)
+		s.writeStartupError(err2)
+		return err2
+	}
+
+	var helloFrame struct {
+		Type            string `json:"type"`
+		ProtocolVersion int    `json:"protocol_version"`
+		Harness         string `json:"harness"`
+		HarnessVersion  string `json:"harness_version"`
+	}
+	if err := json.Unmarshal(helloLine, &helloFrame); err != nil {
+		// Send error frame then close.
+		s.sendPipeError(conn, "protocol_violation", "malformed hello frame: "+err.Error())
+		startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: malformed hello frame: %w", err)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+	if helloFrame.Type != "hello" {
+		s.sendPipeError(conn, "pre_handshake_frame", fmt.Sprintf("expected hello, got %q", helloFrame.Type))
+		startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: expected hello frame, got %q", helloFrame.Type)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+	if helloFrame.ProtocolVersion != piWireProtocolVersion {
+		code := "protocol_version_unsupported"
+		if helloFrame.ProtocolVersion < piWireProtocolVersion {
+			code = "protocol_version_too_old"
+		}
+		msg := fmt.Sprintf("protocol_version %d is not supported (sidecar supports %d)", helloFrame.ProtocolVersion, piWireProtocolVersion)
+		log.Printf("sidecar: runStartupSocketPipe: %s: %s", code, msg)
+		s.sendPipeError(conn, code, msg)
+		startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: protocol version mismatch: extension=%d sidecar=%d", helloFrame.ProtocolVersion, piWireProtocolVersion)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	// Send hello_ack.
+	ackFrame := struct {
+		Type            string `json:"type"`
+		ProtocolVersion int    `json:"protocol_version"`
+		SessionName     string `json:"session_name"`
+		SessionRole     string `json:"session_role"`
+	}{
+		Type:            "hello_ack",
+		ProtocolVersion: piWireProtocolVersion,
+		SessionName:     s.cfg.SessionName,
+		SessionRole:     s.cfg.AgentRole,
+	}
+	ackBytes, _ := json.Marshal(ackFrame)
+	ackBytes = append(ackBytes, '\n')
+	if _, err := conn.Write(ackBytes); err != nil {
+		startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: write hello_ack: %w", err)
+		s.writeStartupError(startupErr)
+		return startupErr
+	}
+
+	log.Printf("sidecar: runStartupSocketPipe: handshake complete (harness=%q version=%q)", helloFrame.Harness, helloFrame.HarnessVersion)
+
+	// Signal readiness now that handshake is complete.
+	s.mu.Lock()
+	if s.cfg.OnReady != nil && !s.shuttingDown {
+		go s.cfg.OnReady()
+	}
+	s.mu.Unlock()
+
+	// --- Set up the outbound queue and writer goroutine -------------------
+	outCh := make(chan []byte, 64)
+	s.mu.Lock()
+	s.harnessPipeOutCh = outCh
+	s.mu.Unlock()
+
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for frame := range outCh {
+			if _, err := conn.Write(frame); err != nil {
+				log.Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
+				return
+			}
+		}
+	}()
+
+	// --- Inbound frame loop -----------------------------------------------
+	// P2.WIRE §3: use bufio.Reader with a large buffer.
+	for {
+		// Read up to maxLineBytes per line.
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			// Strip trailing \r\n → \n.
+			if len(line) > 1 && line[len(line)-2] == '\r' {
+				line = append(line[:len(line)-2], '\n')
+			}
+			cleanShutdown := s.handlePipeFrame(line[:len(line)-1]) // strip trailing \n
+			_ = maxLineBytes                                         // silence unused-var lint if buf not used
+			if cleanShutdown {
+				break
+			}
+		}
+		if readErr != nil {
+			// Unexpected disconnect per P2.WIRE §7.2.
+			log.Printf("sidecar: runStartupSocketPipe: connection dropped: %v", readErr)
+			s.mu.Lock()
+			s.upsertState(agent.StateError, nil, nil)
+			s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": "connection dropped"}, nil)
+			s.lastState = agent.StateError
+			s.mu.Unlock()
+			break
+		}
+	}
+
+	// Nil out the outbound channel under the lock before closing it, so that
+	// any concurrent enqueueHarnessPipeFrame call sees nil (returns false)
+	// rather than sending to a closed channel and panicking.
+	s.mu.Lock()
+	s.harnessPipeOutCh = nil
+	s.mu.Unlock()
+
+	// Close outCh to drain the writer goroutine.
+	close(outCh)
+	<-writerDone
+
+	_ = conn.Close()
+	_ = ln.Close()
+	if s.cfg.HarnessPipeSockPath != "" {
+		_ = os.Remove(s.cfg.HarnessPipeSockPath)
+	}
+
+	return nil
+}
+
+// handlePipeFrame processes a single inbound frame from the PI extension.
+// Called by runStartupSocketPipe's reader loop with the raw JSON bytes
+// (without the trailing newline). Returns true if the frame triggered a
+// clean session shutdown (session_shutdown frame received).
+//
+// Implements P2.WIRE §5 frame catalogue. Unknown frame types are persisted
+// as raw JSON for forward compatibility (P2.WIRE §8.2).
+func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
+	if len(line) == 0 {
+		return false
+	}
+	var frame struct {
+		Type  string `json:"type"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(line, &frame); err != nil {
+		// P2.WIRE §7.3: log and skip.
+		log.Printf("sidecar: runStartupSocketPipe: parse frame error: %v (raw: %s)", err, truncateBytes(line, 200))
+		return false
+	}
+	if frame.Type == "" {
+		log.Printf("sidecar: runStartupSocketPipe: frame missing type field (raw: %s)", truncateBytes(line, 200))
+		return false
+	}
+
+	log.Printf("sidecar: runStartupSocketPipe: inbound frame type=%q", frame.Type)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch frame.Type {
+	case "state_change":
+		st := agent.AgentState(frame.State)
+		s.upsertState(st, nil, nil)
+		s.writeStateChange(st)
+		s.lastState = st
+
+	case "tool_call", "tool_result", "msg_assistant", "turn_start", "turn_end",
+		"provider_error", "auto_retry_start", "auto_retry_end":
+		// Write raw JSON as event payload — the wire schema maps directly to
+		// the existing agent_events payload format (P2.WIRE §8.1).
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
+	case "session_shutdown":
+		// Clean shutdown: mark finished and signal the reader loop.
+		s.upsertState(agent.StateFinished, nil, nil)
+		s.writeStateChange(agent.StateFinished)
+		s.lastState = agent.StateFinished
+		return true
+
+	default:
+		// Forward-compatible: persist unknown frames as raw JSON.
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+	}
+	return false
+}
+
+// sendPipeError writes a protocol-level error frame to the connection and
+// logs it. Used during the handshake before the normal frame loop starts.
+func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
+	errFrame := struct {
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{
+		Type:    "error",
+		Code:    code,
+		Message: message,
+	}
+	b, _ := json.Marshal(errFrame)
+	b = append(b, '\n')
+	_, _ = conn.Write(b)
+	_ = conn.Close()
+}
+
+// enqueueHarnessPipeFrame enqueues a JSONL frame for delivery to the PI
+// extension via the outbound writer goroutine. The frame must already be
+// terminated with '\n'. Returns false if no active pipe connection is open.
+func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
+	s.mu.Lock()
+	ch := s.harnessPipeOutCh
+	s.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- frame:
+		return true
+	default:
+		log.Printf("sidecar: enqueueHarnessPipeFrame: outbound queue full, dropping frame")
+		return false
+	}
+}
+
+// DeliverPrompt enqueues a prompt frame to the PI extension for
+// TransportSocketPipe sessions. For other transport shapes (HTTP-port,
+// stdio-pipe), this method is a no-op and the caller must use the
+// harness-specific delivery path (e.g. harness.DeliverPrompt or stdin write).
+//
+// deliverAs controls the prompt delivery mode:
+//   - "steer"    — mid-turn steering message
+//   - "followUp" — follow-up after the current turn completes
+//   - "nextTurn" — schedule for the next turn
+//
+// Empty deliverAs defaults to "nextTurn".
+func (s *Sidecar) DeliverPrompt(text, deliverAs string) bool {
+	if deliverAs == "" {
+		deliverAs = "nextTurn"
+	}
+	frame := struct {
+		Type      string `json:"type"`
+		Text      string `json:"text"`
+		DeliverAs string `json:"deliver_as"`
+	}{
+		Type:      "prompt",
+		Text:      text,
+		DeliverAs: deliverAs,
+	}
+	b, err := json.Marshal(frame)
+	if err != nil {
+		log.Printf("sidecar: DeliverPrompt: marshal: %v", err)
+		return false
+	}
+	b = append(b, '\n')
+	return s.enqueueHarnessPipeFrame(b)
+}
+
+// SetModel enqueues a set_model control frame to the PI extension.
+// Stub for P3.LIVE — the sidecar does not yet act on this internally;
+// it only forwards the frame.
+func (s *Sidecar) SetModel(provider, model, thinking string) {
+	frame := struct {
+		Type     string `json:"type"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Thinking string `json:"thinking,omitempty"`
+	}{
+		Type:     "set_model",
+		Provider: provider,
+		Model:    model,
+		Thinking: thinking,
+	}
+	b, _ := json.Marshal(frame)
+	b = append(b, '\n')
+	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+}
+
+// RegisterProvider enqueues a register_provider frame to the PI extension.
+// Stub for P3.LIVE.
+func (s *Sidecar) RegisterProvider(name string, cfg map[string]any) {
+	frame := struct {
+		Type   string         `json:"type"`
+		Name   string         `json:"name"`
+		Config map[string]any `json:"config"`
+	}{
+		Type:   "register_provider",
+		Name:   name,
+		Config: cfg,
+	}
+	b, _ := json.Marshal(frame)
+	b = append(b, '\n')
+	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+}
+
+// SetActiveTools enqueues a set_active_tools frame to the PI extension.
+// Stub for P3.LIVE.
+func (s *Sidecar) SetActiveTools(tools []string) {
+	frame := struct {
+		Type  string   `json:"type"`
+		Tools []string `json:"tools"`
+	}{
+		Type:  "set_active_tools",
+		Tools: tools,
+	}
+	b, _ := json.Marshal(frame)
+	b = append(b, '\n')
+	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+}
+
+// Abort enqueues an abort frame to the PI extension.
+// Stub for P3.LIVE.
+func (s *Sidecar) Abort() {
+	frame := struct {
+		Type string `json:"type"`
+	}{Type: "abort"}
+	b, _ := json.Marshal(frame)
+	b = append(b, '\n')
+	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
 }
 
 // buildStdioHarnessCmd constructs the exec.Cmd used to launch the stdio

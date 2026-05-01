@@ -376,8 +376,14 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
 	}
 
-	// Build the bwrap args.
-	return b.BuildArgs(m), nil
+	// Build the bwrap args. For PI sessions, BuildArgs stores any
+	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
+	// an error. Check and surface it here where we CAN return an error.
+	args := b.BuildArgs(m)
+	if m.piBwrapErr != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", m.piBwrapErr)
+	}
+	return args, nil
 }
 
 // Create is not the entry point for bwrap — the bwrap path uses Prepare +

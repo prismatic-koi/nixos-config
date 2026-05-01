@@ -281,6 +281,14 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		HostAPISockPath:   hostAPISockPath,
 		RuntimeEnv:        runtimeEnv,
 		AgentEnvVars:      agentEnvVars,
+		Harness:           harnessName,
+	}
+
+	// PI-harness: populate PI-specific config fields from the active profile slot.
+	if harnessName == "pi" {
+		if piErr := populatePIConfig(&ctrCfg, sessionName, agentRole, cfg); piErr != nil {
+			return fmt.Errorf("agent-run: %w", piErr)
+		}
 	}
 
 	// Read the initial prompt from the pane env var set by session.go at
@@ -658,6 +666,62 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 	if logFile != nil {
 		_, _ = logFile.WriteString(line)
 	}
+}
+
+// populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
+//
+// It:
+//  1. Loads profiles.json and resolves the active profile.
+//  2. Looks up the slot for the session's agent role — returns a clear error if
+//     the profile does not define a slot for this role.
+//  3. Calls WriteSystemPromptFile to generate the per-session system-prompt
+//     temp file and records the host/sandbox paths on ctrCfg.
+//  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
+//  5. Copies PIProvider, PIModel, PIThinking from the profile slot.
+func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config) error {
+	// Load profiles.json.
+	pf, pfErr := config.LoadProfiles()
+	if pfErr != nil {
+		return fmt.Errorf("pi: load profiles: %w", pfErr)
+	}
+
+	// Resolve the active profile (flag > state-file > nix-default).
+	// We have no per-command flag here, so pass "" and let the state-file /
+	// nix-default path take over.
+	profileName, _, err := config.ResolveActiveProfile(pf, "")
+	if err != nil {
+		return fmt.Errorf("pi: resolve active profile: %w", err)
+	}
+	if profileName == "" {
+		return fmt.Errorf("pi: no active profile found — set a profile with `prism profile set <name>` or configure a default in profiles.json")
+	}
+
+	// Require that the active profile defines a slot for this role.
+	if slotErr := config.RequireSlot(pf, profileName, agentRole); slotErr != nil {
+		return fmt.Errorf("pi: %w", slotErr)
+	}
+	slot, _ := config.SlotForRole(pf, profileName, agentRole)
+
+	// Write the system-prompt temp file from the slot.
+	hostPath, sandboxPath, err := container.WriteSystemPromptFile(slot, sessionName)
+	if err != nil {
+		return fmt.Errorf("pi: write system prompt: %w", err)
+	}
+	ctrCfg.PISystemPromptHostPath = hostPath
+	ctrCfg.PISystemPromptSandboxPath = sandboxPath
+
+	// Extension host directory from Nix-written config.
+	if cfg.PIExtensionDir == "" {
+		return fmt.Errorf("pi: PIExtensionDir is not set in prism config — ensure the prism PI extension is configured in Nix (piExtensionDir in config.json)")
+	}
+	ctrCfg.PIExtensionHostDir = cfg.PIExtensionDir
+
+	// Model/provider/thinking from the profile slot.
+	ctrCfg.PIProvider = slot.Provider
+	ctrCfg.PIModel = slot.Model
+	ctrCfg.PIThinking = slot.Thinking
+
+	return nil
 }
 
 // findBwrap locates the bwrap binary on PATH or in well-known Nix store paths.

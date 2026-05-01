@@ -2193,10 +2193,10 @@ func TestBwrapBuildArgs_SystemRootsBeforeWorktree(t *testing.T) {
 // ── Security: sensitive /etc subtree shadowing ───────────────────────────────
 
 // TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed verifies that when
-// /etc/wireguard and /etc/wpa_supplicant exist on the host, BuildArgs emits
-// --tmpfs for each AFTER the /etc ro-bind-mount. The ordering is critical:
-// bwrap applies mounts left-to-right, so the tmpfs must come after the ro-bind
-// to shadow the subtree rather than being overwritten by it.
+// /etc/wireguard, /etc/wpa_supplicant, and /etc/ssh exist on the host,
+// BuildArgs emits --tmpfs for each AFTER the /etc ro-bind-mount. The ordering
+// is critical: bwrap applies mounts left-to-right, so the tmpfs must come
+// after the ro-bind to shadow the subtree rather than being overwritten by it.
 func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
 	// Create fake /etc/wireguard and /etc/wpa_supplicant directories in a temp
 	// location, then temporarily point the os.Stat checks at them by creating
@@ -2210,6 +2210,7 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
 	sensitives := []tempDir{
 		{path: "/etc/wireguard"},
 		{path: "/etc/wpa_supplicant"},
+		{path: "/etc/ssh"},
 	}
 	for i := range sensitives {
 		if _, err := os.Stat(sensitives[i].path); os.IsNotExist(err) {
@@ -2272,16 +2273,16 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing verifies that when
-// /etc/wireguard and /etc/wpa_supplicant do not exist on the host, BuildArgs
-// does NOT emit --tmpfs for them. On a machine without wgnord enabled and
-// without the directories pre-created, the mounts must be omitted to avoid
+// /etc/wireguard, /etc/wpa_supplicant, and /etc/ssh do not exist on the host,
+// BuildArgs does NOT emit --tmpfs for them. On a machine without wgnord enabled
+// and without the directories pre-created, the mounts must be omitted to avoid
 // failing with EROFS when bwrap tries to create the mount-point inside the
 // read-only /etc namespace.
 func TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing(t *testing.T) {
 	// This test only runs meaningfully when the directories are absent.
-	// If they both exist (e.g. this is the navi machine with impermanence),
+	// If they all exist (e.g. this is the navi machine with impermanence),
 	// there's nothing to verify here — skip gracefully.
-	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant"} {
+	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant", "/etc/ssh"} {
 		if _, err := os.Stat(p); err == nil {
 			t.Skipf("%s exists on this host — cannot test the absent-path branch", p)
 		}
@@ -2297,7 +2298,7 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant"} {
+	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant", "/etc/ssh"} {
 		for i := 0; i+1 < len(args); i++ {
 			if args[i] == "--tmpfs" && args[i+1] == p {
 				t.Errorf("--tmpfs %s should NOT appear in args when the directory does not exist on the host, but it does: %v", p, args)

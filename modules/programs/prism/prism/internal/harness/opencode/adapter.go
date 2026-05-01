@@ -47,7 +47,11 @@ type Adapter struct {
 	opencodeURL string
 	httpClient  *http.Client
 	agentRole   string
-	agentModel  string
+	// modelsByRole is the per-role model override map (C.2). When a role key
+	// is present its value takes precedence over the profile/opencode.json
+	// derived model in EffectiveModel and DeliverInitialPrompt. The map may
+	// be nil (no overrides) or may contain only a subset of roles.
+	modelsByRole map[string]string
 	// containerMode, when true, causes DeliverInitialPrompt to be a no-op.
 	// In container mode the initial prompt is delivered via --prompt on the
 	// opencode command line (RFC #691 Phase 1a), so HTTP delivery would be
@@ -64,16 +68,38 @@ type Adapter struct {
 // "http://localhost:4096"). httpClient is used for all HTTP requests; pass nil
 // to use a default short-timeout client. agentRole is the agent role for this
 // session (e.g. "worker" or "coordinator"); agentModel is the model identifier
-// (e.g. "anthropic/claude-sonnet-4-6").
+// (e.g. "anthropic/claude-sonnet-4-6") used as the single-role override for
+// agentRole when non-empty.
+//
+// To supply a full per-role override map (C.2), use NewWithModelOverrides.
 func New(opencodeURL string, httpClient *http.Client, agentRole, agentModel string) *Adapter {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
-	return &Adapter{
+	a := &Adapter{
 		opencodeURL: opencodeURL,
 		httpClient:  httpClient,
 		agentRole:   agentRole,
-		agentModel:  agentModel,
+	}
+	if agentRole != "" && agentModel != "" {
+		a.modelsByRole = map[string]string{agentRole: agentModel}
+	}
+	return a
+}
+
+// NewWithModelOverrides creates a new Adapter with a full per-role model
+// override map (C.2 §3.3). The map may contain any number of roles; roles
+// absent from the map fall through to the profile/opencode.json lookup in
+// EffectiveModel. Pass nil to disable overrides entirely.
+func NewWithModelOverrides(opencodeURL string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) *Adapter {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 20 * time.Second}
+	}
+	return &Adapter{
+		opencodeURL:  opencodeURL,
+		httpClient:   httpClient,
+		agentRole:    agentRole,
+		modelsByRole: modelsByRole,
 	}
 }
 
@@ -84,6 +110,14 @@ func New(opencodeURL string, httpClient *http.Client, agentRole, agentModel stri
 // rather than POST /session which would create a second session.
 func NewContainerMode(opencodeURL string, httpClient *http.Client, agentRole, agentModel string) *Adapter {
 	a := New(opencodeURL, httpClient, agentRole, agentModel)
+	a.containerMode = true
+	return a
+}
+
+// NewContainerModeWithModelOverrides creates a container-mode Adapter with a
+// full per-role model override map (C.2).
+func NewContainerModeWithModelOverrides(opencodeURL string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) *Adapter {
+	a := NewWithModelOverrides(opencodeURL, httpClient, agentRole, modelsByRole)
 	a.containerMode = true
 	return a
 }
@@ -397,12 +431,12 @@ func (a *Adapter) DeliverInitialPrompt(ctx context.Context, prompt, role string)
 		"agent": agentRole,
 	}
 
-	if a.agentModel != "" {
-		slashIdx := strings.Index(a.agentModel, "/")
+	if model := a.modelsByRole[agentRole]; model != "" {
+		slashIdx := strings.Index(model, "/")
 		if slashIdx >= 0 {
 			body["model"] = map[string]string{
-				"providerID": a.agentModel[:slashIdx],
-				"modelID":    a.agentModel[slashIdx+1:],
+				"providerID": model[:slashIdx],
+				"modelID":    model[slashIdx+1:],
 			}
 		}
 	}
@@ -632,20 +666,26 @@ func agentsDir() string {
 	return filepath.Join(configHome, "opencode", "agents")
 }
 
+// SetModelOverrides replaces the adapter's per-role model override map.
+// It implements harness.ModelOverridesSetter (C.2). Not thread-safe; call
+// before sharing the adapter across goroutines.
+func (a *Adapter) SetModelOverrides(m map[string]string) {
+	a.modelsByRole = m
+}
+
 // EffectiveModel returns the model identifier configured for the given
 // agent role.
 //
-// As of #1206 the lookup consults prism's role-keyed profile data first
-// (~/.config/prism/profiles.json → active profile → role slot's model). The
-// profile-driven map is the canonical source: it is what was used to render
-// opencode's own config in the first place, so prism's value is always at
-// least as authoritative as opencode's. Falls back to opencode's
-// ~/.config/opencode/opencode.json when the profile data does not resolve a
-// model for the role (no profiles file, unknown profile, or missing slot) so
-// manually-configured opencode sessions still work.
+// Lookup precedence (C.2 §6.3):
+//  1. Per-role override map (modelsByRole) — highest priority.
+//  2. Prism's profile data (~/.config/prism/profiles.json, via effectiveModelFromProfiles).
+//  3. opencode's own ~/.config/opencode/opencode.json (legacy fallback).
 //
 // It satisfies the harness.Harness interface.
 func (a *Adapter) EffectiveModel(role string) string {
+	if model := a.modelsByRole[role]; model != "" {
+		return model
+	}
 	if model := effectiveModelFromProfiles(role); model != "" {
 		return model
 	}

@@ -63,6 +63,17 @@ const (
 	// their structured protocol is stable, and for any future harness
 	// whose vendor declines to expose a structured API.
 	TransportFallbackScreenScrape TransportShape = "fallback-screen-scrape"
+
+	// TransportSocketPipe declares that the sidecar binds a per-session
+	// Unix socket (Linux) or TCP listener (Darwin) and the harness
+	// extension connects out to it. Wire format is bidirectional JSONL
+	// (newline-delimited JSON objects). The sidecar waits for the
+	// extension's hello frame as the readiness signal; prompts and
+	// control commands are sent outbound via an internal queue.
+	// Health is the connection being open and the hello handshake
+	// having completed successfully.
+	// Examples: PI (P2.SIDECAR #1209).
+	TransportSocketPipe TransportShape = "socket-pipe"
 )
 
 // knownShapes is the closed set of valid TransportShape values. Registration
@@ -72,6 +83,7 @@ var knownShapes = map[TransportShape]bool{
 	TransportHTTPPort:             true,
 	TransportStdioPipe:            true,
 	TransportFallbackScreenScrape: true,
+	TransportSocketPipe:           true,
 }
 
 // Factory constructs a harness.Harness adapter for a single sidecar
@@ -164,7 +176,7 @@ func Register(reg Registration) error {
 		return fmt.Errorf("harness.Register: Shape must not be empty for harness %q", reg.Name)
 	}
 	if !knownShapes[reg.Shape] {
-		return fmt.Errorf("harness.Register: unknown TransportShape %q for harness %q; valid values: http-port, stdio-pipe, fallback-screen-scrape", reg.Shape, reg.Name)
+		return fmt.Errorf("harness.Register: unknown TransportShape %q for harness %q; valid values: http-port, stdio-pipe, fallback-screen-scrape, socket-pipe", reg.Shape, reg.Name)
 	}
 	if reg.Factory == nil {
 		return fmt.Errorf("harness.Register: Factory must not be nil for harness %q", reg.Name)
@@ -231,6 +243,25 @@ func New(name, endpoint string, httpClient *http.Client, agentRole, agentModel s
 	return reg.Factory(endpoint, httpClient, agentRole, agentModel), nil
 }
 
+// NewWithModelOverrides constructs a host-mode harness adapter with a
+// full per-role model override map (C.2). It calls the registered Factory with
+// an empty agentModel then applies the map via the ModelOverridesSetter
+// interface if the adapter implements it. Harnesses that do not implement
+// ModelOverridesSetter receive the single-entry agentModel from
+// modelsByRole[agentRole] as a best-effort fallback.
+func NewWithModelOverrides(name, endpoint string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) (Harness, error) {
+	reg, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q is not registered; valid harnesses: %s", name, joinNames())
+	}
+	singleModel := modelsByRole[agentRole]
+	h := reg.Factory(endpoint, httpClient, agentRole, singleModel)
+	if setter, ok := h.(ModelOverridesSetter); ok {
+		setter.SetModelOverrides(modelsByRole)
+	}
+	return h, nil
+}
+
 // NewContainer constructs a container-mode harness adapter for the
 // named harness. If the registration has a ContainerFactory it is used;
 // otherwise Factory is used. Returns an error if the name is not
@@ -248,6 +279,25 @@ func NewContainer(name, endpoint string, httpClient *http.Client, agentRole, age
 		f = reg.Factory
 	}
 	return f(endpoint, httpClient, agentRole, agentModel), nil
+}
+
+// NewContainerWithModelOverrides constructs a container-mode harness adapter
+// with a full per-role model override map (C.2).
+func NewContainerWithModelOverrides(name, endpoint string, httpClient *http.Client, agentRole string, modelsByRole map[string]string) (Harness, error) {
+	reg, ok := Lookup(name)
+	if !ok {
+		return nil, fmt.Errorf("harness %q is not registered; valid harnesses: %s", name, joinNames())
+	}
+	f := reg.ContainerFactory
+	if f == nil {
+		f = reg.Factory
+	}
+	singleModel := modelsByRole[agentRole]
+	h := f(endpoint, httpClient, agentRole, singleModel)
+	if setter, ok := h.(ModelOverridesSetter); ok {
+		setter.SetModelOverrides(modelsByRole)
+	}
+	return h, nil
 }
 
 // ShapeOf returns the declared TransportShape for the named harness,

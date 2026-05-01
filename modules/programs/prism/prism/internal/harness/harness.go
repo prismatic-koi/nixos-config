@@ -106,6 +106,18 @@ type Harness interface {
 	EffectiveModel(role string) string
 }
 
+// ModelOverridesSetter is an optional interface implemented by harness adapters
+// that support per-role model overrides (C.2). Callers that need to apply a
+// full role→model map after construction use harness.NewWithModelOverrides or
+// harness.NewContainerWithModelOverrides, which call SetModelOverrides via this
+// interface.
+type ModelOverridesSetter interface {
+	// SetModelOverrides replaces the adapter's per-role model map with m.
+	// A nil map clears all overrides. The call is not thread-safe; callers
+	// must invoke it before the adapter is shared across goroutines.
+	SetModelOverrides(m map[string]string)
+}
+
 // HarnessEvent is a raw event received from the agent runtime's event stream.
 // It carries the event type and the raw payload bytes so that each harness
 // implementation can decode them in its own way.

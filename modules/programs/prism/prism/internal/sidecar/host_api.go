@@ -616,6 +616,21 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
+		// For socket-pipe (PI) sessions targeting this sidecar directly,
+		// deliver via the harness pipe rather than shelling out to prism prompt
+		// (which would fail: PI sessions have no opencode HTTP port).
+		if req.Session == s.cfg.SessionName {
+			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
+				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
+				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
+					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{})
+				return
+			}
+		}
+
 		// Deliver via prism prompt on the host.
 		args := []string{"prompt", req.Session, "--prompt", req.Prompt}
 		log.Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
