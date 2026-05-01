@@ -99,7 +99,7 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //     file-read-metadata alongside file-read* (required by dyld/AMFI)
 //   - /bin, /sbin, and /var/... symlink-alias forms (v3 additions)
 //   - /tmp read-write for xcrun and transient files
-//   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant),
+//   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - Host ~/.aws deny (only staged entries accessible)
 //   - Staging HOME / worktree / bare repo / host-API socket dir (RW)
@@ -256,8 +256,10 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("(deny file-read* file-write*\n")
 	sb.WriteString("  (subpath \"/etc/wireguard\")\n")
 	sb.WriteString("  (subpath \"/etc/wpa_supplicant\")\n")
+	sb.WriteString("  (subpath \"/etc/ssh\")\n")
 	sb.WriteString("  (subpath \"/private/etc/wireguard\")\n")
-	sb.WriteString("  (subpath \"/private/etc/wpa_supplicant\"))\n")
+	sb.WriteString("  (subpath \"/private/etc/wpa_supplicant\")\n")
+	sb.WriteString("  (subpath \"/private/etc/ssh\"))\n")
 	sb.WriteString("\n")
 
 	// ── 5. Host ~/.aws deny — keep host credentials invisible ─────────────
