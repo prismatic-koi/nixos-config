@@ -176,6 +176,48 @@ CREATE TABLE IF NOT EXISTS spawn_outcome (
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_end_state    ON spawn_outcome(end_state);
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_pr_number    ON spawn_outcome(pr_number);
 CREATE INDEX IF NOT EXISTS idx_spawn_outcome_review_group ON spawn_outcome(review_group_id);
+
+CREATE TABLE IF NOT EXISTS spawn_inputs (
+    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+
+    -- Inputs as the user passed them (NULL = flag not passed; default in effect).
+    profile_name           TEXT,
+    model_flag             TEXT,
+    variant_flag           TEXT,
+    agent_flag             TEXT,
+    harness_flag           TEXT,
+    isolation_flag         TEXT,
+    host_mode_flag         INTEGER NOT NULL DEFAULT 0,
+    pr_number              INTEGER,
+    branch_flag            TEXT,
+    ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+
+    -- C.2: per-role model-variant overrides (JSON; NULL if no overrides).
+    model_variant_overrides TEXT,
+
+    -- C4.SK: hash of the skills directory at spawn time.
+    -- Shape: "nix:<store-basename>" for nix-managed dirs, "sha256:<hex>" otherwise.
+    skills_manifest_hash    TEXT,
+
+    -- C4.PT: reserved for prompt-template hash (not yet populated).
+    prompt_template_hash    TEXT,
+
+    -- C4.AP: hash of the agent role file at spawn time.
+    -- Shape: "nix:<store-basename>" for nix-managed files, "sha256:<hex>" otherwise.
+    -- NULL when no --agent flag was passed or the role file does not exist.
+    agent_prompt_hash       TEXT,
+
+    -- Prompt delivered to the harness, captured at spawn.
+    prompt_text            TEXT,
+    prompt_source          TEXT,
+
+    -- Free-form JSON blob for forward-compat.
+    extras                 TEXT,
+
+    created_at             INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_spawn_inputs_profile         ON spawn_inputs(profile_name);
+CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harness_flag, profile_name);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -284,6 +326,11 @@ CREATE INDEX IF NOT EXISTS idx_spawn_outcome_review_group ON spawn_outcome(revie
 // the migration idempotent. Fresh databases skip the column-drop (the column
 // never existed in the declarative schema) and the table creation is a no-op
 // because the schema block above already created it.
+// v24→v25 adds the spawn_inputs table (C.1/C.4 §4.1) and the agent_prompt_hash
+// column within it (C4.AP). The table is created with CREATE TABLE IF NOT
+// EXISTS and its indexes with CREATE INDEX IF NOT EXISTS, making the migration
+// idempotent. Fresh databases already have the table from the declarative
+// schema block above, so the CREATE is a no-op.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -367,7 +414,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v24.
+// migrations in order from v1 to v25.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -440,6 +487,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV23toV24(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV24toV25(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1362,7 +1412,144 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 	return nil
 }
 
+func migrateV24toV25(conn *sql.DB, version *int) error {
+	if *version != 24 {
+		return nil
+	}
+	// Migration v24 → v25: add the spawn_inputs table (C.1/C.4 §4.1).
+	// The table holds the intent of a spawn — every flag value the user
+	// passed — keyed on instance_id (FK → sessions). Also includes
+	// agent_prompt_hash (C4.AP) and skills_manifest_hash (C4.SK) columns.
+	// CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT EXISTS make the
+	// migration idempotent; fresh databases already have the table from
+	// the declarative schema block above, so these are no-ops there.
+	spawnInputsSteps := []string{
+		`CREATE TABLE IF NOT EXISTS spawn_inputs (
+		    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+		    profile_name           TEXT,
+		    model_flag             TEXT,
+		    variant_flag           TEXT,
+		    agent_flag             TEXT,
+		    harness_flag           TEXT,
+		    isolation_flag         TEXT,
+		    host_mode_flag         INTEGER NOT NULL DEFAULT 0,
+		    pr_number              INTEGER,
+		    branch_flag            TEXT,
+		    ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+		    model_variant_overrides TEXT,
+		    skills_manifest_hash    TEXT,
+		    prompt_template_hash    TEXT,
+		    agent_prompt_hash       TEXT,
+		    prompt_text            TEXT,
+		    prompt_source          TEXT,
+		    extras                 TEXT,
+		    created_at             INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_spawn_inputs_profile         ON spawn_inputs(profile_name)`,
+		`CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harness_flag, profile_name)`,
+		`UPDATE schema_version SET version = 25`,
+	}
+	for _, step := range spawnInputsSteps {
+		if _, err := conn.Exec(step); err != nil {
+			return fmt.Errorf("db: migration v24→v25: spawn_inputs: %w", err)
+		}
+	}
+	*version = 25
+	return nil
+}
+
 // Close closes the underlying database connection.
 func (d *DB) Close() error {
 	return d.conn.Close()
+}
+
+// SpawnInputs holds the values inserted into spawn_inputs at spawn time.
+// All pointer fields are nullable in the DB; nil means NULL.
+type SpawnInputs struct {
+	InstanceID string
+
+	// Flag values as the user passed them (nil = flag not passed).
+	ProfileName   *string
+	ModelFlag     *string
+	VariantFlag   *string
+	AgentFlag     *string
+	HarnessFlag   *string
+	IsolationFlag *string
+	HostModeFlag  bool
+	PRNumber      *int
+	BranchFlag    *string
+
+	IgnoreConcurrencyCap bool
+
+	// C.2 hook: per-role model-variant overrides (JSON).
+	ModelVariantOverrides *string
+
+	// C4.SK: skills directory hash at spawn time.
+	SkillsManifestHash *string
+
+	// C4.PT: reserved for prompt-template hash (not yet populated).
+	PromptTemplateHash *string
+
+	// C4.AP: agent role file hash at spawn time.
+	AgentPromptHash *string
+
+	// Prompt delivered to the harness.
+	PromptText   *string
+	PromptSource *string
+
+	// Free-form JSON blob for forward-compat.
+	Extras *string
+
+	// ms epoch, mirrors sessions.started_at.
+	CreatedAt int64
+}
+
+// InsertSpawnInputs writes a row to spawn_inputs for the given instance.
+// The function is idempotent via INSERT OR IGNORE — a second call with the
+// same instance_id is a no-op (spawn is a one-shot event; the row, once
+// written, is immutable). A missing FK (sessions row not yet committed) will
+// cause the insert to fail with a foreign-key error; callers must ensure the
+// sessions row exists first.
+func (d *DB) InsertSpawnInputs(si SpawnInputs) error {
+	_, err := d.conn.Exec(`
+INSERT OR IGNORE INTO spawn_inputs (
+    instance_id,
+    profile_name, model_flag, variant_flag, agent_flag, harness_flag,
+    isolation_flag, host_mode_flag,
+    pr_number, branch_flag, ignore_concurrency_cap,
+    model_variant_overrides,
+    skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
+    prompt_text, prompt_source, extras,
+    created_at
+) VALUES (
+    ?,
+    ?, ?, ?, ?, ?,
+    ?, ?,
+    ?, ?, ?,
+    ?,
+    ?, ?, ?,
+    ?, ?, ?,
+    ?
+)`,
+		si.InstanceID,
+		si.ProfileName, si.ModelFlag, si.VariantFlag, si.AgentFlag, si.HarnessFlag,
+		si.IsolationFlag, boolToInt(si.HostModeFlag),
+		si.PRNumber, si.BranchFlag, boolToInt(si.IgnoreConcurrencyCap),
+		si.ModelVariantOverrides,
+		si.SkillsManifestHash, si.PromptTemplateHash, si.AgentPromptHash,
+		si.PromptText, si.PromptSource, si.Extras,
+		si.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("db: insert spawn_inputs for %q: %w", si.InstanceID, err)
+	}
+	return nil
+}
+
+// boolToInt converts a bool to 0/1 for SQLite INTEGER columns.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
