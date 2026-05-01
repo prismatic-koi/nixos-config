@@ -134,6 +134,11 @@ func init() {
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	// --prompt-source is an internal flag used by the host-API /spawn handler
+	// to override the auto-detected prompt source (C.4.SRC, issue #1148).
+	// It is hidden from --help because end users should never pass it directly.
+	spawnCmd.Flags().String("prompt-source", "", "")
+	_ = spawnCmd.Flags().MarkHidden("prompt-source")
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -205,9 +210,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
 	}
 
-	promptFlag, err := resolvePrompt(cmd)
+	promptText, promptSource, err := resolvePromptWithSource(cmd)
 	if err != nil {
 		return err
+	}
+	// --prompt-source is a hidden internal flag set by the host-API /spawn
+	// handler so that proxy-spawned sessions carry "proxy-spawn" instead of
+	// the auto-detected "cli-positional" (C.4.SRC, issue #1148).
+	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
+		promptSource = overrideSource
 	}
 
 	attachFlag, _ := cmd.Flags().GetBool("attach")
@@ -461,7 +472,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		Repo:             deriveRepo(worktreePath),
 		Worktree:         worktreePath,
 		AgentRole:        agentRole,
-		Prompt:           promptFlag,
+		Prompt:           promptText,
+		PromptSource:     promptSource,
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
 		IsolationMode:    string(isolationMode),
@@ -536,7 +548,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		branchFlag:         branchFlag,
 		skillsManifestHash: skillsManifestHash,
 		agentPromptHash:    agentPromptHash,
-		promptFlag:         promptFlag,
+		promptText:         promptText,
+		promptSource:       promptSource,
 	})
 
 	if headless {
@@ -584,7 +597,8 @@ type spawnInputsArgs struct {
 	branchFlag         string
 	skillsManifestHash string
 	agentPromptHash    string
-	promptFlag         string
+	promptText         string
+	promptSource       string
 }
 
 // writeSpawnInputs looks up the instance_id for sessionName and inserts a row
@@ -599,7 +613,7 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	si := db.SpawnInputs{
 		InstanceID:   *st.InstanceID,
 		CreatedAt:    time.Now().UnixMilli(),
-		PromptSource: spawnStrPtr("cli-positional"),
+		PromptSource: spawnStrPtr(args.promptSource),
 	}
 
 	if args.profileName != "" {
@@ -640,8 +654,8 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	if args.agentPromptHash != "" {
 		si.AgentPromptHash = &args.agentPromptHash
 	}
-	if args.promptFlag != "" {
-		si.PromptText = &args.promptFlag
+	if args.promptText != "" {
+		si.PromptText = &args.promptText
 	}
 
 	if err := d.InsertSpawnInputs(si); err != nil {

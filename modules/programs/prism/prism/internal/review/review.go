@@ -84,6 +84,21 @@ import (
 // (case-insensitive) in PR body text. Capture group 1 is the issue number.
 var linkedIssueRe = regexp.MustCompile(`(?i)(?:closes|fixes|refs|references)\s+#(\d+)`)
 
+// reviewGoSHA is the build-time SHA of internal/review/review.go, embedded
+// via -ldflags '-X github.com/prismatic-koi/prism/internal/review.reviewGoSHA=<sha>'
+// during the Nix build. It is the SHA suffix in spawn_inputs.prompt_template_hash
+// for review fan-out sessions (C.4.PT, issue #1148). An empty value means the
+// binary was not built with the ldflag (e.g. in development); the hash is then
+// recorded as "review-fanout:" with an empty suffix.
+var reviewGoSHA string
+
+// ReviewPromptTemplateHash returns the prompt_template_hash value for review
+// fan-out spawns: "review-fanout:<sha>" where <sha> is the build-time SHA of
+// this file. Used by run.go's spawn loops (C.4.PT, issue #1148).
+func ReviewPromptTemplateHash() string {
+	return "review-fanout:" + reviewGoSHA
+}
+
 // DiffMaxBytes is the maximum diff size (in bytes) before truncation.
 // Configurable for testing; production code uses this default.
 const DiffMaxBytes = 200 * 1024 // 200 KB
