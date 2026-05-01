@@ -1,0 +1,467 @@
+package db
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// WriteEvent inserts an event row into agent_events and, when a matching
+// agent_status row exists for e.SessionName, bumps last_seen to
+// MAX(last_seen, e.CreatedAt) in the same transaction. Writing an event for
+// an unknown session_name (no agent_status row) is not an error — the event
+// is still recorded and no last_seen update is attempted.
+func (d *DB) WriteEvent(e Event) error {
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now()
+	}
+	createdAt := e.CreatedAt.UnixMilli()
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: write event: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	const insertQ = `
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID); err != nil {
+		return fmt.Errorf("db: write event: insert: %w", err)
+	}
+
+	// Bump last_seen only when a matching agent_status row exists. The MAX
+	// guard ensures we never move last_seen backward (e.g. for out-of-order
+	// event replays or backfill writes with old timestamps).
+	const updateQ = `
+UPDATE agent_status
+   SET last_seen = MAX(last_seen, ?)
+ WHERE session_name = ?`
+	if _, err := tx.Exec(updateQ, createdAt, e.SessionName); err != nil {
+		return fmt.Errorf("db: write event: update last_seen: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: write event: commit: %w", err)
+	}
+	return nil
+}
+
+// QueryEvents returns up to limit events for the given session, ordered by
+// created_at ASC. before and after are event IDs used for cursor-based
+// pagination — pass nil for open-ended queries. types filters by event type;
+// pass nil to return all types.
+//
+// When limit > 0 and neither before nor after is set (a plain "last N" query),
+// the most-recent N events are returned (newest first in the DB query, then
+// reversed to produce chronological ASC order in the result).
+// When after is set (forward pagination from a cursor), events are fetched
+// ASC from that point. When before is set (backward pagination), events are
+// fetched DESC up to the cursor then reversed to chronological order.
+func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, types []string) ([]Event, error) {
+	args := []any{sessionName}
+	var conditions []string
+	conditions = append(conditions, "session_name = ?")
+
+	if after != nil {
+		var afterTS int64
+		err := d.conn.QueryRow(
+			"SELECT created_at FROM agent_events WHERE id = ?", *after,
+		).Scan(&afterTS)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("QueryEvents: cursor event %q not found", *after)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("db: resolve after cursor: %w", err)
+		}
+		conditions = append(conditions, "created_at > ?")
+		args = append(args, afterTS)
+	}
+
+	if before != nil {
+		var beforeTS int64
+		err := d.conn.QueryRow(
+			"SELECT created_at FROM agent_events WHERE id = ?", *before,
+		).Scan(&beforeTS)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("QueryEvents: cursor event %q not found", *before)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("db: resolve before cursor: %w", err)
+		}
+		conditions = append(conditions, "created_at < ?")
+		args = append(args, beforeTS)
+	}
+
+	if len(types) > 0 {
+		placeholders := make([]string, len(types))
+		for i, t := range types {
+			placeholders[i] = "?"
+			args = append(args, t)
+		}
+		conditions = append(conditions, "type IN ("+strings.Join(placeholders, ",")+")")
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Choose ordering strategy:
+	//   - "last N" (no cursor): fetch newest N rows with DESC, then reverse.
+	//   - forward pagination (after cursor): fetch ASC from cursor.
+	//   - backward pagination (before cursor): fetch DESC up to cursor, then reverse.
+	//   - no limit: fetch all ASC.
+	reverseResult := false
+	orderDir := "ASC"
+	if limit > 0 && after == nil {
+		// Covers both the plain "last N" case and the --before cursor case.
+		orderDir = "DESC"
+		reverseResult = true
+	}
+
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
+		where + " ORDER BY created_at " + orderDir
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate events: %w", err)
+	}
+
+	if reverseResult {
+		for i, j := 0, len(events)-1; i < j; i, j = i+1, j-1 {
+			events[i], events[j] = events[j], events[i]
+		}
+	}
+
+	return events, nil
+}
+
+// QueryEventsByMessageIDs returns all events for sessionName whose payload
+// contains a "messageId" field matching one of the provided IDs. Only events
+// of the specified types are returned; pass nil for types to return all types.
+// Results are ordered by created_at ASC.
+//
+// This is used by checkin's secondary query to fetch tool_call, tool_result,
+// permission_ask, permission_denied, and thinking events that belong to a set
+// of user message turns retrieved by the primary query.
+func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, types []string) ([]Event, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+
+	args := []any{sessionName}
+	conditions := []string{"session_name = ?"}
+
+	// Build the IN clause for messageIds using JSON_EXTRACT.
+	idPlaceholders := make([]string, len(messageIDs))
+	for i, id := range messageIDs {
+		idPlaceholders[i] = "?"
+		args = append(args, id)
+	}
+	conditions = append(conditions, "JSON_EXTRACT(payload, '$.messageId') IN ("+strings.Join(idPlaceholders, ",")+")")
+
+	if len(types) > 0 {
+		typePlaceholders := make([]string, len(types))
+		for i, t := range types {
+			typePlaceholders[i] = "?"
+			args = append(args, t)
+		}
+		conditions = append(conditions, "type IN ("+strings.Join(typePlaceholders, ",")+")")
+	}
+
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
+		" WHERE " + strings.Join(conditions, " AND ") +
+		" ORDER BY created_at ASC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query events by message IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate events by message IDs: %w", err)
+	}
+	return events, nil
+}
+
+// AllSessionEvents returns all events for a session, ordered by created_at ASC.
+// Unlike QueryEvents, this has no limit — it returns the full event history.
+func (d *DB) AllSessionEvents(sessionName string) ([]Event, error) {
+	return d.QueryEvents(sessionName, 0, nil, nil, nil)
+}
+
+// EventsSince returns all events across all sessions created after sinceMs
+// (Unix milliseconds), ordered by created_at ASC. Used by `prism stats --days`.
+func (d *DB) EventsSince(sinceMs int64) ([]Event, error) {
+	const q = `
+SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id
+FROM agent_events
+WHERE created_at >= ?
+ORDER BY created_at ASC`
+	rows, err := d.conn.Query(q, sinceMs)
+	if err != nil {
+		return nil, fmt.Errorf("db: events since: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate events since: %w", err)
+	}
+	return events, nil
+}
+
+// QueryDoomLoopEvents returns doom_loop_detected events from agent_events,
+// ordered by created_at DESC. Optional filters:
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+func (d *DB) QueryDoomLoopEvents(sessionName string, sinceMs int64) ([]Event, error) {
+	args := []any{}
+	conditions := []string{"type = 'doom_loop_detected'"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
+		where + " ORDER BY created_at DESC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query doom loop events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan doom loop event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate doom loop events: %w", err)
+	}
+	return events, nil
+}
+
+// QueryPermissionEvents returns permission_denied or permission_ask events from
+// agent_events, ordered by created_at ASC. Optional filters:
+//   - eventType: must be "permission_denied" or "permission_ask"
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+func (d *DB) QueryPermissionEvents(eventType, sessionName string, sinceMs int64) ([]Event, error) {
+	args := []any{eventType}
+	conditions := []string{"type = ?"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
+		where + " ORDER BY created_at ASC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query permission events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan permission event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate permission events: %w", err)
+	}
+	return events, nil
+}
+
+// QueryAuditEvents returns audit events from agent_events, ordered by
+// created_at DESC. Optional filters:
+//   - sessionName: when non-empty, restrict to this session only
+//   - sinceMs: when > 0, restrict to events created at or after this Unix ms timestamp
+//   - pattern: when non-empty, restrict to events whose payload command field
+//     contains this substring (case-insensitive)
+//   - limit: when > 0, return at most this many events (default 20 when both
+//     limit==0 and sessionName=="")
+//
+// Note: audit events are subject to the same 90-day Prune() threshold as all
+// other agent_events rows. For the forensic use-case described in issue #642,
+// 90 days is sufficient, but audit events are not retained indefinitely.
+func (d *DB) QueryAuditEvents(sessionName string, sinceMs int64, pattern string, limit int) ([]Event, error) {
+	args := []any{}
+	conditions := []string{"type = 'audit'"}
+
+	if sessionName != "" {
+		conditions = append(conditions, "session_name = ?")
+		args = append(args, sessionName)
+	}
+
+	if sinceMs > 0 {
+		conditions = append(conditions, "created_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	if pattern != "" {
+		conditions = append(conditions, "LOWER(JSON_EXTRACT(payload, '$.command')) LIKE ?")
+		args = append(args, "%"+strings.ToLower(pattern)+"%")
+	}
+
+	where := " WHERE " + strings.Join(conditions, " AND ")
+
+	q := "SELECT id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id FROM agent_events" +
+		where + " ORDER BY created_at DESC"
+
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	} else if sessionName == "" {
+		// Default: return the last 20 audit events when no session filter.
+		q += " LIMIT 20"
+	}
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: query audit events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		var createdAt int64
+		if err := rows.Scan(&e.ID, &e.SessionName, &e.Repo, &e.Worktree, &e.HarnessSessionID, &e.Type, &e.Payload, &createdAt, &e.InstanceID); err != nil {
+			return nil, fmt.Errorf("db: scan audit event: %w", err)
+		}
+		e.CreatedAt = time.UnixMilli(createdAt)
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate audit events: %w", err)
+	}
+	return events, nil
+}
+
+// ConsecutiveSidecarFailures returns the number of consecutive non-successful
+// sidecar runs for the given session, counting from the most recent terminal
+// state_change event backward. A "successful" run is one whose terminal
+// state_change payload carries "finished"; all other terminal states
+// ("interrupted", "error", "deleted") are counted as failures.
+//
+// The count stops (and the current value is returned) as soon as a "finished"
+// state_change is encountered, or when there are no more state_change events
+// with terminal states to examine.
+//
+// Sessions with no recorded terminal state_change events return (0, nil) —
+// they are treated as having zero consecutive failures so that new or
+// pre-existing sessions are always restored normally.
+//
+// The limit parameter caps how many events to fetch from the DB. A value of
+// 0 (or any non-positive value) uses the default internal cap of 10, which
+// is more than sufficient for any realistic circuit-breaker threshold. Callers
+// should pass a value at least as large as the configured threshold so the
+// query covers the full window; passing 0 is safe and will use the cap.
+//
+// If the DB query itself fails, the error is returned alongside a count of 0
+// so callers can fall back to restoring the session normally (non-fatal path).
+func (d *DB) ConsecutiveSidecarFailures(sessionName string, limit int) (int, error) {
+	if limit <= 0 {
+		limit = 10 // safe upper bound; more than any sane threshold value
+	}
+	const q = `
+SELECT JSON_EXTRACT(payload, '$.state') AS state
+FROM agent_events
+WHERE session_name = ?
+  AND type = 'state_change'
+  AND JSON_EXTRACT(payload, '$.state') IN ('finished', 'interrupted', 'error', 'deleted')
+ORDER BY created_at DESC, rowid DESC
+LIMIT ?`
+	rows, err := d.conn.Query(q, sessionName, limit)
+	if err != nil {
+		return 0, fmt.Errorf("db: consecutive sidecar failures: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var state string
+		if err := rows.Scan(&state); err != nil {
+			return 0, fmt.Errorf("db: consecutive sidecar failures: scan: %w", err)
+		}
+		if state == "finished" {
+			// A successful run: stop counting.
+			break
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("db: consecutive sidecar failures: iterate: %w", err)
+	}
+	return count, nil
+}
