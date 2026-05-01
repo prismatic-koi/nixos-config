@@ -21,6 +21,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -126,6 +129,24 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		SentAt:       time.Now(),
 	}
 
+	// Socket-pipe transports (e.g. PI) do not have an opencode HTTP port —
+	// route the prompt through the sidecar's per-session host-API socket
+	// instead. The sidecar's /prompt handler detects same-session targets
+	// with a TransportSocketPipe shape and forwards to harness.DeliverPrompt
+	// via the active pipe connection (P2.SIDECAR).
+	if status.Harness != nil {
+		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
+			if err := deliverViaSidecarHostAPI(sessionName, promptText); err != nil {
+				return fmt.Errorf("socket-pipe delivery failed: %w", err)
+			}
+			if err := database.WriteBusMessageDelivered(msg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
+			}
+			fmt.Printf("prompt delivered to %s via socket-pipe\n", sessionName)
+			return nil
+		}
+	}
+
 	// Require port and session ID for HTTP delivery.
 	if status.HarnessPort == nil || status.HarnessSessionID == nil {
 		return fmt.Errorf("session %q has no harness port or session ID — cannot deliver prompt", sessionName)
@@ -142,6 +163,48 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
 	}
 	fmt.Printf("prompt delivered to %s via HTTP\n", sessionName)
+	return nil
+}
+
+// deliverViaSidecarHostAPI dials the per-session host-API Unix socket and
+// POSTs /prompt to deliver a prompt to a socket-pipe (e.g. PI) session. The
+// socket-pipe path bypasses the HTTP harness API used for opencode and
+// instead routes through the sidecar's pipe-frame queue.
+//
+// The function dials the socket directly rather than going through the
+// PRISM_HOST_API proxy mechanism: PRISM_HOST_API is only set inside
+// containerised agent processes; the host-side prism CLI must look up the
+// per-session socket itself via session.SidecarHostAPIPath.
+func deliverViaSidecarHostAPI(sessionName, promptText string) error {
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		return fmt.Errorf("resolve sidecar host-api socket: %w", err)
+	}
+	if _, statErr := os.Stat(sockPath); statErr != nil {
+		return fmt.Errorf("sidecar host-api socket missing at %s: %w", sockPath, statErr)
+	}
+	client := newHostAPIClient(sockPath)
+
+	body, err := json.Marshal(map[string]string{
+		"session": sessionName,
+		"prompt":  promptText,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal prompt: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://prism-hostapi/prompt", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("dial sidecar host-api: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("sidecar host-api returned HTTP %d", resp.StatusCode)
+	}
 	return nil
 }
 

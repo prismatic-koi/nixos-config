@@ -563,6 +563,26 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Same-session targeting bypasses cross-session auth: the request
+		// is being routed to the sidecar's own pipe-connected harness, so
+		// there is no cross-session boundary to enforce. This is the path
+		// taken by the host-side `prism prompt <pi-session>` CLI when it
+		// dials the per-session host-API socket directly. We still gate on
+		// the harness having a TransportSocketPipe shape so an opencode
+		// session — which uses HTTP-port delivery — does not silently route
+		// through this branch.
+		if req.Session == s.cfg.SessionName {
+			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
+				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
+				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
+					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{})
+				return
+			}
+		}
+
 		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
@@ -612,21 +632,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			if req.Session != ownCoordinator {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("workers can only prompt their own coordinator (%s), got %q", ownCoordinator, req.Session))
-				return
-			}
-		}
-
-		// For socket-pipe (PI) sessions targeting this sidecar directly,
-		// deliver via the harness pipe rather than shelling out to prism prompt
-		// (which would fail: PI sessions have no opencode HTTP port).
-		if req.Session == s.cfg.SessionName {
-			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
-				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
-				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
-					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
-					return
-				}
-				writeJSON(w, http.StatusOK, map[string]string{})
 				return
 			}
 		}
