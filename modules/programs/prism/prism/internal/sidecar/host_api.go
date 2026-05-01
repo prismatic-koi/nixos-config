@@ -1123,8 +1123,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merge: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot enqueue merge without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
@@ -1159,8 +1160,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merges: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot list merges without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
@@ -1205,8 +1207,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
+			log.Printf("sidecar: host-API /merges/cancel: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
-				"sidecar has no instance_id — cannot cancel merge without an instance identity")
+				"sidecar has no instance_id — sidecar startup did not run")
 			return
 		}
 
