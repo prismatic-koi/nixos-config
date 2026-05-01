@@ -65,3 +65,20 @@ func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessi
 func BuildDeliveryMessageForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string) string {
 	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, groupData, agentSessions)
 }
+
+// SanitizeSpawnErrorForTest is an exported wrapper around sanitizeSpawnError
+// for use in external test packages. Allows tests to verify that the
+// per-agent error message never includes PRISM_INITIAL_PROMPT or oversized
+// argv content (issue #1194).
+func SanitizeSpawnErrorForTest(prNumber, agentName string, err error) string {
+	return sanitizeSpawnError(prNumber, agentName, err)
+}
+
+// TruncateProgressMsgForTest is an exported wrapper around truncateProgressMsg
+// for use in external test packages.
+func TruncateProgressMsgForTest(prNumber, agentName, msg string) string {
+	return truncateProgressMsg(prNumber, agentName, msg)
+}
+
+// MaxProgressMsgBytesForTest exposes maxProgressMsgBytes for assertions.
+const MaxProgressMsgBytesForTest = maxProgressMsgBytes
