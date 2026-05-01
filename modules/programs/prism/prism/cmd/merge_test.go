@@ -109,20 +109,16 @@ func TestRunMerge_CoordinatorSessionNotRejectedByWorkerGuard(t *testing.T) {
 
 // ── mint-on-the-fly instance_id ───────────────────────────────────────────────
 
-// TestRunMerge_MintsInstanceIDWhenMissing verifies that when a coordinator
-// session has no pre-existing instance_id in the DB, runMerge mints one and
-// writes it to both agent_status and the sessions table. The call proceeds
-// past the instance_id check and fails at the gh preflight (expected in a
-// test environment with no real GitHub API), not at the instance_id guard.
-//
-// This is the fix for issue #1031: prism merge failed with
-// "cannot determine instance_id" for @main coordinator sessions opened
-// without going through prism switch.
-func TestRunMerge_MintsInstanceIDWhenMissing(t *testing.T) {
+// TestRunMerge_FailsWhenInstanceIDMissing verifies that when a coordinator
+// session has no instance_id in the DB, runMerge returns a clear error
+// indicating the sidecar did not start correctly. The sidecar is now the
+// sole owner of instance_id minting (issue #1252); on-the-fly recovery in
+// runMerge has been removed.
+func TestRunMerge_FailsWhenInstanceIDMissing(t *testing.T) {
 	openMergeTestDB(t)
 
 	// Seed a coordinator session WITHOUT an instance_id (simulates a
-	// @main session opened outside of prism switch → ensureAndSwitch).
+	// @main session whose sidecar did not run correctly).
 	const coordSession = "nixos-config@main"
 	d, err := openDB()
 	if err != nil {
@@ -132,66 +128,18 @@ func TestRunMerge_MintsInstanceIDWhenMissing(t *testing.T) {
 		d.Close()
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
-	// Confirm no instance_id is set.
-	status, err := d.CurrentStatus(coordSession)
-	if err != nil {
-		d.Close()
-		t.Fatalf("CurrentStatus: %v", err)
-	}
-	if status == nil {
-		d.Close()
-		t.Fatal("CurrentStatus: got nil, want status row")
-	}
-	if status.InstanceID != nil {
-		d.Close()
-		t.Fatalf("precondition: expected nil instance_id, got %q", *status.InstanceID)
-	}
 	d.Close()
 
 	t.Setenv("PRISM_SESSION_NAME", coordSession)
 	t.Setenv("TMUX", "")
 
-	// runMerge should fail at the gh preflight, not at the instance_id guard.
+	// runMerge should fail with a clear error about missing instance_id,
+	// not attempt on-the-fly minting.
 	err = runMerge(mergeCmd, []string{"999"})
-	if err != nil {
-		// Acceptable: gh preflight will fail in CI/test environments.
-		if strings.Contains(err.Error(), "cannot determine instance_id") {
-			t.Fatalf("runMerge still fails with old 'cannot determine instance_id' error — fix did not take effect: %v", err)
-		}
-		if strings.Contains(err.Error(), "cannot determine calling session") {
-			t.Fatalf("runMerge returned 'cannot determine calling session' — should only happen when callerSession is empty, not here: %v", err)
-		}
-		if strings.Contains(err.Error(), "register session") || strings.Contains(err.Error(), "set instance_id") {
-			t.Fatalf("runMerge failed at DB registration step: %v", err)
-		}
-		// Any other error (e.g. gh not found, PR 999 not open) is expected.
-		t.Logf("runMerge failed at preflight (expected in test env): %v", err)
+	if err == nil {
+		t.Fatal("expected runMerge to return an error when instance_id is missing, got nil")
 	}
-
-	// Verify the instance_id was minted and persisted to agent_status.
-	d2, err := openDB()
-	if err != nil {
-		t.Fatalf("openDB for verify: %v", err)
-	}
-	defer d2.Close()
-
-	status2, err := d2.CurrentStatus(coordSession)
-	if err != nil {
-		t.Fatalf("CurrentStatus after runMerge: %v", err)
-	}
-	if status2 == nil {
-		t.Fatal("CurrentStatus after runMerge: got nil, want status row")
-	}
-	if status2.InstanceID == nil || *status2.InstanceID == "" {
-		t.Fatal("instance_id was not minted and written to agent_status")
-	}
-
-	// Verify a sessions row was inserted for the minted instance_id.
-	sess, err := d2.SessionByInstanceID(*status2.InstanceID)
-	if err != nil {
-		t.Fatalf("SessionByInstanceID: %v", err)
-	}
-	if sess == nil {
-		t.Errorf("no sessions row found for minted instance_id %q", *status2.InstanceID)
+	if !strings.Contains(err.Error(), "no instance_id") && !strings.Contains(err.Error(), "sidecar did not start") {
+		t.Fatalf("expected error about missing instance_id / sidecar not starting, got: %v", err)
 	}
 }

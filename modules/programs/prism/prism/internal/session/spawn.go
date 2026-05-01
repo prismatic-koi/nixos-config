@@ -28,8 +28,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -441,23 +439,6 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if opts.GroupID != "" {
 		if err := d.SetGroupID(opts.SessionName, opts.GroupID); err != nil {
 			return fmt.Errorf("spawn session: set group_id: %w", err)
-		}
-	}
-
-	// Generate an instance_id if the caller did not pre-populate one. The
-	// sidecar needs it via --instance-id to tag container labels and bus
-	// messages; writing it to the DB here keeps the DB row in sync before
-	// the tmux-session-start hook fires.
-	if opts.InstanceID == "" && opts.Layout == LayoutFull {
-		opts.InstanceID = uuid.New().String()
-		if err := d.SetInstanceID(opts.SessionName, opts.InstanceID); err != nil {
-			// Non-fatal: instance isolation degrades gracefully. Log and
-			// continue — the sidecar will read back an empty instance_id
-			// from the DB (which is the pre-instance-id behaviour).
-			fmt.Fprintf(os.Stderr,
-				"warning: could not set instance_id for %q: %v\n",
-				opts.SessionName, err)
-			opts.InstanceID = ""
 		}
 	}
 
