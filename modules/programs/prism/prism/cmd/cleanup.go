@@ -33,7 +33,8 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
-	"github.com/prismatic-koi/prism/internal/piexport"
+	"github.com/prismatic-koi/prism/internal/harness"
+	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -809,7 +810,7 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 	return "", candidateBareRoot
 }
 
-// runSessionArchive performs the opencode-storage copy for the session identified by
+// runSessionArchive performs the harness-storage copy for the session identified by
 // instanceID using the already-open DB d and the agent_status isolation mode
 // from statusIsolationMode. It is called after UpdateSessionEnded so the
 // sessions row has ended_at and end_state populated.
@@ -823,6 +824,8 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 //     to exit non-zero when the archive directory already exists on a re-run.
 //   - Other errors are treated as non-fatal (logged + cleanup continues).
 //
+// Sessions with an unknown harness (no adapter registered) return a clear error
+// and are skipped (AC: edge-case — unknown harness); returns nil.
 // Sessions with unknown or unsupported isolation modes log a clear warning and
 // are skipped (AC: edge-case — unknown isolation mode); returns nil.
 func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
@@ -853,6 +856,33 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		return nil
 	}
 
+	// Resolve the archive adapter for the session's harness. A missing or
+	// unregistered harness is a clear error (not a nil-pointer panic).
+	archiveAdapter, adapterErr := harness.ArchiveAdapterFor(sess.Harness)
+	if adapterErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — %v\n", sessionName, adapterErr)
+		return nil
+	}
+
+	// Resolve source path (harness-specific storage root) via the adapter.
+	ctx := context.Background()
+	srcParams := harnessarchive.SourceParams{
+		SessionName:   sessionName,
+		InstanceID:    instanceID,
+		IsolationMode: statusIsolationMode,
+	}
+	if sess.HarnessSessionID != nil {
+		srcParams.HarnessSessionID = *sess.HarnessSessionID
+	}
+	srcPath, srcErr := archiveAdapter.SourcePath(srcParams)
+	if srcErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
+		return nil
+	}
+
+	// Resolve harness version via the adapter (replaces archive.HarnessVersion()).
+	harnessVersion, _ := archiveAdapter.Version(ctx)
+
 	// Build archive params from DB fields.
 	params := archive.Params{
 		InstanceID:     sess.InstanceID,
@@ -864,7 +894,14 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		EndedAt:        time.Now(), // EndedAt was just set in DB; use now as fallback
 		IsolationMode:  statusIsolationMode,
 		PrismVersion:   archive.PrismGitSHA(),
-		HarnessVersion: archive.HarnessVersion(),
+		HarnessVersion: harnessVersion,
+		StorageRoot:    srcPath,
+		// Copier delegates the harness-specific file-copy to the adapter's Archive
+		// method. This removes the hard-coded opencode copySessionFiles call from
+		// archive.Run and allows any registered harness to provide its own copy logic.
+		Copier: func(copyCtx context.Context, rawDir string) error {
+			return archiveAdapter.Archive(copyCtx, srcPath, rawDir, srcParams)
+		},
 	}
 	if sess.AgentRole != nil {
 		params.AgentRole = *sess.AgentRole
@@ -883,6 +920,8 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 			fmt.Fprintf(os.Stderr, "[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
 		} else if sid != "" {
 			params.HarnessSessionID = sid
+			// Also update srcParams so the Copier closure uses the resolved ID.
+			srcParams.HarnessSessionID = sid
 		}
 	}
 	if sess.GroupID != nil {
@@ -897,29 +936,16 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	if sess.PrismVersion != nil {
 		params.PrismVersion = *sess.PrismVersion
 	}
-	// D6 (issue #1133): pre-resolve the per-mode storage root and extra-file
-	// set via the registered Isolator, then pass them in via params. This
-	// keeps the per-mode dispatch out of the archive package (which cannot
-	// import internal/container without a circular dependency). When
-	// statusIsolationMode is empty or unregistered, params.StorageRoot is
-	// left empty and archive.resolveStorageRoot falls back to the legacy
-	// IsolationMode-keyed switch — matching the pre-refactor behaviour.
-	//
-	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface). Once that
-	// lands, the archive-side resolution moves to ArchiveAdapter.
+
+	// Pre-resolve extra files (e.g. agent-run.log for bwrap/sandbox-exec) via
+	// the container isolator registry. This path pre-dates #1142 and is kept
+	// as-is: the isolator's ExtraFiles are harness-agnostic filesystem paths
+	// that complement the harness adapter's storage root resolution.
 	if statusIsolationMode != "" {
 		if home, homeErr := os.UserHomeDir(); homeErr == nil {
 			if iso, isoErr := container.For(config.IsolationMode(statusIsolationMode), container.ConstructorOpts{Name: sessionName}); isoErr == nil {
 				ap := iso.ArchivePaths(home, sessionName)
-				if params.StorageRoot == "" {
-					params.StorageRoot = ap.StorageRoot
-				}
 				if params.AgentRunLogPath == "" && len(ap.ExtraFiles) > 0 {
-					// Today ExtraFiles for bwrap / sandbox-exec contains a
-					// single agent-run.log path; archive's manifest schema
-					// has a dedicated AgentRunLogPath field that we
-					// continue to populate. Once #1142 lands the archive
-					// package will consume ExtraFiles directly.
 					params.AgentRunLogPath = ap.ExtraFiles[0]
 				}
 			}
@@ -945,10 +971,10 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
 
-	// Translate the raw archive to pi-mono v3 JSONL. Failure is non-fatal:
-	// the raw archive remains intact for re-translation later.
-	if translateErr := piexport.Translate(archivePath); translateErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, translateErr)
+	// Translate the raw archive via the adapter's Export method.
+	// Failure is non-fatal: the raw archive remains intact for re-translation later.
+	if exportErr := archiveAdapter.Export(ctx, archivePath, srcParams); exportErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, exportErr)
 	}
 
 	return nil

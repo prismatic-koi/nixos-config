@@ -1,5 +1,5 @@
-// Package archive exports opencode session state from opencode-stable.db into a
-// prism archive directory at cleanup time.
+// Package archive copies a harness's on-disk session subtree into a prism
+// archive directory at cleanup time.
 //
 // # Directory layout
 //
@@ -32,6 +32,7 @@
 package archive
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -118,6 +119,12 @@ type Params struct {
 	// ArchiveRoot overrides the archive root (~/.local/share/prism/archive).
 	// When empty the XDG-derived default is used. Tests inject this.
 	ArchiveRoot string
+	// Copier, when non-nil, is called instead of the default exportSessionFromDB
+	// to populate rawDir with harness session files. When nil and
+	// HarnessSessionID is non-empty, the built-in opencode exportSessionFromDB
+	// fallback is used for backward compatibility. Tests may also inject this
+	// to supply a custom copy function without setting a storage root.
+	Copier func(ctx context.Context, rawDir string) error
 }
 
 // Run exports the opencode session state for p into the archive directory and
@@ -196,7 +203,11 @@ func Run(p Params) (archivePath string, err error) {
 	}
 
 	// Export opencode session data from SQLite (only when we have a harness_session_id).
-	if p.HarnessSessionID != "" {
+	if p.Copier != nil {
+		if copyErr := p.Copier(context.Background(), rawDir); copyErr != nil {
+			return "", copyErr
+		}
+	} else if p.HarnessSessionID != "" {
 		if exportErr := exportSessionFromDB(p.HarnessSessionID, dbPath, rawDir); exportErr != nil {
 			return "", exportErr
 		}
@@ -333,6 +344,13 @@ func containerNameForSession(sessionName string) string {
 //     left empty (not an error).
 //   - If harnessSessionID is not found in the DB, a single info log is emitted
 //     and raw/ is left empty (not an error).
+// CopySessionFiles exports the opencode session identified by harnessSessionID
+// from the SQLite DB at dbPath into rawDir. It is exported for use by the
+// opencode ArchiveAdapter implementation in internal/harness/opencode/archive.go.
+func CopySessionFiles(harnessSessionID, dbPath, rawDir string) error {
+	return exportSessionFromDB(harnessSessionID, dbPath, rawDir)
+}
+
 func exportSessionFromDB(harnessSessionID, dbPath, rawDir string) error {
 	// If the DB doesn't exist at all (fresh install, never run) — graceful no-op.
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
