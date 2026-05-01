@@ -86,6 +86,82 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	})
 }
 
+// TestProbeConventionalWorktreePath verifies the filesystem-probe fallback that
+// locates a worktree at <bare-root>/<branch>/ when the primary lookup chain
+// (tmux + DB os.Stat check) returns empty.
+//
+// The test constructs a minimal fake worktree directory (just a ".git" file
+// inside it, enough for the os.Stat probe to succeed), seeds the DB with a
+// *stale* worktree path (pointing at a now-deleted directory) whose parent is
+// the fake bare root, then calls probeConventionalWorktreePath and checks that
+// it returns the conventional candidate path.
+func TestProbeConventionalWorktreePath(t *testing.T) {
+	// Construct: <tmpdir>/bare-root/<branch>/.git
+	bareRoot := t.TempDir()
+	branch := "probe-test-branch"
+	conventionalPath := filepath.Join(bareRoot, branch)
+	if err := os.MkdirAll(conventionalPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Create a .git file (worktrees use a file, not a directory).
+	gitFile := filepath.Join(conventionalPath, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: ../bare/.git/worktrees/"+branch+"\n"), 0o644); err != nil {
+		t.Fatalf("write .git file: %v", err)
+	}
+
+	// Seed the DB with a stale worktree path: a sibling directory that no
+	// longer exists.  Its parent (bareRoot) is the same, so the probe can
+	// derive the right bare-root.
+	staleWorktreePath := filepath.Join(bareRoot, "old-gone-path")
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branch
+	if err := d.UpsertStatus(session, "myrepo", staleWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	t.Run("worktree found at conventional path", func(t *testing.T) {
+		gotPath, gotBareRoot := probeConventionalWorktreePath(session, branch)
+		if gotPath != conventionalPath {
+			t.Errorf("worktreePath: got %q, want %q", gotPath, conventionalPath)
+		}
+		if gotBareRoot != bareRoot {
+			t.Errorf("bareRoot: got %q, want %q", gotBareRoot, bareRoot)
+		}
+	})
+
+	t.Run("worktree absent returns empty path but non-empty bareRoot", func(t *testing.T) {
+		// Remove the conventional path so the probe fails.
+		if err := os.RemoveAll(conventionalPath); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		gotPath, gotBareRoot := probeConventionalWorktreePath(session, branch)
+		if gotPath != "" {
+			t.Errorf("worktreePath: got %q, want empty (worktree removed)", gotPath)
+		}
+		if gotBareRoot != bareRoot {
+			t.Errorf("bareRoot: got %q, want %q", gotBareRoot, bareRoot)
+		}
+	})
+
+	t.Run("no DB row returns empty path and empty bareRoot", func(t *testing.T) {
+		gotPath, gotBareRoot := probeConventionalWorktreePath("myrepo@no-such-session", "no-such-branch")
+		if gotPath != "" {
+			t.Errorf("worktreePath: got %q, want empty (no DB row)", gotPath)
+		}
+		if gotBareRoot != "" {
+			t.Errorf("bareRoot: got %q, want empty (no DB row)", gotBareRoot)
+		}
+	})
+}
+
 // TestHeadlessCleanup_EmptyWorktreePath verifies that when worktreePath is
 // empty, headlessCleanup skips worktree removal, still marks the session as
 // ended in the DB, and returns nil.

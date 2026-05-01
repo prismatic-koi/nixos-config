@@ -13,7 +13,6 @@ package container
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 	"strings"
 	"time"
@@ -60,6 +59,8 @@ func roleFor(sessionName string, rootAgentName *string) string {
 //
 // The podmanPS parameter, when non-nil, overrides the real podman ps call —
 // used exclusively by tests to inject fake output without executing podman.
+//
+// This function is package-private; external callers should use podmanIsolator.Cap().
 func ListInFlight(dbPath string, podmanPS func() ([]string, bool)) ([]InFlightSession, bool) {
 	// Step 1: collect sessions from the DB (ended_at IS NULL).
 	dbSessions := map[string]InFlightSession{}
@@ -145,57 +146,4 @@ func runPodmanPS() ([]string, bool) {
 		}
 	}
 	return names, true
-}
-
-// CheckResult is the outcome of a concurrency cap check.
-type CheckResult struct {
-	// Count is the number of in-flight containers at check time.
-	Count int
-	// Cap is the cap that was applied.
-	Cap int
-	// Exceeded is true when Count >= Cap.
-	Exceeded bool
-	// InFlight is the full list of in-flight sessions at check time.
-	InFlight []InFlightSession
-	// PodmanFailed is true when podman ps failed and the count is DB-only.
-	PodmanFailed bool
-}
-
-// CheckCap checks the current in-flight container count against cap.
-// dbPath is the path to prism.db. podmanPS, when non-nil, overrides the real
-// podman ps call (for tests).
-func CheckCap(dbPath string, cap int, podmanPS func() ([]string, bool)) CheckResult {
-	inFlight, podmanFailed := ListInFlight(dbPath, podmanPS)
-	return CheckResult{
-		Count:        len(inFlight),
-		Cap:          cap,
-		Exceeded:     len(inFlight) >= cap,
-		InFlight:     inFlight,
-		PodmanFailed: podmanFailed,
-	}
-}
-
-// FormatExceededError formats the error message shown when the cap is reached.
-func FormatExceededError(res CheckResult) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "error: prism concurrency cap reached (%d agent containers already in flight)\n", res.Count)
-	sb.WriteString("\nActive containers:\n")
-	for _, s := range res.InFlight {
-		fmt.Fprintf(&sb, "  %-40s (%s)\n", s.Name, s.Role)
-	}
-	sb.WriteString("\nHint: wait for a worker to finish and be cleaned up, or re-run with\n")
-	sb.WriteString("      --ignore-concurrency-cap to bypass this guard.")
-	return sb.String()
-}
-
-// FormatExceededWarning formats the warning written to stderr when
-// --ignore-concurrency-cap is passed and the cap is exceeded.
-func FormatExceededWarning(res CheckResult) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "[prism] warning: concurrency cap exceeded (%d/%d in-flight containers) — proceeding because --ignore-concurrency-cap was passed\n", res.Count, res.Cap)
-	sb.WriteString("[prism] in-flight containers:\n")
-	for _, s := range res.InFlight {
-		fmt.Fprintf(&sb, "[prism]   %-40s (%s)\n", s.Name, s.Role)
-	}
-	return sb.String()
 }

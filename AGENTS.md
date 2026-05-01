@@ -44,6 +44,17 @@ go test ./...
 
 This is faster than a full nix build and should be the first check for any prism code change. Run the nix build as well if the change also touches `.nix` files.
 
+### sandbox-exec testing convention
+
+Any change to `internal/container/sandbox_exec.go::generateProfile`,
+`Manager.PrepareSandboxExec`, or `Manager.PrepareSandboxExecHome` must be paired
+with a Darwin-only integration test under `internal/integration/` that invokes
+`/usr/bin/sandbox-exec` against a Nix-built test binary, plus a negative test
+that mutates the profile to prove the positive is not a no-op. Substring
+assertions on profile content are necessary but not sufficient. See
+`modules/programs/prism/prism/docs/sandbox-exec-testing.md` for the full
+convention and helpers (issue #1192).
+
 ## Platform-Aware Commands
 
 This repo targets both NixOS and Darwin. Use the appropriate build and switch commands for your platform. Detect your platform with `uname -s` if unsure (`Linux` = NixOS, `Darwin` = macOS).

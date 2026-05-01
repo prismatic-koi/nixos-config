@@ -137,25 +137,28 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// This mirrors the pattern in cmd/spawn.go:386-394 for regular bwrap spawns.
 		// Podman mode does NOT need this write — the sidecar's Create() path
 		// already writes the file before the container starts.
-		// sandbox-exec mode does NOT yet use this path — it has no bwrap-equivalent
-		// mount mechanism. Config delivery for sandbox-exec is deferred to #1016.
-		//
-		// D3 (issue #1133): the bwrap-only gate routes the write through
+		// Both bwrap and sandbox-exec write the per-agent opencode.json via
 		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
 		// registered isolator instead of the package-level WriteOpencodeConfig
-		// helper. The gate stays narrowed to bwrap to preserve the original
-		// behaviour (sandbox-exec config delivery remains deferred to #1016).
-		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
+		// helper. sandbox-exec config delivery was previously deferred to #1016;
+		// that deferral is now resolved — #1242.
+		//
+		// D3 (issue #1133): the gate routes the write through
+		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
+		// registered isolator instead of the package-level WriteOpencodeConfig
+		// helper.
+		needsOnDiskWrite := opts.IsolationMode == string(config.IsolationBwrap) || opts.IsolationMode == string(config.IsolationSandboxExec)
+		if needsOnDiskWrite && agentConfigContent != "" {
 			iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: agentSession})
 			if isoErr != nil {
-				spawnErr[i] = fmt.Errorf("review: resolve isolator for bwrap agent %s: %w", ag.Name, isoErr)
+				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
 				}
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write opencode config for bwrap agent %s: %w", ag.Name, writeErr)
+				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
 				}
@@ -379,27 +382,27 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			continue
 		}
 
-		// For bwrap sessions, write the opencode.json config file to disk now
-		// so it is present before the agent pane opens. Mirrors the pattern in
-		// cmd/spawn.go:386-394 for regular bwrap spawns.
-		// sandbox-exec mode does NOT yet use this path — config delivery for
-		// sandbox-exec is deferred to #1016.
+		// For bwrap and sandbox-exec sessions, write the opencode.json config
+		// file to disk now so it is present before the agent pane opens.
+		// Mirrors the pattern in cmd/spawn.go:386-394 for regular spawns.
+		// sandbox-exec config delivery was previously deferred to #1016;
+		// that deferral is now resolved — #1242.
 		//
-		// D3 (issue #1133): the bwrap-only gate routes the write through
+		// D3 (issue #1133): the gate routes the write through
 		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
-		// registered isolator. The gate stays narrowed to bwrap to preserve
-		// the original behaviour.
-		if opts.IsolationMode == string(config.IsolationBwrap) && agentConfigContent != "" {
+		// registered isolator.
+		needsOnDiskWrite := opts.IsolationMode == string(config.IsolationBwrap) || opts.IsolationMode == string(config.IsolationSandboxExec)
+		if needsOnDiskWrite && agentConfigContent != "" {
 			iso, isoErr := container.For(config.IsolationMode(opts.IsolationMode), container.ConstructorOpts{Name: agentSession})
 			if isoErr != nil {
-				spawnErr[i] = fmt.Errorf("review: resolve isolator for bwrap agent %s: %w", ag.Name, isoErr)
+				spawnErr[i] = fmt.Errorf("review: resolve isolator for agent %s: %w", ag.Name, isoErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
 				}
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write opencode config for bwrap agent %s: %w", ag.Name, writeErr)
+				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %v", FormatAgentDisplayName(ag.Name), spawnErr[i]))
 				}

@@ -58,3 +58,10 @@ func BuildAsyncAckForTest(prNumber string, round int, groupID string, sessionNam
 func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessions []string, timeout time.Duration, spawnTimes []time.Time, onProgress func(string), groupID string) ([]AgentResult, error) {
 	return pollAgents(ctx, d, agents, agentSessions, timeout, spawnTimes, onProgress, groupID)
 }
+
+// BuildDeliveryMessageForTest is an exported wrapper around buildDeliveryMessage
+// for use in external test packages. Allows tests to verify the header text and
+// no-start error signalling without spinning up a real monitor loop (#1222).
+func BuildDeliveryMessageForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string) string {
+	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, groupData, agentSessions)
+}

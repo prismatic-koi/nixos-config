@@ -247,9 +247,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// bwrap sessions (each is a host process with no per-session memory ceil).
 	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
 	//
-	// D2 (issue #1133): the per-mode if-mode-X branches collapse into a
-	// single runConcurrencyCap dispatch.
-	if err := runConcurrencyCap(cmd, "spawn", isolationMode, isoCaps); err != nil {
+	// A.3 (#1134): unified cap via iso.Cap(ctx, dbPath).Check(ignoreCap).
+	if err := checkConcurrencyCap(cmd, "spawn", isolationMode); err != nil {
 		return err
 	}
 
