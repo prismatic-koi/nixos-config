@@ -113,8 +113,10 @@ func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 	expected := []string{
 		`(subpath "/etc/wireguard")`,
 		`(subpath "/etc/wpa_supplicant")`,
+		`(subpath "/etc/ssh")`,
 		`(subpath "/private/etc/wireguard")`,
 		`(subpath "/private/etc/wpa_supplicant")`,
+		`(subpath "/private/etc/ssh")`,
 	}
 	for _, want := range expected {
 		if !strings.Contains(denyBlock, want) {
