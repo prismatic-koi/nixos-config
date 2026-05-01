@@ -46,6 +46,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
@@ -462,6 +463,30 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				}
 			}()
 			log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
+		}
+	}
+
+	// Mint or load instance_id. The sidecar is the single owner of session
+	// identity. When --instance-id was passed at spawn time, s.cfg.InstanceID
+	// is already set (fast path). Otherwise, query the DB: if the row has a
+	// non-NULL instance_id, load it; if not, mint a fresh UUID and write it.
+	// This runs before the merge-queue watcher so the watcher always has an
+	// identity to key on.
+	if s.cfg.InstanceID == "" && s.cfg.DB != nil {
+		status, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
+		if status != nil && status.InstanceID != nil && *status.InstanceID != "" {
+			s.cfg.InstanceID = *status.InstanceID
+			log.Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
+		} else {
+			minted := uuid.New().String()
+			// Defensively ensure the row exists before writing instance_id.
+			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, "", "", "idle", nil, nil)
+			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
+				log.Printf("sidecar: warning: could not write minted instance_id: %v", err)
+			} else {
+				s.cfg.InstanceID = minted
+				log.Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
+			}
 		}
 	}
 
