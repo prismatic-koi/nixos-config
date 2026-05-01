@@ -630,7 +630,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /spawn
-	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","host_mode":false,"harness":"opencode"}
+	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","harness":"opencode"}
 	// The "repo" field is accepted but ignored — the sidecar always substitutes
 	// its own repo (derived from its session name) so that a client sending a
 	// mount-path name (e.g. "prism-git") still spawns into the correct repo
@@ -651,12 +651,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Profile              string `json:"profile"`
 			Model                string `json:"model"`
 			Variant              string `json:"variant"`
-			HostMode             bool   `json:"host_mode"`
 			Isolation            string `json:"isolation"`
 			Harness              string `json:"harness"`
 			IgnoreConcurrencyCap bool   `json:"ignore_concurrency_cap"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
@@ -673,14 +674,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
 				"unknown harness %q: valid harnesses: %s",
 				req.Harness, strings.Join(harness.Names(), ", ")))
-			return
-		}
-		// Reject conflicting isolation flags at the API boundary so the error
-		// surfaces from the proxy (the spawned subprocess would also reject it,
-		// but doing it here avoids the round-trip and keeps the error close to
-		// the source). Mirrors the resolveIsolationMode rule in cmd/spawn.go.
-		if req.Isolation != "" && req.HostMode {
-			writeError(w, http.StatusBadRequest, "--isolation and --host-mode cannot be used together; --host-mode is a deprecated alias for --isolation host")
 			return
 		}
 		// Validate isolation server-side as defence-in-depth (the client
@@ -721,9 +714,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Variant != "" {
 			args = append(args, "--variant", req.Variant)
 		}
-		if req.HostMode {
-			args = append(args, "--host-mode")
-		}
 		if req.Isolation != "" {
 			args = append(args, "--isolation", req.Isolation)
 		}
@@ -749,9 +739,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Variant != "" {
 			logArgs = append(logArgs, "--variant", req.Variant)
-		}
-		if req.HostMode {
-			logArgs = append(logArgs, "--host-mode")
 		}
 		if req.Isolation != "" {
 			logArgs = append(logArgs, "--isolation", req.Isolation)

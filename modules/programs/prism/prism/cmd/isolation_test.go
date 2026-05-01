@@ -18,7 +18,6 @@ import (
 func newSpawnCmdForTest() *cobra.Command {
 	cmd := &cobra.Command{Use: "spawn-test"}
 	cmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, or host")
-	cmd.Flags().Bool("host-mode", false, "Deprecated alias for --isolation host")
 	return cmd
 }
 
@@ -79,42 +78,6 @@ func TestResolveIsolationMode_UnknownValue(t *testing.T) {
 		if !strings.Contains(err.Error(), m) {
 			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
 		}
-	}
-}
-
-// TestResolveIsolationMode_HostModeAlias verifies that --host-mode maps to "host".
-func TestResolveIsolationMode_HostModeAlias(t *testing.T) {
-	cmd := newSpawnCmdForTest()
-	if err := cmd.Flags().Set("host-mode", "true"); err != nil {
-		t.Fatalf("set --host-mode: %v", err)
-	}
-	cfg := config.Config{}
-	got, err := resolveIsolationMode(cmd, cfg)
-	if err != nil {
-		t.Fatalf("resolveIsolationMode: %v", err)
-	}
-	if got != config.IsolationHost {
-		t.Errorf("got %q, want %q", got, config.IsolationHost)
-	}
-}
-
-// TestResolveIsolationMode_BothIsolationAndHostMode verifies that using both
-// --isolation and --host-mode together returns an error.
-func TestResolveIsolationMode_BothIsolationAndHostMode(t *testing.T) {
-	cmd := newSpawnCmdForTest()
-	if err := cmd.Flags().Set("isolation", "host"); err != nil {
-		t.Fatalf("set --isolation: %v", err)
-	}
-	if err := cmd.Flags().Set("host-mode", "true"); err != nil {
-		t.Fatalf("set --host-mode: %v", err)
-	}
-	cfg := config.Config{}
-	_, err := resolveIsolationMode(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected error when both --isolation and --host-mode are set")
-	}
-	if !strings.Contains(err.Error(), "--isolation and --host-mode") {
-		t.Errorf("error %q does not mention both flags", err.Error())
 	}
 }
 
@@ -185,27 +148,6 @@ func TestResolveIsolationMode_SandboxExecOnLinux(t *testing.T) {
 	}
 }
 
-// TestResolveIsolationMode_SandboxExecHostModeAlias verifies that
-// --isolation sandbox-exec combined with --host-mode returns the existing
-// mutual-exclusion error (same behaviour as any other isolation mode + host-mode).
-func TestResolveIsolationMode_SandboxExecHostModeAlias(t *testing.T) {
-	cmd := newSpawnCmdForTest()
-	if err := cmd.Flags().Set("isolation", "sandbox-exec"); err != nil {
-		t.Fatalf("set --isolation: %v", err)
-	}
-	if err := cmd.Flags().Set("host-mode", "true"); err != nil {
-		t.Fatalf("set --host-mode: %v", err)
-	}
-	cfg := config.Config{}
-	_, err := resolveIsolationMode(cmd, cfg)
-	if err == nil {
-		t.Fatal("expected mutual-exclusion error when both --isolation sandbox-exec and --host-mode are set")
-	}
-	if !strings.Contains(err.Error(), "--isolation and --host-mode") {
-		t.Errorf("error %q does not mention both flags", err.Error())
-	}
-}
-
 // TestResolveIsolationMode_FallbackFromConfig_SandboxExec verifies that when
 // no flags are set and config specifies sandbox-exec, the mode is used — but
 // only on Darwin (the platform guard rejects it elsewhere).
@@ -237,12 +179,12 @@ func TestIsolationFlagExists(t *testing.T) {
 	}
 }
 
-// TestHostModeFlagDeprecationExists verifies that --host-mode still exists
-// as a deprecated alias.
-func TestHostModeFlagDeprecationExists(t *testing.T) {
+// TestHostModeFlagDoesNotExist verifies that --host-mode has been removed from
+// spawnCmd (Phase D-2 of the deprecation cycle).
+func TestHostModeFlagDoesNotExist(t *testing.T) {
 	flag := spawnCmd.Flags().Lookup("host-mode")
-	if flag == nil {
-		t.Fatal("--host-mode flag not found on spawnCmd (should still exist as deprecated alias)")
+	if flag != nil {
+		t.Fatal("--host-mode flag found on spawnCmd (should have been dropped in Phase D-2)")
 	}
 }
 
