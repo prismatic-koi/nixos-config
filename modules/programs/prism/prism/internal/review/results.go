@@ -35,7 +35,10 @@ const maxProgressMsgBytes = 4 * 1024
 //  2. All other errors — the raw error string is stripped of any
 //     PRISM_INITIAL_PROMPT= content, then hard-capped at maxProgressMsgBytes
 //     via truncateProgressMsg.
-func sanitizeSpawnError(agentName string, err error) string {
+//
+// prNumber is used to scope the forensic log path so concurrent review runs do
+// not overwrite each other's error logs.
+func sanitizeSpawnError(prNumber, agentName string, err error) string {
 	if err == nil {
 		return ""
 	}
@@ -53,7 +56,7 @@ func sanitizeSpawnError(agentName string, err error) string {
 	// Tier 2: any other error — strip env payload, then truncate.
 	raw := err.Error()
 	raw = stripEnvPayload(raw)
-	return truncateProgressMsg(agentName, raw)
+	return truncateProgressMsg(prNumber, agentName, raw)
 }
 
 // stripEnvPayload removes the value of PRISM_INITIAL_PROMPT from an error
@@ -75,15 +78,16 @@ func stripEnvPayload(s string) string {
 
 // truncateProgressMsg truncates msg to maxProgressMsgBytes. When truncated, a
 // suffix is appended that names a forensic log path where the full message can
-// be read. The log path is agent-scoped so concurrent agent failures do not
-// overwrite each other's forensic output. The returned string is always
-// ≤ maxProgressMsgBytes+len(suffix).
-func truncateProgressMsg(agentName, msg string) string {
+// be read. The log path includes both prNumber and agentName so concurrent
+// review runs do not overwrite each other's forensic output. The returned
+// string is always ≤ maxProgressMsgBytes+len(suffix).
+func truncateProgressMsg(prNumber, agentName, msg string) string {
 	if len(msg) <= maxProgressMsgBytes {
 		return msg
 	}
-	safeName := sanitisePRNumber(agentName) // reuse path-safe sanitiser
-	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s.log", safeName))
+	safePR := sanitisePRNumber(prNumber)
+	safeAgent := sanitisePRNumber(agentName)
+	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s-%s.log", safePR, safeAgent))
 	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
 	// Write full message to the forensic path (best-effort, non-fatal).
 	_ = os.WriteFile(logPath, []byte(msg), 0o600)
