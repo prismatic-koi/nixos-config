@@ -1282,20 +1282,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Validate session: must match a known session in the host DB.
-		// This prevents silent writes with a NULL/empty session_name (AC edge-case).
-		status, dbErr := s.cfg.DB.CurrentStatus(req.Session)
-		if dbErr != nil {
-			log.Printf("sidecar: host-API /event: CurrentStatus %q: %v", req.Session, dbErr)
-			writeError(w, http.StatusInternalServerError, "db error: "+dbErr.Error())
-			return
-		}
-		if status == nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown session %q — event rejected (no agent_status row in host DB)", req.Session))
-			return
-		}
-
 		// Build the prism event <kind> [flags] invocation.
 		// Always include --session from the top-level field; remaining args
 		// come from the Args map as --key value pairs. Empty-value entries
