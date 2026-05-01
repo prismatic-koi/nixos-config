@@ -3,8 +3,9 @@ package review
 // results.go — result formatting and assessment.
 //
 // This file contains the pure post-processing functions that turn raw polling
-// outcomes into human-readable reports. None of the code here has any
-// dependency on DB, tmux, or spawn machinery.
+// outcomes into human-readable reports. It imports session to detect
+// HostLaunchCmdTooLargeError (for spawn-failure sanitization); otherwise
+// it has no dependency on DB, tmux, or runtime spawn machinery.
 
 import (
 	"encoding/json"
@@ -43,23 +44,22 @@ func sanitizeSpawnError(agentName string, err error) string {
 	var hltl *session.HostLaunchCmdTooLargeError
 	if errors.As(err, &hltl) {
 		return fmt.Sprintf(
-			"launch command exceeded HostLaunchCmdSafeBound (%d bytes, limit %d bytes) — diff too large to inline\n"+
+			"agent %s: launch command exceeded HostLaunchCmdSafeBound (%d bytes, limit %d bytes) — diff too large to inline\n"+
 				"hint: try `prism review <pr> --diff-inline-max 0` to skip diff inlining, or reduce the PR diff size.",
-			hltl.CmdSize, hltl.SafeBound,
+			agentName, hltl.CmdSize, hltl.SafeBound,
 		)
 	}
 
 	// Tier 2: any other error — strip env payload, then truncate.
 	raw := err.Error()
 	raw = stripEnvPayload(raw)
-	return truncateProgressMsg(raw)
+	return truncateProgressMsg(agentName, raw)
 }
 
-// stripEnvPayload removes the value of PRISM_INITIAL_PROMPT (and any other
-// -e KEY=VALUE env pairs) from an error string so that launch-argv content
-// does not reach stdout. The stripping is conservative: it looks for
-// "PRISM_INITIAL_PROMPT=" and replaces everything from that point to the
-// next unquoted whitespace boundary with a placeholder.
+// stripEnvPayload removes the value of PRISM_INITIAL_PROMPT from an error
+// string so that launch-argv content does not reach stdout. The stripping is
+// conservative: it looks for "PRISM_INITIAL_PROMPT=" and truncates at that
+// point, appending a redaction note to indicate content was removed.
 func stripEnvPayload(s string) string {
 	const marker = "PRISM_INITIAL_PROMPT="
 	idx := strings.Index(s, marker)
@@ -75,12 +75,15 @@ func stripEnvPayload(s string) string {
 
 // truncateProgressMsg truncates msg to maxProgressMsgBytes. When truncated, a
 // suffix is appended that names a forensic log path where the full message can
-// be read. The returned string is always ≤ maxProgressMsgBytes+len(suffix).
-func truncateProgressMsg(msg string) string {
+// be read. The log path is agent-scoped so concurrent agent failures do not
+// overwrite each other's forensic output. The returned string is always
+// ≤ maxProgressMsgBytes+len(suffix).
+func truncateProgressMsg(agentName, msg string) string {
 	if len(msg) <= maxProgressMsgBytes {
 		return msg
 	}
-	logPath := filepath.Join(os.TempDir(), "prism-review-error.log")
+	safeName := sanitisePRNumber(agentName) // reuse path-safe sanitiser
+	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("prism-review-error-%s.log", safeName))
 	suffix := fmt.Sprintf("\n[...truncated; full error in %s]", logPath)
 	// Write full message to the forensic path (best-effort, non-fatal).
 	_ = os.WriteFile(logPath, []byte(msg), 0o600)

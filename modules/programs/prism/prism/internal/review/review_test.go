@@ -3323,8 +3323,9 @@ func TestSanitizeSpawnError_OtherError_NoPromptPayload(t *testing.T) {
 // TestTruncateProgressMsg_Cap verifies that a message longer than 4 KiB is
 // truncated with a suffix naming a forensic path.
 func TestTruncateProgressMsg_Cap(t *testing.T) {
+	const agentName = "review-code"
 	long := strings.Repeat("x", review.MaxProgressMsgBytesForTest+1)
-	out := review.TruncateProgressMsgForTest(long)
+	out := review.TruncateProgressMsgForTest(agentName, long)
 	if !strings.Contains(out, "[...truncated; full error in ") {
 		t.Errorf("truncateProgressMsg: truncated message does not contain expected suffix\nmessage:\n%s", out)
 	}
@@ -3333,8 +3334,9 @@ func TestTruncateProgressMsg_Cap(t *testing.T) {
 // TestTruncateProgressMsg_ShortPassthrough verifies that a short message is
 // returned unchanged.
 func TestTruncateProgressMsg_ShortPassthrough(t *testing.T) {
+	const agentName = "review-security"
 	short := "tmux not running"
-	out := review.TruncateProgressMsgForTest(short)
+	out := review.TruncateProgressMsgForTest(agentName, short)
 	if out != short {
 		t.Errorf("truncateProgressMsg: short message modified unexpectedly\ngot: %q\nwant: %q", out, short)
 	}

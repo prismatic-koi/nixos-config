@@ -76,8 +76,8 @@ func SanitizeSpawnErrorForTest(agentName string, err error) string {
 
 // TruncateProgressMsgForTest is an exported wrapper around truncateProgressMsg
 // for use in external test packages.
-func TruncateProgressMsgForTest(msg string) string {
-	return truncateProgressMsg(msg)
+func TruncateProgressMsgForTest(agentName, msg string) string {
+	return truncateProgressMsg(agentName, msg)
 }
 
 // MaxProgressMsgBytesForTest exposes maxProgressMsgBytes for assertions.
