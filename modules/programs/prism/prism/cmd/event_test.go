@@ -23,8 +23,12 @@ import (
 
 // setupEventTestDB seeds a temp DB with a single active session row and
 // returns the DB path. The DB is closed before returning so openDB can reopen it.
+// It also unsets PRISM_HOST_API so that direct-DB-path tests exercise the
+// local DB rather than attempting to proxy (#1254 — proxy tests live in
+// event_proxy_test.go).
 func setupEventTestDB(t *testing.T, session string) string {
 	t.Helper()
+	t.Setenv("PRISM_HOST_API", "")
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
 	if err != nil {
@@ -179,6 +183,7 @@ func TestEventTmuxSessionEnd_EmptySession(t *testing.T) {
 //
 // AC-7: new test for the non-worktree session path.
 func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	// Does not need a live tmux server — no tmux calls in this path.
 	const session = "obsidian"
 
@@ -236,6 +241,7 @@ func TestEventTmuxSessionStart_NonWorktreeSession(t *testing.T) {
 func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
 	for _, session := range []string{"scratchpad", "prism-dashboard"} {
 		t.Run(session, func(t *testing.T) {
+			t.Setenv("PRISM_HOST_API", "")
 			worktree := t.TempDir()
 			dbFile := filepath.Join(t.TempDir(), "prism.db")
 			d, err := db.Open(dbFile)
@@ -282,6 +288,7 @@ func TestEventTmuxSessionStart_SkipsMetaSessions(t *testing.T) {
 // for any session whose worktree had no .bare ancestor, leaving the dashboard
 // stuck showing the session as "idle".
 func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
 
 	// Worktree path with no .bare ancestor — deriveRepo returns "".
@@ -358,6 +365,7 @@ func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
 func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
 	for _, session := range []string{"scratchpad", "prism-dashboard"} {
 		t.Run(session, func(t *testing.T) {
+			t.Setenv("PRISM_HOST_API", "")
 			worktree := t.TempDir()
 
 			dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -413,6 +421,7 @@ func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
 // Regression guard for issue #576 — relaxing the guard must not break the
 // existing worktree flow.
 func TestEventStateChange_WorktreeSession(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "myrepo@main"
 
 	// Build a fake bare repo layout: <tmp>/myrepo/{.bare, worktree}
@@ -495,6 +504,7 @@ func TestEventStateChange_WorktreeSession(t *testing.T) {
 // This is the primary user-visible bug from issue #576 — the row existed but
 // was never updated, so the dashboard showed "idle" forever.
 func TestEventStateChange_UpdatesExistingNonWorktreeRow(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
 	worktree := t.TempDir()
 
@@ -563,6 +573,7 @@ func TestEventStateChange_UpdatesExistingNonWorktreeRow(t *testing.T) {
 // to tmux-session-start, the resulting agent_status row has root_agent_name set
 // to the provided role value immediately (before the sidecar writes it).
 func TestEventTmuxSessionStart_AgentRole(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "myrepo@feature"
 	const agentRole = "worker"
 
@@ -617,6 +628,7 @@ func TestEventTmuxSessionStart_AgentRole(t *testing.T) {
 // from prior value or NULL on fresh insert). Existing callers that don't pass
 // --agent-role continue to behave as before.
 func TestEventTmuxSessionStart_NoAgentRole(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "myrepo@no-role-branch"
 
 	worktree := t.TempDir()
@@ -665,6 +677,7 @@ func TestEventTmuxSessionStart_NoAgentRole(t *testing.T) {
 // subsequent tmux-session-start without --agent-role preserves the existing
 // root_agent_name value (COALESCE in UpsertStatus leaves it unchanged).
 func TestEventTmuxSessionStart_AgentRole_PreservesExisting(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "myrepo@preserve-role-branch"
 
 	worktree := t.TempDir()
@@ -721,6 +734,7 @@ func TestEventTmuxSessionStart_AgentRole_PreservesExisting(t *testing.T) {
 //
 // AC-9: regression protection for PR #475 — ClearEnded must fire for obsidian.
 func TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
 	worktree := t.TempDir()
 

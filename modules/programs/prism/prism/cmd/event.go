@@ -14,6 +14,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,8 +26,38 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// proxyEventToHostAPI sends a prism event write to the host sidecar when
+// PRISM_HOST_API is set. kind is the subcommand name (e.g. "doom-loop-detected").
+// session is the session name from --session. args holds the remaining
+// subcommand-specific flags (key → value, omitting the --session pair which is
+// sent in the top-level "session" field).
+//
+// On success (or if PRISM_HOST_API is unset) returns ("", false), which tells
+// the caller to proceed with the direct DB path. When PRISM_HOST_API is set,
+// this always returns a non-nil error or (nil, true) — it never falls back to
+// the local DB (which would re-introduce the shadow-DB bug, AC edge-case).
+func proxyEventToHostAPI(kind, session string, args map[string]string) (bool, error) {
+	apiURL := sandboxenv.HostAPISocket()
+	if apiURL == "" {
+		return false, nil // not in a container — caller proceeds with direct DB path
+	}
+
+	log.Printf("prism event %s: PRISM_HOST_API set — proxying to host sidecar (session=%s)", kind, session)
+
+	body := map[string]any{
+		"kind":    kind,
+		"session": session,
+		"args":    args,
+	}
+	if err := proxyToHostAPI(apiURL, "/event", body, nil); err != nil {
+		return true, fmt.Errorf("prism event %s: host-API proxy: %w", kind, err)
+	}
+	return true, nil
+}
 
 // touchDashboardSentinel creates or updates the modification time of the
 // dashboard sentinel file, which causes the dashboard's watcher goroutine to
@@ -98,6 +129,13 @@ var eventStateChangeCmd = &cobra.Command{
 		session, _ := cmd.Flags().GetString("session")
 		state, _ := cmd.Flags().GetString("state")
 		worktree, _ := cmd.Flags().GetString("worktree")
+
+		if proxied, err := proxyEventToHostAPI("state-change", session, map[string]string{
+			"state":    state,
+			"worktree": worktree,
+		}); proxied {
+			return err
+		}
 
 		// Skip the meta-sessions (scratchpad and prism-dashboard) that must
 		// not appear in agent_status. All other sessions — including
@@ -172,6 +210,13 @@ var eventPaneDiedCmd = &cobra.Command{
 			return nil
 		}
 
+		if proxied, err := proxyEventToHostAPI("pane-died", session, map[string]string{
+			"window":    window,
+			"exit-code": fmt.Sprintf("%d", exitCode),
+		}); proxied {
+			return err
+		}
+
 		d, err := openDB()
 		if err != nil {
 			return fmt.Errorf("event pane-died: %w", err)
@@ -239,6 +284,13 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		session, _ := cmd.Flags().GetString("session")
 		worktree, _ := cmd.Flags().GetString("worktree")
 		agentRole, _ := cmd.Flags().GetString("agent-role")
+
+		if proxied, err := proxyEventToHostAPI("tmux-session-start", session, map[string]string{
+			"worktree":   worktree,
+			"agent-role": agentRole,
+		}); proxied {
+			return err
+		}
 
 		repo := deriveRepo(worktree)
 		if repo == "" {
@@ -384,6 +436,10 @@ var eventTmuxSessionEndCmd = &cobra.Command{
 			return nil
 		}
 
+		if proxied, err := proxyEventToHostAPI("tmux-session-end", session, map[string]string{}); proxied {
+			return err
+		}
+
 		d, err := openDB()
 		if err != nil {
 			return fmt.Errorf("event tmux-session-end: %w", err)
@@ -465,6 +521,10 @@ var eventCompactionCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
 
+		if proxied, err := proxyEventToHostAPI("compaction", session, map[string]string{}); proxied {
+			return err
+		}
+
 		d, err := openDB()
 		if err != nil {
 			return fmt.Errorf("event compaction: %w", err)
@@ -516,6 +576,12 @@ var eventErrorCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		session, _ := cmd.Flags().GetString("session")
 		message, _ := cmd.Flags().GetString("message")
+
+		if proxied, err := proxyEventToHostAPI("error", session, map[string]string{
+			"message": message,
+		}); proxied {
+			return err
+		}
 
 		d, err := openDB()
 		if err != nil {
@@ -577,6 +643,14 @@ the plugin; this command only writes the event.`,
 		tool, _ := cmd.Flags().GetString("tool")
 		pattern, _ := cmd.Flags().GetString("pattern")
 		count, _ := cmd.Flags().GetInt("count")
+
+		if proxied, err := proxyEventToHostAPI("doom-loop-detected", session, map[string]string{
+			"tool":    tool,
+			"pattern": pattern,
+			"count":   fmt.Sprintf("%d", count),
+		}); proxied {
+			return err
+		}
 
 		d, err := openDB()
 		if err != nil {
