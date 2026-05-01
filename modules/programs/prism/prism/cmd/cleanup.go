@@ -230,7 +230,7 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// Kill and clean up all review sessions spawned by this parent session,
 			// including their port allocations and DB rows.
 			review.CleanupReviewSessionsForParent(d, m.session)
-			if !hostModeFromDB(d, m.session) {
+			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
@@ -526,7 +526,7 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -595,7 +595,7 @@ func closeSession(session string) error {
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -672,7 +672,7 @@ func headlessCloseSession(session string) error {
 		// Kill and clean up all review sessions spawned by this parent session,
 		// including their port allocations and DB rows.
 		review.CleanupReviewSessionsForParent(d, session)
-		if !hostModeFromDB(d, session) {
+		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
@@ -996,12 +996,6 @@ func instanceIDFromStatus(d *db.DB, sessionName string) string {
 		return ""
 	}
 	return *status.InstanceID
-}
-
-// hostModeFromDB returns true when the agent_status row for sessionName has
-// isolation_mode = "host". Returns false when the row is missing or on any error.
-func hostModeFromDB(d *db.DB, sessionName string) bool {
-	return isolationModeFromDB(d, sessionName) == "host"
 }
 
 // isolationModeFromDB queries the already-open database d and returns the
