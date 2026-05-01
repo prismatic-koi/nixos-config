@@ -172,6 +172,7 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (subpath \"/usr\")\n")
 	sb.WriteString("  (subpath \"/bin\")\n")
 	sb.WriteString("  (subpath \"/sbin\")\n")
+	sb.WriteString("  (subpath \"/opt/homebrew\")\n")
 	sb.WriteString("  (subpath \"/System\")\n")
 	sb.WriteString("  (subpath \"/Library\")\n")
 	sb.WriteString("  (subpath \"/Applications/Xcode.app\")\n")

@@ -296,6 +296,9 @@
         "gh issue close *" = "allow";
         "gh issue edit *" = "allow";
         "gh issue comment *" = "allow";
+        "gh issue list" = "allow";
+        "gh issue list *" = "allow";
+        "gh issue view *" = "allow";
         # nix build validation (read-only result)
         "nix build *" = "allow";
         # system switch — requires sudo, will be caught by permission prompt
@@ -627,7 +630,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "./mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -770,7 +773,7 @@
           atlasian = {
             type = "local";
             enabled = true;
-            command = [ "./mcp-atlassian-slim-proxy.mjs" ];
+            command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
             environment = {
               ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
             };
@@ -1075,7 +1078,7 @@
             atlasian = {
               type = "local";
               enabled = true;
-              command = [ "./mcp-atlassian-slim-proxy.mjs" ];
+              command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
               environment = {
                 ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
               };
