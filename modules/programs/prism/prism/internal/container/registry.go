@@ -218,7 +218,7 @@ func Resolve(input ResolveInput) (config.IsolationMode, error) {
 		return config.IsolationHost, nil
 	}
 
-	// 5. Machine-level config default (always set; compiled-in default "host").
+	// 4. Machine-level config default (always set; compiled-in default "host").
 	if input.ConfigDefault != "" {
 		return input.ConfigDefault, nil
 	}

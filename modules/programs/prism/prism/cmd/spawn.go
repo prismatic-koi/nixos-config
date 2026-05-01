@@ -213,8 +213,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
 
-	// Resolve the effective isolation mode. This validates --isolation,
-	// maps --host-mode to "host", and falls back to config.json.
+	// Resolve the effective isolation mode. This validates --isolation
+	// and falls back to config.json.
 	// Done BEFORE any side effects (no worktree, no tmux session, no DB row).
 	isolationMode, err := resolveIsolationMode(cmd, cfg)
 	if err != nil {
