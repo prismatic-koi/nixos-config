@@ -998,26 +998,21 @@ func instanceIDFromStatus(d *db.DB, sessionName string) string {
 	return *status.InstanceID
 }
 
-// hostModeFromDB queries the already-open database d and returns true when
-// the agent_status row for sessionName has host_mode = 1. Returns false when
-// the row is missing, host_mode is NULL (pre-migration), or on any error.
+// hostModeFromDB returns true when the agent_status row for sessionName has
+// isolation_mode = "host". Returns false when the row is missing or on any error.
 func hostModeFromDB(d *db.DB, sessionName string) bool {
-	status, err := d.CurrentStatus(sessionName)
-	if err != nil || status == nil {
-		return false
-	}
-	return status.HostMode
+	return isolationModeFromDB(d, sessionName) == "host"
 }
 
 // isolationModeFromDB queries the already-open database d and returns the
-// effective isolation mode for sessionName using Status.EffectiveIsolationMode.
+// isolation mode for sessionName by reading Status.IsolationMode directly.
 // Returns "" when the row is missing or on any error.
 func isolationModeFromDB(d *db.DB, sessionName string) string {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
 		return ""
 	}
-	return status.EffectiveIsolationMode()
+	return status.IsolationMode
 }
 
 // stopAndRemoveChildContainers stops and removes podman containers for all

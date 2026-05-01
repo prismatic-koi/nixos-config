@@ -360,14 +360,10 @@ func TestIsolationMode_BwrapWrittenBeforeWindow(t *testing.T) {
 	if st.IsolationMode != "bwrap" {
 		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "bwrap")
 	}
-	if st.HostMode {
-		t.Errorf("host_mode = true, want false for bwrap mode")
-	}
 }
 
 // TestIsolationMode_HostWrittenBeforeWindow verifies that after the DB writes
-// performed by setupFullLayout, the agent_status row has isolation_mode = "host"
-// AND host_mode = 1 (true).
+// performed by setupFullLayout, the agent_status row has isolation_mode = "host".
 func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
 	const sessionName = "testrepo@host-test"
 	d := openIsolationTestDB(t, sessionName)
@@ -381,9 +377,6 @@ func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
 	if err := d2.SetIsolationMode(sessionName, "host"); err != nil {
 		t.Fatalf("SetIsolationMode: %v", err)
 	}
-	if err := d2.SetHostMode(sessionName, true); err != nil {
-		t.Fatalf("SetHostMode: %v", err)
-	}
 
 	st, err := d.CurrentStatus(sessionName)
 	if err != nil {
@@ -394,9 +387,6 @@ func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
 	}
 	if st.IsolationMode != "host" {
 		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "host")
-	}
-	if !st.HostMode {
-		t.Errorf("host_mode = false, want true for host mode")
 	}
 }
 

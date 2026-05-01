@@ -29,7 +29,6 @@ type Status struct {
 	ModelID          *string
 	RootAgentName    *string
 	RootModelID      *string
-	HostMode         bool
 	IsolationMode    string // "podman", "bwrap", or "host"; "" means not recorded (back-compat)
 	InstanceID       *string
 	LastSeen         time.Time
@@ -44,15 +43,11 @@ type Status struct {
 }
 
 // EffectiveIsolationMode returns the effective isolation mode for this session.
-// When IsolationMode is non-empty it is returned directly. Otherwise the mode
-// is derived from HostMode for back-compat with pre-v10 DB rows:
-// HostMode=true → "host", HostMode=false → "podman".
+// When IsolationMode is non-empty it is returned directly. Otherwise it
+// defaults to "podman" for back-compat with pre-v10 DB rows.
 func (s Status) EffectiveIsolationMode() string {
 	if s.IsolationMode != "" {
 		return s.IsolationMode
-	}
-	if s.HostMode {
-		return "host"
 	}
 	return "podman"
 }

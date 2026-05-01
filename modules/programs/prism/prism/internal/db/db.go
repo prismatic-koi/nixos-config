@@ -37,6 +37,7 @@ func (d *DB) QueryRow(query string, args ...any) *sql.Row {
 	return d.conn.QueryRow(query, args...)
 }
 
+
 const schema = `
 CREATE TABLE IF NOT EXISTS agent_events (
   id                 TEXT PRIMARY KEY,
@@ -87,7 +88,6 @@ CREATE TABLE IF NOT EXISTS agent_status (
   model_id          TEXT,
   root_agent_name   TEXT,
   root_model_id     TEXT,
-  host_mode         INTEGER NOT NULL DEFAULT 0,
   isolation_mode    TEXT,
   instance_id       TEXT,
   last_seen         INTEGER NOT NULL,
@@ -312,7 +312,7 @@ CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harn
 // v22→v23 is a one-shot backfill that populates agent_status.isolation_mode
 // for every row where it is currently NULL (pre-v10 archived rows that were
 // added before the column existed). The value mirrors the runtime fallback in
-// (db.Status).EffectiveIsolationMode(): host_mode=1 → 'host', otherwise →
+// the old EffectiveIsolationMode(): host_mode=1 → 'host', otherwise →
 // 'podman'. The WHERE clause makes the migration idempotent: rows already set
 // are skipped on any subsequent open. This is the Phase A prerequisite for the
 // A4 deprecation-removal sequence (#1129).
@@ -331,6 +331,13 @@ CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harn
 // EXISTS and its indexes with CREATE INDEX IF NOT EXISTS, making the migration
 // idempotent. Fresh databases already have the table from the declarative
 // schema block above, so the CREATE is a no-op.
+// v25→v26 drops the host_mode column from agent_status. All rows already have
+// isolation_mode set (guaranteed by the v22→v23 backfill, #1129), so the
+// host_mode column is redundant. The column is removed via a table-rebuild
+// migration: the table is recreated without host_mode and all rows are copied
+// across. isolation_mode remains nullable TEXT in the new schema. The migration
+// is conditional: it checks whether host_mode still exists before rebuilding,
+// making it idempotent (#1137).
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -414,7 +421,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v25.
+// migrations in order from v1 to v26.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -490,6 +497,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV24toV25(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV25toV26(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1285,8 +1295,22 @@ func migrateV22toV23(conn *sql.DB, version *int) error {
 	// 'podman'. The WHERE clause skips rows already set, making the
 	// migration idempotent. Fresh databases have no rows so this is a
 	// no-op. (#1129)
-	if _, err := conn.Exec(`UPDATE agent_status SET isolation_mode = CASE WHEN host_mode = 1 THEN 'host' ELSE 'podman' END WHERE isolation_mode IS NULL`); err != nil {
-		return fmt.Errorf("db: migration v22→v23: %w", err)
+	//
+	// Skip the UPDATE when host_mode no longer exists in the schema (the
+	// v25→v26 migration drops it). On a fresh database created after that
+	// migration the column never existed, so the UPDATE would fail. Since
+	// there are no rows with isolation_mode IS NULL on such a database, the
+	// UPDATE is a no-op anyway.
+	var hmColExists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'host_mode'`,
+	).Scan(&hmColExists); err != nil {
+		return fmt.Errorf("db: migration v22→v23: check host_mode column: %w", err)
+	}
+	if hmColExists > 0 {
+		if _, err := conn.Exec(`UPDATE agent_status SET isolation_mode = CASE WHEN host_mode = 1 THEN 'host' ELSE 'podman' END WHERE isolation_mode IS NULL`); err != nil {
+			return fmt.Errorf("db: migration v22→v23: %w", err)
+		}
 	}
 	if _, err := conn.Exec("UPDATE schema_version SET version = 23"); err != nil {
 		return fmt.Errorf("db: migration v22→v23: bump version: %w", err)
@@ -1455,6 +1479,71 @@ func migrateV24toV25(conn *sql.DB, version *int) error {
 		}
 	}
 	*version = 25
+	return nil
+}
+
+func migrateV25toV26(conn *sql.DB, version *int) error {
+	if *version != 25 {
+		return nil
+	}
+	// Migration v25 → v26: drop host_mode column from agent_status.
+	// All rows already have isolation_mode set (guaranteed by v22→v23
+	// backfill, #1129), so host_mode is redundant. We use the
+	// rename-copy-drop idiom because SQLite does not support
+	// ALTER TABLE ... DROP COLUMN portably. The migration is conditional
+	// on the column still existing, making it idempotent. (#1137)
+	var hmColExists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'host_mode'`,
+	).Scan(&hmColExists); err != nil {
+		return fmt.Errorf("db: migration v25→v26: check host_mode column: %w", err)
+	}
+	if hmColExists > 0 {
+		rebuildSteps := []string{
+			`PRAGMA foreign_keys = OFF`,
+			`ALTER TABLE agent_status RENAME TO agent_status_old_v25`,
+			`CREATE TABLE agent_status (
+			  session_name      TEXT PRIMARY KEY,
+			  repo              TEXT NOT NULL,
+			  worktree          TEXT NOT NULL,
+			  state             TEXT NOT NULL,
+			  title             TEXT,
+			  agent_name        TEXT,
+			  model_id          TEXT,
+			  root_agent_name   TEXT,
+			  root_model_id     TEXT,
+			  isolation_mode    TEXT,
+			  instance_id       TEXT,
+			  last_seen         INTEGER NOT NULL,
+			  ended_at          INTEGER,
+			  harness           TEXT NOT NULL DEFAULT 'opencode',
+			  harness_session_id TEXT,
+			  harness_port      INTEGER,
+			  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+			)`,
+			`INSERT INTO agent_status
+			  SELECT session_name, repo, worktree, state, title,
+			         agent_name, model_id, root_agent_name, root_model_id,
+			         COALESCE(isolation_mode, 'podman'),
+			         instance_id, last_seen, ended_at,
+			         harness, harness_session_id, harness_port, group_id
+			  FROM agent_status_old_v25`,
+			`DROP TABLE agent_status_old_v25`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+			   ON agent_status (repo)
+			   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL`,
+			`PRAGMA foreign_keys = ON`,
+		}
+		for _, step := range rebuildSteps {
+			if _, err := conn.Exec(step); err != nil {
+				return fmt.Errorf("db: migration v25→v26: rebuild agent_status: %w", err)
+			}
+		}
+	}
+	if _, err := conn.Exec("UPDATE schema_version SET version = 26"); err != nil {
+		return fmt.Errorf("db: migration v25→v26: bump version: %w", err)
+	}
+	*version = 26
 	return nil
 }
 

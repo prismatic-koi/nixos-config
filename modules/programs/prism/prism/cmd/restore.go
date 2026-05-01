@@ -270,31 +270,22 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// setupFullLayout from forking "prism event tmux-session-start" — we
 	// manage agent_status directly below via the open DB handle.
 	//
-	// IsolationMode is read from the DB row (s.IsolationMode) when recorded.
-	// When absent (pre-v10 rows), fall back to the back-compat derivation:
-	// HostMode=true → "host", else use the global cfg's effective mode.
-	// This ensures sessions spawned before the isolation_mode column was added
-	// are restored with the same behaviour they were created with.
+	// IsolationMode is read directly from the DB row (s.IsolationMode).
+	// All rows have isolation_mode set (guaranteed by v22→v23 backfill, #1129).
 	cfg := loadRestoreConfig()
 
 	var isoMode config.IsolationMode
 	if s.IsolationMode != "" {
 		isoMode = config.IsolationMode(s.IsolationMode)
-	} else if s.HostMode {
-		isoMode = config.IsolationHost
 	} else {
-		// Pre-v10 row without isolation_mode and without host_mode:
-		// fall back to the global config's effective isolation mode.
-		// This restores pre-v10 sessions with the same mode the machine
-		// is currently configured for.
+		// Defensive fallback for rows that somehow still have an empty
+		// isolation_mode (should not occur post-v25 migration). Resolve using
+		// global config defaults.
 		var resolveErr error
 		isoMode, resolveErr = container.Resolve(container.ResolveInput{
 			ConfigDefault: cfg.DefaultIsolationMode,
 		})
 		if resolveErr != nil {
-			// Resolve only returns an error for conflicting flags; with no
-			// flags set this is unreachable. Log and fall back to IsolationHost.
-			fmt.Fprintf(os.Stderr, "restore %q: resolve isolation mode: %v — falling back to host\n", s.SessionName, resolveErr)
 			isoMode = config.IsolationHost
 		}
 	}

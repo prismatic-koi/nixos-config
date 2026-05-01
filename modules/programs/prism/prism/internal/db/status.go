@@ -449,25 +449,6 @@ func (d *DB) ReleasePort(sessionName string) error {
 	return nil
 }
 
-// SetHostMode sets the host_mode column for the given session to 1 (true) or
-// 0 (false). Called by spawn when --host-mode is passed, so that cleanup can
-// skip container teardown for host-mode sessions.
-// It is a no-op when no row exists for sessionName (returns nil).
-func (d *DB) SetHostMode(sessionName string, hostMode bool) error {
-	val := 0
-	if hostMode {
-		val = 1
-	}
-	_, err := d.conn.Exec(
-		"UPDATE agent_status SET host_mode = ? WHERE session_name = ?",
-		val, sessionName,
-	)
-	if err != nil {
-		return fmt.Errorf("db: set host_mode: %w", err)
-	}
-	return nil
-}
-
 // SetIsolationMode records the resolved isolation mode for the given session.
 // mode is one of "podman", "bwrap", or "host". This is persisted so that
 // prism restore can re-spawn the session in the same isolation mode.
@@ -634,7 +615,7 @@ func (d *DB) HarnessSessionIDForInstance(instanceID string) (string, error) {
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -651,7 +632,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -682,7 +663,7 @@ func (d *DB) ActiveSessionCountForMode(mode string) (int, error) {
 // helpers; callable for any IsolationMode value.
 func (d *DB) ActiveSessionsForMode(mode string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL AND isolation_mode = ?`
 	return d.queryStatuses(q, mode)
@@ -691,7 +672,7 @@ WHERE ended_at IS NULL AND isolation_mode = ?`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -709,7 +690,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -734,7 +715,7 @@ func (d *DB) WaitingCount() (int, error) {
 // returned and a duplicate is silently tolerated.
 func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, host_mode, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
 FROM agent_status
 WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
 ORDER BY last_seen DESC
@@ -802,7 +783,6 @@ func scanStatus(s scanner) (*Status, error) {
 	var st Status
 	var lastSeen int64
 	var endedAt sql.NullInt64
-	var hostMode sql.NullInt64
 	var instanceID sql.NullString
 	var harness sql.NullString
 	var harnessSessionID sql.NullString
@@ -812,7 +792,7 @@ func scanStatus(s scanner) (*Status, error) {
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.AgentName, &st.ModelID,
-		&st.RootAgentName, &st.RootModelID, &hostMode, &isolationMode, &instanceID, &lastSeen, &endedAt,
+		&st.RootAgentName, &st.RootModelID, &isolationMode, &instanceID, &lastSeen, &endedAt,
 		&harness, &harnessSessionID, &harnessPort, &groupID,
 	)
 	if err != nil {
@@ -827,12 +807,7 @@ func scanStatus(s scanner) (*Status, error) {
 		t := time.UnixMilli(endedAt.Int64)
 		st.EndedAt = &t
 	}
-	// host_mode: treat NULL (rows written before migration) as 0/false.
-	if hostMode.Valid {
-		st.HostMode = hostMode.Int64 != 0
-	}
-	// isolation_mode: NULL means not recorded (pre-v10 row); callers derive
-	// the mode from host_mode for back-compat in that case.
+	// isolation_mode: NULL means not recorded (pre-v10 row).
 	if isolationMode.Valid {
 		st.IsolationMode = isolationMode.String
 	}
