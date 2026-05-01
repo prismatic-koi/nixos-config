@@ -101,6 +101,7 @@ func init() {
 	statsCmd.Flags().String("repo", "", "Filter rows to those where sessions.repo equals this value")
 	statsCmd.Flags().String("since", "", "Filter rows to those started on or after this date (ISO 8601 or YYYY-MM-DD)")
 	statsCmd.Flags().Bool("instance", false, "Treat the argument as a full instance_id (UUID) even if it might match a session name")
+	statsCmd.Flags().String("group-by", "", "Render a breakdown table grouped by this axis: harness, profile, variant, model")
 	rootCmd.AddCommand(statsCmd)
 }
 
@@ -139,6 +140,22 @@ func runStats(cmd *cobra.Command, args []string) error {
 	repoFilter, _ := cmd.Flags().GetString("repo")
 	sinceStr, _ := cmd.Flags().GetString("since")
 	forceInstance, _ := cmd.Flags().GetBool("instance")
+	groupBy, _ := cmd.Flags().GetString("group-by")
+
+	// Validate --group-by early so we fail fast on bad input.
+	if groupBy != "" {
+		validAxes := []string{"harness", "profile", "variant", "model"}
+		valid := false
+		for _, a := range validAxes {
+			if groupBy == a {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("unknown --group-by value %q; valid axes: harness, profile, variant, model", groupBy)
+		}
+	}
 
 	// --doomloops, --denials, and --asks bypass the per-incarnation view.
 	// They each have their own session-filter path and --days is additive.
@@ -169,6 +186,22 @@ func runStats(cmd *cobra.Command, args []string) error {
 			}
 		}
 		return nil
+	}
+
+	// --group-by: breakdown table grouped by the given axis.
+	if groupBy != "" {
+		// Compute sinceMs from --days or --since for filtering.
+		var sinceMs int64
+		if days > 0 {
+			sinceMs = time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+		} else if sinceStr != "" {
+			ms, err := parseSinceFlag(sinceStr)
+			if err != nil {
+				return err
+			}
+			sinceMs = ms
+		}
+		return runStatsGroupBy(groupBy, sinceMs)
 	}
 
 	// --days: historical aggregate view.

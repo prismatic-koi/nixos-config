@@ -476,6 +476,122 @@ WHERE instance_id = ?`
 	return out, nil
 }
 
+// GroupByRow holds aggregated spawn_outcome metrics for a single group-by value.
+// The GroupValue field is the value of the group-by column (e.g. harness_flag);
+// an empty string means the column was NULL for all sessions in that group.
+type GroupByRow struct {
+	GroupValue string // "" when the column is NULL (rendered as "(none)")
+
+	// Counts
+	SessionCount int
+
+	// Aggregate sums from spawn_outcome
+	TokensInputTotal      int64
+	TokensOutputTotal     int64
+	TokensCacheReadTotal  int64
+	TokensCacheWriteTotal int64
+	CostUSDTotal          float64
+	ToolCallCount         int64
+	MsgAssistantCount     int64
+	DoomLoopCount         int64
+	PermissionDeniedCount int64
+	ErrorEventCount       int64
+
+	// Average duration (ms) over sessions with a non-NULL duration_ms
+	AvgDurationMs *float64
+}
+
+// validGroupByAxes lists the allowed axis names for --group-by.
+var validGroupByAxes = map[string]string{
+	"harness": "si.harness_flag",
+	"profile": "si.profile_name",
+	"variant": "si.variant_flag",
+	"model":   "si.model_flag",
+}
+
+// SpawnOutcomeGroupBy queries the spawn_inputs ⋈ spawn_outcome join and
+// returns per-group aggregated rows for the given axis. The axis must be one
+// of "harness", "profile", "variant", or "model". Sessions that have no
+// spawn_inputs row are excluded (the JOIN is INNER).
+//
+// An optional cutoff in Unix milliseconds (sinceMs > 0) filters sessions to
+// those whose sessions.started_at >= sinceMs — allowing the caller to apply
+// existing --days or --since filters before grouping.
+func (d *DB) SpawnOutcomeGroupBy(axis string, sinceMs int64) ([]GroupByRow, error) {
+	col, ok := validGroupByAxes[axis]
+	if !ok {
+		return nil, fmt.Errorf("unknown group-by axis %q; valid axes: harness, profile, variant, model", axis)
+	}
+
+	// Build the WHERE clause for the optional time filter.
+	whereParts := []string{}
+	var args []any
+	if sinceMs > 0 {
+		whereParts = append(whereParts, "s.started_at >= ?")
+		args = append(args, sinceMs)
+	}
+
+	whereClause := ""
+	if len(whereParts) > 0 {
+		whereClause = "WHERE " + strings.Join(whereParts, " AND ")
+	}
+
+	q := fmt.Sprintf(`
+SELECT
+    COALESCE(%s, '') AS group_value,
+    COUNT(*)         AS session_count,
+    COALESCE(SUM(so.tokens_input_total), 0),
+    COALESCE(SUM(so.tokens_output_total), 0),
+    COALESCE(SUM(so.tokens_cache_read_total), 0),
+    COALESCE(SUM(so.tokens_cache_write_total), 0),
+    COALESCE(SUM(so.cost_usd_total), 0.0),
+    COALESCE(SUM(so.tool_call_count), 0),
+    COALESCE(SUM(so.msg_assistant_count), 0),
+    COALESCE(SUM(so.doom_loop_count), 0),
+    COALESCE(SUM(so.permission_denied_count), 0),
+    COALESCE(SUM(so.error_event_count), 0),
+    AVG(CASE WHEN so.duration_ms IS NOT NULL THEN so.duration_ms ELSE NULL END)
+FROM sessions s
+INNER JOIN spawn_inputs  si ON si.instance_id = s.instance_id
+INNER JOIN spawn_outcome so ON so.instance_id = s.instance_id
+%s
+GROUP BY group_value
+ORDER BY session_count DESC, group_value ASC`, col, whereClause)
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: group_by %s: %w", axis, err)
+	}
+	defer rows.Close()
+
+	var result []GroupByRow
+	for rows.Next() {
+		var r GroupByRow
+		if scanErr := rows.Scan(
+			&r.GroupValue,
+			&r.SessionCount,
+			&r.TokensInputTotal,
+			&r.TokensOutputTotal,
+			&r.TokensCacheReadTotal,
+			&r.TokensCacheWriteTotal,
+			&r.CostUSDTotal,
+			&r.ToolCallCount,
+			&r.MsgAssistantCount,
+			&r.DoomLoopCount,
+			&r.PermissionDeniedCount,
+			&r.ErrorEventCount,
+			&r.AvgDurationMs,
+		); scanErr != nil {
+			return nil, fmt.Errorf("db: group_by %s: scan: %w", axis, scanErr)
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: group_by %s: iterate: %w", axis, err)
+	}
+	return result, nil
+}
+
 // scanSpawnOutcome scans a *sql.Row into a SpawnOutcome.
 func scanSpawnOutcome(row *sql.Row) (*SpawnOutcome, error) {
 	var out SpawnOutcome
