@@ -285,19 +285,34 @@ func BuildOpencodeCmd(opts Opts) string {
 	})
 }
 
-// buildDirectOpencodeCmd returns the opencode direct-launch command (pre-container mode).
+// harnessBinary returns the binary name to invoke for the given harness.
+// For "pi" the binary is pi-coding-agent; for "" or "opencode" it is opencode.
+func harnessBinary(harnessName string) string {
+	switch harnessName {
+	case "pi":
+		return "pi-coding-agent"
+	default:
+		return "opencode"
+	}
+}
+
+// buildDirectOpencodeCmd returns the direct-launch command for the session
+// harness (pre-container mode). For harness="" or "opencode" this is an
+// opencode invocation; for harness="pi" it is pi-coding-agent.
 func buildDirectOpencodeCmd(opts Opts) string {
+	binary := harnessBinary(opts.HarnessName)
+	isOpencode := binary == "opencode"
 	agent := opts.Agent
 	var cmd string
-	if agent != "" {
-		cmd = "opencode --agent " + agent
+	if agent != "" && isOpencode {
+		cmd = binary + " --agent " + agent
 	} else {
-		cmd = "opencode"
+		cmd = binary
 	}
-	if opts.Port != 0 {
+	if isOpencode && opts.Port != 0 {
 		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
 	}
-	if opts.OpencodeSession != "" && !opts.Fresh {
+	if isOpencode && opts.OpencodeSession != "" && !opts.Fresh {
 		cmd += " -s " + opts.OpencodeSession
 	}
 	if opts.Prompt != "" {

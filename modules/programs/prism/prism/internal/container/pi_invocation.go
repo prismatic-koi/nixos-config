@@ -72,7 +72,13 @@ const (
 // APPEND_SYSTEM.md. No --append-system-prompt flag is needed — PI discovers
 // APPEND_SYSTEM.md automatically from its agent config directory.
 func PIInvocation(cfg Config) []string {
-	args := []string{"pi"}
+	// Use the resolved binary path when set; fall back to the bare name for
+	// back-compat in test/host-mode contexts where the binary is on PATH.
+	binary := cfg.PIBinaryPath
+	if binary == "" {
+		binary = "pi-coding-agent"
+	}
+	args := []string{binary}
 
 	if cfg.PIProvider != "" {
 		args = append(args, "--provider", cfg.PIProvider)
@@ -235,6 +241,18 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 // forgot to populate the Config fields) or the extension directory cannot be
 // validated.
 func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
+	// ── PI binary (read-only) ────────────────────────────────────────────────
+	// The pi-coding-agent binary lives in the Nix store and is not reachable
+	// inside the bwrap sandbox purely via PATH (/nix is bind-mounted but the
+	// profile symlink farm may not resolve the specific store path the binary
+	// lives at when the profile is not in scope). Bind-mounting the resolved
+	// absolute path guarantees the binary is accessible at that exact path
+	// inside the sandbox, which is the value PIInvocation uses as argv[0].
+	if cfg.PIBinaryPath == "" {
+		return nil, fmt.Errorf("pi: PIBinaryPath is empty — resolve pi-coding-agent before launching bwrap")
+	}
+	args = append(args, "--ro-bind", cfg.PIBinaryPath, cfg.PIBinaryPath)
+
 	// ── PI agent config directory ────────────────────────────────────────────
 	// The staging directory is always created by StagePIAgentConfigDir before
 	// bwrap launches. Bind-mount it read-only and set PI_CODING_AGENT_DIR to

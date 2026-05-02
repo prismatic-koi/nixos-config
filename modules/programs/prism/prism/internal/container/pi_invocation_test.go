@@ -13,6 +13,7 @@ import (
 
 func TestPIInvocation_BasicFlags(t *testing.T) {
 	cfg := Config{
+		PIBinaryPath:          "/nix/store/abc-pi/bin/pi-coding-agent",
 		PIProvider:            "anthropic",
 		PIModel:               "anthropic/claude-opus-4",
 		PIThinking:            "high",
@@ -20,8 +21,8 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	}
 	args := PIInvocation(cfg)
 
-	if args[0] != "pi" {
-		t.Errorf("expected args[0] == 'pi', got %q", args[0])
+	if args[0] != "/nix/store/abc-pi/bin/pi-coding-agent" {
+		t.Errorf("expected args[0] == '/nix/store/abc-pi/bin/pi-coding-agent', got %q", args[0])
 	}
 	for _, pair := range [][2]string{
 		{"--provider", "anthropic"},
@@ -95,6 +96,16 @@ func TestPIInvocation_NoInitialPrompt(t *testing.T) {
 func hasPair(args []string, flag, val string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == flag && args[i+1] == val {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTriple returns true when flag, val1, val2 appear consecutively in args.
+func hasTriple(args []string, flag, val1, val2 string) bool {
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val1 && args[i+2] == val2 {
 			return true
 		}
 	}
@@ -249,6 +260,28 @@ func TestValidatePIExtensionDir_MissingExtFile(t *testing.T) {
 
 // ── appendPIBwrapMounts ──────────────────────────────────────────────────────
 
+func TestAppendPIBwrapMounts_EmptyPIBinaryPathReturnsError(t *testing.T) {
+	// An empty PIBinaryPath must return a clear error, not silently fall back
+	// to a bare name that would fail inside the bwrap sandbox with ENOENT.
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       "", // intentionally empty
+		PIExtensionHostDir: extDir,
+	}
+
+	_, err := appendPIBwrapMounts(nil, cfg)
+	if err == nil {
+		t.Fatal("expected an error for empty PIBinaryPath, got nil")
+	}
+	if !strings.Contains(err.Error(), "PIBinaryPath") {
+		t.Errorf("error should mention PIBinaryPath; got: %v", err)
+	}
+}
+
 func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	// Regression test for the bug where --dir was skipped for /etc-prefixed
 	// parent paths. /etc/prism does not exist on the host, so bwrap would
@@ -259,7 +292,14 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	}
 	agentConfigDir := t.TempDir()
 
+	// Create a fake pi-coding-agent binary for the test.
+	fakePI := filepath.Join(t.TempDir(), "pi-coding-agent")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
 	cfg := Config{
+		PIBinaryPath:         fakePI,
 		PIAgentConfigHostDir: agentConfigDir,
 		PIExtensionHostDir:   extDir,
 		// Use default sandbox paths so /etc/prism/pi-extensions is the target.
@@ -284,6 +324,11 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	if !hasPair(args, "--setenv", "PI_CODING_AGENT_DIR") {
 		t.Errorf("expected --setenv PI_CODING_AGENT_DIR in args; got %v", args)
 	}
+
+	// Must ro-bind-mount the PI binary so it is accessible inside the sandbox.
+	if !hasTriple(args, "--ro-bind", fakePI, fakePI) {
+		t.Errorf("expected --ro-bind %q %q for PI binary in args; got %v", fakePI, fakePI, args)
+	}
 }
 
 func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
@@ -294,7 +339,13 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	agentConfigDir := t.TempDir()
 	customSandboxDir := "/run/prism/custom-agent"
 
+	fakePI := filepath.Join(t.TempDir(), "pi-coding-agent")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
 	cfg := Config{
+		PIBinaryPath:            fakePI,
 		PIAgentConfigHostDir:    agentConfigDir,
 		PIAgentConfigSandboxDir: customSandboxDir,
 		PIExtensionHostDir:      extDir,
