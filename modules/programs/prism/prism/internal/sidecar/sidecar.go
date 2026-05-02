@@ -1383,6 +1383,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 	// Signal readiness now that handshake is complete.
 	s.mu.Lock()
+	if !s.shuttingDown {
+		// Write a state_change event so WaitForReady's poll unblocks.
+		// We do not call upsertState here because the status row was already
+		// seeded at spawn time and calling it would overwrite root_agent_name
+		// before SSE-based inference has a chance to set it correctly.
+		s.writeStateChange(agent.StateActive)
+	}
 	if s.cfg.OnReady != nil && !s.shuttingDown {
 		go s.cfg.OnReady()
 	}

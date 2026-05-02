@@ -641,5 +641,86 @@ func TestSocketPipe_HostAPIPromptSelfWorkerBypassesAuth(t *testing.T) {
 	}
 }
 
+// TestSocketPipe_HandshakeWritesStateActive verifies that after a successful
+// handshake, the sidecar writes a state_change event of state "active" to the
+// DB — this is what WaitForReady polls for when using the pi harness.
+func TestSocketPipe_HandshakeWritesStateActive(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Verify a state_change event of state "active" is written to the DB
+	// immediately after handshake — this is what WaitForReady polls for.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+		found := false
+		for _, ev := range events {
+			if ev.Type == "state_change" {
+				var payload map[string]string
+				if err := json.Unmarshal([]byte(ev.Payload), &payload); err == nil {
+					if payload["state"] == string(agent.StateActive) {
+						found = true
+						break
+					}
+				}
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no state_change event with state=active found in DB after handshake")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
+// TestSocketPipe_ShuttingDownSkipsStateActive verifies that if the sidecar is
+// already shutting down when the handshake completes, no StateActive event is
+// written (the shuttingDown guard is respected).
+func TestSocketPipe_ShuttingDownSkipsStateActive(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+
+	// Set shuttingDown before handshake completes.
+	sc.mu.Lock()
+	sc.shuttingDown = true
+	sc.mu.Unlock()
+
+	wait := runSocketPipeSidecar(sc)
+
+	// Even with shuttingDown set, the handshake may still proceed up to the
+	// point of writing state. Dial and complete the handshake.
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Give it a moment, then check no active state was written.
+	time.Sleep(100 * time.Millisecond)
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	for _, ev := range events {
+		if ev.Type == "state_change" {
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(ev.Payload), &payload); err == nil {
+				if payload["state"] == string(agent.StateActive) {
+					t.Error("StateActive event was written despite shuttingDown=true")
+				}
+			}
+		}
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
 // Ensure db import is used.
 var _ *db.DB
