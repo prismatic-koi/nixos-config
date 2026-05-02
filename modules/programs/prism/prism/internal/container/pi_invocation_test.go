@@ -13,7 +13,7 @@ import (
 
 func TestPIInvocation_BasicFlags(t *testing.T) {
 	cfg := Config{
-		PIBinaryPath:          "/nix/store/abc-pi/bin/pi-coding-agent",
+		PIBinaryPath:          "/nix/store/abc-pi/bin/pi",
 		PIProvider:            "anthropic",
 		PIModel:               "anthropic/claude-opus-4",
 		PIThinking:            "high",
@@ -21,8 +21,8 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	}
 	args := PIInvocation(cfg)
 
-	if args[0] != "/nix/store/abc-pi/bin/pi-coding-agent" {
-		t.Errorf("expected args[0] == '/nix/store/abc-pi/bin/pi-coding-agent', got %q", args[0])
+	if args[0] != "/nix/store/abc-pi/bin/pi" {
+		t.Errorf("expected args[0] == '/nix/store/abc-pi/bin/pi', got %q", args[0])
 	}
 	for _, pair := range [][2]string{
 		{"--provider", "anthropic"},
@@ -292,8 +292,8 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	}
 	agentConfigDir := t.TempDir()
 
-	// Create a fake pi-coding-agent binary for the test.
-	fakePI := filepath.Join(t.TempDir(), "pi-coding-agent")
+	// Create a fake pi binary for the test.
+	fakePI := filepath.Join(t.TempDir(), "pi")
 	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
 		t.Fatalf("write fake pi binary: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	agentConfigDir := t.TempDir()
 	customSandboxDir := "/run/prism/custom-agent"
 
-	fakePI := filepath.Join(t.TempDir(), "pi-coding-agent")
+	fakePI := filepath.Join(t.TempDir(), "pi")
 	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
 		t.Fatalf("write fake pi binary: %v", err)
 	}
