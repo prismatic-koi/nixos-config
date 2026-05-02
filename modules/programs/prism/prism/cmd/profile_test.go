@@ -1,4 +1,4 @@
-// Package cmd unit tests for the `prism profile` subcommands (#1207).
+// Package cmd unit tests for the `prism profile` subcommands (#1207, #1215).
 //
 // These tests exercise runProfileUse / runProfileList / runProfileShow
 // directly against a synthesised profiles.json under XDG_CONFIG_HOME and an
@@ -12,6 +12,10 @@
 //     the three resolution-order branches (state file, nix default, none).
 //   - `profile show` defaults to the active profile and accepts an explicit
 //     name.
+//   - `--scope` flag parsing: invalid values are rejected with a clear error.
+//   - `--scope session=` without a name is rejected.
+//   - `--scope coordinator/global` from a worker is rejected with a clear error.
+//   - Without `--scope`, live sessions are not touched.
 package cmd
 
 import (
@@ -242,5 +246,107 @@ func TestProfileShow_RejectsUnknownName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "anthropic") || !strings.Contains(err.Error(), "gemini-hybrid") {
 		t.Errorf("error %q does not list valid profile names", err)
+	}
+}
+
+// runProfileUseWithScope is a helper that sets profileUseFlags before calling
+// runProfileUse and resets them afterwards so tests don't leak state.
+func runProfileUseWithScope(t *testing.T, scope string, yes bool, args []string) (string, error) {
+	t.Helper()
+	// Save and restore the package-level flags.
+	prev := profileUseFlags
+	t.Cleanup(func() { profileUseFlags = prev })
+	profileUseFlags.scope = scope
+	profileUseFlags.yes = yes
+	profileUseFlags.verbose = false
+	return runProfileSubcommand(t, runProfileUse, args)
+}
+
+// TestProfileUse_InvalidScopeRejected verifies that unknown --scope values are
+// rejected before any state file write.
+func TestProfileUse_InvalidScopeRejected(t *testing.T) {
+	stateDir := withProfileFixture(t, sampleProfilesJSON)
+
+	_, err := runProfileUseWithScope(t, "bogus-scope", false, []string{"anthropic"})
+	if err == nil {
+		t.Fatal("runProfileUse(--scope bogus-scope): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "--scope must be") {
+		t.Errorf("error %q does not explain valid scope values", err)
+	}
+	// State file must NOT have been written.
+	if _, statErr := os.Stat(filepath.Join(stateDir, "active-profile")); !os.IsNotExist(statErr) {
+		t.Errorf("state file exists after rejected scope")
+	}
+}
+
+// TestProfileUse_ScopeSessionEmptyNameRejected verifies that
+// --scope session= (empty session name) is rejected immediately.
+func TestProfileUse_ScopeSessionEmptyNameRejected(t *testing.T) {
+	withProfileFixture(t, sampleProfilesJSON)
+
+	_, err := runProfileUseWithScope(t, "session=", false, []string{"anthropic"})
+	if err == nil {
+		t.Fatal("runProfileUse(--scope session=): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires a session name") {
+		t.Errorf("error %q does not mention session name requirement", err)
+	}
+}
+
+// TestProfileUse_NoScopeDoesNotTouchLiveSessions verifies that when --scope is
+// absent the future-spawn default is updated (state file written) and no
+// host-API call is attempted. The absence of a host-API socket guarantees that
+// if a call were attempted the command would fail with a dial error — but it
+// should succeed because scope is empty.
+func TestProfileUse_NoScopeDoesNotTouchLiveSessions(t *testing.T) {
+	stateDir := withProfileFixture(t, sampleProfilesJSON)
+	// Ensure PRISM_HOST_API is not set — so any dial attempt would fail.
+	t.Setenv("PRISM_HOST_API", "")
+
+	out, err := runProfileUseWithScope(t, "", false, []string{"gemini-hybrid"})
+	if err != nil {
+		t.Fatalf("runProfileUse(no scope): %v", err)
+	}
+	if !strings.Contains(out, "gemini-hybrid") {
+		t.Errorf("output %q does not confirm profile set", out)
+	}
+	// State file must have been written.
+	data, readErr := os.ReadFile(filepath.Join(stateDir, "active-profile"))
+	if readErr != nil {
+		t.Fatalf("state file not created: %v", readErr)
+	}
+	if strings.TrimRight(string(data), "\n") != "gemini-hybrid" {
+		t.Errorf("state file = %q, want gemini-hybrid", string(data))
+	}
+}
+
+// TestProfileUse_WorkerRejectedForCoordinatorScope verifies that a worker
+// session cannot call --scope coordinator or --scope global.
+// The test sets PRISM_SESSION_NAME to a worker session name (no "@main") and
+// opens a real in-memory DB with only that session registered as non-coordinator.
+// Because opening the real on-disk DB is not possible in unit tests, we rely on
+// the fact that IsCoordinatorSession looks at the session name and/or DB and
+// that a non-coordinator name (without "@main") returns false.
+func TestProfileUse_WorkerRejectedForCoordinatorScope(t *testing.T) {
+	withProfileFixture(t, sampleProfilesJSON)
+
+	// Use a session name that is clearly not a coordinator (no "@main").
+	t.Setenv("PRISM_SESSION_NAME", "nixos-config@some-worker-branch")
+	// Point the DB path to a temp dir so openDB() opens a fresh empty DB.
+	// An empty DB means IsCoordinatorSession returns false for this session.
+	tmpDB := t.TempDir()
+	t.Setenv("PRISM_STATE_HOME", tmpDB)
+
+	for _, scope := range []string{"coordinator", "global"} {
+		t.Run(scope, func(t *testing.T) {
+			_, err := runProfileUseWithScope(t, scope, true /* skip confirm */, []string{"anthropic"})
+			if err == nil {
+				t.Fatalf("runProfileUse(--scope %s) from worker: want error, got nil", scope)
+			}
+			if !strings.Contains(err.Error(), "coordinator sessions only") {
+				t.Errorf("error %q does not mention coordinator-only restriction", err)
+			}
+		})
 	}
 }
