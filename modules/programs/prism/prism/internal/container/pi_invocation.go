@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -156,7 +157,84 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		}
 	}
 
+	// Copy auth.json, settings.json, and themes/ from ~/.pi/agent/ into the
+	// staging directory. Each copy is best-effort and silent when the source
+	// does not exist — PI can start without auth (e.g. auth not yet set up).
+	if home, err := os.UserHomeDir(); err == nil {
+		piAgentSrc := filepath.Join(home, ".pi", "agent")
+		for _, name := range []string{"auth.json", "settings.json"} {
+			src := filepath.Join(piAgentSrc, name)
+			dst := filepath.Join(stagingDir, name)
+			_ = copyFileIfExists(src, dst)
+		}
+		themeSrc := filepath.Join(piAgentSrc, "themes")
+		themeDst := filepath.Join(stagingDir, "themes")
+		_ = copyDirIfExists(themeSrc, themeDst)
+	}
+
 	return stagingDir, piAgentConfigSandboxDefault, nil
+}
+
+// copyFileIfExists copies a single regular file from src to dst. It is a
+// no-op (returning nil) when src does not exist. The destination file is
+// created with mode 0o600.
+func copyFileIfExists(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+// copyDirIfExists recursively copies a directory tree from src to dst. It is a
+// no-op (returning nil) when src does not exist. Files are written with
+// mode 0o600; directories are created with mode 0o700.
+func copyDirIfExists(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+
+	if mkErr := os.MkdirAll(dst, 0o700); mkErr != nil {
+		return mkErr
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDirIfExists(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFileIfExists(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ValidatePIExtensionDir checks that the PI extension directory exists and
@@ -293,22 +371,6 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	args = append(args, "--dir", parent)
 	args = append(args, "--dir", sandboxExtDir)
 	args = append(args, "--ro-bind", cfg.PIExtensionHostDir, sandboxExtDir)
-
-	// ── ~/.pi/agent directory ────────────────────────────────────────────────
-	// PI stores auth credentials, themes, and settings in ~/.pi/agent/ on the
-	// host. Without this mount PI cannot find its auth token inside the sandbox
-	// and fails with a 400 auth error. Mounted read-only at the same host path.
-	// Silently skipped when the directory does not exist — auth may not be set
-	// up yet, and we do not want to break spawning in that case.
-	if home, err := os.UserHomeDir(); err == nil {
-		piAgentDir := filepath.Join(home, ".pi", "agent")
-		if _, statErr := os.Stat(piAgentDir); statErr == nil {
-			// bwrap requires parent dirs to exist in the sandbox namespace.
-			piParent := filepath.Join(home, ".pi")
-			args = append(args, "--dir", piParent)
-			args = append(args, "--ro-bind", piAgentDir, piAgentDir)
-		}
-	}
 
 	return args, nil
 }
