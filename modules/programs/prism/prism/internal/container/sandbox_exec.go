@@ -141,6 +141,9 @@ func generateProfile(m *Manager) string {
 
 	// ── 2. Standard system read-only roots ───────────────────────────────
 	// /nix            — Nix store. All Nix-built binaries live here.
+	//   This also covers the PI extension directory (cfg.PIExtensionHostDir),
+	//   which is a Nix store path resolved from piExtensionDir in config.json
+	//   (issue #1213). No separate SBPL rule is needed for the PI extension.
 	// /usr, /bin, /sbin — standard Apple-signed utility directories.
 	// /System, /Library — OS frameworks, dylibs, and shared data.
 	// /Applications/Xcode.app — xcrun (called by /usr/bin/git shim).
@@ -291,6 +294,12 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
+		// For PI sessions on Darwin (harness=pi), the per-session run directory
+		// also contains the system-prompt temp file written by WriteSystemPromptFile
+		// (e.g. ~/.local/state/prism/run/<hash>/system-prompt.md). Since the
+		// system-prompt file lives in the same directory as hostapi.sock, this
+		// single (subpath ...) rule covers both — no separate PI SBPL rule is
+		// needed for the system-prompt path (issue #1213, confirmed no new rules).
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
@@ -608,11 +617,17 @@ func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 
 	profilePath := m.sandboxExecProfilePath()
 
-	// The sandbox-exec wrapper precedes the harness invocation. HarnessInvocation
-	// returns ["opencode", "--port", ..., "--hostname", "127.0.0.1", ...] and
-	// handles the AllocatedPort ∥ ContainerPort fallback rule (matching bwrap).
+	// The sandbox-exec wrapper precedes the harness invocation. For opencode
+	// sessions, HarnessInvocation returns ["opencode", "--port", ..., ...] and
+	// handles the AllocatedPort ∥ ContainerPort fallback. For PI sessions,
+	// PIInvocation returns ["pi", "--provider", ..., "--append-system-prompt",
+	// ..., "--extension", ...] — the PI analogue of HarnessInvocation.
 	args := []string{"sandbox-exec", "-f", profilePath}
-	args = append(args, HarnessInvocation(cfg)...)
+	if cfg.Harness == "pi" {
+		args = append(args, PIInvocation(cfg)...)
+	} else {
+		args = append(args, HarnessInvocation(cfg)...)
+	}
 
 	return args
 }
