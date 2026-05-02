@@ -7243,3 +7243,37 @@ func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
 		t.Errorf("harness = %q for fresh row; want %q", got, "opencode")
 	}
 }
+
+// TestUpsertStatusSeedRootAgentName_PreservesHarness verifies that calling
+// UpsertStatusSeedRootAgentName with an empty harnessName on a row that already
+// has harness='pi' does NOT overwrite it with the 'opencode' default (issue #1297).
+func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
+	d := openTestDB(t)
+
+	const session = "repo@pi-branch"
+
+	// Seed the row with harness='pi' (as SpawnSession does).
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Simulate the tmux-session-start event hook calling with empty harnessName.
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", ""); err != nil {
+		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	st, err := d.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("no row found")
+	}
+	if st.Harness == nil || *st.Harness != "pi" {
+		got := "<nil>"
+		if st.Harness != nil {
+			got = *st.Harness
+		}
+		t.Errorf("harness = %q after empty-harness upsert; want %q", got, "pi")
+	}
+}
