@@ -724,14 +724,14 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	ctrCfg.PIModel = slot.Model
 	ctrCfg.PIThinking = slot.Thinking
 
-	// Resolve the pi-coding-agent binary path. This must be the absolute store
+	// Resolve the pi binary path. This must be the absolute store
 	// path (or profile path) so that bwrap can bind-mount it into the sandbox.
 	// A missing binary is a hard error: a silent fallback to a bare name would
 	// result in ENOENT inside bwrap and the session exiting in milliseconds
 	// with no useful error message.
-	piBin, lookErr := exec.LookPath("pi-coding-agent")
+	piBin, lookErr := exec.LookPath("pi")
 	if lookErr != nil {
-		return fmt.Errorf("pi: resolve pi-coding-agent binary: %w — ensure pi-coding-agent is installed and on PATH", lookErr)
+		return fmt.Errorf("pi: resolve pi binary: %w — ensure pi is installed and on PATH", lookErr)
 	}
 	ctrCfg.PIBinaryPath = piBin
 

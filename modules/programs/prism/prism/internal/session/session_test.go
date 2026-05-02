@@ -683,3 +683,22 @@ func TestDefaultAgentForSession_NoRow(t *testing.T) {
 		t.Errorf("DefaultAgentForSession (no row) = %q, want %q", got, want)
 	}
 }
+
+// TestHarnessBinary asserts that harnessBinary returns the correct binary name
+// for each harness value (issue #1290).
+func TestHarnessBinary(t *testing.T) {
+	tests := []struct {
+		harness string
+		want    string
+	}{
+		{"pi", "pi"},
+		{"opencode", "opencode"},
+		{"", "opencode"},
+	}
+	for _, tc := range tests {
+		got := harnessBinary(tc.harness)
+		if got != tc.want {
+			t.Errorf("harnessBinary(%q) = %q, want %q", tc.harness, got, tc.want)
+		}
+	}
+}

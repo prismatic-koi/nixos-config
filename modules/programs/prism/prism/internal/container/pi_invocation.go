@@ -76,7 +76,7 @@ func PIInvocation(cfg Config) []string {
 	// back-compat in test/host-mode contexts where the binary is on PATH.
 	binary := cfg.PIBinaryPath
 	if binary == "" {
-		binary = "pi-coding-agent"
+		binary = "pi"
 	}
 	args := []string{binary}
 
