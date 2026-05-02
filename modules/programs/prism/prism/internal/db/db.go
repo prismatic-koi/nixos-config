@@ -223,7 +223,6 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
 );
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_profile         ON spawn_inputs(profile_name);
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harness_flag, profile_name);
-CREATE INDEX IF NOT EXISTS idx_spawn_inputs_abtest_pair     ON spawn_inputs(abtest_pair_id) WHERE abtest_pair_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS harness_frames (
   id            TEXT PRIMARY KEY,
