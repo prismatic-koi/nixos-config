@@ -66,6 +66,304 @@ import type {
 /** Wire protocol version this extension speaks. */
 export const PROTOCOL_VERSION = 1
 
+// ---------------------------------------------------------------------------
+// Behavioural guards — ported from opencode's prism-hooks.ts
+// ---------------------------------------------------------------------------
+//
+// Three guards are implemented here:
+//   1. Doom-loop detector: 5 consecutive same-tool calls → steer message.
+//   2. Review-cycle counter: 3 cycles without convergence → escalation message.
+//   3. Git-push reminder: git push without prior review → system prompt reminder.
+//
+// All three guards can be disabled via env vars for debugging.
+// ---------------------------------------------------------------------------
+
+/** Number of consecutive matching tool calls that triggers the doom-loop. */
+export const DOOM_LOOP_THRESHOLD = 5
+
+/** Number of review cycles before the escalation warning fires. */
+export const REVIEW_CYCLE_THRESHOLD = 3
+
+/**
+ * Tools excluded from doom-loop detection. Legitimate exploration revisits
+ * the same paths often; treating them as loops generates false positives.
+ * todowrite is excluded because task-list management is a housekeeping pattern.
+ */
+export const EXCLUDED_TOOLS = new Set(["read", "grep", "glob", "todowrite"])
+
+/**
+ * Compute a normalised similarity key for a tool call.
+ * Returns null for excluded tools (no detection).
+ *
+ * Ported from opencode's prism-hooks.ts — see that file for the full
+ * commentary on similarity rules per tool.
+ */
+export function similarityKey(tool: string, args: unknown): string | null {
+  if (EXCLUDED_TOOLS.has(tool)) {
+    return null
+  }
+
+  switch (tool) {
+    case "bash": {
+      const cmd: string =
+        typeof args === "object" && args !== null
+          ? (args as Record<string, unknown>).command as string ?? ""
+          : String(args ?? "")
+      const tokens = cmd.trim().split(/\s+/)
+      const meaningful = tokens.filter((t) => t.length > 0)
+      let baseIdx = 0
+      while (baseIdx < meaningful.length && meaningful[baseIdx].startsWith("-")) {
+        baseIdx++
+      }
+      const base = meaningful[baseIdx] ?? ""
+
+      const SUBCOMMAND_CLIS = new Set(["gh", "git", "kubectl", "helm", "docker", "podman"])
+      if (SUBCOMMAND_CLIS.has(base)) {
+        const positionals: string[] = []
+        for (let i = baseIdx + 1; i < meaningful.length; i++) {
+          if (!meaningful[i].startsWith("-")) {
+            positionals.push(meaningful[i])
+          }
+        }
+        const parts = [base, ...positionals.slice(0, 3)]
+        return `bash:${parts.join(" ")}`.trimEnd()
+      }
+
+      let firstPos = ""
+      for (let i = baseIdx + 1; i < meaningful.length; i++) {
+        if (!meaningful[i].startsWith("-")) {
+          firstPos = meaningful[i]
+          break
+        }
+      }
+      return `bash:${base} ${firstPos}`.trimEnd()
+    }
+
+    case "edit":
+    case "write": {
+      const filePath: string =
+        typeof args === "object" && args !== null
+          ? ((args as Record<string, unknown>).filePath as string)
+            ?? ((args as Record<string, unknown>).path as string)
+            ?? ""
+          : String(args ?? "")
+      return `${tool}:${filePath}`
+    }
+
+    case "webfetch": {
+      const url: string =
+        typeof args === "object" && args !== null
+          ? (args as Record<string, unknown>).url as string ?? ""
+          : String(args ?? "")
+      return `webfetch:${url}`
+    }
+
+    default: {
+      const raw =
+        typeof args === "object" && args !== null
+          ? JSON.stringify(args)
+          : String(args ?? "")
+      return `${tool}:${raw}`
+    }
+  }
+}
+
+/** Doom-loop detector state (per session). */
+export interface DoomLoopState {
+  /** The similarity key of the current run. */
+  currentKey: string | null
+  /** How many consecutive matching calls we have seen. */
+  consecutiveCount: number
+  /** Whether we have already fired for this run (one nudge per loop). */
+  fired: boolean
+}
+
+/** Review-cycle tracker state (per session). */
+export interface ReviewCycleState {
+  /** Cycle counts keyed by PR number (or "unknown"). */
+  cycles: Map<string, number>
+  /** The PR number most recently detected. */
+  detectedPrNumber: string | null
+  /**
+   * Prevents counting 5 parallel review-agent invocations as 5 cycles.
+   * Set to true when the first review agent fires; cleared on turn_start
+   * so each full round counts as exactly one cycle.
+   */
+  pendingCycleCount: boolean
+  /**
+   * Tracks whether we've already emitted the review_cycle_exceeded wire
+   * frame for the current PR. Prevents flooding the harness_frames table.
+   * Reset when detectedPrNumber changes.
+   */
+  frameEmitted: boolean
+}
+
+/**
+ * Create a fresh doom-loop state object.
+ * Exported for unit testing.
+ */
+export function newDoomLoopState(): DoomLoopState {
+  return { currentKey: null, consecutiveCount: 0, fired: false }
+}
+
+/**
+ * Create a fresh review-cycle state object.
+ * Exported for unit testing.
+ */
+export function newReviewCycleState(): ReviewCycleState {
+  return { cycles: new Map(), detectedPrNumber: null, pendingCycleCount: false, frameEmitted: false }
+}
+
+/**
+ * Process a single tool call against the doom-loop detector.
+ *
+ * Returns the steering message text when the detector fires, or null when
+ * no action is needed. The caller is responsible for injecting the message
+ * into the session.
+ *
+ * Exported for unit testing.
+ */
+export function processDoomLoop(
+  state: DoomLoopState,
+  toolName: string,
+  toolArgs: unknown,
+): string | null {
+  if (EXCLUDED_TOOLS.has(toolName)) {
+    // Break the current run without tracking.
+    state.currentKey = null
+    state.consecutiveCount = 0
+    state.fired = false
+    return null
+  }
+
+  const key = similarityKey(toolName, toolArgs)
+  if (key === null) {
+    return null
+  }
+
+  if (key === state.currentKey) {
+    if (!state.fired) {
+      state.consecutiveCount++
+      if (state.consecutiveCount >= DOOM_LOOP_THRESHOLD) {
+        state.fired = true
+        return (
+          `[PRISM DOOM-LOOP DETECTION] You've called \`${toolName}\` with the same arguments ` +
+          `${state.consecutiveCount} times in a row. ` +
+          `This usually means the current approach isn't working — stop and rethink. ` +
+          `Consider: is there a different tool that would help? Is there a misunderstanding about the task? Should you escalate to the user?`
+        )
+      }
+    }
+    // already fired — suppress
+    return null
+  }
+
+  // Pattern broke — reset and start fresh.
+  state.currentKey = key
+  state.consecutiveCount = 1
+  state.fired = false
+  return null
+}
+
+/**
+ * Process a single tool call against the review-cycle tracker.
+ *
+ * This handles both `bash` calls to `prism review <N>` and `task` calls
+ * to review subagents. Returns true when the review-cycle threshold is
+ * exceeded (caller should inject escalation message).
+ *
+ * Exported for unit testing.
+ */
+export function processReviewCycle(
+  state: ReviewCycleState,
+  toolName: string,
+  toolArgs: unknown,
+): boolean {
+  if (toolName === "bash") {
+    const command: string =
+      typeof toolArgs === "object" && toolArgs !== null
+        ? (toolArgs as Record<string, unknown>).command as string ?? ""
+        : String(toolArgs ?? "")
+
+    const prismReviewMatch = command.match(/\bprism\s+review\s+(\d+)\b/)
+    if (prismReviewMatch) {
+      const newPr = prismReviewMatch[1]
+      if (newPr !== state.detectedPrNumber) {
+        state.detectedPrNumber = newPr
+        state.cycles.clear()
+        state.frameEmitted = false
+      }
+      if (!state.pendingCycleCount) {
+        state.pendingCycleCount = true
+        const prKey = state.detectedPrNumber ?? "unknown"
+        state.cycles.set(prKey, (state.cycles.get(prKey) ?? 0) + 1)
+      }
+    }
+  }
+
+  if (toolName === "task") {
+    const prompt: string =
+      typeof toolArgs === "object" && toolArgs !== null
+        ? (toolArgs as Record<string, unknown>).prompt as string ?? ""
+        : String(toolArgs ?? "")
+    const subagentType: string =
+      typeof toolArgs === "object" && toolArgs !== null
+        ? (toolArgs as Record<string, unknown>).subagent_type as string ?? ""
+        : ""
+
+    const isReviewAgent = /^review(-goal|-code|-security|-qa|-context)?$/.test(subagentType)
+    if (isReviewAgent) {
+      const prMatch =
+        prompt.match(/\bPR\s*#(\d+)\b/i) ??
+        prompt.match(/pull\s+request\s*#(\d+)/i) ??
+        prompt.match(/\bpr[_\s-]?number[:\s]+(\d+)/i) ??
+        prompt.match(/\b#(\d+)\b/)
+      if (prMatch) {
+        const newPr = prMatch[1]
+        if (newPr !== state.detectedPrNumber) {
+          state.detectedPrNumber = newPr
+          state.cycles.clear()
+          state.frameEmitted = false
+        }
+      }
+      if (!state.pendingCycleCount) {
+        state.pendingCycleCount = true
+        const prKey = state.detectedPrNumber ?? "unknown"
+        state.cycles.set(prKey, (state.cycles.get(prKey) ?? 0) + 1)
+      }
+    }
+  }
+
+  const prKey = state.detectedPrNumber ?? "unknown"
+  return (state.cycles.get(prKey) ?? 0) >= REVIEW_CYCLE_THRESHOLD
+}
+
+/**
+ * Build the review-cycle escalation message for the given PR.
+ * Exported for unit testing.
+ */
+export function reviewCycleEscalationMessage(
+  state: ReviewCycleState,
+): string {
+  const prKey = state.detectedPrNumber ?? "unknown"
+  const cycles = state.cycles.get(prKey) ?? 0
+  const prLabel = state.detectedPrNumber ? `PR #${state.detectedPrNumber}` : "this PR"
+  return (
+    `⚠️ REVIEW LOOP LIMIT: You have run ${cycles} review cycles for ${prLabel} without all agents passing. ` +
+    `You MUST stop and escalate to the user now. Do NOT run another review cycle. ` +
+    `Instead, summarise: (1) what was originally requested, (2) what each review cycle found, ` +
+    `and (3) why the fixes are not converging. Hand off to the coordinator.`
+  )
+}
+
+/**
+ * Check whether a bash command string is a git push.
+ * Exported for unit testing.
+ */
+export function isGitPush(command: string): boolean {
+  return /\bgit(\s+-C\s+\S+|\s+--git-dir\S*)*\s+push\b/.test(command)
+}
+
 /** Per-field byte cap for tool args, tool output, and assistant message deltas. */
 export const TRUNCATION_LIMIT_BYTES = 8 * 1024 // 8 KiB
 
@@ -550,6 +848,30 @@ export default function prismExtension(pi: ExtensionAPI): void {
     return
   }
 
+  // ── Behavioural guard state ───────────────────────────────────────────
+  //
+  // Disabled via env vars for debugging:
+  //   PRISM_DOOM_LOOP_DISABLE=1        — disable doom-loop detector
+  //   PRISM_REVIEW_CYCLE_DISABLE=1     — disable review-cycle escalation
+  //   PRISM_GIT_PUSH_REMINDER_DISABLE=1 — disable git-push reminder
+  //
+  // Review agents have legitimate repeated tool patterns so all guards are
+  // suppressed when the session_role from hello_ack is "review".
+  const doomLoopEnabled = !process.env.PRISM_DOOM_LOOP_DISABLE
+  const reviewCycleEnabled = !process.env.PRISM_REVIEW_CYCLE_DISABLE
+  const gitPushReminderEnabled = !process.env.PRISM_GIT_PUSH_REMINDER_DISABLE
+
+  const doomLoopState = newDoomLoopState()
+  const reviewCycleState = newReviewCycleState()
+
+  // Set to true when hello_ack reveals session_role is "review". All guards
+  // are suppressed — review agents legitimately repeat tool patterns.
+  let isReviewSession = false
+
+  // Flag: git push was detected; cleared after the next turn_start so the
+  // reminder fires exactly once.
+  let pendingGitPushReminder = false
+
   // ── Connection state ──────────────────────────────────────────────────
   let socket: net.Socket | null = null
   let writer: FrameWriter | null = null
@@ -655,6 +977,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
           if (socket) socket.end()
           return
         }
+        // Detect review-agent sessions: guards are suppressed so that
+        // review agents (which legitimately repeat tool patterns) are not
+        // falsely nudged.
+        const role = typeof f.session_role === "string" ? f.session_role : ""
+        if (role === "review") {
+          isReviewSession = true
+        }
         handshakeComplete = true
         return
       }
@@ -718,6 +1047,43 @@ export default function prismExtension(pi: ExtensionAPI): void {
     lastCtx = ctx
     if (writer && handshakeComplete) {
       writer.write({ type: "turn_start" })
+    }
+    // Clear per-turn review-cycle deduplication so the next batch of
+    // review agent invocations counts as a fresh cycle.
+    reviewCycleState.pendingCycleCount = false
+
+    if (!isReviewSession) {
+      // Inject review-cycle escalation warning when the threshold is exceeded.
+      // This fires on every turn after the threshold so the agent cannot
+      // simply ignore it and continue.
+      if (reviewCycleEnabled) {
+        const prKey = reviewCycleState.detectedPrNumber ?? "unknown"
+        const cycles = reviewCycleState.cycles.get(prKey) ?? 0
+        if (cycles >= REVIEW_CYCLE_THRESHOLD) {
+          pi.sendUserMessage(reviewCycleEscalationMessage(reviewCycleState), {
+            deliverAs: "steer",
+          })
+          // Emit the wire frame only once per PR (not on every turn).
+          if (!reviewCycleState.frameEmitted && writer && handshakeComplete) {
+            reviewCycleState.frameEmitted = true
+            writer.write({
+              type: "review_cycle_exceeded",
+              session_name: process.env.PRISM_SESSION_NAME ?? "",
+              pr_number: reviewCycleState.detectedPrNumber ?? "",
+              cycle_count: cycles,
+            })
+          }
+        }
+      }
+
+      // Inject git-push reminder if a push was detected on the previous turn.
+      if (gitPushReminderEnabled && pendingGitPushReminder) {
+        pendingGitPushReminder = false
+        pi.sendUserMessage(
+          "You just ran git push. If this was in the context of an open PR, invoke @review-goal-subagent, @review-code-subagent, @review-security-subagent, @review-qa-subagent, and @review-context-subagent as parallel Task calls (all five in a single response) to review the updated changes before the PR is merged. ALL 5 agents must pass before the PR can be merged.",
+          { deliverAs: "steer" },
+        )
+      }
     }
   })
 
@@ -792,6 +1158,41 @@ export default function prismExtension(pi: ExtensionAPI): void {
     }
     if (truncated) frame.truncated = true
     writer.write(frame)
+
+    // ── Behavioural guards ────────────────────────────────────────────────
+    // Guards are suppressed inside review-agent sessions.
+    if (!isReviewSession) {
+      // Doom-loop detection.
+      if (doomLoopEnabled) {
+        const steeringMsg = processDoomLoop(doomLoopState, name, rawArgs)
+        if (steeringMsg !== null) {
+          pi.sendUserMessage(steeringMsg, { deliverAs: "steer" })
+          writer.write({
+            type: "doom_loop_detected",
+            session_name: process.env.PRISM_SESSION_NAME ?? "",
+            tool: name,
+            consecutive_count: doomLoopState.consecutiveCount,
+          })
+        }
+      }
+
+      // Review-cycle tracking + git-push detection.
+      if (name === "bash") {
+        const command: string =
+          typeof rawArgs === "object" && rawArgs !== null
+            ? (rawArgs as Record<string, unknown>).command as string ?? ""
+            : String(rawArgs ?? "")
+
+        // Git-push reminder flag.
+        if (gitPushReminderEnabled && isGitPush(command)) {
+          pendingGitPushReminder = true
+        }
+      }
+
+      if (reviewCycleEnabled) {
+        processReviewCycle(reviewCycleState, name, rawArgs)
+      }
+    }
   })
 
   pi.on("tool_execution_end", async (event, ctx) => {

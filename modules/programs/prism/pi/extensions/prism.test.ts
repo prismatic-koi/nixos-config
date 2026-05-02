@@ -22,6 +22,16 @@ import {
   truncateArgs,
   truncateString,
   type InboundDispatchAPI,
+  // Behavioural guards
+  similarityKey,
+  processDoomLoop,
+  processReviewCycle,
+  reviewCycleEscalationMessage,
+  isGitPush,
+  newDoomLoopState,
+  newReviewCycleState,
+  DOOM_LOOP_THRESHOLD,
+  REVIEW_CYCLE_THRESHOLD,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -571,5 +581,278 @@ describe("dispatchInboundFrame: forward-compat", () => {
       emit,
     )
     assert.equal(calls.errors[0].code, "malformed_frame")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// similarityKey
+// ---------------------------------------------------------------------------
+
+describe("similarityKey — excluded tools", () => {
+  it("returns null for read", () => {
+    assert.equal(similarityKey("read", { filePath: "/foo.go" }), null)
+  })
+
+  it("returns null for grep", () => {
+    assert.equal(similarityKey("grep", { pattern: "foo" }), null)
+  })
+
+  it("returns null for glob", () => {
+    assert.equal(similarityKey("glob", { pattern: "**/*.ts" }), null)
+  })
+
+  it("returns null for todowrite", () => {
+    assert.equal(similarityKey("todowrite", { todos: [] }), null)
+  })
+})
+
+describe("similarityKey — bash subcommand-driven CLIs", () => {
+  it("gh issue view with different numbers produces different keys", () => {
+    const keys = [1, 2, 3, 4, 5].map((n) =>
+      similarityKey("bash", { command: `gh issue view ${n}` }),
+    )
+    assert.equal(new Set(keys).size, 5)
+  })
+
+  it("git log with different flags produces the same key", () => {
+    const a = similarityKey("bash", { command: "git log -1" })
+    const b = similarityKey("bash", { command: "git log -3" })
+    assert.equal(a, b)
+  })
+
+  it("go test and go build produce different keys", () => {
+    const a = similarityKey("bash", { command: "go test ./..." })
+    const b = similarityKey("bash", { command: "go build ./..." })
+    assert.notEqual(a, b)
+  })
+})
+
+describe("similarityKey — edit/write/webfetch", () => {
+  it("edit same file produces the same key", () => {
+    const a = similarityKey("edit", { filePath: "/foo.go", newString: "a" })
+    const b = similarityKey("edit", { filePath: "/foo.go", newString: "b" })
+    assert.equal(a, b)
+  })
+
+  it("edit different files produces different keys", () => {
+    const a = similarityKey("edit", { filePath: "/foo.go" })
+    const b = similarityKey("edit", { filePath: "/bar.go" })
+    assert.notEqual(a, b)
+  })
+
+  it("webfetch same URL produces the same key", () => {
+    const a = similarityKey("webfetch", { url: "https://example.com" })
+    const b = similarityKey("webfetch", { url: "https://example.com" })
+    assert.equal(a, b)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// processDoomLoop
+// ---------------------------------------------------------------------------
+
+describe("processDoomLoop — basic detection", () => {
+  it("returns null for the first 4 consecutive matching calls", () => {
+    const state = newDoomLoopState()
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      const result = processDoomLoop(state, "bash", { command: "go test ./..." })
+      assert.equal(result, null, `expected null on call ${i + 1}`)
+    }
+  })
+
+  it("fires a steering message on the 5th consecutive matching call", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "bash", { command: "go test ./..." })
+    }
+    assert.ok(msg !== null)
+    assert.ok(msg.includes("PRISM DOOM-LOOP"))
+    assert.ok(msg.includes("bash"))
+  })
+
+  it("suppresses subsequent calls after firing (one nudge per loop)", () => {
+    const state = newDoomLoopState()
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      processDoomLoop(state, "bash", { command: "go test ./..." })
+    }
+    // Further calls after firing should return null.
+    const after = processDoomLoop(state, "bash", { command: "go test ./..." })
+    assert.equal(after, null)
+  })
+
+  it("resets after a different tool call", () => {
+    const state = newDoomLoopState()
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      processDoomLoop(state, "bash", { command: "go test ./..." })
+    }
+    // Different tool breaks the run.
+    processDoomLoop(state, "bash", { command: "go build ./..." })
+    // Now 4 more calls should not fire.
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      msg = processDoomLoop(state, "bash", { command: "go test ./..." })
+    }
+    assert.equal(msg, null)
+  })
+
+  it("excluded tool (read) breaks the run", () => {
+    const state = newDoomLoopState()
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      processDoomLoop(state, "bash", { command: "go test ./..." })
+    }
+    // excluded tool resets state.
+    processDoomLoop(state, "read", { filePath: "/foo.go" })
+    assert.equal(state.currentKey, null)
+    assert.equal(state.consecutiveCount, 0)
+  })
+})
+
+describe("processDoomLoop — per-session isolation", () => {
+  it("two independent states do not cross-contaminate", () => {
+    const stateA = newDoomLoopState()
+    const stateB = newDoomLoopState()
+    // Advance A to 4 calls.
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      processDoomLoop(stateA, "bash", { command: "go test ./..." })
+    }
+    // B is untouched.
+    assert.equal(stateB.consecutiveCount, 0)
+    // A fires on the 5th call; B does not.
+    const msgA = processDoomLoop(stateA, "bash", { command: "go test ./..." })
+    const msgB = processDoomLoop(stateB, "bash", { command: "go test ./..." })
+    assert.ok(msgA !== null)
+    assert.equal(msgB, null)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// processReviewCycle
+// ---------------------------------------------------------------------------
+
+describe("processReviewCycle — bash prism review", () => {
+  it("counts a prism review bash call", () => {
+    const state = newReviewCycleState()
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    assert.equal(state.cycles.get("42"), 1)
+    assert.equal(state.detectedPrNumber, "42")
+  })
+
+  it("does not double-count parallel invocations within the same turn", () => {
+    const state = newReviewCycleState()
+    // Simulate two bash calls with prism review in the same turn.
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    // pendingCycleCount guard: only counted once.
+    assert.equal(state.cycles.get("42"), 1)
+  })
+
+  it("counts a new cycle after pendingCycleCount is cleared", () => {
+    const state = newReviewCycleState()
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    state.pendingCycleCount = false // simulates turn_start clearing the flag
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    assert.equal(state.cycles.get("42"), 2)
+  })
+
+  it("resets cycles when PR number changes", () => {
+    const state = newReviewCycleState()
+    processReviewCycle(state, "bash", { command: "prism review 42" })
+    state.pendingCycleCount = false
+    processReviewCycle(state, "bash", { command: "prism review 43" })
+    assert.equal(state.detectedPrNumber, "43")
+    assert.equal(state.cycles.get("42"), undefined)
+    assert.equal(state.cycles.get("43"), 1)
+    assert.equal(state.frameEmitted, false)
+  })
+
+  it("returns true after REVIEW_CYCLE_THRESHOLD cycles", () => {
+    const state = newReviewCycleState()
+    let exceeded = false
+    for (let i = 0; i < REVIEW_CYCLE_THRESHOLD; i++) {
+      state.pendingCycleCount = false
+      exceeded = processReviewCycle(state, "bash", { command: "prism review 42" })
+    }
+    assert.equal(exceeded, true)
+  })
+})
+
+describe("processReviewCycle — task review subagent", () => {
+  it("counts a review-goal task invocation", () => {
+    const state = newReviewCycleState()
+    processReviewCycle(state, "task", {
+      subagent_type: "review-goal",
+      prompt: "please review PR #99",
+    })
+    assert.equal(state.cycles.get("99"), 1)
+    assert.equal(state.detectedPrNumber, "99")
+  })
+
+  it("ignores non-review task invocations", () => {
+    const state = newReviewCycleState()
+    processReviewCycle(state, "task", {
+      subagent_type: "general",
+      prompt: "do some work",
+    })
+    assert.equal(state.cycles.size, 0)
+  })
+
+  it("returns false for non-review tool calls", () => {
+    const state = newReviewCycleState()
+    const exceeded = processReviewCycle(state, "read", { filePath: "/foo.go" })
+    assert.equal(exceeded, false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reviewCycleEscalationMessage
+// ---------------------------------------------------------------------------
+
+describe("reviewCycleEscalationMessage", () => {
+  it("includes the PR number and cycle count", () => {
+    const state = newReviewCycleState()
+    state.detectedPrNumber = "42"
+    state.cycles.set("42", 3)
+    const msg = reviewCycleEscalationMessage(state)
+    assert.ok(msg.includes("PR #42"))
+    assert.ok(msg.includes("3"))
+    assert.ok(msg.includes("escalate"))
+  })
+
+  it("handles unknown PR number gracefully", () => {
+    const state = newReviewCycleState()
+    state.cycles.set("unknown", 4)
+    const msg = reviewCycleEscalationMessage(state)
+    assert.ok(msg.includes("this PR"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isGitPush
+// ---------------------------------------------------------------------------
+
+describe("isGitPush", () => {
+  it("matches plain git push", () => {
+    assert.equal(isGitPush("git push"), true)
+  })
+
+  it("matches git push with remote and branch", () => {
+    assert.equal(isGitPush("git push origin main"), true)
+  })
+
+  it("matches git push with -u flag", () => {
+    assert.equal(isGitPush("git push -u origin main"), true)
+  })
+
+  it("matches git -C <path> push", () => {
+    assert.equal(isGitPush("git -C /some/path push"), true)
+  })
+
+  it("does not match git pull", () => {
+    assert.equal(isGitPush("git pull"), false)
+  })
+
+  it("does not match unrelated commands", () => {
+    assert.equal(isGitPush("go test ./..."), false)
   })
 })
