@@ -186,7 +186,7 @@ ON CONFLICT(session_name) DO UPDATE SET
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   root_model_id      = COALESCE(excluded.root_model_id, root_model_id),
   last_seen          = excluded.last_seen,
-  harness            = 'opencode',
+  harness            = COALESCE(harness, excluded.harness),
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
 	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, agentName, modelID, now, harnessSessionID)
 	if err != nil {
@@ -708,6 +708,39 @@ func (d *DB) WaitingCount() (int, error) {
 	return n, nil
 }
 
+// ActivePISessionsForRepo returns all active agent_status rows where
+// harness = 'pi' and repo = repo and state IN ('active', 'idle', 'waiting').
+// Used by the /apply-profile and /register-provider host-API endpoints to
+// resolve coordinator-scope targets (P3.LIVE, #1214).
+//
+// Design note: issue #1214 originally proposed filtering by coordinator_session_name
+// to restrict fan-out to sessions spawned by the calling coordinator. That column
+// does not exist in the schema; repo-based filtering is the closest available
+// approximation. In the common single-coordinator-per-repo case the semantics are
+// identical. When multiple coordinators run against the same repo simultaneously the
+// scope is slightly broader — all PI sessions in the repo receive the frame rather
+// than only those owned by the calling coordinator. This is acceptable for the P3
+// milestone; a coordinator_session_name column can be added in a follow-up if
+// strict per-coordinator targeting is required.
+func (d *DB) ActivePISessionsForRepo(repo string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', 'idle', 'waiting')`
+	return d.queryStatuses(q, repo)
+}
+
+// AllActivePISessions returns all active agent_status rows where harness = 'pi'
+// and state IN ('active', 'idle', 'waiting'). Used for scope=global fan-out
+// by the /apply-profile and /register-provider host-API endpoints (P3.LIVE, #1214).
+func (d *DB) AllActivePISessions() ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiting')`
+	return d.queryStatuses(q)
+}
+
 // CoordinatorForRepo returns the agent_status row for the active coordinator
 // session of repo (i.e. the row where repo = repo AND root_agent_name =
 // "coordinator" AND ended_at IS NULL). Returns nil when no coordinator exists.
@@ -828,4 +861,54 @@ func scanStatus(s scanner) (*Status, error) {
 		st.HarnessPort = &hp
 	}
 	return &st, nil
+}
+
+// SetHarness unconditionally sets the harness column for sessionName.
+// It is used in tests and tooling to override the harness for an existing row.
+func (d *DB) SetHarness(sessionName, harness string) error {
+	_, err := d.conn.Exec(
+		`UPDATE agent_status SET harness = ? WHERE session_name = ?`,
+		harness, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set harness: %w", err)
+	}
+	return nil
+}
+
+// SetHarnessRaw is an alias for SetHarness provided for callers that need a
+// separate symbol (e.g. test fallback paths).
+func (d *DB) SetHarnessRaw(sessionName, harness string) error {
+	return d.SetHarness(sessionName, harness)
+}
+
+// UpsertStatusFull is like UpsertStatus but also accepts an explicit harness
+// value. All pointer parameters are optional (nil = COALESCE / preserve existing).
+// The signature mirrors UpsertStatusWithRootAgent extended with a harness parameter.
+func (d *DB) UpsertStatusFull(sessionName, repo, worktree, state string, title, harnessSessionID, agentName, modelID, rootAgentName, harness *string) error {
+	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusFull")
+	now := time.Now().UnixMilli()
+	harnessVal := "opencode"
+	if harness != nil {
+		harnessVal = *harness
+	}
+	const q = `
+INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_name) DO UPDATE SET
+  state              = excluded.state,
+  repo               = excluded.repo,
+  worktree           = excluded.worktree,
+  title              = COALESCE(excluded.title, title),
+  agent_name         = COALESCE(excluded.agent_name, agent_name),
+  model_id           = COALESCE(excluded.model_id, model_id),
+  root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
+  last_seen          = excluded.last_seen,
+  harness            = excluded.harness,
+  harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, rootAgentName, now, harnessVal, harnessSessionID)
+	if err != nil {
+		return fmt.Errorf("db: upsert status full: %w", err)
+	}
+	return nil
 }
