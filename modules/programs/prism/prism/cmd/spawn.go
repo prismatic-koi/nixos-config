@@ -19,12 +19,15 @@ package cmd
 //	--harness <name>             agent harness to use (default: "opencode"; only "opencode" is supported)
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -144,6 +147,7 @@ func init() {
 	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
+	spawnCmd.Flags().StringArray("abtest", nil, "A/B test: spawn two sessions with the given profile names (e.g. --abtest profileA --abtest profileB); mutually exclusive with --profile")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
@@ -211,11 +215,27 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return proxySpawn(apiURL, cmd)
 	}
 
+	// --abtest is mutually exclusive with --profile. Check before any
+	// side-effects so the error surfaces immediately.
+	abtestProfiles, _ := cmd.Flags().GetStringArray("abtest")
+	profileFlag, _ := cmd.Flags().GetString("profile")
+	if len(abtestProfiles) > 0 && cmd.Flags().Changed("profile") {
+		return fmt.Errorf("--abtest and --profile are mutually exclusive")
+	}
+	// Route to the abtest path when --abtest is provided with exactly two profiles.
+	if len(abtestProfiles) > 0 {
+		if len(abtestProfiles) != 2 {
+			return fmt.Errorf("--abtest requires exactly two profile names (got %d)", len(abtestProfiles))
+		}
+		return runAbtestSpawn(cmd, abtestProfiles[0], abtestProfiles[1])
+	}
+	_ = profileFlag // used below
+
 	branchFlag, _ := cmd.Flags().GetString("branch")
 	prFlag, _ := cmd.Flags().GetString("pr")
 	repoFlag, _ := cmd.Flags().GetString("repo")
 	agentFlag, _ := cmd.Flags().GetString("agent")
-	profileFlag, _ := cmd.Flags().GetString("profile")
+	// profileFlag was already read above for the abtest mutual-exclusion check.
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
@@ -623,6 +643,8 @@ type spawnInputsArgs struct {
 	promptText         string
 	promptSource       string
 	modelsByRole       map[string]string
+	// abtestPairID is non-empty for sessions spawned via --abtest.
+	abtestPairID string
 }
 
 // writeSpawnInputs looks up the instance_id for sessionName and inserts a row
@@ -688,6 +710,9 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 			s := string(encoded)
 			si.ModelVariantOverrides = &s
 		}
+	}
+	if args.abtestPairID != "" {
+		si.AbtestPairID = &args.abtestPairID
 	}
 
 	if err := d.InsertSpawnInputs(si); err != nil {
@@ -814,4 +839,340 @@ func parseModelOverrides(raw []string) (map[string]string, error) {
 		m[role] = model
 	}
 	return m, nil
+}
+
+// generateAbtestPairID returns a random 16-byte hex string to use as a shared
+// abtest_pair_id for an --abtest pair. Panics on entropy failure (should never
+// happen; os.Getentropy is always available on Linux/Darwin).
+func generateAbtestPairID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("prism: entropy failure generating abtest_pair_id: %v", err))
+	}
+	return hex.EncodeToString(b)
+}
+
+// runAbtestSpawn implements `prism spawn --abtest profileA profileB`.
+//
+// Pre-flight (no side effects):
+//  1. Validate harness.
+//  2. Load profiles; verify both profile names exist and each has a slot for
+//     the planned session role.
+//  3. Resolve bare root + branch. The branch is suffixed with the profile name
+//     for each session (e.g. my-branch-profileA, my-branch-profileB). If the
+//     user passed --branch, that value is the base; otherwise a timestamp is used.
+//  4. Resolve isolation mode + concurrency cap.
+//
+// Execution:
+//
+//	Two goroutines each call spawnOneAbtest. Both-or-neither semantics: if
+//	either goroutine fails, the other's session (if started) is torn down via
+//	session.EndSession before the error is returned to the caller.
+func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
+	branchFlag, _ := cmd.Flags().GetString("branch")
+	prFlag, _ := cmd.Flags().GetString("pr")
+	repoFlag, _ := cmd.Flags().GetString("repo")
+	agentFlag, _ := cmd.Flags().GetString("agent")
+	modelFlag, _ := cmd.Flags().GetString("model")
+	variantFlag, _ := cmd.Flags().GetString("variant")
+	harnessFlag, _ := cmd.Flags().GetString("harness")
+	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
+	modelsByRole, err := parseModelOverrides(modelOverrideRaw)
+	if err != nil {
+		return err
+	}
+
+	if _, ok := harness.Lookup(harnessFlag); !ok {
+		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
+	}
+
+	promptText, promptSource, err := resolvePromptWithSource(cmd)
+	if err != nil {
+		return err
+	}
+	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
+		promptSource = overrideSource
+	}
+
+	cfg := config.Load()
+
+	isolationMode, err := resolveIsolationMode(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	isoCaps := container.CapabilitiesFor(isolationMode)
+
+	if isoCaps.IsContainer {
+		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{})
+		if isoErr != nil {
+			return isoErr
+		}
+		if err := iso.Available(); err != nil {
+			return err
+		}
+	}
+
+	if err := checkConcurrencyCap(cmd, "spawn", isolationMode); err != nil {
+		return err
+	}
+
+	// Load profiles — required for --abtest.
+	pf, loadErr := config.LoadProfiles()
+	if loadErr != nil {
+		return fmt.Errorf("--abtest: could not load profiles.json: %w", loadErr)
+	}
+
+	// Resolve bare root and base branch.
+	bareRoot, err := resolveBareRoot(repoFlag)
+	if err != nil {
+		return err
+	}
+
+	baseBranch, err := resolveBranch(bareRoot, branchFlag, prFlag)
+	if err != nil {
+		return err
+	}
+
+	// The planned session role (for slot validation and agent assignment).
+	plannedRole := agentFlag
+	if plannedRole == "" {
+		if baseBranch == "main" {
+			plannedRole = "coordinator"
+		} else {
+			plannedRole = "worker"
+		}
+	}
+
+	// Validate both profiles exist and have the required slot BEFORE any
+	// side effects (no worktree, no tmux session, no DB row on failure).
+	for _, profileName := range []string{profileA, profileB} {
+		if err := config.RequireSlot(pf, profileName, plannedRole); err != nil {
+			return fmt.Errorf("--abtest profile %q: %w", profileName, err)
+		}
+	}
+
+	pairID := generateAbtestPairID()
+
+	// Build common spawn args shared by both legs.
+	type abtestLeg struct {
+		profileName string
+		branch      string
+	}
+	legs := []abtestLeg{
+		{profileName: profileA, branch: git.SanitiseBranch(baseBranch + "-" + profileA)},
+		{profileName: profileB, branch: git.SanitiseBranch(baseBranch + "-" + profileB)},
+	}
+
+	// Shared result type for the goroutines.
+	type legResult struct {
+		sessionName string
+		err         error
+	}
+
+	d, dbErr := openDB()
+	if dbErr != nil {
+		return fmt.Errorf("spawn --abtest: open db: %w", dbErr)
+	}
+	defer d.Close()
+
+	results := make([]legResult, 2)
+	var wg sync.WaitGroup
+	var mu sync.Mutex // guards results slice writes from goroutines
+
+	skillsDir := opencodeSkillsDir()
+	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
+	if skillsHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		skillsManifestHash = ""
+	}
+	agentRoleFilePath := opencodeAgentRolePath(plannedRole)
+	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
+	if agentHashErr != nil {
+		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		agentPromptHash = ""
+	}
+
+	for i, leg := range legs {
+		i, leg := i, leg // capture
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sn, spawnErr := spawnOneAbtest(cmd, spawnOneAbtestArgs{
+				profileName:        leg.profileName,
+				branch:             leg.branch,
+				pairID:             pairID,
+				bareRoot:           bareRoot,
+				agentFlag:          agentFlag,
+				plannedRole:        plannedRole,
+				promptText:         promptText,
+				promptSource:       promptSource,
+				modelFlag:          modelFlag,
+				variantFlag:        variantFlag,
+				harnessFlag:        harnessFlag,
+				isolationMode:      isolationMode,
+				isoCaps:            isoCaps,
+				cfg:                cfg,
+				pf:                 pf,
+				modelsByRole:       modelsByRole,
+				skillsManifestHash: skillsManifestHash,
+				agentPromptHash:    agentPromptHash,
+				branchFlag:         branchFlag,
+				prFlag:             prFlag,
+				d:                  d,
+			})
+			mu.Lock()
+			results[i] = legResult{sessionName: sn, err: spawnErr}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	// Both-or-neither: if either leg failed, tear down any session that did start.
+	if results[0].err != nil || results[1].err != nil {
+		for _, r := range results {
+			if r.err == nil && r.sessionName != "" {
+				// Best-effort teardown of the session that did start.
+				_ = tmux.KillSession(r.sessionName)
+				session.KillSidecar(r.sessionName)
+				if killDBErr := d.SetEnded(r.sessionName); killDBErr != nil {
+					fmt.Fprintf(os.Stderr, "[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
+				}
+			}
+		}
+		// Return the first non-nil error.
+		if results[0].err != nil {
+			return results[0].err
+		}
+		return results[1].err
+	}
+
+	fmt.Printf("abtest pair %s spawned:\n", pairID[:8])
+	for _, r := range results {
+		fmt.Printf("  session %q created\n", r.sessionName)
+	}
+	return nil
+}
+
+// spawnOneAbtestArgs bundles the arguments for spawnOneAbtest.
+type spawnOneAbtestArgs struct {
+	profileName        string
+	branch             string
+	pairID             string
+	bareRoot           string
+	agentFlag          string
+	plannedRole        string
+	promptText         string
+	promptSource       string
+	modelFlag          string
+	variantFlag        string
+	harnessFlag        string
+	isolationMode      config.IsolationMode
+	isoCaps            container.Capabilities
+	cfg                config.Config
+	pf                 *config.ProfilesFile
+	modelsByRole       map[string]string
+	skillsManifestHash string
+	agentPromptHash    string
+	branchFlag         string
+	prFlag             string
+	d                  *db.DB
+}
+
+// spawnOneAbtest spawns a single leg of an --abtest pair. Returns the
+// session name on success so the caller can clean it up on failure.
+func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (string, error) {
+	// Create the worktree.
+	worktreePath, err := git.CreateWorktree(a.bareRoot, a.branch)
+	if err != nil {
+		return "", fmt.Errorf("create worktree for branch %q: %w", a.branch, err)
+	}
+
+	configContent, err := config.BuildConfigContent(a.pf, a.profileName, a.modelFlag, a.variantFlag)
+	if err != nil {
+		return "", err
+	}
+
+	if a.isoCaps.NeedsConfigBlob && a.pf != nil {
+		lookupRole := a.plannedRole
+		if lookupRole == "" {
+			lookupRole = "coordinator"
+		}
+		roleConfig, roleErr := config.ContainerConfigForRole(a.pf, lookupRole)
+		if roleErr != nil {
+			return "", roleErr
+		}
+		if roleConfig != "" {
+			profiled, profileErr := config.ApplyProfileToBlob(roleConfig, a.profileName, a.pf)
+			if profileErr != nil {
+				return "", profileErr
+			}
+			patched, patchErr := config.ApplyModelOverrides(profiled, a.profileName, a.modelFlag, a.variantFlag, a.pf)
+			if patchErr != nil {
+				return "", patchErr
+			}
+			configContent = patched
+		}
+	}
+
+	sessionName := session.NameFor(worktreePath, a.bareRoot)
+	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)
+
+	if a.isoCaps.NeedsConfigBlob && configContent != "" {
+		iso, isoErr := container.For(a.isolationMode, container.ConstructorOpts{Name: sessionName})
+		if isoErr != nil {
+			return "", fmt.Errorf("spawn --abtest: %w", isoErr)
+		}
+		if err := iso.WriteHarnessConfigBlob(sessionName, configContent); err != nil {
+			return "", fmt.Errorf("spawn --abtest: %w", err)
+		}
+	}
+
+	h, _ := harness.New(a.harnessFlag, "", nil, "", "")
+	spawnOpts := session.SpawnOpts{
+		SessionName:      sessionName,
+		Repo:             deriveRepo(worktreePath),
+		Worktree:         worktreePath,
+		AgentRole:        agentRole,
+		Prompt:           a.promptText,
+		PromptSource:     a.promptSource,
+		ConfigContent:    configContent,
+		Layout:           session.LayoutFull,
+		IsolationMode:    string(a.isolationMode),
+		PluginHostPath:   a.cfg.SidecarPluginPath,
+		ConfigEnvVarName: h.ConfigEnvVar(),
+		RuntimeEnvVars:   h.RuntimeEnv(),
+		HarnessName:      a.harnessFlag,
+		ModelsByRole:     a.modelsByRole,
+		ForceFresh:       true,
+		Headless:         true,
+		ReadinessTimeout: session.DefaultReadinessTimeout,
+	}
+	if a.pf != nil && !a.isoCaps.IsContainer {
+		spawnOpts.AgentEnvVars = a.pf.AgentEnvVars
+	}
+
+	if err := session.SpawnSession(a.d, spawnOpts); err != nil {
+		return "", err
+	}
+
+	// Write spawn_inputs including abtest_pair_id.
+	writeSpawnInputs(a.d, spawnInputsArgs{
+		sessionName:        sessionName,
+		profileName:        a.profileName,
+		modelFlag:          a.modelFlag,
+		variantFlag:        a.variantFlag,
+		agentFlag:          a.agentFlag,
+		harnessFlag:        a.harnessFlag,
+		cmd:                cmd,
+		prFlag:             a.prFlag,
+		branchFlag:         a.branchFlag,
+		skillsManifestHash: a.skillsManifestHash,
+		agentPromptHash:    a.agentPromptHash,
+		promptText:         a.promptText,
+		promptSource:       a.promptSource,
+		modelsByRole:       a.modelsByRole,
+		abtestPairID:       a.pairID,
+	})
+
+	return sessionName, nil
 }

@@ -75,7 +75,10 @@ var listSessionsCmd = &cobra.Command{
 		// Non-fatal: if unavailable, sort falls back to the name heuristic.
 		groupParents, _ := d.AllGroupParents()
 
-		return renderSessionTable(ss, groupParents)
+		// Fetch abtest pair IDs for the ↔ indicator. Non-fatal.
+		abtestPairs, _ := d.AbtestPairsForSessions()
+
+		return renderSessionTable(ss, groupParents, abtestPairs)
 	},
 }
 
@@ -101,13 +104,18 @@ func displayHarness(h *string) string {
 // It is used to sort depth-2 review sessions immediately after their parent
 // branch — the same parent-attribution logic used by the dashboard. When nil
 // (e.g. the host-API proxy path), the sort falls back to name heuristic.
-func renderSessionTable(ss []db.Status, groupParents map[string]string) error {
+//
+// abtestPairs is a map of session_name → abtest_pair_id. Sessions that share
+// the same pair ID display a ↔ indicator next to their name. When nil (e.g.
+// the proxy path), the indicator is suppressed.
+func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPairs map[string]string) error {
 	type row struct {
 		name    string
 		state   string
 		port    string
 		harness string
 		title   string
+		abtest  bool // true when this session is part of an --abtest pair
 	}
 
 	var rows []row
@@ -120,7 +128,8 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string) error {
 		if s.HarnessPort != nil {
 			port = fmt.Sprintf("%d", *s.HarnessPort)
 		}
-		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title})
+		isAbtest := abtestPairs != nil && abtestPairs[s.SessionName] != ""
+		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title, abtest: isAbtest})
 	}
 
 	// Sort rows using the same parent-attribution logic as the dashboard's
@@ -235,8 +244,14 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string) error {
 			nameStyle = styleName
 		}
 
+		// Build the display name: append ↔ indicator for abtest-paired sessions.
+		displayName := r.name
+		if r.abtest {
+			displayName = r.name + " ↔"
+		}
+
 		fmt.Printf("%s  %s  %s  %s  %s\n",
-			nameStyle.Render(fmt.Sprintf("%-40s", r.name)),
+			nameStyle.Render(fmt.Sprintf("%-40s", displayName)),
 			stateStyled,
 			styleTitle.Render(fmt.Sprintf("%-6s", r.port)),
 			styleTitle.Render(fmt.Sprintf("%-10s", r.harness)),
@@ -260,6 +275,7 @@ func proxyListSessionsAndRender(apiURL string, showAll bool) error {
 	}
 
 	// Proxy path has no DB access; pass nil groupParents so renderSessionTable
-	// falls back to name heuristic for parent attribution.
-	return renderSessionTable(ss, nil)
+	// falls back to name heuristic for parent attribution. Pass nil abtestPairs
+	// so the ↔ indicator is suppressed (no DB available to look it up).
+	return renderSessionTable(ss, nil, nil)
 }
