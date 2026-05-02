@@ -380,13 +380,13 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	// The agent config dir must be ro-bind-mounted.
 	found = false
 	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--ro-bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
+		if args[i] == "--bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected --ro-bind %q %q in args; got %v", agentConfigDir, customSandboxDir, args)
+		t.Errorf("expected --bind %q %q in args; got %v", agentConfigDir, customSandboxDir, args)
 	}
 }
 

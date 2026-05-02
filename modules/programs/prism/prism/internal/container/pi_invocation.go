@@ -346,7 +346,7 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		parent := filepath.Dir(agentConfigSandboxDir)
 		args = append(args, "--dir", parent)
 		args = append(args, "--dir", agentConfigSandboxDir)
-		args = append(args, "--ro-bind", agentConfigHostDir, agentConfigSandboxDir)
+		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
 	}
 
