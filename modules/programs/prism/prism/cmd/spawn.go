@@ -965,8 +965,9 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 
 	// Shared result type for the goroutines.
 	type legResult struct {
-		sessionName string
-		err         error
+		sessionName  string
+		worktreePath string // populated even on partial success for cleanup
+		err          error
 	}
 
 	d, dbErr := openDB()
@@ -997,7 +998,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sn, spawnErr := spawnOneAbtest(cmd, spawnOneAbtestArgs{
+			sn, wt, spawnErr := spawnOneAbtest(cmd, spawnOneAbtestArgs{
 				profileName:        leg.profileName,
 				branch:             leg.branch,
 				pairID:             pairID,
@@ -1021,7 +1022,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				d:                  d,
 			})
 			mu.Lock()
-			results[i] = legResult{sessionName: sn, err: spawnErr}
+			results[i] = legResult{sessionName: sn, worktreePath: wt, err: spawnErr}
 			mu.Unlock()
 		}()
 	}
@@ -1036,6 +1037,13 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				session.KillSidecar(r.sessionName)
 				if killDBErr := d.SetEnded(r.sessionName); killDBErr != nil {
 					fmt.Fprintf(os.Stderr, "[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
+				}
+			}
+			// Remove the worktree even when sessionName is empty — the
+			// worktree may have been created before the session started.
+			if r.worktreePath != "" {
+				if rmErr := git.RemoveWorktree(bareRoot, r.worktreePath); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "[prism spawn] warning: cleanup worktree %q failed: %v\n", r.worktreePath, rmErr)
 				}
 			}
 		}
@@ -1078,18 +1086,19 @@ type spawnOneAbtestArgs struct {
 	d                  *db.DB
 }
 
-// spawnOneAbtest spawns a single leg of an --abtest pair. Returns the
-// session name on success so the caller can clean it up on failure.
-func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (string, error) {
+// spawnOneAbtest spawns a single leg of an --abtest pair. Returns the session
+// name, the worktree path (populated even on partial failure for cleanup), and
+// any error.
+func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, worktreePath string, err error) {
 	// Create the worktree.
-	worktreePath, err := git.CreateWorktree(a.bareRoot, a.branch)
+	worktreePath, err = git.CreateWorktree(a.bareRoot, a.branch)
 	if err != nil {
-		return "", fmt.Errorf("create worktree for branch %q: %w", a.branch, err)
+		return "", "", fmt.Errorf("create worktree for branch %q: %w", a.branch, err)
 	}
 
 	configContent, err := config.BuildConfigContent(a.pf, a.profileName, a.modelFlag, a.variantFlag)
 	if err != nil {
-		return "", err
+		return "", worktreePath, err
 	}
 
 	if a.isoCaps.NeedsConfigBlob && a.pf != nil {
@@ -1099,31 +1108,31 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (string, error) {
 		}
 		roleConfig, roleErr := config.ContainerConfigForRole(a.pf, lookupRole)
 		if roleErr != nil {
-			return "", roleErr
+			return "", worktreePath, roleErr
 		}
 		if roleConfig != "" {
 			profiled, profileErr := config.ApplyProfileToBlob(roleConfig, a.profileName, a.pf)
 			if profileErr != nil {
-				return "", profileErr
+				return "", worktreePath, profileErr
 			}
 			patched, patchErr := config.ApplyModelOverrides(profiled, a.profileName, a.modelFlag, a.variantFlag, a.pf)
 			if patchErr != nil {
-				return "", patchErr
+				return "", worktreePath, patchErr
 			}
 			configContent = patched
 		}
 	}
 
-	sessionName := session.NameFor(worktreePath, a.bareRoot)
+	sessionName = session.NameFor(worktreePath, a.bareRoot)
 	agentRole := session.DefaultAgent(worktreePath, a.agentFlag)
 
 	if a.isoCaps.NeedsConfigBlob && configContent != "" {
 		iso, isoErr := container.For(a.isolationMode, container.ConstructorOpts{Name: sessionName})
 		if isoErr != nil {
-			return "", fmt.Errorf("spawn --abtest: %w", isoErr)
+			return "", worktreePath, fmt.Errorf("spawn --abtest: %w", isoErr)
 		}
 		if err := iso.WriteHarnessConfigBlob(sessionName, configContent); err != nil {
-			return "", fmt.Errorf("spawn --abtest: %w", err)
+			return "", worktreePath, fmt.Errorf("spawn --abtest: %w", err)
 		}
 	}
 
@@ -1152,7 +1161,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (string, error) {
 	}
 
 	if err := session.SpawnSession(a.d, spawnOpts); err != nil {
-		return "", err
+		return "", worktreePath, err
 	}
 
 	// Write spawn_inputs including abtest_pair_id.
@@ -1174,5 +1183,5 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (string, error) {
 		abtestPairID:       a.pairID,
 	})
 
-	return sessionName, nil
+	return sessionName, worktreePath, nil
 }
