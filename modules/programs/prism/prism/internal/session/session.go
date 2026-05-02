@@ -293,11 +293,11 @@ func BuildOpencodeCmd(opts Opts) string {
 }
 
 // harnessBinary returns the binary name to invoke for the given harness.
-// For "pi" the binary is pi-coding-agent; for "" or "opencode" it is opencode.
+// For "pi" the binary is pi; for "" or "opencode" it is opencode.
 func harnessBinary(harnessName string) string {
 	switch harnessName {
 	case "pi":
-		return "pi-coding-agent"
+		return "pi"
 	default:
 		return "opencode"
 	}
@@ -305,7 +305,7 @@ func harnessBinary(harnessName string) string {
 
 // buildDirectOpencodeCmd returns the direct-launch command for the session
 // harness (pre-container mode). For harness="" or "opencode" this is an
-// opencode invocation; for harness="pi" it is pi-coding-agent.
+// opencode invocation; for harness="pi" it is pi.
 func buildDirectOpencodeCmd(opts Opts) string {
 	binary := harnessBinary(opts.HarnessName)
 	isOpencode := binary == "opencode"

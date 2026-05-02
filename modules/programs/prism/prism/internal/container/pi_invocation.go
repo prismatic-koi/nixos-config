@@ -76,7 +76,7 @@ func PIInvocation(cfg Config) []string {
 	// back-compat in test/host-mode contexts where the binary is on PATH.
 	binary := cfg.PIBinaryPath
 	if binary == "" {
-		binary = "pi-coding-agent"
+		binary = "pi"
 	}
 	args := []string{binary}
 
@@ -242,14 +242,14 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 // validated.
 func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	// ── PI binary (read-only) ────────────────────────────────────────────────
-	// The pi-coding-agent binary lives in the Nix store and is not reachable
+	// The pi binary lives in the Nix store and is not reachable
 	// inside the bwrap sandbox purely via PATH (/nix is bind-mounted but the
 	// profile symlink farm may not resolve the specific store path the binary
 	// lives at when the profile is not in scope). Bind-mounting the resolved
 	// absolute path guarantees the binary is accessible at that exact path
 	// inside the sandbox, which is the value PIInvocation uses as argv[0].
 	if cfg.PIBinaryPath == "" {
-		return nil, fmt.Errorf("pi: PIBinaryPath is empty — resolve pi-coding-agent before launching bwrap")
+		return nil, fmt.Errorf("pi: PIBinaryPath is empty — resolve pi before launching bwrap")
 	}
 	args = append(args, "--ro-bind", cfg.PIBinaryPath, cfg.PIBinaryPath)
 

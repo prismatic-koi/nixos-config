@@ -319,11 +319,11 @@ type Config struct {
 	// omitted and PI uses its own default.
 	PIThinking string
 
-	// PIBinaryPath is the absolute host path to the pi-coding-agent binary
-	// (e.g. /nix/store/.../bin/pi-coding-agent or from the Nix profile at
-	// /etc/profiles/per-user/<user>/bin/pi-coding-agent). When non-empty and
+	// PIBinaryPath is the absolute host path to the pi binary
+	// (e.g. /nix/store/.../bin/pi or from the Nix profile at
+	// /etc/profiles/per-user/<user>/bin/pi). When non-empty and
 	// Harness == "pi", BuildArgs (bwrap) bind-mounts this path read-only into
-	// the sandbox and PIInvocation uses it as argv[0] so that pi-coding-agent
+	// the sandbox and PIInvocation uses it as argv[0] so that pi
 	// is accessible inside the bwrap namespace. An empty PIBinaryPath for a
 	// harness=pi session is treated as a configuration error: populatePIConfig
 	// returns a clear error rather than falling back to a bare "pi" name that

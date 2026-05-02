@@ -7180,3 +7180,66 @@ func TestAbtestPairsForSessions(t *testing.T) {
 		t.Errorf("non-abtest session repo@main should not appear in pairs map")
 	}
 }
+
+// TestUpsertStatus_PreservesHarness verifies that UpsertStatus does not
+// overwrite an existing harness value when called on a row that already has
+// harness='pi' (issue #1290, Bug 1).
+func TestUpsertStatus_PreservesHarness(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed a row with harness='pi' via UpsertStatusSeedRootAgentName (the
+	// same path used by SpawnSession).
+	const session = "repo@pi-worker"
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Simulate the sidecar's initial UpsertStatus("idle") call.
+	if err := d.UpsertStatus(session, "repo", "/wt", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// The harness column must still be 'pi'.
+	st, err := d.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("no row found after upsert")
+	}
+	if st.Harness == nil || *st.Harness != "pi" {
+		got := "<nil>"
+		if st.Harness != nil {
+			got = *st.Harness
+		}
+		t.Errorf("harness = %q after UpsertStatus; want %q", got, "pi")
+	}
+}
+
+// TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode verifies that a fresh
+// insert via UpsertStatusWithRootAgent writes harness='opencode' when no row
+// exists (issue #1290, Bug 1 — INSERT path).
+func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
+	d := openTestDB(t)
+
+	const session = "repo@fresh-opencode"
+	agentName := "coordinator"
+	if err := d.UpsertStatusWithRootAgent(session, "repo", "/wt", "idle", nil, nil, &agentName, nil); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
+	}
+
+	st, err := d.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("no row found after upsert")
+	}
+	if st.Harness == nil || *st.Harness != "opencode" {
+		got := "<nil>"
+		if st.Harness != nil {
+			got = *st.Harness
+		}
+		t.Errorf("harness = %q for fresh row; want %q", got, "opencode")
+	}
+}
