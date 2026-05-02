@@ -339,9 +339,92 @@ export function processReviewCycle(
 }
 
 /**
- * Build the review-cycle escalation message for the given PR.
+ * Custom entry type used to persist guard state snapshots in the session file.
+ *
+ * Snapshots are written via `pi.appendEntry(GUARD_STATE_ENTRY_TYPE, snapshot)`
+ * after each significant state change. On session resume (`session_switch` with
+ * `reason: "resume"`), the extension scans session entries from newest to oldest,
+ * finds the latest snapshot, and restores state from it.
+ *
+ * This is the "reconstruct from session entries on resume" pattern described in
+ * issue #1219 and referenced in the wire protocol design doc.
+ */
+export const GUARD_STATE_ENTRY_TYPE = "prism-guard-state"
+
+/** Shape persisted in the session file for state reconstruction. */
+export interface GuardStateSnapshot {
+  /** Doom-loop state: the current similarity key and consecutive count. */
+  doomLoop: {
+    currentKey: string | null
+    consecutiveCount: number
+    fired: boolean
+  }
+  /** Review-cycle state: PR number and cycle counts as a plain object (Map not JSON-safe). */
+  reviewCycle: {
+    detectedPrNumber: string | null
+    cycles: Record<string, number>
+    frameEmitted: boolean
+  }
+  /** Whether a git-push reminder is pending injection. */
+  pendingGitPushReminder: boolean
+}
+
+/**
+ * Serialise the current guard state into a snapshot object for persistence.
  * Exported for unit testing.
  */
+export function snapshotGuardState(
+  doomLoop: DoomLoopState,
+  reviewCycle: ReviewCycleState,
+  pendingGitPushReminder: boolean,
+): GuardStateSnapshot {
+  const cycles: Record<string, number> = {}
+  for (const [k, v] of reviewCycle.cycles) {
+    cycles[k] = v
+  }
+  return {
+    doomLoop: {
+      currentKey: doomLoop.currentKey,
+      consecutiveCount: doomLoop.consecutiveCount,
+      fired: doomLoop.fired,
+    },
+    reviewCycle: {
+      detectedPrNumber: reviewCycle.detectedPrNumber,
+      cycles,
+      frameEmitted: reviewCycle.frameEmitted,
+    },
+    pendingGitPushReminder,
+  }
+}
+
+/**
+ * Restore guard state from a snapshot. Mutates the provided state objects in
+ * place. Exported for unit testing.
+ */
+export function restoreGuardState(
+  snapshot: GuardStateSnapshot,
+  doomLoop: DoomLoopState,
+  reviewCycle: ReviewCycleState,
+): { pendingGitPushReminder: boolean } {
+  doomLoop.currentKey = snapshot.doomLoop.currentKey ?? null
+  doomLoop.consecutiveCount = typeof snapshot.doomLoop.consecutiveCount === "number"
+    ? snapshot.doomLoop.consecutiveCount
+    : 0
+  doomLoop.fired = snapshot.doomLoop.fired === true
+
+  reviewCycle.detectedPrNumber = snapshot.reviewCycle.detectedPrNumber ?? null
+  reviewCycle.cycles.clear()
+  if (snapshot.reviewCycle.cycles && typeof snapshot.reviewCycle.cycles === "object") {
+    for (const [k, v] of Object.entries(snapshot.reviewCycle.cycles)) {
+      if (typeof v === "number") {
+        reviewCycle.cycles.set(k, v)
+      }
+    }
+  }
+  reviewCycle.frameEmitted = snapshot.reviewCycle.frameEmitted === true
+
+  return { pendingGitPushReminder: snapshot.pendingGitPushReminder === true }
+}
 export function reviewCycleEscalationMessage(
   state: ReviewCycleState,
 ): string {
@@ -1035,6 +1118,42 @@ export default function prismExtension(pi: ExtensionAPI): void {
     connect()
   })
 
+  // ── State reconstruction on session resume ───────────────────────────
+  //
+  // When PI resumes a session (session_switch with reason="resume"), the
+  // extension scans the session's branch entries for the latest
+  // GUARD_STATE_ENTRY_TYPE snapshot and restores state from it. This
+  // ensures the doom-loop consecutive count, review-cycle counts, and
+  // git-push reminder flag survive a session pause/resume cycle.
+  //
+  // The entry is written whenever significant state changes occur (see
+  // the tool_execution_start hook below). pendingCycleCount is not
+  // persisted (it is cleared on turn_start anyway).
+  pi.on("session_switch", async (event, ctx) => {
+    lastCtx = ctx
+    if ((event as { reason?: unknown }).reason !== "resume") return
+    if (isReviewSession) return // guards are suppressed for review sessions
+
+    const entries = ctx.sessionManager.getBranch()
+    // Walk backward to find the most recent guard state snapshot.
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i]
+      if (
+        entry !== null &&
+        typeof entry === "object" &&
+        (entry as { type?: unknown }).type === "custom" &&
+        (entry as { customType?: unknown }).customType === GUARD_STATE_ENTRY_TYPE
+      ) {
+        const snapshot = (entry as { data?: unknown }).data as GuardStateSnapshot | undefined
+        if (snapshot && typeof snapshot === "object") {
+          const restored = restoreGuardState(snapshot, doomLoopState, reviewCycleState)
+          pendingGitPushReminder = restored.pendingGitPushReminder
+        }
+        break
+      }
+    }
+  })
+
   pi.on("before_agent_start", async (_event, ctx) => {
     lastCtx = ctx
     if (writer && handshakeComplete) {
@@ -1192,6 +1311,14 @@ export default function prismExtension(pi: ExtensionAPI): void {
       if (reviewCycleEnabled) {
         processReviewCycle(reviewCycleState, name, rawArgs)
       }
+
+      // Persist guard state after each tool call so session resume can
+      // reconstruct the current doom-loop run and review-cycle counts.
+      // pi.appendEntry is lightweight (appends to the session JSON file);
+      // we do it unconditionally — the reviewer can deduplicate via the
+      // "latest entry wins" pattern in session_switch above.
+      pi.appendEntry(GUARD_STATE_ENTRY_TYPE,
+        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder))
     }
   })
 

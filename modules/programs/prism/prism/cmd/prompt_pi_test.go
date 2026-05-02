@@ -39,6 +39,10 @@ func setStatusHarness(t *testing.T, d *db.DB, sessionName, harness string) {
 	}
 }
 
+// maxSunPath is the POSIX limit for sockaddr_un.sun_path (104 on macOS, 108 on Linux).
+// We use 104 as the conservative cross-platform ceiling.
+const maxSunPath = 104
+
 // TestRunPrompt_PISession_RoutesThroughSidecarHostAPI seeds a PI session in
 // the DB and starts a stub Unix-socket HTTP server at the per-session
 // host-api.sock path. It then runs `prism prompt <session>` and asserts that
@@ -46,9 +50,12 @@ func setStatusHarness(t *testing.T, d *db.DB, sessionName, harness string) {
 // (opencode) call was made, and that the audit row was written.
 func TestRunPrompt_PISession_RoutesThroughSidecarHostAPI(t *testing.T) {
 	// Use a short XDG_STATE_HOME so the per-session socket path stays under
-	// the 108-char Unix sun_path limit on Linux.
-	stateHome := filepath.Join(os.TempDir(), "prism-pipe-test-"+randCmdHex(6))
-	if err := os.MkdirAll(stateHome, 0o700); err != nil {
+	// the 104-char Unix sun_path limit on macOS. os.MkdirTemp with a short
+	// two-character prefix keeps the base path short enough on both Linux and
+	// Darwin (unlike filepath.Join(os.TempDir(), ...) which can exceed 104
+	// chars on macOS where TempDir returns a long /private/var/folders/... path).
+	stateHome, err := os.MkdirTemp("", "pp")
+	if err != nil {
 		t.Fatalf("mkdir state home: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
@@ -58,6 +65,9 @@ func TestRunPrompt_PISession_RoutesThroughSidecarHostAPI(t *testing.T) {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	if len(sockPath) > maxSunPath {
+		t.Fatalf("socket path too long (%d > %d): %s", len(sockPath), maxSunPath, sockPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
 		t.Fatalf("mkdir socket dir: %v", err)
@@ -133,8 +143,8 @@ func TestRunPrompt_PISession_RoutesThroughSidecarHostAPI(t *testing.T) {
 // the error message points at the missing socket path so an operator can
 // diagnose the failure.
 func TestRunPrompt_PISession_SocketMissingReturnsClearError(t *testing.T) {
-	stateHome := filepath.Join(os.TempDir(), "prism-pipe-miss-"+randCmdHex(6))
-	if err := os.MkdirAll(stateHome, 0o700); err != nil {
+	stateHome, err := os.MkdirTemp("", "pm")
+	if err != nil {
 		t.Fatalf("mkdir state home: %v", err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
@@ -147,11 +157,11 @@ func TestRunPrompt_PISession_SocketMissingReturnsClearError(t *testing.T) {
 	setStatusHarness(t, d, sessionName, "pi")
 
 	rootCmd.SetArgs([]string{"prompt", sessionName, "--prompt", "test"})
-	err := rootCmd.Execute()
-	if err == nil {
+	execErr := rootCmd.Execute()
+	if execErr == nil {
 		t.Fatal("expected error when sidecar socket missing, got nil")
 	}
-	msg := err.Error()
+	msg := execErr.Error()
 	if !strings.Contains(msg, "socket-pipe delivery failed") {
 		t.Errorf("error should mention socket-pipe delivery failure: got %q", msg)
 	}
