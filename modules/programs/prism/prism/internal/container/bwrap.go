@@ -609,7 +609,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// ── Terminator: -- <harness invocation> ─────────────────────────────────
 	// For opencode: opencode --port <port> --hostname 127.0.0.1
-	// For PI:       pi --provider <p> --model <m> --append-system-prompt ...
+	// For PI:       pi --provider <p> --model <m> --extension ...
 	//
 	// bwrap uses 127.0.0.1 (not 0.0.0.0): the host network namespace is shared
 	// (no --unshare-net), so binding to 0.0.0.0 would be overly broad.

@@ -158,11 +158,11 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			return fmt.Errorf("agent-run: %w", piErr)
 		}
 		// sandbox-exec shares the host filesystem, so the in-sandbox paths for
-		// the system-prompt file and extension directory are the same as the
-		// host paths. Override the bwrap-oriented sandbox-path defaults so that
-		// PIInvocation passes the correct paths to pi's --append-system-prompt
-		// and --extension flags.
-		ctrCfg.PISystemPromptSandboxPath = ctrCfg.PISystemPromptHostPath
+		// the PI agent config directory and extension directory are the same as
+		// the host paths. Override the bwrap-oriented sandbox-path defaults so
+		// that PIInvocation and PI_CODING_AGENT_DIR reference host-accessible
+		// paths directly.
+		ctrCfg.PIAgentConfigSandboxDir = ctrCfg.PIAgentConfigHostDir
 		ctrCfg.PIExtensionSandboxDir = ctrCfg.PIExtensionHostDir
 	}
 
@@ -324,6 +324,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// harness can connect back to the sidecar's pipe listener.
 	if ctrCfg.HarnessPipeTCPPort != 0 {
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://host.containers.internal:%d", ctrCfg.HarnessPipeTCPPort))
+	}
+
+	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers APPEND_SYSTEM.md
+	// from the per-session staging directory. On Darwin (sandbox-exec), the
+	// staging dir is on the host filesystem, so the "sandbox path" override set
+	// in populatePIConfig points at the host path directly.
+	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
+		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}
 
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path

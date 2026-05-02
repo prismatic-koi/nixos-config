@@ -674,8 +674,10 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 //  1. Loads profiles.json and resolves the active profile.
 //  2. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
-//  3. Calls WriteSystemPromptFile to generate the per-session system-prompt
-//     temp file and records the host/sandbox paths on ctrCfg.
+//  3. Calls StagePIAgentConfigDir to create the per-session staging directory
+//     and write APPEND_SYSTEM.md (if a system prompt is configured). Records
+//     the host/sandbox paths on ctrCfg so bwrap can bind-mount the directory
+//     and set PI_CODING_AGENT_DIR.
 //  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  5. Copies PIProvider, PIModel, PIThinking from the profile slot.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config) error {
@@ -702,13 +704,14 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	slot, _ := config.SlotForRole(pf, profileName, agentRole)
 
-	// Write the system-prompt temp file from the slot.
-	hostPath, sandboxPath, err := container.WriteSystemPromptFile(slot, sessionName)
+	// Stage the PI agent config directory (and optionally APPEND_SYSTEM.md)
+	// before bwrap launches, so PI sees the file on its first read.
+	hostDir, sandboxDir, err := container.StagePIAgentConfigDir(slot, sessionName)
 	if err != nil {
-		return fmt.Errorf("pi: write system prompt: %w", err)
+		return fmt.Errorf("pi: stage agent config dir: %w", err)
 	}
-	ctrCfg.PISystemPromptHostPath = hostPath
-	ctrCfg.PISystemPromptSandboxPath = sandboxPath
+	ctrCfg.PIAgentConfigHostDir = hostDir
+	ctrCfg.PIAgentConfigSandboxDir = sandboxDir
 
 	// Extension host directory from Nix-written config.
 	if cfg.PIExtensionDir == "" {
