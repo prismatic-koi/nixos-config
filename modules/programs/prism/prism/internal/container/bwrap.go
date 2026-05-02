@@ -592,6 +592,17 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.
 	if cfg.Harness == "pi" {
+		// Use ~/.config/prism/pi-extensions as the sandbox path for the
+		// extension directory. /etc is ro-bind-mounted from the host so
+		// bwrap cannot create /etc/prism inside the sandbox; .config/prism
+		// follows the same pattern as other prism config mounts.
+		if cfg.PIExtensionSandboxDir == "" {
+			cfg.PIExtensionSandboxDir = filepath.Join(home, ".config", "prism", "pi-extensions")
+		}
+		// Same for the pi-agent config dir.
+		if cfg.PIAgentConfigSandboxDir == "" {
+			cfg.PIAgentConfigSandboxDir = filepath.Join(home, ".config", "prism", "pi-agent")
+		}
 		var piErr error
 		args, piErr = appendPIBwrapMounts(args, cfg)
 		if piErr != nil {

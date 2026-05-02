@@ -146,6 +146,7 @@ type parsedConfig struct {
 	GitUserEmail                   string    `json:"git_user_email"`
 	SshAccessKeyName               string    `json:"ssh_access_key_name"`
 	SshSigningKeyName              string    `json:"ssh_signing_key_name"`
+	PIExtensionDir                 string    `json:"pi_extension_dir"`
 	RestoreStaggerDelayMs          *int      `json:"restore_stagger_delay_ms"`
 	SidecarCircuitBreakerThreshold *int      `json:"sidecar_circuit_breaker_threshold"`
 	BwrapConcurrencyCap            *int      `json:"bwrap_concurrency_cap"`
@@ -287,6 +288,9 @@ func load() Config {
 	}
 	if parsed.SshSigningKeyName != "" {
 		cfg.SshSigningKeyName = parsed.SshSigningKeyName
+	}
+	if parsed.PIExtensionDir != "" {
+		cfg.PIExtensionDir = parsed.PIExtensionDir
 	}
 
 	// For integer pointer fields: nil means absent (keep default); non-nil

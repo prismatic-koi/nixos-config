@@ -69,8 +69,37 @@
           ];
         };
 
-        # Stamp a slot value across the given list of role names.
-        slotsFor = roles: slot: lib.genAttrs roles (_: slot);
+
+        # Determine the system prompt file for a given role.
+        # Maps role names to agent files at ~/.config/opencode/agents/<file>.md.
+        roleToSystemPromptFile = role:
+          let
+            roleFileMap = {
+              coordinator = "coordinator";
+              plan = "coordinator";
+              worker = "worker";
+              review = "review-code-subagent";
+              "review-goal" = "review-goal-subagent";
+              "review-code" = "review-code-subagent";
+              "review-security" = "review-security-subagent";
+              "review-qa" = "review-qa-subagent";
+              "review-context" = "review-context-subagent";
+              ac = "ac";
+              retro = "retro";
+              explore = "worker";
+              title = "worker";
+              summary = "worker";
+              compaction = "worker";
+            };
+          in
+          "$HOME/.config/opencode/agents/${roleFileMap.${role}}.md";
+
+        # Stamp a slot value across the given list of role names, adding
+        # role-specific systemPromptPath values for P2.AGENTRUN support.
+        slotsForWithPrompts = roles: baseSlot:
+          lib.genAttrs roles (role: baseSlot // {
+            systemPromptPath = roleToSystemPromptFile role;
+          });
 
         # Build a profile by combining tiered slot values. Each tier is a
         # `{primary, secondary, lightweight}` triple of slot values — the
@@ -79,9 +108,9 @@
         # bit-identically.
         profileFromTiers =
           tiers:
-          (slotsFor roleMapping.primary tiers.primary)
-          // (slotsFor roleMapping.secondary tiers.secondary)
-          // (slotsFor roleMapping.lightweight tiers.lightweight);
+          (slotsForWithPrompts roleMapping.primary tiers.primary)
+          // (slotsForWithPrompts roleMapping.secondary tiers.secondary)
+          // (slotsForWithPrompts roleMapping.lightweight tiers.lightweight);
 
         # Convenience: build a slot. `thinking` defaults to "none" to preserve
         # current opencode behaviour (renders as variant: "none"). `provider`

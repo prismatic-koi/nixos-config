@@ -747,6 +747,11 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	if lookErr != nil {
 		return fmt.Errorf("pi: resolve pi binary: %w — ensure pi is installed and on PATH", lookErr)
 	}
+	// Resolve symlinks so bwrap gets the real nix store path, not a profile
+	// symlink that does not exist inside the sandbox namespace.
+	if resolved, evalErr := filepath.EvalSymlinks(piBin); evalErr == nil {
+		piBin = resolved
+	}
 	ctrCfg.PIBinaryPath = piBin
 
 	return nil
