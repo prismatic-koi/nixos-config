@@ -333,15 +333,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".nix-profile"),
 	)
 
-	// ── .pi/agent/ ────────────────────────────────────────────────────────────
-	// PI stores auth credentials, themes, and settings in ~/.pi/agent/ on the
-	// host. Mirrors the bwrap --ro-bind for ~/.pi/agent in pi_invocation.go.
-	// Skipped when the directory does not exist (auth not yet set up).
-	symlinkIfExists(
-		filepath.Join(home, ".pi", "agent"),
-		filepath.Join(stagingHome, ".pi", "agent"),
-	)
-
 	return stagingHome, nil
 }
 

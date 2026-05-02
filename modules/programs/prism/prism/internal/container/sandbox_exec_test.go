@@ -750,10 +750,10 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 	}
 }
 
-// TestPrepareSandboxExecHome_PiAgentDirSymlinked verifies that when ~/.pi/agent
-// exists on the host, PrepareSandboxExecHome creates a symlink at
-// <stagingHome>/.pi/agent pointing to the real directory.
-func TestPrepareSandboxExecHome_PiAgentDirSymlinked(t *testing.T) {
+// TestPrepareSandboxExecHome_PiAgentDirNotSymlinked verifies that
+// PrepareSandboxExecHome no longer creates a ~/.pi/agent symlink — auth files
+// are now copied into the staging dir by StagePIAgentConfigDir instead.
+func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
 	// Create ~/.pi/agent in the fake home.
@@ -772,21 +772,11 @@ func TestPrepareSandboxExecHome_PiAgentDirSymlinked(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// The symlink must exist at <stagingHome>/.pi/agent.
+	// No symlink must be created at <stagingHome>/.pi/agent — the staging dir
+	// approach copies files via StagePIAgentConfigDir instead.
 	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
-	fi, err := os.Lstat(symlinkPath)
-	if err != nil {
-		t.Fatalf(".pi/agent symlink must exist: %v", err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Errorf(".pi/agent must be a symlink, got mode %v", fi.Mode())
-	}
-	target, err := os.Readlink(symlinkPath)
-	if err != nil {
-		t.Fatalf("readlink .pi/agent: %v", err)
-	}
-	if target != piAgentDir {
-		t.Errorf(".pi/agent symlink target = %q, want %q", target, piAgentDir)
+	if _, err := os.Lstat(symlinkPath); err == nil {
+		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (files are copied by StagePIAgentConfigDir)")
 	}
 }
 

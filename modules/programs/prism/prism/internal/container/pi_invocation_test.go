@@ -390,8 +390,10 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	}
 }
 
-func TestAppendPIBwrapMounts_PiAgentDirMounted(t *testing.T) {
-	// When ~/.pi/agent exists, appendPIBwrapMounts must add --ro-bind for it.
+func TestAppendPIBwrapMounts_NoPiAgentBindMount(t *testing.T) {
+	// ~/.pi/agent is no longer bind-mounted — files are copied into the staging
+	// dir by StagePIAgentConfigDir instead. Verify that even when ~/.pi/agent
+	// exists, appendPIBwrapMounts does NOT add a --ro-bind for it.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
@@ -419,48 +421,106 @@ func TestAppendPIBwrapMounts_PiAgentDirMounted(t *testing.T) {
 		t.Fatalf("appendPIBwrapMounts: %v", err)
 	}
 
-	// Must contain --ro-bind <piAgentDir> <piAgentDir>.
-	if !hasTriple(args, "--ro-bind", piAgentDir, piAgentDir) {
-		t.Errorf("expected --ro-bind %q %q in args; got %v", piAgentDir, piAgentDir, args)
-	}
-	// Must also contain --dir for the parent ~/.pi.
-	piParent := filepath.Join(fakeHome, ".pi")
-	if !hasPair(args, "--dir", piParent) {
-		t.Errorf("expected --dir %q in args for ~/.pi parent; got %v", piParent, args)
+	// Must NOT contain any --ro-bind involving ~/.pi/agent.
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == piAgentDir {
+			t.Errorf("unexpected --ro-bind for ~/.pi/agent in args; got %v", args)
+		}
 	}
 }
 
-func TestAppendPIBwrapMounts_PiAgentDirMissing(t *testing.T) {
-	// When ~/.pi/agent does not exist, no bind-mount is added and no error is returned.
+// ── StagePIAgentConfigDir: host file copies ──────────────────────────────────
+
+func TestStagePIAgentConfigDir_CopiesAuthAndSettings(t *testing.T) {
+	// When ~/.pi/agent/{auth,settings}.json exist, they must be copied into
+	// the staging dir.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
-	// Deliberately do NOT create ~/.pi/agent.
-
-	extDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
-		t.Fatalf("write ext: %v", err)
-	}
-	fakePI := filepath.Join(t.TempDir(), "pi")
-	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
-		t.Fatalf("write fake pi binary: %v", err)
-	}
-
-	cfg := Config{
-		PIBinaryPath:       fakePI,
-		PIExtensionHostDir: extDir,
-	}
-
-	args, err := appendPIBwrapMounts(nil, cfg)
-	if err != nil {
-		t.Fatalf("expected no error when ~/.pi/agent is absent; got %v", err)
-	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	// Must NOT contain a ro-bind for the missing path.
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--ro-bind" && args[i+1] == piAgentDir {
-			t.Errorf("expected no --ro-bind for absent ~/.pi/agent; got %v", args)
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	authContent := `{"token":"secret"}`
+	settingsContent := `{"theme":"dark"}`
+	if err := os.WriteFile(filepath.Join(piAgentDir, "auth.json"), []byte(authContent), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piAgentDir, "settings.json"), []byte(settingsContent), 0o600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@copy-test")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	for name, want := range map[string]string{
+		"auth.json":     authContent,
+		"settings.json": settingsContent,
+	} {
+		got, readErr := os.ReadFile(filepath.Join(hostDir, name))
+		if readErr != nil {
+			t.Errorf("read %s: %v", name, readErr)
+			continue
 		}
+		if string(got) != want {
+			t.Errorf("%s content = %q, want %q", name, string(got), want)
+		}
+	}
+}
+
+func TestStagePIAgentConfigDir_CopiesThemesDir(t *testing.T) {
+	// When ~/.pi/agent/themes/ exists, its contents must be copied recursively
+	// into the staging dir.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	themesDir := filepath.Join(fakeHome, ".pi", "agent", "themes")
+	if err := os.MkdirAll(themesDir, 0o700); err != nil {
+		t.Fatalf("mkdir themes: %v", err)
+	}
+	themeContent := `{"name":"cool"}`
+	if err := os.WriteFile(filepath.Join(themesDir, "cool.json"), []byte(themeContent), 0o600); err != nil {
+		t.Fatalf("write theme file: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@themes-test")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	got, readErr := os.ReadFile(filepath.Join(hostDir, "themes", "cool.json"))
+	if readErr != nil {
+		t.Fatalf("read themes/cool.json: %v", readErr)
+	}
+	if string(got) != themeContent {
+		t.Errorf("themes/cool.json content = %q, want %q", string(got), themeContent)
+	}
+}
+
+func TestStagePIAgentConfigDir_MissingHostFiles(t *testing.T) {
+	// When ~/.pi/agent does not exist at all, staging succeeds without error
+	// and the optional files are simply absent from the staging dir.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Deliberately do NOT create ~/.pi/agent.
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@missing-pi")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	for _, name := range []string{"auth.json", "settings.json"} {
+		if _, statErr := os.Stat(filepath.Join(hostDir, name)); statErr == nil {
+			t.Errorf("%s must not exist when source is absent", name)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(hostDir, "themes")); statErr == nil {
+		t.Errorf("themes/ must not exist when source is absent")
 	}
 }
 
