@@ -52,6 +52,14 @@
         cp -r ${./pi/extensions/anthropic-oauth}/* $out/anthropic-oauth/
       '';
 
+      # Prism extension for pi — a single derivation whose root contains
+      # prism.ts. This path is wired into config.json via piExtensionDir so
+      # prism can locate the extension at spawn time.
+      prismExtensionDir = pkgs.runCommand "prism-pi-extension" { } ''
+        mkdir -p $out
+        cp ${./pi/extensions/prism.ts} $out/prism.ts
+      '';
+
       # Pi agent settings.json content, defined once here so a future container
       # role can reference the same value without duplication.
       # Follow-up container support will add containerWorkerSettingsJson /
@@ -144,6 +152,8 @@
         };
     in
     {
+      nx.programs.prism.piExtensionDir = "${prismExtensionDir}";
+
       home-manager.users.${config.nx.username} = {
         home.packages = with pkgs; [
           pi-coding-agent
@@ -166,6 +176,9 @@
         # The extension path referenced in settings.json points into this
         # nix-store path, so nix-store --gc will not remove it.
         home.file.".pi/agent/extensions".source = piExtensionsDir;
+        # Prism extension — GC-rooted so the store path referenced in
+        # config.json is not removed by nix-collect-garbage.
+        home.file.".pi/agent/prism-extension".source = prismExtensionDir;
 
         home.persistence."/persist" = {
           directories = [ ".pi" ];
