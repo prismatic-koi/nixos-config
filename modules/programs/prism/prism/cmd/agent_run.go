@@ -259,6 +259,19 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		harnessName = *status.Harness
 	}
 
+	// Look up the harness pipe socket path for socket-pipe harnesses (e.g. "pi").
+	// This must be set on ctrCfg so that bwrap.go's BuildArgs emits
+	// --setenv PRISM_HARNESS_PIPE unix://<path>. Without it the PI binary starts
+	// inside the sandbox without knowing where the sidecar pipe socket is.
+	harnessPipeSockPath := ""
+	if shape, ok := harness.ShapeOf(harnessName); ok && shape == harness.TransportSocketPipe {
+		pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName)
+		if pipeErr != nil {
+			return fmt.Errorf("agent-run: resolve harness pipe path for %q: %w", harnessName, pipeErr)
+		}
+		harnessPipeSockPath = pipePath
+	}
+
 	// Populate harness-specific runtime env vars for the bwrap sandbox.
 	// harnessName comes from the DB; if it is not registered, fall back to
 	// a zero-env map rather than failing the entire agent-run.
@@ -278,8 +291,9 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		GitUserEmail:      cfg.GitUserEmail,
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
-		HostAPISockPath:   hostAPISockPath,
-		RuntimeEnv:        runtimeEnv,
+		HostAPISockPath:     hostAPISockPath,
+		HarnessPipeSockPath: harnessPipeSockPath,
+		RuntimeEnv:          runtimeEnv,
 		AgentEnvVars:      agentEnvVars,
 		Harness:           harnessName,
 	}
