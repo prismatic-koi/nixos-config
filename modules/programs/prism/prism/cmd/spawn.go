@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -230,14 +229,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// tmux session, no DB row).
 	if _, ok := harness.Lookup(harnessFlag); !ok {
 		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
-	}
-
-	// PI harness is only supported on Linux (bwrap path) until P2.DARWIN
-	// (#1213) lands. Reject early with a clear pointer to the tracking issue
-	// so users know what to wait for, rather than failing later with a less
-	// obvious bwrap-not-found / sandbox-exec error.
-	if harnessFlag == "pi" && runtime.GOOS != "linux" {
-		return fmt.Errorf("--harness pi is not yet supported on %s — Darwin support is tracked in #1213", runtime.GOOS)
 	}
 
 	promptText, promptSource, err := resolvePromptWithSource(cmd)

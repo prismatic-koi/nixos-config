@@ -138,6 +138,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		InstanceID:        instanceID,
 		RuntimeEnv:        sandboxRuntimeEnv,
 		AgentEnvVars:      agentEnvVars,
+		Harness:           sandboxHarnessName,
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it
@@ -146,6 +147,23 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		if status.HarnessPort != nil {
 			ctrCfg.HarnessPipeTCPPort = *status.HarnessPort
 		}
+	}
+
+	// PI harness: populate PI-specific config fields (system-prompt, extension
+	// dir, provider/model/thinking) from the active profile slot.
+	// On Darwin sandbox-exec there are no bind-mounts, so the "sandbox paths"
+	// are the same as the host paths — sandbox-exec shares the host filesystem.
+	if sandboxHarnessName == "pi" {
+		if piErr := populatePIConfig(&ctrCfg, sessionName, agentRole, cfg); piErr != nil {
+			return fmt.Errorf("agent-run: %w", piErr)
+		}
+		// sandbox-exec shares the host filesystem, so the in-sandbox paths for
+		// the system-prompt file and extension directory are the same as the
+		// host paths. Override the bwrap-oriented sandbox-path defaults so that
+		// PIInvocation passes the correct paths to pi's --append-system-prompt
+		// and --extension flags.
+		ctrCfg.PISystemPromptSandboxPath = ctrCfg.PISystemPromptHostPath
+		ctrCfg.PIExtensionSandboxDir = ctrCfg.PIExtensionHostDir
 	}
 
 	applyInitialPromptEnvVar(&ctrCfg)
