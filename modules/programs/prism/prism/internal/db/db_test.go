@@ -44,13 +44,13 @@ func TestOpen_CreatesSchema(t *testing.T) {
 		}
 	}
 
-	// Verify schema_version=25 (all migrations applied on Open).
+	// Verify schema_version=28 (all migrations applied on Open).
 	var version int
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version: got %d, want 28", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -1018,8 +1018,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1093,8 +1093,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1594,8 +1594,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1660,8 +1660,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1730,8 +1730,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1825,8 +1825,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -1918,8 +1918,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2455,8 +2455,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2544,8 +2544,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// isolation_mode column must exist and be backfilled by v22→v23.
@@ -4200,8 +4200,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// Check each row.
@@ -4628,8 +4628,8 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -4903,8 +4903,8 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -5124,8 +5124,8 @@ func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// sessions table must exist.
@@ -5278,8 +5278,8 @@ func TestMigration_V15ToV16_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 }
 
@@ -5832,8 +5832,8 @@ func TestMigration_V17ToV18_BackfillsStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// iid-has-events: started_at must be updated to 1600000000000 (min event ts).
@@ -5890,8 +5890,8 @@ func TestMigration_V17ToV18_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 
 	// iid-has-events should still have the corrected timestamp.
@@ -6192,8 +6192,8 @@ func TestMigration_V20ToV21_BackfillsHarnessSessionID(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// iid-with-sid: harness_session_id must have been backfilled.
@@ -6254,8 +6254,8 @@ func TestMigration_V20ToV21_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 
 	// iid-with-sid must still have the backfilled value.
@@ -6413,8 +6413,8 @@ func TestMigration_V21ToV22_BackfillsZeroStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// iid-zero-has-events: started_at must be updated to the minimum event ts.
@@ -6467,8 +6467,8 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 
 	var startedAt int64
@@ -6621,8 +6621,8 @@ func TestMigration_V22ToV23_BackfillsIsolationMode(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// host-null: host_mode=1, was NULL → must now be 'host'.
@@ -6694,8 +6694,8 @@ func TestMigration_V22ToV23_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 
 	// Values must be stable after a second open.
@@ -6830,8 +6830,8 @@ func TestMigration_V23ToV24_DropsOutcomeSummaryAndCreatesSpawnOutcome(t *testing
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after migration: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after migration: got %d, want 28", version)
 	}
 
 	// outcome_summary column must no longer exist on sessions.
@@ -6884,8 +6884,8 @@ func TestMigration_V23ToV24_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 27 {
-		t.Errorf("schema_version after second open: got %d, want 27", version)
+	if version != 28 {
+		t.Errorf("schema_version after second open: got %d, want 28", version)
 	}
 
 	// spawn_outcome must still exist.
@@ -7104,5 +7104,79 @@ func TestActiveSessionsForMode_ReturnsList(t *testing.T) {
 		if s.EndedAt != nil {
 			t.Errorf("session %q has non-nil ended_at, want nil (active)", s.SessionName)
 		}
+	}
+}
+
+// TestAbtestPairsForSessions verifies that AbtestPairsForSessions returns a
+// map of session_name → abtest_pair_id for sessions that have a non-NULL
+// abtest_pair_id in spawn_inputs, and excludes sessions without one.
+func TestAbtestPairsForSessions(t *testing.T) {
+	d := openTestDB(t)
+
+	const pairID = "aabbccdd11223344aabbccdd11223344"
+
+	// Helper: insert a sessions row + matching agent_status row + spawn_inputs row.
+	insertAbtestSession := func(t *testing.T, sessionName, iid, pairIDVal string) {
+		t.Helper()
+		// agent_status row (so AbtestPairsForSessions JOIN succeeds).
+		if err := d.UpsertStatus(sessionName, "repo", "/code/repo/"+sessionName, "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %q: %v", sessionName, err)
+		}
+		// sessions row (FK target for spawn_inputs).
+		sess := db.Session{
+			InstanceID:  iid,
+			SessionName: sessionName,
+			Repo:        "repo",
+			Worktree:    "/code/repo/" + sessionName,
+			Harness:     "opencode",
+		}
+		if err := d.InsertSession(sess); err != nil {
+			t.Fatalf("InsertSession %q: %v", sessionName, err)
+		}
+		// Attach instance_id to agent_status so the JOIN resolves correctly.
+		if err := d.SetInstanceID(sessionName, iid); err != nil {
+			t.Fatalf("SetInstanceID for %q: %v", sessionName, err)
+		}
+		// spawn_inputs row with (optionally) an abtest_pair_id.
+		si := db.SpawnInputs{
+			InstanceID: iid,
+			CreatedAt:  1000,
+		}
+		if pairIDVal != "" {
+			si.AbtestPairID = strPtr(pairIDVal)
+		}
+		if err := d.InsertSpawnInputs(si); err != nil {
+			t.Fatalf("InsertSpawnInputs %q: %v", sessionName, err)
+		}
+	}
+
+	iid1 := uuid.New().String()
+	iid2 := uuid.New().String()
+	iid3 := uuid.New().String()
+
+	insertAbtestSession(t, "repo@branch-profileA", iid1, pairID)
+	insertAbtestSession(t, "repo@branch-profileB", iid2, pairID)
+	// A non-abtest session — should not appear in results.
+	insertAbtestSession(t, "repo@main", iid3, "")
+
+	pairs, err := d.AbtestPairsForSessions()
+	if err != nil {
+		t.Fatalf("AbtestPairsForSessions: %v", err)
+	}
+	if len(pairs) != 2 {
+		t.Errorf("len(pairs) = %d, want 2; got: %v", len(pairs), pairs)
+	}
+	for _, name := range []string{"repo@branch-profileA", "repo@branch-profileB"} {
+		got, ok := pairs[name]
+		if !ok {
+			t.Errorf("session %q missing from pairs map", name)
+			continue
+		}
+		if got != pairID {
+			t.Errorf("session %q: got pair ID %q, want %q", name, got, pairID)
+		}
+	}
+	if _, ok := pairs["repo@main"]; ok {
+		t.Errorf("non-abtest session repo@main should not appear in pairs map")
 	}
 }

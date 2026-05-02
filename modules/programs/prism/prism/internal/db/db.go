@@ -211,6 +211,10 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     prompt_text            TEXT,
     prompt_source          TEXT,
 
+    -- P4.ABTEST: UUID shared between the two sibling sessions of an --abtest pair.
+    -- NULL for non-abtest sessions.
+    abtest_pair_id         TEXT,
+
     -- Free-form JSON blob for forward-compat.
     extras                 TEXT,
 
@@ -218,6 +222,7 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
 );
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_profile         ON spawn_inputs(profile_name);
 CREATE INDEX IF NOT EXISTS idx_spawn_inputs_harness_profile ON spawn_inputs(harness_flag, profile_name);
+CREATE INDEX IF NOT EXISTS idx_spawn_inputs_abtest_pair     ON spawn_inputs(abtest_pair_id) WHERE abtest_pair_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS harness_frames (
   id            TEXT PRIMARY KEY,
@@ -356,6 +361,12 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // type column for fast --types filtering. CREATE TABLE IF NOT EXISTS and
 // CREATE INDEX IF NOT EXISTS make the migration idempotent; fresh databases
 // already have the table from the declarative schema block above.
+// v27→v28 adds the abtest_pair_id column to spawn_inputs (P4.ABTEST, #1216).
+// The column is nullable TEXT; NULL means the session is not part of an A/B
+// test pair. A partial index on non-NULL values enables efficient pair lookup.
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration is
+// idempotent on fresh databases where the base schema already includes the
+// column.
 //
 // PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
 // It is set explicitly here — the single constructor through which all prism
@@ -521,6 +532,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV26toV27(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV27ToV28(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1633,6 +1647,42 @@ func migrateV26toV27(conn *sql.DB, version *int) error {
 	return nil
 }
 
+// migrateV27ToV28 adds the abtest_pair_id column to spawn_inputs (P4.ABTEST,
+// issue #1216). The column is nullable TEXT; NULL means the session is not
+// part of an A/B test pair. A partial index on the non-NULL values allows
+// efficient lookup of both sessions in a pair.
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration
+// is idempotent on fresh databases where the base schema already includes the
+// column.
+func migrateV27ToV28(conn *sql.DB, version *int) error {
+	if *version >= 28 {
+		return nil
+	}
+	// Only ALTER TABLE when the column does not yet exist (idempotent).
+	var colExists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'abtest_pair_id'`,
+	).Scan(&colExists); err != nil {
+		return fmt.Errorf("db: migration v27→v28: check abtest_pair_id column: %w", err)
+	}
+	if colExists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE spawn_inputs ADD COLUMN abtest_pair_id TEXT`); err != nil {
+			return fmt.Errorf("db: migration v27→v28: add abtest_pair_id column: %w", err)
+		}
+	}
+	steps := []string{
+		`CREATE INDEX IF NOT EXISTS idx_spawn_inputs_abtest_pair ON spawn_inputs(abtest_pair_id) WHERE abtest_pair_id IS NOT NULL`,
+		`UPDATE schema_version SET version = 28`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v27→v28: %w", err)
+		}
+	}
+	*version = 28
+	return nil
+}
+
 // Close closes the underlying database connection.
 func (d *DB) Close() error {
 	return d.conn.Close()
@@ -1672,6 +1722,10 @@ type SpawnInputs struct {
 	PromptText   *string
 	PromptSource *string
 
+	// P4.ABTEST: UUID shared between the two sessions in an --abtest pair.
+	// Nil for non-abtest sessions.
+	AbtestPairID *string
+
 	// Free-form JSON blob for forward-compat.
 	Extras *string
 
@@ -1694,7 +1748,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     pr_number, branch_flag, ignore_concurrency_cap,
     model_variant_overrides,
     skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
-    prompt_text, prompt_source, extras,
+    prompt_text, prompt_source, abtest_pair_id, extras,
     created_at
 ) VALUES (
     ?,
@@ -1703,7 +1757,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     ?, ?, ?,
     ?,
     ?, ?, ?,
-    ?, ?, ?,
+    ?, ?, ?, ?,
     ?
 )`,
 		si.InstanceID,
@@ -1712,7 +1766,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 		si.PRNumber, si.BranchFlag, boolToInt(si.IgnoreConcurrencyCap),
 		si.ModelVariantOverrides,
 		si.SkillsManifestHash, si.PromptTemplateHash, si.AgentPromptHash,
-		si.PromptText, si.PromptSource, si.Extras,
+		si.PromptText, si.PromptSource, si.AbtestPairID, si.Extras,
 		si.CreatedAt,
 	)
 	if err != nil {

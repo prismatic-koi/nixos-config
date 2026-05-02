@@ -912,3 +912,30 @@ ON CONFLICT(session_name) DO UPDATE SET
 	}
 	return nil
 }
+
+// AbtestPairsForSessions returns a map of session_name → abtest_pair_id for
+// sessions that have a non-NULL abtest_pair_id in spawn_inputs. Only sessions
+// whose instance_id appears in spawn_inputs with a non-NULL abtest_pair_id are
+// included. This is used by list-sessions to render the ↔ pair indicator.
+func (d *DB) AbtestPairsForSessions() (map[string]string, error) {
+	const q = `
+SELECT a.session_name, si.abtest_pair_id
+FROM agent_status a
+INNER JOIN sessions s ON s.session_name = a.session_name AND s.ended_at IS NULL
+INNER JOIN spawn_inputs si ON si.instance_id = s.instance_id
+WHERE si.abtest_pair_id IS NOT NULL`
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("db: abtest pairs: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var name, pairID string
+		if err := rows.Scan(&name, &pairID); err != nil {
+			return nil, fmt.Errorf("db: abtest pairs scan: %w", err)
+		}
+		result[name] = pairID
+	}
+	return result, rows.Err()
+}
