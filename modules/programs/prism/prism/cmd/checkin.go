@@ -27,6 +27,7 @@ package cmd
 //	checkin_legacy.go  — runCheckinSessionLegacy (screen-scrape fallback)
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -41,8 +42,12 @@ var checkinCmd = &cobra.Command{
 prism DB. Falls back to tmux screen-scrape for sessions that have no DB rows.
 
 With no argument, lists available sessions for the current repo (use --all
-for all repos).`,
-	Args: cobra.MaximumNArgs(1),
+for all repos).
+
+Use --compare <session-a> <session-b> to show a side-by-side narrative view
+of two paired A/B test sessions (they must share an abtest_pair_id). Add
+--diff to emit a text diff suitable for piping into a viewer.`,
+	Args: cobra.MaximumNArgs(2),
 	RunE: runCheckin,
 }
 
@@ -53,10 +58,23 @@ func init() {
 	checkinCmd.Flags().String("types", "", "Orthogonal event-type filter (e.g. --types audit, --types state_change). When set, routes to the raw-event path instead of the rich default view.")
 	checkinCmd.Flags().BoolP("verbose", "v", false, "Show full tool args/results without truncation (forensic mode)")
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
+	checkinCmd.Flags().Bool("compare", false, "Side-by-side comparison of two A/B test sessions (requires two session args)")
+	checkinCmd.Flags().Bool("diff", false, "Emit a text diff (use with --compare)")
 	rootCmd.AddCommand(checkinCmd)
 }
 
 func runCheckin(cmd *cobra.Command, args []string) error {
+	compare, _ := cmd.Flags().GetBool("compare")
+	diffMode, _ := cmd.Flags().GetBool("diff")
+
+	// --compare requires exactly two session arguments.
+	if compare || diffMode {
+		if len(args) != 2 {
+			return fmt.Errorf("checkin --compare requires exactly two session arguments: prism checkin --compare <session-a> <session-b>")
+		}
+		return runCheckinCompare(args[0], args[1], diffMode)
+	}
+
 	if len(args) == 0 {
 		showAll, _ := cmd.Flags().GetBool("all")
 		return runCheckinNoArg(showAll)
