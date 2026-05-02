@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	session "github.com/prismatic-koi/prism/internal/session"
+	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
 
 // hostAPIServeLogsTail writes the last n lines of the log file to w.
@@ -481,7 +482,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var pathErr error
 		switch logSource {
 		case "agent-run":
-			logPath, pathErr = session.AgentRunLogPath(targetSession)
+			logPath, pathErr = prismsession.AgentRunLogPath(targetSession)
 			if pathErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot resolve agent-run log path: "+pathErr.Error())
 				return
@@ -491,7 +492,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				return
 			}
 		default:
-			logPath, pathErr = session.SidecarLogPath(targetSession)
+			logPath, pathErr = prismsession.SidecarLogPath(targetSession)
 			if pathErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot resolve log path: "+pathErr.Error())
 				return
@@ -1364,6 +1365,337 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{})
 	})
 
+	// POST /set-model
+	// Request:  {"session":"<name>","provider":"...","model":"...","thinking":"..."}
+	// Response: {"session":"<name>","status":"applied"|"error:disconnected"|"skipped:opencode"} | {"error":"..."}
+	//
+	// Swaps the model on a single live PI session.  The calling sidecar must
+	// own that session (same session name) OR be a coordinator in the same
+	// repo.  Workers may only target their own session.
+	//
+	// Frame is enqueued best-effort.  The response is returned immediately; no
+	// ACK is awaited from the extension.
+	mux.HandleFunc("/set-model", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req struct {
+			Session  string `json:"session"`
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+			Thinking string `json:"thinking"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		if req.Model == "" {
+			writeError(w, http.StatusBadRequest, "model is required")
+			return
+		}
+
+		// Role-scope check: workers may only target their own session.
+		// We check both the configured AgentRole and the DB-backed
+		// isCoordinatorSession so that the guard fires even when the session
+		// name ends in @main but the sidecar is running as a worker.
+		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		if !callerIsCoordinator && req.Session != s.cfg.SessionName {
+			writeError(w, http.StatusForbidden, "workers can only call /set-model for their own session")
+			return
+		}
+
+		status := liveModelSwapForSession(s, req.Session, req.Provider, req.Model, req.Thinking)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"session": req.Session,
+			"status":  status,
+		})
+	})
+
+	// POST /apply-profile
+	// Request:  {"profile":"<name>","scope":"session|coordinator|global","session":"<name-if-session-scope>"}
+	// Response: {"results":[{"session":"...","status":"..."},...]} | {"error":"..."}
+	//
+	// Resolves which sessions match scope, computes the per-role slot from the
+	// named profile, and delivers a set_model frame to each matching live PI
+	// session.
+	//
+	// Scope rules:
+	//   session    — target the named session only; available to workers (own
+	//                session) or coordinators.
+	//   coordinator — all live PI sessions in the calling coordinator's repo;
+	//                coordinator only.
+	//   global     — every live PI session across all repos; coordinator only.
+	mux.HandleFunc("/apply-profile", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req struct {
+			Profile string `json:"profile"`
+			Scope   string `json:"scope"`
+			Session string `json:"session"` // only for scope=session
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Profile == "" {
+			writeError(w, http.StatusBadRequest, "profile is required")
+			return
+		}
+		switch req.Scope {
+		case "session", "coordinator", "global":
+		default:
+			writeError(w, http.StatusBadRequest, `scope must be "session", "coordinator", or "global"`)
+			return
+		}
+
+		// Permission: global and coordinator scopes require coordinator role.
+		applyCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		if req.Scope == "global" || req.Scope == "coordinator" {
+			if !applyCallerIsCoordinator {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("workers cannot perform apply-profile with scope=%s", req.Scope))
+				return
+			}
+		}
+		// Session scope: workers may only target their own session.
+		if req.Scope == "session" {
+			if req.Session == "" {
+				writeError(w, http.StatusBadRequest, "session is required when scope=session")
+				return
+			}
+			if !applyCallerIsCoordinator && req.Session != s.cfg.SessionName {
+				writeError(w, http.StatusForbidden, "workers can only apply-profile to their own session")
+				return
+			}
+		}
+
+		// Load profiles file to resolve slots.
+		pf, pfErr := hostAPILoadProfiles()
+		if pfErr != nil {
+			writeError(w, http.StatusInternalServerError, "load profiles: "+pfErr.Error())
+			return
+		}
+		if _, ok := pf.Profiles[req.Profile]; !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown profile %q", req.Profile))
+			return
+		}
+
+		// Resolve target sessions.
+		var targets []string
+		switch req.Scope {
+		case "session":
+			targets = []string{req.Session}
+		case "coordinator":
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			if repoErr != nil {
+				writeError(w, http.StatusInternalServerError, "cannot derive repo: "+repoErr.Error())
+				return
+			}
+			statuses, dbErr := s.cfg.DB.ActivePISessionsForRepo(ownRepo)
+			if dbErr != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+dbErr.Error())
+				return
+			}
+			for _, st := range statuses {
+				targets = append(targets, st.SessionName)
+			}
+		case "global":
+			statuses, dbErr := s.cfg.DB.AllActivePISessions()
+			if dbErr != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+dbErr.Error())
+				return
+			}
+			for _, st := range statuses {
+				targets = append(targets, st.SessionName)
+			}
+		}
+
+		// Fan out set_model frames.
+		type sessionResult struct {
+			Session string `json:"session"`
+			Status  string `json:"status"`
+		}
+		results := make([]sessionResult, 0, len(targets))
+		for _, targetSess := range targets {
+			// Look up role to find the correct slot.
+			role, status := resolveRoleForSession(s, targetSess)
+			if status != "" {
+				// Error or skip condition.
+				results = append(results, sessionResult{Session: targetSess, Status: status})
+				continue
+			}
+
+			// Look up slot for role.
+			slot, ok := pf.Profiles[req.Profile][role]
+			if !ok {
+				log.Printf("sidecar: host-API /apply-profile: profile %q has no slot for role %q (session %s) — skipping",
+					req.Profile, role, targetSess)
+				results = append(results, sessionResult{Session: targetSess, Status: "skipped:no-matching-slot"})
+				continue
+			}
+
+			deliveryStatus := liveModelSwapForSession(s, targetSess, slot.Provider, slot.Model, slot.Thinking)
+			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	})
+
+	// POST /register-provider
+	// Request:  {"name":"...","config":{...},"scope":"session|coordinator|global","session":"<name-if-session-scope>"}
+	// Response: {"results":[{"session":"...","status":"..."},...]} | {"error":"..."}
+	//
+	// Pushes a register_provider frame to live PI sessions in scope.
+	// Scope rules mirror /apply-profile.
+	mux.HandleFunc("/register-provider", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req struct {
+			Name    string         `json:"name"`
+			Config  map[string]any `json:"config"`
+			Scope   string         `json:"scope"`
+			Session string         `json:"session"` // only for scope=session
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		switch req.Scope {
+		case "session", "coordinator", "global":
+		default:
+			writeError(w, http.StatusBadRequest, `scope must be "session", "coordinator", or "global"`)
+			return
+		}
+
+		// Permission: global and coordinator scopes require coordinator role.
+		regCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		if req.Scope == "global" || req.Scope == "coordinator" {
+			if !regCallerIsCoordinator {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("workers cannot perform register-provider with scope=%s", req.Scope))
+				return
+			}
+		}
+		if req.Scope == "session" {
+			if req.Session == "" {
+				writeError(w, http.StatusBadRequest, "session is required when scope=session")
+				return
+			}
+			if !regCallerIsCoordinator && req.Session != s.cfg.SessionName {
+				writeError(w, http.StatusForbidden, "workers can only register-provider for their own session")
+				return
+			}
+		}
+
+		// Resolve target sessions.
+		var targets []string
+		switch req.Scope {
+		case "session":
+			targets = []string{req.Session}
+		case "coordinator":
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			if repoErr != nil {
+				writeError(w, http.StatusInternalServerError, "cannot derive repo: "+repoErr.Error())
+				return
+			}
+			statuses, dbErr := s.cfg.DB.ActivePISessionsForRepo(ownRepo)
+			if dbErr != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+dbErr.Error())
+				return
+			}
+			for _, st := range statuses {
+				targets = append(targets, st.SessionName)
+			}
+		case "global":
+			statuses, dbErr := s.cfg.DB.AllActivePISessions()
+			if dbErr != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+dbErr.Error())
+				return
+			}
+			for _, st := range statuses {
+				targets = append(targets, st.SessionName)
+			}
+		}
+
+		type sessionResult struct {
+			Session string `json:"session"`
+			Status  string `json:"status"`
+		}
+		results := make([]sessionResult, 0, len(targets))
+		for _, targetSess := range targets {
+			// Opencode sessions cannot receive register_provider frames.
+			// For the calling session, use the in-process cfg rather than a DB
+			// lookup so that the check is accurate even when no DB row exists.
+			var harnessName string
+			if targetSess == s.cfg.SessionName {
+				harnessName = s.cfg.HarnessName
+			} else {
+				harnessName = harnessNameForSession(s, targetSess)
+			}
+			if harnessName != "pi" {
+				results = append(results, sessionResult{Session: targetSess, Status: "skipped:opencode"})
+				continue
+			}
+			deliveryStatus := liveRegisterProviderForSession(s, targetSess, req.Name, req.Config)
+			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	})
+
+	// POST /register-provider-direct
+	// Request:  {"session":"<name>","name":"...","config":{...}}
+	// Response: {"session":"<name>","status":"..."} | {"error":"..."}
+	//
+	// Internal endpoint called by forwardRegisterProvider when fanning out to
+	// a different sidecar process.  No role check: reachable only via the
+	// per-session Unix socket, which is protected by filesystem permissions.
+	mux.HandleFunc("/register-provider-direct", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Session string         `json:"session"`
+			Name    string         `json:"name"`
+			Config  map[string]any `json:"config"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		if s.cfg.HarnessName != "pi" {
+			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "skipped:opencode"})
+			return
+		}
+		if !isPipeConnected(s) {
+			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "error:disconnected"})
+			return
+		}
+		s.RegisterProvider(req.Name, req.Config)
+		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
+	})
+
 	return mux
 }
 
@@ -1471,3 +1803,184 @@ func knownReviewAgentNames() []string {
 	}
 	return names
 }
+
+// ── P3.LIVE live-model-swap helpers (#1214) ───────────────────────────────────
+
+// liveModelSwapForSession delivers a set_model frame to the named session.
+//
+// When targetSess == s.cfg.SessionName (own session) and the sidecar is
+// running a PI harness, the frame is enqueued directly via s.SetModel.
+// When targetSess is a different session, the call is forwarded to that
+// session's own sidecar host-API socket via an HTTP POST to /set-model.
+//
+// Returns a status string: "applied", "skipped:opencode", or
+// "error:disconnected".
+func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking string) string {
+	if targetSess == s.cfg.SessionName {
+		if s.cfg.HarnessName != "pi" {
+			return "skipped:opencode"
+		}
+		if !isPipeConnected(s) {
+			return "error:disconnected"
+		}
+		s.SetModel(provider, model, thinking)
+		return "applied"
+	}
+
+	// Different session: check harness from DB first.
+	if harnessNameForSession(s, targetSess) != "pi" {
+		return "skipped:opencode"
+	}
+
+	if err := forwardSetModel(targetSess, provider, model, thinking); err != nil {
+		log.Printf("sidecar: liveModelSwapForSession: forward to %s: %v", targetSess, err)
+		return "error:disconnected"
+	}
+	return "applied"
+}
+
+// liveRegisterProviderForSession delivers a register_provider frame to the
+// named session.  Same routing logic as liveModelSwapForSession.
+func liveRegisterProviderForSession(s *Sidecar, targetSess, name string, cfg map[string]any) string {
+	if targetSess == s.cfg.SessionName {
+		if s.cfg.HarnessName != "pi" {
+			return "skipped:opencode"
+		}
+		if !isPipeConnected(s) {
+			return "error:disconnected"
+		}
+		s.RegisterProvider(name, cfg)
+		return "applied"
+	}
+
+	if harnessNameForSession(s, targetSess) != "pi" {
+		return "skipped:opencode"
+	}
+
+	if err := forwardRegisterProvider(targetSess, name, cfg); err != nil {
+		log.Printf("sidecar: liveRegisterProviderForSession: forward to %s: %v", targetSess, err)
+		return "error:disconnected"
+	}
+	return "applied"
+}
+
+// isPipeConnected returns true when the sidecar has an active harness pipe
+// connection (harnessPipeOutCh is non-nil).
+func isPipeConnected(s *Sidecar) bool {
+	s.mu.Lock()
+	ch := s.harnessPipeOutCh
+	s.mu.Unlock()
+	return ch != nil
+}
+
+// harnessNameForSession returns the harness name for a session by querying the
+// DB.  Returns "opencode" (default) when the row is absent or harness is unset.
+func harnessNameForSession(s *Sidecar, sessionName string) string {
+	if s.cfg.DB == nil {
+		return "opencode"
+	}
+	st, err := s.cfg.DB.CurrentStatus(sessionName)
+	if err != nil || st == nil {
+		return "opencode"
+	}
+	if st.Harness != nil && *st.Harness != "" {
+		return *st.Harness
+	}
+	return "opencode"
+}
+
+// resolveRoleForSession returns the root_agent_name (role) for targetSess, or
+// a non-empty skipStatus string when the session should be skipped.
+//
+// Returns (role, "") on success.
+// Returns ("", "skipped:opencode") for non-PI sessions.
+// Returns ("", "error:disconnected") when the session cannot be looked up.
+func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus string) {
+	if harnessNameForSession(s, targetSess) != "pi" {
+		return "", "skipped:opencode"
+	}
+	if s.cfg.DB == nil {
+		return "", "error:disconnected"
+	}
+	name, _, err := s.cfg.DB.RootAgentName(targetSess)
+	if err != nil {
+		return "", "error:disconnected"
+	}
+	if name == "" {
+		name = "worker" // fallback when role is not recorded
+	}
+	return name, ""
+}
+
+// forwardSetModel dials the target session's host-API socket and POSTs a
+// /set-model request.
+func forwardSetModel(targetSess, provider, model, thinking string) error {
+	sockPath, err := hostAPISocketPath(targetSess)
+	if err != nil {
+		return fmt.Errorf("resolve socket: %w", err)
+	}
+	body := struct {
+		Session  string `json:"session"`
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+		Thinking string `json:"thinking"`
+	}{Session: targetSess, Provider: provider, Model: model, Thinking: thinking}
+	return dialUnixAndPostFn(sockPath, "/set-model", body)
+}
+
+// forwardRegisterProvider dials the target session's host-API socket and POSTs
+// a /register-provider-direct request.
+func forwardRegisterProvider(targetSess, name string, cfg map[string]any) error {
+	sockPath, err := hostAPISocketPath(targetSess)
+	if err != nil {
+		return fmt.Errorf("resolve socket: %w", err)
+	}
+	body := struct {
+		Session string         `json:"session"`
+		Name    string         `json:"name"`
+		Config  map[string]any `json:"config"`
+	}{Session: targetSess, Name: name, Config: cfg}
+	return dialUnixAndPostFn(sockPath, "/register-provider-direct", body)
+}
+
+// dialUnixAndPostFn is the function used to forward HTTP POST requests to
+// another sidecar's Unix socket.  Overridable in tests to intercept forwarding.
+var dialUnixAndPostFn = dialUnixAndPost
+
+// dialUnixAndPost opens a Unix socket connection to sockPath, POSTs JSON body
+// to path, and returns an error when the response status is not 2xx.
+func dialUnixAndPost(sockPath, path string, body any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", sockPath)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	resp, err := client.Post("http://prism-sidecar"+path, "application/json", bytes.NewReader(b))
+	if err != nil {
+		return fmt.Errorf("post: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// hostAPISocketPath is the function used to resolve a session's host-API Unix
+// socket path.  Overridable in tests.
+var hostAPISocketPath = defaultHostAPISocketPath
+
+func defaultHostAPISocketPath(sessionName string) (string, error) {
+	return prismsession.SidecarHostAPIPath(sessionName)
+}
+
+// hostAPILoadProfiles loads the profiles file for the /apply-profile endpoint.
+// Package-level variable so tests can inject a fake.
+var hostAPILoadProfiles = config.LoadProfiles
