@@ -28,7 +28,7 @@ func seedSession(t *testing.T, d *db.DB, sessionName, role string) {
 	t.Helper()
 	// Use UpsertStatusSeedRootAgentName to set the root_agent_name so roleFor
 	// can return the correct label.
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, "repo", "/workspace", "idle", nil, nil, role); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "repo", "/workspace", "idle", nil, nil, role, ""); err != nil {
 		t.Fatalf("seedSession(%q): %v", sessionName, err)
 	}
 }

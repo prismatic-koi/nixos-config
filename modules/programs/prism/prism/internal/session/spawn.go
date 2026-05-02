@@ -163,6 +163,15 @@ type SpawnOpts struct {
 	// can call harness.ShapeOf to determine its own transport shape.
 	HarnessName string
 
+	// HarnessPipeSockPath is the Unix socket path for the PI harness pipe
+	// (TransportSocketPipe). When non-empty and isolation mode is "host",
+	// agentPaneEnvVars injects PRISM_HARNESS_PIPE=unix://<path> into the
+	// agent tmux pane. Pre-computed by the caller (cmd/spawn.go) from
+	// SidecarHarnessPipePath so that the spawner and sidecar agree on the
+	// path deterministically without a round-trip through the sidecar process.
+	// Empty for non-socket-pipe harnesses (e.g. "opencode").
+	HarnessPipeSockPath string
+
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override flags so
 	// the harness adapter applies per-role model overrides.
@@ -431,8 +440,15 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
 	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
 	// value written here.
+	// Resolve effective harness for DB seeding — default to "opencode" when
+	// empty so sessions without an explicit --harness flag continue to write
+	// the same value they wrote before this fix.
+	effectiveHarness := opts.HarnessName
+	if effectiveHarness == "" {
+		effectiveHarness = "opencode"
+	}
 	if err := d.UpsertStatusSeedRootAgentName(
-		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole,
+		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness,
 	); err != nil {
 		startup.log("spawn-session: seed status FAILED: %v", err)
 		return fmt.Errorf("spawn session: seed status: %w", err)
@@ -636,8 +652,9 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		Layout:           LayoutFull,
 		ForceFresh:       opts.ForceFresh,
 		Headless:         opts.Headless,
-		HarnessName:      opts.HarnessName,
-		ModelsByRole:     opts.ModelsByRole,
+		HarnessName:         opts.HarnessName,
+		HarnessPipeSockPath: opts.HarnessPipeSockPath,
+		ModelsByRole:        opts.ModelsByRole,
 	}
 }
 

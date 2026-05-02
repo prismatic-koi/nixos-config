@@ -168,6 +168,13 @@ type Opts struct {
 	// can call harness.ShapeOf to determine its own transport shape. When
 	// empty, the sidecar defaults to "opencode".
 	HarnessName string
+	// HarnessPipeSockPath is the Unix socket path for the PI harness pipe
+	// (TransportSocketPipe). When non-empty and isolation mode is "host",
+	// agentPaneEnvVars injects PRISM_HARNESS_PIPE=unix://<path> into the
+	// agent tmux pane so the PI extension can connect to the sidecar socket.
+	// Ignored for bwrap/sandbox-exec (those modes set PRISM_HARNESS_PIPE via
+	// their own paths) and for podman (container mode uses ctrCfg).
+	HarnessPipeSockPath string
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override flags.
 	// Nil means no per-role overrides.
@@ -594,10 +601,21 @@ func Create(name, directory string, opts Opts) error {
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux.
 func agentPaneEnvVars(opts Opts) map[string]string {
-	if opts.Prompt == "" {
+	if effectiveIsolationMode(opts) == "host" {
+		// In host mode the prompt is delivered via $(cat …) in the launch
+		// command (buildDirectOpencodeCmd / #1064), so no PRISM_INITIAL_PROMPT
+		// env var is needed. However, for socket-pipe harnesses (e.g. "pi")
+		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
+		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
+		// paths; only inject here for host mode.
+		if opts.HarnessPipeSockPath != "" {
+			return map[string]string{
+				"PRISM_HARNESS_PIPE": "unix://" + opts.HarnessPipeSockPath,
+			}
+		}
 		return nil
 	}
-	if effectiveIsolationMode(opts) == "host" {
+	if opts.Prompt == "" {
 		return nil
 	}
 	if opts.PromptFilePath != "" {
