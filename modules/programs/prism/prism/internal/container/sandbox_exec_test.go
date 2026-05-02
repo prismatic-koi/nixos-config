@@ -750,6 +750,71 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 	}
 }
 
+// TestPrepareSandboxExecHome_PiAgentDirSymlinked verifies that when ~/.pi/agent
+// exists on the host, PrepareSandboxExecHome creates a symlink at
+// <stagingHome>/.pi/agent pointing to the real directory.
+func TestPrepareSandboxExecHome_PiAgentDirSymlinked(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Create ~/.pi/agent in the fake home.
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("create ~/.pi/agent: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-agent-test",
+		InstanceID:  "pi-agent-symlink-test",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// The symlink must exist at <stagingHome>/.pi/agent.
+	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
+	fi, err := os.Lstat(symlinkPath)
+	if err != nil {
+		t.Fatalf(".pi/agent symlink must exist: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf(".pi/agent must be a symlink, got mode %v", fi.Mode())
+	}
+	target, err := os.Readlink(symlinkPath)
+	if err != nil {
+		t.Fatalf("readlink .pi/agent: %v", err)
+	}
+	if target != piAgentDir {
+		t.Errorf(".pi/agent symlink target = %q, want %q", target, piAgentDir)
+	}
+}
+
+// TestPrepareSandboxExecHome_PiAgentDirMissingSkipped verifies that when
+// ~/.pi/agent does not exist, PrepareSandboxExecHome succeeds without creating
+// a dangling symlink.
+func TestPrepareSandboxExecHome_PiAgentDirMissingSkipped(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	// Ensure ~/.pi/agent does NOT exist.
+	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-agent-missing",
+		InstanceID:  "pi-agent-missing-test",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// No symlink must exist for .pi/agent when source is absent.
+	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
+	if _, err := os.Lstat(symlinkPath); err == nil {
+		t.Errorf(".pi/agent must not exist when ~/.pi/agent is absent")
+	}
+}
+
 // TestPrepareSandboxExecHome_IdempotentReCreation verifies that calling
 // PrepareSandboxExecHome a second time on an existing staging dir succeeds
 // without error and does not corrupt symlinks.
