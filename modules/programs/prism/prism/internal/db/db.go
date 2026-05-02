@@ -8,6 +8,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1773,6 +1774,98 @@ INSERT OR IGNORE INTO spawn_inputs (
 		return fmt.Errorf("db: insert spawn_inputs for %q: %w", si.InstanceID, err)
 	}
 	return nil
+}
+
+// SpawnInputsByInstanceID returns the spawn_inputs row for the given
+// instance_id, or nil when not found.
+func (d *DB) SpawnInputsByInstanceID(instanceID string) (*SpawnInputs, error) {
+	const q = `
+SELECT
+    instance_id,
+    profile_name, model_flag, variant_flag, agent_flag, harness_flag,
+    isolation_flag, host_mode_flag,
+    pr_number, branch_flag, ignore_concurrency_cap,
+    model_variant_overrides,
+    skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
+    prompt_text, prompt_source, abtest_pair_id, extras,
+    created_at
+FROM spawn_inputs
+WHERE instance_id = ?`
+	row := d.conn.QueryRow(q, instanceID)
+	var si SpawnInputs
+	var profileName, modelFlag, variantFlag, agentFlag, harnessFlag, isolationFlag sql.NullString
+	var prNumber sql.NullInt64
+	var branchFlag, modelVariantOverrides, skillsManifestHash, promptTemplateHash, agentPromptHash sql.NullString
+	var promptText, promptSource, abtestPairID, extras sql.NullString
+	var hostModeFlag, ignoreConcurrencyCap int
+	err := row.Scan(
+		&si.InstanceID,
+		&profileName, &modelFlag, &variantFlag, &agentFlag, &harnessFlag,
+		&isolationFlag, &hostModeFlag,
+		&prNumber, &branchFlag, &ignoreConcurrencyCap,
+		&modelVariantOverrides,
+		&skillsManifestHash, &promptTemplateHash, &agentPromptHash,
+		&promptText, &promptSource, &abtestPairID, &extras,
+		&si.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: spawn_inputs by instance_id %q: %w", instanceID, err)
+	}
+	if profileName.Valid {
+		si.ProfileName = &profileName.String
+	}
+	if modelFlag.Valid {
+		si.ModelFlag = &modelFlag.String
+	}
+	if variantFlag.Valid {
+		si.VariantFlag = &variantFlag.String
+	}
+	if agentFlag.Valid {
+		si.AgentFlag = &agentFlag.String
+	}
+	if harnessFlag.Valid {
+		si.HarnessFlag = &harnessFlag.String
+	}
+	if isolationFlag.Valid {
+		si.IsolationFlag = &isolationFlag.String
+	}
+	si.HostModeFlag = hostModeFlag != 0
+	if prNumber.Valid {
+		n := int(prNumber.Int64)
+		si.PRNumber = &n
+	}
+	if branchFlag.Valid {
+		si.BranchFlag = &branchFlag.String
+	}
+	si.IgnoreConcurrencyCap = ignoreConcurrencyCap != 0
+	if modelVariantOverrides.Valid {
+		si.ModelVariantOverrides = &modelVariantOverrides.String
+	}
+	if skillsManifestHash.Valid {
+		si.SkillsManifestHash = &skillsManifestHash.String
+	}
+	if promptTemplateHash.Valid {
+		si.PromptTemplateHash = &promptTemplateHash.String
+	}
+	if agentPromptHash.Valid {
+		si.AgentPromptHash = &agentPromptHash.String
+	}
+	if promptText.Valid {
+		si.PromptText = &promptText.String
+	}
+	if promptSource.Valid {
+		si.PromptSource = &promptSource.String
+	}
+	if abtestPairID.Valid {
+		si.AbtestPairID = &abtestPairID.String
+	}
+	if extras.Valid {
+		si.Extras = &extras.String
+	}
+	return &si, nil
 }
 
 // boolToInt converts a bool to 0/1 for SQLite INTEGER columns.

@@ -913,6 +913,195 @@ ON CONFLICT(session_name) DO UPDATE SET
 	return nil
 }
 
+// SessionsByAbtestPairID returns all sessions rows (active and ended) whose
+// spawn_inputs.abtest_pair_id equals pairID. The result is ordered by
+// started_at ASC so the caller can treat index 0 as "session A" and index 1
+// as "session B" deterministically.
+//
+// A pair that is fully cleaned up (both sessions ended) is still returned —
+// callers use the results to render historical comparison views.
+//
+// The query joins sessions → spawn_inputs on instance_id. Sessions that have
+// no spawn_inputs row (pre-migration or non-abtest) are excluded.
+func (d *DB) SessionsByAbtestPairID(pairID string) ([]Session, error) {
+	// We cannot use sessionsSelectCols directly because a JOIN with
+	// spawn_inputs would make 'instance_id' ambiguous in SQLite.
+	// Explicitly qualify all columns with the sessions table alias.
+	const q = `
+SELECT s.instance_id, s.session_name, s.agent_role, s.root_agent_name,
+       s.repo, s.worktree, s.harness, s.harness_session_id, s.group_id,
+       s.started_at, s.ended_at, s.end_state, s.archive_path, s.prism_version
+  FROM sessions s
+INNER JOIN spawn_inputs si ON si.instance_id = s.instance_id
+WHERE si.abtest_pair_id = ?
+ORDER BY s.started_at ASC`
+	return d.querySessions(q, pairID)
+}
+
+// AbtestPairRow holds summary data for a single abtest pair, aggregated from
+// spawn_inputs and spawn_outcome.
+type AbtestPairRow struct {
+	PairID string // shared abtest_pair_id UUID
+
+	// Session A (first spawned, lower started_at)
+	SessionNameA string
+	InstanceIDA  string
+	ProfileA     string // spawn_inputs.profile_name; "" when not set
+	StartedAtA   int64  // ms epoch
+	EndedAtA     *int64 // nil when still running
+
+	// Session B (second spawned)
+	SessionNameB string
+	InstanceIDB  string
+	ProfileB     string
+	StartedAtB   int64
+	EndedAtB     *int64
+
+	// Metrics from spawn_outcome (nil when outcome not yet computed)
+	TurnsA        *int   // msg_assistant_count
+	TurnsB        *int
+	TokensInputA  *int64
+	TokensInputB  *int64
+	TokensOutputA *int64
+	TokensOutputB *int64
+	DurationMsA   *int64
+	DurationMsB   *int64
+	EndStateA     *string
+	EndStateB     *string
+}
+
+// AbtestPairsAll returns one AbtestPairRow per distinct abtest_pair_id.
+// Pairs are ordered by the started_at of their first session (oldest first).
+// Sessions that lack spawn_inputs or spawn_outcome rows are included but with
+// nil metric fields.
+func (d *DB) AbtestPairsAll() ([]AbtestPairRow, error) {
+	// Fetch all (instance_id, session_name, started_at, ended_at, abtest_pair_id, profile_name)
+	// tuples ordered by pair_id, started_at. We then group by pair_id in Go.
+	const q = `
+SELECT
+    si.abtest_pair_id,
+    s.instance_id,
+    s.session_name,
+    s.started_at,
+    s.ended_at,
+    COALESCE(si.profile_name, ''),
+    COALESCE(so.msg_assistant_count, 0),
+    COALESCE(so.tokens_input_total, 0),
+    COALESCE(so.tokens_output_total, 0),
+    so.duration_ms,
+    so.end_state
+FROM spawn_inputs si
+INNER JOIN sessions s ON s.instance_id = si.instance_id
+LEFT  JOIN spawn_outcome so ON so.instance_id = si.instance_id
+WHERE si.abtest_pair_id IS NOT NULL
+ORDER BY si.abtest_pair_id ASC, s.started_at ASC`
+
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("db: abtest_pairs_all: %w", err)
+	}
+	defer rows.Close()
+
+	// Accumulate into a map pair_id → AbtestPairRow (filling A slot first,
+	// then B). Order of insertion is preserved via pairOrder slice.
+	type abtestRawRow struct {
+		pairID      string
+		instanceID  string
+		sessionName string
+		startedAt   int64
+		endedAt     sql.NullInt64
+		profile     string
+		turns       int
+		tokensIn    int64
+		tokensOut   int64
+		durationMs  sql.NullInt64
+		endState    sql.NullString
+	}
+
+	var rawRows []abtestRawRow
+	for rows.Next() {
+		var r abtestRawRow
+		if scanErr := rows.Scan(
+			&r.pairID, &r.instanceID, &r.sessionName, &r.startedAt, &r.endedAt,
+			&r.profile, &r.turns, &r.tokensIn, &r.tokensOut, &r.durationMs, &r.endState,
+		); scanErr != nil {
+			return nil, fmt.Errorf("db: abtest_pairs_all: scan: %w", scanErr)
+		}
+		rawRows = append(rawRows, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: abtest_pairs_all: iterate: %w", err)
+	}
+
+	// Group into pairs by pairID.
+	pairMap := make(map[string]*AbtestPairRow)
+	var pairOrder []string
+	for _, r := range rawRows {
+		pr, exists := pairMap[r.pairID]
+		if !exists {
+			pr = &AbtestPairRow{PairID: r.pairID}
+			pairMap[r.pairID] = pr
+			pairOrder = append(pairOrder, r.pairID)
+		}
+		// Fill A first, then B.
+		if pr.InstanceIDA == "" {
+			// Slot A
+			pr.InstanceIDA = r.instanceID
+			pr.SessionNameA = r.sessionName
+			pr.ProfileA = r.profile
+			pr.StartedAtA = r.startedAt
+			if r.endedAt.Valid {
+				v := r.endedAt.Int64
+				pr.EndedAtA = &v
+			}
+			turns := r.turns
+			pr.TurnsA = &turns
+			tokIn := r.tokensIn
+			pr.TokensInputA = &tokIn
+			tokOut := r.tokensOut
+			pr.TokensOutputA = &tokOut
+			if r.durationMs.Valid {
+				v := r.durationMs.Int64
+				pr.DurationMsA = &v
+			}
+			if r.endState.Valid {
+				v := r.endState.String
+				pr.EndStateA = &v
+			}
+		} else {
+			// Slot B
+			pr.InstanceIDB = r.instanceID
+			pr.SessionNameB = r.sessionName
+			pr.ProfileB = r.profile
+			pr.StartedAtB = r.startedAt
+			if r.endedAt.Valid {
+				v := r.endedAt.Int64
+				pr.EndedAtB = &v
+			}
+			turns := r.turns
+			pr.TurnsB = &turns
+			tokIn := r.tokensIn
+			pr.TokensInputB = &tokIn
+			tokOut := r.tokensOut
+			pr.TokensOutputB = &tokOut
+			if r.durationMs.Valid {
+				v := r.durationMs.Int64
+				pr.DurationMsB = &v
+			}
+			if r.endState.Valid {
+				v := r.endState.String
+				pr.EndStateB = &v
+			}
+		}
+	}
+
+	result := make([]AbtestPairRow, 0, len(pairOrder))
+	for _, pid := range pairOrder {
+		result = append(result, *pairMap[pid])
+	}
+	return result, nil
+}
+
 // AbtestPairsForSessions returns a map of session_name → abtest_pair_id for
 // sessions that have a non-NULL abtest_pair_id in spawn_inputs. Only sessions
 // whose instance_id appears in spawn_inputs with a non-NULL abtest_pair_id are

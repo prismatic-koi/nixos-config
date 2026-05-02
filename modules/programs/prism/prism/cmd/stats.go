@@ -102,6 +102,7 @@ func init() {
 	statsCmd.Flags().String("since", "", "Filter rows to those started on or after this date (ISO 8601 or YYYY-MM-DD)")
 	statsCmd.Flags().Bool("instance", false, "Treat the argument as a full instance_id (UUID) even if it might match a session name")
 	statsCmd.Flags().String("group-by", "", "Render a breakdown table grouped by this axis: harness, profile, variant, model")
+	statsCmd.Flags().Bool("abtest", false, "List all A/B test pairs with summary metrics")
 	rootCmd.AddCommand(statsCmd)
 }
 
@@ -137,10 +138,16 @@ func runStats(cmd *cobra.Command, args []string) error {
 	doomloops, _ := cmd.Flags().GetBool("doomloops")
 	denials, _ := cmd.Flags().GetBool("denials")
 	asks, _ := cmd.Flags().GetBool("asks")
+	abtest, _ := cmd.Flags().GetBool("abtest")
 	repoFilter, _ := cmd.Flags().GetString("repo")
 	sinceStr, _ := cmd.Flags().GetString("since")
 	forceInstance, _ := cmd.Flags().GetBool("instance")
 	groupBy, _ := cmd.Flags().GetString("group-by")
+
+	// --abtest: list all A/B test pairs with summary metrics.
+	if abtest {
+		return runStatsAbtestFlag()
+	}
 
 	// Validate --group-by early so we fail fast on bad input.
 	if groupBy != "" {
