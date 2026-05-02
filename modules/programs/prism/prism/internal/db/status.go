@@ -712,6 +712,16 @@ func (d *DB) WaitingCount() (int, error) {
 // harness = 'pi' and repo = repo and state IN ('active', 'idle', 'waiting').
 // Used by the /apply-profile and /register-provider host-API endpoints to
 // resolve coordinator-scope targets (P3.LIVE, #1214).
+//
+// Design note: issue #1214 originally proposed filtering by coordinator_session_name
+// to restrict fan-out to sessions spawned by the calling coordinator. That column
+// does not exist in the schema; repo-based filtering is the closest available
+// approximation. In the common single-coordinator-per-repo case the semantics are
+// identical. When multiple coordinators run against the same repo simultaneously the
+// scope is slightly broader — all PI sessions in the repo receive the frame rather
+// than only those owned by the calling coordinator. This is acceptable for the P3
+// milestone; a coordinator_session_name column can be added in a follow-up if
+// strict per-coordinator targeting is required.
 func (d *DB) ActivePISessionsForRepo(repo string) ([]Status, error) {
 	const q = `
 SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id

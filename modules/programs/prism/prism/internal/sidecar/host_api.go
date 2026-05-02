@@ -1403,6 +1403,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// We check both the configured AgentRole and the DB-backed
 		// isCoordinatorSession so that the guard fires even when the session
 		// name ends in @main but the sidecar is running as a worker.
+		//
+		// When a coordinator fans out to another session via forwardSetModel,
+		// the target sidecar's /set-model receives req.Session == s.cfg.SessionName
+		// (the target's own session name), so the guard passes correctly.
+		// There is no sidecar-to-sidecar authentication beyond the per-session
+		// Unix socket filesystem permissions (same as /register-provider-direct).
 		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
 		if !callerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-model for their own session")
