@@ -34,7 +34,7 @@ export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
 function getAuthJsonPath(): string {
-  return join(homedir(), ".pi", "agent", "auth.json")
+  return process.env.PI_AUTH_JSON ?? join(homedir(), ".pi", "agent", "auth.json")
 }
 
 /**
@@ -48,23 +48,27 @@ export function readCredentials(): ClaudeCredentials | null {
     const raw = readFileSync(authPath, "utf-8").trim()
     if (!raw) return null
     const data = JSON.parse(raw) as {
-      access?: string
-      refresh?: string
-      expires?: number
+      anthropic?: {
+        access?: string
+        refresh?: string
+        expires?: number
+      }
     }
+    const provider = data.anthropic
     if (
-      typeof data.access !== "string" ||
-      typeof data.refresh !== "string" ||
-      typeof data.expires !== "number"
+      !provider ||
+      typeof provider.access !== "string" ||
+      typeof provider.refresh !== "string" ||
+      typeof provider.expires !== "number"
     ) {
       log("credentials_read_malformed", { path: authPath })
       return null
     }
     log("credentials_read_ok", { path: authPath })
     return {
-      accessToken: data.access,
-      refreshToken: data.refresh,
-      expiresAt: data.expires,
+      accessToken: provider.access,
+      refreshToken: provider.refresh,
+      expiresAt: provider.expires,
     }
   } catch (err) {
     log("credentials_read_error", {
@@ -91,9 +95,11 @@ export function writeCredentials(creds: ClaudeCredentials): void {
     // Start fresh if malformed
   }
 
-  existing.access = creds.accessToken
-  existing.refresh = creds.refreshToken
-  existing.expires = creds.expiresAt
+  existing.anthropic = {
+    access: creds.accessToken,
+    refresh: creds.refreshToken,
+    expires: creds.expiresAt,
+  }
 
   const dir = dirname(authPath)
   if (!existsSync(dir)) {
