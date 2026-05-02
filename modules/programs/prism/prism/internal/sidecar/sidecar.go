@@ -723,12 +723,34 @@ func (s *Sidecar) Shutdown() {
 	}
 
 	// Close the harness pipe listener and connection (socket-pipe transport).
+	// Best-effort graceful shutdown: send an abort frame so the PI extension
+	// can flush state to disk, write a final session_end event, and exit
+	// cleanly. The frame is only delivered when the connection is still live;
+	// in the typical cleanup path the tmux pane (and therefore PI) has
+	// already been killed before the sidecar receives SIGTERM, so this write
+	// is a no-op there. Either way the connection is then closed below.
 	s.mu.Lock()
 	pipeLn := s.harnessPipeListener
 	pipeConn := s.harnessPipeConn
+	pipeOutCh := s.harnessPipeOutCh
 	s.harnessPipeListener = nil
 	s.harnessPipeConn = nil
 	s.mu.Unlock()
+	if pipeOutCh != nil {
+		abortFrame := []byte(`{"type":"abort"}` + "\n")
+		select {
+		case pipeOutCh <- abortFrame:
+			// Give the writer goroutine a brief moment to flush the frame
+			// onto the wire before the connection is torn down. Bounded so
+			// shutdown never blocks longer than a couple of seconds even if
+			// the extension is unresponsive.
+			time.Sleep(100 * time.Millisecond)
+		default:
+			// Outbound queue full or no longer accepting — fall through to
+			// the connection close. handlePipeFrame's connection-dropped
+			// handler will mark the session error if PI exits unexpectedly.
+		}
+	}
 	if pipeConn != nil {
 		_ = pipeConn.Close()
 	}

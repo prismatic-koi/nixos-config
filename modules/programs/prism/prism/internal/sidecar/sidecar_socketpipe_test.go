@@ -590,5 +590,56 @@ func TestSocketPipe_SidecarDispatchesSocketPipe(t *testing.T) {
 	_ = runErr
 }
 
+// TestSocketPipe_HostAPIPromptSelfWorkerBypassesAuth verifies that a worker
+// PI session can be self-prompted via the host-API /prompt endpoint, bypassing
+// the worker→own-coordinator-only auth check that the HTTP-port path enforces.
+//
+// The bypass is necessary because the host-side `prism prompt <pi-session>`
+// CLI dials the per-session host-API socket directly — the request targets
+// the sidecar's own session, so there is no cross-session security boundary
+// to enforce. Without the bypass, a worker PI session could not be prompted
+// from the host CLI at all (P2.SPAWN edge-case AC, #1212).
+func TestSocketPipe_HostAPIPromptSelfWorkerBypassesAuth(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	defer conn.Close()
+
+	// Drive the host-API /prompt as if the host CLI dialled hostapi.sock and
+	// targeted the sidecar's own session. The sidecar role is "worker" — under
+	// the cross-session rules, a worker may only prompt its own coordinator;
+	// the bypass is what permits a same-session target.
+	rr := doHostAPI(t, sc, "POST", "/prompt",
+		`{"session":"testrepo@main","prompt":"hello pi"}`)
+
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200 (bypass should permit same-session worker self-prompt); body=%s",
+			rr.Code, rr.Body.String())
+	}
+
+	// The sidecar must have enqueued a prompt frame to the extension.
+	rd := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := rd.ReadBytes('\n')
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		t.Fatalf("read prompt frame: %v", err)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal(line, &frame); err != nil {
+		t.Fatalf("unmarshal prompt frame: %v", err)
+	}
+	if frame["type"] != "prompt" || frame["text"] != "hello pi" {
+		t.Errorf("prompt frame = %v, want type=prompt text=hello pi", frame)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
 // Ensure db import is used.
 var _ *db.DB
