@@ -537,6 +537,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// because opencode never came up.
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
+	// For socket-pipe harnesses (e.g. "pi") in host isolation mode, pre-compute
+	// the Unix socket path so agentPaneEnvVars can inject PRISM_HARNESS_PIPE
+	// into the tmux pane. bwrap and sandbox-exec set PRISM_HARNESS_PIPE via
+	// their own paths (bwrap.go --setenv); only inject here for host mode.
+	if hShape, hShapeOK := harness.ShapeOf(harnessFlag); hShapeOK && hShape == harness.TransportSocketPipe && string(isolationMode) == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
+			spawnOpts.HarnessPipeSockPath = pipePath
+		} else {
+			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+		}
+	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
 	// receive env vars via podman --env flags in the sidecar.
 	if pf != nil && !isoCaps.IsContainer {
@@ -1158,6 +1169,13 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = a.pf.AgentEnvVars
+	}
+	if hShape, hShapeOK := harness.ShapeOf(a.harnessFlag); hShapeOK && hShape == harness.TransportSocketPipe && string(a.isolationMode) == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
+			spawnOpts.HarnessPipeSockPath = pipePath
+		} else {
+			fmt.Fprintf(os.Stderr, "[prism spawn --abtest] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+		}
 	}
 
 	if err := session.SpawnSession(a.d, spawnOpts); err != nil {

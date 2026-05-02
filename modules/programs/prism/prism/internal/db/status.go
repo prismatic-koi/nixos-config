@@ -129,7 +129,7 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 // so that the DB row has a non-NULL root_agent_name from the first moment.
 // The sidecar will later write the same value idempotently via
 // UpsertStatusWithRootAgent (COALESCE preserves the already-set value).
-func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, rootAgentName string) error {
+func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, rootAgentName string, harnessName string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusSeedRootAgentName")
 	now := time.Now().UnixMilli()
 	// When rootAgentName is empty, fall back to leaving root_agent_name as-is
@@ -140,9 +140,16 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	if rootAgentName != "" {
 		rootAgentNamePtr = &rootAgentName
 	}
+	// Resolve the harness name to write. Default to "opencode" when empty so
+	// existing callers that do not pass a harness name continue to write the
+	// same value they wrote before.
+	effectiveHarness := harnessName
+	if effectiveHarness == "" {
+		effectiveHarness = "opencode"
+	}
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
@@ -150,9 +157,9 @@ ON CONFLICT(session_name) DO UPDATE SET
   title              = COALESCE(excluded.title, title),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
-  harness            = 'opencode',
+  harness            = excluded.harness,
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, harnessSessionID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, effectiveHarness, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
 	}

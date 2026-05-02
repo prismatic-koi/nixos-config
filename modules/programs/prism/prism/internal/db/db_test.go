@@ -3560,7 +3560,7 @@ func TestConsecutiveSidecarFailures_TieBreaker(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_Insert(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -3589,7 +3589,7 @@ func TestUpsertStatusSeedRootAgentName_Insert(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_EmptyRole(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName (empty role): %v", err)
 	}
 
@@ -3614,12 +3614,12 @@ func TestUpsertStatusSeedRootAgentName_Idempotent(t *testing.T) {
 	d := openTestDB(t)
 
 	// First call: seed with "review-code".
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", ""); err != nil {
 		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
 	}
 
 	// Second call: write the same role — must be a no-op for root_agent_name.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "review-code"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "review-code", ""); err != nil {
 		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -3646,12 +3646,12 @@ func TestUpsertStatusSeedRootAgentName_PreservesExisting(t *testing.T) {
 	d := openTestDB(t)
 
 	// Seed with a known role.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	// Update with empty role — existing root_agent_name must survive.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "", ""); err != nil {
 		t.Fatalf("update with empty role: %v", err)
 	}
 
@@ -3675,7 +3675,7 @@ func TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent(t *testing.T) {
 	d := openTestDB(t)
 
 	// Spawn-time seed: root_agent_name = "review-code", agent_name = nil.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -3716,11 +3716,11 @@ func TestCoordinatorForRepo(t *testing.T) {
 	defer d.Close()
 
 	// Seed a coordinator row with root_agent_name = "coordinator".
-	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
 	// Seed a worker row.
-	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 
@@ -3804,7 +3804,7 @@ func TestRootAgentName(t *testing.T) {
 	}
 
 	// Post-migration row: root_agent_name is populated — returns (name, true, nil).
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
 	nameCoord, rowExistsCoord, err := d.RootAgentName("repo@main")
@@ -3825,7 +3825,7 @@ func TestIsGroupMember(t *testing.T) {
 	defer d.Close()
 
 	// Seed a session and a group.
-	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 	groupID, err := d.RegisterGroup("repo@worker")
@@ -3834,7 +3834,7 @@ func TestIsGroupMember(t *testing.T) {
 	}
 
 	// Seed a review agent session and assign it to the group.
-	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal", ""); err != nil {
 		t.Fatalf("seed review agent: %v", err)
 	}
 	if err := d.SetGroupID("repo@worker~review-1-review-goal", groupID); err != nil {
@@ -4011,10 +4011,10 @@ func TestUpsertStatusWithAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/old/worktree", "idle", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/old/worktree", "idle", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
 	}
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/new/worktree", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/new/worktree", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
 	}
 

@@ -317,7 +317,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		// plain UpsertStatus path which leaves root_agent_name as-is (NULL on
 		// insert, preserved on update).
 		if agentRole != "" {
-			if err := d.UpsertStatusSeedRootAgentName(session, repo, worktree, string(agent.StateIdle), nil, nil, agentRole); err != nil {
+			if err := d.UpsertStatusSeedRootAgentName(session, repo, worktree, string(agent.StateIdle), nil, nil, agentRole, ""); err != nil {
 				return fmt.Errorf("event tmux-session-start: upsert status: %w", err)
 			}
 		} else {

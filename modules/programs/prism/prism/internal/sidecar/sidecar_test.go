@@ -2671,7 +2671,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	defer d.Close()
 
 	// Happy path: post-migration coordinator row on the conventional @main branch.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
 	if !isCoordinatorSession("repo@main", d) {
@@ -2681,7 +2681,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	// Core value of the change: coordinator on a non-@main branch name.
 	// The DB read must identify it correctly regardless of branch name.
 	// Use a different repo name to avoid the unique-coordinator-per-repo constraint.
-	if err := d.UpsertStatusSeedRootAgentName("other-repo@custom-branch", "other-repo", "/code/custom", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("other-repo@custom-branch", "other-repo", "/code/custom", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator on custom branch: %v", err)
 	}
 	if !isCoordinatorSession("other-repo@custom-branch", d) {
@@ -2689,7 +2689,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	}
 
 	// Post-migration worker row: DB says false.
-	if err := d.UpsertStatusSeedRootAgentName("repo@feature", "repo", "/code/feature", "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@feature", "repo", "/code/feature", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 	if isCoordinatorSession("repo@feature", d) {
@@ -2741,7 +2741,7 @@ func TestNotifyCoordinator_SelfNotificationSkipped_StaleRootAgentName(t *testing
 	coordinator := New(cfg)
 
 	// Seed with stale root_agent_name="worker" — simulates the bug scenario.
-	if err := d.UpsertStatusSeedRootAgentName(coordinator.cfg.SessionName, coordinator.cfg.Repo, coordinator.cfg.Worktree, "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(coordinator.cfg.SessionName, coordinator.cfg.Repo, coordinator.cfg.Worktree, "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed stale worker: %v", err)
 	}
 
@@ -2777,7 +2777,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainWins(t *testing.T) {
 	defer d.Close()
 
 	sess := "myrepo@main"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "myrepo", "/code/main", "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "myrepo", "/code/main", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed stale worker: %v", err)
 	}
 
@@ -2787,7 +2787,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainWins(t *testing.T) {
 
 	// Worker on a non-@main branch must still return false.
 	workerSess := "myrepo@feature"
-	if err := d.UpsertStatusSeedRootAgentName(workerSess, "myrepo", "/code/feature", "active", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(workerSess, "myrepo", "/code/feature", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 	if isCoordinatorSession(workerSess, d) {
@@ -5246,7 +5246,7 @@ func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
 func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
 	d := openTestDB(t)
 	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
-	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed DB: %v", err)
 	}
 	// Session name without "@" — edge case for repoFromSession.
@@ -5511,7 +5511,7 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	d := openTestDB(t)
 	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
-	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed DB: %v", err)
 	}
 	// Session name without "@" — repoFromSession will fail.

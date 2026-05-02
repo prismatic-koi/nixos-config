@@ -36,7 +36,7 @@ func TestRunMerge_WorkerSessionIsRejected(t *testing.T) {
 		t.Fatalf("openDB: %v", err)
 	}
 	defer d.Close()
-	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature", "idle", nil, nil, "worker"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature", "idle", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	d.Close()
@@ -82,7 +82,7 @@ func TestRunMerge_CoordinatorSessionNotRejectedByWorkerGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", ""); err != nil {
 		d.Close()
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestRunMerge_FailsWhenInstanceIDMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", ""); err != nil {
 		d.Close()
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
