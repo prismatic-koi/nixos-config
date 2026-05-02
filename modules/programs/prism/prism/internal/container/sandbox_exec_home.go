@@ -103,6 +103,7 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".kube"),
 		filepath.Join(stagingHome, ".config", "opencode"),
 		filepath.Join(stagingHome, ".cache"),
+		filepath.Join(stagingHome, ".pi"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -330,6 +331,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	symlinkIfExists(
 		filepath.Join(home, ".nix-profile"),
 		filepath.Join(stagingHome, ".nix-profile"),
+	)
+
+	// ── .pi/agent/ ────────────────────────────────────────────────────────────
+	// PI stores auth credentials, themes, and settings in ~/.pi/agent/ on the
+	// host. Mirrors the bwrap --ro-bind for ~/.pi/agent in pi_invocation.go.
+	// Skipped when the directory does not exist (auth not yet set up).
+	symlinkIfExists(
+		filepath.Join(home, ".pi", "agent"),
+		filepath.Join(stagingHome, ".pi", "agent"),
 	)
 
 	return stagingHome, nil
@@ -619,7 +629,7 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// Scan the top-level staging HOME and all immediate subdirectories that
 	// the staging HOME builder creates (one level deep).
 	scanDir("")
-	subDirs := []string{".ssh", ".aws", ".kube", ".config/opencode", ".cache"}
+	subDirs := []string{".ssh", ".aws", ".kube", ".config/opencode", ".cache", ".pi"}
 	for _, sub := range subDirs {
 		scanDir(sub)
 	}
