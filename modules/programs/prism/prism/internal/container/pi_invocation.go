@@ -65,7 +65,7 @@ const (
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
 //	--no-session                          (prism manages session state)
-//	--prompt   <cfg.InitialPrompt>        (when non-empty)
+//	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
 //
 // The system prompt is delivered via PI_CODING_AGENT_DIR (set in the bwrap
 // environment) pointing at the per-session staging directory that contains
@@ -102,7 +102,7 @@ func PIInvocation(cfg Config) []string {
 	args = append(args, "--no-session")
 
 	if cfg.InitialPrompt != "" {
-		args = append(args, "--prompt", cfg.InitialPrompt)
+		args = append(args, cfg.InitialPrompt)
 	}
 
 	return args

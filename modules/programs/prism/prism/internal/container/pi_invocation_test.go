@@ -78,8 +78,13 @@ func TestPIInvocation_InitialPrompt(t *testing.T) {
 	cfg := Config{InitialPrompt: "do the thing"}
 	args := PIInvocation(cfg)
 
-	if !hasPair(args, "--prompt", "do the thing") {
-		t.Errorf("expected --prompt 'do the thing'; got %v", args)
+	// The prompt must appear as a bare positional argument (last element),
+	// not as --prompt <text>.
+	if hasArg(args, "--prompt") {
+		t.Errorf("--prompt flag must not appear; pi takes the message as a positional arg; got %v", args)
+	}
+	if len(args) == 0 || args[len(args)-1] != "do the thing" {
+		t.Errorf("expected 'do the thing' as last positional arg; got %v", args)
 	}
 }
 
@@ -89,6 +94,10 @@ func TestPIInvocation_NoInitialPrompt(t *testing.T) {
 
 	if hasArg(args, "--prompt") {
 		t.Errorf("expected --prompt to be absent; got %v", args)
+	}
+	// When no prompt, the last arg must not be an empty string positional arg.
+	if len(args) > 0 && args[len(args)-1] == "" {
+		t.Errorf("expected no empty positional arg appended; got %v", args)
 	}
 }
 
