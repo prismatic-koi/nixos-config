@@ -294,5 +294,21 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	args = append(args, "--dir", sandboxExtDir)
 	args = append(args, "--ro-bind", cfg.PIExtensionHostDir, sandboxExtDir)
 
+	// ── ~/.pi/agent directory ────────────────────────────────────────────────
+	// PI stores auth credentials, themes, and settings in ~/.pi/agent/ on the
+	// host. Without this mount PI cannot find its auth token inside the sandbox
+	// and fails with a 400 auth error. Mounted read-only at the same host path.
+	// Silently skipped when the directory does not exist — auth may not be set
+	// up yet, and we do not want to break spawning in that case.
+	if home, err := os.UserHomeDir(); err == nil {
+		piAgentDir := filepath.Join(home, ".pi", "agent")
+		if _, statErr := os.Stat(piAgentDir); statErr == nil {
+			// bwrap requires parent dirs to exist in the sandbox namespace.
+			piParent := filepath.Join(home, ".pi")
+			args = append(args, "--dir", piParent)
+			args = append(args, "--ro-bind", piAgentDir, piAgentDir)
+		}
+	}
+
 	return args, nil
 }

@@ -390,6 +390,80 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	}
 }
 
+func TestAppendPIBwrapMounts_PiAgentDirMounted(t *testing.T) {
+	// When ~/.pi/agent exists, appendPIBwrapMounts must add --ro-bind for it.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// Must contain --ro-bind <piAgentDir> <piAgentDir>.
+	if !hasTriple(args, "--ro-bind", piAgentDir, piAgentDir) {
+		t.Errorf("expected --ro-bind %q %q in args; got %v", piAgentDir, piAgentDir, args)
+	}
+	// Must also contain --dir for the parent ~/.pi.
+	piParent := filepath.Join(fakeHome, ".pi")
+	if !hasPair(args, "--dir", piParent) {
+		t.Errorf("expected --dir %q in args for ~/.pi parent; got %v", piParent, args)
+	}
+}
+
+func TestAppendPIBwrapMounts_PiAgentDirMissing(t *testing.T) {
+	// When ~/.pi/agent does not exist, no bind-mount is added and no error is returned.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately do NOT create ~/.pi/agent.
+
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("expected no error when ~/.pi/agent is absent; got %v", err)
+	}
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	// Must NOT contain a ro-bind for the missing path.
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == piAgentDir {
+			t.Errorf("expected no --ro-bind for absent ~/.pi/agent; got %v", args)
+		}
+	}
+}
+
 // ── piHarnessPipePath ────────────────────────────────────────────────────────
 
 func TestPIHarnessPipePath_UsesXDGStateHome(t *testing.T) {
