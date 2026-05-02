@@ -295,11 +295,11 @@ func generateProfile(m *Manager) string {
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
 		// For PI sessions on Darwin (harness=pi), the per-session run directory
-		// also contains the system-prompt temp file written by WriteSystemPromptFile
-		// (e.g. ~/.local/state/prism/run/<hash>/system-prompt.md). Since the
-		// system-prompt file lives in the same directory as hostapi.sock, this
-		// single (subpath ...) rule covers both — no separate PI SBPL rule is
-		// needed for the system-prompt path (issue #1213, confirmed no new rules).
+		// also contains the pi-agent/ staging subdirectory written by
+		// StagePIAgentConfigDir (e.g. ~/.local/state/prism/run/<hash>/pi-agent/).
+		// Since the staging dir is a subdirectory of the run dir, this single
+		// (subpath ...) rule covers both — no separate PI SBPL rule is needed
+		// (issue #1285, confirmed no new rules required).
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
@@ -620,8 +620,9 @@ func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 	// The sandbox-exec wrapper precedes the harness invocation. For opencode
 	// sessions, HarnessInvocation returns ["opencode", "--port", ..., ...] and
 	// handles the AllocatedPort ∥ ContainerPort fallback. For PI sessions,
-	// PIInvocation returns ["pi", "--provider", ..., "--append-system-prompt",
-	// ..., "--extension", ...] — the PI analogue of HarnessInvocation.
+	// PIInvocation returns ["pi", "--provider", ..., "--extension", ...] — the
+	// PI analogue of HarnessInvocation. The system prompt is delivered via
+	// PI_CODING_AGENT_DIR / APPEND_SYSTEM.md rather than a CLI flag.
 	args := []string{"sandbox-exec", "-f", profilePath}
 	if cfg.Harness == "pi" {
 		args = append(args, PIInvocation(cfg)...)

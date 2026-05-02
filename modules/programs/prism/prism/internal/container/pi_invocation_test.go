@@ -13,11 +13,10 @@ import (
 
 func TestPIInvocation_BasicFlags(t *testing.T) {
 	cfg := Config{
-		PIProvider:                "anthropic",
-		PIModel:                   "anthropic/claude-opus-4",
-		PIThinking:                "high",
-		PISystemPromptSandboxPath: "/tmp/prism-system-prompt.md",
-		PIExtensionSandboxDir:     "/etc/prism/pi-extensions",
+		PIProvider:            "anthropic",
+		PIModel:               "anthropic/claude-opus-4",
+		PIThinking:            "high",
+		PIExtensionSandboxDir: "/etc/prism/pi-extensions",
 	}
 	args := PIInvocation(cfg)
 
@@ -28,7 +27,6 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 		{"--provider", "anthropic"},
 		{"--model", "anthropic/claude-opus-4"},
 		{"--thinking", "high"},
-		{"--append-system-prompt", "/tmp/prism-system-prompt.md"},
 		{"--extension", "/etc/prism/pi-extensions/prism.ts"},
 	} {
 		flag, val := pair[0], pair[1]
@@ -39,13 +37,17 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	if !hasArg(args, "--no-session") {
 		t.Error("expected --no-session in args")
 	}
+	// --append-system-prompt must NOT appear — system prompt is delivered via
+	// PI_CODING_AGENT_DIR / APPEND_SYSTEM.md, not via a CLI flag.
+	if hasArg(args, "--append-system-prompt") {
+		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", args)
+	}
 }
 
 func TestPIInvocation_NoOptionalFlags(t *testing.T) {
 	// When Provider, Model, Thinking are empty, those flags must be omitted.
 	cfg := Config{
-		PISystemPromptSandboxPath: "/tmp/prism-system-prompt.md",
-		PIExtensionSandboxDir:     "/etc/prism/pi-extensions",
+		PIExtensionSandboxDir: "/etc/prism/pi-extensions",
 	}
 	args := PIInvocation(cfg)
 
@@ -61,8 +63,9 @@ func TestPIInvocation_DefaultSandboxPaths(t *testing.T) {
 	cfg := Config{}
 	args := PIInvocation(cfg)
 
-	if !hasPair(args, "--append-system-prompt", piSystemPromptSandboxDefault) {
-		t.Errorf("expected default system-prompt sandbox path %q; got %v", piSystemPromptSandboxDefault, args)
+	// --append-system-prompt must be absent (system prompt via PI_CODING_AGENT_DIR).
+	if hasArg(args, "--append-system-prompt") {
+		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", args)
 	}
 	expectedExt := filepath.Join(piExtensionSandboxDefault, piExtensionFilename)
 	if !hasPair(args, "--extension", expectedExt) {
@@ -98,9 +101,9 @@ func hasPair(args []string, flag, val string) bool {
 	return false
 }
 
-// ── WriteSystemPromptFile ────────────────────────────────────────────────────
+// ── StagePIAgentConfigDir ─────────────────────────────────────────────────────
 
-func TestWriteSystemPromptFile_WritesContent(t *testing.T) {
+func TestStagePIAgentConfigDir_WritesAppendSystem(t *testing.T) {
 	// Prepare a source system-prompt file.
 	srcDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "agent-instructions.md")
@@ -115,59 +118,102 @@ func TestWriteSystemPromptFile_WritesContent(t *testing.T) {
 		SystemPromptPath: srcFile,
 	}
 
-	// Override XDG_STATE_HOME so the temp file lands in t.TempDir().
+	// Override XDG_STATE_HOME so staging lands in t.TempDir().
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	hostPath, sandboxPath, err := WriteSystemPromptFile(slot, "test-session@main")
+	hostDir, sandboxDir, err := StagePIAgentConfigDir(slot, "test-session@main")
 	if err != nil {
-		t.Fatalf("WriteSystemPromptFile: %v", err)
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
 
-	// Sandbox path must be the default.
-	if sandboxPath != piSystemPromptSandboxDefault {
-		t.Errorf("sandboxPath = %q, want %q", sandboxPath, piSystemPromptSandboxDefault)
+	// Sandbox dir must be the default.
+	if sandboxDir != piAgentConfigSandboxDefault {
+		t.Errorf("sandboxDir = %q, want %q", sandboxDir, piAgentConfigSandboxDefault)
 	}
 
-	// Host path must exist and contain the source content.
-	got, err := os.ReadFile(hostPath)
+	// APPEND_SYSTEM.md must exist and contain the source content.
+	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
+	got, err := os.ReadFile(appendSystemPath)
 	if err != nil {
-		t.Fatalf("read host path %q: %v", hostPath, err)
+		t.Fatalf("read APPEND_SYSTEM.md at %q: %v", appendSystemPath, err)
 	}
 	if string(got) != content {
-		t.Errorf("file content = %q, want %q", string(got), content)
+		t.Errorf("APPEND_SYSTEM.md content = %q, want %q", string(got), content)
 	}
 
-	// Host path filename must be piSystemPromptFileName.
-	if filepath.Base(hostPath) != piSystemPromptFileName {
-		t.Errorf("base name = %q, want %q", filepath.Base(hostPath), piSystemPromptFileName)
+	// hostDir must be a subdirectory named pi-agent under the run dir.
+	if filepath.Base(hostDir) != piAgentConfigSubdir {
+		t.Errorf("hostDir base = %q, want %q", filepath.Base(hostDir), piAgentConfigSubdir)
 	}
 }
 
-func TestWriteSystemPromptFile_EmptySystemPromptPath(t *testing.T) {
+func TestStagePIAgentConfigDir_EmptySystemPromptPath(t *testing.T) {
+	// When SystemPromptPath is empty, staging dir is created but APPEND_SYSTEM.md
+	// is omitted — no error (edge-case AC).
 	slot := config.RoleSlot{}
-	_, _, err := WriteSystemPromptFile(slot, "test-session@main")
-	if err == nil {
-		t.Fatal("expected error for empty SystemPromptPath, got nil")
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	hostDir, sandboxDir, err := StagePIAgentConfigDir(slot, "test-session@main")
+	if err != nil {
+		t.Fatalf("expected no error for empty SystemPromptPath; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "systemPromptPath") {
-		t.Errorf("error message does not mention systemPromptPath: %v", err)
+	if hostDir == "" || sandboxDir == "" {
+		t.Fatalf("expected non-empty hostDir and sandboxDir; got %q, %q", hostDir, sandboxDir)
+	}
+	// Staging dir must exist.
+	if _, statErr := os.Stat(hostDir); statErr != nil {
+		t.Errorf("staging dir %q does not exist: %v", hostDir, statErr)
+	}
+	// APPEND_SYSTEM.md must NOT exist.
+	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
+	if _, statErr := os.Stat(appendSystemPath); statErr == nil {
+		t.Errorf("APPEND_SYSTEM.md should not exist when SystemPromptPath is empty")
 	}
 }
 
-func TestWriteSystemPromptFile_MissingSourceFile(t *testing.T) {
+func TestStagePIAgentConfigDir_MissingSourceFile(t *testing.T) {
+	// When SystemPromptPath points to a missing file, staging dir is created
+	// but APPEND_SYSTEM.md is omitted — no error (edge-case AC: non-fatal).
 	slot := config.RoleSlot{
 		SystemPromptPath: "/nonexistent/path/agent.md",
 	}
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	_, _, err := WriteSystemPromptFile(slot, "test-session@main")
-	if err == nil {
-		t.Fatal("expected error for missing source file, got nil")
+	hostDir, _, err := StagePIAgentConfigDir(slot, "test-session@main")
+	if err != nil {
+		t.Fatalf("expected no error for missing source file; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "nonexistent") {
-		t.Errorf("error message does not mention the missing path: %v", err)
+	// Staging dir must still exist.
+	if _, statErr := os.Stat(hostDir); statErr != nil {
+		t.Errorf("staging dir %q does not exist: %v", hostDir, statErr)
+	}
+	// APPEND_SYSTEM.md must NOT exist.
+	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
+	if _, statErr := os.Stat(appendSystemPath); statErr == nil {
+		t.Errorf("APPEND_SYSTEM.md should not exist when source file is missing")
+	}
+}
+
+func TestStagePIAgentConfigDir_IsolatedPerSession(t *testing.T) {
+	// Two concurrent spawns for different session names must use different
+	// staging dirs — no cross-session contamination (edge-case AC).
+	srcFile := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(srcFile, []byte("role prompt"), 0o600); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	slot := config.RoleSlot{SystemPromptPath: srcFile}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	dir1, _, err1 := StagePIAgentConfigDir(slot, "nixos-config@feature-a")
+	dir2, _, err2 := StagePIAgentConfigDir(slot, "nixos-config@feature-b")
+	if err1 != nil || err2 != nil {
+		t.Fatalf("StagePIAgentConfigDir errors: %v, %v", err1, err2)
+	}
+	if dir1 == dir2 {
+		t.Errorf("expected different staging dirs for different sessions; both got %q", dir1)
 	}
 }
 
@@ -211,14 +257,11 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
 		t.Fatalf("write ext: %v", err)
 	}
-	promptFile := filepath.Join(t.TempDir(), "system-prompt.md")
-	if err := os.WriteFile(promptFile, []byte("# prompt"), 0o600); err != nil {
-		t.Fatalf("write prompt: %v", err)
-	}
+	agentConfigDir := t.TempDir()
 
 	cfg := Config{
-		PISystemPromptHostPath: promptFile,
-		PIExtensionHostDir:     extDir,
+		PIAgentConfigHostDir: agentConfigDir,
+		PIExtensionHostDir:   extDir,
 		// Use default sandbox paths so /etc/prism/pi-extensions is the target.
 	}
 
@@ -235,6 +278,55 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	// Must also contain --dir /etc/prism/pi-extensions (the target dir itself).
 	if !hasPair(args, "--dir", piExtensionSandboxDefault) {
 		t.Errorf("expected --dir %q in args (target dir); got %v", piExtensionSandboxDefault, args)
+	}
+
+	// Must set PI_CODING_AGENT_DIR to the default sandbox agent config dir.
+	if !hasPair(args, "--setenv", "PI_CODING_AGENT_DIR") {
+		t.Errorf("expected --setenv PI_CODING_AGENT_DIR in args; got %v", args)
+	}
+}
+
+func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	agentConfigDir := t.TempDir()
+	customSandboxDir := "/run/prism/custom-agent"
+
+	cfg := Config{
+		PIAgentConfigHostDir:    agentConfigDir,
+		PIAgentConfigSandboxDir: customSandboxDir,
+		PIExtensionHostDir:      extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// PI_CODING_AGENT_DIR must be set to the custom sandbox dir.
+	found := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PI_CODING_AGENT_DIR" && args[i+2] == customSandboxDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q in args; got %v", customSandboxDir, args)
+	}
+
+	// The agent config dir must be ro-bind-mounted.
+	found = false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--ro-bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --ro-bind %q %q in args; got %v", agentConfigDir, customSandboxDir, args)
 	}
 }
 
