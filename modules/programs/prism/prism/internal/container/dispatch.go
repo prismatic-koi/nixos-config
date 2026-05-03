@@ -557,11 +557,13 @@ func (h *hostIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
 	return opts.DirectCmd
 }
 
-// SidecarFlags returns nil for host mode: the sidecar is not started for
-// host sessions. (StartSidecarWithOpts is gated by isolation mode upstream;
-// SidecarFlags being nil here is a safety net.)
+// SidecarFlags returns the sidecar argv extensions for host mode. Host
+// sessions use the same host-API socket path as bwrap/sandbox-exec, so the
+// common helper is shared. --agent-role is included when opts.AgentRole is
+// non-empty so that agent_status.agent_name is written for host-isolation
+// sessions (including the pi harness).
 func (h *hostIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
-	return nil
+	return commonHostAPISidecarFlags(opts)
 }
 
 // ArchivePaths returns the host archive layout: storage in the shared root,
