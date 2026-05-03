@@ -264,9 +264,11 @@ func load() Config {
 	}
 	// DefaultIsolationMode: use the parsed value when present and valid;
 	// otherwise keep the compiled-in default. "podman" is treated as absent
-	// (falls back to the default) since podman isolation has been removed.
+	// (falls back to bwrap) since podman isolation has been removed.
 	// Unknown values are silently ignored.
-	if parsed.DefaultIsolationMode != "" && parsed.DefaultIsolationMode != "podman" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
+	if parsed.DefaultIsolationMode == "podman" {
+		cfg.DefaultIsolationMode = IsolationBwrap
+	} else if parsed.DefaultIsolationMode != "" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
 		cfg.DefaultIsolationMode = IsolationMode(parsed.DefaultIsolationMode)
 	}
 	if parsed.SidecarPluginPath != "" {

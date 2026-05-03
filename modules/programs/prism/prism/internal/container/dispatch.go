@@ -60,9 +60,9 @@ type CapStatus struct {
 	// not to enumerate; in that case Note carries the explanatory message.
 	InFlight []InFlightSession
 
-	// Note carries any non-fatal context from the probe — e.g. the podman
-	// implementation sets Note to "podman ps failed — using DB-only count"
-	// when runPodmanPS returns false. Empty when the probe ran cleanly.
+	// Note carries any non-fatal context from the probe — e.g. a DB error
+	// description when the session list could not be fetched. Empty when the
+	// probe ran cleanly.
 	Note string
 }
 

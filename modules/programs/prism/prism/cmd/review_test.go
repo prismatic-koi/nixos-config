@@ -189,8 +189,8 @@ func TestResolveParentIsolationMode_Bwrap(t *testing.T) {
 	}
 }
 
-// TestResolveParentIsolationMode_Podman verifies that a session recorded as
-// "podman" in the DB returns "podman" from resolveParentIsolationMode.
+// TestResolveParentIsolationMode_Podman verifies that a legacy session recorded
+// as "podman" in the DB falls back to "bwrap" since podman is no longer valid.
 func TestResolveParentIsolationMode_Podman(t *testing.T) {
 	d := openReviewTestDB(t)
 
@@ -203,8 +203,8 @@ func TestResolveParentIsolationMode_Podman(t *testing.T) {
 	}
 
 	got := resolveParentIsolationMode(session)
-	if got != "podman" {
-		t.Errorf("resolveParentIsolationMode = %q, want %q", got, "podman")
+	if got != "bwrap" {
+		t.Errorf("resolveParentIsolationMode = %q, want %q", got, "bwrap")
 	}
 }
 
@@ -227,8 +227,9 @@ func TestResolveParentIsolationMode_PreV10HostModeTrue(t *testing.T) {
 	}
 }
 
-// TestResolveParentIsolationMode_IsolationModePodman verifies that a session with
-// isolation_mode="podman" returns "podman" from resolveParentIsolationMode.
+// TestResolveParentIsolationMode_IsolationModePodman verifies that a legacy
+// session with isolation_mode="podman" falls back to "bwrap" since podman is
+// no longer a valid isolation mode.
 func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
 	d := openReviewTestDB(t)
 
@@ -238,8 +239,8 @@ func TestResolveParentIsolationMode_PreV10HostModeFalse(t *testing.T) {
 	}
 
 	got := resolveParentIsolationMode(session)
-	if got != "podman" {
-		t.Errorf("resolveParentIsolationMode for isolation_mode=podman = %q, want %q", got, "podman")
+	if got != "bwrap" {
+		t.Errorf("resolveParentIsolationMode for isolation_mode=podman = %q, want %q", got, "bwrap")
 	}
 }
 

@@ -278,13 +278,12 @@ func resolvePaths(p Params) (archiveRoot, dbPath string, err error) {
 // mode and session name.
 //
 //   - host / bwrap / sandbox-exec: $HOME/.local/share/opencode/opencode-stable.db
-//   - podman: $HOME/.local/share/opencode/prism-sessions/<containerName>/opencode-stable.db
 //   - unknown / empty: returns an error
 //
 // bwrap and sandbox-exec both use the host-shared opencode data directory.
 // exportSessionFromDB scopes all queries to the specific harness_session_id, so
 // concurrent sessions in the same DB are not affected.
-func resolveDBPath(isolationMode, sessionName string) (string, error) {
+func resolveDBPath(isolationMode, _ string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("archive: resolve home for db path: %w", err)
@@ -293,18 +292,14 @@ func resolveDBPath(isolationMode, sessionName string) (string, error) {
 	switch isolationMode {
 	case "host", "bwrap", "sandbox-exec":
 		return filepath.Join(home, ".local", "share", "opencode", "opencode-stable.db"), nil
-	case "podman":
-		containerName := containerNameForSession(sessionName)
-		return filepath.Join(home, ".local", "share", "opencode", "prism-sessions", containerName, "opencode-stable.db"), nil
 	default:
 		return "", fmt.Errorf("archive: unsupported isolation mode %q", isolationMode)
 	}
 }
 
-// resolveStorageRoot is retained for back-compat with callers that still
-// reference the storage root path (e.g. tests). It returns the host-side
-// opencode storage root for the given isolation mode.
-func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
+// resolveStorageRoot returns the host-side opencode storage root for the given
+// isolation mode.
+func resolveStorageRoot(isolationMode, _ string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("archive: resolve home for storage root: %w", err)
@@ -313,23 +308,9 @@ func resolveStorageRoot(isolationMode, sessionName string) (string, error) {
 	switch isolationMode {
 	case "host", "bwrap", "sandbox-exec":
 		return filepath.Join(home, ".local", "share", "opencode", "storage"), nil
-	case "podman":
-		containerName := containerNameForSession(sessionName)
-		return filepath.Join(home, ".local", "share", "opencode", "prism-sessions", containerName, "storage"), nil
 	default:
 		return "", fmt.Errorf("archive: unsupported isolation mode %q", isolationMode)
 	}
-}
-
-// containerNameForSession returns the podman container name for a session,
-// mirroring the logic in internal/container.NameForSession without importing
-// that package (to keep archive lean and avoid a circular dependency).
-func containerNameForSession(sessionName string) string {
-	safe := strings.ReplaceAll(sessionName, "@", "-")
-	safe = strings.ReplaceAll(safe, "/", "-")
-	safe = strings.ReplaceAll(safe, ".", "-")
-	safe = strings.ReplaceAll(safe, "~", "-")
-	return "prism-" + safe
 }
 
 // exportSessionFromDB queries opencode-stable.db for the session identified by

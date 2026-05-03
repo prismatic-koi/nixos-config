@@ -637,20 +637,12 @@ func TestRunSessionWithNoMessages(t *testing.T) {
 	}
 }
 
-// TestResolveDBPathPodman verifies the podman path uses the container name.
+// TestResolveDBPathPodman verifies that "podman" is now an unsupported mode and
+// returns an error.
 func TestResolveDBPathPodman(t *testing.T) {
-	got, err := resolveDBPath("podman", "nixos-config@feature")
-	if err != nil {
-		t.Fatalf("resolveDBPath podman: %v", err)
-	}
-	if !strings.Contains(got, "prism-sessions") {
-		t.Errorf("podman DB path = %q, want path containing 'prism-sessions'", got)
-	}
-	if !strings.Contains(got, "prism-nixos-config-feature") {
-		t.Errorf("podman DB path = %q, want path containing container name 'prism-nixos-config-feature'", got)
-	}
-	if !strings.HasSuffix(got, "opencode-stable.db") {
-		t.Errorf("podman DB path = %q, want suffix 'opencode-stable.db'", got)
+	_, err := resolveDBPath("podman", "nixos-config@feature")
+	if err == nil {
+		t.Fatal("resolveDBPath podman: expected error for removed podman mode, got nil")
 	}
 }
 
@@ -671,18 +663,12 @@ func TestResolveDBPathHost(t *testing.T) {
 	}
 }
 
-// TestResolveStorageRootPodman verifies the podman storage root path uses the container name.
-// resolveStorageRoot is retained for back-compat.
+// TestResolveStorageRootPodman verifies that "podman" is now an unsupported
+// mode and returns an error.
 func TestResolveStorageRootPodman(t *testing.T) {
-	got, err := resolveStorageRoot("podman", "nixos-config@feature")
-	if err != nil {
-		t.Fatalf("resolveStorageRoot podman: %v", err)
-	}
-	if !strings.Contains(got, "prism-sessions") {
-		t.Errorf("podman storage root = %q, want path containing 'prism-sessions'", got)
-	}
-	if !strings.Contains(got, "prism-nixos-config-feature") {
-		t.Errorf("podman storage root = %q, want path containing container name 'prism-nixos-config-feature'", got)
+	_, err := resolveStorageRoot("podman", "nixos-config@feature")
+	if err == nil {
+		t.Fatal("resolveStorageRoot podman: expected error for removed podman mode, got nil")
 	}
 }
 
@@ -785,25 +771,6 @@ func TestRunRepoTraversalRejected(t *testing.T) {
 		_, err := Run(p)
 		if err == nil {
 			t.Errorf("Run() with repo=%q succeeded, want error", repo)
-		}
-	}
-}
-
-// TestContainerNameForSession verifies the container name mapping matches
-// the logic in internal/container.NameForSession.
-func TestContainerNameForSession(t *testing.T) {
-	cases := []struct {
-		sessionName   string
-		wantContainer string
-	}{
-		{"nixos-config@feature", "prism-nixos-config-feature"},
-		{"nixos-config@main~review-1-review-code", "prism-nixos-config-main-review-1-review-code"},
-		{"my.repo@feat/slash", "prism-my-repo-feat-slash"},
-	}
-	for _, tc := range cases {
-		got := containerNameForSession(tc.sessionName)
-		if got != tc.wantContainer {
-			t.Errorf("containerNameForSession(%q) = %q, want %q", tc.sessionName, got, tc.wantContainer)
 		}
 	}
 }

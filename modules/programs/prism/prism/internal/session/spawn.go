@@ -788,17 +788,6 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		// profile env vars in host mode today.
 	}
 	agentCmd := BuildOpencodeCmd(buildOpts)
-	if mode == "podman" && port != 0 {
-		readyPath, pathErr := SidecarReadyPath(opts.SessionName)
-		if pathErr != nil {
-			fmt.Fprintf(os.Stderr,
-				"warning: could not determine ready path for %q, skipping readiness wait: %v\n",
-				opts.SessionName, pathErr)
-		} else {
-			_ = os.Remove(readyPath)
-			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
-		}
-	}
 
 	// Persist isolation_mode to the DB BEFORE creating the agent window.
 	// prism agent-run (the bwrap entry point) reads isolation_mode from

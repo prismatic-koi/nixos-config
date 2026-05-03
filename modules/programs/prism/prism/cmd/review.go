@@ -360,10 +360,10 @@ func resolveParentIsolationMode(parentSession string) string {
 	if stErr != nil || status == nil {
 		return ""
 	}
-	if status.IsolationMode == "" {
-		// Pre-v10 rows have no isolation_mode; default to podman (safe default
-		// for legacy rows that pre-date the isolation_mode column, #1137).
-		return "podman"
+	if status.IsolationMode == "" || status.IsolationMode == "podman" {
+		// Pre-v10 rows have no isolation_mode; legacy rows with "podman" fall
+		// back to bwrap since podman isolation has been removed.
+		return "bwrap"
 	}
 	return status.IsolationMode
 }
