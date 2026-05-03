@@ -834,8 +834,9 @@ func TestSocketPipe_TurnStartTurnEndPersisted(t *testing.T) {
 }
 
 // TestSocketPipe_EmptyAccumulatorAtTurnEnd verifies that a turn_end with no
-// preceding msg_assistant frames still writes a msg_assistant event with empty
-// text (not suppressed).
+// preceding msg_assistant frames does NOT write a msg_assistant event. Tool-only
+// turns (turn_start → tool_call → tool_result → turn_end, no text fragments)
+// must not produce a spurious "(no text)" row in prism checkin (#1319).
 func TestSocketPipe_EmptyAccumulatorAtTurnEnd(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)
@@ -844,7 +845,7 @@ func TestSocketPipe_EmptyAccumulatorAtTurnEnd(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
-	// No msg_assistant frames.
+	// No msg_assistant frames — tool-only turn.
 	sendJSON(t, conn, map[string]any{"type": "turn_end"})
 
 	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
@@ -854,21 +855,10 @@ func TestSocketPipe_EmptyAccumulatorAtTurnEnd(t *testing.T) {
 	}
 
 	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
-	found := false
 	for _, ev := range events {
 		if ev.Type == "msg_assistant" {
-			found = true
-			var p struct {
-				Text string `json:"text"`
-			}
-			_ = json.Unmarshal([]byte(ev.Payload), &p)
-			if p.Text != "" {
-				t.Errorf("expected empty text for empty-accumulator flush, got %q", p.Text)
-			}
+			t.Errorf("unexpected msg_assistant event written for empty-accumulator turn_end: %s", ev.Payload)
 		}
-	}
-	if !found {
-		t.Error("no msg_assistant event written for empty accumulator at turn_end")
 	}
 }
 
