@@ -55,6 +55,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
+	"github.com/prismatic-koi/prism/internal/payload"
 )
 
 // defaultNotifyHTTPClient is the HTTP client used for coordinator notification
@@ -337,6 +338,13 @@ type Sidecar struct {
 	// on set (before the goroutine starts); after that only the writer goroutine
 	// reads from it; callers enqueue via enqueueHarnessPipeFrame.
 	harnessPipeOutCh chan []byte
+
+	// pipeAccum accumulates msg_assistant text fragments between turn_start and
+	// turn_end for the socket-pipe transport. On turn_end, the accumulated text
+	// is flushed as a single msg_assistant event with token/cost fields from the
+	// turn_end usage object. Reset to nil on each turn_start.
+	// Protected by s.mu.
+	pipeAccum *string
 }
 
 // New creates a Sidecar with the given configuration.
@@ -1441,6 +1449,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			// Unexpected disconnect per P2.WIRE §7.2.
 			log.Printf("sidecar: runStartupSocketPipe: connection dropped: %v", readErr)
 			s.mu.Lock()
+			s.flushPipeAccum()
 			s.upsertState(agent.StateError, nil, nil)
 			s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": "connection dropped"}, nil)
 			s.lastState = agent.StateError
@@ -1476,6 +1485,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 //
 // Implements P2.WIRE §5 frame catalogue. Unknown frame types are persisted
 // as raw JSON for forward compatibility (P2.WIRE §8.2).
+//
+// msg_assistant coalescing: rather than writing one agent_events row per
+// streaming fragment, the sidecar accumulates text between turn_start and
+// turn_end, then writes a single msg_assistant row on turn_end (or on
+// session_shutdown / connection drop) with the concatenated text and token/
+// cost fields from the turn_end usage object. This produces one row per
+// assistant turn instead of ~50 fragmented rows.
 func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	if len(line) == 0 {
 		return false
@@ -1506,13 +1522,66 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.writeStateChange(st)
 		s.lastState = st
 
-	case "tool_call", "tool_result", "msg_assistant", "turn_start", "turn_end",
+	case "turn_start":
+		// Reset the accumulator for the new turn, then persist the frame.
+		empty := ""
+		s.pipeAccum = &empty
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
+	case "msg_assistant":
+		// Buffer the text fragment; do not write a row yet.
+		var f struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(line, &f); err == nil {
+			if s.pipeAccum == nil {
+				// Fragments received before turn_start — initialise accumulator.
+				empty := ""
+				s.pipeAccum = &empty
+			}
+			*s.pipeAccum += f.Text
+		}
+
+	case "turn_end":
+		// Flush the accumulator as a single msg_assistant event with token/cost
+		// fields from the usage object, then persist the turn_end frame.
+		var f struct {
+			Usage struct {
+				Input      int     `json:"input"`
+				Output     int     `json:"output"`
+				CacheRead  int     `json:"cache_read"`
+				CacheWrite int     `json:"cache_write"`
+				Cost       float64 `json:"cost"`
+			} `json:"usage"`
+		}
+		_ = json.Unmarshal(line, &f)
+
+		text := ""
+		if s.pipeAccum != nil {
+			text = *s.pipeAccum
+		}
+		s.pipeAccum = nil
+
+		p := payload.MsgAssistant{
+			Text:             text,
+			InputTokens:      f.Usage.Input,
+			OutputTokens:     f.Usage.Output,
+			CacheReadTokens:  f.Usage.CacheRead,
+			CacheWriteTokens: f.Usage.CacheWrite,
+			Cost:             f.Usage.Cost,
+		}
+		s.writeEvent("msg_assistant", p, nil)
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
+	case "tool_call", "tool_result",
 		"provider_error", "auto_retry_start", "auto_retry_end":
 		// Write raw JSON as event payload — the wire schema maps directly to
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
 	case "session_shutdown":
+		// Flush any partial accumulator before marking finished.
+		s.flushPipeAccum()
 		// Clean shutdown: mark finished and signal the reader loop.
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
@@ -1524,6 +1593,19 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 	}
 	return false
+}
+
+// flushPipeAccum writes a msg_assistant event for any text accumulated in
+// pipeAccum and resets the accumulator to nil. Called on session_shutdown and
+// connection drop so that partial turns are not silently discarded.
+// Must be called with s.mu held.
+func (s *Sidecar) flushPipeAccum() {
+	if s.pipeAccum == nil {
+		return
+	}
+	p := payload.MsgAssistant{Text: *s.pipeAccum}
+	s.writeEvent("msg_assistant", p, nil)
+	s.pipeAccum = nil
 }
 
 // sendPipeError writes a protocol-level error frame to the connection and

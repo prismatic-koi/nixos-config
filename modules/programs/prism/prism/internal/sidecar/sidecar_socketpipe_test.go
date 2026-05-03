@@ -722,5 +722,278 @@ func TestSocketPipe_ShuttingDownSkipsStateActive(t *testing.T) {
 	_ = wait()
 }
 
+// ── coalescing tests ──────────────────────────────────────────────────────────
+
+// TestSocketPipe_MsgAssistantCoalesced verifies that N msg_assistant fragment
+// frames between turn_start and turn_end produce exactly one msg_assistant row
+// in agent_events with the concatenated text (AC: N fragments → 1 row).
+func TestSocketPipe_MsgAssistantCoalesced(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "Hello"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": " world"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "!"})
+	sendJSON(t, conn, map[string]any{
+		"type": "turn_end",
+		"usage": map[string]any{
+			"input":       100,
+			"output":      50,
+			"cache_read":  40,
+			"cache_write": 5,
+			"cost":        0.0015,
+		},
+	})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+
+	var msgAssistantEvents []db.Event
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			msgAssistantEvents = append(msgAssistantEvents, ev)
+		}
+	}
+
+	if got := len(msgAssistantEvents); got != 1 {
+		t.Fatalf("expected exactly 1 msg_assistant event, got %d", got)
+	}
+
+	var p struct {
+		Text             string  `json:"text"`
+		InputTokens      int     `json:"inputTokens"`
+		OutputTokens     int     `json:"outputTokens"`
+		CacheReadTokens  int     `json:"cacheReadTokens"`
+		CacheWriteTokens int     `json:"cacheWriteTokens"`
+		Cost             float64 `json:"cost"`
+	}
+	if err := json.Unmarshal([]byte(msgAssistantEvents[0].Payload), &p); err != nil {
+		t.Fatalf("unmarshal msg_assistant payload: %v", err)
+	}
+
+	if p.Text != "Hello world!" {
+		t.Errorf("coalesced text = %q, want %q", p.Text, "Hello world!")
+	}
+	if p.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100", p.InputTokens)
+	}
+	if p.OutputTokens != 50 {
+		t.Errorf("OutputTokens = %d, want 50", p.OutputTokens)
+	}
+	if p.CacheReadTokens != 40 {
+		t.Errorf("CacheReadTokens = %d, want 40", p.CacheReadTokens)
+	}
+	if p.CacheWriteTokens != 5 {
+		t.Errorf("CacheWriteTokens = %d, want 5", p.CacheWriteTokens)
+	}
+	if p.Cost != 0.0015 {
+		t.Errorf("Cost = %v, want 0.0015", p.Cost)
+	}
+}
+
+// TestSocketPipe_TurnStartTurnEndPersisted verifies that turn_start and
+// turn_end frames each produce their own row in agent_events.
+func TestSocketPipe_TurnStartTurnEndPersisted(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "hi"})
+	sendJSON(t, conn, map[string]any{"type": "turn_end"})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	eventTypes := map[string]int{}
+	for _, ev := range events {
+		eventTypes[ev.Type]++
+	}
+
+	if eventTypes["turn_start"] == 0 {
+		t.Error("no turn_start event in agent_events")
+	}
+	if eventTypes["turn_end"] == 0 {
+		t.Error("no turn_end event in agent_events")
+	}
+}
+
+// TestSocketPipe_EmptyAccumulatorAtTurnEnd verifies that a turn_end with no
+// preceding msg_assistant frames still writes a msg_assistant event with empty
+// text (not suppressed).
+func TestSocketPipe_EmptyAccumulatorAtTurnEnd(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	// No msg_assistant frames.
+	sendJSON(t, conn, map[string]any{"type": "turn_end"})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	found := false
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			found = true
+			var p struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal([]byte(ev.Payload), &p)
+			if p.Text != "" {
+				t.Errorf("expected empty text for empty-accumulator flush, got %q", p.Text)
+			}
+		}
+	}
+	if !found {
+		t.Error("no msg_assistant event written for empty accumulator at turn_end")
+	}
+}
+
+// TestSocketPipe_AccumulatorResetsOnTurnStart verifies that multiple turns in a
+// single session each produce their own single msg_assistant event and the
+// accumulator resets between turns.
+func TestSocketPipe_AccumulatorResetsOnTurnStart(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// First turn.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "turn1"})
+	sendJSON(t, conn, map[string]any{"type": "turn_end"})
+
+	// Second turn.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "turn2"})
+	sendJSON(t, conn, map[string]any{"type": "turn_end"})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	textSet := map[string]int{}
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			var p struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
+				textSet[p.Text]++
+			}
+		}
+	}
+
+	if len(textSet) != 2 {
+		t.Fatalf("expected 2 distinct msg_assistant events (one per turn), got %d: %v", len(textSet), textSet)
+	}
+	if textSet["turn1"] != 1 {
+		t.Errorf("expected exactly 1 msg_assistant with text='turn1', got %d", textSet["turn1"])
+	}
+	if textSet["turn2"] != 1 {
+		t.Errorf("expected exactly 1 msg_assistant with text='turn2', got %d", textSet["turn2"])
+	}
+}
+
+// TestSocketPipe_PartialAccumulatorFlushedOnShutdown verifies that a
+// session_shutdown with a non-empty accumulator writes a partial msg_assistant
+// event — the accumulated text is not silently discarded.
+func TestSocketPipe_PartialAccumulatorFlushedOnShutdown(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "partial"})
+	// No turn_end — simulate abrupt shutdown mid-turn.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	found := false
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			found = true
+			var p struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal([]byte(ev.Payload), &p)
+			if p.Text != "partial" {
+				t.Errorf("partial flush text = %q, want %q", p.Text, "partial")
+			}
+		}
+	}
+	if !found {
+		t.Error("partial accumulator not flushed on session_shutdown")
+	}
+}
+
+// TestSocketPipe_PartialAccumulatorFlushedOnDrop verifies that a connection
+// drop with a non-empty accumulator writes a partial msg_assistant event.
+func TestSocketPipe_PartialAccumulatorFlushedOnDrop(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "dropped"})
+	// Drop the connection without session_shutdown.
+	conn.Close()
+
+	_ = wait()
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	found := false
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			found = true
+			var p struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal([]byte(ev.Payload), &p)
+			if p.Text != "dropped" {
+				t.Errorf("partial flush on drop text = %q, want %q", p.Text, "dropped")
+			}
+		}
+	}
+	if !found {
+		t.Error("partial accumulator not flushed on connection drop")
+	}
+}
+
 // Ensure db import is used.
 var _ *db.DB
