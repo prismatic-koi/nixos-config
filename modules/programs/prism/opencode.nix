@@ -583,39 +583,30 @@
           let
             profiledAgents =
               config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider
-                (
-                  {
-                    worker = {
-                      description = "Default worker agent with full tool access";
-                      mode = "primary";
-                      color = config.theme.red;
-                      permission = {
-                        bash = containerWorkerBashCommands;
-                      };
+                ({
+                  worker = {
+                    description = "Default worker agent with full tool access";
+                    mode = "primary";
+                    color = config.theme.red;
+                    permission = {
+                      bash = containerWorkerBashCommands;
                     };
-                    ac = { };
-                    explore = { };
-                    title = { };
-                    summary = { };
-                    compaction = { };
-                    coordinator = {
-                      disable = true;
-                    };
-                    build = {
-                      disable = true;
-                    };
-                    plan = {
-                      disable = true;
-                    };
-                  }
-                  // {
-                    review-goal = { };
-                    review-code = { };
-                    review-security = { };
-                    review-qa = { };
-                    review-context = { };
-                  }
-                );
+                  };
+                  ac = { };
+                  explore = { };
+                  title = { };
+                  summary = { };
+                  compaction = { };
+                  coordinator = {
+                    disable = true;
+                  };
+                  build = {
+                    disable = true;
+                  };
+                  plan = {
+                    disable = true;
+                  };
+                });
             # Strip variant from disabled agents so their primary-role "medium"
             # doesn't poison the model's thinking level for the worker.
             sanitisedAgents = lib.mapAttrs (
@@ -760,11 +751,6 @@
           title = { };
           summary = { };
           compaction = { };
-          review-goal = { };
-          review-code = { };
-          review-security = { };
-          review-qa = { };
-          review-context = { };
         });
         # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
         # not processed by the module system. Use optionalAttrs so the key is
