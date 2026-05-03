@@ -247,6 +247,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 
 	// Validate harness BEFORE any session state is created (no worktree, no
 	// tmux session, no DB row).
+	// Note: harness resolution from profile slot happens later (after the profile
+	// and planned role are resolved), so validation runs a second time there too.
 	if _, ok := harness.Lookup(harnessFlag); !ok {
 		return fmt.Errorf("unknown harness %q: valid harnesses: %s", harnessFlag, strings.Join(harness.Names(), ", "))
 	}
@@ -392,6 +394,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 					err)
 			}
 			return err
+		}
+
+		// Resolve harness from the profile slot when --harness was not
+		// explicitly passed (#1328). The --harness flag takes precedence;
+		// the profile slot provides the default when the flag is absent.
+		if !cmd.Flags().Changed("harness") {
+			if slot, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
+				slotHarness := config.HarnessForSlot(slot)
+				if _, validHarness := harness.Lookup(slotHarness); !validHarness {
+					return fmt.Errorf("profile %q role %q declares unknown harness %q: valid harnesses: %s",
+						resolvedProfile, plannedRole, slotHarness, strings.Join(harness.Names(), ", "))
+				}
+				harnessFlag = slotHarness
+			}
 		}
 	}
 
@@ -956,23 +972,36 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 
 	// Validate both profiles exist and have the required slot BEFORE any
 	// side effects (no worktree, no tmux session, no DB row on failure).
+	// Also resolve per-leg harness from each profile's slot (#1328):
+	// --harness flag overrides; when absent, the slot's harness is used.
+	type abtestLeg struct {
+		profileName string
+		branch      string
+		harnessName string
+	}
+	legs := make([]abtestLeg, 0, 2)
 	for _, profileName := range []string{profileA, profileB} {
 		if err := config.RequireSlot(pf, profileName, plannedRole); err != nil {
 			return fmt.Errorf("--abtest profile %q: %w", profileName, err)
 		}
+		legHarness := harnessFlag
+		if !cmd.Flags().Changed("harness") {
+			if slot, ok := config.SlotForRole(pf, profileName, plannedRole); ok {
+				legHarness = config.HarnessForSlot(slot)
+			}
+		}
+		if _, ok := harness.Lookup(legHarness); !ok {
+			return fmt.Errorf("--abtest profile %q role %q declares unknown harness %q: valid harnesses: %s",
+				profileName, plannedRole, legHarness, strings.Join(harness.Names(), ", "))
+		}
+		legs = append(legs, abtestLeg{
+			profileName: profileName,
+			branch:      git.SanitiseBranch(baseBranch + "-" + profileName),
+			harnessName: legHarness,
+		})
 	}
 
 	pairID := generateAbtestPairID()
-
-	// Build common spawn args shared by both legs.
-	type abtestLeg struct {
-		profileName string
-		branch      string
-	}
-	legs := []abtestLeg{
-		{profileName: profileA, branch: git.SanitiseBranch(baseBranch + "-" + profileA)},
-		{profileName: profileB, branch: git.SanitiseBranch(baseBranch + "-" + profileB)},
-	}
 
 	// Shared result type for the goroutines.
 	type legResult struct {
@@ -1020,7 +1049,7 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				promptSource:       promptSource,
 				modelFlag:          modelFlag,
 				variantFlag:        variantFlag,
-				harnessFlag:        harnessFlag,
+				harnessFlag:        leg.harnessName,
 				isolationMode:      isolationMode,
 				isoCaps:            isoCaps,
 				cfg:                cfg,

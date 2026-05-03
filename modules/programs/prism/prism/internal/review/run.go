@@ -22,6 +22,9 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -201,6 +204,31 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		//
 		// WorktreeReadOnly=true ensures review containers cannot modify the
 		// branch under review (satisfies the [security] acceptance criterion).
+		//
+		// Per-agent harness resolution (#1328): resolve the harness for this
+		// agent from the active profile's slot. opts.Harness (derived from the
+		// --harness CLI flag) overrides the profile slot when explicitly set.
+		// When opts.Harness is the default "opencode" and no explicit override
+		// was made, the profile slot's harness takes precedence.
+		agentHarnessName := opts.Harness
+		if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+			slotHarness := config.HarnessForSlot(slot)
+			// Profile slot harness is used when opts.Harness is the default
+			// "opencode" (not explicitly overridden). If the caller explicitly
+			// set a non-default harness, it wins.
+			if opts.Harness == "" || opts.Harness == "opencode" {
+				agentHarnessName = slotHarness
+			}
+		}
+		agentH, agentHErr := harness.New(agentHarnessName, "", nil, "", "")
+		if agentHErr != nil {
+			spawnErr[i] = fmt.Errorf("review: unknown harness %q for agent %s: valid harnesses: %s",
+				agentHarnessName, ag.Name, strings.Join(harness.Names(), ", "))
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
+			}
+			continue
+		}
 		spawnOpts := session.SpawnOpts{
 			InstanceID:         uuid.New().String(),
 			SessionName:        agentSession,
@@ -216,8 +244,9 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			PluginHostPath:     opts.PluginHostPath,
 			WorktreeReadOnly:   true,
 			GroupID:            groupID,
-			RuntimeEnvVars:     opts.RuntimeEnvVars,
-			HarnessName:        opts.Harness,
+			ConfigEnvVarName:   agentH.ConfigEnvVar(),
+			RuntimeEnvVars:     agentH.RuntimeEnv(),
+			HarnessName:        agentHarnessName,
 			ModelsByRole:       opts.ModelsByRole,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
@@ -464,6 +493,25 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			}
 		}
 
+		// Per-agent harness resolution (#1328): resolve the harness for this
+		// agent from the active profile's slot. opts.Harness (derived from the
+		// --harness CLI flag) overrides the profile slot when explicitly set.
+		asyncAgentHarnessName := opts.Harness
+		if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+			slotHarness := config.HarnessForSlot(slot)
+			if opts.Harness == "" || opts.Harness == "opencode" {
+				asyncAgentHarnessName = slotHarness
+			}
+		}
+		asyncAgentH, asyncAgentHErr := harness.New(asyncAgentHarnessName, "", nil, "", "")
+		if asyncAgentHErr != nil {
+			spawnErr[i] = fmt.Errorf("review: unknown harness %q for agent %s: valid harnesses: %s",
+				asyncAgentHarnessName, ag.Name, strings.Join(harness.Names(), ", "))
+			if opts.OnProgress != nil {
+				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
+			}
+			continue
+		}
 		spawnOpts := session.SpawnOpts{
 			InstanceID:         uuid.New().String(),
 			SessionName:        agentSession,
@@ -479,8 +527,9 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			PluginHostPath:     opts.PluginHostPath,
 			WorktreeReadOnly:   true,
 			GroupID:            groupID,
-			RuntimeEnvVars:     opts.RuntimeEnvVars,
-			HarnessName:        opts.Harness,
+			ConfigEnvVarName:   asyncAgentH.ConfigEnvVar(),
+			RuntimeEnvVars:     asyncAgentH.RuntimeEnv(),
+			HarnessName:        asyncAgentHarnessName,
 			ModelsByRole:       opts.ModelsByRole,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {

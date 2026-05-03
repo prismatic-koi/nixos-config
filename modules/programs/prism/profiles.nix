@@ -121,17 +121,21 @@
         # zero value). `provider` defaults to "" — populated explicitly by the
         # migrated profiles below.
         # `systemPromptPath` is null until P2.AGENTRUN populates per-role prompts.
+        # `harness` defaults to "" (omitted from JSON via omitempty) which the Go
+        # side treats as "opencode". Set explicitly to e.g. "pi" for PI sessions.
         slot =
           {
             provider ? "",
             model,
             thinking ? "off",
             systemPromptPath ? null,
+            harness ? "",
           }:
           {
             inherit provider model thinking;
             systemPromptPath = if systemPromptPath == null then "" else toString systemPromptPath;
-          };
+          }
+          // (if harness == "" then { } else { inherit harness; });
 
         # ── Migrated profiles ──────────────────────────────────────────────────
         # Each existing profile is expanded into per-role slots via
@@ -265,7 +269,7 @@
                 model = roleSlot.model;
                 thinking = roleSlot.thinking or "off";
                 systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
-              }) profileEntry
+              } // (if (roleSlot.harness or "") == "" then { } else { harness = roleSlot.harness; })) profileEntry
             ) config.nx.programs.prism.profiles.data.profiles;
             # Container role configs — full opencode.json blobs injected as
             # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
