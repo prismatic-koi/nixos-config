@@ -519,72 +519,19 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_ContainerMode verifies that when cfg.DefaultIsolationMode
-// is "podman" and the persisted session is not marked host_mode, restore uses
-// the container-mode agent command ("podman attach --sig-proxy=false <container-name>")
-// rather than launching opencode directly. It also asserts that the
-// PluginHostPath is propagated from cfg into opts so the sidecar bind-mounts
-// the plugin file.
-//
-// This is the core AC-1 regression guard: restoring a container-mode session
-// must go through the same podman-attach path as spawn (RFC #691, Phase 1a).
-func TestRestoreSession_ContainerMode(t *testing.T) {
-	// Uses withCmdServer — must not run in parallel.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	s := newCmdTestServer(t)
-	withCmdServer(t, s)
-
-	// Override cfg to enable podman mode for this test only.
-	pluginPath := "/fake/plugin/path/prism-hooks.ts"
-	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationPodman,
-		SidecarPluginPath:    pluginPath,
-	})
-
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "myrepo@container-restore"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	if err := callRestoreSession(d, status); err != nil {
-		t.Fatalf("restoreSession: %v", err)
-	}
-	t.Cleanup(func() { session.KillSidecar(sessionName) })
-
-	if !s.hasSession(sessionName) {
-		t.Fatalf("session %q was not created", sessionName)
-	}
-
-	// The agent pane start command must contain "podman attach --sig-proxy=false 'prism-myrepo-container-restore'",
-	// not "opencode --agent". The container name is derived from the session name via
-	// container.NameForSession("myrepo@container-restore") = "prism-myrepo-container-restore".
-	// The name is single-quoted for shell safety in the readiness wait script.
-	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "podman attach --sig-proxy=false 'prism-myrepo-container-restore'") {
-		t.Errorf("agent pane missing 'podman attach --sig-proxy=false 'prism-myrepo-container-restore'' — captured:\n%s", pane)
-	}
-	if strings.Contains(pane, "opencode --agent") {
-		t.Errorf("agent pane contains 'opencode --agent' but should be in container mode — captured:\n%s", pane)
-	}
-	if strings.Contains(pane, "opencode attach") {
-		t.Errorf("agent pane contains old 'opencode attach' command — should now use 'podman attach' (RFC #691)")
-	}
-}
-
 // TestRestoreSession_HostModeOverride verifies that when a session was
 // explicitly spawned in host mode (isolation_mode="host" in agent_status),
-// restore preserves that mode even when cfg.DefaultIsolationMode is "podman".
-// The agent pane must run "opencode --agent ..." rather than "podman attach".
+// restore preserves that mode even when cfg.DefaultIsolationMode is "bwrap".
+// The agent pane must run "opencode --agent ..." rather than using bwrap.
 func TestRestoreSession_HostModeOverride(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	// Enable podman mode globally — the test verifies the per-session
+	// Enable bwrap mode globally — the test verifies the per-session
 	// isolation_mode still overrides it.
-	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationPodman})
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationBwrap})
 
 	d := openRestoreTestDB(t)
 
@@ -620,7 +567,7 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Agent pane start command must contain "opencode" but NOT "podman attach".
+	// Agent pane start command must contain "opencode" but NOT "bwrap".
 	// For a non-worktree path (no .bare parent), no --agent flag is added,
 	// but the command is still opencode directly (host mode).
 	pane := agentPaneStartCmd(t, s, sessionName)
@@ -724,7 +671,7 @@ func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
 
 	pluginPath := "/fake/plugin/path/prism-hooks.ts"
 	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationPodman,
+		DefaultIsolationMode: config.IsolationBwrap,
 		SidecarPluginPath:    pluginPath,
 	})
 
@@ -778,7 +725,7 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 	withCmdServer(t, s)
 
 	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationPodman,
+		DefaultIsolationMode: config.IsolationBwrap,
 	})
 
 	pf := fakeProfilesFile()
@@ -841,7 +788,7 @@ func TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile(t *testing.T)
 	srv := newCmdTestServer(t)
 	withCmdServer(t, srv)
 	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationPodman,
+		DefaultIsolationMode: config.IsolationBwrap,
 	})
 
 	pf := &config.ProfilesFile{
@@ -909,7 +856,7 @@ func TestRestoreSession_ContainerMode_ProfilesError(t *testing.T) {
 	withCmdServer(t, s)
 
 	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationPodman,
+		DefaultIsolationMode: config.IsolationBwrap,
 	})
 
 	// Simulate a missing/unreadable profiles.json.
@@ -1493,33 +1440,32 @@ func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_PodmanMode_TempFileWritten verifies that podman-mode
-// restore writes the opencode temp file when NeedsConfigBlob is true. Although
-// the podman sidecar's Create() path also writes this file, the pre-write in
-// restore.go is an idempotent precondition — both writes use the same content
-// source (ContainerConfigForRole) and the same deterministic path.
-func TestRestoreSession_PodmanMode_TempFileWritten(t *testing.T) {
+// TestRestoreSession_BwrapMode_TempFileWritten2 verifies that bwrap-mode
+// restore writes the opencode temp file when NeedsConfigBlob is true. This
+// is an additional variant of the bwrap write test using SetIsolationMode
+// to simulate a persisted bwrap session being restored.
+func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 	t.Setenv("TMPDIR", t.TempDir())
 
-	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationPodman})
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationBwrap})
 	pf := fakeProfilesFile()
 	withRestoreProfiles(t, pf, nil)
 
 	d := openRestoreTestDB(t)
 
-	worktreeDir := filepath.Join(t.TempDir(), "feature-pod")
+	worktreeDir := filepath.Join(t.TempDir(), "feature-bwrap2")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	sessionName := "myrepo@podman-worker"
+	sessionName := "myrepo@bwrap-worker2"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-	if err := d.SetIsolationMode(sessionName, string(config.IsolationPodman)); err != nil {
+	if err := d.SetIsolationMode(sessionName, string(config.IsolationBwrap)); err != nil {
 		t.Fatalf("SetIsolationMode: %v", err)
 	}
-	status.IsolationMode = string(config.IsolationPodman)
+	status.IsolationMode = string(config.IsolationBwrap)
 
 	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
 	_ = os.Remove(expectedPath) // precondition
@@ -1532,12 +1478,9 @@ func TestRestoreSession_PodmanMode_TempFileWritten(t *testing.T) {
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	// Podman mode: NeedsConfigBlob=true, so restore.go writes the temp file.
-	// This is idempotent — the sidecar's Create() path will write it again
-	// (same content). The write here ensures the file is present even if the
-	// sidecar is restarted without a full container create.
+	// Bwrap mode: NeedsConfigBlob=true, so restore.go writes the temp file.
 	if _, err := os.Stat(expectedPath); err != nil {
-		t.Errorf("podman restore did not write opencode temp file at %q — expected file when NeedsConfigBlob=true: %v",
+		t.Errorf("bwrap restore did not write opencode temp file at %q — expected file when NeedsConfigBlob=true: %v",
 			expectedPath, err)
 	}
 }

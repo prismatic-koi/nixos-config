@@ -17,7 +17,7 @@ import (
 // spawnCmd but isolated from the global state, preventing test pollution.
 func newSpawnCmdForTest() *cobra.Command {
 	cmd := &cobra.Command{Use: "spawn-test"}
-	cmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, or host")
+	cmd.Flags().String("isolation", "", "Isolation mode: bwrap or host")
 	return cmd
 }
 
@@ -28,7 +28,6 @@ func TestResolveIsolationMode_ValidValues(t *testing.T) {
 		flag string
 		want config.IsolationMode
 	}{
-		{"podman", config.IsolationPodman},
 		{"bwrap", config.IsolationBwrap},
 		{"sandbox-exec", config.IsolationSandboxExec},
 		{"host", config.IsolationHost},
@@ -74,7 +73,7 @@ func TestResolveIsolationMode_UnknownValue(t *testing.T) {
 		t.Errorf("error %q does not contain 'unknown isolation mode'", err.Error())
 	}
 	// Error message must list all valid values, including sandbox-exec.
-	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+	for _, m := range []string{"bwrap", "sandbox-exec", "host"} {
 		if !strings.Contains(err.Error(), m) {
 			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
 		}
@@ -88,7 +87,6 @@ func TestResolveIsolationMode_FallbackFromConfig(t *testing.T) {
 		cfgMode config.IsolationMode
 		want    config.IsolationMode
 	}{
-		{config.IsolationPodman, config.IsolationPodman},
 		{config.IsolationHost, config.IsolationHost},
 	}
 

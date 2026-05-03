@@ -150,12 +150,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve the effective isolation mode. When --isolation-mode is set it
-	// takes precedence. Otherwise fall back to --container for back-compat.
+	// takes precedence. The --container flag is retained for back-compat but
+	// now maps to bwrap (podman isolation has been removed).
 	var isolationMode config.IsolationMode
 	if isolationModeFlag != "" && config.IsValidIsolationMode(isolationModeFlag) {
 		isolationMode = config.IsolationMode(isolationModeFlag)
 	} else if containerFlag {
-		isolationMode = config.IsolationPodman
+		isolationMode = config.IsolationBwrap
 	} else {
 		isolationMode = config.IsolationHost
 	}

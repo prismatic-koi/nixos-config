@@ -351,24 +351,24 @@ func containerName(sessionName string) string {
 	return NameForSession(sessionName)
 }
 
-// Manager manages the lifecycle of a single podman container for a session.
+	// Manager manages the lifecycle of a single agent session sandbox.
 type Manager struct {
 	cfg            Config
 	name           string
 	healthCheckURL string
 	httpClient     *http.Client
 	// isolator is the Isolator implementation used to run, shut down, and
-	// inspect the container. It is set unconditionally to a podmanIsolator in
-	// New() and can be replaced in tests.
+	// inspect the sandbox process. It is set to a hostIsolator by default in
+	// New() and can be replaced in tests or by PrepareBwrap/PrepareSandboxExec.
 	isolator Isolator
 	// allowedSignersReady is true when writeGitconfig successfully wrote the
 	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
-	// so that podman is never given a source path that doesn't exist on disk.
+	// so that bwrap is never given a source path that doesn't exist on disk.
 	allowedSignersReady bool
 	// claudeCredentialsReady is true when writeClaudeCredentials successfully
 	// extracted Claude credentials from the macOS Keychain and wrote them to
 	// a temp file. buildRunArgs uses this to gate the bind-mount so that
-	// podman is never given a source path that doesn't exist on disk.
+	// bwrap is never given a source path that doesn't exist on disk.
 	// This field is only ever true on Darwin.
 	claudeCredentialsReady bool
 
@@ -395,7 +395,7 @@ func New(cfg Config) *Manager {
 		// no MCP initialisation, plugin loading, or external network calls.
 		healthCheckURL: fmt.Sprintf("http://127.0.0.1:%d/global/health", cfg.AllocatedPort),
 		httpClient:     httpClient,
-		isolator:       newPodmanIsolator(name),
+		isolator:       newHostIsolator(name),
 	}
 }
 

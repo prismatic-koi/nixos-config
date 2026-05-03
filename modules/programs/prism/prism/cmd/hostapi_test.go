@@ -377,7 +377,7 @@ func TestProxySpawn_IsolationForwarded(t *testing.T) {
 		Isolation string `json:"isolation"`
 	}
 
-	cases := []string{"podman", "bwrap", "sandbox-exec", "host"}
+	cases := []string{"bwrap", "sandbox-exec", "host"}
 	for _, mode := range cases {
 		t.Run(mode, func(t *testing.T) {
 			reqCh := make(chan spawnReq, 1)
@@ -509,7 +509,7 @@ func TestProxySpawn_IsolationUnknownValueRejectedClientSide(t *testing.T) {
 		t.Errorf("error %q does not mention 'unknown isolation mode'", err.Error())
 	}
 	// Error message must list all valid values so the user sees the accepted set.
-	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+	for _, m := range []string{"bwrap", "sandbox-exec", "host"} {
 		if !strings.Contains(err.Error(), m) {
 			t.Errorf("error %q does not mention valid mode %q", err.Error(), m)
 		}

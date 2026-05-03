@@ -18,7 +18,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
-	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
@@ -5657,7 +5656,7 @@ echo "session \"${last}@cap-branch\" created"
 // running `prism spawn --isolation host` saw the value silently dropped and
 // the spawned session landed in the configured default mode (typically bwrap).
 func TestHostAPI_Spawn_IsolationForwarded(t *testing.T) {
-	for _, mode := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+	for _, mode := range []string{"bwrap", "sandbox-exec", "host"} {
 		t.Run(mode, func(t *testing.T) {
 			d := openTestDB(t)
 
@@ -5795,7 +5794,7 @@ exit 99
 	if !strings.Contains(errMsg, "unknown isolation mode") {
 		t.Errorf("error %q does not mention 'unknown isolation mode'", errMsg)
 	}
-	for _, m := range []string{"podman", "bwrap", "sandbox-exec", "host"} {
+	for _, m := range []string{"bwrap", "sandbox-exec", "host"} {
 		if !strings.Contains(errMsg, m) {
 			t.Errorf("error %q does not list valid mode %q", errMsg, m)
 		}
@@ -9472,41 +9471,6 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 	}
 	if got := strings.Count(final, "[timing] ready:"); got != 1 {
 		t.Errorf("got %d `[timing] ready` lines, want exactly 1:\n%s", got, final)
-	}
-}
-
-// TestBwrapTimingMarkers_PodmanModeNotEmittedHere verifies that when Container
-// is non-nil (podman mode), the bwrap-path markers in HandleEvent do NOT fire
-// — the podman path has its own `[timing]` markers in Run() (`pre-Create`,
-// `Create`, `WaitHealthy`, `CreateSession start/done`, `ready`,
-// `prompt delivered`) and emitting them here too would duplicate the lines.
-func TestBwrapTimingMarkers_PodmanModeNotEmittedHere(t *testing.T) {
-	d := openTestDB(t)
-	cfg := Config{
-		SessionName:   "test-repo@feature",
-		Repo:          "test-repo",
-		Worktree:      "/tmp/test-podman-worktree",
-		OpencodeURL:   "http://localhost:19999",
-		DB:            d,
-		Clock:         newTestClock(),
-		Harness:       &harness.FakeHarness{},
-		IsolationMode: config.IsolationPodman,
-		// Non-nil Container → podman mode. The pointer doesn't have to be
-		// fully populated for HandleEvent's gate — it just needs to be non-nil.
-		Container: &container.Config{},
-	}
-	sc := New(cfg)
-	sc.spawnTime = time.Now().Add(-100 * time.Millisecond)
-
-	getLogs := captureLog(t)
-	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
-	out := getLogs()
-
-	if strings.Contains(out, "[timing] opencode listening:") {
-		t.Errorf("podman mode must not emit bwrap-path `[timing] opencode listening` from HandleEvent:\n%s", out)
-	}
-	if strings.Contains(out, "[timing] ready:") {
-		t.Errorf("podman mode must not emit bwrap-path `[timing] ready` from HandleEvent:\n%s", out)
 	}
 }
 

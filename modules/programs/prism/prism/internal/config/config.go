@@ -16,14 +16,10 @@ import (
 )
 
 // IsolationMode represents the isolation mechanism for agent sessions.
-// Valid values are "podman", "bwrap", "sandbox-exec", and "host".
+// Valid values are "bwrap", "sandbox-exec", and "host".
 type IsolationMode string
 
 const (
-	// IsolationPodman runs opencode inside a rootless podman container,
-	// managed by the sidecar. The agent window attaches via "podman attach".
-	IsolationPodman IsolationMode = "podman"
-
 	// IsolationBwrap runs opencode inside a bubblewrap sandbox, launched and
 	// owned by the tmux pane via "prism agent-run". The sidecar does not
 	// manage the process lifecycle. Linux only.
@@ -40,10 +36,10 @@ const (
 )
 
 // ValidIsolationModes lists all valid isolation mode strings.
-var ValidIsolationModes = []IsolationMode{IsolationPodman, IsolationBwrap, IsolationSandboxExec, IsolationHost}
+var ValidIsolationModes = []IsolationMode{IsolationBwrap, IsolationSandboxExec, IsolationHost}
 
 // IsValidIsolationMode reports whether s is a valid isolation mode.
-// Valid values are "podman", "bwrap", "sandbox-exec", and "host".
+// Valid values are "bwrap", "sandbox-exec", and "host".
 func IsValidIsolationMode(s string) bool {
 	for _, m := range ValidIsolationModes {
 		if string(m) == s {
@@ -71,7 +67,7 @@ type Config struct {
 
 	// Sidecar container settings.
 	// DefaultIsolationMode is the machine-level default isolation mode for new
-	// agent sessions. Valid values: "podman", "bwrap", "sandbox-exec", "host".
+	// agent sessions. Valid values: "bwrap", "sandbox-exec", "host".
 	DefaultIsolationMode IsolationMode `json:"default_isolation_mode,omitempty"`
 	// SidecarPluginPath is the host-side path to the opencode plugin file that
 	// is bind-mounted into the container. Empty string = no plugin.
@@ -267,11 +263,10 @@ func load() Config {
 		cfg.KittyBin = parsed.KittyBin
 	}
 	// DefaultIsolationMode: use the parsed value when present and valid;
-	// otherwise keep the compiled-in default (IsolationHost).
-	// Unknown values (including legacy "container_mode" keys) are silently
-	// ignored — Go's JSON decoder drops unknown keys, and invalid mode strings
-	// are treated as absent.
-	if parsed.DefaultIsolationMode != "" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
+	// otherwise keep the compiled-in default. "podman" is treated as absent
+	// (falls back to the default) since podman isolation has been removed.
+	// Unknown values are silently ignored.
+	if parsed.DefaultIsolationMode != "" && parsed.DefaultIsolationMode != "podman" && IsValidIsolationMode(parsed.DefaultIsolationMode) {
 		cfg.DefaultIsolationMode = IsolationMode(parsed.DefaultIsolationMode)
 	}
 	if parsed.SidecarPluginPath != "" {

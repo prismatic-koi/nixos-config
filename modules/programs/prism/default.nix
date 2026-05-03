@@ -26,17 +26,15 @@
         isolation = {
           default = lib.mkOption {
             type = lib.types.enum [
-              "podman"
               "bwrap"
               "host"
               "sandbox-exec"
             ];
-            default = if pkgs.stdenv.hostPlatform.isLinux then "podman" else "host";
+            default = if pkgs.stdenv.hostPlatform.isLinux then "bwrap" else "host";
             example = "bwrap";
             description = ''
               Default isolation mode for new agent sessions. Valid values:
-              - "podman":       run opencode inside a rootless podman container (default on Linux).
-              - "bwrap":        run opencode inside a bubblewrap sandbox (Linux-only).
+              - "bwrap":        run opencode inside a bubblewrap sandbox (Linux-only, default on Linux).
               - "host":         run opencode directly in the tmux pane with no isolation (default on Darwin).
               - "sandbox-exec": run opencode inside a macOS sandbox-exec profile (Darwin-only).
 
@@ -165,7 +163,7 @@
             message = ''
               nx.programs.prism.agent.isolation.default = "bwrap" requires Linux.
               bubblewrap is not available on ${pkgs.stdenv.hostPlatform.system}.
-              Use "podman" or "host" instead, or only set "bwrap" on Linux hosts.
+              Use "host" instead, or only set "bwrap" on Linux hosts.
             '';
           }
           {
@@ -177,7 +175,7 @@
             message = ''
               nx.programs.prism.agent.isolation.default = "sandbox-exec" requires Darwin.
               sandbox-exec is not available on ${pkgs.stdenv.hostPlatform.system}.
-              Use "podman" or "bwrap" instead, or only set "sandbox-exec" on Darwin hosts.
+              Use "bwrap" or "host" instead, or only set "sandbox-exec" on Darwin hosts.
             '';
           }
         ];
