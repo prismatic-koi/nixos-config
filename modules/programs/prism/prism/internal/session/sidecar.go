@@ -350,7 +350,7 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	//
 	//   - podman:               --container --port --agent-role --plugin-path …
 	//   - bwrap, sandbox-exec:  --port --agent-role --plugin-path …  (no --container)
-	//   - host:                 nil (the sidecar is not started for host)
+	//   - host:                 --port --agent-role --plugin-path …  (same as bwrap/sandbox-exec)
 	//
 	// The pre-refactor branch lived at internal/session/sidecar.go:317-352.
 	if opts.IsolationMode != "" {
