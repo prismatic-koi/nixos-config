@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -723,6 +724,39 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if len(req.Abtest) == 2 && req.Profile != "" {
 			writeError(w, http.StatusBadRequest, "--abtest and --profile are mutually exclusive")
 			return
+		}
+		// Validate abtest profile names against the known profile set to prevent
+		// flag injection (e.g. a name like "--isolation host" would inject CLI
+		// flags into the host-side prism spawn invocation).
+		if len(req.Abtest) == 2 {
+			// Structural check: reject names that could be interpreted as flags
+			// or contain path separators.
+			validProfileName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+			for _, name := range req.Abtest {
+				if !validProfileName.MatchString(name) {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf(
+						"invalid abtest profile name %q: must contain only letters, digits, hyphens, and underscores", name))
+					return
+				}
+			}
+			// Semantic check: validate against the known profile set when
+			// profiles.json is accessible. On load error, the structural check
+			// above is still in effect.
+			if pf, pfErr := config.LoadProfiles(); pfErr == nil {
+				known := config.AvailableProfileNames(pf)
+				knownSet := make(map[string]bool, len(known))
+				for _, n := range known {
+					knownSet[n] = true
+				}
+				for _, name := range req.Abtest {
+					if !knownSet[name] {
+						writeError(w, http.StatusBadRequest, fmt.Sprintf(
+							"unknown abtest profile name %q: must be one of: %s",
+							name, strings.Join(known, ", ")))
+						return
+					}
+				}
+			}
 		}
 		// Validate harness before spawning. Default empty string to "opencode"
 		// for backwards compatibility with clients that don't send the field.

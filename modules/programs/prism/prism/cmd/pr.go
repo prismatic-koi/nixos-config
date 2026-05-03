@@ -259,6 +259,11 @@ var prCmd = &cobra.Command{
 			return fmt.Errorf("unknown harness %q: valid harnesses: %s", effectiveHarness, strings.Join(harness.Names(), ", "))
 		}
 
+		modelsByRole, modelOverrideErr := parseModelOverrides(modelOverrideFlag)
+		if modelOverrideErr != nil {
+			return modelOverrideErr
+		}
+
 		prHarness, _ := harness.New(effectiveHarness, "", nil, "", "")
 		opts := session.Opts{
 			Prompt:           promptFlag,
@@ -269,6 +274,7 @@ var prCmd = &cobra.Command{
 			ConfigContent:    configContent,
 			ConfigEnvVarName: prHarness.ConfigEnvVar(),
 			RuntimeEnvVars:   prHarness.RuntimeEnv(),
+			ModelsByRole:     modelsByRole,
 			// ForceFresh=true: prism pr creates a new worktree; if a session
 			// with the same name exists it is a stale zombie and should be
 			// killed, matching the same semantics as prism spawn.
