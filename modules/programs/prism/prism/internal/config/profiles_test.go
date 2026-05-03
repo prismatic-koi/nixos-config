@@ -1293,3 +1293,66 @@ func TestApplyProfileToBlob_RejectsMalformedBlob(t *testing.T) {
 		t.Fatal("ApplyProfileToBlob(garbage): want parse error")
 	}
 }
+
+// ── thinking → variant translation (#1299) ────────────────────────────────────
+
+// TestBuildConfigContent_OffThinkingTranslatesToNoneVariant verifies that a
+// profile slot with thinking="off" produces variant="none" in the opencode
+// config content (the PI zero value must be translated to the opencode zero
+// value).
+func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
+	pf := sampleProfilesFile()
+	// Add an "off-thinking" profile whose coordinator slot uses thinking="off".
+	pf.Profiles["off-test"] = config.ProfileEntry{
+		"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-6", Thinking: "off"},
+		"worker":      {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", Thinking: "off"},
+	}
+	pf.RoleMapping = map[string][]string{
+		"primary":     {"coordinator"},
+		"secondary":   {"worker"},
+		"lightweight": {},
+	}
+	out, err := config.BuildConfigContent(pf, "off-test", "", "")
+	if err != nil {
+		t.Fatalf("BuildConfigContent: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	agents, _ := cfg["agent"].(map[string]any)
+	for _, role := range []string{"coordinator", "worker"} {
+		entry, ok := agents[role].(map[string]any)
+		if !ok {
+			continue
+		}
+		// thinking="off" must produce variant="none" for opencode, not "off".
+		if v, hasVariant := entry["variant"]; hasVariant && v != "none" {
+			t.Errorf("agent.%s variant: got %v, want none (translated from off)", role, v)
+		}
+		// Must not pass "off" through to opencode.
+		if v, hasVariant := entry["variant"]; hasVariant && v == "off" {
+			t.Errorf("agent.%s variant: got 'off' — should have been translated to 'none'", role)
+		}
+	}
+}
+
+// TestBuildConfigContent_NonZeroThinkingPassesThrough verifies that a
+// non-zero thinking level (e.g. "medium") is passed through unchanged to
+// opencode's variant field.
+func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
+	pf := sampleProfilesFile()
+	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "", "")
+	if err != nil {
+		t.Fatalf("BuildConfigContent: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	agents := cfg["agent"].(map[string]any)
+	worker := agents["worker"].(map[string]any)
+	if worker["variant"] != "medium" {
+		t.Errorf("worker variant: got %v, want medium (non-zero thinking passed through unchanged)", worker["variant"])
+	}
+}
