@@ -264,12 +264,16 @@
             # round-trip cleanly.
             profiles = lib.mapAttrs (
               _name: profileEntry:
-              lib.mapAttrs (_role: roleSlot: {
-                provider = roleSlot.provider or "";
-                model = roleSlot.model;
-                thinking = roleSlot.thinking or "off";
-                systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
-              } // (if (roleSlot.harness or "") == "" then { } else { harness = roleSlot.harness; })) profileEntry
+              lib.mapAttrs (
+                _role: roleSlot:
+                {
+                  provider = roleSlot.provider or "";
+                  model = roleSlot.model;
+                  thinking = roleSlot.thinking or "off";
+                  systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
+                }
+                // (if (roleSlot.harness or "") == "" then { } else { harness = roleSlot.harness; })
+              ) profileEntry
             ) config.nx.programs.prism.profiles.data.profiles;
             # Container role configs — full opencode.json blobs injected as
             # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
