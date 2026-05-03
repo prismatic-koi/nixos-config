@@ -1,8 +1,7 @@
 package container
 
-// AC-6 round-trip test for #1050: confirm that bwrap.BuildArgs and
-// Manager.buildRunArgs both reference the same per-session host-API socket
-// directory derived from a sidecar-style path.
+// AC-6 round-trip test for #1050: confirm that bwrap.BuildArgs references the
+// same per-session host-API socket directory derived from a sidecar-style path.
 //
 // This test cannot import internal/session directly (session imports
 // container, which would create a cycle), so it re-derives the expected
@@ -29,11 +28,10 @@ func expectedSessionDirName(sessionName string) string {
 	return hex.EncodeToString(sum[:])[:hashLen]
 }
 
-// TestHostAPIPath_RoundTrip_SidecarBwrapPodmanAgree verifies that for the
-// same sidecar-style HostAPISockPath, the bwrap and podman builders both
-// reference the same directory — and that directory is the one a sidecar
-// would produce via session.SidecarHostAPIPath.
-func TestHostAPIPath_RoundTrip_SidecarBwrapPodmanAgree(t *testing.T) {
+// TestHostAPIPath_RoundTrip_BwrapUsesCorrectSocketDir verifies that for a
+// sidecar-style HostAPISockPath, the bwrap builder references the same
+// directory that a sidecar would produce via session.SidecarHostAPIPath.
+func TestHostAPIPath_RoundTrip_BwrapUsesCorrectSocketDir(t *testing.T) {
 	cases := []struct {
 		name    string
 		session string
@@ -68,7 +66,6 @@ func TestHostAPIPath_RoundTrip_SidecarBwrapPodmanAgree(t *testing.T) {
 			wantDir := filepath.Join(stateHome, "prism", "run", expectedSessionDirName(tc.session))
 			sockPath := filepath.Join(wantDir, "hostapi.sock")
 
-			// 1) Podman: m.buildRunArgs must volume-mount wantDir at /var/run/prism-host.
 			m, _, cleanup := bwrapFixture(t, Config{
 				SessionName:     tc.session,
 				Worktree:        t.TempDir(),
@@ -77,16 +74,7 @@ func TestHostAPIPath_RoundTrip_SidecarBwrapPodmanAgree(t *testing.T) {
 			})
 			defer cleanup()
 
-			podmanArgs := m.buildRunArgs()
-			gotPodmanDir := findVolumeSrcByDst(podmanArgs, "/var/run/prism-host")
-			if gotPodmanDir == "" {
-				t.Fatalf("podman args do not include /var/run/prism-host volume mount: %v", podmanArgs)
-			}
-			if gotPodmanDir != wantDir {
-				t.Errorf("podman volume src = %q, want %q (sidecar-derived)", gotPodmanDir, wantDir)
-			}
-
-			// 2) Bwrap: BuildArgs must --bind wantDir to itself.
+			// Bwrap: BuildArgs must --bind wantDir to itself.
 			b := &bwrapIsolator{name: m.name}
 			bwrapArgs := b.BuildArgs(m)
 			gotBwrapDir := findBindSrcByDst(bwrapArgs, wantDir)
@@ -96,22 +84,6 @@ func TestHostAPIPath_RoundTrip_SidecarBwrapPodmanAgree(t *testing.T) {
 			}
 		})
 	}
-}
-
-// findVolumeSrcByDst scans podman --volume args for "<src>:<dst>[:<opts>]" and
-// returns src for the first arg whose dst matches.
-func findVolumeSrcByDst(args []string, dst string) string {
-	for i := 0; i < len(args)-1; i++ {
-		if args[i] != "--volume" {
-			continue
-		}
-		spec := args[i+1]
-		parts := strings.SplitN(spec, ":", 3)
-		if len(parts) >= 2 && parts[1] == dst {
-			return parts[0]
-		}
-	}
-	return ""
 }
 
 // findBindSrcByDst scans bwrap --bind args for "<src> <dst>" pairs and returns

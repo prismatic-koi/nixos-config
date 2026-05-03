@@ -1171,12 +1171,12 @@ func TestResolveAgentConfigContent_HostMode(t *testing.T) {
 // This is the primary regression test for issue #784 (silent build-agent spawn).
 func TestResolveAgentConfigContent_ContainerMode_NilProfilesFile(t *testing.T) {
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("podman", nil, agentName, "")
+		_, err := review.ResolveAgentConfigContent("bwrap", nil, agentName, "")
 		if err == nil {
-			t.Errorf("podman mode, nil pf, agent %q: expected error, got nil", agentName)
+			t.Errorf("bwrap mode, nil pf, agent %q: expected error, got nil", agentName)
 		}
 		if !findSubstring(err.Error(), "nil ProfilesFile") {
-			t.Errorf("podman mode, nil pf, agent %q: error should mention 'nil ProfilesFile', got: %v", agentName, err)
+			t.Errorf("bwrap mode, nil pf, agent %q: error should mention 'nil ProfilesFile', got: %v", agentName, err)
 		}
 	}
 }
@@ -1214,12 +1214,12 @@ func TestResolveAgentConfigContent_ContainerMode_EmptyBlob(t *testing.T) {
 		ContainerReviewContextConfig:  "",
 	}
 	for _, agentName := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		_, err := review.ResolveAgentConfigContent("podman", stale, agentName, "")
+		_, err := review.ResolveAgentConfigContent("bwrap", stale, agentName, "")
 		if err == nil {
-			t.Errorf("podman mode, empty blob, agent %q: expected error, got nil (would have silently spawned as build agent)", agentName)
+			t.Errorf("bwrap mode, empty blob, agent %q: expected error, got nil (would have silently spawned as build agent)", agentName)
 		}
 		if !findSubstring(err.Error(), "stale") {
-			t.Errorf("podman mode, empty blob, agent %q: error should mention 'stale', got: %v", agentName, err)
+			t.Errorf("bwrap mode, empty blob, agent %q: error should mention 'stale', got: %v", agentName, err)
 		}
 	}
 }
@@ -1261,13 +1261,13 @@ func TestResolveAgentConfigContent_ContainerMode_Success(t *testing.T) {
 		"review-context":  pf.ContainerReviewContextConfig,
 	}
 	for agentName, wantBlob := range want {
-		blob, err := review.ResolveAgentConfigContent("podman", pf, agentName, "")
+		blob, err := review.ResolveAgentConfigContent("bwrap", pf, agentName, "")
 		if err != nil {
-			t.Errorf("podman mode, agent %q: unexpected error: %v", agentName, err)
+			t.Errorf("bwrap mode, agent %q: unexpected error: %v", agentName, err)
 			continue
 		}
 		if blob != wantBlob {
-			t.Errorf("podman mode, agent %q: got blob %q, want %q", agentName, blob, wantBlob)
+			t.Errorf("bwrap mode, agent %q: got blob %q, want %q", agentName, blob, wantBlob)
 		}
 	}
 }
@@ -1309,9 +1309,9 @@ func TestResolveAgentConfigContent_ContainerMode_WorkerRole(t *testing.T) {
 	// Worker and coordinator are not review agents — ContainerConfigForRole
 	// returns their blobs, but they are not set in sampleReviewProfilesFile.
 	// Empty blob should produce an error.
-	_, err := review.ResolveAgentConfigContent("podman", pf, "worker", "")
+	_, err := review.ResolveAgentConfigContent("bwrap", pf, "worker", "")
 	if err == nil {
-		t.Error("podman mode, agent 'worker': expected error for empty blob, got nil")
+		t.Error("bwrap mode, agent 'worker': expected error for empty blob, got nil")
 	}
 }
 
@@ -1353,7 +1353,7 @@ func TestResolveAgentConfigContent_OverlaysRuntimeActiveProfile(t *testing.T) {
 		ContainerReviewGoalConfig: `{"$schema":"https://opencode.ai/opencode.json","default_agent":"review-goal","model":"anthropic/claude-sonnet-4-6","agent":{"review-goal":{"model":"anthropic/claude-sonnet-4-6","variant":"none"}}}`,
 	}
 
-	blob, err := review.ResolveAgentConfigContent("podman", pf, "review-goal", "gemini-hybrid")
+	blob, err := review.ResolveAgentConfigContent("bwrap", pf, "review-goal", "gemini-hybrid")
 	if err != nil {
 		t.Fatalf("ResolveAgentConfigContent: %v", err)
 	}
@@ -1385,7 +1385,7 @@ func TestResolveAgentConfigContent_DefaultProfileIsByteIdentical(t *testing.T) {
 
 	cases := []string{"", "anthropic"}
 	for _, active := range cases {
-		blob, err := review.ResolveAgentConfigContent("podman", pf, "review-goal", active)
+		blob, err := review.ResolveAgentConfigContent("bwrap", pf, "review-goal", active)
 		if err != nil {
 			t.Fatalf("active=%q: %v", active, err)
 		}

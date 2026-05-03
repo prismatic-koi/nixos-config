@@ -4,8 +4,8 @@ package cmd
 // (issue #904). These mirror the contract tests in spawn_config_write_test.go
 // and verify that:
 //
-//	1. The "sandboxed" gate (isoMode == IsolationPodman || isoMode == IsolationBwrap)
-//	   correctly admits bwrap and podman, and rejects host.
+//	1. The "sandboxed" gate (isoMode == IsolationBwrap)
+//	   correctly admits bwrap and rejects host.
 //	2. The WriteOpencodeConfig write path used by pr.go
 //	   (container.OpencodeConfigFilePath(container.NameForSession(tmuxSession)))
 //	   matches the Manager's read path, so prism agent-run's reconstructed
@@ -31,23 +31,21 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestPrBwrapSandboxedGate asserts that the boolean gate widening the
-// configContent generation block matches the post-#898 spec:
-//   - IsolationPodman → sandboxed = true
-//   - IsolationBwrap  → sandboxed = true  (new in #904 for pr.go)
+// TestPrBwrapSandboxedGate asserts that the boolean gate for
+// configContent generation matches the bwrap-only spec:
+//   - IsolationBwrap  → sandboxed = true
 //   - IsolationHost   → sandboxed = false
 func TestPrBwrapSandboxedGate(t *testing.T) {
 	cases := []struct {
 		mode      config.IsolationMode
 		sandboxed bool
 	}{
-		{config.IsolationPodman, true},
 		{config.IsolationBwrap, true},
 		{config.IsolationHost, false},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.mode), func(t *testing.T) {
-			got := tc.mode == config.IsolationPodman || tc.mode == config.IsolationBwrap
+			got := tc.mode == config.IsolationBwrap
 			if got != tc.sandboxed {
 				t.Errorf("sandboxed gate for mode %q = %v, want %v", tc.mode, got, tc.sandboxed)
 			}
@@ -194,40 +192,6 @@ func TestPrHostModeNoWrite(t *testing.T) {
 	path := container.OpencodeConfigFilePath(containerName)
 	if _, err := os.Stat(path); err == nil {
 		t.Errorf("host-mode pr must not write opencode temp file %q, but it exists", path)
-		_ = os.Remove(path)
-	}
-}
-
-// TestPrPodmanModeNoWriteFromPrCmd asserts that podman mode does NOT write
-// the opencode temp file from pr.go. The podman sidecar's Create() flow
-// handles the file itself — writing it in pr.go for podman would be a no-op
-// at best and a source of drift at worst.
-func TestPrPodmanModeNoWriteFromPrCmd(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("bwrap mode is Linux-only")
-	}
-
-	t.Setenv("TMPDIR", t.TempDir())
-
-	const branchName = "pr-podman"
-	bareRoot := filepath.Join(t.TempDir(), "myrepo")
-	worktreePath := filepath.Join(bareRoot, branchName)
-	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
-	containerName := container.NameForSession(tmuxSessionName)
-
-	isoMode := config.IsolationPodman
-	configContent := `{"model":"pr-worker-model"}`
-
-	// Simulate the pr.go guard — podman mode must NOT fire it.
-	if isoMode == config.IsolationBwrap && configContent != "" {
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
-			t.Fatalf("WriteOpencodeConfig: %v", err)
-		}
-	}
-
-	path := container.OpencodeConfigFilePath(containerName)
-	if _, err := os.Stat(path); err == nil {
-		t.Errorf("podman pr must not write opencode temp file %q (sidecar handles it), but it exists", path)
 		_ = os.Remove(path)
 	}
 }

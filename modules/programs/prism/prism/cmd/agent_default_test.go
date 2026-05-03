@@ -161,32 +161,3 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_PodmanIsolationMode verifies that IsolationMode="podman"
-// produces the correct "podman attach --sig-proxy=false <container-name>" command.
-func TestBuildOpencodeCmd_PodmanIsolationMode(t *testing.T) {
-	re := opencodeRuntimeEnv()
-	cases := []struct {
-		opts session.Opts
-		want string
-	}{
-		// Podman mode with SessionName — should use podman attach with the
-		// stable container name derived from the session name (single-quoted for
-		// shell safety when embedded in the readiness wait script).
-		{session.Opts{IsolationMode: "podman", SessionName: "repo@main", Port: 14000}, "podman attach --sig-proxy=false 'prism-repo-main'"},
-		// Different session name — container name is derived correctly.
-		{session.Opts{IsolationMode: "podman", SessionName: "nixos-config@feature", Port: 14042}, "podman attach --sig-proxy=false 'prism-nixos-config-feature'"},
-		// Agent role is irrelevant in podman mode (podman attach is role-agnostic).
-		{session.Opts{IsolationMode: "podman", SessionName: "repo@branch", Port: 14001, Agent: "coordinator"}, "podman attach --sig-proxy=false 'prism-repo-branch'"},
-		// Podman mode with no SessionName falls back to direct launch (safety net).
-		// The fallback calls buildDirectOpencodeCmd, which prepends RuntimeEnvVars.
-		{session.Opts{IsolationMode: "podman", SessionName: "", Port: 0, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker"},
-		// Host mode includes the timeout prefix (via RuntimeEnvVars).
-		{session.Opts{IsolationMode: "host", Port: 14000, Agent: "worker", RuntimeEnvVars: re}, bashTimeoutPrefix + "opencode --agent worker --port 14000 --hostname 127.0.0.1"},
-	}
-	for _, tc := range cases {
-		got := session.BuildOpencodeCmd(tc.opts)
-		if got != tc.want {
-			t.Errorf("BuildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
-		}
-	}
-}

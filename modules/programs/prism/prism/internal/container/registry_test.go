@@ -93,15 +93,14 @@ func TestFor_UnknownMode_DoesNotPanic(t *testing.T) {
 	_, _ = For("not-a-mode", ConstructorOpts{Name: "test"})
 }
 
-// ── Names returns all four registered modes ───────────────────────────────────
+// ── Names returns all three registered modes ──────────────────────────────────
 
-func TestNames_ReturnsAllFourModes(t *testing.T) {
+func TestNames_ReturnsAllThreeModes(t *testing.T) {
 	names := Names()
 
 	want := []config.IsolationMode{
 		config.IsolationBwrap,
 		config.IsolationHost,
-		config.IsolationPodman,
 		config.IsolationSandboxExec,
 	}
 
@@ -119,19 +118,6 @@ func TestNames_ReturnsAllFourModes(t *testing.T) {
 }
 
 // ── For returns the right isolator type ──────────────────────────────────────
-
-func TestFor_PodmanMode_ReturnsPodmanIsolator(t *testing.T) {
-	iso, err := For(config.IsolationPodman, ConstructorOpts{Name: "test-session"})
-	if err != nil {
-		t.Fatalf("For(IsolationPodman) returned error: %v", err)
-	}
-	if iso.Name() != config.IsolationPodman {
-		t.Errorf("isolator Name() = %q, want %q", iso.Name(), config.IsolationPodman)
-	}
-	if !iso.Capabilities().IsContainer {
-		t.Error("podmanIsolator.Capabilities().IsContainer should be true")
-	}
-}
 
 func TestFor_HostMode_ReturnsHostIsolator(t *testing.T) {
 	iso, err := For(config.IsolationHost, ConstructorOpts{Name: "test-session"})
@@ -164,33 +150,6 @@ func TestFor_SandboxExecMode_ReturnsSandboxExecIsolator(t *testing.T) {
 }
 
 // ── Capabilities correctness ──────────────────────────────────────────────────
-
-func TestCapabilities_Podman(t *testing.T) {
-	iso, _ := For(config.IsolationPodman, ConstructorOpts{Name: "test"})
-	caps := iso.Capabilities()
-
-	if !caps.IsContainer {
-		t.Error("podman: IsContainer should be true")
-	}
-	if !caps.OwnsContainerLifecycle {
-		t.Error("podman: OwnsContainerLifecycle should be true")
-	}
-	if !caps.NeedsConfigBlob {
-		t.Error("podman: NeedsConfigBlob should be true")
-	}
-	if caps.NeedsHostAPISocket {
-		t.Error("podman: NeedsHostAPISocket should be false")
-	}
-	if !caps.UsesContainerHarness {
-		t.Error("podman: UsesContainerHarness should be true")
-	}
-	if !caps.RestartOnExit {
-		t.Error("podman: RestartOnExit should be true")
-	}
-	if !caps.NeedsReadinessWait {
-		t.Error("podman: NeedsReadinessWait should be true")
-	}
-}
 
 func TestCapabilities_Bwrap(t *testing.T) {
 	iso, _ := For(config.IsolationBwrap, ConstructorOpts{Name: "test"})
@@ -258,7 +217,7 @@ func TestResolve_IsolationFlagTakesPrecedence(t *testing.T) {
 	mode, err := Resolve(ResolveInput{
 		IsolationFlag:        "bwrap",
 		IsolationFlagChanged: true,
-		ConfigDefault:        config.IsolationPodman,
+		ConfigDefault:        config.IsolationHost,
 	})
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
@@ -271,26 +230,13 @@ func TestResolve_IsolationFlagTakesPrecedence(t *testing.T) {
 func TestResolve_DBIsolationMode_UsedWhenFlagsAbsent(t *testing.T) {
 	mode, err := Resolve(ResolveInput{
 		DBIsolationMode: "bwrap",
-		ConfigDefault:   config.IsolationPodman,
+		ConfigDefault:   config.IsolationHost,
 	})
 	if err != nil {
 		t.Fatalf("Resolve returned error: %v", err)
 	}
 	if mode != config.IsolationBwrap {
 		t.Errorf("mode = %q, want %q", mode, config.IsolationBwrap)
-	}
-}
-
-func TestResolve_ConfigDefault_Podman(t *testing.T) {
-	// ConfigDefault=podman: without any flags, should resolve to podman.
-	mode, err := Resolve(ResolveInput{
-		ConfigDefault: config.IsolationPodman,
-	})
-	if err != nil {
-		t.Fatalf("Resolve returned error: %v", err)
-	}
-	if mode != config.IsolationPodman {
-		t.Errorf("mode = %q, want %q", mode, config.IsolationPodman)
 	}
 }
 
