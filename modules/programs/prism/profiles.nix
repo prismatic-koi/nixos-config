@@ -69,10 +69,10 @@
           ];
         };
 
-
         # Determine the system prompt file for a given role.
         # Maps role names to agent files at ~/.config/opencode/agents/<file>.md.
-        roleToSystemPromptFile = role:
+        roleToSystemPromptFile =
+          role:
           let
             roleFileMap = {
               coordinator = "coordinator";
@@ -96,10 +96,15 @@
 
         # Stamp a slot value across the given list of role names, adding
         # role-specific systemPromptPath values for P2.AGENTRUN support.
-        slotsForWithPrompts = roles: baseSlot:
-          lib.genAttrs roles (role: baseSlot // {
-            systemPromptPath = roleToSystemPromptFile role;
-          });
+        slotsForWithPrompts =
+          roles: baseSlot:
+          lib.genAttrs roles (
+            role:
+            baseSlot
+            // {
+              systemPromptPath = roleToSystemPromptFile role;
+            }
+          );
 
         # Build a profile by combining tiered slot values. Each tier is a
         # `{primary, secondary, lightweight}` triple of slot values — the
@@ -112,15 +117,15 @@
           // (slotsForWithPrompts roleMapping.secondary tiers.secondary)
           // (slotsForWithPrompts roleMapping.lightweight tiers.lightweight);
 
-        # Convenience: build a slot. `thinking` defaults to "none" to preserve
-        # current opencode behaviour (renders as variant: "none"). `provider`
-        # defaults to "" — populated explicitly by the migrated profiles below.
+        # Convenience: build a slot. `thinking` defaults to "off" (the PI harness
+        # zero value). `provider` defaults to "" — populated explicitly by the
+        # migrated profiles below.
         # `systemPromptPath` is null until P2.AGENTRUN populates per-role prompts.
         slot =
           {
             provider ? "",
             model,
-            thinking ? "none",
+            thinking ? "off",
             systemPromptPath ? null,
           }:
           {
@@ -253,7 +258,7 @@
               lib.mapAttrs (_role: roleSlot: {
                 provider = roleSlot.provider or "";
                 model = roleSlot.model;
-                thinking = roleSlot.thinking or "none";
+                thinking = roleSlot.thinking or "off";
                 systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
               }) profileEntry
             ) config.nx.programs.prism.profiles.data.profiles;
@@ -288,14 +293,20 @@
             container_resources = config.nx.programs.prism._internal.agentResources;
           };
 
+        # Translate a profile thinking value to the opencode variant string.
+        # The canonical zero value in profiles is "off" (the PI harness
+        # convention), but opencode expects "none" as its zero value.
+        thinkingToVariant = thinking: if thinking == "off" then "none" else thinking;
+
         # applyProfile patches `model` and `variant` onto each baseAgent that
         # the active profile defines a slot for. Agents not present in the
         # profile (e.g. `build`) are returned unchanged so they inherit the
         # top-level opencode model.
         #
         # The mapping is direct under the role-keyed schema: `agentName` is the
-        # slot key. `slot.thinking` is rendered as opencode's `variant` to
-        # preserve bit-identical output with the pre-#1206 schema.
+        # slot key. `slot.thinking` is translated to opencode's `variant` via
+        # thinkingToVariant ("off" → "none") to preserve bit-identical output
+        # with the pre-#1206 schema.
         applyProfile =
           profileName: baseAgents:
           let
@@ -312,7 +323,7 @@
               cfg
               // {
                 model = slotCfg.model;
-                variant = slotCfg.thinking;
+                variant = thinkingToVariant slotCfg.thinking;
               }
           ) baseAgents;
       };
