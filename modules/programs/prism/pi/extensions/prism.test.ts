@@ -35,6 +35,9 @@ import {
   GUARD_STATE_ENTRY_TYPE,
   DOOM_LOOP_THRESHOLD,
   REVIEW_CYCLE_THRESHOLD,
+  // Status bar
+  formatPrismStatus,
+  extractBranch,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -997,5 +1000,74 @@ describe("isGitPush", () => {
 
   it("does not match unrelated commands", () => {
     assert.equal(isGitPush("go test ./..."), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// formatPrismStatus
+// ---------------------------------------------------------------------------
+
+describe("formatPrismStatus — coordinator", () => {
+  it("shows role and branch", () => {
+    const text = formatPrismStatus("coordinator", "main", null, 0)
+    assert.equal(text, "[coordinator] main")
+  })
+})
+
+describe("formatPrismStatus — worker", () => {
+  it("shows role and branch", () => {
+    const text = formatPrismStatus("worker", "fix-login-redirect", null, 0)
+    assert.equal(text, "[worker] fix-login-redirect")
+  })
+
+  it("does not include PR info even if cycles > 0", () => {
+    const text = formatPrismStatus("worker", "some-branch", "42", 2)
+    assert.equal(text, "[worker] some-branch")
+  })
+})
+
+describe("formatPrismStatus — review", () => {
+  it("includes PR number and cycle count", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "42", 2)
+    assert.equal(text, "[review] fix-login-redirect · PR#42 · 2 cycles")
+  })
+
+  it("uses singular 'cycle' when count is 1", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "42", 1)
+    assert.equal(text, "[review] fix-login-redirect · PR#42 · 1 cycle")
+  })
+
+  it("omits PR info when pr_number is null", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", null, 0)
+    assert.equal(text, "[review] fix-login-redirect")
+  })
+})
+
+describe("formatPrismStatus — unknown role", () => {
+  it("shows [unknown] when role is empty", () => {
+    const text = formatPrismStatus("", "main", null, 0)
+    assert.equal(text, "[unknown] main")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractBranch
+// ---------------------------------------------------------------------------
+
+describe("extractBranch", () => {
+  it("extracts the part after @ in session_name", () => {
+    assert.equal(extractBranch("nixos-config@fix-login"), "fix-login")
+  })
+
+  it("returns full string when no @ is present", () => {
+    assert.equal(extractBranch("main"), "main")
+  })
+
+  it("handles multiple @ signs — uses last segment after first @", () => {
+    assert.equal(extractBranch("nixos-config@fix@extra"), "fix@extra")
+  })
+
+  it("returns empty string for empty input", () => {
+    assert.equal(extractBranch(""), "")
   })
 })

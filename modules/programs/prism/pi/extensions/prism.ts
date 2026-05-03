@@ -457,6 +457,51 @@ export const TRUNCATION_SENTINEL = "…[truncated]"
 export const HARNESS_NAME = "pi"
 
 // ---------------------------------------------------------------------------
+// Status bar helper — exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Format the prism status bar text for PI's footer.
+ *
+ * Format:
+ *   [coordinator] main
+ *   [worker] fix-login-redirect
+ *   [review] PR#42 · 2 cycles
+ *
+ * @param role         - session role from hello_ack (e.g. "coordinator", "worker", "review")
+ * @param branch       - branch label extracted from session_name (part after "@", or full name)
+ * @param prNumber     - detected PR number (null when unknown)
+ * @param cycles       - current review cycle count
+ */
+export function formatPrismStatus(
+  role: string,
+  branch: string,
+  prNumber: string | null,
+  cycles: number,
+): string {
+  const roleLabel = role.length > 0 ? role : "unknown"
+  const prefix = `[${roleLabel}] ${branch}`
+  if (roleLabel === "review" && prNumber !== null) {
+    const cycleLabel = cycles === 1 ? "1 cycle" : `${cycles} cycles`
+    return `${prefix} · PR#${prNumber} · ${cycleLabel}`
+  }
+  return prefix
+}
+
+/**
+ * Extract the branch label from a session_name.
+ * If session_name contains "@", return the part after it.
+ * Otherwise return the full session_name.
+ */
+export function extractBranch(sessionName: string): string {
+  const atIdx = sessionName.indexOf("@")
+  if (atIdx !== -1) {
+    return sessionName.slice(atIdx + 1)
+  }
+  return sessionName
+}
+
+// ---------------------------------------------------------------------------
 // Truncation helpers — exported for unit testing.
 // ---------------------------------------------------------------------------
 
@@ -951,6 +996,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // are suppressed — review agents legitimately repeat tool patterns.
   let isReviewSession = false
 
+  // Session identity captured from hello_ack. Used for status bar display.
+  let sessionRole = ""
+  let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
+
   // Flag: git push was detected; cleared after the next turn_start so the
   // reminder fires exactly once.
   let pendingGitPushReminder = false
@@ -1067,7 +1116,28 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (role === "review") {
           isReviewSession = true
         }
+        sessionRole = role
+        // Override branch from hello_ack session_name if provided.
+        if (typeof f.session_name === "string" && f.session_name.length > 0) {
+          sessionBranch = extractBranch(f.session_name)
+        }
         handshakeComplete = true
+
+        // Set the status bar immediately after handshake.
+        const prCycles = sessionRole === "review"
+          ? (reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0)
+          : 0
+        const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+        lastCtx?.ui?.setStatus("prism", statusText)
+        if (writer) {
+          writer.write({
+            type: "session_status",
+            role: sessionRole,
+            branch: sessionBranch,
+            review_cycles: prCycles,
+            pr_number: reviewCycleState.detectedPrNumber ?? "",
+          })
+        }
         return
       }
 
@@ -1170,6 +1240,22 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // Clear per-turn review-cycle deduplication so the next batch of
     // review agent invocations counts as a fresh cycle.
     reviewCycleState.pendingCycleCount = false
+
+    // Refresh status bar on each turn_start so review-cycle count is live.
+    if (handshakeComplete) {
+      const prCycles = reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0
+      const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+      lastCtx?.ui?.setStatus("prism", statusText)
+      if (writer) {
+        writer.write({
+          type: "session_status",
+          role: sessionRole,
+          branch: sessionBranch,
+          review_cycles: prCycles,
+          pr_number: reviewCycleState.detectedPrNumber ?? "",
+        })
+      }
+    }
 
     if (!isReviewSession) {
       // Inject review-cycle escalation warning when the threshold is exceeded.
