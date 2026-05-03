@@ -53,12 +53,12 @@
             default = "5g";
             example = "4g";
             description = ''
-              Maximum memory for each agent container, passed to podman run --memory.
+              Maximum memory for each agent session (passed to bwrap cgroup limits).
               Set to an empty string to disable the limit (no flag emitted).
-              Default of 5g is chosen for a 32 GB host: observed steady-state per-container
+              Default of 5g is chosen for a 32 GB host: observed steady-state per-session
               usage is 300–660 MB; Nix builds peak around 4.5 GB before releasing memory.
               5g provides headroom for peak Nix builds while making the cap functional —
-              a runaway container will OOM-kill itself at 5 GB rather than dragging the host
+              a runaway session will OOM-kill itself at 5 GB rather than dragging the host
               to a panic.
             '';
           };
@@ -68,10 +68,10 @@
             default = "5g";
             example = "5g";
             description = ''
-              Maximum combined memory+swap for each agent container, passed to
-              podman run --memory-swap. Equal to memoryMax by default, which
-              effectively disables swap for the container so a runaway process
-              dies fast rather than thrashing. Set to an empty string to disable.
+              Maximum combined memory+swap for each agent session.
+              Equal to memoryMax by default, which effectively disables swap
+              for the session so a runaway process dies fast rather than thrashing.
+              Set to an empty string to disable.
             '';
           };
 
@@ -80,8 +80,8 @@
             default = 4096;
             example = 2048;
             description = ''
-              Maximum number of processes (PIDs) for each agent container, passed
-              to podman run --pids-limit. Set to 0 to disable the limit.
+              Maximum number of processes (PIDs) for each agent session.
+              Set to 0 to disable the limit.
             '';
           };
         };
@@ -136,7 +136,6 @@
   };
 
   imports = [
-    ./container-image.nix
     ./container-tokens.nix
     ./neovim
     ./opencode.nix
