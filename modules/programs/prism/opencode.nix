@@ -608,13 +608,6 @@
                       disable = true;
                     };
                   }
-                  // {
-                    review-goal = { };
-                    review-code = { };
-                    review-security = { };
-                    review-qa = { };
-                    review-context = { };
-                  }
                 );
             # Strip variant from disabled agents so their primary-role "medium"
             # doesn't poison the model's thinking level for the worker.
@@ -760,11 +753,6 @@
           title = { };
           summary = { };
           compaction = { };
-          review-goal = { };
-          review-code = { };
-          review-security = { };
-          review-qa = { };
-          review-context = { };
         });
         # lib.mkIf cannot be used here — this is serialised with builtins.toJSON,
         # not processed by the module system. Use optionalAttrs so the key is
