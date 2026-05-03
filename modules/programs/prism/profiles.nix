@@ -221,6 +221,11 @@
             ];
           };
         };
+
+        # Translate a profile thinking value to the opencode variant string.
+        # The canonical zero value in profiles is "off" (the PI harness
+        # convention), but opencode expects "none" as its zero value.
+        thinkingToVariant = thinking: if thinking == "off" then "none" else thinking;
       in
       {
         data = {
@@ -292,11 +297,6 @@
             # → prism sidecar → container.Config → buildRunArgs → podman run.
             container_resources = config.nx.programs.prism._internal.agentResources;
           };
-
-        # Translate a profile thinking value to the opencode variant string.
-        # The canonical zero value in profiles is "off" (the PI harness
-        # convention), but opencode expects "none" as its zero value.
-        thinkingToVariant = thinking: if thinking == "off" then "none" else thinking;
 
         # applyProfile patches `model` and `variant` onto each baseAgent that
         # the active profile defines a slot for. Agents not present in the
