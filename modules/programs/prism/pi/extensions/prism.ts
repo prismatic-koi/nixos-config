@@ -1045,9 +1045,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
     })
     socket.on("close", () => {
       connected = false
+      socket = null
       writer = null
+      handshakeComplete = false
       // Per wire spec §7.6: if the sidecar dies, PI continues running
-      // standalone. We don't try to reconnect.
+      // standalone. We don't try to reconnect here; the sidecar's reconnect
+      // loop re-accepts on session_start.
     })
     socket.on("connect", () => {
       connected = true
@@ -1185,6 +1188,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
     lastCtx = ctx
     // Connect on session_start. The wire spec requires the extension to dial
     // out; the sidecar has already bound the listener.
+    //
+    // Guard: if a socket connection is already active (e.g. after /new
+    // triggers session_start while the previous connection is still live),
+    // skip the reconnect — the sidecar's reconnect loop handles it.
+    if (socket !== null || connected) return
     connect()
   })
 
