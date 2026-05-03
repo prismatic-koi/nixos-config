@@ -219,3 +219,25 @@ func parseSpawnSessionName(output string) string {
 	}
 	return ""
 }
+
+// parseAllSpawnSessionNames collects all session names from the output of
+// `prism spawn --abtest`, which prints two lines of the form:
+//
+//	session "name" created
+//
+// Returns all matched names in order.
+func parseAllSpawnSessionNames(output string) []string {
+	var names []string
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "session ") || !strings.HasSuffix(line, " created") {
+			continue
+		}
+		inner := strings.TrimPrefix(line, "session ")
+		inner = strings.TrimSuffix(inner, " created")
+		if len(inner) >= 2 && inner[0] == '"' && inner[len(inner)-1] == '"' {
+			names = append(names, inner[1:len(inner)-1])
+		}
+	}
+	return names
+}
