@@ -147,13 +147,18 @@ etc.) can reuse it.
   launched. The first frame received from the extension serves as the
   readiness signal that gates `OnReady` (the `~/.local/state/prism/run/
   <session>-sidecar.ready` file consumed by the agent pane).
-- The sidecar accepts exactly **one** connection per socket. Subsequent
-  accept attempts return immediately with EOF; the second extension
-  process (e.g. after a hot reload) is rejected. Multi-connection support
-  is out of scope for v1 and explicitly declared a non-goal here.
-- The connection persists for the lifetime of the PI session. Disconnection
-  — clean (FIN) or abrupt (RST) — terminates the session. See §7.2 for
-  timing.
+- The sidecar keeps the listener **open across connection drops**. After
+  an unexpected disconnect (no preceding `session_shutdown`), the sidecar
+  waits up to `pipeDisconnectTimeout` (30 s) for the extension to
+  reconnect. This window covers the `/new` scenario: PI's `/new` command
+  triggers a `session_start` event which closes and re-opens the socket.
+- The extension **must not** call `connect()` when a connection is already
+  live. The `session_start` handler guards against duplicate connections
+  (`if (socket !== null || connected) return`). See §7.2 for the full
+  reconnect protocol.
+- The connection persists for the lifetime of the PI session. A clean
+  `session_shutdown` causes the sidecar to break its accept loop and exit.
+  See §7.2 for drop handling.
 
 ## 3. Framing
 
@@ -708,30 +713,39 @@ behaviour for opencode-on-bwrap.
 
 ### 7.2 Connection dropped mid-session
 
-The connection is the session. A drop — whether clean FIN or RST or
-network-level disappearance — terminates the session.
+The sidecar distinguishes two kinds of disconnect:
 
-Behaviour:
+**Clean shutdown** — a `session_shutdown` frame (§5.10) precedes the drop.
+The sidecar marks the session `finished` (subject to idle-debounce) and
+exits its accept loop. No reconnect is attempted.
 
-- If the drop is preceded by a clean `session_shutdown` frame (§5.10):
-  this is the normal terminal path. The sidecar marks the session
-  `finished` (subject to idle-debounce) and exits its read loop.
-- If the drop occurs without a preceding `session_shutdown`: the
-  sidecar treats it as a protocol-level disconnect. The session is
-  marked `error` with a `"connection dropped"` note attached to the
-  `state_change` event payload.
-- The sidecar does **not** attempt to reconnect or re-accept. There is
-  one accept; once the connection ends the socket is closed and the
-  session is terminal.
-- The sidecar applies a 30-second timeout: if read returns EOF without
-  preceding `session_shutdown`, the sidecar waits up to 30s for the
-  PI process to exit (in case the disconnect is caused by a normal
-  shutdown that did not get to send `session_shutdown` due to crash).
-  If PI has exited within that window, the session is marked `finished`;
-  otherwise `error`. This 30s window mirrors the existing
-  `ReconnectRecoveryDelay` (60s) used for opencode SSE reconnects in
-  `internal/sidecar/sidecar.go:ReconnectRecoveryDelay`, with a tighter
-  bound because there is no reconnect to wait for — only a process exit.
+**Unexpected drop** — the connection closes (FIN or RST) without a
+preceding `session_shutdown`. This is the normal path for PI's `/new`
+command, which triggers a `session_start` event in the extension and
+causes the old socket connection to close before the extension opens a
+new one.
+
+On an unexpected drop the sidecar:
+
+1. Flushes the partial accumulator (any in-progress assistant turn is
+   written as a `msg_assistant` event with whatever text has accumulated
+   so far).
+2. Logs the drop.
+3. Re-enters `Accept` on the **same listener** (which remains open) with
+   a `pipeDisconnectTimeout` (30 s) deadline.
+
+If a new connection arrives within the window, the full P2.WIRE handshake
+is replayed (`hello` / `hello_ack`) and the frame loop resumes. The
+`OnReady` callback is **not** re-fired on subsequent connections.
+
+If no connection arrives before the timeout expires (or the context is
+cancelled), the session transitions to `error` state and the sidecar
+returns an error.
+
+The extension **must** guard `connect()` so it only fires when not
+already connected (`if (socket !== null || connected) return`). This
+prevents a duplicate connection if `session_start` fires while a live
+connection exists.
 
 ### 7.3 Frame parse error
 
