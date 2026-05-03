@@ -52,6 +52,11 @@ let
     git_user_email = gitUserEmail;
     ssh_access_key_name = config.nx.programs.prism.sshAccessKeyName;
     ssh_signing_key_name = config.nx.programs.prism.sshSigningKeyName;
+    # ssh_bin: absolute path to Nix-built openssh. Used as GIT_SSH_COMMAND in
+    # sandbox-exec sessions to bypass Apple's libnetwork.dylib (which needs
+    # system-network sandbox rules that are hard to replicate). Nix openssh
+    # uses its own libresolv/libldns and resolves hostnames without any of that.
+    ssh_bin = "${pkgs.openssh}/bin/ssh";
     restore_stagger_delay_ms = config.nx.programs.prism.restoreStaggerDelayMs;
     sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;

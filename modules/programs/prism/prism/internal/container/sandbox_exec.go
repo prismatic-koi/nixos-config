@@ -517,6 +517,15 @@ func generateProfile(m *Manager) string {
 	// ── 17. Network ───────────────────────────────────────────────────────
 	// Unchanged from v1. Matches the bwrap baseline. Restriction to
 	// specific hosts/ports is a future concern per #1012.
+	//
+	// Note: GIT_SSH_COMMAND is set to the Nix-built openssh binary (cfg.SshBin,
+	// baked into config.json by prism-tui.nix). Nix openssh links against its
+	// own libresolv/libldns (Nix store paths under /nix, already allowed) rather
+	// than Apple's libnetwork.dylib. This means the system-network macro rules
+	// (dafsaData.bin, com.apple.netsrc, AF_SYSTEM/AF_ROUTE sockets) are NOT
+	// needed for SSH git operations — they would only be needed if /usr/bin/ssh
+	// were used. See issue #1012 and the GIT_SSH_COMMAND block in
+	// cmd/agent_run_sandbox_exec_darwin.go for the full rationale.
 	sb.WriteString("(allow network*)\n")
 	sb.WriteString("\n")
 

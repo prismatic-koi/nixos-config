@@ -240,6 +240,13 @@ type Config struct {
 	// defaults to "prismatic-koi-ed25519-signingkey".
 	SshSigningKeyName string
 
+	// SshBin is the absolute path to the ssh binary for GIT_SSH_COMMAND in
+	// sandbox-exec sessions. When non-empty, it is used instead of bare "ssh"
+	// so that the Nix-built openssh (which uses its own libresolv/libldns) is
+	// invoked rather than /usr/bin/ssh (which uses Apple's libnetwork.dylib and
+	// requires system-network sandbox rules). When empty, falls back to "ssh".
+	SshBin string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the opencode command as
 	// --agent <AgentRole> --prompt <text> so that opencode starts the session
