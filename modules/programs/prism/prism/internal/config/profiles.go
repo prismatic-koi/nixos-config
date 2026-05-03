@@ -63,11 +63,17 @@ import (
 //     preserve bit-identical output with the pre-#1206 schema.
 //   - SystemPromptPath: optional absolute path to a per-role system prompt
 //     (consumed by P2.AGENTRUN; not surfaced in the legacy opencode shim).
+//   - Harness: optional harness name to use for this role's session (e.g.
+//     "opencode", "pi"). When absent or empty, defaults to "opencode". Only
+//     meaningful for session-boundary roles (coordinator, worker, review-*);
+//     subagent roles (plan, explore, title, summary, compaction) run in-process
+//     and this field is ignored for them.
 type RoleSlot struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model"`
 	Thinking         string `json:"thinking,omitempty"`
 	SystemPromptPath string `json:"systemPromptPath,omitempty"`
+	Harness          string `json:"harness,omitempty"`
 }
 
 // ProfileEntry maps session role names ("coordinator", "worker", "plan",
@@ -245,6 +251,19 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 	}
 	slot, ok := entry[role]
 	return slot, ok
+}
+
+// HarnessForSlot returns the harness name declared in the given slot, defaulting
+// to "opencode" when the slot's Harness field is absent or empty.
+//
+// This is the canonical accessor for the per-role harness resolution introduced
+// by #1328: callers should not read slot.Harness directly, so the default logic
+// lives in one place.
+func HarnessForSlot(slot RoleSlot) string {
+	if slot.Harness == "" {
+		return "opencode"
+	}
+	return slot.Harness
 }
 
 // RequireSlot validates that the named profile defines a slot for the given
