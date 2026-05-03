@@ -29,6 +29,7 @@ import {
 } from "./auth.ts"
 import { getCachedCredentials } from "./credentials.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
+import { streamSimpleAnthropic } from "@mariozechner/pi-ai"
 import { getModelBetas, getExcludedBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
 import {
@@ -125,6 +126,14 @@ export default function (pi: ExtensionAPI) {
     //   - Automatic token refresh on 401
     //   - Manual SSE parsing (zero npm deps — no @anthropic-ai/sdk)
     streamSimple: (model, context, options) => {
+      // Only intercept requests for the anthropic provider (Claude OAuth subscriptions).
+      // For all other providers (github-copilot, openrouter, etc.) that also use the
+      // anthropic-messages API type, delegate to pi's built-in handler which has
+      // provider-specific logic (e.g. Copilot dynamic headers).
+      if (model.provider !== "anthropic") {
+        return streamSimpleAnthropic(model, context, options)
+      }
+
       const { createAssistantMessageEventStream, calculateCost } =
         require("@mariozechner/pi-ai") as typeof import("@mariozechner/pi-ai")
 

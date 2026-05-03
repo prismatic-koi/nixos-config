@@ -72,6 +72,9 @@
         treeFilterMode = "default";
         quietStartup = true;
         enableInstallTelemetry = false;
+        warnings = {
+          anthropicExtraUsage = false;
+        };
 
         # Vendored extension: replaces the previous npm:pi-anthropic-oauth@0.1.9
         # package. The extension is stored in the nix store as plain TypeScript

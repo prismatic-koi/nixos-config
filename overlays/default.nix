@@ -120,14 +120,24 @@ rec {
           jsonschema = "${placeholder "out"}/share/opencode/schema.json";
         };
       });
-      pi-coding-agent = masterPkgs.pi-coding-agent.overrideAttrs (old: {
-        postPatch = (old.postPatch or "") + ''
-          substituteInPlace packages/coding-agent/src/modes/interactive/interactive-mode.ts \
-            --replace-fail \
-              'this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);' \
-              '/* anthropic subscription warning suppressed */'
-        '';
-      });
+      pi-coding-agent =
+        let
+          newSrc = prev.fetchFromGitHub {
+            owner = "badlogic";
+            repo = "pi-mono";
+            tag = "v0.72.1";
+            hash = "sha256-SqUxghc60P3HfmaFJGB/m23mvzw0cD7cDEUrNFOqo0Y=";
+          };
+        in
+        prev.pi-coding-agent.overrideAttrs (old: {
+          version = "0.72.1";
+          src = newSrc;
+          npmDeps = prev.fetchNpmDeps {
+            inherit (old) npmWorkspace;
+            src = newSrc;
+            hash = "sha256-KUC1xQK6oJXtg962YeLOnO76uTdR10/VNa9iiCdT3VM=";
+          };
+        });
 
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
