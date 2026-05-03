@@ -206,18 +206,14 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// branch under review (satisfies the [security] acceptance criterion).
 		//
 		// Per-agent harness resolution (#1328): resolve the harness for this
-		// agent from the active profile's slot. opts.Harness (derived from the
-		// --harness CLI flag) overrides the profile slot when explicitly set.
-		// When opts.Harness is the default "opencode" and no explicit override
-		// was made, the profile slot's harness takes precedence.
+		// agent from the active profile's slot. opts.HarnessExplicit is true
+		// when the caller passed --harness explicitly; in that case opts.Harness
+		// wins unconditionally. Otherwise the profile slot's harness takes
+		// precedence (defaulting to "opencode" via HarnessForSlot).
 		agentHarnessName := opts.Harness
-		if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-			slotHarness := config.HarnessForSlot(slot)
-			// Profile slot harness is used when opts.Harness is the default
-			// "opencode" (not explicitly overridden). If the caller explicitly
-			// set a non-default harness, it wins.
-			if opts.Harness == "" || opts.Harness == "opencode" {
-				agentHarnessName = slotHarness
+		if !opts.HarnessExplicit {
+			if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+				agentHarnessName = config.HarnessForSlot(slot)
 			}
 		}
 		agentH, agentHErr := harness.New(agentHarnessName, "", nil, "", "")
@@ -493,14 +489,12 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			}
 		}
 
-		// Per-agent harness resolution (#1328): resolve the harness for this
-		// agent from the active profile's slot. opts.Harness (derived from the
-		// --harness CLI flag) overrides the profile slot when explicitly set.
+		// Per-agent harness resolution (#1328): same semantics as Run() —
+		// opts.HarnessExplicit guards whether the profile slot or the flag wins.
 		asyncAgentHarnessName := opts.Harness
-		if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-			slotHarness := config.HarnessForSlot(slot)
-			if opts.Harness == "" || opts.Harness == "opencode" {
-				asyncAgentHarnessName = slotHarness
+		if !opts.HarnessExplicit {
+			if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+				asyncAgentHarnessName = config.HarnessForSlot(slot)
 			}
 		}
 		asyncAgentH, asyncAgentHErr := harness.New(asyncAgentHarnessName, "", nil, "", "")

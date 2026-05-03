@@ -230,6 +230,11 @@ type Opts struct {
 	Agents []Agent
 	// Harness is the runtime harness to use ("opencode").
 	Harness string
+	// HarnessExplicit is true when the caller explicitly set --harness on the
+	// command line. When true, Harness takes precedence over the profile slot's
+	// harness field. When false, the profile slot's harness field wins (and
+	// Harness is the default "opencode" value).
+	HarnessExplicit bool
 	// RuntimeEnvVars holds harness-specific environment variables to inject
 	// into each spawned agent session (host-mode only; container-mode sessions
 	// receive env vars via the container runtime). Populated from

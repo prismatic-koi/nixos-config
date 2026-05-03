@@ -267,7 +267,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 		WorkerSession:  parentSession, // async delivery goes back to this session
 		Worktree:       worktree,
 		Agents:         agents,
-		Harness:        harnessFlag,
+		Harness:         harnessFlag,
+		HarnessExplicit: cmd.Flags().Changed("harness"),
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
 		IsolationMode:  string(isoMode),
