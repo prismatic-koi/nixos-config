@@ -951,6 +951,27 @@ export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Connection guard helper (exported for testing).
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the extension should attempt to connect to the sidecar.
+ *
+ * The guard prevents a duplicate connection when PI fires `session_start`
+ * while a previous connection is still live (e.g. the `/new` command
+ * triggers `session_start` before the existing socket close event fires).
+ * In that case the sidecar's reconnect loop will re-accept on its own once
+ * the old connection drops — the extension must not race it with a second
+ * dial attempt.
+ */
+export function shouldAttemptConnect(
+  socket: unknown | null,
+  connected: boolean,
+): boolean {
+  return socket === null && !connected
+}
+
+// ---------------------------------------------------------------------------
 // Extension entry point.
 // ---------------------------------------------------------------------------
 
@@ -1192,7 +1213,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // Guard: if a socket connection is already active (e.g. after /new
     // triggers session_start while the previous connection is still live),
     // skip the reconnect — the sidecar's reconnect loop handles it.
-    if (socket !== null || connected) return
+    if (!shouldAttemptConnect(socket, connected)) return
     connect()
   })
 

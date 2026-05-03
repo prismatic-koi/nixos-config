@@ -38,6 +38,8 @@ import {
   // Status bar
   formatPrismStatus,
   extractBranch,
+  // Connection guard
+  shouldAttemptConnect,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1069,5 +1071,32 @@ describe("extractBranch", () => {
 
   it("returns empty string for empty input", () => {
     assert.equal(extractBranch(""), "")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// shouldAttemptConnect (session_start guard)
+// ---------------------------------------------------------------------------
+
+describe("shouldAttemptConnect", () => {
+  it("returns true when socket is null and not connected", () => {
+    assert.equal(shouldAttemptConnect(null, false), true)
+  })
+
+  it("returns false when socket is non-null (connection already live)", () => {
+    // Simulate an active socket object — any non-null value stands in.
+    const fakeSocket = {}
+    assert.equal(shouldAttemptConnect(fakeSocket, false), false)
+  })
+
+  it("returns false when connected flag is true even if socket is null", () => {
+    // connected=true can briefly precede socket being set on the 'connect'
+    // event; the guard must still block a duplicate dial in this window.
+    assert.equal(shouldAttemptConnect(null, true), false)
+  })
+
+  it("returns false when both socket is set and connected is true", () => {
+    const fakeSocket = {}
+    assert.equal(shouldAttemptConnect(fakeSocket, true), false)
   })
 })
