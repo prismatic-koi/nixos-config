@@ -27,6 +27,7 @@ in
         # If issues arise, Firefox can be installed via Homebrew while
         # keeping this module enabled for configuration management.
         enable = true;
+        configPath = ".config/mozilla/firefox";
         nativeMessagingHosts = [
           pkgs.tridactyl-native
         ];
@@ -84,7 +85,7 @@ in
       };
       home.persistence."/persist" = {
         directories = [
-          ".mozilla/firefox"
+          ".config/mozilla/firefox"
         ];
       };
     };
