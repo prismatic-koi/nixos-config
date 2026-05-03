@@ -1739,15 +1739,20 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		}
 		s.pipeAccum = nil
 
-		p := payload.MsgAssistant{
-			Text:             text,
-			InputTokens:      f.Usage.Input,
-			OutputTokens:     f.Usage.Output,
-			CacheReadTokens:  f.Usage.CacheRead,
-			CacheWriteTokens: f.Usage.CacheWrite,
-			Cost:             f.Usage.Cost,
+		// Only write a msg_assistant row when there is actual text content.
+		// Tool-only turns emit turn_start/turn_end with zero msg_assistant
+		// fragments, which would produce a spurious "(no text)" row in checkin.
+		if text != "" {
+			p := payload.MsgAssistant{
+				Text:             text,
+				InputTokens:      f.Usage.Input,
+				OutputTokens:     f.Usage.Output,
+				CacheReadTokens:  f.Usage.CacheRead,
+				CacheWriteTokens: f.Usage.CacheWrite,
+				Cost:             f.Usage.Cost,
+			}
+			s.writeEvent("msg_assistant", p, nil)
 		}
-		s.writeEvent("msg_assistant", p, nil)
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
 	case "tool_call", "tool_result",
