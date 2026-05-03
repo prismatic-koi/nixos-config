@@ -162,7 +162,7 @@ func FormatAgentDisplayName(name string) string {
 // blob is then returned as pre-rendered from pf.Default). See Run() for the
 // canonical resolution path.
 func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName, activeProfile string) (string, error) {
-	needsConfig := isolationMode == string(config.IsolationPodman) || isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
+	needsConfig := isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
 	if !needsConfig {
 		return "", nil
 	}

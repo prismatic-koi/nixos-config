@@ -142,12 +142,11 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	//     writes to the cache (the original bwrap.go used --bind, not
 	//     --ro-bind).
 	//
-	// This is incidentally-different — both modes accept reads from the
-	// cache; the writeability flag is the only difference. Encoding it here
-	// keeps the per-mode-tweak knowledge in one file rather than scattering
-	// "RW for bwrap, RO for podman" comments at every call site.
-	awsSSOReadOnly := mode == isolationPodman
-	awsCLIReadOnly := mode == isolationPodman
+	// Both bwrap and sandbox-exec accept reads from the cache; mounts are
+	// read-write for both modes.
+	awsSSOReadOnly := false
+	awsCLIReadOnly := false
+	_ = mode // mode is retained for future per-mode mount tweaks
 
 	specs := []MountSpec{
 		// ── ~/.claude (RW) ───────────────────────────────────────────────

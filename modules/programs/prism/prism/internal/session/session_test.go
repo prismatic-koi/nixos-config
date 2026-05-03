@@ -132,26 +132,6 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 	}
 }
 
-// TestBuildDirectOpencodeCmd_AgentEnvVars_PodmanMode verifies that
-// AgentEnvVars are NOT injected when IsolationMode is "podman", even via
-// the buildDirectOpencodeCmd fallback path (podman, Port=0).
-func TestBuildDirectOpencodeCmd_AgentEnvVars_PodmanMode(t *testing.T) {
-	opts := Opts{
-		Agent:         "worker",
-		Port:          0, // Port=0 triggers buildDirectOpencodeCmd fallback in BuildOpencodeCmd
-		SessionName:   "myrepo@branch",
-		IsolationMode: "podman",
-		AgentEnvVars: map[string]string{
-			"AWS_CONFIG_FILE": "/Users/bensherman/.config/aws/readonly-config",
-		},
-	}
-	cmd := buildDirectOpencodeCmd(opts)
-
-	if strings.Contains(cmd, "AWS_CONFIG_FILE") {
-		t.Errorf("AgentEnvVars should not be injected when IsolationMode=podman, got: %q", cmd)
-	}
-}
-
 // TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty verifies that an empty
 // AgentEnvVars map produces no change to the command (beyond the
 // outermost RuntimeEnvVars prefix when provided via the harness).
@@ -203,19 +183,6 @@ func TestBuildDirectOpencodeCmd_AgentEnvVarsNil(t *testing.T) {
 }
 
 // ── Isolation mode command construction ─────────────────────────────────────
-
-// TestBuildOpencodeCmd_PodmanMode verifies that IsolationMode="podman" produces
-// "podman attach --sig-proxy=false <container-name>".
-func TestBuildOpencodeCmd_PodmanMode(t *testing.T) {
-	opts := Opts{
-		IsolationMode: "podman",
-		SessionName:   "nixos-config@feature",
-	}
-	cmd := BuildOpencodeCmd(opts)
-	if !strings.HasPrefix(cmd, "podman attach --sig-proxy=false") {
-		t.Errorf("podman mode: got %q, want prefix 'podman attach --sig-proxy=false'", cmd)
-	}
-}
 
 // TestBuildOpencodeCmd_BwrapMode verifies that IsolationMode="bwrap" produces
 // "prism agent-run --session <session-name>".
@@ -296,7 +263,7 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 // tmux.NewWindow opens window 1 produce the correct agent_status values.
 // They exercise the same openDB() + SetIsolationMode path that the
 // fix adds to setupFullLayout, ensuring the mode is persisted correctly for all
-// three isolation modes ("bwrap", "host", "podman").
+// three isolation modes ("bwrap", "host", "sandbox-exec").
 //
 // The tests use SetTestDBPath to redirect the session package's openDB() to an
 // isolated temp DB, then seed an agent_status row (as ensureAndSwitch does
@@ -387,34 +354,6 @@ func TestIsolationMode_HostWrittenBeforeWindow(t *testing.T) {
 	}
 	if st.IsolationMode != "host" {
 		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "host")
-	}
-}
-
-// TestIsolationMode_PodmanWrittenBeforeWindow verifies that after the DB writes
-// performed by setupFullLayout, the agent_status row has isolation_mode = "podman".
-func TestIsolationMode_PodmanWrittenBeforeWindow(t *testing.T) {
-	const sessionName = "testrepo@podman-test"
-	d := openIsolationTestDB(t, sessionName)
-
-	d2, err := openDB()
-	if err != nil {
-		t.Fatalf("openDB: %v", err)
-	}
-	defer d2.Close()
-
-	if err := d2.SetIsolationMode(sessionName, "podman"); err != nil {
-		t.Fatalf("SetIsolationMode: %v", err)
-	}
-
-	st, err := d.CurrentStatus(sessionName)
-	if err != nil {
-		t.Fatalf("CurrentStatus: %v", err)
-	}
-	if st == nil {
-		t.Fatal("CurrentStatus: got nil, want a row")
-	}
-	if st.IsolationMode != "podman" {
-		t.Errorf("isolation_mode = %q, want %q", st.IsolationMode, "podman")
 	}
 }
 

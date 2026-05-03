@@ -349,9 +349,8 @@ func buildDirectOpencodeCmd(opts Opts) string {
 		cmd = "PRISM_SESSION_NAME=" + shellQuote(opts.SessionName) + " " + cmd
 	}
 	// Prepend agent env vars before PRISM_SESSION_NAME, in sorted key order
-	// for determinism. Only applies to host-mode sessions — podman sessions
-	// receive env vars via podman --env flags in the sidecar.
-	if opts.IsolationMode != "podman" && len(opts.AgentEnvVars) > 0 {
+	// for determinism.
+	if len(opts.AgentEnvVars) > 0 {
 		keys := make([]string, 0, len(opts.AgentEnvVars))
 		for k := range opts.AgentEnvVars {
 			keys = append(keys, k)
@@ -683,17 +682,6 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
 	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
 	agentCmd := BuildOpencodeCmd(opts)
-	if mode == "podman" && opts.Port != 0 {
-		readyPath, pathErr := SidecarReadyPath(name)
-		if pathErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not determine ready path for %q, skipping readiness wait: %v\n", name, pathErr)
-		} else {
-			// Remove any stale ready file from a previous session lifecycle
-			// before the pane script starts polling.
-			_ = os.Remove(readyPath)
-			agentCmd = buildReadinessWaitCmd(readyPath, agentCmd)
-		}
-	}
 
 	// Persist isolation_mode BEFORE opening the agent window. This is the
 	// critical ordering fix: prism agent-run in window 1 reads isolation_mode

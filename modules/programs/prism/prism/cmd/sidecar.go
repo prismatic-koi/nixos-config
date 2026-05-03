@@ -60,7 +60,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
-	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -118,10 +117,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	agentRole, _ := cmd.Flags().GetString("agent-role")
 	port, _ := cmd.Flags().GetInt("port")
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
+	_ = pluginPath // was used for podman container config, now removed
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 	configContent, _ := cmd.Flags().GetString("config-content")
+	_ = configContent
 	instanceID, _ := cmd.Flags().GetString("instance-id")
 	worktreeReadOnly, _ := cmd.Flags().GetBool("worktree-readonly")
+	_ = worktreeReadOnly
 	harnessName, _ := cmd.Flags().GetString("harness")
 	harnessBinaryPath, _ := cmd.Flags().GetString("harness-binary")
 	bwrapPath, _ := cmd.Flags().GetString("bwrap-path")
@@ -150,12 +152,13 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resolve the effective isolation mode. When --isolation-mode is set it
-	// takes precedence. Otherwise fall back to --container for back-compat.
+	// takes precedence. The --container flag is retained for back-compat but
+	// now maps to bwrap (podman isolation has been removed).
 	var isolationMode config.IsolationMode
 	if isolationModeFlag != "" && config.IsValidIsolationMode(isolationModeFlag) {
 		isolationMode = config.IsolationMode(isolationModeFlag)
 	} else if containerFlag {
-		isolationMode = config.IsolationPodman
+		isolationMode = config.IsolationBwrap
 	} else {
 		isolationMode = config.IsolationHost
 	}
@@ -206,8 +209,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
 	}
 
-	// Load prism runtime config — needed for git identity and SSH key names.
+	// Load prism runtime config.
 	prismCfg := config.Load()
+	_ = prismCfg
 
 	// Resolve the agent model once via the harness adapter. The adapter is
 	// constructed transiently here for the EffectiveModel call; a fresh
@@ -222,56 +226,9 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		agentModel = modelProbe.EffectiveModel(agentRole)
 	}
 
-	// Load profiles to extract container resource caps and agent env vars.
-	// Non-fatal if missing (e.g. running without the nix module) — resource
-	// fields remain at their zero values and no resource flags are emitted.
-	var containerResources config.ContainerResources
-	var agentEnvVars map[string]string
-	if isoCaps.IsContainer {
-		if pf, pfErr := config.LoadProfiles(); pfErr == nil {
-			containerResources = pf.ContainerResources
-			agentEnvVars = pf.AgentEnvVars
-		}
-	}
-
-	// Build container config — only for podman mode. bwrap mode does not
-	// use a container.Config; the bwrap sandbox is owned by the tmux pane.
+	// ctrCfg is always nil now that podman isolation has been removed.
+	// The downstream nil checks gate all container-specific code paths.
 	var ctrCfg *container.Config
-	if isoCaps.IsContainer {
-		if port == 0 {
-			return fmt.Errorf("sidecar: --port is required in podman container mode")
-		}
-		// Derive git bare-root and worktree private git dir so that git works
-		// inside the container without following the absolute host path stored
-		// in the worktree's .git file (fixes #485).
-		bareRoot := git.BareRoot(worktree)
-		var worktreeGitDir string
-		if bareRoot != "" {
-			worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
-		}
-		ctrCfg = &container.Config{
-			SessionName:       sessionName,
-			Worktree:          worktree,
-			WorktreeReadOnly:  worktreeReadOnly,
-			BareRoot:          bareRoot,
-			WorktreeGitDir:    worktreeGitDir,
-			AllocatedPort:     port,
-			AgentRole:         agentRole,
-			AgentModel:        agentModel,
-			InstanceID:        instanceID,
-			PluginHostPath:    pluginPath,
-			ConfigContent:     configContent,
-			InitialPrompt:     initialPrompt,
-			GitUserName:       prismCfg.GitUserName,
-			GitUserEmail:      prismCfg.GitUserEmail,
-			SshAccessKeyName:  prismCfg.SshAccessKeyName,
-			SshSigningKeyName: prismCfg.SshSigningKeyName,
-			MemoryMax:         containerResources.MemoryMax,
-			MemorySwapMax:     containerResources.MemorySwapMax,
-			PidsLimit:         containerResources.PidsLimit,
-			AgentEnvVars:      agentEnvVars,
-		}
-	}
 
 	// Build the host-API socket path for podman, bwrap, and sandbox-exec modes.
 	// The agent runs in a sandbox without direct access to host tmux in all

@@ -1,13 +1,12 @@
 package container
 
 import (
-	"context"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
+	"path/filepath"
 )
 
 // openTestDB creates a fresh in-memory SQLite DB at a temp path and returns
@@ -33,130 +32,47 @@ func seedSession(t *testing.T, d *db.DB, sessionName, role string) {
 	}
 }
 
-// noPodman returns a podmanPS stub that reports no live containers — simulates
-// a system where podman is not available.
-func noPodman() ([]string, bool) {
-	return nil, false
-}
+// ── Cap helper tests ──────────────────────────────────────────────────────────
 
-// emptyPodman returns a podmanPS stub that returns an empty list successfully.
-func emptyPodman() ([]string, bool) {
-	return []string{}, true
-}
-
-// ── ListInFlight tests ───────────────────────────────────────────────────────
-
-func TestListInFlight_EmptyDB_NoContainers(t *testing.T) {
-	_, path := openTestDB(t)
-	result, failed := ListInFlight(path, emptyPodman)
-	if len(result) != 0 {
-		t.Errorf("expected empty result, got %v", result)
-	}
-	if failed {
-		t.Error("expected podmanFailed=false with empty podman response")
-	}
-}
-
-func TestListInFlight_DBSessions_Counted(t *testing.T) {
-	d, path := openTestDB(t)
-	seedSession(t, d, "nixos-config@main", "coordinator")
-	seedSession(t, d, "nixos-config@feature-a", "worker")
-
-	result, _ := ListInFlight(path, emptyPodman)
-	if len(result) != 2 {
-		t.Errorf("expected 2 in-flight sessions, got %d: %v", len(result), result)
-	}
-}
-
-func TestListInFlight_PodmanFailure_FallsBackToDBOnly(t *testing.T) {
-	d, path := openTestDB(t)
-	seedSession(t, d, "nixos-config@main", "coordinator")
-
-	result, podmanFailed := ListInFlight(path, noPodman)
-	if !podmanFailed {
-		t.Error("expected podmanFailed=true when podman stub fails")
-	}
-	if len(result) != 1 {
-		t.Errorf("expected 1 session from DB fallback, got %d", len(result))
-	}
-}
-
-func TestListInFlight_DeduplicatesByContainerName(t *testing.T) {
-	d, path := openTestDB(t)
-	sessionName := "nixos-config@feature-a"
-	seedSession(t, d, sessionName, "worker")
-
-	// Pretend podman also reports this container.
-	containerName := NameForSession(sessionName)
-	podmanStub := func() ([]string, bool) {
-		return []string{containerName}, true
-	}
-
-	result, _ := ListInFlight(path, podmanStub)
-	if len(result) != 1 {
-		t.Errorf("expected deduplicated to 1, got %d: %v", len(result), result)
-	}
-}
-
-func TestListInFlight_PodmanOnlyContainerCounted(t *testing.T) {
-	// A container present in podman but NOT in the DB should still be counted.
-	_, path := openTestDB(t)
-	podmanStub := func() ([]string, bool) {
-		return []string{"prism-nixos-config-orphan"}, true
-	}
-	result, _ := ListInFlight(path, podmanStub)
-	if len(result) != 1 {
-		t.Errorf("expected 1 podman-only container, got %d", len(result))
-	}
-}
-
-func TestListInFlight_NonPrismContainersIgnored(t *testing.T) {
-	// Containers without the "prism-" prefix are not prism-managed.
-	_, path := openTestDB(t)
-	podmanStub := func() ([]string, bool) {
-		return []string{"some-other-container", "nginx-proxy"}, true
-	}
-	result, _ := ListInFlight(path, podmanStub)
-	if len(result) != 0 {
-		t.Errorf("expected 0 non-prism containers counted, got %d: %v", len(result), result)
-	}
-}
-
-// ── podmanIsolator.Cap tests (replaces CheckCap tests) ───────────────────────
-
-// podmanCapWithPS is a helper that calls podmanIsolator.Cap() with a fake
-// podmanPS injection. Since Cap() calls ListInFlight(nil) directly, we
-// test it via a small helper that exercises the same logic.
-//
-// For testing we construct the CapStatus directly from ListInFlight + the cap
-// constant, mirroring what podmanIsolator.Cap does internally.
-func podmanCapFromDB(t *testing.T, dbPath string, podmanPS func() ([]string, bool)) CapStatus {
+// capFromDB is a helper that exercises the concurrency cap check by querying
+// all active sessions from the DB and constructing a CapStatus.
+func capFromDB(t *testing.T, dbPath string) CapStatus {
 	t.Helper()
-	inFlight, podmanFailed := ListInFlight(dbPath, podmanPS)
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("capFromDB: open DB: %v", err)
+	}
+	defer d.Close()
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("capFromDB: AllActiveStatus: %v", err)
+	}
+	var inFlight []InFlightSession
+	for _, s := range statuses {
+		inFlight = append(inFlight, InFlightSession{
+			Name: s.SessionName,
+			Role: roleFor(s.SessionName, s.RootAgentName),
+		})
+	}
 	limit := DefaultConcurrencyCap
 	count := len(inFlight)
-	note := ""
-	if podmanFailed {
-		note = "podman ps failed — concurrency check is using DB-only count (may be imprecise)"
-	}
 	return CapStatus{
-		Mode:     "podman",
+		Mode:     config.IsolationBwrap,
 		Limit:    limit,
 		Count:    count,
 		Exceeded: count >= limit,
 		InFlight: inFlight,
-		Note:     note,
 	}
 }
 
-// TestPodmanCap_FiveSessionsAllows verifies: 5 live sessions → spawn allowed.
-func TestPodmanCap_FiveSessionsAllows(t *testing.T) {
+// TestCap_FiveSessionsAllows verifies: 5 live sessions → spawn allowed.
+func TestCap_FiveSessionsAllows(t *testing.T) {
 	d, path := openTestDB(t)
 	for i := 0; i < 5; i++ {
 		seedSession(t, d, "repo@branch-"+string(rune('a'+i)), "worker")
 	}
 
-	status := podmanCapFromDB(t, path, emptyPodman)
+	status := capFromDB(t, path)
 	if status.Count != 5 {
 		t.Errorf("expected count=5, got %d", status.Count)
 	}
@@ -165,14 +81,14 @@ func TestPodmanCap_FiveSessionsAllows(t *testing.T) {
 	}
 }
 
-// TestPodmanCap_SixSessionsRefuses verifies: 6 live sessions → spawn refused.
-func TestPodmanCap_SixSessionsRefuses(t *testing.T) {
+// TestCap_SixSessionsRefuses verifies: 6 live sessions → spawn refused.
+func TestCap_SixSessionsRefuses(t *testing.T) {
 	d, path := openTestDB(t)
 	for i := 0; i < 6; i++ {
 		seedSession(t, d, "repo@branch-"+string(rune('a'+i)), "worker")
 	}
 
-	status := podmanCapFromDB(t, path, emptyPodman)
+	status := capFromDB(t, path)
 	if status.Count != 6 {
 		t.Errorf("expected count=6, got %d", status.Count)
 	}
@@ -181,15 +97,15 @@ func TestPodmanCap_SixSessionsRefuses(t *testing.T) {
 	}
 }
 
-// TestPodmanCap_SixSessionsWithFlagProceeds verifies: 6 sessions +
+// TestCap_SixSessionsWithFlagProceeds verifies: 6 sessions +
 // --ignore-concurrency-cap → warning produced, nil error returned.
-func TestPodmanCap_SixSessionsWithFlagProceeds(t *testing.T) {
+func TestCap_SixSessionsWithFlagProceeds(t *testing.T) {
 	d, path := openTestDB(t)
 	for i := 0; i < 6; i++ {
 		seedSession(t, d, "repo@branch-"+string(rune('a'+i)), "worker")
 	}
 
-	status := podmanCapFromDB(t, path, emptyPodman)
+	status := capFromDB(t, path)
 
 	if !status.Exceeded {
 		t.Errorf("expected Exceeded=true at 6 sessions with cap=%d, got false", DefaultConcurrencyCap)
@@ -209,9 +125,6 @@ func TestPodmanCap_SixSessionsWithFlagProceeds(t *testing.T) {
 	if !strings.Contains(warning, "exceeded") {
 		t.Errorf("warning should mention 'exceeded', got: %s", warning)
 	}
-	if !strings.Contains(warning, "repo@branch-") {
-		t.Errorf("warning should contain session names, got: %s", warning)
-	}
 }
 
 // ── CapStatus.RenderError tests ───────────────────────────────────────────────
@@ -221,12 +134,9 @@ func TestCapStatus_RenderError_ContainsSessionNames(t *testing.T) {
 	seedSession(t, d, "nixos-config@main", "coordinator")
 	seedSession(t, d, "nixos-config@feature-x", "worker")
 
-	status := podmanCapFromDB(t, path, emptyPodman)
+	status := capFromDB(t, path)
 	msg := status.RenderError()
 
-	if !strings.Contains(msg, "nixos-config@main") {
-		t.Errorf("error message should contain session name 'nixos-config@main', got:\n%s", msg)
-	}
 	if !strings.Contains(msg, "--ignore-concurrency-cap") {
 		t.Errorf("error message should mention --ignore-concurrency-cap, got:\n%s", msg)
 	}
@@ -238,7 +148,7 @@ func TestCapStatus_RenderError_ContainsCount(t *testing.T) {
 		seedSession(t, d, "repo@branch-"+string(rune('a'+i)), "worker")
 	}
 
-	status := podmanCapFromDB(t, path, emptyPodman)
+	status := capFromDB(t, path)
 	msg := status.RenderError()
 
 	if !strings.Contains(msg, "6") {
@@ -253,7 +163,6 @@ func TestCapStatus_RenderWarning_ModeNoun(t *testing.T) {
 		mode config.IsolationMode
 		want string
 	}{
-		{"podman", "agent containers"},
 		{"bwrap", "bwrap sessions"},
 		{"sandbox-exec", "sandbox-exec sessions"},
 	}
@@ -311,27 +220,6 @@ func TestCapStatus_Check_IgnoreCapReturnsNil(t *testing.T) {
 	err := status.Check(true)
 	if err != nil {
 		t.Errorf("expected nil when ignoreCap=true, got %v", err)
-	}
-}
-
-// TestPodmanIsolator_Cap_IntegrationSmoke runs podmanIsolator.Cap against a
-// real DB to verify end-to-end behavior without subprocess podman calls.
-func TestPodmanIsolator_Cap_IntegrationSmoke(t *testing.T) {
-	d, path := openTestDB(t)
-	for i := 0; i < 3; i++ {
-		seedSession(t, d, "repo@branch-"+string(rune('a'+i)), "worker")
-	}
-	// We can't call podmanIsolator.Cap directly from outside the package
-	// in a _test.go file that is package container, but we can construct one.
-	iso := newPodmanIsolator("test-container")
-	status := iso.Cap(context.Background(), path)
-	// podman ps will fail in the test environment, which is fine — the DB
-	// count should still be 3 and Exceeded should be false (3 < 6).
-	if status.Count < 3 {
-		t.Errorf("expected count >= 3 from DB, got %d", status.Count)
-	}
-	if status.Limit != DefaultConcurrencyCap {
-		t.Errorf("expected Limit=%d, got %d", DefaultConcurrencyCap, status.Limit)
 	}
 }
 

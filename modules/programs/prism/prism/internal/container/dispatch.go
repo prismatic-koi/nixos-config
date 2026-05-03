@@ -60,9 +60,9 @@ type CapStatus struct {
 	// not to enumerate; in that case Note carries the explanatory message.
 	InFlight []InFlightSession
 
-	// Note carries any non-fatal context from the probe — e.g. the podman
-	// implementation sets Note to "podman ps failed — using DB-only count"
-	// when runPodmanPS returns false. Empty when the probe ran cleanly.
+	// Note carries any non-fatal context from the probe — e.g. a DB error
+	// description when the session list could not be fetched. Empty when the
+	// probe ran cleanly.
 	Note string
 }
 
@@ -70,8 +70,6 @@ type CapStatus struct {
 // cap warning/error messages.
 func modeNoun(mode config.IsolationMode) string {
 	switch mode {
-	case config.IsolationPodman:
-		return "agent containers"
 	case config.IsolationBwrap:
 		return "bwrap sessions"
 	case config.IsolationSandboxExec:
@@ -225,7 +223,6 @@ type AgentPaneOpts struct {
 type ArchivePaths struct {
 	// StorageRoot is the host-side opencode storage root for this session.
 	// For host/bwrap/sandbox-exec: $HOME/.local/share/opencode/storage.
-	// For podman:                  $HOME/.local/share/opencode/prism-sessions/<container>/storage.
 	StorageRoot string
 
 	// ExtraFiles are absolute host paths that the archive should copy
@@ -249,112 +246,6 @@ type LogPaths struct {
 	// Populated for bwrap and sandbox-exec. Empty for podman and host (the
 	// agent-run path is not used by those modes).
 	AgentRunLog string
-}
-
-// ----------------------------------------------------------------------------
-// podmanIsolator
-// ----------------------------------------------------------------------------
-
-// Available reports whether podman mode can run on this host. Wraps the
-// existing CheckAvailability helper (internal/container/container.go:1315).
-func (p *podmanIsolator) Available() error {
-	return CheckAvailability()
-}
-
-// Cap probes the podman concurrency cap by merging DB-active sessions with
-// live podman ps output. Sets Note when podman ps fails so Check can emit
-// the "podman ps failed — using DB-only count (may be imprecise)" warning.
-//
-// Limit is DefaultConcurrencyCap (6).
-func (p *podmanIsolator) Cap(ctx context.Context, dbPath string) CapStatus {
-	inFlight, podmanFailed := ListInFlight(dbPath, nil)
-	limit := DefaultConcurrencyCap
-	count := len(inFlight)
-	note := ""
-	if podmanFailed {
-		note = "podman ps failed — concurrency check is using DB-only count (may be imprecise)"
-	}
-	return CapStatus{
-		Mode:     config.IsolationPodman,
-		Limit:    limit,
-		Count:    count,
-		Exceeded: count >= limit,
-		InFlight: inFlight,
-		Note:     note,
-	}
-}
-
-// WriteHarnessConfigBlob writes the harness config blob to the deterministic
-// per-session temp path. For podman the file is bind-mounted at
-// /root/.config/opencode/opencode.json inside the container — see
-// container.go:1234. The same call-site gate (NeedsConfigBlob && content != "")
-// already filtered out empty content; this method returns nil on empty input
-// to keep the contract identical.
-//
-// sessionName is the prism session name (e.g. "nixos-config@feature"); the
-// isolator translates it to the container name internally so the write path
-// matches Manager.opencodeConfigFilePath.
-func (p *podmanIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
-	if content == "" {
-		return nil
-	}
-	return WriteOpencodeConfig(NameForSession(sessionName), content)
-}
-
-// AgentPaneCmd returns the tmux pane command for podman: "podman attach"
-// onto the running container, with --sig-proxy=false so that Ctrl-C reaches
-// opencode's TUI as a literal byte (matching host-mode keystroke behaviour).
-//
-// Mirrors the pre-refactor branch in BuildOpencodeCmd
-// (internal/session/session.go:268-284). When SessionName is empty, falls
-// back to DirectCmd — the same defensive fallback as the original switch.
-func (p *podmanIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
-	if opts.SessionName == "" {
-		return opts.DirectCmd
-	}
-	return "podman attach --sig-proxy=false " + shellQuotePodman(NameForSession(opts.SessionName))
-}
-
-// SidecarFlags returns the sidecar argv extensions for podman: --container,
-// --port, --agent-role, --plugin-path, --initial-prompt, --config-content
-// (each conditional on the corresponding opts field being set). Mirrors the
-// pre-refactor branch in StartSidecarWithOpts
-// (internal/session/sidecar.go:317-336).
-func (p *podmanIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
-	out := []string{"--container", "--port", fmt.Sprintf("%d", opts.Port)}
-	if opts.AgentRole != "" {
-		out = append(out, "--agent-role", opts.AgentRole)
-	}
-	if opts.PluginHostPath != "" {
-		out = append(out, "--plugin-path", opts.PluginHostPath)
-	}
-	if opts.InitialPrompt != "" {
-		out = append(out, "--initial-prompt", opts.InitialPrompt)
-	}
-	if opts.ConfigContent != "" {
-		out = append(out, "--config-content", opts.ConfigContent)
-	}
-	return out
-}
-
-// ArchivePaths returns the podman archive layout: storage lives under a
-// per-container subdirectory (Darwin virtiofs WAL-mode workaround). No extra
-// archive files — agent-run.log is bwrap/sandbox-exec only.
-func (p *podmanIsolator) ArchivePaths(home, sessionName string) ArchivePaths {
-	return ArchivePaths{
-		StorageRoot: archivePodmanStorageRoot(home, NameForSession(sessionName)),
-	}
-}
-
-// LogPaths returns the per-mode log file set for podman. Today only the
-// SidecarLog is populated for podman — agent-run.log is not produced in
-// container mode (the log is captured by the container PTY instead).
-func (p *podmanIsolator) LogPaths() LogPaths {
-	return LogPaths{
-		// SidecarLog and AgentRunLog are looked up by the caller via
-		// internal/session — keeping the shape here means a future
-		// follow-up can wire the lookup without re-touching call sites.
-	}
 }
 
 // ----------------------------------------------------------------------------
@@ -620,13 +511,6 @@ func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 // internal/archive/archive.go:267-268.
 func archiveSharedStorageRoot(home string) string {
 	return filepath.Join(home, ".local", "share", "opencode", "storage")
-}
-
-// archivePodmanStorageRoot returns the per-container opencode storage root
-// used by podman (Darwin virtiofs WAL-mode workaround). Mirrors the
-// pre-refactor branch in internal/archive/archive.go:269-271.
-func archivePodmanStorageRoot(home, containerName string) string {
-	return filepath.Join(home, ".local", "share", "opencode", "prism-sessions", containerName, "storage")
 }
 
 // archiveAgentRunLogPaths returns the agent-run log path for the named

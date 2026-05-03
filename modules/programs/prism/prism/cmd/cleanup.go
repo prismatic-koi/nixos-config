@@ -838,7 +838,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 
 	// Validate isolation mode before doing any work.
 	switch statusIsolationMode {
-	case "host", "bwrap", "sandbox-exec", "podman":
+	case "host", "bwrap", "sandbox-exec":
 		// OK — supported modes.
 	default:
 		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — unsupported isolation mode %q\n",
@@ -1059,12 +1059,10 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 	for _, childSession := range childNames {
 		name := container.NameForSession(childSession)
 
-		// Resolve the child session's persisted isolation mode. Most review
-		// children are podman today, but bwrap/sandbox-exec children are
-		// supported under #1197 — dispatching via the registry handles all
-		// modes uniformly. Fall back to podman when the DB row is missing or
-		// the column is empty (matches pre-refactor behaviour).
-		isoMode := config.IsolationPodman
+		// Resolve the child session's persisted isolation mode. Dispatch
+		// via the registry handles all modes uniformly. Fall back to bwrap
+		// when the DB row is missing or the column is empty.
+		isoMode := config.IsolationBwrap
 		if d != nil {
 			if modeStr := isolationModeFromDB(d, childSession); modeStr != "" {
 				isoMode = config.IsolationMode(modeStr)
@@ -1073,8 +1071,8 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 
 		iso, isoErr := container.For(isoMode, container.ConstructorOpts{Name: name})
 		if isoErr != nil {
-			// Unknown mode — fall back to podman.
-			if iso, isoErr = container.For(config.IsolationPodman, container.ConstructorOpts{Name: name}); isoErr != nil {
+			// Unknown mode — fall back to bwrap (best-effort temp-file cleanup).
+			if iso, isoErr = container.For(config.IsolationBwrap, container.ConstructorOpts{Name: name}); isoErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: unknown mode %q for %q: %v\n", isoMode, childSession, isoErr)
 				continue
 			}
@@ -1106,11 +1104,9 @@ func removeContainerIfExists(sessionName string) {
 	name := container.NameForSession(sessionName)
 
 	// Resolve the session's persisted isolation mode. When the DB row is
-	// missing or has an empty isolation_mode, fall back to podman: that is
-	// the pre-refactor behaviour (the open-coded podman stop/rm always ran
-	// regardless of mode, and the "no such container" path was silently
-	// ignored).
-	isoMode := config.IsolationPodman
+	// missing or has an empty isolation_mode, fall back to bwrap for
+	// best-effort temp-file cleanup.
+	isoMode := config.IsolationBwrap
 	if d, dbErr := openDB(); dbErr == nil {
 		modeStr := isolationModeFromDB(d, sessionName)
 		d.Close()
@@ -1119,13 +1115,12 @@ func removeContainerIfExists(sessionName string) {
 		}
 	}
 
-	// Per-mode dispatch: podman runs stop/rm + temp-file cleanup; bwrap and
-	// sandbox-exec do temp-file cleanup only; host is a no-op.
+	// Per-mode dispatch: bwrap and sandbox-exec do temp-file cleanup only;
+	// host is a no-op.
 	iso, isoErr := container.For(isoMode, container.ConstructorOpts{Name: name})
 	if isoErr != nil {
-		// Unknown mode — fall back to the podman path so the legacy
-		// behaviour (always try podman stop/rm) is preserved.
-		if iso, isoErr = container.For(config.IsolationPodman, container.ConstructorOpts{Name: name}); isoErr != nil {
+		// Unknown mode — fall back to bwrap (best-effort temp-file cleanup).
+		if iso, isoErr = container.For(config.IsolationBwrap, container.ConstructorOpts{Name: name}); isoErr != nil {
 			fmt.Fprintf(os.Stderr, "[prism] removeContainerIfExists: unknown isolation mode %q for %q: %v\n", isoMode, sessionName, isoErr)
 			return
 		}
