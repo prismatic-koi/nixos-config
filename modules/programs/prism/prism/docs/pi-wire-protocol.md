@@ -514,6 +514,44 @@ Sidecar response:
 This is the **clean** termination path. Connection drops without a
 preceding `session_shutdown` are handled per §7.2.
 
+### 5.11 `session_status`
+
+Status snapshot emitted by the extension to inform the sidecar of the
+current session identity and review-cycle progress. This frame is sent
+immediately after the `hello_ack` handshake completes and again at the
+start of each turn (`turn_start`), so the sidecar always has an up-to-date
+picture of the session state.
+
+```json
+{"type":"session_status","role":"worker","branch":"fix-login-redirect","review_cycles":0,"pr_number":""}
+{"type":"session_status","role":"review","branch":"fix-login-redirect","review_cycles":2,"pr_number":"42"}
+```
+
+Fields:
+
+- `role` (string, required) — session role as received in `hello_ack`
+  (`"coordinator"`, `"worker"`, `"review"`, or `""` when unknown).
+- `branch` (string, required) — branch label extracted from the
+  `session_name`: the part after `@` when the name contains `@`, otherwise
+  the full `session_name`.
+- `review_cycles` (integer, required) — current review-cycle count for the
+  detected PR. Zero when no PR has been detected yet.
+- `pr_number` (string, required) — the PR number most recently detected by
+  the review-cycle tracker, or `""` when unknown.
+
+Sidecar behaviour: store as a harness frame per §8.2 forward-compat rules
+(unknown frames are stored as-is). No active dispatch is required; the
+sidecar may use this frame for monitoring and session metadata.
+
+The extension also calls `ctx.ui.setStatus("prism", text)` with a
+human-readable summary at the same points. The status text format is:
+
+```
+[coordinator] main
+[worker] fix-login-redirect
+[review] fix-login-redirect · PR#42 · 2 cycles
+```
+
 ## 6. Frame catalogue — sidecar → extension
 
 Frames sent by the sidecar to the extension. These represent **prism
