@@ -63,8 +63,10 @@ import (
 // the sidecar log line.
 func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	branchFlag, _ := cmd.Flags().GetString("branch")
+	prFlag, _ := cmd.Flags().GetString("pr")
 	agentFlag, _ := cmd.Flags().GetString("agent")
 	profileFlag, _ := cmd.Flags().GetString("profile")
+	abtestFlag, _ := cmd.Flags().GetStringArray("abtest")
 	modelFlag, _ := cmd.Flags().GetString("model")
 	variantFlag, _ := cmd.Flags().GetString("variant")
 	harnessFlag, _ := cmd.Flags().GetString("harness")
@@ -91,10 +93,79 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		}
 	}
 
+	// --abtest and --profile are mutually exclusive — enforce client-side for
+	// fast feedback before the round-trip to the host API.
+	if len(abtestFlag) > 0 && cmd.Flags().Changed("profile") {
+		return fmt.Errorf("--abtest and --profile are mutually exclusive")
+	}
+	// Validate --abtest count early: we only allow 0 or 2 values.
+	if len(abtestFlag) == 1 || len(abtestFlag) > 2 {
+		return fmt.Errorf("--abtest requires exactly two profile names (got %d)", len(abtestFlag))
+	}
+
+	// Resolve --pr to a branch client-side when running inside a container.
+	// git is accessible from containers (PRISM_BARE_ROOT is set), so we can
+	// look up the PR branch here and forward it as --branch to the host API.
+	// The --pr flag itself is not forwarded because the host-side handler only
+	// accepts a branch name.
+	if prFlag != "" {
+		if branchFlag != "" {
+			return fmt.Errorf("--pr and --branch are mutually exclusive")
+		}
+		bareRoot, bareErr := resolveBareRoot("")
+		if bareErr != nil {
+			return bareErr
+		}
+		resolvedBranch, branchErr := resolveBranch(bareRoot, "", prFlag)
+		if branchErr != nil {
+			return branchErr
+		}
+		branchFlag = resolvedBranch
+	}
+
 	promptFlag, err := resolvePrompt(cmd)
 	if err != nil {
 		return err
 	}
+
+	// Abtest path: POST with abtest field and parse two session names from response.
+	if len(abtestFlag) == 2 {
+		var resp struct {
+			SessionNames []string `json:"session_names"`
+		}
+		body := map[string]any{
+			"branch":                 branchFlag,
+			"prompt":                 promptFlag,
+			"agent":                  agentFlag,
+			"model":                  modelFlag,
+			"variant":                variantFlag,
+			"harness":                harnessFlag,
+			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
+			"abtest":                 abtestFlag,
+		}
+		if isolationChanged {
+			body["isolation"] = isolationFlag
+		}
+		if len(modelOverrideFlag) > 0 {
+			modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
+			if parseErr != nil {
+				return parseErr
+			}
+			if len(modelsByRole) > 0 {
+				if encoded, encErr := json.Marshal(modelsByRole); encErr == nil {
+					body["model_variant_overrides"] = string(encoded)
+				}
+			}
+		}
+		if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
+			return err
+		}
+		for _, sn := range resp.SessionNames {
+			fmt.Printf("session %q created\n", sn)
+		}
+		return nil
+	}
+
 	var resp struct {
 		SessionName string `json:"session_name"`
 	}

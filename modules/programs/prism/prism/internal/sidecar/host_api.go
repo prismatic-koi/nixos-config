@@ -665,7 +665,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Absence of the field (the pre-#1263 behaviour) is treated as an empty map.
 	// See issue #1263 (C2.PROXY proxy-spawn model-override parity).
 	//
+	// Optional field "abtest" accepts a two-element array of profile names that
+	// are forwarded as --abtest flags to the host-side prism spawn. Exactly 0
+	// or 2 values are accepted; 1 or 3+ return HTTP 400. When abtest is set,
+	// "profile" must be absent. The response carries "session_names" (a two-
+	// element array) rather than the singular "session_name". See issue #1330.
+	//
 	// Response: {"session_name":"nixos-config@my-feature"} | {"error":"..."}
+	//           {"session_names":["nixos-config@branch-a","nixos-config@branch-b"]} (abtest)
 	mux.HandleFunc("/spawn", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -674,17 +681,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Repo                  string `json:"repo"` // accepted but ignored — ownRepo is always used
-			Branch                string `json:"branch"`
-			Prompt                string `json:"prompt"`
-			Agent                 string `json:"agent"`
-			Profile               string `json:"profile"`
-			Model                 string `json:"model"`
-			Variant               string `json:"variant"`
-			Isolation             string `json:"isolation"`
-			Harness               string `json:"harness"`
-			IgnoreConcurrencyCap  bool   `json:"ignore_concurrency_cap"`
-			ModelVariantOverrides string `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
+			Repo                  string   `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch                string   `json:"branch"`
+			Prompt                string   `json:"prompt"`
+			Agent                 string   `json:"agent"`
+			Profile               string   `json:"profile"`
+			Model                 string   `json:"model"`
+			Variant               string   `json:"variant"`
+			Isolation             string   `json:"isolation"`
+			Harness               string   `json:"harness"`
+			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
+			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
+			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
 		}
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
@@ -705,6 +713,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Branch == "" {
 			writeError(w, http.StatusBadRequest, "branch is required")
+			return
+		}
+		// Validate --abtest: must be 0 or 2 values; mutually exclusive with profile.
+		if len(req.Abtest) == 1 || len(req.Abtest) > 2 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("--abtest requires exactly two profile names (got %d)", len(req.Abtest)))
+			return
+		}
+		if len(req.Abtest) == 2 && req.Profile != "" {
+			writeError(w, http.StatusBadRequest, "--abtest and --profile are mutually exclusive")
 			return
 		}
 		// Validate harness before spawning. Default empty string to "opencode"
@@ -751,7 +768,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Agent != "" {
 			args = append(args, "--agent", req.Agent)
 		}
-		if req.Profile != "" {
+		// --abtest and --profile are mutually exclusive; validated above.
+		if len(req.Abtest) == 2 {
+			args = append(args, "--abtest", req.Abtest[0], "--abtest", req.Abtest[1])
+		} else if req.Profile != "" {
 			args = append(args, "--profile", req.Profile)
 		}
 		if req.Model != "" {
@@ -781,7 +801,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Agent != "" {
 			logArgs = append(logArgs, "--agent", req.Agent)
 		}
-		if req.Profile != "" {
+		if len(req.Abtest) == 2 {
+			logArgs = append(logArgs, "--abtest", req.Abtest[0], "--abtest", req.Abtest[1])
+		} else if req.Profile != "" {
 			logArgs = append(logArgs, "--profile", req.Profile)
 		}
 		if req.Model != "" {
@@ -814,9 +836,25 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		outStr := string(out)
+
+		// Abtest path: prism spawn --abtest prints two session lines.
+		// Parse both and return them in "session_names".
+		if len(req.Abtest) == 2 {
+			sessionNames := parseAllSpawnSessionNames(outStr)
+			if len(sessionNames) == 0 {
+				// Fallback: derive from ownRepo@branch-profile (best effort).
+				for _, p := range req.Abtest {
+					sessionNames = append(sessionNames, ownRepo+"@"+req.Branch+"-"+p)
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"session_names": sessionNames})
+			return
+		}
+
 		// prism spawn headless prints: session "name" created
 		// Parse the session name from the output.
-		sessionName := parseSpawnSessionName(string(out))
+		sessionName := parseSpawnSessionName(outStr)
 		if sessionName == "" {
 			// Fallback: derive from ownRepo@branch (branch already sanitised by spawn).
 			sessionName = ownRepo + "@" + req.Branch
