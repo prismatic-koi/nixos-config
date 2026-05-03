@@ -7,18 +7,20 @@ package cmd
 //
 // Additional flags mirror prism spawn:
 //
-//	--repo <name>         target repo by folder name under ~/code (or full path)
-//	--prompt <text>       pass an initial prompt to opencode on launch
-//	--prompt-file <path>  read the initial prompt from a file
-//	--agent <name>        opencode agent to use (default: "coordinator" on main, "worker" otherwise)
-//	--attach              switch the current tmux client to the new session
-//	--profile <name>      model profile to use from ~/.config/prism/profiles.json
-//	--model <name>        model identifier override (overrides profile's primary model)
-//	--variant <name>      model variant override (overrides all agents' variant)
-//	--harness <name>      agent harness to use (default: from profile slot or "opencode")
-//	--isolation <mode>    isolation mode: podman, bwrap, sandbox-exec, or host
+//	--repo <name>                   target repo by folder name under ~/code (or full path)
+//	--prompt <text>                 pass an initial prompt to opencode on launch
+//	--prompt-file <path>            read the initial prompt from a file
+//	--agent <name>                  opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--attach                        switch the current tmux client to the new session
+//	--profile <name>                model profile to use from ~/.config/prism/profiles.json
+//	--model <name>                  model identifier override (overrides profile's primary model)
+//	--variant <name>                model variant override (overrides all agents' variant)
+//	--model-override role=model     per-role model override (repeatable)
+//	--harness <name>                agent harness to use (default: from profile slot or "opencode")
+//	--isolation <mode>              isolation mode: podman, bwrap, sandbox-exec, or host
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,6 +51,7 @@ var prCmd = &cobra.Command{
 		harnessFlag, _ := cmd.Flags().GetString("harness")
 		isolationFlag, _ := cmd.Flags().GetString("isolation")
 		ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
+		modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
 
 		promptFlag, err := resolvePrompt(cmd)
 		if err != nil {
@@ -84,6 +87,17 @@ var prCmd = &cobra.Command{
 			}
 			if cmd.Flags().Changed("isolation") {
 				body["isolation"] = isolationFlag
+			}
+			if len(modelOverrideFlag) > 0 {
+				modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
+				if parseErr != nil {
+					return parseErr
+				}
+				if len(modelsByRole) > 0 {
+					if encoded, encErr := json.Marshal(modelsByRole); encErr == nil {
+						body["model_variant_overrides"] = string(encoded)
+					}
+				}
 			}
 			if proxyErr := proxyToHostAPI(apiURL, "/spawn", body, &resp); proxyErr != nil {
 				return proxyErr
@@ -273,6 +287,7 @@ func init() {
 	prCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	prCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	prCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
+	prCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	prCmd.Flags().String("harness", "", "Agent harness to use (default: from profile slot, or opencode)")
 	prCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	rootCmd.AddCommand(prCmd)
