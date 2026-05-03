@@ -23,11 +23,11 @@
 //	  },
 //	  "profiles": {
 //	    "anthropic": {
-//	      "coordinator": {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"none","systemPromptPath":""},
-//	      "plan":        {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"none","systemPromptPath":""},
-//	      "worker":      {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"none","systemPromptPath":""},
+//	      "coordinator": {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"off","systemPromptPath":""},
+//	      "plan":        {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"off","systemPromptPath":""},
+//	      "worker":      {"provider":"anthropic","model":"anthropic/claude-sonnet-4-6","thinking":"off","systemPromptPath":""},
 //	      ...
-//	      "explore":     {"provider":"anthropic","model":"anthropic/claude-haiku-4-5","thinking":"none","systemPromptPath":""}
+//	      "explore":     {"provider":"anthropic","model":"anthropic/claude-haiku-4-5","thinking":"off","systemPromptPath":""}
 //	    },
 //	    "anthropic-opus": {...},
 //	    "gemini-hybrid":  {...}
@@ -353,9 +353,16 @@ type agentCfg struct {
 // concept but kept the wire format identical so that opencode sessions
 // produce bit-identical output across the migration.
 //
+// The canonical zero value in profiles is "off" (the PI harness convention),
+// but opencode expects "none" as its zero value. This function translates
+// "off" → "none" so both consumers receive what they expect.
+//
 // An empty thinking value is rendered as an empty variant (which
 // marshalConfigContent then omits from the output entirely).
 func variantFromThinking(thinking string) string {
+	if thinking == "off" {
+		return "none"
+	}
 	return thinking
 }
 

@@ -59,6 +59,20 @@ func TestPIInvocation_NoOptionalFlags(t *testing.T) {
 	}
 }
 
+// TestPIInvocation_OffThinkingPassedThrough verifies that thinking="off"
+// (the zero value in profiles after #1299) is passed as --thinking off to
+// PI — not translated or dropped.
+func TestPIInvocation_OffThinkingPassedThrough(t *testing.T) {
+	cfg := Config{
+		PIThinking:            "off",
+		PIExtensionSandboxDir: "/etc/prism/pi-extensions",
+	}
+	args := PIInvocation(cfg)
+	if !hasPair(args, "--thinking", "off") {
+		t.Errorf("expected --thinking off in PI invocation args; got %v", args)
+	}
+}
+
 func TestPIInvocation_DefaultSandboxPaths(t *testing.T) {
 	// When sandbox path overrides are empty the defaults must be used.
 	cfg := Config{}
