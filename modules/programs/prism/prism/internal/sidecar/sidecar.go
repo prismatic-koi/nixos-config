@@ -1105,6 +1105,31 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 			// (not silently dropping them) per the edge-case AC.
 			eventType, normPayload, shouldWrite := normaliser.NormaliseFrame(line)
 			if !shouldWrite {
+				// turn_start / turn_end / msg_assistant may not produce a
+				// normPayload but still need to drive the accumulator — check
+				// the raw frame type.
+				switch frame.Type {
+				case "turn_start":
+					empty := ""
+					s.mu.Lock()
+					s.pipeAccum = &empty
+					s.writeEvent(frame.Type, json.RawMessage(line), nil)
+					s.mu.Unlock()
+				case "msg_assistant":
+					// Buffer the text fragment from the raw line.
+					s.mu.Lock()
+					if s.pipeAccum == nil {
+						empty := ""
+						s.pipeAccum = &empty
+					}
+					*s.pipeAccum += frame.Text
+					s.mu.Unlock()
+				case "turn_end":
+					s.mu.Lock()
+					stdioFlushPipeAccum(s, line)
+					s.writeEvent(frame.Type, json.RawMessage(line), nil)
+					s.mu.Unlock()
+				}
 				continue
 			}
 			if eventType == "state_change" {
@@ -1123,6 +1148,25 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 					continue
 				}
 			}
+			if eventType == "msg_assistant" {
+				// Accumulate text instead of writing immediately.
+				var p struct {
+					Text string `json:"text"`
+				}
+				// normPayload may be a payload.MsgAssistant struct; marshal and
+				// unmarshal to extract the text field generically.
+				if b, err := json.Marshal(normPayload); err == nil {
+					_ = json.Unmarshal(b, &p)
+				}
+				s.mu.Lock()
+				if s.pipeAccum == nil {
+					empty := ""
+					s.pipeAccum = &empty
+				}
+				*s.pipeAccum += p.Text
+				s.mu.Unlock()
+				continue
+			}
 			s.mu.Lock()
 			s.writeEvent(eventType, normPayload, nil)
 			s.mu.Unlock()
@@ -1131,6 +1175,28 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 		// Legacy fallback path (harness does not implement FrameNormaliser).
 		switch frame.Type {
+		case "turn_start":
+			empty := ""
+			s.mu.Lock()
+			s.pipeAccum = &empty
+			s.writeEvent(frame.Type, json.RawMessage(line), nil)
+			s.mu.Unlock()
+
+		case "msg_assistant":
+			s.mu.Lock()
+			if s.pipeAccum == nil {
+				empty := ""
+				s.pipeAccum = &empty
+			}
+			*s.pipeAccum += frame.Text
+			s.mu.Unlock()
+
+		case "turn_end":
+			s.mu.Lock()
+			stdioFlushPipeAccum(s, line)
+			s.writeEvent(frame.Type, json.RawMessage(line), nil)
+			s.mu.Unlock()
+
 		case "state_change":
 			st := agent.AgentState(frame.State)
 			s.mu.Lock()
@@ -1138,11 +1204,6 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 			s.writeStateChange(st)
 			s.mu.Unlock()
 			lastState = frame.State
-
-		case "msg_assistant":
-			s.mu.Lock()
-			s.writeEvent("msg_assistant", map[string]string{"text": frame.Text}, nil)
-			s.mu.Unlock()
 
 		default:
 			// Forward-compatible: write the raw frame as an event of the named type.
@@ -1154,6 +1215,11 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	if err := scanner.Err(); err != nil {
 		log.Printf("sidecar: runStartupStdio: scanner error: %v", err)
 	}
+
+	// Flush any partial accumulator before writing error state (mid-turn exit).
+	s.mu.Lock()
+	s.flushPipeAccum()
+	s.mu.Unlock()
 
 	// Wait for the child process to exit. cmd.Wait() also closes the stdout
 	// pipe, which is fine because we have already read all frames above.
@@ -1606,6 +1672,43 @@ func (s *Sidecar) flushPipeAccum() {
 	p := payload.MsgAssistant{Text: *s.pipeAccum}
 	s.writeEvent("msg_assistant", p, nil)
 	s.pipeAccum = nil
+}
+
+// stdioFlushPipeAccum flushes the msg_assistant accumulator for the stdio
+// (TransportStdioPipe) path on turn_end. Unlike flushPipeAccum it:
+//   - Reads token/cost fields from the turn_end line (if present).
+//   - Suppresses the write when the accumulator is nil or empty (zero
+//     msg_assistant fragments in the turn → no spurious row).
+//
+// Must be called with s.mu held.
+func stdioFlushPipeAccum(s *Sidecar, turnEndLine []byte) {
+	if s.pipeAccum == nil || *s.pipeAccum == "" {
+		s.pipeAccum = nil
+		return
+	}
+	text := *s.pipeAccum
+	s.pipeAccum = nil
+
+	var f struct {
+		Usage struct {
+			Input      int     `json:"input"`
+			Output     int     `json:"output"`
+			CacheRead  int     `json:"cache_read"`
+			CacheWrite int     `json:"cache_write"`
+			Cost       float64 `json:"cost"`
+		} `json:"usage"`
+	}
+	_ = json.Unmarshal(turnEndLine, &f)
+
+	p := payload.MsgAssistant{
+		Text:             text,
+		InputTokens:      f.Usage.Input,
+		OutputTokens:     f.Usage.Output,
+		CacheReadTokens:  f.Usage.CacheRead,
+		CacheWriteTokens: f.Usage.CacheWrite,
+		Cost:             f.Usage.Cost,
+	}
+	s.writeEvent("msg_assistant", p, nil)
 }
 
 // sendPipeError writes a protocol-level error frame to the connection and
