@@ -593,10 +593,10 @@ func shellQuotePodman(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// commonHostAPISidecarFlags returns the SidecarFlags shared by bwrap and
-// sandbox-exec. Both modes set up a host-API socket and harness but do not
-// own a container lifecycle, so --container is intentionally omitted. Mirrors
-// the pre-refactor branch in StartSidecarWithOpts
+// commonHostAPISidecarFlags returns the SidecarFlags shared by bwrap,
+// sandbox-exec, and host. All three modes set up a host-API socket and harness
+// but do not own a container lifecycle, so --container is intentionally
+// omitted. Mirrors the pre-refactor branch in StartSidecarWithOpts
 // (internal/session/sidecar.go:336-352).
 func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 	out := []string{"--port", fmt.Sprintf("%d", opts.Port)}
