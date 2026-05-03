@@ -147,6 +147,49 @@ func TestSshKeyNameAbsentKeepsDefault(t *testing.T) {
 	}
 }
 
+func TestSshBinOverriddenFromFile(t *testing.T) {
+	// When ssh_bin is set in the config file, the loaded value should override
+	// the zero default. This is used by prism-tui.nix to bake the absolute
+	// Nix-store openssh path into config.json at darwin-rebuild switch time.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"ssh_bin": "/nix/store/abc123-openssh-10.3p1/bin/ssh"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshBin != "/nix/store/abc123-openssh-10.3p1/bin/ssh" {
+		t.Errorf("SshBin: got %q, want %q", cfg.SshBin, "/nix/store/abc123-openssh-10.3p1/bin/ssh")
+	}
+}
+
+func TestSshBinAbsentKeepsEmpty(t *testing.T) {
+	// When ssh_bin is absent from the config file, SshBin should remain empty
+	// (its zero value). The GIT_SSH_COMMAND code in agent_run_sandbox_exec_darwin.go
+	// falls back to bare "ssh" when SshBin is empty.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Config file exists but doesn't mention ssh_bin.
+	raw := `{"color_primary": "#ff0000"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.SshBin != "" {
+		t.Errorf("SshBin: got %q, want empty string when absent from config", cfg.SshBin)
+	}
+}
+
 func TestIsolationModeFromNewField(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

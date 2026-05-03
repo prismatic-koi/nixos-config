@@ -84,6 +84,14 @@ type Config struct {
 	// SshSigningKeyName is the base filename (not full path) of the SSH signing key in ~/.ssh/.
 	// The public key is derived by appending ".pub". Defaults to "prismatic-koi-ed25519-signingkey" if empty.
 	SshSigningKeyName string `json:"ssh_signing_key_name"`
+	// SshBin is the absolute path to the ssh binary to use for GIT_SSH_COMMAND
+	// in sandbox-exec sessions. When set (typically to a Nix-store openssh path
+	// baked in by prism-tui.nix), this Nix-built ssh is used instead of
+	// /usr/bin/ssh. The Nix openssh links against its own libresolv/libldns
+	// rather than Apple's libnetwork.dylib, so it resolves hostnames without
+	// needing the system-network sandbox rules (dafsaData.bin etc.).
+	// When empty, GIT_SSH_COMMAND falls back to bare "ssh" (PATH lookup).
+	SshBin string `json:"ssh_bin"`
 
 	// Restore behaviour.
 	// RestoreStaggerDelayMs is the delay in milliseconds inserted between
@@ -142,6 +150,7 @@ type parsedConfig struct {
 	GitUserEmail                   string    `json:"git_user_email"`
 	SshAccessKeyName               string    `json:"ssh_access_key_name"`
 	SshSigningKeyName              string    `json:"ssh_signing_key_name"`
+	SshBin                         string    `json:"ssh_bin"`
 	PIExtensionDir                 string    `json:"pi_extension_dir"`
 	RestoreStaggerDelayMs          *int      `json:"restore_stagger_delay_ms"`
 	SidecarCircuitBreakerThreshold *int      `json:"sidecar_circuit_breaker_threshold"`
@@ -285,6 +294,9 @@ func load() Config {
 	}
 	if parsed.SshSigningKeyName != "" {
 		cfg.SshSigningKeyName = parsed.SshSigningKeyName
+	}
+	if parsed.SshBin != "" {
+		cfg.SshBin = parsed.SshBin
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir
