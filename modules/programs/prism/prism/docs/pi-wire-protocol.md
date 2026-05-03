@@ -385,13 +385,32 @@ delta into one `msg_assistant` frame.
 {"type":"msg_assistant","text":"Here is "}
 ```
 
-- `text` (string, required) — the delta text. May be empty (no-op on the
-  sidecar side; recorded as a zero-length event).
+- `text` (string, required) — the delta text. May be empty (treated as a
+  zero-length fragment; contributes nothing to the coalesced text).
 
-The frame maps directly into a `msg_assistant` row in `agent_events`,
-matching `internal/payload/payload.go:MsgAssistant`. The sidecar does **not**
-attempt to coalesce fragments; consumers (the dashboard, `prism checkin`)
-already handle the fragment stream from opencode the same way.
+The sidecar **coalesces** fragments within a turn rather than writing one
+row per fragment. Text from each `msg_assistant` frame is accumulated in
+memory between `turn_start` and `turn_end`. On `turn_end`, a single
+`msg_assistant` event is written to `agent_events` with:
+
+- `text` set to the concatenation of all fragment texts in order.
+- Token and cost fields (`inputTokens`, `outputTokens`, `cacheReadTokens`,
+  `cacheWriteTokens`, `cost`) populated from the `turn_end` frame's `usage`
+  object (zero when absent).
+
+This produces one `msg_assistant` row per turn instead of ~50 fragmented
+rows. The payload schema matches `internal/payload/payload.go:MsgAssistant`.
+
+**Edge cases:**
+
+- If `turn_end` arrives with no preceding `msg_assistant` frames (empty
+  accumulator), a `msg_assistant` row is still written with empty `text`.
+- If `session_shutdown` or a connection drop arrives with a non-empty
+  accumulator, a partial `msg_assistant` row is written with the accumulated
+  text and zero token/cost fields — the partial text is not silently
+  discarded.
+- The accumulator resets on each `turn_start`; multiple turns in a single
+  session each produce their own single `msg_assistant` event.
 
 ### 5.6 `turn_start`
 
