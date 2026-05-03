@@ -583,32 +583,30 @@
           let
             profiledAgents =
               config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider
-                (
-                  {
-                    worker = {
-                      description = "Default worker agent with full tool access";
-                      mode = "primary";
-                      color = config.theme.red;
-                      permission = {
-                        bash = containerWorkerBashCommands;
-                      };
+                ({
+                  worker = {
+                    description = "Default worker agent with full tool access";
+                    mode = "primary";
+                    color = config.theme.red;
+                    permission = {
+                      bash = containerWorkerBashCommands;
                     };
-                    ac = { };
-                    explore = { };
-                    title = { };
-                    summary = { };
-                    compaction = { };
-                    coordinator = {
-                      disable = true;
-                    };
-                    build = {
-                      disable = true;
-                    };
-                    plan = {
-                      disable = true;
-                    };
-                  }
-                );
+                  };
+                  ac = { };
+                  explore = { };
+                  title = { };
+                  summary = { };
+                  compaction = { };
+                  coordinator = {
+                    disable = true;
+                  };
+                  build = {
+                    disable = true;
+                  };
+                  plan = {
+                    disable = true;
+                  };
+                });
             # Strip variant from disabled agents so their primary-role "medium"
             # doesn't poison the model's thinking level for the worker.
             sanitisedAgents = lib.mapAttrs (
