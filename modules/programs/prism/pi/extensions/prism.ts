@@ -109,7 +109,12 @@ export function similarityKey(tool: string, args: unknown): string | null {
         typeof args === "object" && args !== null
           ? (args as Record<string, unknown>).command as string ?? ""
           : String(args ?? "")
-      const tokens = cmd.trim().split(/\s+/)
+      // Strip leading `cd <path> &&` or `cd <path>;` prefixes so that
+      // commands like `cd /worktree && git push origin main` are keyed on
+      // `git push origin` rather than `cd`. Bare `cd /foo` (no following
+      // command) is NOT stripped — it remains `bash:cd` as a legitimate op.
+      const stripped = cmd.trim().replace(/^(cd\s+\S+\s*(?:&&|;)\s*)+/, "")
+      const tokens = stripped.split(/\s+/)
       const meaningful = tokens.filter((t) => t.length > 0)
       let baseIdx = 0
       while (baseIdx < meaningful.length && meaningful[baseIdx].startsWith("-")) {
