@@ -42,6 +42,8 @@ import {
   shouldAttemptConnect,
   // Git-push reminder
   GIT_PUSH_REMINDER_MESSAGE,
+  // turn_end signal resolver
+  resolveTurnEndSignal,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1224,5 +1226,144 @@ describe("shouldAttemptConnect", () => {
   it("returns false when both socket is set and connected is true", () => {
     const fakeSocket = {}
     assert.equal(shouldAttemptConnect(fakeSocket, true), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveTurnEndSignal (turn_end state-change resolver)
+// ---------------------------------------------------------------------------
+
+describe("resolveTurnEndSignal — finished", () => {
+  it("returns 'finished' when stopReason=stop, idle, no pending, not reviewing", () => {
+    assert.equal(
+      resolveTurnEndSignal("stop", true, false, false),
+      "finished",
+    )
+  })
+
+  it("returns 'none' when stopReason=stop but hasPendingMessages=true", () => {
+    // AC: stop + pending messages → agent has more work queued, NOT finished.
+    // hasPendingMessages also suppresses idle emission (same as old behaviour).
+    assert.equal(
+      resolveTurnEndSignal("stop", true, true, false),
+      "none",
+    )
+  })
+
+  it("returns 'none' when stopReason=stop but isIdle=false", () => {
+    // Session is still streaming — not idle, cannot be finished
+    assert.equal(
+      resolveTurnEndSignal("stop", false, false, false),
+      "none",
+    )
+  })
+
+  it("returns 'none' when stopReason=stop and pendingReviewCall=true", () => {
+    // AC: in reviewing state — do not emit finished; agent awaits review-complete
+    assert.equal(
+      resolveTurnEndSignal("stop", true, false, true),
+      "none",
+    )
+  })
+})
+
+describe("resolveTurnEndSignal — interrupted", () => {
+  it("returns 'interrupted' when stopReason=aborted", () => {
+    // AC: user pressed Escape → always emit interrupted regardless of idle state
+    assert.equal(
+      resolveTurnEndSignal("aborted", true, false, false),
+      "interrupted",
+    )
+  })
+
+  it("returns 'interrupted' when stopReason=aborted even if not idle", () => {
+    assert.equal(
+      resolveTurnEndSignal("aborted", false, true, false),
+      "interrupted",
+    )
+  })
+
+  it("returns 'interrupted' when stopReason=aborted even if pendingReviewCall=true", () => {
+    assert.equal(
+      resolveTurnEndSignal("aborted", true, false, true),
+      "interrupted",
+    )
+  })
+})
+
+describe("resolveTurnEndSignal — toolUse", () => {
+  it("does NOT return 'finished' when stopReason=toolUse", () => {
+    // AC: turn ended to execute tools, agent is not done — no finished emitted.
+    // In practice isIdle=false when toolUse fires, but even if idle, not finished.
+    assert.notEqual(
+      resolveTurnEndSignal("toolUse", true, false, false),
+      "finished",
+    )
+  })
+
+  it("does NOT return 'interrupted' when stopReason=toolUse", () => {
+    assert.notEqual(
+      resolveTurnEndSignal("toolUse", true, false, false),
+      "interrupted",
+    )
+  })
+
+  it("returns 'none' when stopReason=toolUse and not idle (typical case)", () => {
+    // Typical: tool use stops are not idle because tool execution follows.
+    assert.equal(
+      resolveTurnEndSignal("toolUse", false, false, false),
+      "none",
+    )
+  })
+})
+
+describe("resolveTurnEndSignal — length", () => {
+  it("does NOT return 'finished' when stopReason=length", () => {
+    // AC: context limit hit, agent may continue — no finished emitted.
+    assert.notEqual(
+      resolveTurnEndSignal("length", true, false, false),
+      "finished",
+    )
+  })
+
+  it("does NOT return 'interrupted' when stopReason=length", () => {
+    assert.notEqual(
+      resolveTurnEndSignal("length", true, false, false),
+      "interrupted",
+    )
+  })
+
+  it("returns 'none' when stopReason=length and not idle", () => {
+    assert.equal(
+      resolveTurnEndSignal("length", false, false, false),
+      "none",
+    )
+  })
+})
+
+describe("resolveTurnEndSignal — error", () => {
+  it("returns 'none' when stopReason=error", () => {
+    // AC: errors are handled separately; do not emit finished
+    assert.equal(
+      resolveTurnEndSignal("error", true, false, false),
+      "none",
+    )
+  })
+})
+
+describe("resolveTurnEndSignal — idle (non-stop reasons that are idle)", () => {
+  it("returns 'idle' when stopReason is undefined and session is idle with no pending", () => {
+    // Unknown/missing stopReason that hits the idle branch
+    assert.equal(
+      resolveTurnEndSignal(undefined, true, false, false),
+      "idle",
+    )
+  })
+
+  it("returns 'none' when stopReason is undefined but not idle", () => {
+    assert.equal(
+      resolveTurnEndSignal(undefined, false, false, false),
+      "none",
+    )
   })
 })
