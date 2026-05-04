@@ -1717,6 +1717,13 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.lastState = st
 
 	case "turn_start":
+		// Transition the session to active on every new turn. The sidecar's
+		// upsertState deduplicates — if already active the write is a no-op.
+		// This is the real fix for the idle→active path: NormaliseFrame is not
+		// on this code path (PI uses TransportSocketPipe, not TransportStdioPipe).
+		s.upsertState(agent.StateActive, nil, nil)
+		s.writeStateChange(agent.StateActive)
+		s.lastState = agent.StateActive
 		// Reset the accumulator for the new turn, then persist the frame.
 		empty := ""
 		s.pipeAccum = &empty

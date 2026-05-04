@@ -852,7 +852,7 @@ describe("snapshotGuardState", () => {
     dl.consecutiveCount = 3
     dl.fired = false
     const rc = newReviewCycleState()
-    const snap = snapshotGuardState(dl, rc, false)
+    const snap = snapshotGuardState(dl, rc, false, false)
     assert.equal(snap.doomLoop.currentKey, "bash:git push")
     assert.equal(snap.doomLoop.consecutiveCount, 3)
     assert.equal(snap.doomLoop.fired, false)
@@ -864,18 +864,26 @@ describe("snapshotGuardState", () => {
     rc.detectedPrNumber = "42"
     rc.cycles.set("42", 2)
     rc.frameEmitted = true
-    const snap = snapshotGuardState(dl, rc, true)
+    const snap = snapshotGuardState(dl, rc, true, false)
     assert.equal(snap.reviewCycle.detectedPrNumber, "42")
     assert.equal(snap.reviewCycle.cycles["42"], 2)
     assert.equal(snap.reviewCycle.frameEmitted, true)
     assert.equal(snap.pendingGitPushReminder, true)
+    assert.equal(snap.pendingReviewCall, false)
+  })
+
+  it("serialises pendingReviewCall", () => {
+    const dl = newDoomLoopState()
+    const rc = newReviewCycleState()
+    const snap = snapshotGuardState(dl, rc, false, true)
+    assert.equal(snap.pendingReviewCall, true)
   })
 
   it("produces a JSON-safe value (no Map objects)", () => {
     const dl = newDoomLoopState()
     const rc = newReviewCycleState()
     rc.cycles.set("99", 1)
-    const snap = snapshotGuardState(dl, rc, false)
+    const snap = snapshotGuardState(dl, rc, false, false)
     // JSON round-trip must succeed and preserve cycles
     const json = JSON.stringify(snap)
     const parsed = JSON.parse(json)
@@ -891,6 +899,7 @@ describe("restoreGuardState", () => {
       doomLoop: { currentKey: "bash:nix build", consecutiveCount: 4, fired: true },
       reviewCycle: { detectedPrNumber: null, cycles: {}, frameEmitted: false },
       pendingGitPushReminder: false,
+      pendingReviewCall: false,
     }
     restoreGuardState(snap, dl, rc)
     assert.equal(dl.currentKey, "bash:nix build")
@@ -905,12 +914,27 @@ describe("restoreGuardState", () => {
       doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
       reviewCycle: { detectedPrNumber: "77", cycles: { "77": 3 }, frameEmitted: true },
       pendingGitPushReminder: true,
+      pendingReviewCall: false,
     }
     const result = restoreGuardState(snap, dl, rc)
     assert.equal(rc.detectedPrNumber, "77")
     assert.equal(rc.cycles.get("77"), 3)
     assert.equal(rc.frameEmitted, true)
     assert.equal(result.pendingGitPushReminder, true)
+    assert.equal(result.pendingReviewCall, false)
+  })
+
+  it("restores pendingReviewCall=true from snapshot", () => {
+    const dl = newDoomLoopState()
+    const rc = newReviewCycleState()
+    const snap = {
+      doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
+      reviewCycle: { detectedPrNumber: "10", cycles: {}, frameEmitted: false },
+      pendingGitPushReminder: false,
+      pendingReviewCall: true,
+    }
+    const result = restoreGuardState(snap, dl, rc)
+    assert.equal(result.pendingReviewCall, true)
   })
 
   it("clears existing Map entries before restoring", () => {
@@ -921,6 +945,7 @@ describe("restoreGuardState", () => {
       doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
       reviewCycle: { detectedPrNumber: null, cycles: {}, frameEmitted: false },
       pendingGitPushReminder: false,
+      pendingReviewCall: false,
     }
     restoreGuardState(snap, dl, rc)
     assert.equal(rc.cycles.size, 0)
@@ -934,14 +959,16 @@ describe("restoreGuardState", () => {
       doomLoop: { currentKey: undefined, consecutiveCount: "not-a-number" as unknown as number, fired: undefined },
       reviewCycle: { detectedPrNumber: undefined, cycles: null as unknown as Record<string, number>, frameEmitted: undefined },
       pendingGitPushReminder: undefined as unknown as boolean,
+      pendingReviewCall: undefined as unknown as boolean,
     }
-    restoreGuardState(snap, dl, rc)
+    const result = restoreGuardState(snap, dl, rc)
     assert.equal(dl.currentKey, null)
     assert.equal(dl.consecutiveCount, 0)
     assert.equal(dl.fired, false)
     assert.equal(rc.detectedPrNumber, null)
     assert.equal(rc.cycles.size, 0)
     assert.equal(rc.frameEmitted, false)
+    assert.equal(result.pendingReviewCall, false)
   })
 })
 
@@ -956,13 +983,13 @@ describe("snapshotGuardState + restoreGuardState round-trip", () => {
     rc.cycles.set("55", 2)
     rc.frameEmitted = false
 
-    const snap = snapshotGuardState(dl, rc, true)
+    const snap = snapshotGuardState(dl, rc, true, true)
     // Simulate writing to and reading from the session JSON file.
     const persisted = JSON.parse(JSON.stringify(snap))
 
     const dl2 = newDoomLoopState()
     const rc2 = newReviewCycleState()
-    const { pendingGitPushReminder } = restoreGuardState(persisted, dl2, rc2)
+    const { pendingGitPushReminder, pendingReviewCall } = restoreGuardState(persisted, dl2, rc2)
 
     assert.equal(dl2.currentKey, "bash:git status")
     assert.equal(dl2.consecutiveCount, 2)
@@ -971,6 +998,7 @@ describe("snapshotGuardState + restoreGuardState round-trip", () => {
     assert.equal(rc2.cycles.get("55"), 2)
     assert.equal(rc2.frameEmitted, false)
     assert.equal(pendingGitPushReminder, true)
+    assert.equal(pendingReviewCall, true)
   })
 })
 

@@ -1,6 +1,6 @@
 // Package pi implements the harness.Harness interface for the PI (pi-coding-agent)
-// runtime. PI communicates via a TransportStdioPipe shape: the binary writes a
-// JSONL event stream to stdout and receives prompts on stdin.
+// runtime. PI communicates via a TransportSocketPipe shape: the extension
+// connects to a Unix socket bound by the sidecar and exchanges JSONL frames.
 //
 // # B5.TR — Translate payload strategy
 //
@@ -344,6 +344,13 @@ func marshalArgs(raw json.RawMessage) string {
 
 // NormaliseFrame maps a raw PI JSONL frame to a canonical opencode-shaped
 // (eventType, payload, shouldWrite) tuple (implements FrameNormaliser).
+//
+// Note: PI is registered as TransportSocketPipe. NormaliseFrame is only called
+// from the TransportStdioPipe path (runStartupStdio). It is retained here to
+// satisfy the FrameNormaliser interface and to normalise any PI frames that may
+// be replayed or parsed outside the socket-pipe path (e.g. tests, piexport).
+// The idle→active state transition on turn_start is handled by handlePipeFrame
+// in sidecar.go, which is the actual runtime code path for PI sessions.
 //
 // Normalisation map:
 //

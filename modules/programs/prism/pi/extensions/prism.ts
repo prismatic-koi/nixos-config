@@ -367,6 +367,13 @@ export interface GuardStateSnapshot {
   }
   /** Whether a git-push reminder is pending injection. */
   pendingGitPushReminder: boolean
+  /**
+   * Whether a `prism review` call is in-flight (set on detection, cleared on
+   * prompt delivery). Must be persisted so that a session pause/resume during
+   * the review-wait window does not reset the guard and allow turn_end to
+   * emit state_change:idle and clobber the reviewing state.
+   */
+  pendingReviewCall: boolean
 }
 
 /**
@@ -377,6 +384,7 @@ export function snapshotGuardState(
   doomLoop: DoomLoopState,
   reviewCycle: ReviewCycleState,
   pendingGitPushReminder: boolean,
+  pendingReviewCall: boolean,
 ): GuardStateSnapshot {
   const cycles: Record<string, number> = {}
   for (const [k, v] of reviewCycle.cycles) {
@@ -394,6 +402,7 @@ export function snapshotGuardState(
       frameEmitted: reviewCycle.frameEmitted,
     },
     pendingGitPushReminder,
+    pendingReviewCall,
   }
 }
 
@@ -405,7 +414,7 @@ export function restoreGuardState(
   snapshot: GuardStateSnapshot,
   doomLoop: DoomLoopState,
   reviewCycle: ReviewCycleState,
-): { pendingGitPushReminder: boolean } {
+): { pendingGitPushReminder: boolean; pendingReviewCall: boolean } {
   doomLoop.currentKey = snapshot.doomLoop.currentKey ?? null
   doomLoop.consecutiveCount = typeof snapshot.doomLoop.consecutiveCount === "number"
     ? snapshot.doomLoop.consecutiveCount
@@ -423,7 +432,10 @@ export function restoreGuardState(
   }
   reviewCycle.frameEmitted = snapshot.reviewCycle.frameEmitted === true
 
-  return { pendingGitPushReminder: snapshot.pendingGitPushReminder === true }
+  return {
+    pendingGitPushReminder: snapshot.pendingGitPushReminder === true,
+    pendingReviewCall: snapshot.pendingReviewCall === true,
+  }
 }
 export function reviewCycleEscalationMessage(
   state: ReviewCycleState,
@@ -1032,6 +1044,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // reminder fires exactly once.
   let pendingGitPushReminder = false
 
+  // Flag: `prism review` was called during this session. When true, the
+  // turn_end idle emission is suppressed so that the `reviewing` state is
+  // not clobbered while waiting for the review-complete prompt. Cleared
+  // when a `prompt` inbound frame arrives (review-complete delivery) so
+  // that subsequent turns can go idle normally.
+  let pendingReviewCall = false
+
   // ── Connection state ──────────────────────────────────────────────────
   let socket: net.Socket | null = null
   let writer: FrameWriter | null = null
@@ -1206,6 +1225,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         },
       }
 
+      // A prompt frame signals that the sidecar is delivering a message
+      // (e.g. review-complete). Clear the reviewing-state guard so subsequent
+      // turns can emit state_change:idle normally.
+      if (f.type === "prompt") {
+        pendingReviewCall = false
+      }
+
       void dispatchInboundFrame(f, apiAdapter, sendError)
     })
   }
@@ -1254,6 +1280,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (snapshot && typeof snapshot === "object") {
           const restored = restoreGuardState(snapshot, doomLoopState, reviewCycleState)
           pendingGitPushReminder = restored.pendingGitPushReminder
+          pendingReviewCall = restored.pendingReviewCall
         }
         break
       }
@@ -1363,8 +1390,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       // Idle detection: if PI reports idle and no pending messages, emit
       // state_change:idle. Sidecar applies its own debounce window.
+      // Guard: if `prism review` was called this session and the
+      // review-complete prompt has not yet arrived, suppress the idle
+      // emission so the `reviewing` state is not clobbered.
       try {
         if (
+          !pendingReviewCall &&
           typeof ctx.isIdle === "function" &&
           ctx.isIdle() &&
           (typeof ctx.hasPendingMessages !== "function" ||
@@ -1428,6 +1459,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (gitPushReminderEnabled && isGitPush(command)) {
           pendingGitPushReminder = true
         }
+
+        // Reviewing-state guard: set flag when `prism review` is called so
+        // that the turn_end idle emission is suppressed until the
+        // review-complete prompt arrives.
+        if (/\bprism\s+review\b/.test(command)) {
+          pendingReviewCall = true
+        }
       }
 
       if (reviewCycleEnabled) {
@@ -1440,7 +1478,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
       // we do it unconditionally — the reviewer can deduplicate via the
       // "latest entry wins" pattern in session_switch above.
       pi.appendEntry(GUARD_STATE_ENTRY_TYPE,
-        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder))
+        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder, pendingReviewCall))
     }
   })
 

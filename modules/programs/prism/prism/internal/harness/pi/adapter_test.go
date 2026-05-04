@@ -292,6 +292,22 @@ func TestNormaliseFrame_MessageComplete_NonAssistant_Skipped(t *testing.T) {
 	}
 }
 
+func TestNormaliseFrame_TurnStart_NotWritten(t *testing.T) {
+	// turn_start is handled by handlePipeFrame (the TransportSocketPipe path),
+	// not by NormaliseFrame (TransportStdioPipe path). NormaliseFrame treats
+	// it as an unknown type — logged and shouldWrite=false. The socket-pipe
+	// integration tests in sidecar_socketpipe_test.go cover the real runtime
+	// behaviour.
+	a := pi.New("", "", "")
+	raw := []byte(`{"type":"turn_start"}`)
+
+	_, _, shouldWrite := a.NormaliseFrame(raw)
+
+	if shouldWrite {
+		t.Error("expected shouldWrite=false for turn_start (handled by handlePipeFrame, not NormaliseFrame)")
+	}
+}
+
 func TestNormaliseFrame_ToolResult_TruncatesLongOutput(t *testing.T) {
 	a := pi.New("", "", "")
 	longOutput := make([]byte, 600)
