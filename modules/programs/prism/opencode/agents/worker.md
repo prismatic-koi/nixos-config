@@ -55,6 +55,8 @@ When your work is complete and quality gates pass:
 
 ## Running a review
 
+Before running `prism review`, load the `prism` skill via the skill tool. The skill contains the full async review workflow and async expectations — loading it first ensures you handle the review-complete prompt correctly.
+
 `prism review <pr>` is **async**. It spawns 5 review agents in a group and
 returns immediately with a "review in progress" acknowledgement. Results are
 delivered to you via a follow-up `prism prompt` when all agents complete.
@@ -120,6 +122,8 @@ Avoid cosmetic bikeshedding that invites another full review round for no
 substantive gain. When in doubt, ship the PR as-is — review rounds aren't free.
 
 ### Fallback: Task-call subagents
+
+**This fallback is only applicable when the `task` tool is present in your active toolset (i.e. you are running under the opencode harness). If you are running under the pi harness, the `task` tool is not available — `prism review` is the only supported review path. Pi harness agents must NOT attempt to invoke Task subagents.**
 
 If `prism review` is unavailable or the environment does not support it, invoke
 the five review subagents **in parallel** (in a single response with 5 Task tool

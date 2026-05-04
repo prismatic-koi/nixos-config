@@ -40,6 +40,8 @@ import {
   extractBranch,
   // Connection guard
   shouldAttemptConnect,
+  // Git-push reminder
+  GIT_PUSH_REMINDER_MESSAGE,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1002,6 +1004,41 @@ describe("isGitPush", () => {
 
   it("does not match unrelated commands", () => {
     assert.equal(isGitPush("go test ./..."), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GIT_PUSH_REMINDER_MESSAGE
+// ---------------------------------------------------------------------------
+
+describe("GIT_PUSH_REMINDER_MESSAGE", () => {
+  it("instructs the agent to load the prism skill", () => {
+    assert.ok(
+      GIT_PUSH_REMINDER_MESSAGE.includes("prism` skill") ||
+        GIT_PUSH_REMINDER_MESSAGE.includes("prism skill"),
+      "message should mention loading the prism skill",
+    )
+  })
+
+  it("instructs the agent to run prism review", () => {
+    assert.ok(
+      GIT_PUSH_REMINDER_MESSAGE.includes("prism review"),
+      "message should contain 'prism review'",
+    )
+  })
+
+  it("does not mention Task subagents", () => {
+    assert.ok(
+      !GIT_PUSH_REMINDER_MESSAGE.includes("subagent"),
+      "message must not mention Task subagents",
+    )
+  })
+
+  it("does not mention parallel Task calls", () => {
+    assert.ok(
+      !GIT_PUSH_REMINDER_MESSAGE.includes("Task call"),
+      "message must not mention parallel Task calls",
+    )
   })
 })
 
