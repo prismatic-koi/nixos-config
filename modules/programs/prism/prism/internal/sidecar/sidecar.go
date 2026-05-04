@@ -1811,6 +1811,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		s.lastState = agent.StateFinished
+		go s.notifyCoordinator()
 		return true
 
 	default:
