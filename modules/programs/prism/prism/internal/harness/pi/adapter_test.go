@@ -292,27 +292,19 @@ func TestNormaliseFrame_MessageComplete_NonAssistant_Skipped(t *testing.T) {
 	}
 }
 
-func TestNormaliseFrame_TurnStart_EmitsStateChangeActive(t *testing.T) {
-	// turn_start must emit state_change:active so the session transitions
-	// from idle→active when a new turn begins. The sidecar's upsertState
-	// deduplicates — if already active the write is a no-op.
+func TestNormaliseFrame_TurnStart_NotWritten(t *testing.T) {
+	// turn_start is handled by handlePipeFrame (the TransportSocketPipe path),
+	// not by NormaliseFrame (TransportStdioPipe path). NormaliseFrame treats
+	// it as an unknown type — logged and shouldWrite=false. The socket-pipe
+	// integration tests in sidecar_socketpipe_test.go cover the real runtime
+	// behaviour.
 	a := pi.New("", "", "")
 	raw := []byte(`{"type":"turn_start"}`)
 
-	evtType, normPayload, shouldWrite := a.NormaliseFrame(raw)
+	_, _, shouldWrite := a.NormaliseFrame(raw)
 
-	if !shouldWrite {
-		t.Fatal("expected shouldWrite=true for turn_start")
-	}
-	if evtType != "state_change" {
-		t.Fatalf("expected eventType=state_change, got %q", evtType)
-	}
-	p, ok := normPayload.(payload.StateChange)
-	if !ok {
-		t.Fatalf("expected payload.StateChange, got %T", normPayload)
-	}
-	if p.State != "active" {
-		t.Errorf("StateChange.State: want %q got %q", "active", p.State)
+	if shouldWrite {
+		t.Error("expected shouldWrite=false for turn_start (handled by handlePipeFrame, not NormaliseFrame)")
 	}
 }
 

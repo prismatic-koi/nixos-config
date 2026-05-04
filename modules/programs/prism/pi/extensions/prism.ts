@@ -367,6 +367,13 @@ export interface GuardStateSnapshot {
   }
   /** Whether a git-push reminder is pending injection. */
   pendingGitPushReminder: boolean
+  /**
+   * Whether a `prism review` call is in-flight (set on detection, cleared on
+   * prompt delivery). Must be persisted so that a session pause/resume during
+   * the review-wait window does not reset the guard and allow turn_end to
+   * emit state_change:idle and clobber the reviewing state.
+   */
+  pendingReviewCall: boolean
 }
 
 /**
@@ -377,6 +384,7 @@ export function snapshotGuardState(
   doomLoop: DoomLoopState,
   reviewCycle: ReviewCycleState,
   pendingGitPushReminder: boolean,
+  pendingReviewCall: boolean,
 ): GuardStateSnapshot {
   const cycles: Record<string, number> = {}
   for (const [k, v] of reviewCycle.cycles) {
@@ -394,6 +402,7 @@ export function snapshotGuardState(
       frameEmitted: reviewCycle.frameEmitted,
     },
     pendingGitPushReminder,
+    pendingReviewCall,
   }
 }
 
@@ -405,7 +414,7 @@ export function restoreGuardState(
   snapshot: GuardStateSnapshot,
   doomLoop: DoomLoopState,
   reviewCycle: ReviewCycleState,
-): { pendingGitPushReminder: boolean } {
+): { pendingGitPushReminder: boolean; pendingReviewCall: boolean } {
   doomLoop.currentKey = snapshot.doomLoop.currentKey ?? null
   doomLoop.consecutiveCount = typeof snapshot.doomLoop.consecutiveCount === "number"
     ? snapshot.doomLoop.consecutiveCount
@@ -423,7 +432,10 @@ export function restoreGuardState(
   }
   reviewCycle.frameEmitted = snapshot.reviewCycle.frameEmitted === true
 
-  return { pendingGitPushReminder: snapshot.pendingGitPushReminder === true }
+  return {
+    pendingGitPushReminder: snapshot.pendingGitPushReminder === true,
+    pendingReviewCall: snapshot.pendingReviewCall === true,
+  }
 }
 export function reviewCycleEscalationMessage(
   state: ReviewCycleState,
@@ -1268,6 +1280,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (snapshot && typeof snapshot === "object") {
           const restored = restoreGuardState(snapshot, doomLoopState, reviewCycleState)
           pendingGitPushReminder = restored.pendingGitPushReminder
+          pendingReviewCall = restored.pendingReviewCall
         }
         break
       }
@@ -1465,7 +1478,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
       // we do it unconditionally — the reviewer can deduplicate via the
       // "latest entry wins" pattern in session_switch above.
       pi.appendEntry(GUARD_STATE_ENTRY_TYPE,
-        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder))
+        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder, pendingReviewCall))
     }
   })
 

@@ -1,6 +1,6 @@
 // Package pi implements the harness.Harness interface for the PI (pi-coding-agent)
-// runtime. PI communicates via a TransportStdioPipe shape: the binary writes a
-// JSONL event stream to stdout and receives prompts on stdin.
+// runtime. PI communicates via a TransportSocketPipe shape: the extension
+// connects to a Unix socket bound by the sidecar and exchanges JSONL frames.
 //
 // # B5.TR — Translate payload strategy
 //
@@ -345,6 +345,13 @@ func marshalArgs(raw json.RawMessage) string {
 // NormaliseFrame maps a raw PI JSONL frame to a canonical opencode-shaped
 // (eventType, payload, shouldWrite) tuple (implements FrameNormaliser).
 //
+// Note: PI is registered as TransportSocketPipe. NormaliseFrame is only called
+// from the TransportStdioPipe path (runStartupStdio). It is retained here to
+// satisfy the FrameNormaliser interface and to normalise any PI frames that may
+// be replayed or parsed outside the socket-pipe path (e.g. tests, piexport).
+// The idle→active state transition on turn_start is handled by handlePipeFrame
+// in sidecar.go, which is the actual runtime code path for PI sessions.
+//
 // Normalisation map:
 //
 //   - message_complete (role=assistant) → "msg_assistant" / payload.MsgAssistant
@@ -352,7 +359,6 @@ func marshalArgs(raw json.RawMessage) string {
 //   - tool_call                         → "tool_call"     / payload.ToolCall
 //   - tool_result                       → "tool_result"   / payload.ToolResult
 //   - state_change                      → "state_change"  / payload.StateChange
-//   - turn_start                        → "state_change"  / payload.StateChange{State:"active"}
 //   - session_end                       → "msg_assistant" / payload.MsgAssistant
 //     (synthetic event carrying session-level token totals)
 //   - all other types: logged at info level; shouldWrite = false
@@ -445,15 +451,6 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			MessageID: f.MessageID,
 		}
 		return "tool_result", p, true
-
-	case "turn_start":
-		// Emit state_change:active so the session transitions from idle→active
-		// when a new turn begins. The sidecar's upsertState deduplicates — if
-		// the session is already active the write is a no-op.
-		p := payload.StateChange{
-			State: "active",
-		}
-		return "state_change", p, true
 
 	case "state_change":
 		var f piStateChangeFrame
