@@ -1721,9 +1721,17 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// upsertState deduplicates — if already active the write is a no-op.
 		// This is the real fix for the idle→active path: NormaliseFrame is not
 		// on this code path (PI uses TransportSocketPipe, not TransportStdioPipe).
-		s.upsertState(agent.StateActive, nil, nil)
-		s.writeStateChange(agent.StateActive)
-		s.lastState = agent.StateActive
+		//
+		// Guard: if the DB state is reviewing, skip the active write. prism review
+		// sets reviewing via UpsertStatus directly; the in-memory s.lastState
+		// remains active and would clobber it on the next turn_start (#1365).
+		if s.currentDBState() != agent.StateReviewing {
+			s.upsertState(agent.StateActive, nil, nil)
+			s.writeStateChange(agent.StateActive)
+			s.lastState = agent.StateActive
+		} else {
+			log.Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
+		}
 		// Reset the accumulator for the new turn, then persist the frame.
 		empty := ""
 		s.pipeAccum = &empty

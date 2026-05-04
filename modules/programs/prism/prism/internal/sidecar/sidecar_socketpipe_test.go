@@ -329,6 +329,114 @@ func TestSocketPipe_TurnStartActiveWhenAlreadyActive(t *testing.T) {
 	}
 }
 
+// TestSocketPipe_TurnStart_DoesNotClobberReviewing verifies that a turn_start
+// frame arriving while the DB state is "reviewing" does NOT overwrite it with
+// "active". This is the fix for #1365: prism review writes reviewing directly
+// to the DB via UpsertStatus; the sidecar's in-memory lastState is still
+// active, so without the guard a subsequent turn_start clobbers reviewing.
+func TestSocketPipe_TurnStart_DoesNotClobberReviewing(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Bring the session to active state via turn_start (as the agent would).
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active after first turn_start, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Simulate prism review writing reviewing directly to the DB (as the
+	// review subprocess does — bypassing the sidecar's in-memory state).
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateReviewing), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus reviewing: %v", err)
+	}
+
+	// Confirm the DB is now in reviewing state.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateReviewing) {
+		t.Fatalf("expected reviewing in DB before turn_start, got %q", s)
+	}
+
+	// Send a turn_start — this must NOT overwrite reviewing with active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	// Give the sidecar time to process the frame.
+	time.Sleep(100 * time.Millisecond)
+
+	// The DB state must still be reviewing.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateReviewing) {
+		t.Errorf("turn_start clobbered reviewing: DB state = %q, want %q", s, agent.StateReviewing)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
+// TestSocketPipe_TurnStart_IdleTransitionsToActive verifies that a turn_start
+// frame when the session is in idle state transitions it correctly to active
+// (regression guard for #1365 — the reviewing guard must not break the
+// idle→active path).
+func TestSocketPipe_TurnStart_IdleTransitionsToActive(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to idle via state_change frames.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateIdle) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached idle, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// turn_start must transition idle → active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active after turn_start from idle, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
 // TestSocketPipe_EventFrames verifies that tool_call, tool_result, and
 // msg_assistant frames are persisted to agent_events.
 func TestSocketPipe_EventFrames(t *testing.T) {
