@@ -303,6 +303,27 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		}
 	}
 
+	// Override TERM for sandbox-exec sessions: replace kitty-protocol terminal
+	// types (xterm-kitty, etc.) with xterm-256color.
+	//
+	// The kitty keyboard protocol requires a bidirectional escape-sequence
+	// handshake: the TUI writes a query sequence and reads back a response
+	// from the terminal. Under sandbox-exec the handshake appears to fail or
+	// produce an inconsistent result — opencode ends up in a state where
+	// regular letter keys arrive correctly (they are plain bytes in any mode)
+	// but special keys like Backspace that are encoded differently under the
+	// kitty protocol do not work. Forcing TERM to xterm-256color prevents
+	// opencode from attempting the kitty protocol negotiation and falls back to
+	// standard VT sequences (Backspace = 0x7f), which work correctly.
+	//
+	// This is analogous to the podman path, which hardcodes xterm-256color
+	// because the container image may not ship the host's terminfo entry.
+	// Unlike the bwrap path (which passes TERM through because bwrap
+	// bind-mounts the full host terminfo tree), sandbox-exec shares the host
+	// filesystem so terminfo resolution itself is not the issue — the kitty
+	// protocol handshake is.
+	env = sandboxExecNormaliseTermEnv(env)
+
 	// Inject credential env vars (LLM API keys, GITHUB_TOKEN).
 	env = append(env, m.CredentialEnvVars()...)
 
@@ -466,4 +487,43 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		return fmt.Errorf("agent-run: wait sandbox-exec: %w", waitErr)
 	}
 	return nil
+}
+
+// sandboxExecNormaliseTermEnv replaces kitty-protocol TERM values in env with
+// xterm-256color. It returns a new slice; the input is not modified.
+//
+// Terminal emulators that implement the kitty keyboard protocol (e.g. kitty,
+// ghostty) advertise themselves via TERM values like "xterm-kitty". When
+// opencode's TUI sees such a TERM it attempts the kitty keyboard protocol
+// handshake — writing a query escape sequence and reading back a response.
+// Under sandbox-exec this handshake does not complete correctly, leaving
+// opencode in a mixed state: plain letter keys (bare bytes) arrive fine but
+// special keys encoded by the kitty protocol (Backspace = \x1b[127u, Escape =
+// \x1b[27u, etc.) are not handled.
+//
+// Replacing the TERM value with xterm-256color prevents the handshake attempt
+// and causes opencode to use standard VT key encoding instead, where Backspace
+// is 0x7f and Escape is 0x1b — both of which work correctly through the
+// sandbox-exec PTY.
+func sandboxExecNormaliseTermEnv(env []string) []string {
+	// Terminal types that advertise kitty keyboard protocol support.
+	// Keep this list conservative — only add values that are known to
+	// cause the handshake issue under sandbox-exec.
+	kittyTerms := map[string]bool{
+		"xterm-kitty": true,
+		"ghostty":     true,
+	}
+
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TERM=") {
+			termVal := strings.TrimPrefix(kv, "TERM=")
+			if kittyTerms[termVal] {
+				out = append(out, "TERM=xterm-256color")
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
 }
