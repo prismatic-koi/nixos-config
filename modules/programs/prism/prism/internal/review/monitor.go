@@ -14,10 +14,8 @@ package review
 // called by the monitor-review subcommand.
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +24,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
 // MonitorOpts configures the group-completion monitor.
@@ -364,10 +363,10 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 	return fmt.Errorf("delivery failed after %d attempts: %w", maxRetries+1, lastErr)
 }
 
-// deliverPrompt sends text to workerSession via the prism prompt HTTP API.
-// It mirrors the logic in cmd/prompt.go's runPrompt but operates directly
-// via the DB + HTTP path (no exec of a subprocess) so the monitor can be
-// embedded without spawning child processes.
+// deliverPrompt sends text to workerSession via the harness-aware delivery
+// helper. For pi sessions (TransportSocketPipe), it routes through the
+// session's host-API Unix socket. For opencode sessions, it uses the
+// opencode HTTP API (prompt_async).
 func deliverPrompt(workerSession, text, dbPath string) error {
 	if dbPath == "" {
 		dbPath = defaultDBPath()
@@ -388,36 +387,8 @@ func deliverPrompt(workerSession, text, dbPath string) error {
 	if status.EndedAt != nil {
 		return fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
 	}
-	if status.HarnessPort == nil || status.HarnessSessionID == nil {
-		return fmt.Errorf("session %q has no harness port or session ID — cannot deliver prompt", workerSession)
-	}
 
-	// Build prompt body matching cmd/prompt.go's buildPromptBody.
-	body := buildPromptBodyForMonitor(text, status)
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshal prompt body: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", *status.HarnessPort, *status.HarnessSessionID)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request to %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d from %s", resp.StatusCode, url)
-	}
-
-	return nil
+	return promptdelivery.DeliverToSession(workerSession, status, text, buildPromptBodyForMonitor)
 }
 
 // buildPromptBodyForMonitor constructs the HTTP request body for prompt_async.

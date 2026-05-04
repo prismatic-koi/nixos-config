@@ -569,12 +569,24 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// is being routed to the sidecar's own pipe-connected harness, so
 		// there is no cross-session boundary to enforce. This is the path
 		// taken by the host-side `prism prompt <pi-session>` CLI when it
-		// dials the per-session host-API socket directly. We still gate on
-		// the harness having a TransportSocketPipe shape so an opencode
-		// session — which uses HTTP-port delivery — does not silently route
-		// through this branch.
+		// dials the per-session host-API socket directly, and by the
+		// promptdelivery.DeliverToSession helper used by the review-complete
+		// monitor, coordinator notify, and merge-queue watcher (#1364).
+		// We still gate on the harness having a TransportSocketPipe shape
+		// so an opencode session — which uses HTTP-port delivery — does not
+		// silently route through this branch.
 		if req.Session == s.cfg.SessionName {
 			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
+				// Reject delivery when the pi session is in "waiting" state,
+				// consistent with the `prism prompt` CLI behaviour (#1364).
+				if s.cfg.DB != nil {
+					selfStatus, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
+					if dbErr == nil && selfStatus != nil && selfStatus.State == "waiting" {
+						writeError(w, http.StatusConflict,
+							fmt.Sprintf("session %q is in waiting state — prompt not delivered", s.cfg.SessionName))
+						return
+					}
+				}
 				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
 				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
 					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")

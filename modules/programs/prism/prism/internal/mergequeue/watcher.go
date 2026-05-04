@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
 const (
@@ -297,15 +299,33 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 	w.notify(context.Background(), head.SessionName, head.InstanceID, notifyText)
 }
 
-// notify delivers a notification to the coordinator via the opencode HTTP API.
-// It looks up the coordinator's harness port from agent_status and posts a
-// prompt_async message. Failure is non-fatal (logged).
+// notify delivers a notification to the coordinator via the appropriate
+// delivery path based on the harness type. For pi (TransportSocketPipe)
+// coordinators, it routes through the host-API Unix socket (#1364). For
+// opencode coordinators, it uses the opencode HTTP API (prompt_async).
+// Failure is non-fatal (logged).
 func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, text string) {
 	status, err := w.db.CurrentStatus(targetSession)
 	if err != nil || status == nil {
 		log.Printf("[mergequeue] notify: cannot find coordinator session %q: %v", targetSession, err)
 		return
 	}
+
+	// PI (socket-pipe) coordinators do not have an opencode HTTP server —
+	// route through the coordinator's host-API Unix socket instead (#1364).
+	if status.Harness != nil {
+		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
+			log.Printf("[mergequeue] notify: routing via host-API socket for pi coordinator=%s", targetSession)
+			if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, buildNotifyBody); deliverErr != nil {
+				log.Printf("[mergequeue] notify: FAILED (pi path) — coordinator=%s reason=%v", targetSession, deliverErr)
+			} else {
+				log.Printf("[mergequeue] notify: delivered to pi coordinator=%s via host-API socket", targetSession)
+			}
+			return
+		}
+	}
+
+	// Opencode path: require harness port and session ID.
 	if status.HarnessPort == nil {
 		log.Printf("[mergequeue] notify: coordinator %q has no harness port", targetSession)
 		return

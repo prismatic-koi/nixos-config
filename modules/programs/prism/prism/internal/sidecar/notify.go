@@ -14,6 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
 // reviewAgentParentSession derives the parent worker session name from a
@@ -62,13 +64,28 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 		log.Printf("sidecar: notifyParentWorker: parent session %q has ended — skipping notification", parentSession)
 		return
 	}
+
+	notifyText := fmt.Sprintf("review agent %s failed to start: %v", s.cfg.SessionName, startupErr)
+
+	// PI (socket-pipe) workers do not have an opencode HTTP server — route
+	// through the parent session's host-API Unix socket instead (#1364).
+	if parentStatus.Harness != nil {
+		if shape, ok := harness.ShapeOf(*parentStatus.Harness); ok && shape == harness.TransportSocketPipe {
+			log.Printf("sidecar: notifyParentWorker: routing via host-API socket for pi parent=%s", parentSession)
+			if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody); err != nil {
+				log.Printf("sidecar: notifyParentWorker: FAILED (pi path) — parent=%s reason=%v", parentSession, err)
+			} else {
+				log.Printf("sidecar: notifyParentWorker: delivered to pi parent=%s via host-API socket", parentSession)
+			}
+			return
+		}
+	}
+
 	if parentStatus.HarnessPort == nil {
 		log.Printf("sidecar: notifyParentWorker: parent session %q has no harness port — cannot deliver notification", parentSession)
 		return
 	}
 	port := *parentStatus.HarnessPort
-
-	notifyText := fmt.Sprintf("review agent %s failed to start: %v", s.cfg.SessionName, startupErr)
 
 	storedSID := ""
 	if parentStatus.HarnessSessionID != nil {
@@ -213,7 +230,27 @@ func (s *Sidecar) notifyCoordinator() {
 		SentAt:       time.Now(),
 	}
 
-	// Require port for HTTP delivery.
+	// PI (socket-pipe) coordinators do not have an opencode HTTP server — route
+	// through the coordinator's host-API Unix socket instead (#1364).
+	if coordStatus.Harness != nil {
+		if shape, ok := harness.ShapeOf(*coordStatus.Harness); ok && shape == harness.TransportSocketPipe {
+			log.Printf("sidecar: notifyCoordinator: routing via host-API socket for pi coordinator=%s", coordinatorName)
+			if err := promptdelivery.DeliverToSession(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody); err != nil {
+				log.Printf("sidecar: notifyCoordinator: FAILED (pi path) — coordinator=%s reason=%v", coordinatorName, err)
+				if writeErr := s.cfg.DB.WriteBusMessageFailed(msg); writeErr != nil {
+					log.Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)
+				}
+				return
+			}
+			if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
+				log.Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
+			}
+			log.Printf("sidecar: notifyCoordinator: delivered to pi coordinator=%s via host-API socket", coordinatorName)
+			return
+		}
+	}
+
+	// Require port for HTTP delivery (opencode path).
 	if coordStatus.HarnessPort == nil {
 		log.Printf("sidecar: notifyCoordinator: coordinator has no harness port — cannot deliver notification")
 		return
