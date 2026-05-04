@@ -165,9 +165,10 @@ type Config struct {
 	// manages a podman container running opencode in combined TUI + HTTP mode
 	// instead of relying on a directly-launched opencode process.
 	Container *container.Config
-	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
-	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
-	// to agents running inside the container.
+	// HostAPISockPath, when non-empty, is the path at which the sidecar starts a
+	// Unix socket HTTP server exposing host-side tmux operations to agents running
+	// inside the sandbox (container or bwrap). The listener is started regardless of
+	// whether Container is set — bwrap sessions (where Container is nil) also need it.
 	HostAPISockPath string
 	// HostAPITCPPort is the OS-allocated TCP port used on Darwin for the host-API
 	// listener. It is set by Run() after binding the listener and recorded here for
@@ -264,7 +265,7 @@ type Sidecar struct {
 	// Protected by mu.
 	container *containerMgr
 	// hostAPIListener is the Unix socket listener for the host-API HTTP server.
-	// Set in Run() when container mode is active and HostAPISockPath is non-empty.
+	// Set in Run() when HostAPISockPath is non-empty (regardless of isolation mode).
 	// Protected by mu.
 	hostAPIListener net.Listener
 	// hostAPISrv is the HTTP server for the host-API Unix socket.
@@ -403,44 +404,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
-	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
-	// determine the wire-level shape and dispatch to the appropriate startup
-	// helper. The back half of Run (host-API, merge-queue watcher, SSE loop,
-	// shutdown) is shape-agnostic and is unchanged.
+	// Start the host-API Unix socket server (AC-1, AC-9).
+	// This runs for ALL harness types — any session with HostAPISockPath set
+	// needs the Unix socket so the sandboxed agent can proxy prism CLI calls
+	// back to the host. Previously this block was nested inside the
+	// Container!=nil branch (and then after the transport-shape switch), which
+	// meant bwrap sessions never got a socket: socket-pipe (pi) and
+	// stdio-pipe harnesses return early from the switch, so the block was
+	// unreachable for them.
 	//
-	// When HarnessName is empty (back-compat: callers that pre-date this field)
-	// the registry lookup is skipped and we fall through to runStartupHTTP,
-	// preserving today's behaviour for all existing sessions.
-	if s.cfg.HarnessName != "" {
-		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
-		if !ok {
-			return fmt.Errorf("sidecar: unknown harness %q (not registered)", s.cfg.HarnessName)
-		}
-		switch shape {
-		case harness.TransportHTTPPort:
-			if err := s.runStartupHTTP(ctx); err != nil {
-				return err
-			}
-		case harness.TransportStdioPipe:
-			return s.runStartupStdio(ctx)
-		case harness.TransportSocketPipe:
-			return s.runStartupSocketPipe(ctx)
-		default:
-			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
-		}
-	} else {
-		// HarnessName is empty: preserve legacy behaviour (HTTP-port startup).
-		if err := s.runStartupHTTP(ctx); err != nil {
-			return err
-		}
-	}
-
-	// Start the host-API servers (AC-1, AC-9).
-	// This runs for BOTH podman and bwrap isolation modes — any session with
-	// HostAPISockPath set needs the Unix socket so the sandboxed agent can
-	// proxy prism CLI calls back to the host. Previously this block was nested
-	// inside the Container!=nil branch, which meant bwrap coordinators (where
-	// Container is nil) never got a socket.
+	// This block MUST run before the transport-shape switch so that pi
+	// (socket-pipe) and stdio-pipe sessions get the listener before
+	// runStartupSocketPipe / runStartupStdio is called and returns.
+	//
+	// The TCP server for Darwin container sessions is started AFTER the switch
+	// (below), because runStartupHTTP must run first to bind the TCP listener
+	// port (s.hostAPITCPListener is set inside runStartupHTTP on Darwin). Only
+	// HTTP-port harnesses reach the post-switch TCP server block because
+	// socket-pipe and stdio-pipe return early from the switch.
 	//
 	// Guard with !shuttingDown: if SIGTERM arrived before we reach here,
 	// Shutdown() will have already run and we must not create listeners that
@@ -488,27 +469,63 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				log.Printf("sidecar: host-API server (unix): %v", err)
 			}
 		}()
+	}
 
-		// TCP server — Darwin only, when the TCP listener was bound before
-		// container creation. Uses a separate http.Server with the same handler
-		// so both transports serve identical API endpoints.
-		s.mu.Lock()
-		tcpLn := s.hostAPITCPListener
-		s.mu.Unlock()
-		if tcpLn != nil {
-			tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
-			s.mu.Lock()
-			s.hostAPITCPSrv = tcpSrv
-			s.mu.Unlock()
-			go func() {
-				if err := tcpSrv.Serve(tcpLn); err != nil &&
-					!errors.Is(err, http.ErrServerClosed) &&
-					!errors.Is(err, net.ErrClosed) {
-					log.Printf("sidecar: host-API server (tcp): %v", err)
-				}
-			}()
-			log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
+	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
+	// determine the wire-level shape and dispatch to the appropriate startup
+	// helper. The back half of Run (merge-queue watcher, SSE loop, shutdown)
+	// is shape-agnostic and is unchanged.
+	//
+	// When HarnessName is empty (back-compat: callers that pre-date this field)
+	// the registry lookup is skipped and we fall through to runStartupHTTP,
+	// preserving today's behaviour for all existing sessions.
+	if s.cfg.HarnessName != "" {
+		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
+		if !ok {
+			return fmt.Errorf("sidecar: unknown harness %q (not registered)", s.cfg.HarnessName)
 		}
+		switch shape {
+		case harness.TransportHTTPPort:
+			if err := s.runStartupHTTP(ctx); err != nil {
+				return err
+			}
+		case harness.TransportStdioPipe:
+			return s.runStartupStdio(ctx)
+		case harness.TransportSocketPipe:
+			return s.runStartupSocketPipe(ctx)
+		default:
+			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
+		}
+	} else {
+		// HarnessName is empty: preserve legacy behaviour (HTTP-port startup).
+		if err := s.runStartupHTTP(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Start the host-API TCP server — Darwin only, for HTTP-port (opencode
+	// container) sessions. The TCP listener is bound inside runStartupHTTP
+	// (before container creation, so the port is known at container launch
+	// time). We start the server goroutine here, after runStartupHTTP returns,
+	// because s.hostAPITCPListener is not set until runStartupHTTP runs.
+	// Socket-pipe and stdio-pipe cases return early above and never reach here,
+	// so this block only executes for HTTP-port sessions — exactly as before.
+	s.mu.Lock()
+	tcpLn := s.hostAPITCPListener
+	s.mu.Unlock()
+	if tcpLn != nil {
+		tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
+		s.mu.Lock()
+		s.hostAPITCPSrv = tcpSrv
+		s.mu.Unlock()
+		go func() {
+			if err := tcpSrv.Serve(tcpLn); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) &&
+				!errors.Is(err, net.ErrClosed) {
+				log.Printf("sidecar: host-API server (tcp): %v", err)
+			}
+		}()
+		log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
 	}
 
 	// Mint or load instance_id. The sidecar is the single owner of session
