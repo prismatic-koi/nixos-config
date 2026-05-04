@@ -637,6 +637,67 @@ describe("similarityKey — bash subcommand-driven CLIs", () => {
   })
 })
 
+describe("similarityKey — bash cd-prefix stripping", () => {
+  it("strips a single 'cd /path &&' prefix (git command)", () => {
+    const key = similarityKey("bash", { command: "cd /foo && git push origin main" })
+    assert.equal(key, "bash:git push origin main")
+  })
+
+  it("strips a single 'cd /path &&' prefix (gh command)", () => {
+    const key = similarityKey("bash", { command: "cd /foo && gh pr create --title foo" })
+    // gh is a subcommand CLI; positionals are pr, create, foo (--title is a flag, foo is its value
+    // but the algorithm doesn't parse flag arity — foo appears as a positional).
+    assert.equal(key, "bash:gh pr create foo")
+    // Crucially, it must NOT be bash:cd.
+    assert.notEqual(key, "bash:cd")
+  })
+
+  it("strips a single 'cd /path &&' prefix (nix command)", () => {
+    const key = similarityKey("bash", { command: "cd /foo/bar && nix eval .#foo" })
+    // nix is not in SUBCOMMAND_CLIS, so base=nix, firstPos=eval.
+    assert.equal(key, "bash:nix eval")
+    // Crucially, it must NOT be bash:cd.
+    assert.notEqual(key, "bash:cd")
+  })
+
+  it("strips multiple chained 'cd' prefixes", () => {
+    const key = similarityKey("bash", { command: "cd /foo && cd /bar && git status" })
+    assert.equal(key, "bash:git status")
+  })
+
+  it("does NOT strip a bare 'cd /foo' (no following command)", () => {
+    const key = similarityKey("bash", { command: "cd /foo" })
+    // Bare cd is not stripped; base=cd, firstPos=/foo.
+    // The key contains 'cd' as the base command, confirming the bare cd is treated as-is.
+    assert.ok(key !== null && key.startsWith("bash:cd"), `expected key starting with bash:cd, got ${key}`)
+  })
+
+  it("strips 'cd /path;' (semicolon separator) prefix", () => {
+    const key = similarityKey("bash", { command: "cd /foo; git status" })
+    assert.equal(key, "bash:git status")
+  })
+
+  it("5 different bash commands all starting with the same 'cd /worktree &&' produce different keys", () => {
+    const cmds = [
+      "cd /home/ben/worktree && git status",
+      "cd /home/ben/worktree && git add .",
+      "cd /home/ben/worktree && git commit -m 'msg'",
+      "cd /home/ben/worktree && git push origin branch",
+      "cd /home/ben/worktree && gh pr create --title foo",
+    ]
+    const keys = cmds.map((command) => similarityKey("bash", { command }))
+    // All 5 should be distinct — no doom-loop false positive.
+    assert.equal(new Set(keys).size, 5)
+  })
+
+  it("5 identical bash commands (same after stripping) DO produce the same key", () => {
+    const cmd = "cd /home/ben/worktree && git status"
+    const keys = [1, 2, 3, 4, 5].map(() => similarityKey("bash", { command: cmd }))
+    // All 5 should be the same key — doom-loop detector fires correctly.
+    assert.equal(new Set(keys).size, 1)
+  })
+})
+
 describe("similarityKey — edit/write/webfetch", () => {
   it("edit same file produces the same key", () => {
     const a = similarityKey("edit", { filePath: "/foo.go", newString: "a" })
