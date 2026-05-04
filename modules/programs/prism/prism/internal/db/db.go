@@ -1675,8 +1675,22 @@ func migrateV27ToV28(conn *sql.DB, version *int) error {
 	return nil
 }
 
-// Close closes the underlying database connection.
+// Close checkpoints the WAL (so -wal and -shm sidecar files are removed when
+// the last connection closes) and then closes the underlying database
+// connection.
+//
+// PASSIVE mode is used: it copies committed WAL frames into the main database
+// file and then lets conn.Close() remove the now-empty sidecar files. TRUNCATE
+// mode is intentionally avoided — it truncates the WAL to zero bytes but leaves
+// a zero-byte -wal file on disk, which prevents t.TempDir() cleanup in tests.
+//
+// If the checkpoint call returns an error (e.g. because the database is in
+// delete-journal mode or has already been closed), the error is logged and
+// Close still calls conn.Close() — a failed checkpoint is non-fatal.
 func (d *DB) Close() error {
+	if _, err := d.conn.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
+		fmt.Fprintf(os.Stderr, "[prism] db.Close: wal_checkpoint failed (non-fatal): %v\n", err)
+	}
 	return d.conn.Close()
 }
 
