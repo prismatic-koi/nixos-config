@@ -158,6 +158,23 @@
               model = "anthropic/claude-haiku-4-5";
             };
           };
+          anthropic-pi = profileFromTiers {
+            primary = slot {
+              provider = "anthropic";
+              model = "anthropic/claude-sonnet-4-6";
+              harness = "pi";
+            };
+            secondary = slot {
+              provider = "anthropic";
+              model = "anthropic/claude-sonnet-4-6";
+              harness = "pi";
+            };
+            lightweight = slot {
+              provider = "anthropic";
+              model = "anthropic/claude-haiku-4-5";
+              harness = "pi";
+            };
+          };
           anthropic-opus = profileFromTiers {
             primary = slot {
               provider = "anthropic";
@@ -200,6 +217,32 @@
               model = "github-copilot/claude-haiku-4.5";
             };
           };
+          github-copilot-pi-worker =
+            (profileFromTiers {
+              primary = slot {
+                provider = "github-copilot";
+                model = "github-copilot/claude-sonnet-4.6";
+              };
+              secondary = slot {
+                provider = "github-copilot";
+                model = "github-copilot/claude-sonnet-4.6";
+              };
+              lightweight = slot {
+                provider = "github-copilot";
+                model = "github-copilot/claude-haiku-4.5";
+              };
+            })
+            // {
+              worker =
+                slot {
+                  provider = "github-copilot";
+                  model = "github-copilot/claude-sonnet-4.6";
+                  harness = "pi";
+                }
+                // {
+                  systemPromptPath = roleToSystemPromptFile "worker";
+                };
+            };
           google = profileFromTiers {
             primary = slot {
               provider = "google";
