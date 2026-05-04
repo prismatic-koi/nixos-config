@@ -26,7 +26,10 @@
 //   tool_execution_start  → tool_call           (truncated args)
 //   tool_execution_end    → tool_result         (truncated output)
 //   turn_start            → turn_start
-//   turn_end              → turn_end + state_change:idle (when no pending msgs)
+//   turn_end              → turn_end + state_change:finished + session_shutdown
+//                            (stopReason=stop, idle, no pending, not reviewing)
+//                         → turn_end + state_change:interrupted (stopReason=aborted)
+//                         → turn_end + state_change:idle (other idle turns)
 //   message_update        → msg_assistant       (text_delta only, truncated)
 //   after_provider_response (non-OK)
 //                         → provider_error
@@ -958,6 +961,73 @@ export async function dispatchInboundFrame(
 }
 
 // ---------------------------------------------------------------------------
+// turn_end signal resolver — exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Valid stop reasons as defined by the PI agent.
+ *
+ * - "stop"      — model declared end_turn cleanly
+ * - "toolUse"   — turn ended to execute tools; agent is not done
+ * - "length"    — context limit hit; agent may continue
+ * - "error"     — error during generation
+ * - "aborted"   — user interrupted (e.g. Escape key)
+ */
+export type StopReason = "stop" | "toolUse" | "length" | "error" | "aborted"
+
+/**
+ * Signal that the turn_end handler should emit.
+ *
+ * - "finished"     — emit state_change:finished, session_shutdown, close writer
+ * - "interrupted"  — emit state_change:interrupted
+ * - "idle"         — emit state_change:idle (existing behaviour)
+ * - "none"         — do not emit any state_change frame
+ */
+export type TurnEndSignal = "finished" | "interrupted" | "idle" | "none"
+
+/**
+ * Determines which state-change signal to emit at the end of a turn.
+ *
+ * Priority order:
+ *  1. If stopReason is "aborted" → "interrupted" (always, regardless of idle)
+ *  2. If stopReason is "stop" AND isIdle AND !hasPendingMessages AND
+ *     !pendingReviewCall → "finished"
+ *  3. If stopReason is "stop" (or any non-aborted, non-error reason) AND
+ *     isIdle AND !hasPendingMessages AND !pendingReviewCall → "idle"
+ *  4. Otherwise → "none"
+ *
+ * The "finished" path is only taken on a clean "stop" to avoid false-positives
+ * from tool-use mid-turn or context-limit truncation.
+ */
+export function resolveTurnEndSignal(
+  stopReason: StopReason | string | undefined,
+  isIdle: boolean,
+  hasPendingMessages: boolean,
+  pendingReviewCall: boolean,
+): TurnEndSignal {
+  if (stopReason === "aborted") {
+    return "interrupted"
+  }
+  if (
+    stopReason === "stop" &&
+    isIdle &&
+    !hasPendingMessages &&
+    !pendingReviewCall
+  ) {
+    return "finished"
+  }
+  if (
+    stopReason !== "error" &&
+    isIdle &&
+    !hasPendingMessages &&
+    !pendingReviewCall
+  ) {
+    return "idle"
+  }
+  return "none"
+}
+
+// ---------------------------------------------------------------------------
 // Activation guard — exported for unit testing.
 // ---------------------------------------------------------------------------
 
@@ -1061,6 +1131,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
   let writer: FrameWriter | null = null
   let handshakeComplete = false
   let connected = false
+  // Flag: session_shutdown has already been emitted from the turn_end handler
+  // (clean-finish path). When true, the session_shutdown hook must not emit
+  // a second finished+shutdown sequence or attempt to write to a closed writer.
+  let sessionShutdownEmitted = false
   // Track the latest active turn's abort handle. ctx.abort() requires an
   // ExtensionContext, so we capture one whenever a turn-active hook fires.
   let lastCtx: ExtensionContext | null = null
@@ -1393,23 +1467,41 @@ export default function prismExtension(pi: ExtensionAPI): void {
       }
       writer.write(turnEndFrame)
 
-      // Idle detection: if PI reports idle and no pending messages, emit
-      // state_change:idle. Sidecar applies its own debounce window.
-      // Guard: if `prism review` was called this session and the
-      // review-complete prompt has not yet arrived, suppress the idle
-      // emission so the `reviewing` state is not clobbered.
+      // Determine which state-change signal to emit based on stopReason and
+      // session context. resolveTurnEndSignal handles all cases:
+      //   "finished"    → clean finish; emit finished + shutdown and close
+      //   "interrupted" → user abort; emit interrupted
+      //   "idle"        → normal idle; emit idle (existing behaviour)
+      //   "none"        → do nothing
       try {
-        if (
-          !pendingReviewCall &&
-          typeof ctx.isIdle === "function" &&
-          ctx.isIdle() &&
-          (typeof ctx.hasPendingMessages !== "function" ||
-            !ctx.hasPendingMessages())
-        ) {
+        const stopReason =
+          message !== null && typeof message === "object"
+            ? (message as { stopReason?: unknown }).stopReason
+            : undefined
+        const isIdle =
+          typeof ctx.isIdle === "function" ? ctx.isIdle() : false
+        const hasPending =
+          typeof ctx.hasPendingMessages === "function"
+            ? ctx.hasPendingMessages()
+            : false
+        const signal = resolveTurnEndSignal(
+          stopReason as StopReason | undefined,
+          isIdle,
+          hasPending,
+          pendingReviewCall,
+        )
+        if (signal === "finished") {
+          sessionShutdownEmitted = true
+          writer.write({ type: "state_change", state: "finished" })
+          writer.write({ type: "session_shutdown" })
+          writer.close()
+        } else if (signal === "interrupted") {
+          writer.write({ type: "state_change", state: "interrupted" })
+        } else if (signal === "idle") {
           writer.write({ type: "state_change", state: "idle" })
         }
       } catch (err) {
-        console.error("[prism-extension] idle check failed:", err)
+        console.error("[prism-extension] turn_end signal resolution failed:", err)
       }
     }
   })
@@ -1598,9 +1690,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
   pi.on("session_shutdown", async (_event, ctx) => {
     lastCtx = ctx
     if (writer && handshakeComplete) {
-      writer.write({ type: "state_change", state: "finished" })
-      writer.write({ type: "session_shutdown" })
-      writer.close()
+      // If the turn_end handler already emitted finished+shutdown (clean-finish
+      // path), do not double-emit. The writer is already closed in that case.
+      if (!sessionShutdownEmitted) {
+        writer.write({ type: "state_change", state: "finished" })
+        writer.write({ type: "session_shutdown" })
+        writer.close()
+      }
     } else if (writer) {
       writer.close()
     }
