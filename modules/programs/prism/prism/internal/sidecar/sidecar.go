@@ -404,17 +404,24 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
-	// Start the host-API servers (AC-1, AC-9).
-	// This runs for BOTH podman and bwrap isolation modes — any session with
-	// HostAPISockPath set needs the Unix socket so the sandboxed agent can
-	// proxy prism CLI calls back to the host. Previously this block was nested
-	// inside the Container!=nil branch, which meant bwrap coordinators (where
-	// Container is nil) never got a socket.
+	// Start the host-API Unix socket server (AC-1, AC-9).
+	// This runs for ALL harness types — any session with HostAPISockPath set
+	// needs the Unix socket so the sandboxed agent can proxy prism CLI calls
+	// back to the host. Previously this block was nested inside the
+	// Container!=nil branch (and then after the transport-shape switch), which
+	// meant bwrap sessions never got a socket: socket-pipe (pi) and
+	// stdio-pipe harnesses return early from the switch, so the block was
+	// unreachable for them.
 	//
-	// This block MUST run before the transport-shape switch below so that
-	// socket-pipe and stdio-pipe harnesses (pi sessions) also get the host-API
-	// listener. Those cases return early from the switch, so placing this block
-	// after the switch meant the listener was never created for pi bwrap sessions.
+	// This block MUST run before the transport-shape switch so that pi
+	// (socket-pipe) and stdio-pipe sessions get the listener before
+	// runStartupSocketPipe / runStartupStdio is called and returns.
+	//
+	// The TCP server for Darwin container sessions is started AFTER the switch
+	// (below), because runStartupHTTP must run first to bind the TCP listener
+	// port (s.hostAPITCPListener is set inside runStartupHTTP on Darwin). Only
+	// HTTP-port harnesses reach the post-switch TCP server block because
+	// socket-pipe and stdio-pipe return early from the switch.
 	//
 	// Guard with !shuttingDown: if SIGTERM arrived before we reach here,
 	// Shutdown() will have already run and we must not create listeners that
@@ -462,27 +469,6 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				log.Printf("sidecar: host-API server (unix): %v", err)
 			}
 		}()
-
-		// TCP server — Darwin only, when the TCP listener was bound before
-		// container creation. Uses a separate http.Server with the same handler
-		// so both transports serve identical API endpoints.
-		s.mu.Lock()
-		tcpLn := s.hostAPITCPListener
-		s.mu.Unlock()
-		if tcpLn != nil {
-			tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
-			s.mu.Lock()
-			s.hostAPITCPSrv = tcpSrv
-			s.mu.Unlock()
-			go func() {
-				if err := tcpSrv.Serve(tcpLn); err != nil &&
-					!errors.Is(err, http.ErrServerClosed) &&
-					!errors.Is(err, net.ErrClosed) {
-					log.Printf("sidecar: host-API server (tcp): %v", err)
-				}
-			}()
-			log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
-		}
 	}
 
 	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
@@ -515,6 +501,31 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		if err := s.runStartupHTTP(ctx); err != nil {
 			return err
 		}
+	}
+
+	// Start the host-API TCP server — Darwin only, for HTTP-port (opencode
+	// container) sessions. The TCP listener is bound inside runStartupHTTP
+	// (before container creation, so the port is known at container launch
+	// time). We start the server goroutine here, after runStartupHTTP returns,
+	// because s.hostAPITCPListener is not set until runStartupHTTP runs.
+	// Socket-pipe and stdio-pipe cases return early above and never reach here,
+	// so this block only executes for HTTP-port sessions — exactly as before.
+	s.mu.Lock()
+	tcpLn := s.hostAPITCPListener
+	s.mu.Unlock()
+	if tcpLn != nil {
+		tcpSrv := &http.Server{Handler: s.hostAPIHandler()}
+		s.mu.Lock()
+		s.hostAPITCPSrv = tcpSrv
+		s.mu.Unlock()
+		go func() {
+			if err := tcpSrv.Serve(tcpLn); err != nil &&
+				!errors.Is(err, http.ErrServerClosed) &&
+				!errors.Is(err, net.ErrClosed) {
+				log.Printf("sidecar: host-API server (tcp): %v", err)
+			}
+		}()
+		log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
 	}
 
 	// Mint or load instance_id. The sidecar is the single owner of session
