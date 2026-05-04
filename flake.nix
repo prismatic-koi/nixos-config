@@ -1,5 +1,4 @@
 {
-  # publish-prism-agent: skopeo now installed via apt, free-disk-space removed (~3 min faster)
   description = "Nixos config flake";
 
   nixConfig = {
@@ -156,24 +155,8 @@
             "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
             "lucidph3nx-nixos-config.cachix.org-1:gXiGMMDnozkXCjvOs9fOwKPZNIqf94ZA/YksjrKekHE="
           ];
-          mkPrismAgentImage =
-            system:
-            let
-              pkgs = import nixpkgs {
-                inherit system;
-                config.allowUnfree = true;
-                overlays = [ self.overlays.modifications ];
-              };
-            in
-            import ./images/prism-agent.nix {
-              inherit pkgs cachixSubstituters trustedPublicKeys;
-              lib = nixpkgs.lib;
-            };
         in
-        {
-          x86_64-linux.prismAgentImage = mkPrismAgentImage "x86_64-linux";
-          aarch64-linux.prismAgentImage = mkPrismAgentImage "aarch64-linux";
-        };
+        { };
 
       devShells = forEachSystem (pkgs: {
         default = pkgs.mkShell {
