@@ -72,7 +72,7 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 	if parentStatus.Harness != nil {
 		if shape, ok := harness.ShapeOf(*parentStatus.Harness); ok && shape == harness.TransportSocketPipe {
 			log.Printf("sidecar: notifyParentWorker: routing via host-API socket for pi parent=%s", parentSession)
-			if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody); err != nil {
+			if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody, ""); err != nil {
 				log.Printf("sidecar: notifyParentWorker: FAILED (pi path) — parent=%s reason=%v", parentSession, err)
 			} else {
 				log.Printf("sidecar: notifyParentWorker: delivered to pi parent=%s via host-API socket", parentSession)
@@ -235,7 +235,7 @@ func (s *Sidecar) notifyCoordinator() {
 	if coordStatus.Harness != nil {
 		if shape, ok := harness.ShapeOf(*coordStatus.Harness); ok && shape == harness.TransportSocketPipe {
 			log.Printf("sidecar: notifyCoordinator: routing via host-API socket for pi coordinator=%s", coordinatorName)
-			if err := promptdelivery.DeliverToSession(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody); err != nil {
+			if err := promptdelivery.DeliverToSession(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody, ""); err != nil {
 				log.Printf("sidecar: notifyCoordinator: FAILED (pi path) — coordinator=%s reason=%v", coordinatorName, err)
 				if writeErr := s.cfg.DB.WriteBusMessageFailed(msg); writeErr != nil {
 					log.Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)

@@ -551,6 +551,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 			Prompt  string `json:"prompt"`
+			// Source identifies the logical origin of the delivery. When
+			// "review-complete" the sidecar clears reviewingInFlight before
+			// enqueuing the prompt frame, allowing the subsequent turn_start
+			// to transition normally to active. All other deliveries (coordinator
+			// follow-ups, merge-queue notifications, etc.) leave the flag
+			// unchanged — clearing on non-review prompts would prematurely end
+			// the reviewing window and reintroduce the race (#1372, AC #7).
+			Source string `json:"source,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -586,6 +594,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 							fmt.Sprintf("session %q is in waiting state — prompt not delivered", s.cfg.SessionName))
 						return
 					}
+				}
+				// Clear reviewingInFlight only when this is the monitor's
+				// review-complete delivery (source == "review-complete"). This
+				// ensures the turn_start that immediately follows the delivered
+				// prompt sees reviewingInFlight=false and correctly transitions
+				// to active. Non-review deliveries (coordinator follow-ups,
+				// merge-queue notifications) must NOT clear the flag — doing so
+				// would prematurely end the reviewing window and allow idle
+				// debounce to fire a spurious "finished" transition before the
+				// real review-complete prompt arrives (#1372, AC #7).
+				if req.Source == "review-complete" {
+					s.mu.Lock()
+					s.reviewingInFlight = false
+					s.mu.Unlock()
 				}
 				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
 				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
@@ -1002,6 +1024,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
 				return
 			}
+			// Set the in-memory flag atomically now that the DB write succeeded.
+			// handlePipeFrame's turn_start guard reads this flag instead of calling
+			// currentDBState(), eliminating the SQLite read-after-write race (#1372).
+			s.mu.Lock()
+			s.reviewingInFlight = true
+			s.mu.Unlock()
 		}
 
 		var req struct {

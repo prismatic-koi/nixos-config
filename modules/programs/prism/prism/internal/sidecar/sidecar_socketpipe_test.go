@@ -356,14 +356,18 @@ func TestSocketPipe_TurnStart_DoesNotClobberReviewing(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Simulate prism review writing reviewing directly to the DB (as the
-	// review subprocess does — bypassing the sidecar's in-memory state).
+	// Simulate the /review handler: write reviewing to the DB and set the
+	// in-memory reviewingInFlight flag (which is now what handlePipeFrame's
+	// turn_start guard checks instead of calling currentDBState).
 	if err := sc.cfg.DB.UpsertStatus(
 		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
 		string(agent.StateReviewing), nil, nil,
 	); err != nil {
 		t.Fatalf("UpsertStatus reviewing: %v", err)
 	}
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
 
 	// Confirm the DB is now in reviewing state.
 	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateReviewing) {

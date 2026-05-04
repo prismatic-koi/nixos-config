@@ -38,7 +38,7 @@ func TestDeliverToSession_OpencodePath(t *testing.T) {
 		HarnessSessionID: &sid,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello opencode", nil)
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello opencode", nil, "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestDeliverToSession_OpencodePath_NoPort(t *testing.T) {
 		// HarnessPort is nil — cannot deliver.
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil)
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "")
 	if err == nil {
 		t.Fatal("expected error for missing harness port, got nil")
 	}
@@ -79,7 +79,7 @@ func TestDeliverToSession_PiPath_MissingSocket(t *testing.T) {
 	}
 
 	// The socket path doesn't exist — we expect a clear error, not a hang.
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil)
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "")
 	if err == nil {
 		t.Fatal("expected error for missing socket, got nil")
 	}
@@ -111,7 +111,7 @@ func TestDeliverToSession_NilHarness(t *testing.T) {
 		HarnessSessionID: &sid,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello nil harness", nil)
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello nil harness", nil, "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
 		return map[string]any{"custom_text": text, "extra": "field"}
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "custom body test", customBuilder)
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "custom body test", customBuilder, "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
