@@ -238,8 +238,9 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 `
 
 // Open opens (or creates) the prism database at path.
-// It creates parent directories as needed, enables WAL mode, enforces foreign
-// keys, runs the full schema, and sets schema_version=11 if the table is empty.
+// It creates parent directories as needed, embeds WAL mode / busy_timeout /
+// foreign_keys in the DSN (so every pooled connection inherits them), runs the
+// full schema, and sets schema_version=11 if the table is empty.
 // Pending migrations are applied in order: v1→v2 adds agent_name/model_id;
 // v2→v3 adds root_agent_name/root_model_id; v3→v4 adds opencode_port to
 // agent_status; v4→v5 adds host_mode to agent_status; v5→v6 adds instance_id
@@ -368,20 +369,30 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // idempotent on fresh databases where the base schema already includes the
 // column.
 //
-// PRAGMA foreign_keys = ON: SQLite foreign-key enforcement is off by default.
-// It is set explicitly here — the single constructor through which all prism
-// DB connections are opened — so every connection benefits automatically.
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
 	}
 
-	conn, err := sql.Open("sqlite", path)
+	// Embed connection-level settings in the DSN so that every connection
+	// opened by the database/sql pool inherits them, not just the first one.
+	// The modernc.org/sqlite driver interprets each _pragma value as
+	// "PRAGMA <name>(<value>)" and runs it on every new connection.
+	//
+	//   busy_timeout=5000 — wait up to 5 s before returning SQLITE_BUSY when
+	//     the DB is locked by another process (e.g. the sidecar writing).
+	//   journal_mode=WAL  — enables WAL for better concurrent read/write.
+	//   foreign_keys=1    — enforce FK constraints (off by default in SQLite).
+	dsn := "file:" + path +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)"
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("db: open: %w", err)
 	}
 
-	conn, err = openAndConfigure(conn, path)
+	conn, err = openAndConfigure(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -389,31 +400,12 @@ func Open(path string) (*DB, error) {
 	return &DB{conn: conn, path: path}, nil
 }
 
-// openAndConfigure sets pragmas, applies the schema, seeds the schema version,
-// and runs pending migrations on an already-opened connection. It closes conn
-// on any error and returns the same conn on success.
-func openAndConfigure(conn *sql.DB, path string) (*sql.DB, error) {
-	// Enable WAL mode for better concurrent read/write performance.
-	if _, err := conn.Exec("PRAGMA journal_mode = WAL;"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("db: set WAL mode: %w", err)
-	}
-
-	// Wait up to 5 seconds before returning SQLITE_BUSY when the DB is locked
-	// by another process (e.g. the plugin writing concurrently).
-	if _, err := conn.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("db: set busy timeout: %w", err)
-	}
-
-	// Enforce foreign-key constraints. SQLite disables FK enforcement by
-	// default; this must be set per connection, which is why it lives here
-	// (the single constructor used for every prism DB connection).
-	if _, err := conn.Exec("PRAGMA foreign_keys = ON;"); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("db: enable foreign keys: %w", err)
-	}
-
+// openAndConfigure applies the schema, seeds the schema version, and runs
+// pending migrations on an already-opened connection. Connection-level settings
+// (busy_timeout, journal_mode, foreign_keys) are embedded in the DSN by Open
+// so they apply to every connection in the pool. It closes conn on any error
+// and returns the same conn on success.
+func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 	// Create all tables.
 	if _, err := conn.Exec(schema); err != nil {
 		conn.Close()
