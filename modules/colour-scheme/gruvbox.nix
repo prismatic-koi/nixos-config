@@ -65,11 +65,11 @@
       bg3 = "#665c54";
       bg4 = "#7c6f64";
       bg5 = "#928374";
-      bg_visual = "#3c3836";
-      bg_red = "#fb4934";
-      bg_green = "#b8bb26";
-      bg_blue = "#83a598";
-      bg_yellow = "#fabd2f";
+      bg_visual = "#3c2f3a";
+      bg_red = "#4a2526";
+      bg_green = "#2e3d1f";
+      bg_blue = "#1e3a42";
+      bg_yellow = "#3d3318";
     })
   ];
 }
