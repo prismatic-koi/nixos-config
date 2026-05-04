@@ -1010,21 +1010,21 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					time.Sleep(reviewingWriteBackoff)
 				}
 			}
-		if lastUpsertErr != nil {
-			log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
-			return
+			if lastUpsertErr != nil {
+				log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
+				return
+			}
+			// Set the in-memory flag atomically now that the DB write succeeded.
+			// handlePipeFrame's turn_start guard reads this flag instead of calling
+			// currentDBState(), eliminating the SQLite read-after-write race (#1372).
+			s.mu.Lock()
+			s.reviewingInFlight = true
+			s.mu.Unlock()
 		}
-		// Set the in-memory flag atomically now that the DB write succeeded.
-		// handlePipeFrame's turn_start guard reads this flag instead of calling
-		// currentDBState(), eliminating the SQLite read-after-write race (#1372).
-		s.mu.Lock()
-		s.reviewingInFlight = true
-		s.mu.Unlock()
-	}
 
-	var req struct {
-		PRNumber string   `json:"pr_number"`
+		var req struct {
+			PRNumber string   `json:"pr_number"`
 			Agents   []string `json:"agents"`
 			Timeout  string   `json:"timeout"`
 		}
