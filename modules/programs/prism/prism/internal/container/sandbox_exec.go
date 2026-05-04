@@ -265,14 +265,30 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (subpath \"/private/etc/ssh\"))\n")
 	sb.WriteString("\n")
 
-	// ── 5. Host ~/.aws deny — keep host credentials invisible ─────────────
+	// ── 5. Host ~/.aws deny with sso/ and cli/ carve-outs ────────────────
 	// The staging HOME contains symlinks to the staged .aws credential
 	// entries (per issue #1017). The host raw ~/.aws subtree must remain
 	// read-denied so that path traversal cannot bypass the staging map.
+	//
+	// Exception: ~/.aws/sso and ~/.aws/cli must remain accessible so that
+	// AWS SSO auth and tools that read SSO tokens (e.g. kubectl) work inside
+	// the sandbox. The staging HOME creates symlinks for these two subdirs
+	// pointing at the host paths, and collectStagingHomeSymlinkTargets emits
+	// per-symlink allow rules for them. The more-specific allow rules below
+	// override the broad deny for exactly these two subdirs (SBPL evaluates
+	// more-specific rules as overrides of broader ones). See issue #1380.
 	if home != "" {
 		awsPath := filepath.Join(home, ".aws")
 		sb.WriteString("(deny file-read* file-write*\n")
 		sb.WriteString("  (subpath " + quoteSBPL(awsPath) + "))\n")
+		sb.WriteString("\n")
+		// Carve-outs: allow sso/ and cli/ subtrees within ~/.aws. These
+		// more-specific allow rules override the broad deny above.
+		awsSSOPath := filepath.Join(home, ".aws", "sso")
+		awsCLIPath := filepath.Join(home, ".aws", "cli")
+		sb.WriteString("(allow file-read*\n")
+		sb.WriteString("  (subpath " + quoteSBPL(awsSSOPath) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(awsCLIPath) + "))\n")
 		sb.WriteString("\n")
 	}
 
