@@ -403,44 +403,17 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
-	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
-	// determine the wire-level shape and dispatch to the appropriate startup
-	// helper. The back half of Run (host-API, merge-queue watcher, SSE loop,
-	// shutdown) is shape-agnostic and is unchanged.
-	//
-	// When HarnessName is empty (back-compat: callers that pre-date this field)
-	// the registry lookup is skipped and we fall through to runStartupHTTP,
-	// preserving today's behaviour for all existing sessions.
-	if s.cfg.HarnessName != "" {
-		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
-		if !ok {
-			return fmt.Errorf("sidecar: unknown harness %q (not registered)", s.cfg.HarnessName)
-		}
-		switch shape {
-		case harness.TransportHTTPPort:
-			if err := s.runStartupHTTP(ctx); err != nil {
-				return err
-			}
-		case harness.TransportStdioPipe:
-			return s.runStartupStdio(ctx)
-		case harness.TransportSocketPipe:
-			return s.runStartupSocketPipe(ctx)
-		default:
-			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
-		}
-	} else {
-		// HarnessName is empty: preserve legacy behaviour (HTTP-port startup).
-		if err := s.runStartupHTTP(ctx); err != nil {
-			return err
-		}
-	}
-
 	// Start the host-API servers (AC-1, AC-9).
 	// This runs for BOTH podman and bwrap isolation modes — any session with
 	// HostAPISockPath set needs the Unix socket so the sandboxed agent can
 	// proxy prism CLI calls back to the host. Previously this block was nested
 	// inside the Container!=nil branch, which meant bwrap coordinators (where
 	// Container is nil) never got a socket.
+	//
+	// This block MUST run before the transport-shape switch below so that
+	// socket-pipe and stdio-pipe harnesses (pi sessions) also get the host-API
+	// listener. Those cases return early from the switch, so placing this block
+	// after the switch meant the listener was never created for pi bwrap sessions.
 	//
 	// Guard with !shuttingDown: if SIGTERM arrived before we reach here,
 	// Shutdown() will have already run and we must not create listeners that
@@ -508,6 +481,38 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				}
 			}()
 			log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
+		}
+	}
+
+	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
+	// determine the wire-level shape and dispatch to the appropriate startup
+	// helper. The back half of Run (merge-queue watcher, SSE loop, shutdown)
+	// is shape-agnostic and is unchanged.
+	//
+	// When HarnessName is empty (back-compat: callers that pre-date this field)
+	// the registry lookup is skipped and we fall through to runStartupHTTP,
+	// preserving today's behaviour for all existing sessions.
+	if s.cfg.HarnessName != "" {
+		shape, ok := harness.ShapeOf(s.cfg.HarnessName)
+		if !ok {
+			return fmt.Errorf("sidecar: unknown harness %q (not registered)", s.cfg.HarnessName)
+		}
+		switch shape {
+		case harness.TransportHTTPPort:
+			if err := s.runStartupHTTP(ctx); err != nil {
+				return err
+			}
+		case harness.TransportStdioPipe:
+			return s.runStartupStdio(ctx)
+		case harness.TransportSocketPipe:
+			return s.runStartupSocketPipe(ctx)
+		default:
+			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
+		}
+	} else {
+		// HarnessName is empty: preserve legacy behaviour (HTTP-port startup).
+		if err := s.runStartupHTTP(ctx); err != nil {
+			return err
 		}
 	}
 
