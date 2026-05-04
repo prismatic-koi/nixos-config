@@ -165,9 +165,10 @@ type Config struct {
 	// manages a podman container running opencode in combined TUI + HTTP mode
 	// instead of relying on a directly-launched opencode process.
 	Container *container.Config
-	// HostAPISockPath, when non-empty and Container is non-nil, is the path at which
-	// the sidecar starts a Unix socket HTTP server exposing host-side tmux operations
-	// to agents running inside the container.
+	// HostAPISockPath, when non-empty, is the path at which the sidecar starts a
+	// Unix socket HTTP server exposing host-side tmux operations to agents running
+	// inside the sandbox (container or bwrap). The listener is started regardless of
+	// whether Container is set — bwrap sessions (where Container is nil) also need it.
 	HostAPISockPath string
 	// HostAPITCPPort is the OS-allocated TCP port used on Darwin for the host-API
 	// listener. It is set by Run() after binding the listener and recorded here for
@@ -264,7 +265,7 @@ type Sidecar struct {
 	// Protected by mu.
 	container *containerMgr
 	// hostAPIListener is the Unix socket listener for the host-API HTTP server.
-	// Set in Run() when container mode is active and HostAPISockPath is non-empty.
+	// Set in Run() when HostAPISockPath is non-empty (regardless of isolation mode).
 	// Protected by mu.
 	hostAPIListener net.Listener
 	// hostAPISrv is the HTTP server for the host-API Unix socket.
