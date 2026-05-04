@@ -220,6 +220,28 @@ func parseSpawnSessionName(output string) string {
 	return ""
 }
 
+// isSQLiteBusy reports whether err is a SQLite SQLITE_BUSY or SQLITE_LOCKED
+// error. These errors indicate that a concurrent writer holds the write lock
+// and the caller should retry after a short backoff.
+//
+// The check is performed by string-matching the error message rather than
+// importing modernc.org/sqlite directly, avoiding a package-level dependency
+// on the driver in sidecar code. The modernc driver formats these errors as:
+//
+//	"db: upsert status: database is locked (5) (SQLITE_BUSY)"
+//	"db: upsert status: database is locked (6) (SQLITE_LOCKED)"
+//
+// "database is locked" is common to both, so we match on that phrase.
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "SQLITE_LOCKED") ||
+		strings.Contains(msg, "database is locked")
+}
+
 // parseAllSpawnSessionNames collects all session names from the output of
 // `prism spawn --abtest`, which prints two lines of the form:
 //

@@ -947,16 +947,49 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// to the worker, the row is already `reviewing`. See #1068. The
 		// subprocess-side write in RunAsync remains as defence in depth.
 		//
-		// Best-effort: if the upsert fails (e.g. the row is missing or the
-		// DB is transiently unavailable), log a warning and proceed. The
-		// subprocess still runs and the user-facing behaviour degrades to
-		// the pre-fix state for this single call rather than hard-failing.
+		// Retry on SQLITE_BUSY: the sidecar's socket-pipe reader goroutine
+		// may hold the write lock for a brief turn_start upsert at the same
+		// instant this handler fires (the agent called `prism review` as a
+		// bash tool call, so turn_start fired moments before). SQLite WAL
+		// mode serialises writers, but if the busy_timeout is not honoured
+		// by the in-process pool the write can return SQLITE_BUSY immediately.
+		// Three attempts with 10 ms backoff (≤30 ms total) outlast a typical
+		// sidecar write without blocking the socket-pipe reader goroutine for
+		// more than one write round-trip. See #1355.
+		//
+		// If all retries fail, return HTTP 500 so the agent receives a clear
+		// failure it can retry, rather than silently spawning review agents
+		// with the session stuck in a non-reviewing state (which causes the
+		// review-complete prompt to be silently dropped).
+		const (
+			reviewingWriteAttempts = 3
+			reviewingWriteBackoff  = 10 * time.Millisecond
+		)
 		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
 			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — CurrentStatus error: %v", dbErr)
 		} else if status == nil {
 			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — no agent_status row for session %q", s.cfg.SessionName)
-		} else if upsertErr := s.cfg.DB.UpsertStatus(s.cfg.SessionName, status.Repo, status.Worktree, string(agent.StateReviewing), nil, nil); upsertErr != nil {
-			log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed: %v", upsertErr)
+		} else {
+			var lastUpsertErr error
+			for attempt := range reviewingWriteAttempts {
+				lastUpsertErr = s.cfg.DB.UpsertStatus(s.cfg.SessionName, status.Repo, status.Worktree, string(agent.StateReviewing), nil, nil)
+				if lastUpsertErr == nil {
+					break
+				}
+				if !isSQLiteBusy(lastUpsertErr) {
+					// Non-transient error — no point retrying.
+					break
+				}
+				log.Printf("sidecar: host-API /review: pre-emptive reviewing write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, lastUpsertErr)
+				if attempt < reviewingWriteAttempts-1 {
+					time.Sleep(reviewingWriteBackoff)
+				}
+			}
+			if lastUpsertErr != nil {
+				log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
+				return
+			}
 		}
 
 		var req struct {
