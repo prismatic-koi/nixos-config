@@ -1108,5 +1108,88 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 	}
 }
 
+// TestSocketPipe_HostAPISockCreatedBeforeDispatch is the regression test for
+// issue #1346: the host-API listener must be started before Run() dispatches to
+// runStartupSocketPipe, so that pi bwrap sessions have a working hostapi.sock
+// from the moment the harness-pipe handshake begins.
+//
+// The test verifies ordering by racing the two sockets: as soon as the
+// harness-pipe socket appears (which proves Run() has entered
+// runStartupSocketPipe), the host-API socket must already exist.  If the
+// listener block is ever moved back to after the transport-shape switch, the
+// host-API socket will not yet exist at that point and this test will fail.
+func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
+	// Two short-prefix socket paths: one for the harness pipe, one for the
+	// host-API listener.  Both must fit within the 104-char POSIX limit.
+	pipeSockPath := shortSockPath(t)
+
+	// Use the same temp dir (from shortSockPath) but a distinct filename so
+	// both paths share the short prefix.
+	dir := filepath.Dir(pipeSockPath)
+	hostAPISockPath := filepath.Join(dir, "hostapi.sock")
+	if len(hostAPISockPath) > maxSunPath {
+		t.Fatalf("hostapi socket path too long (%d > %d): %s", len(hostAPISockPath), maxSunPath, hostAPISockPath)
+	}
+
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           "testrepo@main",
+		Repo:                  "testrepo",
+		Worktree:              t.TempDir(),
+		DB:                    d,
+		Clock:                 clk,
+		AgentRole:             "worker",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   pipeSockPath,
+		HostAPISockPath:       hostAPISockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		Harness:               pih.New("", "", ""),
+	}
+	sc := New(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var runErr error
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		runErr = sc.Run(ctx)
+	}()
+
+	// Wait for the harness-pipe socket to appear.  This proves that Run() has
+	// entered runStartupSocketPipe (i.e. the transport-shape switch has been
+	// executed).  At this point the host-API listener block — which is now
+	// placed BEFORE the switch — must already have run.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(pipeSockPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("harness-pipe socket never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Assert: host-API socket must already exist at this point.
+	if _, err := os.Stat(hostAPISockPath); err != nil {
+		t.Errorf("hostapi.sock does not exist after harness-pipe socket appeared — host-API listener was not started before dispatch (#1346): %v", err)
+	}
+
+	// Clean up: connect, handshake, shut down so Run() exits cleanly.
+	conn, _ := dialAndHandshake(t, pipeSockPath)
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+
+	select {
+	case <-runDone:
+	case <-time.After(3 * time.Second):
+		t.Error("Run() did not finish within timeout after session_shutdown")
+	}
+	_ = runErr
+}
+
 // Ensure db import is used.
 var _ *db.DB
