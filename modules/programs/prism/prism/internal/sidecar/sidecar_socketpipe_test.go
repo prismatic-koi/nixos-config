@@ -236,6 +236,99 @@ func TestSocketPipe_StateChange(t *testing.T) {
 	}
 }
 
+// TestSocketPipe_TurnStartEmitsStateActive verifies that a turn_start frame
+// causes the sidecar to transition the session to active state in the DB.
+// This is the real fix for #1350: PI uses TransportSocketPipe, so the fix must
+// live in handlePipeFrame — NormaliseFrame is not on this code path.
+func TestSocketPipe_TurnStartEmitsStateActive(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to idle first via state_change, then send turn_start.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+
+	// Wait for idle to be committed.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateIdle) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached idle, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Now send turn_start — must transition back to active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active after turn_start, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
+// TestSocketPipe_TurnStartActiveWhenAlreadyActive verifies that a turn_start
+// frame when the session is already active is a no-op (no invalid transition
+// error — the upsertState deduplication handles it).
+func TestSocketPipe_TurnStartActiveWhenAlreadyActive(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// First turn_start — transitions from initial state to active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	// Wait for active.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if s == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active after first turn_start, got %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Second consecutive turn_start — already active, must be a no-op.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	time.Sleep(50 * time.Millisecond)
+
+	// State must still be active (not error or anything else).
+	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if s != string(agent.StateActive) {
+		t.Errorf("state after consecutive turn_start = %q, want active", s)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
 // TestSocketPipe_EventFrames verifies that tool_call, tool_result, and
 // msg_assistant frames are persisted to agent_events.
 func TestSocketPipe_EventFrames(t *testing.T) {
