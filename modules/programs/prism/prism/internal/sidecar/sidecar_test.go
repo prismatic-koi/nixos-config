@@ -9100,9 +9100,12 @@ func TestReviewing_IdleDebounceSuppressed(t *testing.T) {
 	// Create worker sidecar.
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	// Set the worker state to "reviewing" (simulating what RunAsync does after
-	// spawning review agents).
+	// Set the worker state to "reviewing" (simulating what the /review handler
+	// does: pre-emptive DB write + set reviewingInFlight).
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
 
 	// Trigger idle debounce (opencode went idle after the `prism review` tool call returned).
 	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
@@ -9177,9 +9180,12 @@ func TestReviewing_NotClobberedByBusyTurn(t *testing.T) {
 
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	// Set the worker state to "reviewing" (as RunAsync does after spawning
-	// review agents).
+	// Set the worker state to "reviewing" (simulating what the /review handler
+	// does: pre-emptive DB write + set reviewingInFlight).
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
 
 	// Fire two busy + idle cycles, simulating one or more assistant turns the
 	// worker emits after `prism review` returns but before the review-complete
@@ -9252,8 +9258,12 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 
 	worker, clk := newWorkerSidecar(t, d, srv.Client())
 
-	// Set the worker state to "reviewing".
+	// Set the worker state to "reviewing" (simulating what the /review handler
+	// does: pre-emptive DB write + set reviewingInFlight).
 	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
 
 	// Step 1: idle debounce fires while in "reviewing" — must be suppressed.
 	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
@@ -9267,18 +9277,20 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 		t.Errorf("after suppressed idle: state = %q, want %q", state, agent.StateReviewing)
 	}
 
-	// Step 2: the review monitor writes `active` to the DB just before
-	// delivering the review-complete prompt (option 1 in #1049). This mirrors
-	// the pre-delivery write performed by review.MonitorFunc.
+	// Step 2: the review monitor delivers the review-complete prompt via the
+	// /prompt same-session socket-pipe path. This clears reviewingInFlight
+	// (before enqueuing the prompt frame) and also writes `active` to the DB.
+	// Here we simulate both actions directly.
 	if err := d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree,
 		string(agent.StateActive), nil, nil); err != nil {
 		t.Fatalf("monitor pre-delivery upsert active: %v", err)
 	}
+	worker.mu.Lock()
+	worker.reviewingInFlight = false
+	worker.mu.Unlock()
 
-	// Step 3: review-complete prompt arrives; opencode goes busy. The busy
-	// event now sees `active` (not `reviewing`) in the DB, so it proceeds
-	// normally — though the state is already `active`, upsertState is a
-	// no-op for same-state transitions.
+	// Step 3: review-complete prompt arrives; opencode goes busy. reviewingInFlight
+	// is now false so the busy event proceeds normally and writes active.
 	worker.HandleEvent(makeSSE("session.status", map[string]any{
 		"status": map[string]string{"type": "busy"},
 	}))

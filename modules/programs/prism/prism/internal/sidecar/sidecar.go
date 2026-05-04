@@ -351,6 +351,15 @@ type Sidecar struct {
 	// turn_end usage object. Reset to nil on each turn_start.
 	// Protected by s.mu.
 	pipeAccum *string
+
+	// reviewingInFlight is set to true when the /review handler successfully
+	// writes the reviewing state to the DB, and cleared when the monitor
+	// delivers the review-complete prompt via /prompt (same-session,
+	// TransportSocketPipe path). All reviewing guards in handlePipeFrame and
+	// events.go read this field instead of calling currentDBState(), eliminating
+	// the read-after-write race where currentDBState() could return active after
+	// the pre-emptive reviewing write. Protected by s.mu.
+	reviewingInFlight bool
 }
 
 // New creates a Sidecar with the given configuration.
@@ -1722,10 +1731,12 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// This is the real fix for the idle→active path: NormaliseFrame is not
 		// on this code path (PI uses TransportSocketPipe, not TransportStdioPipe).
 		//
-		// Guard: if the DB state is reviewing, skip the active write. prism review
-		// sets reviewing via UpsertStatus directly; the in-memory s.lastState
-		// remains active and would clobber it on the next turn_start (#1365).
-		if s.currentDBState() != agent.StateReviewing {
+		// Guard: if reviewingInFlight is set, skip the active write. The /review
+		// handler sets this flag atomically in-memory when the pre-emptive
+		// reviewing DB write succeeds, closing the race where currentDBState()
+		// could return active after the write (#1372). Using the in-memory flag
+		// instead of currentDBState() avoids the SQLite read-after-write race.
+		if !s.reviewingInFlight {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 			s.lastState = agent.StateActive

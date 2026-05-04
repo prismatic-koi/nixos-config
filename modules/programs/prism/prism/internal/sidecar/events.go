@@ -159,9 +159,9 @@ func (s *Sidecar) handleServerConnected() {
 		if s.lastState != agent.StateActive {
 			return
 		}
-		// Suppress if the DB state is reviewing — the worker is awaiting review
-		// results and must not be prematurely finished.
-		if s.currentDBState() == agent.StateReviewing {
+		// Suppress if reviewingInFlight — the worker is awaiting review results
+		// and must not be prematurely finished.
+		if s.reviewingInFlight {
 			log.Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
@@ -192,16 +192,15 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		s.cancelRecoveryTimer()
 		s.manualDenial = false
 		s.busyEpoch++
-		// Suppress the active write if compacting (existing exception) or if the
-		// DB state is reviewing — the worker is awaiting the review-complete
-		// prompt and any incidental busy turn (e.g. an assistant summary fired
-		// after `prism review` returns, before the monitor delivers results)
-		// must not clobber `reviewing`. The monitor is responsible for writing
-		// `active` to the DB just before delivering the review-complete prompt
-		// so that the genuine reviewing→active transition still happens. See
+		// Suppress the active write if compacting (existing exception) or if
+		// reviewingInFlight — the worker is awaiting the review-complete prompt
+		// and any incidental busy turn (e.g. an assistant summary fired after
+		// `prism review` returns, before the monitor delivers results) must not
+		// clobber `reviewing`. The monitor is responsible for writing `active`
+		// to the DB just before delivering the review-complete prompt so that
+		// the genuine reviewing→active transition still happens. See
 		// internal/review/monitor.go and #1049.
-		dbStateOnBusy := s.currentDBState()
-		if dbStateOnBusy == agent.StateReviewing {
+		if s.reviewingInFlight {
 			log.Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
 		} else if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
@@ -253,14 +252,14 @@ func (s *Sidecar) handleSessionIdle() {
 		}
 
 		// Check current DB state: if interrupted or error, don't overwrite.
-		// If reviewing, suppress finished — the worker is awaiting review results;
-		// it will transition to finished naturally after the review-complete prompt
-		// is delivered and the worker resolves the results.
+		// If reviewingInFlight, suppress finished — the worker is awaiting review
+		// results; it will transition to finished naturally after the
+		// review-complete prompt is delivered and the worker resolves the results.
 		currentState := s.currentDBState()
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
 			return
 		}
-		if currentState == agent.StateReviewing {
+		if s.reviewingInFlight {
 			log.Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
@@ -716,7 +715,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				if currentState == agent.StateInterrupted || currentState == agent.StateError {
 					return
 				}
-				if currentState == agent.StateReviewing {
+				if s.reviewingInFlight {
 					log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
 					return
 				}

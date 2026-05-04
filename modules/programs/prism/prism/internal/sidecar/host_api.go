@@ -587,6 +587,19 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 						return
 					}
 				}
+				// Clear the in-memory reviewing flag before enqueuing the prompt
+				// frame. This ensures the turn_start that immediately follows the
+				// delivered prompt sees reviewingInFlight=false and correctly
+				// transitions to active without logging a spurious suppression
+				// message. The flag is cleared here (before DeliverPrompt) rather
+				// than in handlePipeFrame's turn_start path so that the flag is
+				// already false by the time the frame is enqueued to the extension.
+				// Non-review prompts (coordinator follow-ups) also clear the flag —
+				// a coordinator prompt arriving during review deliberately interrupts
+				// the reviewing window, so clearing is correct (#1372).
+				s.mu.Lock()
+				s.reviewingInFlight = false
+				s.mu.Unlock()
 				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
 				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
 					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
@@ -997,15 +1010,21 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					time.Sleep(reviewingWriteBackoff)
 				}
 			}
-			if lastUpsertErr != nil {
-				log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
-				return
-			}
+		if lastUpsertErr != nil {
+			log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
+			return
 		}
+		// Set the in-memory flag atomically now that the DB write succeeded.
+		// handlePipeFrame's turn_start guard reads this flag instead of calling
+		// currentDBState(), eliminating the SQLite read-after-write race (#1372).
+		s.mu.Lock()
+		s.reviewingInFlight = true
+		s.mu.Unlock()
+	}
 
-		var req struct {
-			PRNumber string   `json:"pr_number"`
+	var req struct {
+		PRNumber string   `json:"pr_number"`
 			Agents   []string `json:"agents"`
 			Timeout  string   `json:"timeout"`
 		}
