@@ -456,6 +456,13 @@ export const TRUNCATION_SENTINEL = "…[truncated]"
 /** Harness identifier sent in the `hello` frame. */
 export const HARNESS_NAME = "pi"
 
+/**
+ * The message injected as a steer after the agent runs `git push`.
+ * Exported so unit tests can assert against the canonical text.
+ */
+export const GIT_PUSH_REMINDER_MESSAGE =
+  "You just ran git push. If this was in the context of an open PR, first load the `prism` skill via the skill tool so you have the full async review workflow context, then run `prism review <pr-number>` to kick off the parallel review. Wait for the review-complete prompt before merging."
+
 // ---------------------------------------------------------------------------
 // Status bar helper — exported for unit testing.
 // ---------------------------------------------------------------------------
@@ -1314,7 +1321,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
       if (gitPushReminderEnabled && pendingGitPushReminder) {
         pendingGitPushReminder = false
         pi.sendUserMessage(
-          "You just ran git push. If this was in the context of an open PR, invoke @review-goal-subagent, @review-code-subagent, @review-security-subagent, @review-qa-subagent, and @review-context-subagent as parallel Task calls (all five in a single response) to review the updated changes before the PR is merged. ALL 5 agents must pass before the PR can be merged.",
+          GIT_PUSH_REMINDER_MESSAGE,
           { deliverAs: "steer" },
         )
       }
