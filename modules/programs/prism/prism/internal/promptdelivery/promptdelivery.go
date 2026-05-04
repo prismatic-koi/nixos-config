@@ -55,12 +55,18 @@ import (
 // buildHTTPBody is called for the opencode path to construct the POST body.
 // For the pi path, only the plain text is sent (the sidecar handles wrapping).
 // When buildHTTPBody is nil, a minimal body with just a "parts" array is used.
-func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any) error {
+//
+// source identifies the logical origin of the delivery. When non-empty it is
+// forwarded to the sidecar's /prompt handler via the "source" JSON field. The
+// sidecar uses this to gate reviewingInFlight clearing: only
+// source="review-complete" (the monitor's delivery) clears the flag; all other
+// deliveries leave it unchanged. Pass "" for non-monitor callers.
+func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string) error {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
 		shape, ok := harness.ShapeOf(*status.Harness)
 		if ok && shape == harness.TransportSocketPipe {
-			return deliverViaSidecarSocket(sessionName, text)
+			return deliverViaSidecarSocket(sessionName, text, source)
 		}
 	}
 
@@ -69,15 +75,19 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 }
 
 // deliverViaSidecarSocket dials the target session's host-API Unix socket and
-// POSTs /prompt with {"session": sessionName, "prompt": text}.
+// POSTs /prompt with {"session": sessionName, "prompt": text, "source": source}.
 //
 // The sidecar's /prompt handler checks that req.Session == s.cfg.SessionName
 // and that the harness shape is TransportSocketPipe, then calls s.DeliverPrompt
 // to write the text to the pi process's stdin pipe.
 //
+// source is forwarded as the "source" JSON field. The sidecar uses it to gate
+// reviewingInFlight clearing: only source="review-complete" clears the flag.
+// Pass "" for non-monitor callers (the field is omitted when empty).
+//
 // Returns an error if the socket does not exist (session ended / socket cleaned
 // up) or the HTTP request fails.
-func deliverViaSidecarSocket(sessionName, text string) error {
+func deliverViaSidecarSocket(sessionName, text, source string) error {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
@@ -89,10 +99,14 @@ func deliverViaSidecarSocket(sessionName, text string) error {
 
 	client := newUnixClient(sockPath)
 
-	body, err := json.Marshal(map[string]string{
+	bodyMap := map[string]string{
 		"session": sessionName,
 		"prompt":  text,
-	})
+	}
+	if source != "" {
+		bodyMap["source"] = source
+	}
+	body, err := json.Marshal(bodyMap)
 	if err != nil {
 		return fmt.Errorf("marshal prompt body: %w", err)
 	}

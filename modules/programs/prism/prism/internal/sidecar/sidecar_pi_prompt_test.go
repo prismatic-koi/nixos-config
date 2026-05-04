@@ -133,3 +133,87 @@ func TestHostAPI_Prompt_PiSession_NotConnected(t *testing.T) {
 		t.Fatalf("status = %d, want 503 (pipe not connected), body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight verifies that a
+// /prompt delivery with source="review-complete" clears the reviewingInFlight
+// flag, allowing the subsequent turn_start to transition normally to active.
+// This is the primary AC #7 gate for #1372.
+func TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight(t *testing.T) {
+	d := openTestDB(t)
+
+	sessionName := "myrepo@piworker"
+	if err := d.UpsertStatus(sessionName, "myrepo", "/wt", "reviewing", nil, nil); err != nil {
+		t.Fatalf("seed DB reviewing state: %v", err)
+	}
+
+	sc := newPiSidecarForHostAPITest(t, sessionName, "myrepo", "worker", d)
+
+	// Set reviewingInFlight = true (simulating the /review handler).
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
+
+	// Inject a fake pipe channel so DeliverPrompt succeeds.
+	fakePipeCh := make(chan []byte, 10)
+	sc.mu.Lock()
+	sc.harnessPipeOutCh = fakePipeCh
+	sc.mu.Unlock()
+
+	// POST /prompt with source="review-complete".
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@piworker","prompt":"review results here","source":"review-complete"}`)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	// reviewingInFlight must now be false.
+	sc.mu.Lock()
+	inFlight := sc.reviewingInFlight
+	sc.mu.Unlock()
+	if inFlight {
+		t.Error("reviewingInFlight = true after review-complete delivery, want false")
+	}
+}
+
+// TestHostAPI_Prompt_NonReviewComplete_DoesNotClearReviewingInFlight verifies
+// that a /prompt delivery without source="review-complete" (e.g. a coordinator
+// follow-up) does NOT clear reviewingInFlight. Clearing on non-review prompts
+// would prematurely end the reviewing window and reintroduce the race (#1372, AC #7).
+func TestHostAPI_Prompt_NonReviewComplete_DoesNotClearReviewingInFlight(t *testing.T) {
+	d := openTestDB(t)
+
+	sessionName := "myrepo@piworker"
+	if err := d.UpsertStatus(sessionName, "myrepo", "/wt", "reviewing", nil, nil); err != nil {
+		t.Fatalf("seed DB reviewing state: %v", err)
+	}
+
+	sc := newPiSidecarForHostAPITest(t, sessionName, "myrepo", "worker", d)
+
+	// Set reviewingInFlight = true.
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
+
+	// Inject a fake pipe channel.
+	fakePipeCh := make(chan []byte, 10)
+	sc.mu.Lock()
+	sc.harnessPipeOutCh = fakePipeCh
+	sc.mu.Unlock()
+
+	// POST /prompt without source (coordinator follow-up scenario).
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@piworker","prompt":"coordinator follow-up"}`)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	// reviewingInFlight must still be true — coordinator prompts must not clear it.
+	sc.mu.Lock()
+	inFlight := sc.reviewingInFlight
+	sc.mu.Unlock()
+	if !inFlight {
+		t.Error("reviewingInFlight = false after non-review-complete delivery, want true (must not be cleared)")
+	}
+}

@@ -388,7 +388,7 @@ func deliverPrompt(workerSession, text, dbPath string) error {
 		return fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
 	}
 
-	return promptdelivery.DeliverToSession(workerSession, status, text, buildPromptBodyForMonitor)
+	return promptdelivery.DeliverToSession(workerSession, status, text, buildPromptBodyForMonitor, "review-complete")
 }
 
 // buildPromptBodyForMonitor constructs the HTTP request body for prompt_async.
