@@ -352,6 +352,7 @@ func marshalArgs(raw json.RawMessage) string {
 //   - tool_call                         → "tool_call"     / payload.ToolCall
 //   - tool_result                       → "tool_result"   / payload.ToolResult
 //   - state_change                      → "state_change"  / payload.StateChange
+//   - turn_start                        → "state_change"  / payload.StateChange{State:"active"}
 //   - session_end                       → "msg_assistant" / payload.MsgAssistant
 //     (synthetic event carrying session-level token totals)
 //   - all other types: logged at info level; shouldWrite = false
@@ -444,6 +445,15 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			MessageID: f.MessageID,
 		}
 		return "tool_result", p, true
+
+	case "turn_start":
+		// Emit state_change:active so the session transitions from idle→active
+		// when a new turn begins. The sidecar's upsertState deduplicates — if
+		// the session is already active the write is a no-op.
+		p := payload.StateChange{
+			State: "active",
+		}
+		return "state_change", p, true
 
 	case "state_change":
 		var f piStateChangeFrame

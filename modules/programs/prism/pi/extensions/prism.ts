@@ -1032,6 +1032,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // reminder fires exactly once.
   let pendingGitPushReminder = false
 
+  // Flag: `prism review` was called during this session. When true, the
+  // turn_end idle emission is suppressed so that the `reviewing` state is
+  // not clobbered while waiting for the review-complete prompt. Cleared
+  // when a `prompt` inbound frame arrives (review-complete delivery) so
+  // that subsequent turns can go idle normally.
+  let pendingReviewCall = false
+
   // ── Connection state ──────────────────────────────────────────────────
   let socket: net.Socket | null = null
   let writer: FrameWriter | null = null
@@ -1206,6 +1213,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         },
       }
 
+      // A prompt frame signals that the sidecar is delivering a message
+      // (e.g. review-complete). Clear the reviewing-state guard so subsequent
+      // turns can emit state_change:idle normally.
+      if (f.type === "prompt") {
+        pendingReviewCall = false
+      }
+
       void dispatchInboundFrame(f, apiAdapter, sendError)
     })
   }
@@ -1363,8 +1377,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       // Idle detection: if PI reports idle and no pending messages, emit
       // state_change:idle. Sidecar applies its own debounce window.
+      // Guard: if `prism review` was called this session and the
+      // review-complete prompt has not yet arrived, suppress the idle
+      // emission so the `reviewing` state is not clobbered.
       try {
         if (
+          !pendingReviewCall &&
           typeof ctx.isIdle === "function" &&
           ctx.isIdle() &&
           (typeof ctx.hasPendingMessages !== "function" ||
@@ -1427,6 +1445,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         // Git-push reminder flag.
         if (gitPushReminderEnabled && isGitPush(command)) {
           pendingGitPushReminder = true
+        }
+
+        // Reviewing-state guard: set flag when `prism review` is called so
+        // that the turn_end idle emission is suppressed until the
+        // review-complete prompt arrives.
+        if (/\bprism\s+review\b/.test(command)) {
+          pendingReviewCall = true
         }
       }
 
