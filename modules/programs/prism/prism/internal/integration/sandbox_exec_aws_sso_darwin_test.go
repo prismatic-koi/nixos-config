@@ -89,14 +89,28 @@ func prepareSSOSentinel(t *testing.T) (ssoDir, sentinelPath string) {
 		t.Skipf("cannot create ~/.aws for test: %v", mkErr)
 	}
 	ssoDir = filepath.Join(awsDir, "sso")
+	// Check whether the directory already exists BEFORE creating it. If it
+	// already existed (e.g. the user has real SSO tokens there), register a
+	// cleanup that removes only the sentinel file — not the whole directory.
+	// Only remove the directory itself if this test created it.
+	ssoDirExisted := false
+	if _, statErr := os.Stat(ssoDir); statErr == nil {
+		ssoDirExisted = true
+	}
 	if mkErr := os.MkdirAll(ssoDir, 0o700); mkErr != nil {
 		t.Skipf("cannot create ~/.aws/sso for test: %v", mkErr)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(ssoDir) })
 
 	sentinelPath = filepath.Join(ssoDir, ".prism-1380-test-sentinel")
 	if wErr := os.WriteFile(sentinelPath, []byte(awsSSOSentinelContent), 0o600); wErr != nil {
 		t.Skipf("cannot plant ~/.aws/sso sentinel (may be running inside a restricted sandbox): %v", wErr)
+	}
+	if ssoDirExisted {
+		// Directory already existed — only clean up the sentinel file we created.
+		t.Cleanup(func() { _ = os.Remove(sentinelPath) })
+	} else {
+		// We created the directory — remove it entirely on cleanup.
+		t.Cleanup(func() { _ = os.RemoveAll(ssoDir) })
 	}
 	return ssoDir, sentinelPath
 }
@@ -110,14 +124,28 @@ func prepareCLISentinel(t *testing.T) (cliDir, sentinelPath string) {
 		t.Skipf("cannot create ~/.aws for test: %v", mkErr)
 	}
 	cliDir = filepath.Join(awsDir, "cli")
+	// Check whether the directory already exists BEFORE creating it. If it
+	// already existed (e.g. the user has real CLI config there), register a
+	// cleanup that removes only the sentinel file — not the whole directory.
+	// Only remove the directory itself if this test created it.
+	cliDirExisted := false
+	if _, statErr := os.Stat(cliDir); statErr == nil {
+		cliDirExisted = true
+	}
 	if mkErr := os.MkdirAll(cliDir, 0o700); mkErr != nil {
 		t.Skipf("cannot create ~/.aws/cli for test: %v", mkErr)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(cliDir) })
 
 	sentinelPath = filepath.Join(cliDir, ".prism-1380-test-sentinel")
 	if wErr := os.WriteFile(sentinelPath, []byte(awsCLISentinelContent), 0o600); wErr != nil {
 		t.Skipf("cannot plant ~/.aws/cli sentinel (may be running inside a restricted sandbox): %v", wErr)
+	}
+	if cliDirExisted {
+		// Directory already existed — only clean up the sentinel file we created.
+		t.Cleanup(func() { _ = os.Remove(sentinelPath) })
+	} else {
+		// We created the directory — remove it entirely on cleanup.
+		t.Cleanup(func() { _ = os.RemoveAll(cliDir) })
 	}
 	return cliDir, sentinelPath
 }
