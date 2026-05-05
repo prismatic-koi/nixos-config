@@ -355,10 +355,14 @@ type Sidecar struct {
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
-	// TransportSocketPipe path). All reviewing guards in handlePipeFrame and
-	// events.go read this field instead of calling currentDBState(), eliminating
-	// the read-after-write race where currentDBState() could return active after
-	// the pre-emptive reviewing write. Protected by s.mu.
+	// TransportSocketPipe path only — opencode-harness sessions bypass /prompt).
+	//
+	// The suppress guards in events.go additionally check currentDBState() ==
+	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
+	// write ("active") lands, even on opencode-harness sessions where
+	// reviewingInFlight is never cleared via /prompt. See #1384.
+	//
+	// Protected by s.mu.
 	reviewingInFlight bool
 }
 

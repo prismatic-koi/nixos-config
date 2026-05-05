@@ -9322,6 +9322,177 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 	}
 }
 
+// TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite
+// verifies the fix for #1384: on opencode-harness sessions the monitor writes
+// "active" to the DB just before delivering the review-complete prompt via
+// deliverViaHTTP (bypassing the sidecar's /prompt handler, so
+// reviewingInFlight is never cleared by the socket-pipe path). The idle
+// debounce guard must not suppress when reviewingInFlight is true but the DB
+// state is already "active" (not "reviewing").
+func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-oc-harness-idle"
+	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Step 1: simulate the /review handler — write "reviewing" to DB and set
+	// reviewingInFlight.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
+
+	// Step 2: simulate the monitor's pre-delivery write — it writes "active"
+	// to the DB just before delivering the review-complete prompt via
+	// deliverViaHTTP. reviewingInFlight is NOT cleared (opencode-harness
+	// bypasses /prompt entirely).
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateActive), nil, nil)
+
+	// Step 3: the worker's opencode goes busy (processing the review-complete
+	// prompt). With the fix, busy must NOT be suppressed because DB state is
+	// "active", not "reviewing".
+	worker.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
+		t.Errorf("after busy (post-monitor write): state = %q, want %q (busy must not be suppressed when DB is active)", state, agent.StateActive)
+	}
+
+	// Step 4: worker goes idle. With the fix, idle debounce must NOT be
+	// suppressed because DB state is "active", not "reviewing".
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer after session.idle (must not be suppressed when DB is active)")
+	}
+	timer.Fire()
+
+	// The session must reach "finished" (not remain stuck in "reviewing" or
+	// "active" forever, which was the pre-fix symptom).
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateFinished) {
+		t.Errorf("after idle debounce: state = %q, want %q (opencode-harness session must reach finished)", state, agent.StateFinished)
+	}
+
+	// Coordinator must receive the "has finished" notification.
+	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
+	if msg == nil {
+		t.Fatal("expected coordinator notification after opencode-harness review-complete cycle, got none")
+	}
+	wantText := "Agent test-repo@feature has finished its current task"
+	if msg.Text != wantText {
+		t.Errorf("notification text = %q, want %q", msg.Text, wantText)
+	}
+}
+
+// TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite verifies
+// the fix for #1384 specifically for the busy-event suppress site: when
+// reviewingInFlight is true but the DB state is "active" (monitor pre-delivery
+// write has landed), busy must proceed normally and write "active".
+func TestReviewing_OpencodeHarness_BusyNotSuppressedAfterMonitorWrite(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-oc-harness-busy"
+	srv, _ := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, _ := newWorkerSidecar(t, d, srv.Client())
+
+	// Set reviewingInFlight = true (as /review handler does).
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
+
+	// Monitor pre-delivery write: "active" in DB, reviewingInFlight still true.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateActive), nil, nil)
+
+	// Busy must NOT be suppressed — DB is "active", not "reviewing".
+	worker.HandleEvent(makeSSE("session.status", map[string]any{
+		"status": map[string]string{"type": "busy"},
+	}))
+
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateActive) {
+		t.Errorf("state = %q after busy (reviewingInFlight=true, DB=active): want %q (busy suppression must not fire when DB is active)", state, agent.StateActive)
+	}
+}
+
+// TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite verifies
+// that the opencode-harness fix does NOT break the core suppression: when
+// reviewingInFlight is true AND the DB state is "reviewing" (monitor has not
+// yet written "active"), the idle debounce must still be suppressed.
+func TestReviewing_OpencodeHarness_StillSuppressedBeforeMonitorWrite(t *testing.T) {
+	d := openTestDB(t)
+
+	coordSID := "coord-sid-oc-harness-suppress"
+	var notifyCount int
+	var notifyMu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/session" {
+			sessions := []map[string]any{{"id": coordSID}}
+			data, _ := json.Marshal(sessions)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
+		notifyMu.Lock()
+		notifyCount++
+		notifyMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvPort := parseSrvPort(t, srv.URL)
+	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
+
+	worker, clk := newWorkerSidecar(t, d, srv.Client())
+
+	// Simulate /review handler: DB = "reviewing", reviewingInFlight = true.
+	// The monitor has NOT yet written "active" — review is genuinely in flight.
+	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, string(agent.StateReviewing), nil, nil)
+	worker.mu.Lock()
+	worker.reviewingInFlight = true
+	worker.mu.Unlock()
+
+	// Idle debounce must be suppressed (DB is still "reviewing").
+	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("expected idle timer")
+	}
+	timer.Fire()
+
+	// State must remain "reviewing" — no premature finished.
+	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateReviewing) {
+		t.Errorf("state = %q after suppressed idle, want %q (suppression must still fire when DB is reviewing)", state, agent.StateReviewing)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	var totalMsgs int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", "test-repo@main").Scan(&totalMsgs); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	if totalMsgs != 0 {
+		t.Errorf("suppression must still fire (DB=reviewing): got %d bus message(s)", totalMsgs)
+	}
+
+	notifyMu.Lock()
+	nc := notifyCount
+	notifyMu.Unlock()
+	if nc != 0 {
+		t.Errorf("coordinator HTTP POST count = %d, want 0 (suppression must still fire)", nc)
+	}
+}
+
 // TestHostAPI_Review_PreEmptiveReviewingWriteBeforeStreamCompletes verifies
 // the entry-point write fix for #1068: the sidecar's /review HTTP handler
 // must mark the calling session as `reviewing` in the DB before its response
