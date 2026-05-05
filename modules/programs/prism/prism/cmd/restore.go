@@ -295,6 +295,16 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		}
 	}
 
+	// Apply per-path isolation override: if the stored worktree path matches
+	// a configured override, use the override mode regardless of what was
+	// recorded in the DB row. This ensures sessions for paths like
+	// ~/documents/obsidian are always restored with the correct isolation mode
+	// (e.g. "host") even if they were originally recorded with a different mode.
+	if override := cfg.IsolationOverrideForPath(directory); override != "" {
+		fmt.Fprintf(os.Stderr, "[prism restore] using isolation override %q for path %q\n", override, directory)
+		isoMode = override
+	}
+
 	// Look up the isolation capabilities for this mode. All per-mode branching
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isoMode)
