@@ -1459,11 +1459,6 @@
           # Skills — mounted as a single directory (like agents/) so
           # impermanence does not create dangling symlinks after GC (#501).
           xdg.configFile."opencode/skills".source = skillsDir;
-          # Model profiles — written to ~/.config/prism/profiles.json.
-          # The Go CLI reads this at runtime when --profile is passed to
-          # prism spawn. It contains all profile definitions and the role-to-agent
-          # mapping, and records which profile is the current default.
-          xdg.configFile."prism/profiles.json".text = config.nx.programs.prism.profiles.json;
           home.persistence."/persist" = {
             directories = [
               ".config/opencode"
