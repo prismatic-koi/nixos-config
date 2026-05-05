@@ -268,6 +268,145 @@ func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_AWSSSOAndCLICarveouts verifies that the profile contains
+// explicit (allow file-read* (subpath ".../.aws/sso")) and
+// (allow file-read* (subpath ".../.aws/cli")) rules after the broad ~/.aws deny.
+// These more-specific allow rules let AWS SSO tokens and kubectl credential
+// files be read through the staging HOME symlinks (issue #1380).
+func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "aws-carveout-test",
+		Worktree:    t.TempDir(),
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
+	})
+
+	profile := generateProfile(m)
+
+	awsSSOPath := filepath.Join(fakeHome, ".aws", "sso")
+	awsCLIPath := filepath.Join(fakeHome, ".aws", "cli")
+
+	// Both carve-out paths must appear in the profile.
+	if !strings.Contains(profile, awsSSOPath) {
+		t.Errorf("profile missing ~/.aws/sso carve-out path %q; full profile:\n%s", awsSSOPath, profile)
+	}
+	if !strings.Contains(profile, awsCLIPath) {
+		t.Errorf("profile missing ~/.aws/cli carve-out path %q; full profile:\n%s", awsCLIPath, profile)
+	}
+
+	// Each carve-out path must be inside an (allow ...) clause that follows
+	// the broad (deny ...) clause for ~/.aws. Verify ordering: find the deny
+	// clause, then find each allow carve-out after it.
+	awsDenyPath := filepath.Join(fakeHome, ".aws")
+	denyIdx := strings.Index(profile, awsDenyPath)
+	if denyIdx < 0 {
+		t.Fatalf("profile missing ~/.aws deny path %q; full profile:\n%s", awsDenyPath, profile)
+	}
+
+	ssoIdx := strings.Index(profile, awsSSOPath)
+	if ssoIdx < 0 {
+		t.Fatalf("profile missing ~/.aws/sso path; already checked above — this should not happen")
+	}
+	if ssoIdx <= denyIdx {
+		t.Errorf("~/.aws/sso carve-out (at index %d) must appear AFTER the ~/.aws deny (at index %d); full profile:\n%s", ssoIdx, denyIdx, profile)
+	}
+	// Verify sso path is inside an (allow ...) block.
+	ssoAllowStart := strings.LastIndex(profile[:ssoIdx], "(allow")
+	ssoDenyStart := strings.LastIndex(profile[:ssoIdx], "(deny")
+	if ssoAllowStart < 0 || ssoDenyStart > ssoAllowStart {
+		t.Errorf("~/.aws/sso path is not inside an (allow ...) block; full profile:\n%s", profile)
+	}
+
+	cliIdx := strings.Index(profile, awsCLIPath)
+	if cliIdx < 0 {
+		t.Fatalf("profile missing ~/.aws/cli path; already checked above — this should not happen")
+	}
+	if cliIdx <= denyIdx {
+		t.Errorf("~/.aws/cli carve-out (at index %d) must appear AFTER the ~/.aws deny (at index %d); full profile:\n%s", cliIdx, denyIdx, profile)
+	}
+	// Verify cli path is inside an (allow ...) block.
+	cliAllowStart := strings.LastIndex(profile[:cliIdx], "(allow")
+	cliDenyStart := strings.LastIndex(profile[:cliIdx], "(deny")
+	if cliAllowStart < 0 || cliDenyStart > cliAllowStart {
+		t.Errorf("~/.aws/cli path is not inside an (allow ...) block; full profile:\n%s", profile)
+	}
+}
+
+// TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded verifies that when
+// ~/.aws/sso and ~/.aws/cli symlinks exist in the staging HOME, their resolved
+// targets are included in the collected set (not excluded by the deniedPrefixes
+// logic). This exercises the carve-out in isDenied (issue #1380).
+func TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Create ~/.aws/sso and ~/.aws/cli directories in the fake home so the
+	// symlinkIfExists helper in PrepareSandboxExecHome creates symlinks for them.
+	for _, dir := range []string{
+		filepath.Join(fakeHome, ".aws", "sso"),
+		filepath.Join(fakeHome, ".aws", "cli"),
+	} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "aws-sso-not-excluded-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
+	if err != nil {
+		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
+	}
+
+	// The resolved targets for ~/.aws/sso and ~/.aws/cli must be present.
+	// Use filepath.EvalSymlinks to resolve the expected paths: on macOS
+	// the fakeHome is under /tmp/ which resolves to /private/tmp/ via the
+	// /var → /private/var symlink, so we must compare against canonical forms.
+	awsSSOPathRaw := filepath.Join(fakeHome, ".aws", "sso")
+	awsCLIPathRaw := filepath.Join(fakeHome, ".aws", "cli")
+	awsSSOPath, _ := filepath.EvalSymlinks(awsSSOPathRaw)
+	if awsSSOPath == "" {
+		awsSSOPath = awsSSOPathRaw
+	}
+	awsCLIPath, _ := filepath.EvalSymlinks(awsCLIPathRaw)
+	if awsCLIPath == "" {
+		awsCLIPath = awsCLIPathRaw
+	}
+	foundSSO, foundCLI := false, false
+	for _, target := range targets {
+		if target.ResolvedPath == awsSSOPath {
+			foundSSO = true
+		}
+		if target.ResolvedPath == awsCLIPath {
+			foundCLI = true
+		}
+	}
+	if !foundSSO {
+		t.Errorf("~/.aws/sso resolved path %q not found in collectStagingHomeSymlinkTargets output; got: %v", awsSSOPath, targets)
+	}
+	if !foundCLI {
+		t.Errorf("~/.aws/cli resolved path %q not found in collectStagingHomeSymlinkTargets output; got: %v", awsCLIPath, targets)
+	}
+}
+
 // ── PrepareSandboxExec ──────────────────────────────────────────────────────
 
 // TestPrepareSandboxExec_WritesProfileAndReturnsArgs verifies that
