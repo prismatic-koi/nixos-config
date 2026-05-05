@@ -404,6 +404,79 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	}
 }
 
+func TestAppendPIBwrapMounts_SetsPIAuthJSON(t *testing.T) {
+	// When PIAgentConfigHostDir is set, appendPIBwrapMounts must emit
+	// --setenv PI_AUTH_JSON <PIAgentConfigSandboxDir>/auth.json so that PI
+	// can find its credentials inside the bwrap sandbox.
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	agentConfigDir := t.TempDir()
+	customSandboxDir := "/run/prism/pi-agent"
+
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:            fakePI,
+		PIAgentConfigHostDir:    agentConfigDir,
+		PIAgentConfigSandboxDir: customSandboxDir,
+		PIExtensionHostDir:      extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// PI_AUTH_JSON must be set to <PIAgentConfigSandboxDir>/auth.json.
+	expectedAuthJSON := filepath.Join(customSandboxDir, "auth.json")
+	found := false
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" && args[i+2] == expectedAuthJSON {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --setenv PI_AUTH_JSON %q in args; got %v", expectedAuthJSON, args)
+	}
+}
+
+func TestAppendPIBwrapMounts_NoPIAuthJSONWhenNoAgentConfigDir(t *testing.T) {
+	// When PIAgentConfigHostDir is empty (no agent config dir configured),
+	// PI_AUTH_JSON must not be set — the setenv is conditional on the bind-mount.
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:         fakePI,
+		PIAgentConfigHostDir: "", // intentionally empty
+		PIExtensionHostDir:   extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// PI_AUTH_JSON must NOT be set when no agent config dir is provided.
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" {
+			t.Errorf("PI_AUTH_JSON must not be set when PIAgentConfigHostDir is empty; got %v", args)
+		}
+	}
+}
+
 func TestAppendPIBwrapMounts_NoPiAgentBindMount(t *testing.T) {
 	// ~/.pi/agent is no longer bind-mounted — files are copied into the staging
 	// dir by StagePIAgentConfigDir instead. Verify that even when ~/.pi/agent

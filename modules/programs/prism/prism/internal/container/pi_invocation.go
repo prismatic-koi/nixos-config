@@ -348,6 +348,12 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		args = append(args, "--dir", agentConfigSandboxDir)
 		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
+		// PI reads credentials from PI_AUTH_JSON. The staging dir bind-mount
+		// (above) places auth.json inside the sandbox at this path. Without
+		// this env var, pi falls back to ~/.pi/agent/auth.json which is never
+		// mounted into the bwrap sandbox.
+		args = append(args, "--setenv", "PI_AUTH_JSON",
+			filepath.Join(agentConfigSandboxDir, "auth.json"))
 	}
 
 	// ── Extension directory ──────────────────────────────────────────────────
