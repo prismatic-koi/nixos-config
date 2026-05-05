@@ -404,10 +404,9 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 	}
 }
 
-func TestAppendPIBwrapMounts_SetsPIAuthJSON(t *testing.T) {
-	// When PIAgentConfigHostDir is set, appendPIBwrapMounts must emit
-	// --setenv PI_AUTH_JSON <PIAgentConfigSandboxDir>/auth.json so that PI
-	// can find its credentials inside the bwrap sandbox.
+func TestAppendPIBwrapMounts_NoPIAuthJSONEnvVar(t *testing.T) {
+	// PI_AUTH_JSON does not exist in the pi source — appendPIBwrapMounts must
+	// never emit --setenv PI_AUTH_JSON regardless of configuration.
 	extDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
 		t.Fatalf("write ext: %v", err)
@@ -432,23 +431,30 @@ func TestAppendPIBwrapMounts_SetsPIAuthJSON(t *testing.T) {
 		t.Fatalf("appendPIBwrapMounts: %v", err)
 	}
 
-	// PI_AUTH_JSON must be set to <PIAgentConfigSandboxDir>/auth.json.
-	expectedAuthJSON := filepath.Join(customSandboxDir, "auth.json")
-	found := false
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" && args[i+2] == expectedAuthJSON {
-			found = true
-			break
+	// PI_AUTH_JSON must NEVER be set — it is a fictional env var.
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" {
+			t.Errorf("PI_AUTH_JSON must never be set (fictional env var); got %v", args)
 		}
-	}
-	if !found {
-		t.Errorf("expected --setenv PI_AUTH_JSON %q in args; got %v", expectedAuthJSON, args)
 	}
 }
 
-func TestAppendPIBwrapMounts_NoPIAuthJSONWhenNoAgentConfigDir(t *testing.T) {
-	// When PIAgentConfigHostDir is empty (no agent config dir configured),
-	// PI_AUTH_JSON must not be set — the setenv is conditional on the bind-mount.
+func TestAppendPIBwrapMounts_BindsAuthJSONWhenExists(t *testing.T) {
+	// When ~/.pi/agent/auth.json exists on the host, appendPIBwrapMounts must
+	// emit --bind <authPath> <authPath> (read-write) so that OAuth token
+	// refreshes inside the bwrap sandbox are persisted back to the host file.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	authPath := filepath.Join(piAgentDir, "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"token":"secret"}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
 	extDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
 		t.Fatalf("write ext: %v", err)
@@ -459,9 +465,8 @@ func TestAppendPIBwrapMounts_NoPIAuthJSONWhenNoAgentConfigDir(t *testing.T) {
 	}
 
 	cfg := Config{
-		PIBinaryPath:         fakePI,
-		PIAgentConfigHostDir: "", // intentionally empty
-		PIExtensionHostDir:   extDir,
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
 	}
 
 	args, err := appendPIBwrapMounts(nil, cfg)
@@ -469,10 +474,48 @@ func TestAppendPIBwrapMounts_NoPIAuthJSONWhenNoAgentConfigDir(t *testing.T) {
 		t.Fatalf("appendPIBwrapMounts: %v", err)
 	}
 
-	// PI_AUTH_JSON must NOT be set when no agent config dir is provided.
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" {
-			t.Errorf("PI_AUTH_JSON must not be set when PIAgentConfigHostDir is empty; got %v", args)
+	// Must contain --bind authPath authPath (read-write, not --ro-bind).
+	if !hasTriple(args, "--bind", authPath, authPath) {
+		t.Errorf("expected --bind %q %q in args; got %v", authPath, authPath, args)
+	}
+	// Must NOT use --ro-bind for auth.json (OAuth refreshes need write access).
+	if hasTriple(args, "--ro-bind", authPath, authPath) {
+		t.Errorf("--ro-bind must not be used for auth.json (need write access for token refresh); got %v", args)
+	}
+}
+
+func TestAppendPIBwrapMounts_NoBindWhenAuthJSONAbsent(t *testing.T) {
+	// When ~/.pi/agent/auth.json does not exist on the host, appendPIBwrapMounts
+	// must NOT add any bind mount for it — pi prompts for login instead.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately do NOT create ~/.pi/agent/auth.json.
+
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// Must NOT contain any bind mount for a .pi/agent/auth.json path.
+	piAuthSuffix := filepath.Join(".pi", "agent", "auth.json")
+	for i := 0; i+2 < len(args); i++ {
+		if (args[i] == "--bind" || args[i] == "--ro-bind") &&
+			strings.HasSuffix(args[i+1], piAuthSuffix) {
+			t.Errorf("auth.json bind mount must be absent when file does not exist; got %v", args)
 		}
 	}
 }
@@ -516,11 +559,12 @@ func TestAppendPIBwrapMounts_NoPiAgentBindMount(t *testing.T) {
 	}
 }
 
-// ── StagePIAgentConfigDir: host file copies ──────────────────────────────────
+// ── StagePIAgentConfigDir: auth.json symlink and settings.json copy ──────────
 
-func TestStagePIAgentConfigDir_CopiesAuthAndSettings(t *testing.T) {
-	// When ~/.pi/agent/{auth,settings}.json exist, they must be copied into
-	// the staging dir.
+func TestStagePIAgentConfigDir_SymlinksAuthJSON(t *testing.T) {
+	// StagePIAgentConfigDir must create a symlink at <stagingDir>/auth.json
+	// pointing to ~/.pi/agent/auth.json (not a copy) so that OAuth token
+	// refreshes inside the sandbox are written back to the host file.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -530,31 +574,88 @@ func TestStagePIAgentConfigDir_CopiesAuthAndSettings(t *testing.T) {
 		t.Fatalf("mkdir ~/.pi/agent: %v", err)
 	}
 	authContent := `{"token":"secret"}`
-	settingsContent := `{"theme":"dark"}`
 	if err := os.WriteFile(filepath.Join(piAgentDir, "auth.json"), []byte(authContent), 0o600); err != nil {
 		t.Fatalf("write auth.json: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(piAgentDir, "settings.json"), []byte(settingsContent), 0o600); err != nil {
-		t.Fatalf("write settings.json: %v", err)
-	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@copy-test")
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@symlink-test")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
 
-	for name, want := range map[string]string{
-		"auth.json":     authContent,
-		"settings.json": settingsContent,
-	} {
-		got, readErr := os.ReadFile(filepath.Join(hostDir, name))
-		if readErr != nil {
-			t.Errorf("read %s: %v", name, readErr)
-			continue
-		}
-		if string(got) != want {
-			t.Errorf("%s content = %q, want %q", name, string(got), want)
-		}
+	authLink := filepath.Join(hostDir, "auth.json")
+
+	// auth.json in the staging dir must be a symlink (not a regular file).
+	info, statErr := os.Lstat(authLink)
+	if statErr != nil {
+		t.Fatalf("auth.json not present in staging dir: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("auth.json must be a symlink, not a regular file; mode = %v", info.Mode())
+	}
+
+	// The symlink must point at the real ~/.pi/agent/auth.json.
+	target, readErr := os.Readlink(authLink)
+	if readErr != nil {
+		t.Fatalf("auth.json readlink: %v", readErr)
+	}
+	expectedTarget := filepath.Join(piAgentDir, "auth.json")
+	if target != expectedTarget {
+		t.Errorf("auth.json symlink target = %q, want %q", target, expectedTarget)
+	}
+}
+
+func TestStagePIAgentConfigDir_AuthJSONSymlinkDanglingWhenTargetAbsent(t *testing.T) {
+	// When ~/.pi/agent/auth.json does not exist, the symlink must still be
+	// created (dangling symlink is acceptable — pi prompts for login rather
+	// than crashing). The staging dir creation must succeed without error.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Deliberately do NOT create ~/.pi/agent/auth.json.
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@dangling-auth")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v (must not error even with dangling symlink)", err)
+	}
+
+	authLink := filepath.Join(hostDir, "auth.json")
+
+	// The symlink must exist (dangling is fine).
+	info, statErr := os.Lstat(authLink)
+	if statErr != nil {
+		t.Fatalf("auth.json symlink must exist even when target is absent: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("auth.json must be a symlink; mode = %v", info.Mode())
+	}
+}
+
+func TestStagePIAgentConfigDir_CopiesSettings(t *testing.T) {
+	// settings.json must still be copied (not symlinked) into the staging dir.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	settingsContent := `{"theme":"dark"}`
+	if err := os.WriteFile(filepath.Join(piAgentDir, "settings.json"), []byte(settingsContent), 0o600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@settings-test")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	got, readErr := os.ReadFile(filepath.Join(hostDir, "settings.json"))
+	if readErr != nil {
+		t.Errorf("read settings.json: %v", readErr)
+	} else if string(got) != settingsContent {
+		t.Errorf("settings.json content = %q, want %q", string(got), settingsContent)
 	}
 }
 
@@ -589,8 +690,9 @@ func TestStagePIAgentConfigDir_CopiesThemesDir(t *testing.T) {
 }
 
 func TestStagePIAgentConfigDir_MissingHostFiles(t *testing.T) {
-	// When ~/.pi/agent does not exist at all, staging succeeds without error
-	// and the optional files are simply absent from the staging dir.
+	// When ~/.pi/agent does not exist at all, staging succeeds without error.
+	// auth.json must be a dangling symlink (created anyway for pi to find via
+	// PI_CODING_AGENT_DIR). settings.json and themes/ must be absent.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -601,10 +703,17 @@ func TestStagePIAgentConfigDir_MissingHostFiles(t *testing.T) {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
 
-	for _, name := range []string{"auth.json", "settings.json"} {
-		if _, statErr := os.Stat(filepath.Join(hostDir, name)); statErr == nil {
-			t.Errorf("%s must not exist when source is absent", name)
-		}
+	// auth.json must be a dangling symlink (target need not exist).
+	authLink := filepath.Join(hostDir, "auth.json")
+	if info, statErr := os.Lstat(authLink); statErr != nil {
+		t.Errorf("auth.json symlink must exist even when source is absent: %v", statErr)
+	} else if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("auth.json must be a symlink; mode = %v", info.Mode())
+	}
+
+	// settings.json and themes/ must be absent (no copy when source absent).
+	if _, statErr := os.Stat(filepath.Join(hostDir, "settings.json")); statErr == nil {
+		t.Errorf("settings.json must not exist when source is absent")
 	}
 	if _, statErr := os.Stat(filepath.Join(hostDir, "themes")); statErr == nil {
 		t.Errorf("themes/ must not exist when source is absent")

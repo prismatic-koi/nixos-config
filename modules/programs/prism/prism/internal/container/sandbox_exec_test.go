@@ -1107,6 +1107,69 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_PiAuthJSONLiteralRule verifies that generateProfile
+// emits a targeted SBPL rule for ~/.pi/agent/auth.json when Harness == "pi".
+// The rule must use (literal ...) (not subpath) and must include file-write*
+// so that OAuth token refreshes inside the sandbox persist to the host file.
+// The rule is always emitted for pi sessions even when the file does not exist
+// (sandbox-exec silently ignores literals for non-existent paths).
+func TestGenerateProfile_PiAuthJSONLiteralRule(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{
+		SessionName: "repo@pi-session",
+		Harness:     "pi",
+	})
+	profile := generateProfile(m)
+
+	authPath := filepath.Join(fakeHome, ".pi", "agent", "auth.json")
+
+	// The auth.json literal must appear in the profile.
+	if !strings.Contains(profile, authPath) {
+		t.Errorf("profile missing ~/.pi/agent/auth.json path %q; full profile:\n%s", authPath, profile)
+	}
+
+	// It must appear inside an (allow file-read* file-write* ...) clause.
+	authIdx := strings.Index(profile, authPath)
+	if authIdx < 0 {
+		t.Fatalf("auth.json path not found in profile (checked above)")
+	}
+	clauseStart := strings.LastIndex(profile[:authIdx], "(allow")
+	if clauseStart < 0 {
+		t.Errorf("auth.json path not inside an (allow ...) clause; full profile:\n%s", profile)
+	}
+	clause := profile[clauseStart:authIdx]
+	if !strings.Contains(clause, "file-write*") {
+		t.Errorf("auth.json allow clause must include file-write* for token refresh; clause: %q; full profile:\n%s", clause, profile)
+	}
+
+	// It must be a (literal ...) rule, not a (subpath ...) rule, to scope it
+	// tightly to the single file.
+	if !strings.Contains(profile, "(literal "+quoteSBPL(authPath)+")") {
+		t.Errorf("auth.json must appear as (literal %q), not as subpath; full profile:\n%s", authPath, profile)
+	}
+}
+
+func TestGenerateProfile_PiAuthJSONAbsentForNonPiSession(t *testing.T) {
+	// When Harness != "pi", generateProfile must NOT emit a rule for
+	// ~/.pi/agent/auth.json — the pi credential file should not be exposed
+	// to non-pi sessions.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{
+		SessionName: "repo@opencode-session",
+		// Harness is empty (default opencode session)
+	})
+	profile := generateProfile(m)
+
+	piAgentPath := filepath.Join(fakeHome, ".pi", "agent")
+	if strings.Contains(profile, piAgentPath) {
+		t.Errorf("profile must not contain ~/.pi/agent path for non-pi session; full profile:\n%s", profile)
+	}
+}
+
 // TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed verifies AC11:
 // (a) the profile denies the host ~/.aws subtree and
 // (b) the resolved target of the staged ~/.aws/config symlink appears as an
