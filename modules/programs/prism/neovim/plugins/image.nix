@@ -1,11 +1,5 @@
-{ config, lib, pkgs, ... }:
-# image-nvim uses allow-passthrough to render kitty graphics protocol images.
-# On Darwin, allow-passthrough is disabled globally to prevent opencode's
-# Bubble Tea TUI from pushing kitty keyboard protocol through to kitty (which
-# causes escape keypresses to be swallowed). Disable the plugin on Darwin
-# until per-window passthrough control is implemented.
-# TODO: re-enable when allow-passthrough is scoped per-window (#allow-passthrough-darwin)
-lib.mkIf (!pkgs.stdenv.isDarwin) {
+{ config, pkgs, ... }:
+{
   home-manager.users.${config.nx.username} = {
     programs.neovim.extraLuaPackages = ps: [ ps.magick ];
     programs.neovim.plugins = [
