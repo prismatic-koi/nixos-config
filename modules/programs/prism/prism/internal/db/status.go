@@ -140,12 +140,21 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	if rootAgentName != "" {
 		rootAgentNamePtr = &rootAgentName
 	}
-	// Resolve the harness name to write. Default to "opencode" when empty so
-	// existing callers that do not pass a harness name continue to write the
-	// same value they wrote before.
-	effectiveHarness := harnessName
-	if effectiveHarness == "" {
-		effectiveHarness = "opencode"
+	// Resolve the harness name to write for a fresh INSERT. Default to
+	// "opencode" when empty so new rows always have a non-NULL harness column.
+	// The UPDATE path is handled separately below.
+	insertHarness := harnessName
+	if insertHarness == "" {
+		insertHarness = "opencode"
+	}
+	// For the ON CONFLICT UPDATE path, pass harnessName as a pointer so that
+	// the SQL can distinguish "empty (no override)" from "explicit value".
+	// When harnessNamePtr is NULL, CASE preserves the existing DB value; when
+	// non-NULL, it overwrites — allowing an explicit harness (e.g. "pi") to
+	// replace a stale value (e.g. "opencode") left in an ended DB row.
+	var harnessNamePtr *string
+	if harnessName != "" {
+		harnessNamePtr = &harnessName
 	}
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id)
@@ -157,9 +166,9 @@ ON CONFLICT(session_name) DO UPDATE SET
   title              = COALESCE(excluded.title, title),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
-  harness            = COALESCE(harness, excluded.harness),
+  harness            = CASE WHEN ? IS NOT NULL THEN ? ELSE harness END,
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, effectiveHarness, harnessSessionID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, insertHarness, harnessSessionID, harnessNamePtr, harnessNamePtr)
 	if err != nil {
 		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
 	}

@@ -7244,6 +7244,44 @@ func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
 	}
 }
 
+// TestUpsertStatusSeedRootAgentName_OverridesStaleHarness verifies that calling
+// UpsertStatusSeedRootAgentName with an explicit non-empty harnessName overwrites
+// an existing harness value on the DB row. This is the ended-row case from
+// issue #1400: after prism reset, the ended row has harness='opencode'; the
+// next prism switch (with active profile declaring harness='pi') must write
+// 'pi' into the row when it falls through to UpsertStatusSeedRootAgentName.
+func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
+	d := openTestDB(t)
+
+	const session = "repo@override-branch"
+
+	// Seed the row with harness='opencode' (simulating a pre-reset ended row).
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "opencode"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Simulate allocatePortForSession falling through to UpsertStatusSeedRootAgentName
+	// with the new harness ('pi') from the active profile.
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+		t.Fatalf("override upsert: %v", err)
+	}
+
+	st, err := d.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("no row found")
+	}
+	if st.Harness == nil || *st.Harness != "pi" {
+		got := "<nil>"
+		if st.Harness != nil {
+			got = *st.Harness
+		}
+		t.Errorf("harness = %q after explicit-pi upsert; want %q", got, "pi")
+	}
+}
+
 // TestUpsertStatusSeedRootAgentName_PreservesHarness verifies that calling
 // UpsertStatusSeedRootAgentName with an empty harnessName on a row that already
 // has harness='pi' does NOT overwrite it with the 'opencode' default (issue #1297).
