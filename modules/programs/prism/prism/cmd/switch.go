@@ -306,15 +306,21 @@ var switchCmd = &cobra.Command{
 		}
 
 		// Resolve the harness from the active profile's worker slot, mirroring
-		// the pattern in spawn.go (lines 473–480). prism switch always opens
-		// worker sessions, so "worker" is the role to look up.
+		// the pattern in spawn.go. prism switch always opens worker sessions,
+		// so "worker" is the role to look up.
 		//
 		// When pf is nil (profiles.json missing or unloadable) or the profile
 		// has no worker slot, fall back to "opencode" so existing behaviour is
 		// preserved. A warning was already logged above in the pf==nil case.
 		switchHarnessName := "opencode"
 		if pf != nil {
-			resolvedProfile, _, _ := config.ResolveActiveProfile(pf, "")
+			resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+			if profErr != nil {
+				// Corrupt or unreadable active-profile state file — surface the
+				// error rather than silently falling back. Matches the defensive
+				// posture of injectContainerConfig and spawn.go.
+				return fmt.Errorf("prism switch: resolve active profile: %w", profErr)
+			}
 			if resolvedProfile != "" {
 				if slot, ok := config.SlotForRole(pf, resolvedProfile, "worker"); ok {
 					switchHarnessName = config.HarnessForSlot(slot)
@@ -322,9 +328,18 @@ var switchCmd = &cobra.Command{
 			}
 		}
 
+		// Validate the resolved harness name before using it. An unknown harness
+		// (e.g. declared in profiles.json but not compiled in) should fail with a
+		// clear error rather than producing a nil adapter that panics on the next
+		// method call. Mirrors the harness.Lookup guard in spawn.go.
+		if _, ok := harness.Lookup(switchHarnessName); !ok {
+			return fmt.Errorf("prism switch: active profile worker slot declares unknown harness %q: valid harnesses: %s",
+				switchHarnessName, strings.Join(harness.Names(), ", "))
+		}
+
 		// Populate harness-specific env var names from the adapter so that
 		// no opencode-specific string literals appear in session.go.
-		// Fall back gracefully when the harness is unknown.
+		// harnessFlag was validated above so the error is unreachable.
 		switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
 		opts := session.Opts{
 			Fresh:            fresh,
