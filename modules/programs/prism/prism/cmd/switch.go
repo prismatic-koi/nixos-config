@@ -18,6 +18,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -171,6 +172,19 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		opts.ForceFresh = true
 	}
 
+	// For socket-pipe harnesses (e.g. "pi") in host isolation mode,
+	// pre-compute the Unix socket path so agentPaneEnvVars can inject
+	// PRISM_HARNESS_PIPE into the tmux pane. bwrap and sandbox-exec set
+	// PRISM_HARNESS_PIPE via their own paths; only inject here for host mode.
+	// This mirrors the same block in spawn.go.
+	if hShape, hShapeOK := harness.ShapeOf(opts.HarnessName); hShapeOK && hShape == harness.TransportSocketPipe && opts.IsolationMode == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
+			opts.HarnessPipeSockPath = pipePath
+		} else {
+			fmt.Fprintf(os.Stderr, "[prism switch] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+		}
+	}
+
 	// Allocate a port for full-layout sessions. The agent_status row must
 	// exist before we can write harness_port to it, so we allocate after
 	// session.Create (which seeds agent_status via `prism event
@@ -179,7 +193,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	// this ordering dependency, we pre-allocate: seed the DB row first, then
 	// allocate the port, then create the tmux session.
 	if opts.Layout == session.LayoutFull {
-		port, err := allocatePortForSession(sessionName, directory)
+		port, err := allocatePortForSession(sessionName, directory, opts.HarnessName)
 		if err != nil {
 			// Non-fatal: log and continue without a port. opencode will still
 			// work, just without the serve API.
@@ -204,7 +218,12 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 // allocatePortForSession ensures the agent_status row exists for sessionName
 // and then allocates a port from the DB. If the session already has a port
 // allocated (e.g. on restore), it returns the existing port.
-func allocatePortForSession(sessionName, directory string) (int, error) {
+//
+// harnessName is the resolved harness for the new session (e.g. "opencode"
+// or "pi"). It is written to the DB row so that prism restore can replay the
+// correct harness. When empty, defaults to "opencode" (handled by
+// UpsertStatusSeedRootAgentName's own default logic).
+func allocatePortForSession(sessionName, directory, harnessName string) (int, error) {
 	d, err := openDB()
 	if err != nil {
 		return 0, fmt.Errorf("open db: %w", err)
@@ -220,7 +239,9 @@ func allocatePortForSession(sessionName, directory string) (int, error) {
 		return *existing.HarnessPort, nil
 	}
 
-	// Ensure the agent_status row exists (idempotent upsert).
+	// Ensure the agent_status row exists (idempotent upsert). Use
+	// UpsertStatusSeedRootAgentName so the harness name is written to the
+	// DB row from the first moment — prism restore reads it from here.
 	repo := deriveRepo(directory)
 	if repo == "" {
 		// Not inside a project worktree — derive from session name.
@@ -228,7 +249,7 @@ func allocatePortForSession(sessionName, directory string) (int, error) {
 			repo = sessionName[:idx]
 		}
 	}
-	if err := d.UpsertStatus(sessionName, repo, directory, "idle", nil, nil); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, directory, "idle", nil, nil, "", harnessName); err != nil {
 		return 0, fmt.Errorf("upsert status: %w", err)
 	}
 
@@ -284,16 +305,49 @@ var switchCmd = &cobra.Command{
 			}
 		}
 
+		// Resolve the harness from the active profile's worker slot, mirroring
+		// the pattern in spawn.go. prism switch always opens worker sessions,
+		// so "worker" is the role to look up.
+		//
+		// When pf is nil (profiles.json missing or unloadable) or the profile
+		// has no worker slot, fall back to "opencode" so existing behaviour is
+		// preserved. A warning was already logged above in the pf==nil case.
+		switchHarnessName := "opencode"
+		if pf != nil {
+			resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+			if profErr != nil {
+				// Corrupt or unreadable active-profile state file — surface the
+				// error rather than silently falling back. Matches the defensive
+				// posture of injectContainerConfig and spawn.go.
+				return fmt.Errorf("prism switch: resolve active profile: %w", profErr)
+			}
+			if resolvedProfile != "" {
+				if slot, ok := config.SlotForRole(pf, resolvedProfile, "worker"); ok {
+					switchHarnessName = config.HarnessForSlot(slot)
+				}
+			}
+		}
+
+		// Validate the resolved harness name before using it. An unknown harness
+		// (e.g. declared in profiles.json but not compiled in) should fail with a
+		// clear error rather than producing a nil adapter that panics on the next
+		// method call. Mirrors the harness.Lookup guard in spawn.go.
+		if _, ok := harness.Lookup(switchHarnessName); !ok {
+			return fmt.Errorf("prism switch: active profile worker slot declares unknown harness %q: valid harnesses: %s",
+				switchHarnessName, strings.Join(harness.Names(), ", "))
+		}
+
 		// Populate harness-specific env var names from the adapter so that
 		// no opencode-specific string literals appear in session.go.
-		// "opencode" is the only registered harness; fall back gracefully.
-		switchHarness, _ := harness.New("opencode", "", nil, "", "")
+		// harnessFlag was validated above so the error is unreachable.
+		switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
 		opts := session.Opts{
 			Fresh:            fresh,
 			IsolationMode:    string(isoMode),
 			PluginHostPath:   cfg.SidecarPluginPath,
 			ConfigEnvVarName: switchHarness.ConfigEnvVar(),
 			RuntimeEnvVars:   switchHarness.RuntimeEnv(),
+			HarnessName:      switchHarnessName,
 		}
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
 		// receive env vars via podman --env flags in the sidecar (podman) or
