@@ -1595,11 +1595,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			ProtocolVersion int    `json:"protocol_version"`
 			SessionName     string `json:"session_name"`
 			SessionRole     string `json:"session_role"`
+			IsolationMode   string `json:"isolation_mode"`
 		}{
 			Type:            "hello_ack",
 			ProtocolVersion: piWireProtocolVersion,
 			SessionName:     s.cfg.SessionName,
 			SessionRole:     s.cfg.AgentRole,
+			IsolationMode:   string(s.cfg.IsolationMode),
 		}
 		ackBytes, _ := json.Marshal(ackFrame)
 		ackBytes = append(ackBytes, '\n')

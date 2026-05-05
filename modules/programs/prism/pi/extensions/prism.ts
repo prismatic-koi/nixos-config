@@ -494,25 +494,37 @@ export const GIT_PUSH_REMINDER_MESSAGE =
  *   [coordinator] main
  *   [worker] fix-login-redirect
  *   [review] PR#42 · 2 cycles
+ *   [coordinator] obsidian (host)
  *
- * @param role         - session role from hello_ack (e.g. "coordinator", "worker", "review")
- * @param branch       - branch label extracted from session_name (part after "@", or full name)
- * @param prNumber     - detected PR number (null when unknown)
- * @param cycles       - current review cycle count
+ * The isolation mode suffix is appended only when the session is running in
+ * "host" isolation mode (or when isolation_mode is absent/unknown, treated
+ * the same as "host"). Sandboxed modes ("sandbox-exec", "bwrap") produce no
+ * suffix — they are the normal/expected case.
+ *
+ * @param role          - session role from hello_ack (e.g. "coordinator", "worker", "review")
+ * @param branch        - branch label extracted from session_name (part after "@", or full name)
+ * @param isolationMode - isolation mode from hello_ack ("sandbox-exec", "bwrap", "host", or "" for absent)
+ * @param prNumber      - detected PR number (null when unknown)
+ * @param cycles        - current review cycle count
  */
 export function formatPrismStatus(
   role: string,
   branch: string,
+  isolationMode: string,
   prNumber: string | null,
   cycles: number,
 ): string {
   const roleLabel = role.length > 0 ? role : "unknown"
   const prefix = `[${roleLabel}] ${branch}`
+  // Append isolation mode suffix when host mode (or absent/unknown).
+  // Sandboxed modes ("sandbox-exec", "bwrap") are the default — no suffix.
+  const isHostMode = isolationMode !== "sandbox-exec" && isolationMode !== "bwrap"
+  const isolationSuffix = isHostMode ? " (host)" : ""
   if (roleLabel === "review" && prNumber !== null) {
     const cycleLabel = cycles === 1 ? "1 cycle" : `${cycles} cycles`
-    return `${prefix} · PR#${prNumber} · ${cycleLabel}`
+    return `${prefix}${isolationSuffix} · PR#${prNumber} · ${cycleLabel}`
   }
-  return prefix
+  return `${prefix}${isolationSuffix}`
 }
 
 /**
@@ -1114,6 +1126,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // Session identity captured from hello_ack. Used for status bar display.
   let sessionRole = ""
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
+  let sessionIsolationMode = ""
 
   // Flag: git push was detected; cleared after the next turn_start so the
   // reminder fires exactly once.
@@ -1250,13 +1263,16 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (typeof f.session_name === "string" && f.session_name.length > 0) {
           sessionBranch = extractBranch(f.session_name)
         }
+        // Capture isolation_mode from hello_ack. Absent field is treated as
+        // empty string, which formatPrismStatus maps to the (host) suffix.
+        sessionIsolationMode = typeof f.isolation_mode === "string" ? f.isolation_mode : ""
         handshakeComplete = true
 
         // Set the status bar immediately after handshake.
         const prCycles = sessionRole === "review"
           ? (reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0)
           : 0
-        const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+        const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
         lastCtx?.ui?.setStatus("prism", statusText)
         if (writer) {
           writer.write({
@@ -1386,7 +1402,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // Refresh status bar on each turn_start so review-cycle count is live.
     if (handshakeComplete) {
       const prCycles = reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0
-      const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+      const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
       lastCtx?.ui?.setStatus("prism", statusText)
       if (writer) {
         writer.write({
