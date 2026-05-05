@@ -159,9 +159,17 @@ func (s *Sidecar) handleServerConnected() {
 		if s.lastState != agent.StateActive {
 			return
 		}
-		// Suppress if reviewingInFlight — the worker is awaiting review results
-		// and must not be prematurely finished.
-		if s.reviewingInFlight {
+		// Suppress if reviewingInFlight AND the DB still shows "reviewing".
+		// For socket-pipe (pi) sessions, reviewingInFlight is cleared by the
+		// /prompt handler when source='review-complete'. For opencode-harness
+		// sessions, the monitor delivers via deliverViaHTTP (opencode's
+		// prompt_async API), bypassing /prompt entirely — so reviewingInFlight
+		// stays true. The monitor writes "active" to the DB just before
+		// delivering, so checking currentDBState() == StateReviewing detects
+		// whether delivery has already happened: once it has, the DB is
+		// "active" (not "reviewing"), the guard is false, and suppression is
+		// lifted. See #1384.
+		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 			log.Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
@@ -200,7 +208,7 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		// to the DB just before delivering the review-complete prompt so that
 		// the genuine reviewing→active transition still happens. See
 		// internal/review/monitor.go and #1049.
-		if s.reviewingInFlight {
+		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 			log.Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
 		} else if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
@@ -259,7 +267,7 @@ func (s *Sidecar) handleSessionIdle() {
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
 			return
 		}
-		if s.reviewingInFlight {
+		if s.reviewingInFlight && currentState == agent.StateReviewing {
 			log.Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
@@ -715,7 +723,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				if currentState == agent.StateInterrupted || currentState == agent.StateError {
 					return
 				}
-				if s.reviewingInFlight {
+				if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 					log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
 					return
 				}
