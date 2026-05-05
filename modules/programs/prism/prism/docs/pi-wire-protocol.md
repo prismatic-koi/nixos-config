@@ -233,7 +233,7 @@ event frame. Sending any other frame first is a protocol violation
 In response, the sidecar sends:
 
 ```json
-{"type":"hello_ack","protocol_version":1,"session_name":"prism@feature","session_role":"worker","instance_id":"01HZ..."}
+{"type":"hello_ack","protocol_version":1,"session_name":"prism@feature","session_role":"worker","isolation_mode":"sandbox-exec","instance_id":"01HZ..."}
 ```
 
 - `type` (string, required) — literal `"hello_ack"`.
@@ -248,6 +248,12 @@ In response, the sidecar sends:
   derived from the sidecar's `Config.AgentRole`. The extension may
   branch on this to adjust behaviour (e.g. coordinators do not auto-start
   the merge-queue watcher from inside PI; that lives in the sidecar).
+- `isolation_mode` (string, optional) — the effective isolation mode for
+  this session: `"sandbox-exec"`, `"bwrap"`, or `"host"`. Absent (or
+  empty string) when the sidecar is older and does not populate this
+  field; the extension treats absent/empty as `"host"`. Used by the
+  extension to show a `(host)` suffix in the status bar when the session
+  is running without a sandbox (see §5.11).
 - `instance_id` (string, required) — the UUID for this session
   incarnation, matching the value the sidecar uses for `to_instance_id`
   on bus messages (`internal/sidecar/sidecar.go:Config.InstanceID`).
@@ -555,7 +561,16 @@ human-readable summary at the same points. The status text format is:
 [coordinator] main
 [worker] fix-login-redirect
 [review] fix-login-redirect · PR#42 · 2 cycles
+[coordinator] obsidian (host)
+[coordinator] obsidian (host) · PR#42 · 2 cycles
 ```
+
+When `isolation_mode` from `hello_ack` is `"sandbox-exec"` or `"bwrap"`,
+no isolation suffix is appended (sandboxed sessions are the normal case).
+When `isolation_mode` is `"host"` or absent/empty (treated as host), the
+suffix ` (host)` is appended after the branch label and before any PR/cycle
+info. This surfaces unsandboxed sessions visually so users can tell them
+apart from sandboxed ones at a glance.
 
 ## 6. Frame catalogue — sidecar → extension
 
