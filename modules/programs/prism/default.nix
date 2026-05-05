@@ -124,6 +124,27 @@
             (not scanned for subdirectories).
           '';
         };
+
+        isolationOverrides = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          example = {
+            "~/documents/obsidian" = "host";
+          };
+          description = ''
+            Per-path isolation mode overrides. Maps path strings (with optional
+            "~/" prefix) to isolation mode strings ("bwrap", "sandbox-exec", or
+            "host"). When a session path matches a key, the associated mode is
+            used instead of the machine default (default_isolation_mode).
+
+            Invalid mode values are silently ignored by prism — the machine
+            default is used instead.
+
+            Written to config.json as project_isolation_overrides. The compiled-in
+            Go default already maps "~/documents/obsidian" → "host" for fresh
+            Darwin installs; set this option explicitly to override or extend it.
+          '';
+        };
       };
 
       profile = {

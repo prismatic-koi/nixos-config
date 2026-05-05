@@ -277,3 +277,181 @@ func TestMalformedJSON(t *testing.T) {
 		t.Errorf("ProjectLocations: got %v, want default [~/code]", cfg.ProjectLocations)
 	}
 }
+
+// TestProjectIsolationOverridesDefault verifies that defaults() includes the
+// Obsidian vault path mapped to "host" so a fresh Darwin install works without
+// any config.json entry.
+func TestProjectIsolationOverridesDefault(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	if cfg.ProjectIsolationOverrides == nil {
+		t.Fatal("ProjectIsolationOverrides: got nil, want non-nil map from defaults")
+	}
+	got, ok := cfg.ProjectIsolationOverrides["~/documents/obsidian"]
+	if !ok {
+		t.Errorf("ProjectIsolationOverrides: missing key %q", "~/documents/obsidian")
+	} else if got != "host" {
+		t.Errorf("ProjectIsolationOverrides[%q]: got %q, want %q", "~/documents/obsidian", got, "host")
+	}
+}
+
+// TestProjectIsolationOverridesFromFile verifies that a config.json with
+// project_isolation_overrides is loaded and replaces the defaults entirely.
+func TestProjectIsolationOverridesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"project_isolation_overrides": {"~/myproject": "bwrap"}}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	// The file replaces the defaults entirely (map replacement, not merge).
+	if len(cfg.ProjectIsolationOverrides) != 1 {
+		t.Errorf("ProjectIsolationOverrides: got %d entries, want 1", len(cfg.ProjectIsolationOverrides))
+	}
+	got, ok := cfg.ProjectIsolationOverrides["~/myproject"]
+	if !ok {
+		t.Errorf("ProjectIsolationOverrides: missing key %q", "~/myproject")
+	} else if got != "bwrap" {
+		t.Errorf("ProjectIsolationOverrides[%q]: got %q, want %q", "~/myproject", got, "bwrap")
+	}
+	// Defaults must be gone since the file provided a non-nil map.
+	if _, obsidianPresent := cfg.ProjectIsolationOverrides["~/documents/obsidian"]; obsidianPresent {
+		t.Errorf("ProjectIsolationOverrides: default key %q should not be present when file provides the map", "~/documents/obsidian")
+	}
+}
+
+// TestProjectIsolationOverridesAbsentKeepsDefaults verifies that an absent
+// project_isolation_overrides key in config.json leaves the compiled-in
+// defaults intact.
+func TestProjectIsolationOverridesAbsentKeepsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Config file exists but has no project_isolation_overrides key.
+	raw := `{"color_primary": "#ff0000"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	got, ok := cfg.ProjectIsolationOverrides["~/documents/obsidian"]
+	if !ok {
+		t.Errorf("ProjectIsolationOverrides: default key %q missing when key absent from config", "~/documents/obsidian")
+	} else if got != "host" {
+		t.Errorf("ProjectIsolationOverrides[%q]: got %q, want %q", "~/documents/obsidian", got, "host")
+	}
+}
+
+// TestProjectIsolationOverridesEmptyMapClearsDefaults verifies that an
+// explicit empty object {} in config.json replaces defaults with an empty map.
+func TestProjectIsolationOverridesEmptyMapClearsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"project_isolation_overrides": {}}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if len(cfg.ProjectIsolationOverrides) != 0 {
+		t.Errorf("ProjectIsolationOverrides: got %d entries, want 0 (explicit empty should clear defaults)", len(cfg.ProjectIsolationOverrides))
+	}
+}
+
+// TestIsolationOverrideForPathMatch verifies that IsolationOverrideForPath
+// returns the correct mode for a path that matches a configured override.
+func TestIsolationOverrideForPathMatch(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("cannot determine home dir: %v", err)
+	}
+
+	obsidianPath := filepath.Join(home, "documents/obsidian")
+	got := cfg.IsolationOverrideForPath(obsidianPath)
+	if got != config.IsolationHost {
+		t.Errorf("IsolationOverrideForPath(%q): got %q, want %q", obsidianPath, got, config.IsolationHost)
+	}
+}
+
+// TestIsolationOverrideForPathTildeKeyMatch verifies that a "~/" key in
+// ProjectIsolationOverrides matches an already-expanded absolute path.
+func TestIsolationOverrideForPathTildeKeyMatch(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	// The default key "~/documents/obsidian" should match the tilde form too.
+	got := cfg.IsolationOverrideForPath("~/documents/obsidian")
+	if got != config.IsolationHost {
+		t.Errorf("IsolationOverrideForPath(\"~/documents/obsidian\"): got %q, want %q", got, config.IsolationHost)
+	}
+}
+
+// TestIsolationOverrideForPathNoMatch verifies that IsolationOverrideForPath
+// returns "" for a path that does not match any override.
+func TestIsolationOverrideForPathNoMatch(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	got := cfg.IsolationOverrideForPath("/some/other/path")
+	if got != "" {
+		t.Errorf("IsolationOverrideForPath(%q): got %q, want empty string", "/some/other/path", got)
+	}
+}
+
+// TestIsolationOverrideForPathInvalidMode verifies that an override entry with
+// an invalid isolation mode value is silently ignored (returns "").
+func TestIsolationOverrideForPathInvalidMode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"project_isolation_overrides": {"~/myproject": "unknown-mode"}}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	got := cfg.IsolationOverrideForPath("~/myproject")
+	if got != "" {
+		t.Errorf("IsolationOverrideForPath(%q): got %q, want empty string (invalid mode ignored)", "~/myproject", got)
+	}
+}
+
+// TestIsolationOverrideForPathEmptyMap verifies that IsolationOverrideForPath
+// returns "" when ProjectIsolationOverrides is empty.
+func TestIsolationOverrideForPathEmptyMap(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"project_isolation_overrides": {}}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	got := cfg.IsolationOverrideForPath("~/documents/obsidian")
+	if got != "" {
+		t.Errorf("IsolationOverrideForPath(%q): got %q, want empty string (empty overrides map)", "~/documents/obsidian", got)
+	}
+}

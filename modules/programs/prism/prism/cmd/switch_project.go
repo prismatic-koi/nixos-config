@@ -97,7 +97,7 @@ func projectEntries() []entry {
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
+func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -150,26 +150,30 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
-		if isoCaps.NeedsConfigBlob && pf != nil {
+		// Apply per-path isolation override for the new worktree.
+		effIso, effCaps := applyPathIsolationOverride(worktreePath, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+		if effCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob {
-			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktreePath, projectPath), opts.ConfigContent, "switch"); err != nil {
+		if effCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(effIso, session.NameFor(worktreePath, projectPath), opts.ConfigContent, "switch"); err != nil {
 				return err
 			}
 		}
 		return ensureAndSwitch(worktreePath, projectPath, opts)
 	}
 
-	if isoCaps.NeedsConfigBlob && pf != nil {
+	// Apply per-path isolation override for the chosen worktree.
+	effIso, effCaps := applyPathIsolationOverride(chosen.path, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+	if effCaps.NeedsConfigBlob && pf != nil {
 		if err := injectContainerConfig(chosen.path, pf, &opts, "prism switch"); err != nil {
 			return err
 		}
 	}
-	if isoCaps.NeedsConfigBlob {
-		if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(chosen.path, projectPath), opts.ConfigContent, "switch"); err != nil {
+	if effCaps.NeedsConfigBlob {
+		if err := writeHarnessConfigBlobFor(effIso, session.NameFor(chosen.path, projectPath), opts.ConfigContent, "switch"); err != nil {
 			return err
 		}
 	}
@@ -348,16 +352,18 @@ func handleReviewGroupPick(groupKey string) error {
 	return err
 }
 
-func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
+func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
 	exclude := switchWorktreeExcludeSet()
 	if exclude[filepath.Base(path)] {
-		if isoCaps.NeedsConfigBlob && pf != nil {
+		// Apply per-path isolation override for excluded-from-conversion paths.
+		effIso, effCaps := applyPathIsolationOverride(path, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+		if effCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob {
-			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+		if effCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(effIso, session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
 				return err
 			}
 		}
@@ -381,13 +387,15 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "conversion failed: %v\nopening directly\n", err)
-			if isoCaps.NeedsConfigBlob && pf != nil {
+			// Apply per-path isolation override for the fallback direct-open.
+			effIso, effCaps := applyPathIsolationOverride(path, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+			if effCaps.NeedsConfigBlob && pf != nil {
 				if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 					return err
 				}
 			}
-			if isoCaps.NeedsConfigBlob {
-				if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+			if effCaps.NeedsConfigBlob {
+				if err := writeHarnessConfigBlobFor(effIso, session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
 					return err
 				}
 			}
@@ -420,25 +428,29 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 			removeContainerIfExists(oldSessionName)
 		}
 
-		if isoCaps.NeedsConfigBlob && pf != nil {
+		// Apply per-path isolation override for the converted worktree.
+		effIso, effCaps := applyPathIsolationOverride(worktreePath, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+		if effCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(worktreePath, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob {
-			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktreePath, path), opts.ConfigContent, "switch"); err != nil {
+		if effCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(effIso, session.NameFor(worktreePath, path), opts.ConfigContent, "switch"); err != nil {
 				return err
 			}
 		}
 		return ensureAndSwitch(worktreePath, path, opts)
 	default:
-		if isoCaps.NeedsConfigBlob && pf != nil {
+		// Apply per-path isolation override for direct-open.
+		effIso, effCaps := applyPathIsolationOverride(path, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps)
+		if effCaps.NeedsConfigBlob && pf != nil {
 			if err := injectContainerConfig(path, pf, &opts, "prism switch"); err != nil {
 				return err
 			}
 		}
-		if isoCaps.NeedsConfigBlob {
-			if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
+		if effCaps.NeedsConfigBlob {
+			if err := writeHarnessConfigBlobFor(effIso, session.NameFor(path, ""), opts.ConfigContent, "switch"); err != nil {
 				return err
 			}
 		}

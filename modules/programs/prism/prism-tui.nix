@@ -48,6 +48,7 @@ let
     worktree_exclude = config.nx.programs.prism.worktreeExclude;
     project_locations = config.nx.programs.prism.projects.locations;
     project_specific = config.nx.programs.prism.projects.specific;
+    project_isolation_overrides = config.nx.programs.prism.projects.isolationOverrides;
     git_user_name = gitUserName;
     git_user_email = gitUserEmail;
     ssh_access_key_name = config.nx.programs.prism.sshAccessKeyName;

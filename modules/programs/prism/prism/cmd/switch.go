@@ -25,6 +25,23 @@ import (
 
 // ── session management ────────────────────────────────────────────────────────
 
+// applyPathIsolationOverride checks cfg.ProjectIsolationOverrides for path and,
+// if a valid override is found, updates opts.IsolationMode in place and returns
+// the overridden IsolationMode plus new Capabilities. If no override applies,
+// the original isoMode and isoCaps are returned unchanged.
+//
+// The caller is responsible for passing a non-nil opts pointer. Logging is
+// done to stderr at info level when an override fires.
+func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Opts, isoMode config.IsolationMode, isoCaps container.Capabilities) (config.IsolationMode, container.Capabilities) {
+	override := cfg.IsolationOverrideForPath(path)
+	if override == "" {
+		return isoMode, isoCaps
+	}
+	fmt.Fprintf(os.Stderr, "[prism switch] using isolation override %q for path %q\n", override, path)
+	opts.IsolationMode = string(override)
+	return override, container.CapabilitiesFor(override)
+}
+
 // writeHarnessConfigBlobFor dispatches the per-mode "write opencode.json blob
 // to the deterministic per-session temp path" step through the registered
 // Isolator (D3, issue #1133). cmdName is used in the error wrapper so the
@@ -369,13 +386,15 @@ var switchCmd = &cobra.Command{
 					return fmt.Errorf("no worktrees found in %s", p)
 				}
 				o := opts
-				if isoCaps.NeedsConfigBlob && pf != nil {
+				// Apply per-path isolation override for the first worktree.
+				effIso, effCaps := applyPathIsolationOverride(worktrees[0], cfg, &o, isoMode, isoCaps)
+				if effCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(worktrees[0], pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(worktrees[0], p), o.ConfigContent, "switch"); err != nil {
+				if effCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(worktrees[0], p), o.ConfigContent, "switch"); err != nil {
 						return err
 					}
 				}
@@ -383,26 +402,30 @@ var switchCmd = &cobra.Command{
 			}
 			if bareRoot := git.BareRoot(p); bareRoot != "" {
 				o := opts
-				if isoCaps.NeedsConfigBlob && pf != nil {
+				// Apply per-path isolation override for the worktree path.
+				effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps)
+				if effCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, bareRoot), o.ConfigContent, "switch"); err != nil {
+				if effCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, bareRoot), o.ConfigContent, "switch"); err != nil {
 						return err
 					}
 				}
 				return ensureAndSwitch(p, bareRoot, o)
 			}
 			o := opts
-			if isoCaps.NeedsConfigBlob && pf != nil {
+			// Apply per-path isolation override for plain directory paths.
+			effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps)
+			if effCaps.NeedsConfigBlob && pf != nil {
 				if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 					return err
 				}
 			}
-			if isoCaps.NeedsConfigBlob {
-				if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
+			if effCaps.NeedsConfigBlob {
+				if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
 					return err
 				}
 			}
@@ -442,18 +465,21 @@ var switchCmd = &cobra.Command{
 			p := chosen.path
 			switch {
 			case git.IsBareRepo(p):
-				return handleBareRepo(p, pf, opts, isoCaps)
+				return handleBareRepo(p, pf, opts, isoCaps, cfg)
 			case git.IsRegularRepo(p):
-				return handleRegularRepo(p, pf, opts, isoCaps)
+				return handleRegularRepo(p, pf, opts, isoCaps, cfg)
 			default:
 				o := opts
-				if isoCaps.NeedsConfigBlob && pf != nil {
+				// Apply per-path isolation override for plain directory paths
+				// selected from the picker (e.g. ~/documents/obsidian).
+				effIso, effCaps := applyPathIsolationOverride(p, cfg, &o, isoMode, isoCaps)
+				if effCaps.NeedsConfigBlob && pf != nil {
 					if err := injectContainerConfig(p, pf, &o, "prism switch"); err != nil {
 						return err
 					}
 				}
-				if isoCaps.NeedsConfigBlob {
-					if err := writeHarnessConfigBlobFor(isoMode, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
+				if effCaps.NeedsConfigBlob {
+					if err := writeHarnessConfigBlobFor(effIso, session.NameFor(p, ""), o.ConfigContent, "switch"); err != nil {
 						return err
 					}
 				}

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -129,6 +130,14 @@ type Config struct {
 	// so that agent-run knows where to find the extension at runtime.
 	// When empty, agent-run falls back to a relative-to-executable heuristic.
 	PIExtensionDir string `json:"pi_extension_dir"`
+
+	// ProjectIsolationOverrides maps path strings (with optional "~/" prefix)
+	// to isolation mode strings. When a session path matches a key (after "~/"
+	// expansion), the associated mode is used instead of DefaultIsolationMode.
+	// Invalid mode values are silently ignored (same treatment as an invalid
+	// DefaultIsolationMode). Keys must exactly match the path after "~/"
+	// expansion; no glob or prefix matching.
+	ProjectIsolationOverrides map[string]string `json:"project_isolation_overrides,omitempty"`
 }
 
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or
@@ -156,9 +165,10 @@ type parsedConfig struct {
 	SidecarCircuitBreakerThreshold *int      `json:"sidecar_circuit_breaker_threshold"`
 	BwrapConcurrencyCap            *int      `json:"bwrap_concurrency_cap"`
 	SandboxExecConcurrencyCap      *int      `json:"sandbox_exec_concurrency_cap"`
-	WorktreeExclude                *[]string `json:"worktree_exclude"`
-	ProjectLocations               *[]string `json:"project_locations"`
-	ProjectSpecific                *[]string `json:"project_specific"`
+	WorktreeExclude                *[]string          `json:"worktree_exclude"`
+	ProjectLocations               *[]string          `json:"project_locations"`
+	ProjectSpecific                *[]string          `json:"project_specific"`
+	ProjectIsolationOverrides      *map[string]string `json:"project_isolation_overrides"`
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
@@ -194,9 +204,12 @@ func defaults() Config {
 		SshSigningKeyName:         "prismatic-koi-ed25519-signingkey",
 		BwrapConcurrencyCap:       DefaultBwrapConcurrencyCap,
 		SandboxExecConcurrencyCap: DefaultSandboxExecConcurrencyCap,
-		WorktreeExclude:           []string{"obsidian"},
-		ProjectLocations:     []string{"~/code"},
-		ProjectSpecific:      []string{"~/documents/obsidian"},
+		WorktreeExclude:  []string{"obsidian"},
+		ProjectLocations: []string{"~/code"},
+		ProjectSpecific:  []string{"~/documents/obsidian"},
+		ProjectIsolationOverrides: map[string]string{
+			"~/documents/obsidian": "host",
+		},
 	}
 }
 
@@ -329,6 +342,12 @@ func load() Config {
 		cfg.ProjectSpecific = *parsed.ProjectSpecific
 	}
 
+	// For map fields: nil pointer means absent (keep default); non-nil
+	// pointer (including pointer to empty map) means replace entirely.
+	if parsed.ProjectIsolationOverrides != nil {
+		cfg.ProjectIsolationOverrides = *parsed.ProjectIsolationOverrides
+	}
+
 	return cfg
 }
 
@@ -367,6 +386,45 @@ func (c Config) CircuitBreakerThreshold() int {
 		return 0
 	}
 	return n
+}
+
+// IsolationOverrideForPath looks up path in ProjectIsolationOverrides and
+// returns the configured IsolationMode if the path matches and the value is
+// valid. Returns "" if the path is not present in the map or the mapped value
+// is not a valid isolation mode (silently ignored).
+//
+// path is expanded: a leading "~/" is replaced with the user home directory
+// before lookup. The keys in ProjectIsolationOverrides are also expanded
+// before comparison, so both "~/documents/obsidian" and an already-expanded
+// absolute path work as keys.
+func (c Config) IsolationOverrideForPath(path string) IsolationMode {
+	if len(c.ProjectIsolationOverrides) == 0 {
+		return ""
+	}
+	expanded := expandHomePath(path)
+	for k, v := range c.ProjectIsolationOverrides {
+		if expandHomePath(k) == expanded {
+			if IsValidIsolationMode(v) {
+				return IsolationMode(v)
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// expandHomePath expands a leading "~/" in p to the user's home directory.
+// If os.UserHomeDir() fails or p does not start with "~/", p is returned
+// unchanged.
+func expandHomePath(p string) string {
+	if !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[2:])
 }
 
 // configFilePath returns the path to look for the config file.

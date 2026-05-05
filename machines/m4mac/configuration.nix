@@ -26,6 +26,9 @@ in
     programs = {
       prism.profile.default = "anthropic";
       prism.agent.isolation.default = "sandbox-exec";
+      prism.projects.isolationOverrides = {
+        "~/documents/obsidian" = "host";
+      };
       # Disable programs that default to enabled but aren't needed/available on Darwin
       podman.enable = false;
       dragon-drop.enable = false;
