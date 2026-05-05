@@ -723,10 +723,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				if currentState == agent.StateInterrupted || currentState == agent.StateError {
 					return
 				}
-			if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
-				log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
-				return
-			}
+				if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
+					log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
+					return
+				}
 
 				log.Printf("sidecar: transition -> finished (cause=root_agent_idle_debounce)")
 				s.upsertState(agent.StateFinished, nil, nil)
