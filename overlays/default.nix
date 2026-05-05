@@ -27,7 +27,106 @@ rec {
 
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
-      opencode = masterPkgs.opencode;
+      # Pinned to opencode 1.14.32 via overrideAttrs on nixpkgs' opencode.
+      # History: 1.4.11 regressed the --prompt TUI flag (pre-fills instead of
+      # auto-submitting), which broke prism's headless workflows, so we
+      # previously pinned 1.4.6 via a dedicated `nixpkgs-opencode` flake input
+      # (see #901). 1.14.18 is verified to no longer carry that regression, so
+      # we switched to overrideAttrs instead of dragging a whole nixpkgs
+      # revision along for one package (see #910).
+      #
+      # Re-pinned to 1.14.32 (see #1391): after unpinning in PR #1375,
+      # 1.14.31 introduced two TUI regressions: (1) cursor jumping wildly
+      # while typing in the prompt (editing keys broken), and (2) the escape
+      # key being swallowed by dialog layers so prism's tmux popups could no
+      # longer be dismissed. 1.14.32 fixes the cursor/editing-key regression;
+      # the escape regression remains open.
+      #
+      # The 1.14.x series changed the build contract vs. the 1.4.x that is
+      # still in `prev.opencode`: the bundled CLI now dynamically imports
+      # `prettier` (a root-workspace devDep) inside `generate.ts`, so the
+      # root workspace must be included in the `bun install` filter set;
+      # `packages/shared` is a new standalone workspace; and the schema
+      # script emits a single `schema.json` instead of the old
+      # `config.json` + `tui.json` pair. So we have to override the build /
+      # install phases in addition to the version + hashes.
+      #
+      # To bump this pin:
+      #   1. Update `version` below.
+      #   2. Recompute `src.hash`:
+      #        nix-prefetch-url --unpack \
+      #          https://github.com/anomalyco/opencode/archive/refs/tags/v<version>.tar.gz
+      #        nix hash convert --hash-algo sha256 --to sri <hash-from-above>
+      #   3. Recompute `node_modules.outputHash`: set it to `lib.fakeHash`,
+      #      attempt a build, and substitute the correct hash from the error.
+      opencode = prev.opencode.overrideAttrs (old: rec {
+        version = "1.14.32";
+        src = old.src.override {
+          tag = "v${version}";
+          hash = "sha256-roQwjdYuAXVZIJ5pcBxSDXZYhyDfxLdVdBNa5GhbUTc=";
+        };
+
+        node_modules = old.node_modules.overrideAttrs (_: {
+          inherit src;
+          # 1.14.x: include the root workspace (`--filter './'`) so that
+          # `prettier` — a root devDep that `generate.ts` dynamically
+          # imports — ends up in node_modules, and add `packages/shared`
+          # which is a new standalone workspace in 1.14.x.
+          buildPhase = ''
+            runHook preBuild
+
+            bun install \
+              --cpu="*" \
+              --frozen-lockfile \
+              --filter './' \
+              --filter ./packages/app \
+              --filter ./packages/desktop \
+              --filter ./packages/opencode \
+              --filter ./packages/shared \
+              --ignore-scripts \
+              --no-progress \
+              --os="*"
+
+            bun --bun ./nix/scripts/canonicalize-node-modules.ts
+            bun --bun ./nix/scripts/normalize-bun-binaries.ts
+
+            runHook postBuild
+          '';
+          outputHash = "sha256-dbpqhVcjWr+puZhV0x7pR38iMjjZdbrJydKJ/qJfDeY=";
+        });
+
+        # 1.14.x: schema script now emits a single `schema.json` rather than
+        # `config.json` + `tui.json`, and the install step needs to follow.
+        buildPhase = ''
+          runHook preBuild
+
+          cd ./packages/opencode
+          bun --bun ./script/build.ts --single --skip-install
+          bun --bun ./script/schema.ts schema.json
+
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+
+          install -Dm755 dist/opencode-*/bin/opencode $out/bin/opencode
+          install -Dm644 schema.json $out/share/opencode/schema.json
+
+          wrapProgram $out/bin/opencode \
+            --prefix PATH : ${
+              final.lib.makeBinPath (
+                [ final.ripgrep ] ++ final.lib.optional final.stdenv.hostPlatform.isDarwin final.sysctl
+              )
+            }
+
+          runHook postInstall
+        '';
+
+        passthru = (old.passthru or { }) // {
+          jsonschema = "${placeholder "out"}/share/opencode/schema.json";
+        };
+      });
       pi-coding-agent =
         let
           newSrc = prev.fetchFromGitHub {
