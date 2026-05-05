@@ -24,7 +24,7 @@ in
   # Module configuration using nx namespace (matching NixOS pattern)
   nx = {
     programs = {
-      prism.opencode.provider = "anthropic";
+      prism.profile.default = "anthropic";
       prism.agent.isolation.default = "sandbox-exec";
       # Disable programs that default to enabled but aren't needed/available on Darwin
       podman.enable = false;

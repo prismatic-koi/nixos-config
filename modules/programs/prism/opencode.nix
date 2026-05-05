@@ -9,17 +9,7 @@
     nx.programs.prism.opencode.enable = lib.mkEnableOption "enables opencode" // {
       default = true;
     };
-    nx.programs.prism.opencode.provider = lib.mkOption {
-      type = lib.types.enum (builtins.attrNames config.nx.programs.prism.profiles.data.profiles);
-      default = "anthropic";
-      description = ''
-        The model profile to use for baked-in opencode agent config.
-        This selects the default profile recorded in profiles.json and drives
-        the model strings written into opencode.json. All provider auth plugins
-        are always present so any provider can be used mid-session regardless
-        of which profile is active.
-      '';
-    };
+
     # Serialised opencode.json blobs for container roles.
     # Set by opencode.nix and consumed by profiles.nix to embed them into
     # profiles.json under container_worker_config / container_coordinator_config.
@@ -410,7 +400,7 @@
         - Never use Te Reo as decoration or performance – only where it fits naturally.
       '';
       currentProfile =
-        config.nx.programs.prism.profiles.data.profiles.${config.nx.programs.prism.opencode.provider};
+        config.nx.programs.prism.profiles.data.profiles.${config.nx.programs.prism.profile.default};
       # Resolve a model from the role-keyed profile by picking the first role in
       # each legacy tier (#1206). Profiles defined via profileFromTiers stamp the
       # same slot value across every role in a tier, so any role from the tier
@@ -582,7 +572,7 @@
         agent =
           let
             profiledAgents =
-              config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider
+              config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.profile.default
                 ({
                   worker = {
                     description = "Default worker agent with full tool access";
@@ -655,7 +645,7 @@
         default_agent = "coordinator";
         enabled_providers = containerEnabledProviders;
         model = models.primary;
-        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider ({
+        agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.profile.default ({
           coordinator = {
             description = "Repo coordinator — orchestrates agents, reviews PRs, merges work";
             mode = "primary";
@@ -1045,7 +1035,7 @@
               };
             };
           };
-          profiledAgents = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider baseAgentMap;
+          profiledAgents = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.profile.default baseAgentMap;
           # Strip variant from disabled agents
           sanitisedAgents = lib.mapAttrs (
             _name: cfg: if cfg ? disable && cfg.disable then builtins.removeAttrs cfg [ "variant" ] else cfg
@@ -1145,7 +1135,7 @@
             settings = {
               autoupdate = false;
               model = models.primary;
-              agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.opencode.provider (
+              agent = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.profile.default (
                 {
                   worker = {
                     description = "Default worker agent with full tool access";

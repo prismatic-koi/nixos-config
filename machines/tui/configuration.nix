@@ -26,7 +26,7 @@
       wallpaper.variant = "enso";
     };
     programs = {
-      prism.opencode.provider = "anthropic";
+      prism.profile.default = "anthropic";
       chromium.enable = true;
       calibre.enable = true;
       cura.enable = true;

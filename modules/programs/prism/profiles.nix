@@ -299,7 +299,7 @@
                   s;
             in
             builtins.toJSON {
-              default = config.nx.programs.prism.opencode.provider;
+              default = config.nx.programs.prism.profile.default;
               role_mapping = config.nx.programs.prism.profiles.data.roleMapping;
               # Profiles are role-keyed. Each slot is emitted with its full record
               # (provider, model, thinking, systemPromptPath). systemPromptPath is
