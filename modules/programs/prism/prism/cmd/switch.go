@@ -235,7 +235,7 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("current status: %w", err)
 	}
-	if existing != nil && existing.HarnessPort != nil {
+	if existing != nil && existing.HarnessPort != nil && existing.EndedAt == nil {
 		return *existing.HarnessPort, nil
 	}
 
