@@ -30,6 +30,9 @@
 //                            (stopReason=stop, idle, no pending, not reviewing)
 //                         → turn_end + state_change:interrupted (stopReason=aborted)
 //                         → turn_end + state_change:idle (other idle turns)
+//   agent_end             → state_change:finished + session_shutdown (review sessions, stopReason=stop)
+//                         → state_change:interrupted               (review sessions, stopReason=aborted)
+//                         → no-op                                  (non-review sessions or stopReason=error)
 //   message_update        → msg_assistant       (text_delta only, truncated)
 //   after_provider_response (non-OK)
 //                         → provider_error
@@ -494,25 +497,37 @@ export const GIT_PUSH_REMINDER_MESSAGE =
  *   [coordinator] main
  *   [worker] fix-login-redirect
  *   [review] PR#42 · 2 cycles
+ *   [coordinator] obsidian (host)
  *
- * @param role         - session role from hello_ack (e.g. "coordinator", "worker", "review")
- * @param branch       - branch label extracted from session_name (part after "@", or full name)
- * @param prNumber     - detected PR number (null when unknown)
- * @param cycles       - current review cycle count
+ * The isolation mode suffix is appended only when the session is running in
+ * "host" isolation mode (or when isolation_mode is absent/unknown, treated
+ * the same as "host"). Sandboxed modes ("sandbox-exec", "bwrap") produce no
+ * suffix — they are the normal/expected case.
+ *
+ * @param role          - session role from hello_ack (e.g. "coordinator", "worker", "review")
+ * @param branch        - branch label extracted from session_name (part after "@", or full name)
+ * @param isolationMode - isolation mode from hello_ack ("sandbox-exec", "bwrap", "host", or "" for absent)
+ * @param prNumber      - detected PR number (null when unknown)
+ * @param cycles        - current review cycle count
  */
 export function formatPrismStatus(
   role: string,
   branch: string,
+  isolationMode: string,
   prNumber: string | null,
   cycles: number,
 ): string {
   const roleLabel = role.length > 0 ? role : "unknown"
   const prefix = `[${roleLabel}] ${branch}`
+  // Append isolation mode suffix when host mode (or absent/unknown).
+  // Sandboxed modes ("sandbox-exec", "bwrap") are the default — no suffix.
+  const isHostMode = isolationMode !== "sandbox-exec" && isolationMode !== "bwrap"
+  const isolationSuffix = isHostMode ? " (host)" : ""
   if (roleLabel === "review" && prNumber !== null) {
     const cycleLabel = cycles === 1 ? "1 cycle" : `${cycles} cycles`
-    return `${prefix} · PR#${prNumber} · ${cycleLabel}`
+    return `${prefix}${isolationSuffix} · PR#${prNumber} · ${cycleLabel}`
   }
-  return prefix
+  return `${prefix}${isolationSuffix}`
 }
 
 /**
@@ -961,6 +976,43 @@ export async function dispatchInboundFrame(
 }
 
 // ---------------------------------------------------------------------------
+// agent_end signal resolver — exported for unit testing.
+// ---------------------------------------------------------------------------
+
+/**
+ * Signal that the agent_end handler should emit for review-agent sessions.
+ *
+ * - "finished"     — emit state_change:finished, session_shutdown, close writer
+ * - "interrupted"  — emit state_change:interrupted (no shutdown)
+ * - "none"         — do not emit any state_change frame
+ *
+ * Only used by review sessions (isReviewSession === true). Non-review sessions
+ * always return "none" here — they rely on the turn_end → isIdle path instead.
+ */
+export type AgentEndSignal = "finished" | "interrupted" | "none"
+
+/**
+ * Determines which state-change signal to emit from the agent_end hook.
+ *
+ * For review sessions:
+ *   - stopReason=stop     → "finished"
+ *   - stopReason=aborted  → "interrupted"
+ *   - anything else       → "none" (error path or unknown)
+ * For non-review sessions: always "none".
+ *
+ * Exported for unit testing.
+ */
+export function resolveAgentEndSignal(
+  isReviewSession: boolean,
+  stopReason: string | undefined,
+): AgentEndSignal {
+  if (!isReviewSession) return "none"
+  if (stopReason === "stop") return "finished"
+  if (stopReason === "aborted") return "interrupted"
+  return "none"
+}
+
+// ---------------------------------------------------------------------------
 // turn_end signal resolver — exported for unit testing.
 // ---------------------------------------------------------------------------
 
@@ -1114,6 +1166,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // Session identity captured from hello_ack. Used for status bar display.
   let sessionRole = ""
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
+  let sessionIsolationMode = ""
 
   // Flag: git push was detected; cleared after the next turn_start so the
   // reminder fires exactly once.
@@ -1250,13 +1303,16 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (typeof f.session_name === "string" && f.session_name.length > 0) {
           sessionBranch = extractBranch(f.session_name)
         }
+        // Capture isolation_mode from hello_ack. Absent field is treated as
+        // empty string, which formatPrismStatus maps to the (host) suffix.
+        sessionIsolationMode = typeof f.isolation_mode === "string" ? f.isolation_mode : ""
         handshakeComplete = true
 
         // Set the status bar immediately after handshake.
         const prCycles = sessionRole === "review"
           ? (reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0)
           : 0
-        const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+        const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
         lastCtx?.ui?.setStatus("prism", statusText)
         if (writer) {
           writer.write({
@@ -1386,7 +1442,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // Refresh status bar on each turn_start so review-cycle count is live.
     if (handshakeComplete) {
       const prCycles = reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0
-      const statusText = formatPrismStatus(sessionRole, sessionBranch, reviewCycleState.detectedPrNumber, prCycles)
+      const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
       lastCtx?.ui?.setStatus("prism", statusText)
       if (writer) {
         writer.write({
@@ -1504,6 +1560,70 @@ export default function prismExtension(pi: ExtensionAPI): void {
         console.error("[prism-extension] turn_end signal resolution failed:", err)
       }
     }
+  })
+
+  // ── agent_end hook ────────────────────────────────────────────────────
+  //
+  // For review-agent sessions (isReviewSession === true), this hook fires
+  // after the model has produced its final response and all tool calls are
+  // complete. At this point we know for certain whether the run ended cleanly
+  // (stopReason=stop), was aborted (stopReason=aborted), or hit an error.
+  //
+  // Background: the turn_end hook fires while isStreaming is still true, so
+  // isIdle() returns false and resolveTurnEndSignal returns "none" — the
+  // session_shutdown frame is never written via that path for review sessions
+  // (which complete in a single run without going idle between turns). The
+  // agent_end hook fires after isStreaming is set to false (the PI agent-core
+  // sets isStreaming=false before emitting agent_end), making it the correct
+  // place to emit session_shutdown for review sessions.
+  //
+  // For non-review sessions the existing turn_end → isIdle path works: between
+  // turns the agent returns to idle, isIdle() returns true, and the normal
+  // resolveTurnEndSignal("finished", ...) path fires correctly when the agent
+  // eventually completes with stopReason=stop.
+  //
+  // The sessionShutdownEmitted guard prevents double-emission if this hook
+  // fires after the session_shutdown PI hook has already closed the writer
+  // (unlikely for review agents but required for correctness).
+  pi.on("agent_end", async (event, ctx) => {
+    lastCtx = ctx
+    if (!isReviewSession) {
+      // Non-review sessions: the turn_end → isIdle path handles shutdown.
+      return
+    }
+    if (!writer || !handshakeComplete) return
+    if (sessionShutdownEmitted) {
+      // session_shutdown PI hook already fired — do not double-emit.
+      return
+    }
+
+    // Extract stopReason from the last message in the event payload.
+    // The agent_end event carries the final messages from the run; the last
+    // one is the terminal assistant message whose stopReason reflects how the
+    // run ended (stop, aborted, error, …).
+    const messages = (event as { messages?: unknown[] }).messages
+    const lastMsg =
+      Array.isArray(messages) && messages.length > 0
+        ? messages[messages.length - 1]
+        : undefined
+    const stopReason =
+      lastMsg !== null && typeof lastMsg === "object"
+        ? (lastMsg as { stopReason?: unknown }).stopReason as string | undefined
+        : undefined
+
+    const signal = resolveAgentEndSignal(isReviewSession, stopReason)
+    if (signal === "finished") {
+      // Clean finish: emit finished + shutdown and close the writer.
+      sessionShutdownEmitted = true
+      writer.write({ type: "state_change", state: "finished" })
+      writer.write({ type: "session_shutdown" })
+      writer.close()
+    } else if (signal === "interrupted") {
+      // User abort: emit interrupted. Do not close with shutdown.
+      writer.write({ type: "state_change", state: "interrupted" })
+    }
+    // signal === "none": stopReason=error or unknown — the existing error path
+    // handles it (or the connection drop + pipeDisconnectTimeout takes over).
   })
 
   pi.on("tool_execution_start", async (event, ctx) => {

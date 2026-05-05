@@ -335,6 +335,24 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 6a. PI auth.json targeted allow (pi sessions only) ───────────────
+	// The staging dir contains a symlink <stagingDir>/auth.json →
+	// ~/.pi/agent/auth.json (created by StagePIAgentConfigDir). For the
+	// symlink to resolve inside the sandbox, the real credential file must
+	// also be accessible at its host path. We allow read-write so that OAuth
+	// token refreshes performed inside the session are written back to the
+	// host file. The rule is always emitted for pi sessions even when
+	// ~/.pi/agent/auth.json does not exist — sandbox-exec silently ignores
+	// (literal ...) rules for non-existent paths, so pi simply prompts for
+	// login rather than crashing. The rule is scoped to the specific file
+	// literal (not a subpath) to avoid granting broad ~/.pi/agent/ access.
+	if m.cfg.Harness == "pi" && home != "" {
+		piAuthPath := filepath.Join(home, ".pi", "agent", "auth.json")
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (literal " + quoteSBPL(piAuthPath) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
 	// opencode's fs.up() walk probes multiple targets (.opencode, .git) at
 	// every ancestor of the worktree with no stop parameter. Under deny-default

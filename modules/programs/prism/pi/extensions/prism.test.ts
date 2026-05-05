@@ -44,6 +44,8 @@ import {
   GIT_PUSH_REMINDER_MESSAGE,
   // turn_end signal resolver
   resolveTurnEndSignal,
+  // agent_end signal resolver
+  resolveAgentEndSignal,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1137,46 +1139,82 @@ describe("GIT_PUSH_REMINDER_MESSAGE", () => {
 // formatPrismStatus
 // ---------------------------------------------------------------------------
 
-describe("formatPrismStatus — coordinator", () => {
-  it("shows role and branch", () => {
-    const text = formatPrismStatus("coordinator", "main", null, 0)
+describe("formatPrismStatus — coordinator (sandbox-exec, no suffix)", () => {
+  it("shows role and branch without isolation suffix", () => {
+    const text = formatPrismStatus("coordinator", "main", "sandbox-exec", null, 0)
     assert.equal(text, "[coordinator] main")
   })
 })
 
+describe("formatPrismStatus — coordinator (bwrap, no suffix)", () => {
+  it("shows role and branch without isolation suffix", () => {
+    const text = formatPrismStatus("coordinator", "main", "bwrap", null, 0)
+    assert.equal(text, "[coordinator] main")
+  })
+})
+
+describe("formatPrismStatus — coordinator (host, suffix shown)", () => {
+  it("appends (host) suffix when isolation mode is 'host'", () => {
+    const text = formatPrismStatus("coordinator", "obsidian", "host", null, 0)
+    assert.equal(text, "[coordinator] obsidian (host)")
+  })
+})
+
+describe("formatPrismStatus — coordinator (empty string, treated as host)", () => {
+  it("appends (host) suffix when isolation mode is absent/empty", () => {
+    const text = formatPrismStatus("coordinator", "main", "", null, 0)
+    assert.equal(text, "[coordinator] main (host)")
+  })
+})
+
 describe("formatPrismStatus — worker", () => {
-  it("shows role and branch", () => {
-    const text = formatPrismStatus("worker", "fix-login-redirect", null, 0)
+  it("shows role and branch (sandbox-exec, no suffix)", () => {
+    const text = formatPrismStatus("worker", "fix-login-redirect", "sandbox-exec", null, 0)
     assert.equal(text, "[worker] fix-login-redirect")
   })
 
-  it("does not include PR info even if cycles > 0", () => {
-    const text = formatPrismStatus("worker", "some-branch", "42", 2)
+  it("shows (host) suffix in host mode", () => {
+    const text = formatPrismStatus("worker", "fix-login-redirect", "host", null, 0)
+    assert.equal(text, "[worker] fix-login-redirect (host)")
+  })
+
+  it("does not include PR info even if cycles > 0 (sandbox-exec)", () => {
+    const text = formatPrismStatus("worker", "some-branch", "sandbox-exec", "42", 2)
     assert.equal(text, "[worker] some-branch")
   })
 })
 
 describe("formatPrismStatus — review", () => {
-  it("includes PR number and cycle count", () => {
-    const text = formatPrismStatus("review", "fix-login-redirect", "42", 2)
+  it("includes PR number and cycle count (sandbox-exec, no suffix)", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "sandbox-exec", "42", 2)
     assert.equal(text, "[review] fix-login-redirect · PR#42 · 2 cycles")
   })
 
-  it("uses singular 'cycle' when count is 1", () => {
-    const text = formatPrismStatus("review", "fix-login-redirect", "42", 1)
+  it("includes PR number and cycle count with (host) suffix in host mode", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "host", "42", 2)
+    assert.equal(text, "[review] fix-login-redirect (host) · PR#42 · 2 cycles")
+  })
+
+  it("uses singular 'cycle' when count is 1 (sandbox-exec)", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "sandbox-exec", "42", 1)
     assert.equal(text, "[review] fix-login-redirect · PR#42 · 1 cycle")
   })
 
-  it("omits PR info when pr_number is null", () => {
-    const text = formatPrismStatus("review", "fix-login-redirect", null, 0)
+  it("omits PR info when pr_number is null (sandbox-exec)", () => {
+    const text = formatPrismStatus("review", "fix-login-redirect", "sandbox-exec", null, 0)
     assert.equal(text, "[review] fix-login-redirect")
   })
 })
 
 describe("formatPrismStatus — unknown role", () => {
-  it("shows [unknown] when role is empty", () => {
-    const text = formatPrismStatus("", "main", null, 0)
+  it("shows [unknown] when role is empty (sandbox-exec, no suffix)", () => {
+    const text = formatPrismStatus("", "main", "sandbox-exec", null, 0)
     assert.equal(text, "[unknown] main")
+  })
+
+  it("shows [unknown] with (host) suffix in host mode", () => {
+    const text = formatPrismStatus("", "main", "host", null, 0)
+    assert.equal(text, "[unknown] main (host)")
   })
 })
 
@@ -1365,5 +1403,67 @@ describe("resolveTurnEndSignal — idle (non-stop reasons that are idle)", () =>
       resolveTurnEndSignal(undefined, false, false, false),
       "none",
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveAgentEndSignal (agent_end state-change resolver)
+// ---------------------------------------------------------------------------
+
+describe("resolveAgentEndSignal — review session + stopReason=stop", () => {
+  it("returns 'finished' for review session with stopReason=stop", () => {
+    // AC: review agent completes cleanly → session_shutdown must be emitted
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + stopReason=aborted", () => {
+  it("returns 'interrupted' for review session with stopReason=aborted", () => {
+    // AC: user abort → state_change:interrupted, no shutdown
+    assert.equal(resolveAgentEndSignal(true, "aborted"), "interrupted")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + stopReason=error", () => {
+  it("returns 'none' for review session with stopReason=error", () => {
+    // AC: error path is handled separately; agent_end must not emit shutdown
+    assert.equal(resolveAgentEndSignal(true, "error"), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + unknown stopReason", () => {
+  it("returns 'none' for review session with unknown stopReason", () => {
+    assert.equal(resolveAgentEndSignal(true, "toolUse"), "none")
+  })
+
+  it("returns 'none' for review session with undefined stopReason", () => {
+    assert.equal(resolveAgentEndSignal(true, undefined), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — non-review session (always no-op)", () => {
+  it("returns 'none' for non-review session with stopReason=stop", () => {
+    // AC: non-review sessions use the turn_end → isIdle path; agent_end is a no-op
+    assert.equal(resolveAgentEndSignal(false, "stop"), "none")
+  })
+
+  it("returns 'none' for non-review session with stopReason=aborted", () => {
+    assert.equal(resolveAgentEndSignal(false, "aborted"), "none")
+  })
+
+  it("returns 'none' for non-review session with stopReason=error", () => {
+    assert.equal(resolveAgentEndSignal(false, "error"), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — double-emission guard (sessionShutdownEmitted)", () => {
+  it("returns 'finished' for review + stop regardless of guard (guard is caller responsibility)", () => {
+    // The sessionShutdownEmitted guard is checked by the caller (the agent_end hook
+    // in the extension factory), not by this pure helper. Verify the helper itself
+    // consistently returns 'finished' for stop — the caller gates on the flag.
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+    // A second call still returns 'finished'; the factory will skip emission because
+    // sessionShutdownEmitted is already true in that code path.
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
   })
 })
