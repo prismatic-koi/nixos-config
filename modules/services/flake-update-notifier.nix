@@ -22,7 +22,7 @@ let
     MSG="flake.lock is out of date on $(${pkgs.hostname}/bin/hostname). Run: nh os switch"
 
     if command -v ${pkgs.libnotify}/bin/notify-send &>/dev/null; then
-      ${pkgs.libnotify}/bin/notify-send -u normal -t 0 "$TITLE" "$MSG"
+      ${pkgs.libnotify}/bin/notify-send -u normal -t 0 -i nix-snowflake "$TITLE" "$MSG"
     elif command -v osascript &>/dev/null; then
       osascript -e "display notification \"$MSG\" with title \"$TITLE\""
     fi
@@ -48,20 +48,26 @@ in
     lib.mkMerge [
       # ── Linux ──────────────────────────────────────────────────────────────
       (lib.mkIf pkgs.stdenv.isLinux {
-        # User-level service: fires at graphical session start (login/boot).
-        home-manager.users.${config.nx.username}.systemd.user.services.flake-update-notifier = {
-          Unit = {
-            Description = "Check if flake.lock is up to date";
-            After = [ "graphical-session.target" ];
-          };
-          Service = {
-            Type = "oneshot";
-            # Short delay so the notification daemon is ready before we fire.
-            ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
-            ExecStart = "${check-script}";
-          };
-          Install = {
-            WantedBy = [ "graphical-session.target" ];
+        home-manager.users.${config.nx.username} = {
+          # Ensure the NixOS snowflake icon theme is present so notify-send can
+          # resolve the `nix-snowflake` icon name at runtime.
+          home.packages = [ pkgs.nixos-icons ];
+
+          # User-level service: fires at graphical session start (login/boot).
+          systemd.user.services.flake-update-notifier = {
+            Unit = {
+              Description = "Check if flake.lock is up to date";
+              After = [ "graphical-session.target" ];
+            };
+            Service = {
+              Type = "oneshot";
+              # Short delay so the notification daemon is ready before we fire.
+              ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
+              ExecStart = "${check-script}";
+            };
+            Install = {
+              WantedBy = [ "graphical-session.target" ];
+            };
           };
         };
 
