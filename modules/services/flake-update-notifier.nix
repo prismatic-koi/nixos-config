@@ -48,24 +48,26 @@ in
     lib.mkMerge [
       # ── Linux ──────────────────────────────────────────────────────────────
       (lib.mkIf pkgs.stdenv.isLinux {
-        # Ensure the NixOS snowflake icon theme is present so notify-send can
-        # resolve the `nix-snowflake` icon name at runtime.
-        home-manager.users.${config.nx.username}.home.packages = [ pkgs.nixos-icons ];
+        home-manager.users.${config.nx.username} = {
+          # Ensure the NixOS snowflake icon theme is present so notify-send can
+          # resolve the `nix-snowflake` icon name at runtime.
+          home.packages = [ pkgs.nixos-icons ];
 
-        # User-level service: fires at graphical session start (login/boot).
-        home-manager.users.${config.nx.username}.systemd.user.services.flake-update-notifier = {
-          Unit = {
-            Description = "Check if flake.lock is up to date";
-            After = [ "graphical-session.target" ];
-          };
-          Service = {
-            Type = "oneshot";
-            # Short delay so the notification daemon is ready before we fire.
-            ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
-            ExecStart = "${check-script}";
-          };
-          Install = {
-            WantedBy = [ "graphical-session.target" ];
+          # User-level service: fires at graphical session start (login/boot).
+          systemd.user.services.flake-update-notifier = {
+            Unit = {
+              Description = "Check if flake.lock is up to date";
+              After = [ "graphical-session.target" ];
+            };
+            Service = {
+              Type = "oneshot";
+              # Short delay so the notification daemon is ready before we fire.
+              ExecStartPre = "${pkgs.coreutils}/bin/sleep 5";
+              ExecStart = "${check-script}";
+            };
+            Install = {
+              WantedBy = [ "graphical-session.target" ];
+            };
           };
         };
 
