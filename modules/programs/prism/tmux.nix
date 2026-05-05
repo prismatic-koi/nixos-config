@@ -116,8 +116,16 @@ in
             # tmux
             ''
               # appearance
-              set -g extended-keys on
-              set -g extended-keys-format csi-u
+              # extended-keys intentionally omitted. Setting it on globally
+              # causes kitty to encode escape as \x1b[27u (CSI-u), which
+              # opencode's Bubble Tea TUI does not handle — escape keypresses
+              # are silently swallowed in all panes. The PI TUI warns about
+              # this setting being absent, but the warning is cosmetic: PI
+              # works correctly without it. In sandboxed sessions $TMUX is
+              # stripped from the environment so PI's check returns early
+              # without warning. In host-mode PI sessions the warning appears
+              # but can be ignored.
+
               set -g status-interval 5
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
@@ -129,7 +137,16 @@ in
               set -g status-left-style 'bg=${bg1} fg=${secondary}'
               set -g status-right-style 'bg=${bg1} fg=${primary}'
               # for kitty images in image.nvim
-              set -gq allow-passthrough on
+              # Darwin: disable allow-passthrough to prevent opencode's Bubble
+              # Tea TUI from pushing kitty keyboard protocol (\x1b[>31u)
+              # directly to kitty via the passthrough channel. With passthrough
+              # enabled, kitty encodes escape as \x1b[27u (CSI-u) which
+              # opencode doesn't recognise — escape keypresses are silently
+              # swallowed. On NixOS/bwrap this is not needed because bwrap's
+              # intermediate PTY prevents the passthrough from reaching kitty.
+              # TODO: replace with per-window passthrough control so inline
+              # image display can be re-enabled for non-agent windows.
+              ${if isDarwin then "set -gq allow-passthrough off" else "set -gq allow-passthrough on"}
               # sensible debugging behavior
               set -g remain-on-exit on
               # Enable OSC 52 clipboard passthrough so opencode running inside a
