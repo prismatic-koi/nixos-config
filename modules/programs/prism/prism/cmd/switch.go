@@ -476,7 +476,7 @@ var switchCmd = &cobra.Command{
 			return ensureAndSwitch("[scratchpad]", "", opts)
 
 		case "[+ clone repo]":
-			return handleCloneRepo(pf, opts, isoCaps)
+			return handleCloneRepo(pf, opts, isoCaps, cfg)
 
 		default:
 			p := chosen.path

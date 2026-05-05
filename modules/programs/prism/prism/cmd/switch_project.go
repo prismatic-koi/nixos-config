@@ -460,7 +460,7 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 
 // ── clone repo ────────────────────────────────────────────────────────────────
 
-func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities) error {
+func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
 	repoURL := promptInput("clone url> ")
 	if repoURL == "" {
 		return nil
@@ -491,13 +491,18 @@ func handleCloneRepo(pf *config.ProfilesFile, opts session.Opts, isoCaps contain
 	if len(worktrees) == 0 {
 		return fmt.Errorf("clone succeeded but no worktrees found in %s", targetDir)
 	}
-	if isoCaps.NeedsConfigBlob && pf != nil {
+	// Apply per-path isolation override for the cloned worktree. In practice
+	// the worktree lives under a project location (e.g. ~/code/<name>/main)
+	// and is unlikely to match an override key, but the check is applied
+	// consistently at every session-creation entry point.
+	effIso, effCaps := applyPathIsolationOverride(worktrees[0], cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps, pf)
+	if effCaps.NeedsConfigBlob && pf != nil {
 		if err := injectContainerConfig(worktrees[0], pf, &opts, "prism switch"); err != nil {
 			return err
 		}
 	}
-	if isoCaps.NeedsConfigBlob {
-		if err := writeHarnessConfigBlobFor(config.IsolationMode(opts.IsolationMode), session.NameFor(worktrees[0], targetDir), opts.ConfigContent, "switch"); err != nil {
+	if effCaps.NeedsConfigBlob {
+		if err := writeHarnessConfigBlobFor(effIso, session.NameFor(worktrees[0], targetDir), opts.ConfigContent, "switch"); err != nil {
 			return err
 		}
 	}

@@ -344,6 +344,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Resolve the effective isolation mode. This validates --isolation
 	// and falls back to config.json.
 	// Done BEFORE any side effects (no worktree, no tmux session, no DB row).
+	//
+	// Note: project_isolation_overrides is intentionally NOT consulted here.
+	// prism spawn creates a new worktree in a git repo and should respect the
+	// explicit --isolation flag and machine default only. The per-path override
+	// is applied by prism switch (opening an existing path) and prism restore
+	// (re-creating a session for a stored path). This matches the edge-case AC
+	// in issue #1404: "prism spawn from inside a session does not consult
+	// project_isolation_overrides — it uses the caller's isolation mode
+	// resolution path unchanged."
 	isolationMode, err := resolveIsolationMode(cmd, cfg)
 	if err != nil {
 		return err
