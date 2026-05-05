@@ -157,16 +157,26 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		}
 	}
 
-	// Copy auth.json, settings.json, and themes/ from ~/.pi/agent/ into the
-	// staging directory. Each copy is best-effort and silent when the source
-	// does not exist — PI can start without auth (e.g. auth not yet set up).
+	// Symlink auth.json from the staging dir to the real ~/.pi/agent/auth.json.
+	// This allows OAuth token refreshes performed inside the sandbox to be
+	// written back to the host file (a copy would be stale after refresh).
+	// The symlink is created even when the target does not exist yet (a
+	// dangling symlink is fine — PI will prompt for login). Non-fatal if
+	// symlinking fails for any reason.
+	if home, err := os.UserHomeDir(); err == nil {
+		authTarget := filepath.Join(home, ".pi", "agent", "auth.json")
+		authLink := filepath.Join(stagingDir, "auth.json")
+		_ = os.Symlink(authTarget, authLink)
+	}
+
+	// Copy settings.json and themes/ from ~/.pi/agent/ into the staging
+	// directory. Each copy is best-effort and silent when the source does
+	// not exist — PI can start without them.
 	if home, err := os.UserHomeDir(); err == nil {
 		piAgentSrc := filepath.Join(home, ".pi", "agent")
-		for _, name := range []string{"auth.json", "settings.json"} {
-			src := filepath.Join(piAgentSrc, name)
-			dst := filepath.Join(stagingDir, name)
-			_ = copyFileIfExists(src, dst)
-		}
+		src := filepath.Join(piAgentSrc, "settings.json")
+		dst := filepath.Join(stagingDir, "settings.json")
+		_ = copyFileIfExists(src, dst)
 		themeSrc := filepath.Join(piAgentSrc, "themes")
 		themeDst := filepath.Join(stagingDir, "themes")
 		_ = copyDirIfExists(themeSrc, themeDst)
@@ -348,12 +358,21 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		args = append(args, "--dir", agentConfigSandboxDir)
 		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
-		// PI reads credentials from PI_AUTH_JSON. The staging dir bind-mount
-		// (above) places auth.json inside the sandbox at this path. Without
-		// this env var, pi falls back to ~/.pi/agent/auth.json which is never
-		// mounted into the bwrap sandbox.
-		args = append(args, "--setenv", "PI_AUTH_JSON",
-			filepath.Join(agentConfigSandboxDir, "auth.json"))
+	}
+
+	// ── PI auth.json bind-mount (read-write) ─────────────────────────────
+	// The staging dir contains a symlink <stagingDir>/auth.json →
+	// ~/.pi/agent/auth.json (created by StagePIAgentConfigDir). For the
+	// symlink to resolve inside the bwrap sandbox, the real file must also
+	// be bind-mounted at its host path. We use --bind (read-write) so that
+	// OAuth token refreshes performed inside the session are written back to
+	// the host file. The bind is only emitted when the file exists on the
+	// host — when it does not, pi prompts for login instead of crashing.
+	if home, err := os.UserHomeDir(); err == nil {
+		authPath := filepath.Join(home, ".pi", "agent", "auth.json")
+		if _, statErr := os.Stat(authPath); statErr == nil {
+			args = append(args, "--bind", authPath, authPath)
+		}
 	}
 
 	// ── Extension directory ──────────────────────────────────────────────────
