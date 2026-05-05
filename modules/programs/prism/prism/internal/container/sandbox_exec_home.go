@@ -524,12 +524,34 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// Symlink targets that fall under these prefixes are excluded from the
 	// allow-literal/subpath block to avoid the literal-over-subpath precedence
 	// issue in Apple's SBPL.
+	//
+	// allowedUnderDenied lists specific sub-paths that are carved out of the
+	// denied region. generateProfile emits explicit (allow file-read* (subpath
+	// ...)) rules for these after the broad deny, so it is safe for the
+	// per-symlink allow block to reference their targets.
+	// Concretely: ~/.aws/sso and ~/.aws/cli are carved out so that the staging
+	// HOME symlinks for those dirs produce per-symlink allow rules.
 	var deniedPrefixes []string
+	var allowedUnderDenied []string
 	if home != "" {
 		deniedPrefixes = append(deniedPrefixes, filepath.Join(home, ".aws")+"/")
+		// Carve sso/ and cli/ out of the denied region — generateProfile emits
+		// explicit (allow file-read* (subpath ~/.aws/sso)) and
+		// (allow file-read* (subpath ~/.aws/cli)) after the broad deny.
+		allowedUnderDenied = append(allowedUnderDenied,
+			filepath.Join(home, ".aws", "sso")+"/",
+			filepath.Join(home, ".aws", "cli")+"/",
+		)
 	}
 
 	isDenied := func(path string) bool {
+		// Check whether the path falls under any allowed carve-out first.
+		// If yes, it is not considered denied even if a broader deny prefix matches.
+		for _, allowed := range allowedUnderDenied {
+			if strings.HasPrefix(path+"/", allowed) || path == strings.TrimSuffix(allowed, "/") {
+				return false
+			}
+		}
 		for _, prefix := range deniedPrefixes {
 			if strings.HasPrefix(path+"/", prefix) || path == strings.TrimSuffix(prefix, "/") {
 				return true
