@@ -44,6 +44,8 @@ import {
   GIT_PUSH_REMINDER_MESSAGE,
   // turn_end signal resolver
   resolveTurnEndSignal,
+  // agent_end signal resolver
+  resolveAgentEndSignal,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1401,5 +1403,67 @@ describe("resolveTurnEndSignal — idle (non-stop reasons that are idle)", () =>
       resolveTurnEndSignal(undefined, false, false, false),
       "none",
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveAgentEndSignal (agent_end state-change resolver)
+// ---------------------------------------------------------------------------
+
+describe("resolveAgentEndSignal — review session + stopReason=stop", () => {
+  it("returns 'finished' for review session with stopReason=stop", () => {
+    // AC: review agent completes cleanly → session_shutdown must be emitted
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + stopReason=aborted", () => {
+  it("returns 'interrupted' for review session with stopReason=aborted", () => {
+    // AC: user abort → state_change:interrupted, no shutdown
+    assert.equal(resolveAgentEndSignal(true, "aborted"), "interrupted")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + stopReason=error", () => {
+  it("returns 'none' for review session with stopReason=error", () => {
+    // AC: error path is handled separately; agent_end must not emit shutdown
+    assert.equal(resolveAgentEndSignal(true, "error"), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — review session + unknown stopReason", () => {
+  it("returns 'none' for review session with unknown stopReason", () => {
+    assert.equal(resolveAgentEndSignal(true, "toolUse"), "none")
+  })
+
+  it("returns 'none' for review session with undefined stopReason", () => {
+    assert.equal(resolveAgentEndSignal(true, undefined), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — non-review session (always no-op)", () => {
+  it("returns 'none' for non-review session with stopReason=stop", () => {
+    // AC: non-review sessions use the turn_end → isIdle path; agent_end is a no-op
+    assert.equal(resolveAgentEndSignal(false, "stop"), "none")
+  })
+
+  it("returns 'none' for non-review session with stopReason=aborted", () => {
+    assert.equal(resolveAgentEndSignal(false, "aborted"), "none")
+  })
+
+  it("returns 'none' for non-review session with stopReason=error", () => {
+    assert.equal(resolveAgentEndSignal(false, "error"), "none")
+  })
+})
+
+describe("resolveAgentEndSignal — double-emission guard (sessionShutdownEmitted)", () => {
+  it("returns 'finished' for review + stop regardless of guard (guard is caller responsibility)", () => {
+    // The sessionShutdownEmitted guard is checked by the caller (the agent_end hook
+    // in the extension factory), not by this pure helper. Verify the helper itself
+    // consistently returns 'finished' for stop — the caller gates on the flag.
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+    // A second call still returns 'finished'; the factory will skip emission because
+    // sessionShutdownEmitted is already true in that code path.
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
   })
 })
