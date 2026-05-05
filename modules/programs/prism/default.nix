@@ -126,6 +126,20 @@
         };
       };
 
+      profile = {
+        default = lib.mkOption {
+          type = lib.types.enum (builtins.attrNames config.nx.programs.prism.profiles.data.profiles);
+          default = "anthropic";
+          description = ''
+            The system-wide default profile written as `default` in profiles.json.
+            This controls which profile is active when prism spawns a new session
+            and affects all harnesses (opencode, pi, etc.), not just opencode.
+            Changing this selects a different set of model assignments for all
+            session roles (coordinator, worker, explore, etc.).
+          '';
+        };
+      };
+
       # Internal computed values for submodules to use
       _internal = lib.mkOption {
         type = lib.types.attrs;
@@ -136,6 +150,22 @@
   };
 
   imports = [
+    (lib.mkRenamedOptionModule
+      [
+        "nx"
+        "programs"
+        "prism"
+        "opencode"
+        "provider"
+      ]
+      [
+        "nx"
+        "programs"
+        "prism"
+        "profile"
+        "default"
+      ]
+    )
     ./container-tokens.nix
     ./neovim
     ./opencode.nix
