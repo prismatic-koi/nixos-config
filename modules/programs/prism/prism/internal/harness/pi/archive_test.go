@@ -21,7 +21,7 @@ func TestArchiveAdapter_SourcePath_WithHarnessSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SourcePath: %v", err)
 	}
-	want := filepath.Join(home, ".local", "share", "pi", "sessions", "sess-abc-123")
+	want := filepath.Join(home, ".pi", "agent", "sessions", "sess-abc-123")
 	if got != want {
 		t.Errorf("SourcePath: want %q got %q", want, got)
 	}
@@ -36,7 +36,7 @@ func TestArchiveAdapter_SourcePath_EmptyHarnessSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SourcePath: %v", err)
 	}
-	want := filepath.Join(home, ".local", "share", "pi", "sessions")
+	want := filepath.Join(home, ".pi", "agent", "sessions")
 	if got != want {
 		t.Errorf("SourcePath (empty ID): want %q got %q", want, got)
 	}

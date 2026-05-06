@@ -65,7 +65,6 @@ const (
 //	--model    <cfg.PIModel>              (when non-empty)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
-//	--no-session                          (prism manages session state)
 //	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
 //
 // The system prompt is delivered via PI_CODING_AGENT_DIR (set in the bwrap
@@ -98,9 +97,6 @@ func PIInvocation(cfg Config) []string {
 	}
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
-
-	// PI manages its own session continuity; prism owns session state.
-	args = append(args, "--no-session")
 
 	if cfg.InitialPrompt != "" {
 		args = append(args, cfg.InitialPrompt)

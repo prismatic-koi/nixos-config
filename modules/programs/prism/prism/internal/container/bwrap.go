@@ -622,21 +622,17 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── PI session persistence dir (read-write, conditional, pi only) ────────
-	// PI stores session state as JSONL files at ~/.local/share/pi/sessions/
-	// <harness_session_id>/. This directory must be bind-mounted read-write so
-	// that PI can write session files inside the sandbox and the host-side
-	// archiver (internal/harness/pi/archive.go) can read them after the session
-	// exits. Currently PIInvocation always passes --no-session which suppresses
-	// PI's native session persistence, so no active writes occur — but the
-	// mount must be present for when --no-session is removed or made conditional.
-	// Without it, PI would get ENOENT writing sessions inside the sandbox and
-	// the host-side archiver would never see those files.
+	// PI stores OAuth session state at ~/.pi/agent/sessions/. This directory
+	// must be bind-mounted read-write so that PI can load existing OAuth tokens
+	// inside the sandbox and write back refreshed tokens. Without the mount,
+	// PI's anthropic-oauth extension receives null from getApiKey and the
+	// session fails with "No Anthropic auth available."
 	//
 	// Conditional: only emitted when the directory exists on the host. When
 	// absent (e.g. a fresh install before any PI session has run), the mount is
 	// silently omitted and the session starts normally.
 	if cfg.Harness == "pi" {
-		piSessionsDir := filepath.Join(home, ".local", "share", "pi", "sessions")
+		piSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
 		if _, err := os.Stat(piSessionsDir); err == nil {
 			args = append(args, "--bind", piSessionsDir, piSessionsDir)
 		}
