@@ -22,6 +22,7 @@ import { join } from "node:path"
 import {
   readCredentials,
   writeCredentials,
+  repairCredentials,
 } from "./credentials.ts"
 
 let tempDir: string
@@ -132,5 +133,98 @@ describe("writeCredentials", () => {
     writeCredentials({ accessToken: "z", refreshToken: "w", expiresAt: 0 })
     const data = JSON.parse(readFileSync(nested, "utf-8"))
     assert.equal(data.anthropic.access, "z")
+  })
+
+  it("writes type: 'oauth' in the anthropic entry", () => {
+    const expires = Date.now() + 3_600_000
+    writeCredentials({ accessToken: "a", refreshToken: "r", expiresAt: expires })
+
+    const data = JSON.parse(readFileSync(authJson, "utf-8"))
+    assert.equal(data.anthropic.type, "oauth")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// readCredentials back-compat: missing type field
+// ---------------------------------------------------------------------------
+
+describe("readCredentials back-compat", () => {
+  it("returns valid credentials when anthropic entry has no type field", () => {
+    const expires = Date.now() + 3_600_000
+    // Simulate a corrupted entry written by older versions of writeCredentials()
+    writeFileSync(
+      authJson,
+      JSON.stringify({
+        anthropic: { access: "acc", refresh: "ref", expires },
+      }),
+      "utf-8",
+    )
+    const creds = readCredentials()
+    assert.ok(creds !== null, "should return credentials even without type field")
+    assert.equal(creds.accessToken, "acc")
+    assert.equal(creds.refreshToken, "ref")
+    assert.equal(creds.expiresAt, expires)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// repairCredentials tests
+// ---------------------------------------------------------------------------
+
+describe("repairCredentials", () => {
+  it("adds type: 'oauth' to an anthropic entry that is missing it", () => {
+    const expires = Date.now() + 3_600_000
+    writeFileSync(
+      authJson,
+      JSON.stringify({
+        anthropic: { access: "acc", refresh: "ref", expires },
+        "github-copilot": { type: "oauth", refresh: "gh-ref" },
+      }),
+      "utf-8",
+    )
+
+    repairCredentials()
+
+    const data = JSON.parse(readFileSync(authJson, "utf-8"))
+    assert.equal(data.anthropic.type, "oauth")
+    // Original fields must be preserved
+    assert.equal(data.anthropic.access, "acc")
+    assert.equal(data.anthropic.refresh, "ref")
+    assert.equal(data.anthropic.expires, expires)
+    // Other top-level keys must be untouched
+    assert.deepEqual(data["github-copilot"], { type: "oauth", refresh: "gh-ref" })
+  })
+
+  it("leaves an anthropic entry that already has type: 'oauth' unchanged", () => {
+    const expires = Date.now() + 3_600_000
+    const original = {
+      anthropic: { type: "oauth", access: "acc", refresh: "ref", expires },
+    }
+    writeFileSync(authJson, JSON.stringify(original), "utf-8")
+
+    repairCredentials()
+
+    const data = JSON.parse(readFileSync(authJson, "utf-8"))
+    assert.equal(data.anthropic.type, "oauth")
+    assert.equal(data.anthropic.access, "acc")
+    assert.equal(data.anthropic.refresh, "ref")
+    assert.equal(data.anthropic.expires, expires)
+  })
+
+  it("is a no-op when auth.json is absent", () => {
+    // File doesn't exist — should not throw
+    assert.doesNotThrow(() => repairCredentials())
+  })
+
+  it("is a no-op when auth.json has no anthropic key", () => {
+    writeFileSync(
+      authJson,
+      JSON.stringify({ "github-copilot": { type: "oauth" } }),
+      "utf-8",
+    )
+    repairCredentials()
+    // File should be unchanged
+    const data = JSON.parse(readFileSync(authJson, "utf-8"))
+    assert.ok(!("anthropic" in data))
   })
 })

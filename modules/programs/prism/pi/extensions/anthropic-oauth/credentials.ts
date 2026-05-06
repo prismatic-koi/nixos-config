@@ -96,6 +96,7 @@ export function writeCredentials(creds: ClaudeCredentials): void {
   }
 
   existing.anthropic = {
+    type: "oauth",
     access: creds.accessToken,
     refresh: creds.refreshToken,
     expires: creds.expiresAt,
@@ -113,6 +114,43 @@ export function writeCredentials(creds: ClaudeCredentials): void {
     chmodSync(authPath, 0o600)
   }
   log("credentials_write_ok", { path: authPath })
+}
+
+/**
+ * One-time data repair: if auth.json contains an anthropic entry without
+ * type: "oauth", write it back with the field added. This self-heals existing
+ * installations that were corrupted by older versions of writeCredentials().
+ * Safe to call on every startup — a no-op when the entry is already correct
+ * or absent.
+ */
+export function repairCredentials(): void {
+  const authPath = getAuthJsonPath()
+  try {
+    if (!existsSync(authPath)) return
+    const raw = readFileSync(authPath, "utf-8").trim()
+    if (!raw) return
+    const data = JSON.parse(raw) as Record<string, unknown>
+    const provider = data.anthropic as Record<string, unknown> | undefined
+    if (!provider) return
+    if (provider.type === "oauth") return // already correct, nothing to do
+
+    // Entry exists but lacks type: "oauth" — repair it in place
+    log("credentials_repair", { path: authPath })
+    provider.type = "oauth"
+    writeFileSync(authPath, JSON.stringify(data, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    })
+    if (process.platform !== "win32") {
+      chmodSync(authPath, 0o600)
+    }
+    log("credentials_repair_ok", { path: authPath })
+  } catch (err) {
+    log("credentials_repair_error", {
+      path: authPath,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 /**
