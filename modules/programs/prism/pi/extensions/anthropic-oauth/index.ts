@@ -114,8 +114,11 @@ export default function (pi: ExtensionAPI) {
       login: loginAnthropic,
       // pi-specific: refreshToken is called by pi when tokens are near expiry
       refreshToken: refreshAnthropicToken,
-      // pi-specific: getApiKey extracts the bearer token from stored credentials
-      getApiKey: (credentials: OAuthCredentials) => credentials.access,
+      // pi-specific: getApiKey extracts the bearer token from stored credentials.
+      // Fall back to auth.json when the per-session credential store is empty
+      // (e.g. new bwrap sessions that have never run /login anthropic).
+      getApiKey: (credentials: OAuthCredentials) =>
+        credentials.access || getCachedCredentials()?.accessToken || null,
     } as unknown as ProviderConfig["oauth"],
 
     // pi-specific: streamSimple wraps the Anthropic messages endpoint with:
