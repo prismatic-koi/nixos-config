@@ -792,16 +792,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				}
 			}
 		}
-		// Validate harness before spawning. Default empty string to "opencode"
-		// for backwards compatibility with clients that don't send the field.
-		if req.Harness == "" {
-			req.Harness = "opencode"
-		}
-		if _, ok := harness.Lookup(req.Harness); !ok {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"unknown harness %q: valid harnesses: %s",
-				req.Harness, strings.Join(harness.Names(), ", ")))
-			return
+		// Validate harness before spawning. An empty string means the client
+		// did not pass --harness explicitly; the host-side spawn will derive
+		// the harness from the profile slot as designed (#1421). Only validate
+		// when the field is non-empty.
+		if req.Harness != "" {
+			if _, ok := harness.Lookup(req.Harness); !ok {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf(
+					"unknown harness %q: valid harnesses: %s",
+					req.Harness, strings.Join(harness.Names(), ", ")))
+				return
+			}
 		}
 		// Validate isolation server-side as defence-in-depth (the client
 		// already validated, but a non-prism client could send anything).
@@ -858,7 +859,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		for role, model := range modelsByRole {
 			args = append(args, "--model-override", role+"="+model)
 		}
-		args = append(args, "--harness", req.Harness)
+		// Only pass --harness when the client explicitly set it. When absent,
+		// the host-side spawn derives the harness from the profile slot (#1421).
+		if req.Harness != "" {
+			args = append(args, "--harness", req.Harness)
+		}
 		args = append(args, "--repo", ownRepo)
 
 		// Log without the prompt value — it may contain sensitive context.
@@ -889,7 +894,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		for role, model := range modelsByRole {
 			logArgs = append(logArgs, "--model-override", role+"="+model)
 		}
-		logArgs = append(logArgs, "--harness", req.Harness)
+		if req.Harness != "" {
+			logArgs = append(logArgs, "--harness", req.Harness)
+		}
 		logArgs = append(logArgs, "--repo", ownRepo)
 		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
