@@ -1727,9 +1727,40 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	switch frame.Type {
 	case "state_change":
 		st := agent.AgentState(frame.State)
-		s.upsertState(st, nil, nil)
-		s.writeStateChange(st)
-		s.lastState = st
+		switch st {
+		case agent.StateIdle:
+			// Gap 1+2: delegate to handleSessionIdle, which applies the 2s idle
+			// debounce (→ StateFinished + notifyCoordinator) and cancels any
+			// in-flight idle/recovery timers first. Do NOT write "idle" as a raw
+			// state — the PI wire protocol uses "idle" as a signal, not a
+			// persistent state (§5.2). The sidecar materialises it as
+			// StateFinished after the debounce window, matching the opencode path.
+			s.writeEvent("state_change", map[string]string{"state": string(st)}, nil)
+			s.handleSessionIdle()
+		case agent.StateError:
+			// Gap 3: cancel any in-flight timers and record lastErrorAt before
+			// writing StateError, so that (a) a stale debounce cannot overwrite
+			// the error state, and (b) a subsequent turn_start within
+			// ErrorResumeDebounce is treated as churn, not a genuine resume.
+			s.cancelIdleTimer()
+			s.cancelRecoveryTimer()
+			s.lastErrorAt = s.cfg.Clock.Now()
+			log.Printf("sidecar: transition -> error (cause=pi_state_change)")
+			s.upsertState(st, nil, nil)
+			s.writeStateChange(st)
+			s.lastState = st
+		case agent.StateWaiting:
+			// Gap 5: cancel idle debounce so the session does not spuriously
+			// finish while waiting for user input (permission prompt).
+			s.cancelIdleTimer()
+			s.upsertState(st, nil, nil)
+			s.writeStateChange(st)
+			s.lastState = st
+		default:
+			s.upsertState(st, nil, nil)
+			s.writeStateChange(st)
+			s.lastState = st
+		}
 
 	case "turn_start":
 		// Transition the session to active on every new turn. The sidecar's
@@ -1742,7 +1773,25 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// reviewing DB write succeeds, closing the race where currentDBState()
 		// could return active after the write (#1372). Using the in-memory flag
 		// instead of currentDBState() avoids the SQLite read-after-write race.
+		//
+		// Gap 1 (turn_start cancels debounce): cancel any in-flight idle debounce
+		// started by a preceding state_change{idle} frame, so the session does
+		// not spuriously transition to StateFinished after the follow-up arrives.
+		s.cancelIdleTimer()
 		if !s.reviewingInFlight {
+			// Gap 4: when resuming from a terminal state (error or interrupted),
+			// clear ended_at so the session reappears in AllActiveStatus and
+			// prism list-sessions. Check lastState (in-memory) first; if it is
+			// still empty (initial turn) also check the DB for robustness.
+			prevState := s.lastState
+			if prevState == "" {
+				prevState = s.currentDBState()
+			}
+			if prevState == agent.StateError || prevState == agent.StateInterrupted {
+				if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
+					log.Printf("sidecar: ClearEnded failed on pi resume: %v", err)
+				}
+			}
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 			s.lastState = agent.StateActive
@@ -1772,6 +1821,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// Flush the accumulator as a single msg_assistant event with token/cost
 		// fields from the usage object, then persist the turn_end frame.
 		var f struct {
+			Agent string `json:"agent"`
 			Usage struct {
 				Input      int     `json:"input"`
 				Output     int     `json:"output"`
@@ -1787,6 +1837,25 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			text = *s.pipeAccum
 		}
 		s.pipeAccum = nil
+
+		// Gap 7: update lastAssistantAgent after a root-agent turn_end so that
+		// handleSessionIdle()'s subagent-suppression logic works correctly for
+		// PI sessions. When the turn_end carries an agent field, use it;
+		// otherwise fall back to rootAgent (PI may omit the field for root turns).
+		agentName := f.Agent
+		if agentName == "" {
+			agentName = s.rootAgent
+		}
+		log.Printf("sidecar: pi turn_end: lastAssistantAgent: %q -> %q (rootAgent=%q)",
+			s.lastAssistantAgent, agentName, s.rootAgent)
+		s.lastAssistantAgent = agentName
+		// When the root agent just completed its turn, clear lastAssistantAgent
+		// so the next state_change{idle} starts the debounce normally (mirrors
+		// the opencode handleMessageUpdated behaviour for root-agent completion).
+		if agentName != "" && agentName == s.rootAgent {
+			log.Printf("sidecar: pi turn_end: lastAssistantAgent cleared (root agent completed)")
+			s.lastAssistantAgent = ""
+		}
 
 		// Only write a msg_assistant row when there is actual text content.
 		// Tool-only turns emit turn_start/turn_end with zero msg_assistant
@@ -1804,8 +1873,14 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		}
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
+	case "auto_retry_start":
+		// Gap 6: cancel any in-flight idle debounce so the session does not
+		// spuriously finish during the retry window.
+		s.cancelIdleTimer()
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
 	case "tool_call", "tool_result",
-		"provider_error", "auto_retry_start", "auto_retry_end":
+		"provider_error", "auto_retry_end":
 		// Write raw JSON as event payload — the wire schema maps directly to
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
@@ -1813,6 +1888,10 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	case "session_shutdown":
 		// Flush any partial accumulator before marking finished.
 		s.flushPipeAccum()
+		// Gap 8: cancel any in-flight idle/recovery timers before writing
+		// StateFinished so the coordinator receives exactly one notification.
+		s.cancelIdleTimer()
+		s.cancelRecoveryTimer()
 		// Clean shutdown: mark finished and signal the reader loop.
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)

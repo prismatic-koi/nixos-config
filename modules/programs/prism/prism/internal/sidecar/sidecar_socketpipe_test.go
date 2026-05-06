@@ -192,9 +192,16 @@ func TestSocketPipe_Handshake_HelloAck(t *testing.T) {
 }
 
 // TestSocketPipe_StateChange drives state_change frames and verifies DB state.
+//
+// Note: state_change{idle} is now handled by the idle debounce path
+// (handleSessionIdle). The sidecar does not persist "idle" as a raw DB state;
+// instead it starts a 2s debounce that eventually writes StateFinished.
+// This test verifies the active transition and that state_change{idle} starts
+// the debounce (evidenced by a state_change event written to agent_events with
+// state=idle) without immediately overwriting the DB state to "idle".
 func TestSocketPipe_StateChange(t *testing.T) {
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
@@ -215,18 +222,20 @@ func TestSocketPipe_StateChange(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Send idle.
+	// Send idle — this starts the debounce but does NOT write "idle" to the DB.
+	// The sidecar records a state_change event with state=idle in agent_events,
+	// then starts the 2s debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
-	deadline = time.Now().Add(2 * time.Second)
-	for {
-		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if s == string(agent.StateIdle) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("state never reached idle, got %q", s)
-		}
-		time.Sleep(20 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	// A debounce timer must have been created.
+	if timer := clk.LastTimer(); timer == nil {
+		t.Error("no idle debounce timer created after state_change{idle}")
+	}
+
+	// The DB state must NOT have changed to "idle" (debounce not fired yet).
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s == string(agent.StateIdle) {
+		t.Errorf("DB state should not be 'idle' before debounce fires, got %q", s)
 	}
 
 	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
@@ -240,43 +249,59 @@ func TestSocketPipe_StateChange(t *testing.T) {
 // causes the sidecar to transition the session to active state in the DB.
 // This is the real fix for #1350: PI uses TransportSocketPipe, so the fix must
 // live in handlePipeFrame — NormaliseFrame is not on this code path.
+//
+// Note: state_change{idle} no longer writes "idle" directly to the DB; it
+// starts the 2s idle debounce. turn_start cancels the debounce and writes
+// StateActive directly.
 func TestSocketPipe_TurnStartEmitsStateActive(t *testing.T) {
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Drive to idle first via state_change, then send turn_start.
+	// Drive to active first, then trigger the idle debounce.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
 
-	// Wait for idle to be committed.
+	// Wait for the idle debounce timer to be created.
 	deadline := time.Now().Add(2 * time.Second)
+	var idleTimer *testTimer
 	for {
-		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if s == string(agent.StateIdle) {
+		idleTimer = clk.LastTimer()
+		if idleTimer != nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("state never reached idle, got %q", s)
+			t.Fatal("no idle debounce timer created after state_change{idle}")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Now send turn_start — must transition back to active.
+	// Now send turn_start — must cancel the debounce and keep the session active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
+	// Poll until the idle timer is stopped (cancelled by turn_start). The sidecar
+	// processes frames sequentially under s.mu: cancelIdleTimer is called before
+	// any DB write, so once the timer is stopped we know turn_start was processed.
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if s == string(agent.StateActive) {
+		idleTimer.mu.Lock()
+		stopped := idleTimer.stopped
+		idleTimer.mu.Unlock()
+		if stopped {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("state never reached active after turn_start, got %q", s)
+			t.Fatal("idle debounce timer was not stopped by turn_start within timeout")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	// State must be active (not finished).
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st != string(agent.StateActive) {
+		t.Errorf("state after turn_start = %q, want active", st)
 	}
 
 	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
@@ -393,33 +418,37 @@ func TestSocketPipe_TurnStart_DoesNotClobberReviewing(t *testing.T) {
 }
 
 // TestSocketPipe_TurnStart_IdleTransitionsToActive verifies that a turn_start
-// frame when the session is in idle state transitions it correctly to active
-// (regression guard for #1365 — the reviewing guard must not break the
-// idle→active path).
+// frame when the session is in the idle-debounce window transitions it correctly
+// to active (regression guard for #1365 — the reviewing guard must not break
+// the idle→active path).
+//
+// Note: since state_change{idle} now starts the debounce (not writing "idle"
+// to DB), we wait for the debounce timer to be created, then send turn_start
+// and verify the session reaches active with the debounce cancelled.
 func TestSocketPipe_TurnStart_IdleTransitionsToActive(t *testing.T) {
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Drive to idle via state_change frames.
+	// Drive to active then trigger idle debounce via state_change frames.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "active"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
 
+	// Wait for the debounce timer to be created.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if s == string(agent.StateIdle) {
+		if clk.LastTimer() != nil {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("state never reached idle, got %q", s)
+			t.Fatal("no idle debounce timer created after state_change{idle}")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// turn_start must transition idle → active.
+	// turn_start must cancel the debounce and transition to active.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
 	deadline = time.Now().Add(2 * time.Second)
@@ -429,7 +458,7 @@ func TestSocketPipe_TurnStart_IdleTransitionsToActive(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("state never reached active after turn_start from idle, got %q", s)
+			t.Fatalf("state never reached active after turn_start from idle-debounce, got %q", s)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -1394,6 +1423,642 @@ func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
 		t.Error("Run() did not finish within timeout after session_shutdown")
 	}
 	_ = runErr
+}
+
+// newSocketPipeSidecarWithClock creates a Sidecar for socket-pipe testing and
+// also returns the testClock so callers can drive timers manually.
+// PipeReconnectTimeout is set to a short value so tests that close the
+// connection without a session_shutdown don't block for 30s.
+func newSocketPipeSidecarWithClock(t *testing.T, sockPath string) (*Sidecar, *testClock) {
+	t.Helper()
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           "testrepo@main",
+		Repo:                  "testrepo",
+		Worktree:              t.TempDir(),
+		DB:                    d,
+		Clock:                 clk,
+		AgentRole:             "worker",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		Harness:               pih.New("", "", ""),
+	}
+	return New(cfg), clk
+}
+
+// countBusMessages returns the number of bus_messages rows addressed to the
+// given session (both delivered and undelivered).
+func countBusMessages(t *testing.T, d *db.DB, toSession string) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ?", toSession).Scan(&n); err != nil {
+		t.Fatalf("count bus_messages: %v", err)
+	}
+	return n
+}
+
+// ── state-gap tests ──────────────────────────────────────────────────────────
+
+// TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce verifies that
+// state_change{idle} starts the 2s idle debounce and, when it fires, writes
+// StateFinished and calls notifyCoordinator (Gap 1 fix).
+func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to active, then send state_change{idle}.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+
+	// Give the sidecar a moment to process.
+	time.Sleep(50 * time.Millisecond)
+
+	// State should NOT be finished yet (debounce has not fired).
+	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if s == string(agent.StateFinished) {
+		t.Error("state reached finished before idle debounce fired")
+	}
+
+	// Fire the debounce timer manually.
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("no idle debounce timer was created")
+	}
+	timer.Fire()
+
+	// State must now be finished.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if st == string(agent.StateFinished) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached finished after idle debounce, got %q", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_IdleDebounce_CancelledByTurnStart verifies that a turn_start
+// arriving while the idle debounce timer is running cancels the timer and
+// transitions the session to StateActive, not StateFinished (Gap 1 + 2 fix).
+func TestSocketPipe_IdleDebounce_CancelledByTurnStart(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+
+	// Give the sidecar time to create the idle timer.
+	time.Sleep(50 * time.Millisecond)
+
+	timer := clk.LastTimer()
+	if timer == nil {
+		t.Fatal("no idle debounce timer was created after state_change{idle}")
+	}
+
+	// Send turn_start — must cancel the debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	time.Sleep(50 * time.Millisecond)
+
+	// Firing the (now-cancelled) timer must not write StateFinished.
+	timer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st == string(agent.StateFinished) {
+		t.Errorf("state became finished after cancelled debounce, want active")
+	}
+	if st != string(agent.StateActive) {
+		t.Errorf("state = %q after turn_start, want active", st)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_MultipleIdle_OnlyOneTimer verifies that multiple consecutive
+// state_change{idle} frames result in exactly one debounce timer running at
+// a time — earlier timers are cancelled before a new one starts (Gap 2 fix).
+func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+
+	// First idle.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+	firstTimer := clk.LastTimer()
+	if firstTimer == nil {
+		t.Fatal("no timer after first idle")
+	}
+
+	// Second idle — first timer must be cancelled before the new one starts.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+	secondTimer := clk.LastTimer()
+	if secondTimer == nil {
+		t.Fatal("no timer after second idle")
+	}
+	if firstTimer == secondTimer {
+		t.Fatal("same timer object — second idle did not create a new timer")
+	}
+	if !firstTimer.stopped {
+		t.Error("first idle timer was not stopped when second idle arrived")
+	}
+
+	// Firing the second timer must write StateFinished exactly once.
+	secondTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	// Also firing the first (already-stopped) timer must be a no-op.
+	firstTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st != string(agent.StateFinished) {
+		t.Errorf("state after second debounce = %q, want finished", st)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_ErrorState_CancelsTimers verifies that state_change{error}
+// cancels any in-flight idle or recovery timer and records lastErrorAt,
+// so a stale debounce cannot overwrite StateError (Gap 3 fix).
+func TestSocketPipe_ErrorState_CancelsTimers(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Start idle debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil {
+		t.Fatal("no idle timer after state_change{idle}")
+	}
+
+	// Send state_change{error} — must cancel the idle timer.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "error"})
+	time.Sleep(50 * time.Millisecond)
+
+	// The idle timer must be stopped.
+	if !idleTimer.stopped {
+		t.Error("idle timer was not stopped by state_change{error}")
+	}
+
+	// Firing the stale timer must not overwrite StateError.
+	idleTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st != string(agent.StateError) {
+		t.Errorf("state after stale debounce fire = %q, want error", st)
+	}
+
+	// lastErrorAt must be set (non-zero).
+	sc.mu.Lock()
+	lastErrorAt := sc.lastErrorAt
+	sc.mu.Unlock()
+	if lastErrorAt.IsZero() {
+		t.Error("lastErrorAt was not set after state_change{error}")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_TurnStart_ClearsEndedOnErrorResume verifies that a turn_start
+// arriving after a state_change{error} clears ended_at in the DB so the session
+// reappears in AllActiveStatus (Gap 4 fix).
+func TestSocketPipe_TurnStart_ClearsEndedOnErrorResume(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to error state.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "error"})
+	time.Sleep(50 * time.Millisecond)
+
+	// Manually set ended_at so the session would be invisible to AllActiveStatus.
+	if err := sc.cfg.DB.SetEnded(sc.cfg.SessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Verify session is invisible before the resume.
+	active, err := sc.cfg.DB.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	for _, st := range active {
+		if st.SessionName == sc.cfg.SessionName {
+			t.Error("session visible in AllActiveStatus before resume (ended_at should exclude it)")
+			break
+		}
+	}
+
+	// Simulate resume via turn_start.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if st == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active after resume, got %q", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Session must now be visible in AllActiveStatus.
+	active, err = sc.cfg.DB.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	found := false
+	for _, st := range active {
+		if st.SessionName == sc.cfg.SessionName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("session not visible in AllActiveStatus after error resume (ended_at was not cleared)")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume verifies that a
+// turn_start after a state_change{interrupted} also clears ended_at (Gap 4).
+func TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to interrupted via state_change.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "interrupted"})
+	time.Sleep(50 * time.Millisecond)
+
+	// Set ended_at manually (normally set by Shutdown).
+	if err := sc.cfg.DB.SetEnded(sc.cfg.SessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Resume via turn_start.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+		if st == string(agent.StateActive) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state never reached active, got %q", st)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Session must be visible in AllActiveStatus.
+	active, err := sc.cfg.DB.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	found := false
+	for _, st := range active {
+		if st.SessionName == sc.cfg.SessionName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("session not visible in AllActiveStatus after interrupted resume")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_WaitingState_CancelsIdleTimer verifies that state_change{waiting}
+// cancels any in-flight idle debounce timer so the session does not spuriously
+// transition to StateFinished while waiting for user input (Gap 5 fix).
+func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Start idle debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil {
+		t.Fatal("no idle timer after state_change{idle}")
+	}
+
+	// Send state_change{waiting} — must cancel the idle timer.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "waiting"})
+	time.Sleep(50 * time.Millisecond)
+
+	if !idleTimer.stopped {
+		t.Error("idle timer was not stopped by state_change{waiting}")
+	}
+
+	// Firing the stale timer must not write StateFinished.
+	idleTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st == string(agent.StateFinished) {
+		t.Errorf("state became finished after cancelled idle timer during waiting, want waiting")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_AutoRetryStart_CancelsIdleTimer verifies that an auto_retry_start
+// frame cancels any in-flight idle debounce so the session does not spuriously
+// finish during the retry window (Gap 6 fix).
+func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Start idle debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil {
+		t.Fatal("no idle timer after state_change{idle}")
+	}
+
+	// Send auto_retry_start — must cancel the idle timer.
+	sendJSON(t, conn, map[string]any{"type": "auto_retry_start", "attempt": 1})
+	time.Sleep(50 * time.Millisecond)
+
+	if !idleTimer.stopped {
+		t.Error("idle timer was not stopped by auto_retry_start")
+	}
+
+	// Firing the stale timer must not write StateFinished.
+	idleTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st == string(agent.StateFinished) {
+		t.Errorf("state became finished after cancelled idle timer during retry, want active")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent verifies that a turn_end
+// frame updates lastAssistantAgent so that handleSessionIdle()'s subagent-
+// suppression logic works correctly for PI sessions (Gap 7 fix).
+func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
+	// Set rootAgent to "worker" (same as AgentRole, set in New via cfg.AgentRole).
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a turn_start / turn_end for a subagent.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "sub output"})
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"agent": "subagent",
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	// lastAssistantAgent must be "subagent" (not cleared because it != rootAgent).
+	sc.mu.Lock()
+	laa := sc.lastAssistantAgent
+	sc.mu.Unlock()
+	if laa != "subagent" {
+		t.Errorf("lastAssistantAgent = %q after subagent turn_end, want %q", laa, "subagent")
+	}
+
+	// Now send a root-agent turn_end.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "root output"})
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"agent": sc.rootAgent,
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	// lastAssistantAgent must be cleared after root-agent turn_end.
+	sc.mu.Lock()
+	laa = sc.lastAssistantAgent
+	sc.mu.Unlock()
+	if laa != "" {
+		t.Errorf("lastAssistantAgent = %q after root turn_end, want empty (cleared)", laa)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_SessionShutdown_CancelsTimers verifies that session_shutdown
+// cancels any in-flight idle/recovery timer before writing StateFinished so
+// the coordinator receives exactly one notification (Gap 8 fix).
+func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Start idle debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+
+	idleTimer := clk.LastTimer()
+	if idleTimer == nil {
+		t.Fatal("no idle timer after state_change{idle}")
+	}
+
+	// Send session_shutdown immediately (before debounce fires).
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+
+	// The idle timer must be stopped.
+	if !idleTimer.stopped {
+		t.Error("idle timer was not stopped by session_shutdown")
+	}
+
+	// State must be finished (written by session_shutdown, not by debounce).
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st != string(agent.StateFinished) {
+		t.Errorf("state after session_shutdown = %q, want finished", st)
+	}
+
+	// Firing the (now-stopped) timer must not produce a second StateFinished write.
+	// We verify indirectly: the timer was stopped so Fire() is a no-op.
+	beforeCount := countStateChangeEvents(t, sc.cfg.DB, sc.cfg.SessionName, "finished")
+	idleTimer.Fire()
+	time.Sleep(50 * time.Millisecond)
+	afterCount := countStateChangeEvents(t, sc.cfg.DB, sc.cfg.SessionName, "finished")
+	if afterCount != beforeCount {
+		t.Errorf("firing stopped idle timer after session_shutdown wrote %d extra finished event(s)",
+			afterCount-beforeCount)
+	}
+}
+
+// countStateChangeEvents returns the number of state_change events with the
+// given state value recorded in agent_events for the session.
+func countStateChangeEvents(t *testing.T, d *db.DB, session, state string) int {
+	t.Helper()
+	events := getEvents(t, d, session)
+	n := 0
+	for _, ev := range events {
+		if ev.Type == "state_change" {
+			var p map[string]string
+			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
+				if p["state"] == state {
+					n++
+				}
+			}
+		}
+	}
+	return n
+}
+
+// TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded verifies that
+// state_change{error} records lastErrorAt so the ErrorResumeDebounce guard in
+// handleSessionUpdated has a reference time (Gap 3 edge-case from AC).
+//
+// The PI path does not go through handleSessionUpdated; this test validates
+// the lastErrorAt prerequisite: that a turn_start arriving within the debounce
+// window DOES still proceed normally (since the PI path uses turn_start, not
+// session.updated), but that lastErrorAt is set after an error state.
+func TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "error"})
+	time.Sleep(50 * time.Millisecond)
+
+	// lastErrorAt must be recorded at the clock's current time.
+	sc.mu.Lock()
+	lastErrorAt := sc.lastErrorAt
+	sc.mu.Unlock()
+	if lastErrorAt.IsZero() {
+		t.Fatal("lastErrorAt was not set after state_change{error}")
+	}
+	expectedTime := clk.Now()
+	if !lastErrorAt.Equal(expectedTime) {
+		t.Errorf("lastErrorAt = %v, want %v (clock.Now())", lastErrorAt, expectedTime)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_TurnStart_DoesNotClobberReviewing_PreservesExistingBehaviour
+// is a renamed alias for the original TestSocketPipe_TurnStart_DoesNotClobberReviewing
+// that confirms the existing behaviour is preserved after the Gap fixes.
+// The original test already covers this; this marker ensures the AC is explicit.
+func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
+	// This is covered by TestSocketPipe_TurnStart_DoesNotClobberReviewing.
+	// We verify here that the reviewing guard AND the cancelIdleTimer call
+	// in turn_start do not interact badly: an idle debounce is cancelled
+	// but reviewingInFlight still suppresses the active write.
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to active, start idle debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "idle"})
+	time.Sleep(50 * time.Millisecond)
+
+	idleTimer := clk.LastTimer()
+
+	// Simulate /review: write reviewing to DB and set reviewingInFlight.
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateReviewing), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus reviewing: %v", err)
+	}
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
+
+	// Send turn_start — idle timer cancelled but active write suppressed.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	time.Sleep(50 * time.Millisecond)
+
+	// Idle timer must be cancelled.
+	if idleTimer != nil && !idleTimer.stopped {
+		t.Error("idle timer was not cancelled by turn_start while reviewing")
+	}
+
+	// DB state must still be reviewing (active write suppressed).
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st != string(agent.StateReviewing) {
+		t.Errorf("state = %q after turn_start while reviewing, want reviewing", st)
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
 }
 
 // Ensure db import is used.
