@@ -7,7 +7,7 @@
 //   - CLEAN   → gh pr merge --squash
 //   - BEHIND  → gh pr update-branch
 //   - DIRTY   → fail with "merge conflicts"
-//   - BLOCKED → fail on CI failure, keep watching otherwise
+//   - BLOCKED → fail on CI failure or review required, keep watching otherwise
 //   - Others  → keep watching (transient)
 //
 // On each terminal outcome (merged, failed, closed) a bus notification is
@@ -212,11 +212,13 @@ func (w *Watcher) tick(ctx context.Context) {
 		w.failAndNotify(head, "merge conflicts")
 
 	case "BLOCKED":
-		// Disambiguate: CI failure vs. still running / required review.
+		// Disambiguate: CI failure, review required, or still running.
 		if hasCIFailure(prInfo.StatusCheckRollup) {
 			w.failAndNotify(head, "CI failed")
+		} else if prInfo.ReviewDecision == "REVIEW_REQUIRED" {
+			w.failAndNotify(head, "human reviewer approval required before merge")
 		} else {
-			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure — staying watching", head.PR)
+			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or review requirement — staying watching", head.PR)
 		}
 
 	case "UNSTABLE", "UNKNOWN", "HAS_HOOKS", "DRAFT":
@@ -292,6 +294,8 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 		notifyText = fmt.Sprintf("PR #%d CI failed — needs worker fix", head.PR)
 	case "PR was closed without merging":
 		notifyText = fmt.Sprintf("PR #%d was closed without merging — removed from queue", head.PR)
+	case "human reviewer approval required before merge":
+		notifyText = fmt.Sprintf("PR #%d is blocked — human reviewer approval required before merge", head.PR)
 	default:
 		notifyText = fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	}
@@ -422,7 +426,7 @@ func buildNotifyBody(text string, status *db.Status) map[string]any {
 // the field list never regresses to use the (invalid) "merged" field again —
 // `gh pr view` rejects unknown JSON fields with a non-zero exit, so an invalid
 // field name silently breaks the entire merge-queue watcher (see #1014 fallout).
-const prInfoJSONFields = "state,mergedAt,mergeStateStatus,statusCheckRollup"
+const prInfoJSONFields = "state,mergedAt,mergeStateStatus,statusCheckRollup,reviewDecision"
 
 // prInfo holds the fields we care about from `gh pr view --json`.
 type prInfo struct {
@@ -430,6 +434,9 @@ type prInfo struct {
 	MergedAt          *string      `json:"mergedAt"`
 	MergeStateStatus  string       `json:"mergeStateStatus"`
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
+	// ReviewDecision is the PR's review decision from GitHub: "REVIEW_REQUIRED",
+	// "APPROVED", "CHANGES_REQUESTED", or "" (empty when no review policy exists).
+	ReviewDecision string `json:"reviewDecision"`
 }
 
 // isMerged reports whether the PR has been merged. `gh pr view` emits
