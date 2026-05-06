@@ -499,6 +499,55 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 	}
 }
 
+// TestSandboxExecIntegration_KeychainAPIAccessible verifies that the macOS
+// Keychain Services API (Mach IPC) is accessible from inside the sandbox-exec
+// profile. The test invokes /usr/bin/security find-generic-password for the
+// "Claude Code-credentials" service inside the sandbox and asserts that the
+// command does not fail with a sandbox deny.
+//
+// The Keychain API operates over Mach IPC (securityd/secd), not direct file
+// access. The SBPL profile grants mach-lookup and network*, so the API is
+// reachable from inside the sandbox even when direct file reads of
+// ~/Library/Keychains/ are denied (see TestSandboxExecIntegration_KeychainDenied).
+//
+// A missing Keychain entry (exit 44 from security, meaning "item not found")
+// is treated as a successful API call — the test skips gracefully when the
+// "Claude Code-credentials" entry is absent so that CI hosts without a Claude
+// login still pass. This is the regression guard ensuring that
+// opencode-claude-auth can call the Keychain API directly from inside the
+// sandbox (issue #1413).
+func TestSandboxExecIntegration_KeychainAPIAccessible(t *testing.T) {
+	if !sandboxExecAvailable() {
+		t.Skip("sandbox-exec not available")
+	}
+	if _, err := os.Stat("/usr/bin/security"); err != nil {
+		t.Skip("/usr/bin/security not present")
+	}
+
+	m, stagingHome := newIntegrationManager(t)
+	profilePath := writeProfileForIntegration(t, m)
+
+	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome),
+		"/usr/bin/security", "find-generic-password", "-l", "Claude Code-credentials", "-w")
+
+	// exit 0: credentials found — Keychain API accessible and entry present.
+	// exit 44: "item not found" — Keychain API accessible but entry absent.
+	// Any other exit (e.g. sandbox deny producing "Operation not permitted") is a failure.
+	const securityItemNotFound = 44
+	switch code {
+	case 0:
+		// Credentials retrieved successfully — Keychain API is accessible.
+	case securityItemNotFound:
+		// Entry absent from host Keychain. API is still accessible — skip so
+		// the test does not require a Claude login to pass.
+		t.Skipf("Claude Code-credentials entry absent from host Keychain — Keychain API is accessible inside sandbox (security exit 44); skipping")
+	default:
+		// Unexpected exit. A sandbox deny would produce "Operation not permitted"
+		// in stderr. Treat any other code as a failure.
+		t.Errorf("Keychain API call inside sandbox: expected exit 0 or 44 (item not found), got %d\noutput: %s\n(A sandbox deny produces 'Operation not permitted')", code, out)
+	}
+}
+
 // TestSandboxExecIntegration_DocumentsDenied verifies that a file under
 // ~/Documents is NOT readable from inside the sandbox (N5 in F.1 §3.2).
 func TestSandboxExecIntegration_DocumentsDenied(t *testing.T) {
