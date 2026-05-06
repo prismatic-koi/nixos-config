@@ -27,7 +27,7 @@ import {
   refreshAnthropicToken,
   isClaudeOAuthAccessToken,
 } from "./auth.ts"
-import { getCachedCredentials } from "./credentials.ts"
+import { getCachedCredentials, repairCredentials } from "./credentials.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@mariozechner/pi-ai"
 import { getModelBetas, getExcludedBetas } from "./betas.ts"
@@ -99,6 +99,8 @@ function getUserAgent(): string {
 export default function (pi: ExtensionAPI) {
   initLogger()
   log("extension_init", { version: config.ccVersion })
+
+  repairCredentials()
 
   ensureClaudeCodeSymlink()
   const models = getAnthropicModels()
