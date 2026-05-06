@@ -201,8 +201,12 @@ func (a *Adapter) ConfigEnvVar() string {
 }
 
 // RuntimeEnv returns additional environment variables needed by the PI process.
+// PI_OFFLINE=1 suppresses telemetry and update-check network calls, matching
+// the behaviour of the host shell alias that always sets this variable.
 func (a *Adapter) RuntimeEnv() map[string]string {
-	return map[string]string{}
+	return map[string]string{
+		"PI_OFFLINE": "1",
+	}
 }
 
 // ValidateAgentRole reports whether the given role is supported by PI.

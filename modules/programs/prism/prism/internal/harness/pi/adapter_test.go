@@ -8,6 +8,36 @@ import (
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
+// ── RuntimeEnv ────────────────────────────────────────────────────────────────
+
+func TestRuntimeEnv_ContainsPIOffline(t *testing.T) {
+	a := pi.New("", "", "")
+	env := a.RuntimeEnv()
+	if env == nil {
+		t.Fatal("RuntimeEnv() returned nil")
+	}
+	val, ok := env["PI_OFFLINE"]
+	if !ok {
+		t.Error("RuntimeEnv() missing PI_OFFLINE")
+	}
+	if val != "1" {
+		t.Errorf("PI_OFFLINE = %q, want %q", val, "1")
+	}
+}
+
+func TestRuntimeEnv_ReturnsNewMapEachCall(t *testing.T) {
+	a := pi.New("", "", "")
+	env1 := a.RuntimeEnv()
+	env2 := a.RuntimeEnv()
+	// Mutating the returned map should not affect subsequent calls.
+	env1["NEW_KEY"] = "value"
+	if _, ok := env2["NEW_KEY"]; ok {
+		t.Error("RuntimeEnv() returned the same map instance — mutations leak across calls")
+	}
+}
+
+// ── NormaliseFrame ────────────────────────────────────────────────────────────
+
 func TestNormaliseFrame_MsgAssistant(t *testing.T) {
 	a := pi.New("", "", "")
 	raw := []byte(`{"type":"message_complete","id":"msg-abc","role":"assistant","content":[{"type":"text","text":"Hello world"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":10,"cache_creation_input_tokens":5},"model":"claude-sonnet-4-5","provider":"anthropic","elapsed_ms":1234}`)
