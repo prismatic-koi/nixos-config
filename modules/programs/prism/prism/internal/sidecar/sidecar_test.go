@@ -6836,10 +6836,11 @@ echo "session \"${last}@harness-branch\" created"
 	}
 }
 
-// TestHostAPI_Spawn_MissingHarnessDefaultsToOpencode verifies that when the
-// harness field is absent from the request, the server defaults to "opencode"
-// and the spawn proceeds without error.
-func TestHostAPI_Spawn_MissingHarnessDefaultsToOpencode(t *testing.T) {
+// TestHostAPI_Spawn_MissingHarnessNotForwarded verifies that when the harness
+// field is absent from the request, the server does NOT pass --harness to the
+// host-side spawn. This allows the host-side spawn to derive the harness from
+// the profile slot as designed (#1421).
+func TestHostAPI_Spawn_MissingHarnessNotForwarded(t *testing.T) {
 	d := openTestDB(t)
 
 	argsFile := filepath.Join(t.TempDir(), "captured-args")
@@ -6867,20 +6868,21 @@ echo "session \"${last}@no-harness-branch\" created"
 	}
 	sc := New(cfg)
 
-	// No "harness" field in request body — must default to "opencode".
+	// No "harness" field in request body — host-side spawn must not receive --harness.
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
 		`{"branch":"no-harness-branch"}`)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 for missing harness (default opencode); body = %s", rr.Code, rr.Body.String())
+		t.Fatalf("status = %d, want 200 for missing harness; body = %s", rr.Code, rr.Body.String())
 	}
 
 	capturedArgs, err := os.ReadFile(argsFile)
 	if err != nil {
 		t.Fatalf("read captured args: %v", err)
 	}
-	// The spawned prism binary must have received --harness opencode.
-	if !strings.Contains(string(capturedArgs), "--harness opencode") {
-		t.Errorf("captured args %q do not contain '--harness opencode' (harness was not defaulted or forwarded)", string(capturedArgs))
+	// When harness is absent from the proxy request, --harness must NOT be forwarded
+	// so the host-side spawn can derive it from the profile slot (#1421).
+	if strings.Contains(string(capturedArgs), "--harness") {
+		t.Errorf("captured args %q contain '--harness' but harness was not sent in the proxy request body", string(capturedArgs))
 	}
 }
 

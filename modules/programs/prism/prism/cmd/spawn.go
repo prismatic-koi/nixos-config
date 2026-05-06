@@ -128,6 +128,8 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		return err
 	}
 
+	harnessChanged := cmd.Flags().Changed("harness")
+
 	// Abtest path: POST with abtest field and parse two session names from response.
 	if len(abtestFlag) == 2 {
 		var resp struct {
@@ -139,9 +141,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			"agent":                  agentFlag,
 			"model":                  modelFlag,
 			"variant":                variantFlag,
-			"harness":                harnessFlag,
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			"abtest":                 abtestFlag,
+		}
+		// Only forward "harness" when explicitly set. When absent, the host-side
+		// spawn derives the harness from the profile slot as designed (#1421).
+		if harnessChanged {
+			body["harness"] = harnessFlag
 		}
 		if isolationChanged {
 			body["isolation"] = isolationFlag
@@ -176,7 +182,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"profile":                profileFlag,
 		"model":                  modelFlag,
 		"variant":                variantFlag,
-		"harness":                harnessFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 	}
 	if len(modelOverrideFlag) > 0 {
@@ -189,6 +194,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 				body["model_variant_overrides"] = string(encoded)
 			}
 		}
+	}
+	// Only forward "harness" when explicitly set. When absent, the host-side
+	// spawn derives the harness from the profile slot as designed (#1421).
+	if harnessChanged {
+		body["harness"] = harnessFlag
 	}
 	// Only forward "isolation" when explicitly set. An empty value would tell
 	// the host-side spawn to fall back to config.json, which is correct only

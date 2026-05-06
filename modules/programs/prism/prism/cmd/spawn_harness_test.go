@@ -5,8 +5,8 @@ package cmd
 // Coverage:
 //   - runSpawn rejects unknown harness values before any state is created
 //   - runSpawn accepts "opencode" (explicitly or as default)
-//   - proxySpawn forwards the harness field to the host-API /spawn endpoint
-//   - Container-mode (PRISM_HOST_API set): harness forwarded correctly
+//   - proxySpawn forwards the harness field only when explicitly set (#1421)
+//   - proxySpawn omits the harness field when --harness is not explicitly passed (#1421)
 
 import (
 	"encoding/json"
@@ -197,21 +197,18 @@ func TestProxySpawn_HarnessForwarded(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_HarnessDefaultForwarded verifies that when --harness is not
-// explicitly set (defaults to "opencode"), the default value is still forwarded
-// to the host-API in the JSON body.
-func TestProxySpawn_HarnessDefaultForwarded(t *testing.T) {
-	type spawnReq struct {
-		Branch  string `json:"branch"`
-		Harness string `json:"harness"`
-	}
-
-	reqCh := make(chan spawnReq, 1)
+// TestProxySpawn_HarnessAbsentWhenNotExplicit verifies that when --harness is
+// not explicitly set (i.e. the user did not pass the flag), the harness field
+// is absent from the JSON body sent to the host-API. This allows the host-side
+// spawn to derive the harness from the profile slot as designed (#1421).
+func TestProxySpawn_HarnessAbsentWhenNotExplicit(t *testing.T) {
+	// Use a raw map to detect field presence vs. zero-value absence.
+	reqCh := make(chan map[string]any, 1)
 
 	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
-		var req spawnReq
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		reqCh <- req
+		var raw map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		reqCh <- raw
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"session_name":"nixos-config@default-harness"}`))
@@ -227,16 +224,16 @@ func TestProxySpawn_HarnessDefaultForwarded(t *testing.T) {
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "default-harness")
-	// harness stays at default ("opencode")
+	// harness stays at default ("opencode") but is NOT explicitly changed
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
 	}
 
 	select {
-	case req := <-reqCh:
-		if req.Harness != "opencode" {
-			t.Errorf("harness = %q, want %q (default)", req.Harness, "opencode")
+	case raw := <-reqCh:
+		if _, present := raw["harness"]; present {
+			t.Errorf("harness field present in request body when --harness was not explicitly passed; got %v", raw["harness"])
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
