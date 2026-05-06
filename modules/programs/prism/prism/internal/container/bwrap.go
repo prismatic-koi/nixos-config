@@ -373,6 +373,39 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	if signingKeyName == "" {
 		signingKeyName = "prismatic-koi-ed25519-signingkey"
 	}
+	// Note on sops rotation and Linux bind-mount inode semantics (issue #1412):
+	//
+	// On NixOS, the signing key is managed by sops-nix. The symlink chain is:
+	//   ~/.ssh/prismatic-koi-ed25519-signingkey
+	//     → /run/secrets/ssh/prismatic-koi-ed25519-signingkey   (stable sops intermediate)
+	//     → /run/secrets.d/<N>/ssh/prismatic-koi-ed25519-signingkey  (concrete sops file)
+	//
+	// sops-nix's pruneGenerations removes old secrets.d/<N>/ directories on
+	// nixos-rebuild switch (keepGenerations = 1 by default). This raised the
+	// question of whether EvalSymlinks here is fragile — mirroring the Darwin
+	// sandbox-exec fix in PR #1411.
+	//
+	// On Linux, bwrap bind-mounts are inode-based, not path-based:
+	//   1. filepath.EvalSymlinks resolves to /run/secrets.d/<N>/ssh/signingkey.
+	//   2. The kernel bind-mount (MS_BIND) increments the inode's reference count.
+	//   3. When pruneGenerations removes secrets.d/<N>/, it unlinks the directory
+	//      entries but cannot free the inodes as long as any reference exists.
+	//   4. The bwrap sandbox's bind mount holds that reference — the file remains
+	//      readable inside the sandbox for the duration of the session.
+	//   5. After the session exits and the bind mount is released, the inode is
+	//      freed (refcount drops to 0). No memory leak.
+	//
+	// For new sessions spawned after a rotation, filepath.EvalSymlinks resolves
+	// to the new /run/secrets.d/<N+1>/ path — so new sessions are always correct.
+	//
+	// This is fundamentally different from the Darwin/sandbox-exec case: SBPL
+	// profile rules are path-based (evaluated at each file access), so a stale
+	// concrete path in the profile causes every access to fail after rotation.
+	// bwrap bind mounts are inode-based, so they survive the rotation cleanly.
+	//
+	// EvalSymlinks is therefore the correct approach here — no fix is needed.
+	// The fix in sandbox_exec_home.go (symlinkIfExists vs symlinkIfResolvable)
+	// does not apply to bwrap for this reason.
 	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName))
 	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName+".pub"))
 	if errPriv == nil && errPub == nil {
