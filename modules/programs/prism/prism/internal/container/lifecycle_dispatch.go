@@ -221,9 +221,6 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 	}
 	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
 
-	// On Darwin, extract Claude Code credentials from the Keychain.
-	m.writeClaudeCredentials()
-
 	if _, err := writeProfile(m); err != nil {
 		return nil, err
 	}

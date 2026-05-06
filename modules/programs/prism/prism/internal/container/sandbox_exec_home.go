@@ -12,10 +12,10 @@ package container
 // Design decisions locked by the coordinator in issue #1017:
 //
 //  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment at
-//     bwrap.go:306-308). On Darwin this means writeClaudeCredentials() extracts
-//     to its existing temp path, and the file is reachable inside the sandbox
-//     at $HOME/.claude/.credentials.json via the symlink. On Darwin, writes to
-//     .credentials.json flow through the symlink to the host's ~/.claude/.credentials.json.
+//     bwrap.go:306-308). On Darwin, opencode-claude-auth calls the Keychain API
+//     (Mach IPC) directly from inside the sandbox — no pre-seeded credentials
+//     file is needed. Writes to .credentials.json (e.g. token refreshes) flow
+//     through the symlink to the host's ~/.claude/.credentials.json.
 //     This is the accepted trade-off (simplest, matches bwrap's RW treatment).
 //
 //  2. .config/opencode/agents/ is role-conditional: included as a symlink for
@@ -237,16 +237,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	)
 
 	// ── .claude/ — symlink to host ~/.claude (RW write-through) ──────────────
-	// On Darwin, opencode-claude-auth writes .credentials.json inside
-	// ~/.claude/. Since this is a symlink to host ~/.claude, writes inside
-	// the sandbox flow through to the host's ~/.claude/.credentials.json.
-	// This is the accepted trade-off: simplest, matches bwrap's RW bind of
-	// ~/.claude at bwrap.go:306-308. On Linux, ~/.claude/.credentials.json
-	// already lives there; no Keychain extraction is needed.
-	// Darwin-specific: writeClaudeCredentials() below extracts from Keychain
-	// to a temp path (m.claudeCredentialsFilePath()), which is reachable at
-	// $HOME/.claude/.credentials.json via this symlink (because the temp path
-	// equals the host's ~/.claude/.credentials.json location via write-through).
+	// On Darwin, opencode-claude-auth calls the Keychain API (Mach IPC)
+	// directly from inside the sandbox — no pre-seeded credentials file is
+	// needed at spawn time. Token refreshes performed by opencode-claude-auth
+	// during a session write .credentials.json inside ~/.claude/, and since
+	// this is a symlink to host ~/.claude, those writes flow through to the
+	// host path and are immediately reflected in subsequent sessions.
+	// On Linux, ~/.claude/.credentials.json already lives on disk; the bwrap
+	// path bind-mounts ~/.claude/ with RW access (bwrap.go:306-308), matching
+	// the same write-through semantics via a different mechanism.
 	symlinkIfExists(
 		filepath.Join(home, ".claude"),
 		filepath.Join(stagingHome, ".claude"),
