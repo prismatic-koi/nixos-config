@@ -17,14 +17,11 @@ package cmd
 // non-Darwin via a runtime.GOOS check, so the stub is unreachable in practice.
 
 import (
-	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -187,33 +184,6 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 
 	if err := validateSandboxExecArgs(args); err != nil {
 		return err
-	}
-
-	// Write Claude Code credentials into the staging HOME.
-	//
-	// In bwrap/podman mode, writeClaudeCredentials() writes a temp file that
-	// is bind-mounted at /root/.claude/.credentials.json inside the container.
-	// sandbox-exec has no bind-mount mechanism, so we write the credentials
-	// directly to $STAGING_HOME/.claude/.credentials.json instead. The staging
-	// HOME's .claude/ is a symlink to the real ~/.claude/, so the write lands
-	// at the host path — which is in the SBPL profile's RW allow set for the
-	// .claude symlink target. On macOS, credentials live in the Keychain and
-	// ~/.claude/.credentials.json is absent or empty; opencode-claude-auth
-	// reads it at startup and fails silently if it is missing.
-	if stagingHomeCreds, credErr := m.SandboxExecHomePath(); credErr == nil && stagingHomeCreds != "" {
-		credsDst := filepath.Join(stagingHomeCreds, ".claude", ".credentials.json")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		out, keychainErr := exec.CommandContext(ctx, "security", "find-generic-password",
-			"-l", "Claude Code-credentials", "-w").Output()
-		if keychainErr == nil {
-			creds := strings.TrimSpace(string(out))
-			if creds != "" {
-				if writeErr := os.WriteFile(credsDst, []byte(creds), 0o600); writeErr != nil {
-					log.Printf("agent-run: sandbox-exec: write claude credentials: %v", writeErr)
-				}
-			}
-		}
 	}
 
 	// Build the env for sandbox-exec. The slice is K=V pairs (os/exec uses the
