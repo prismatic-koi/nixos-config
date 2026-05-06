@@ -6,11 +6,16 @@ package pi
 // "JSONL files with a tree structure (parent/child IDs for branching)").
 // Unlike opencode, PI has no SQLite database — it is a pure flat-file store.
 //
-// Source path layout (best-effort based on RFC #606; confirmed at PI session time):
+// Source path layout (confirmed via PI_CODING_AGENT_SESSION_DIR env var and
+// PI's --help which shows "~/.pi/agent/sessions/" as the export example path):
 //
-//   ~/.local/share/pi/sessions/<harness_session_id>/
+//   ~/.pi/agent/sessions/<harness_session_id>/
 //       session.jsonl        — the full conversation transcript
 //       [additional *.jsonl files per branch or compaction round]
+//
+// The PI_CODING_AGENT_DIR defaults to ~/.pi/agent and session storage is a
+// subdirectory of it. The XDG path ~/.local/share/pi/sessions/ does NOT
+// exist — it was incorrectly assumed in issue #1419.
 //
 // Archive copies all *.jsonl files from the session directory into raw/.
 // Export normalises the raw JSONL to pi-mono v3 session.jsonl (currently a
@@ -41,7 +46,9 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 
 // SourcePath returns the host-side PI session directory for the session.
 //
-// PI stores sessions under $HOME/.local/share/pi/sessions/<harness_session_id>/.
+// PI stores sessions under $HOME/.pi/agent/sessions/<harness_session_id>/.
+// This matches PI_CODING_AGENT_DIR (defaults to ~/.pi/agent) with the sessions/
+// subdirectory appended, and is confirmed by PI's own --help example path.
 // The harness_session_id is populated at session-create time when PI starts.
 // When HarnessSessionID is empty (PI failed to start), SourcePath returns the
 // sessions root directory; the caller handles the missing-directory case.
@@ -50,7 +57,7 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 	if err != nil {
 		return "", fmt.Errorf("pi archive: resolve home: %w", err)
 	}
-	sessionsRoot := filepath.Join(home, ".local", "share", "pi", "sessions")
+	sessionsRoot := filepath.Join(home, ".pi", "agent", "sessions")
 	if p.HarnessSessionID == "" {
 		return sessionsRoot, nil
 	}
