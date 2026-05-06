@@ -262,7 +262,7 @@ counted with `wc -l` over `*.go` and `*_test.go` files at the directory level
   queue for the sidecar's session_name and drives PRs through the merge
   lifecycle using the GitHub CLI: CLEAN → gh pr merge --squash; BEHIND → gh
   pr update-branch; DIRTY → fail with 'merge conflicts'; BLOCKED → fail on CI
-  failure, keep watching otherwise; Others → keep watching (transient). On
+  failure or review required, keep watching otherwise; Others → keep watching (transient). On
   each terminal outcome (merged, failed, closed) a bus notification is
   delivered to the enqueuing coordinator session via the opencode HTTP API.
   The notification text names the PR, includes the worker session's archive
@@ -1979,7 +1979,7 @@ For each top-level prism subcommand, the function chain and side-effects.
 
 **Function chain (cancel):** `cmd/merges.go:mergesCancelCmd → runMergesCancel → (proxy to host-API when in bwrap) → db.CancelMerge`.
 
-**Function chain (the watcher inside coordinator sidecar):** `internal/sidecar/sidecar.go:Run → mergequeue.New(db, instanceID, sessionName, httpClient).Run(ctx) → poll loop → db.MergeQueueHead → exec.CommandContext(ctx, "gh", "pr", "view", …) → branch on mergeable_state: CLEAN→gh pr merge --squash, BEHIND→gh pr update-branch, DIRTY→fail, BLOCKED→fail-on-CI or keep watching → on terminal: db.TerminateMerge + bus notification via opencode HTTP API`.
+**Function chain (the watcher inside coordinator sidecar):** `internal/sidecar/sidecar.go:Run → mergequeue.New(db, instanceID, sessionName, httpClient).Run(ctx) → poll loop → db.MergeQueueHead → exec.CommandContext(ctx, "gh", "pr", "view", …) → branch on mergeable_state: CLEAN→gh pr merge --squash, BEHIND→gh pr update-branch, DIRTY→fail, BLOCKED→fail-on-CI-or-review-required or keep watching → on terminal: db.TerminateMerge + bus notification via opencode HTTP API`.
 
 **Side-effects:**
 

@@ -235,6 +235,7 @@ When a queued PR reaches a terminal outcome, the watcher delivers a bus notifica
 | Merge conflicts | `PR #N has merge conflicts — worker rebase needed` |
 | CI failure | `PR #N CI failed — needs worker fix` |
 | Closed without merging | `PR #N was closed without merging — removed from queue` |
+| Review required | `PR #N is blocked — human reviewer approval required before merge` |
 | Other merge failure | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
 
@@ -248,6 +249,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `merge conflicts` | `prism prompt <worker-session>` asking it to rebase onto main and push; re-enqueue with `prism merge <pr>` after the worker finishes |
 | `CI failed` | `prism prompt <worker-session>` asking it to investigate the failed check, fix, and push; re-enqueue with `prism merge <pr>` |
 | `closed without merging` | Usually nothing — the PR was closed deliberately. Investigate if unexpected. |
+| `blocked — human reviewer approval required` | Request a human review on the PR (e.g. via `gh pr review --request <user>`). Once approved, re-enqueue with `prism merge <pr>`. |
 | `merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
