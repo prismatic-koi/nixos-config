@@ -511,6 +511,8 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 	case "BLOCKED":
 		if hasCIFailure(prInfoVal.StatusCheckRollup) {
 			fw.watcher.failAndNotify(head, "CI failed")
+		} else if prInfoVal.ReviewDecision == "REVIEW_REQUIRED" {
+			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
 		}
 
 	case "UNSTABLE", "UNKNOWN", "HAS_HOOKS", "DRAFT":
@@ -767,6 +769,179 @@ func TestWatcher_BLOCKEDWithoutCIFailureStaysWatching(t *testing.T) {
 	}
 	if row.Status != "watching" {
 		t.Errorf("status: got %q, want watching (no CI failure)", row.Status)
+	}
+}
+
+// TestWatcher_BLOCKEDWithReviewRequired transitions to failed with the review
+// notification message when reviewDecision is "REVIEW_REQUIRED" and CI is passing.
+func TestWatcher_BLOCKEDWithReviewRequired(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-review"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-review")
+
+	if _, err := d.EnqueueMerge(555, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:             "OPEN",
+				MergeStateStatus:  "BLOCKED",
+				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
+				ReviewDecision:    "REVIEW_REQUIRED",
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	// Row must have transitioned to failed.
+	row, err := d.PendingMergeByPR(555)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
+		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
+	}
+
+	// Notification must have been sent and contain the expected text.
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
+		t.Fatalf("unmarshal notification body: %v", err)
+	}
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "PR #555") {
+		t.Errorf("notification text %q does not contain 'PR #555'", text)
+	}
+	if !strings.Contains(text, "human reviewer approval required before merge") {
+		t.Errorf("notification text %q does not contain review-required message", text)
+	}
+}
+
+// TestWatcher_BLOCKEDCIFailureNotMisdiagnosedAsReviewRequired verifies that
+// a BLOCKED PR with a CI failure and REVIEW_REQUIRED reviewDecision is
+// diagnosed as CI failure (CI check takes precedence) — or more precisely,
+// that CI failure is checked first and is not suppressed by reviewDecision.
+func TestWatcher_BLOCKEDCIFailureNotMisdiagnosedAsReviewRequired(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-cifirst"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-cifirst")
+
+	if _, err := d.EnqueueMerge(444, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:             "OPEN",
+				MergeStateStatus:  "BLOCKED",
+				StatusCheckRollup: []checkEntry{{Conclusion: "FAILURE"}},
+				ReviewDecision:    "REVIEW_REQUIRED",
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	// Row must be failed with "CI failed" (CI check takes precedence).
+	row, err := d.PendingMergeByPR(444)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+	if row.Error == nil || *row.Error != "CI failed" {
+		t.Errorf("error: got %v, want 'CI failed'", row.Error)
+	}
+}
+
+// TestWatcher_BLOCKEDReviewRequiredIsReEnqueueable verifies the edge-case AC:
+// after a terminal "review required" failure, the coordinator can re-enqueue
+// the same PR with prism merge and the new row starts as watching.
+func TestWatcher_BLOCKEDReviewRequiredIsReEnqueueable(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-reenqueue"
+	session := "myrepo@main"
+
+	// First enqueue and fail with review-required.
+	if _, err := d.EnqueueMerge(666, session, instanceID, nil); err != nil {
+		t.Fatalf("first EnqueueMerge: %v", err)
+	}
+	if err := d.TerminateMerge(666, "failed", "human reviewer approval required before merge"); err != nil {
+		t.Fatalf("TerminateMerge: %v", err)
+	}
+
+	// Re-enqueue — simulates coordinator running `prism merge <pr>` after approval.
+	m, err := d.EnqueueMerge(666, session, instanceID, nil)
+	if err != nil {
+		t.Fatalf("second EnqueueMerge: %v", err)
+	}
+	if m.Status != "watching" {
+		t.Errorf("re-enqueued status: got %q, want watching", m.Status)
+	}
+	if m.Error != nil {
+		t.Errorf("re-enqueued error: got %v, want nil", m.Error)
+	}
+}
+
+// TestWatcher_BLOCKEDNoReviewDecisionNoCI stays watching (CI still running case).
+func TestWatcher_BLOCKEDNoReviewDecisionNoCIStaysWatching(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-nostatus"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(777, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+		func(_ context.Context, pr int) (*prInfo, error) {
+			// No CI failure, no review requirement — e.g. CI still running.
+			return &prInfo{
+				State:             "OPEN",
+				MergeStateStatus:  "BLOCKED",
+				StatusCheckRollup: []checkEntry{{Conclusion: "PENDING"}},
+				ReviewDecision:    "",
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(777)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching", row.Status)
 	}
 }
 
@@ -1146,13 +1321,20 @@ func TestPRInfoJSONFields_NoMergedField(t *testing.T) {
 		}
 	}
 	hasMergedAt := false
+	hasReviewDecision := false
 	for _, f := range fields {
 		if f == "mergedAt" {
 			hasMergedAt = true
 		}
+		if f == "reviewDecision" {
+			hasReviewDecision = true
+		}
 	}
 	if !hasMergedAt {
 		t.Errorf("prInfoJSONFields must include 'mergedAt' to detect merged state. Got: %q", prInfoJSONFields)
+	}
+	if !hasReviewDecision {
+		t.Errorf("prInfoJSONFields must include 'reviewDecision' to detect review-required blocks (#1357). Got: %q", prInfoJSONFields)
 	}
 }
 
@@ -1232,7 +1414,7 @@ func TestWatcher_RunGHPassesRepoFlag(t *testing.T) {
 			calls = append(calls, snap)
 			// Tailor the response so each method completes its happy path.
 			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
-				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[]}`), nil
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[],"reviewDecision":""}`), nil
 			}
 			// merge / update-branch return empty success.
 			return nil, nil
