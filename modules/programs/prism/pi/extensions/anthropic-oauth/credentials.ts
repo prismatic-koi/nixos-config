@@ -137,7 +137,6 @@ export function repairCredentials(): void {
     // Entry exists but lacks type: "oauth" — repair it in place
     log("credentials_repair", { path: authPath })
     provider.type = "oauth"
-    data.anthropic = provider
     writeFileSync(authPath, JSON.stringify(data, null, 2), {
       encoding: "utf-8",
       mode: 0o600,
