@@ -163,11 +163,34 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	if signingKeyName == "" {
 		signingKeyName = "prismatic-koi-ed25519-signingkey"
 	}
-	symlinkIfResolvable(
+	// Use symlinkIfExists (not symlinkIfResolvable) for signing keys so that
+	// the staging HOME symlink points at the stable intermediate sops symlink
+	// (~/.ssh/prismatic-koi-ed25519-signingkey{,.pub}) rather than the
+	// fully-resolved sops temp path (e.g. /private/var/folders/.../secrets.d/271/).
+	//
+	// sops secrets rotate: on darwin-rebuild switch the secrets.d/<N> directory
+	// increments. If the staging HOME symlink points at the fully-resolved
+	// concrete path, it becomes dangling after rotation and git push fails with
+	// "Couldn't load public key … No such file or directory" (issue #1410).
+	//
+	// With symlinkIfExists the chain is:
+	//   <stagingHome>/.ssh/signing-key{,.pub}
+	//     → ~/.ssh/prismatic-koi-ed25519-signingkey{,.pub}   (stable sops symlink)
+	//     → /private/var/folders/.../secrets.d/<current>/... (sops resolves this)
+	//
+	// The SBPL profile already grants (allow file-read* (subpath "/private/var/folders"))
+	// so the sandbox can follow the chain to whatever secrets.d/<N> is current,
+	// even after a rotation that occurred after session spawn.
+	//
+	// Note: symlinkIfResolvable is still used for the access key below because
+	// collectStagingHomeSymlinkTargets resolves the access key symlink to emit
+	// a (literal ...) SBPL rule for it — the access key does not go through
+	// sops and its path does not rotate.
+	symlinkIfExists(
 		filepath.Join(sshDir, signingKeyName),
 		filepath.Join(stagingHome, ".ssh", "signing-key"),
 	)
-	symlinkIfResolvable(
+	symlinkIfExists(
 		filepath.Join(sshDir, signingKeyName+".pub"),
 		filepath.Join(stagingHome, ".ssh", "signing-key.pub"),
 	)

@@ -889,6 +889,213 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 	}
 }
 
+// TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath verifies that the
+// signing-key and signing-key.pub symlinks in the staging HOME point at the
+// intermediate ~/.ssh/<name> path (i.e. the stable sops symlink), not the
+// fully-resolved concrete path underneath it. This is the fix for issue #1410:
+// using the intermediate symlink means the staging HOME stays valid across sops
+// rotations (when secrets.d/<N>/ increments), whereas using the resolved path
+// would produce a dangling symlink after the rotation.
+//
+// The access-key symlink is NOT checked here — it still uses symlinkIfResolvable
+// and is expected to point at the resolved real path.
+func TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// In newFakeHome, the signing key files are plain files directly under
+	// ~/.ssh/. For this test, we simulate the sops-managed layout:
+	// ~/.ssh/prismatic-koi-ed25519-signingkey.pub → a "concrete" sops path,
+	// and later rotate that concrete path.
+	//
+	// We replace the plain files with symlinks that point at a "current" dir,
+	// mimicking secrets.d/271/.
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
+	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
+		t.Fatalf("create sops-dir-1: %v", err)
+	}
+	keyPrivPath1 := filepath.Join(sopsDir1, "signing-key")
+	keyPubPath1 := filepath.Join(sopsDir1, "signing-key.pub")
+	if err := os.WriteFile(keyPrivPath1, []byte("priv-v1"), 0o600); err != nil {
+		t.Fatalf("write sops priv key v1: %v", err)
+	}
+	if err := os.WriteFile(keyPubPath1, []byte("pub-v1"), 0o600); err != nil {
+		t.Fatalf("write sops pub key v1: %v", err)
+	}
+
+	// Replace the plain files with symlinks to the "sops v1" concrete paths.
+	intermediatePriv := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey")
+	intermediatePub := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub")
+	_ = os.Remove(intermediatePriv)
+	_ = os.Remove(intermediatePub)
+	if err := os.Symlink(keyPrivPath1, intermediatePriv); err != nil {
+		t.Fatalf("symlink intermediate priv: %v", err)
+	}
+	if err := os.Symlink(keyPubPath1, intermediatePub); err != nil {
+		t.Fatalf("symlink intermediate pub: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@signing-key-test",
+		InstanceID:  "signing-key-intermediate-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// Verify signing-key.pub symlink points at the INTERMEDIATE path, not the
+	// fully-resolved sops-dir-1/signing-key.pub path.
+	pubLink := filepath.Join(stagingHome, ".ssh", "signing-key.pub")
+	pubTarget, err := os.Readlink(pubLink)
+	if err != nil {
+		t.Fatalf("signing-key.pub is not a symlink: %v", err)
+	}
+	if pubTarget != intermediatePub {
+		t.Errorf("signing-key.pub symlink points at %q, want intermediate path %q\n"+
+			"(the symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
+			"so it stays valid after a sops rotation)",
+			pubTarget, intermediatePub)
+	}
+
+	// Same for signing-key (private).
+	privLink := filepath.Join(stagingHome, ".ssh", "signing-key")
+	privTarget, err := os.Readlink(privLink)
+	if err != nil {
+		t.Fatalf("signing-key is not a symlink: %v", err)
+	}
+	if privTarget != intermediatePriv {
+		t.Errorf("signing-key symlink points at %q, want intermediate path %q",
+			privTarget, intermediatePriv)
+	}
+
+	// Now simulate a sops rotation: update the intermediate symlinks to point
+	// at a new secrets.d/v2 directory, leaving sops-dir-1 in place but unreachable.
+	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
+	if err := os.MkdirAll(sopsDir2, 0o700); err != nil {
+		t.Fatalf("create sops-dir-2: %v", err)
+	}
+	keyPrivPath2 := filepath.Join(sopsDir2, "signing-key")
+	keyPubPath2 := filepath.Join(sopsDir2, "signing-key.pub")
+	if err := os.WriteFile(keyPrivPath2, []byte("priv-v2"), 0o600); err != nil {
+		t.Fatalf("write sops priv key v2: %v", err)
+	}
+	if err := os.WriteFile(keyPubPath2, []byte("pub-v2"), 0o600); err != nil {
+		t.Fatalf("write sops pub key v2: %v", err)
+	}
+	// Rotate: update intermediate symlinks to point at v2.
+	_ = os.Remove(intermediatePriv)
+	_ = os.Remove(intermediatePub)
+	if err := os.Symlink(keyPrivPath2, intermediatePriv); err != nil {
+		t.Fatalf("rotate intermediate priv to v2: %v", err)
+	}
+	if err := os.Symlink(keyPubPath2, intermediatePub); err != nil {
+		t.Fatalf("rotate intermediate pub to v2: %v", err)
+	}
+
+	// After rotation, the staging HOME signing-key.pub still points at
+	// intermediatePub, which now resolves to sops-dir-2. Verify the chain
+	// resolves (os.Stat follows symlinks) and the content is from v2.
+	content, err := os.ReadFile(pubLink)
+	if err != nil {
+		t.Fatalf("cannot read signing-key.pub through staging HOME after rotation: %v\n"+
+			"(this would cause 'Couldn't load public key' in git push — the fix for #1410)", err)
+	}
+	if string(content) != "pub-v2" {
+		t.Errorf("signing-key.pub after rotation: got %q, want %q", string(content), "pub-v2")
+	}
+}
+
+// TestPrepareSandboxExecHome_SigningKeyAbsentNoDanglingSymlink verifies that
+// when the signing key intermediate symlink does not exist (genuinely absent,
+// not just stale), no dangling symlink is created in the staging HOME.
+// This covers AC: "if signing keys are genuinely absent, git push still works
+// — it pushes without signing rather than crashing."
+func TestPrepareSandboxExecHome_SigningKeyAbsentNoDanglingSymlink(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Remove the signing key files from the fake home (simulate absent keys).
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey"))
+	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub"))
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@absent-signing-key",
+		InstanceID:  "signing-key-absent-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// Signing key symlinks must NOT exist in staging HOME when source is absent.
+	for _, name := range []string{"signing-key", "signing-key.pub"} {
+		p := filepath.Join(stagingHome, ".ssh", name)
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s must not exist when source is absent (no dangling symlinks)", name)
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_AccessKeyStillUsesResolvedPath verifies that the
+// access-key symlink in the staging HOME still points at the fully-resolved
+// real path (not an intermediate symlink). This is unchanged from the original
+// behaviour — access-key uses symlinkIfResolvable so that the SBPL profile
+// collectStagingHomeSymlinkTargets can emit a (literal ...) rule for it.
+func TestPrepareSandboxExecHome_AccessKeyStillUsesResolvedPath(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Make the access key file a symlink to a "resolved" path, to ensure
+	// symlinkIfResolvable resolves it fully before creating the staging link.
+	sshDir := filepath.Join(fakeHome, ".ssh")
+	resolvedDir := filepath.Join(fakeHome, "resolved-keys")
+	if err := os.MkdirAll(resolvedDir, 0o700); err != nil {
+		t.Fatalf("create resolved-keys dir: %v", err)
+	}
+	resolvedKey := filepath.Join(resolvedDir, "access-key-real")
+	if err := os.WriteFile(resolvedKey, []byte("access-key-content"), 0o600); err != nil {
+		t.Fatalf("write resolved access key: %v", err)
+	}
+	// Replace the plain access key file with a symlink.
+	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519"))
+	if err := os.Symlink(resolvedKey, filepath.Join(sshDir, "prismatic-koi-ed25519")); err != nil {
+		t.Fatalf("symlink access key: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@access-key-test",
+		InstanceID:  "access-key-resolved-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// The access-key symlink should point at the fully-resolved path
+	// (symlinkIfResolvable resolves through the intermediate).
+	accessLink := filepath.Join(stagingHome, ".ssh", "access-key")
+	accessTarget, err := os.Readlink(accessLink)
+	if err != nil {
+		t.Fatalf("access-key is not a symlink: %v", err)
+	}
+	// resolvedKey might itself resolve further on macOS (e.g. /tmp → /private/tmp).
+	expectedTarget, _ := filepath.EvalSymlinks(resolvedKey)
+	if expectedTarget == "" {
+		expectedTarget = resolvedKey
+	}
+	if accessTarget != expectedTarget {
+		t.Errorf("access-key target = %q, want resolved path %q\n"+
+			"(access-key must use symlinkIfResolvable to expose the real path for the SBPL profile)",
+			accessTarget, expectedTarget)
+	}
+}
+
 // TestPrepareSandboxExecHome_PiAgentDirNotSymlinked verifies that
 // PrepareSandboxExecHome no longer creates a ~/.pi/agent symlink — auth files
 // are now copied into the staging dir by StagePIAgentConfigDir instead.
