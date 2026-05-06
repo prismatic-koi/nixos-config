@@ -35,8 +35,10 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 			t.Errorf("expected %q %q in args; got %v", flag, val, args)
 		}
 	}
-	if !hasArg(args, "--no-session") {
-		t.Error("expected --no-session in args")
+	// --no-session must NOT appear — PI must use its native OAuth session
+	// persistence so that spawned sessions can authenticate with Anthropic.
+	if hasArg(args, "--no-session") {
+		t.Errorf("--no-session must not appear in PIInvocation args; got %v", args)
 	}
 	// --append-system-prompt must NOT appear — system prompt is delivered via
 	// PI_CODING_AGENT_DIR / APPEND_SYSTEM.md, not via a CLI flag.

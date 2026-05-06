@@ -2661,14 +2661,14 @@ func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) 
 }
 
 // TestBwrapBuildArgs_PISessionsDirBoundWhenExists verifies that when
-// ~/.local/share/pi/sessions exists on the host and cfg.Harness == "pi",
+// ~/.pi/agent/sessions exists on the host and cfg.Harness == "pi",
 // BuildArgs emits --bind SRC SRC for the directory (read-write).
 func TestBwrapBuildArgs_PISessionsDirBoundWhenExists(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
 	// Create the PI sessions directory under the fake HOME.
-	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
 	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll pi sessions dir: %v", err)
 	}
@@ -2682,13 +2682,13 @@ func TestBwrapBuildArgs_PISessionsDirBoundWhenExists(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent verifies that when
-// ~/.local/share/pi/sessions does not exist on the host, BuildArgs does NOT
+// ~/.pi/agent/sessions does not exist on the host, BuildArgs does NOT
 // emit --bind for it — the session must start without error.
 func TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
-	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
 	// Do NOT create piSessionsDir — it should be absent from args.
 
 	b := &bwrapIsolator{name: m.name}
@@ -2713,7 +2713,7 @@ func TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI(t *testing.T) {
 
 	// Create the PI sessions directory so the stat() would succeed if the
 	// code were wrong.
-	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
 	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll pi sessions dir: %v", err)
 	}
@@ -2733,7 +2733,7 @@ func TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
-	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
 	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll pi sessions dir: %v", err)
 	}
