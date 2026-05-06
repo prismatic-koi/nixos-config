@@ -42,9 +42,12 @@ package integration_test
 //      broader /private/var/folders allow. This makes the negative test
 //      sensitive to removal of that specific literal.
 //
-// Shared helpers: requireSandboxExec, requireNixBash, newProfileManagerWithBareRoot,
-// preparePositiveProfile, writeAugmentedPositiveProfile, withMutatedProfile,
-// hostCredentialDir, sbplQuoteForTest — all in sandbox_exec_helpers_darwin_test.go.
+// Shared helpers:
+//   - requireSandboxExec, requireNixBash, newProfileManagerWithBareRoot,
+//     preparePositiveProfile, writeAugmentedPositiveProfile, withMutatedProfile
+//     → sandbox_exec_helpers_darwin_test.go
+//   - hostCredentialDir, sbplQuoteForTest
+//     → sandbox_exec_staging_home_darwin_test.go
 //
 // See docs/sandbox-exec-testing.md for the convention these tests support (#1192).
 

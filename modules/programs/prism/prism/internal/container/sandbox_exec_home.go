@@ -182,7 +182,7 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// so the sandbox can follow the chain to whatever secrets.d/<N> is current,
 	// even after a rotation that occurred after session spawn.
 	//
-	// Note: symlinkIfResolvable is still used for the access key below because
+	// Note: symlinkIfResolvable is still used for the access key above because
 	// collectStagingHomeSymlinkTargets resolves the access key symlink to emit
 	// a (literal ...) SBPL rule for it — the access key does not go through
 	// sops and its path does not rotate.
