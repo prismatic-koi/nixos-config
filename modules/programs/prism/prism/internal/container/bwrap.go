@@ -621,6 +621,27 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
+	// ── PI session persistence dir (read-write, conditional, pi only) ────────
+	// PI stores session state as JSONL files at ~/.local/share/pi/sessions/
+	// <harness_session_id>/. This directory must be bind-mounted read-write so
+	// that PI can write session files inside the sandbox and the host-side
+	// archiver (internal/harness/pi/archive.go) can read them after the session
+	// exits. Currently PIInvocation always passes --no-session which suppresses
+	// PI's native session persistence, so no active writes occur — but the
+	// mount must be present for when --no-session is removed or made conditional.
+	// Without it, PI would get ENOENT writing sessions inside the sandbox and
+	// the host-side archiver would never see those files.
+	//
+	// Conditional: only emitted when the directory exists on the host. When
+	// absent (e.g. a fresh install before any PI session has run), the mount is
+	// silently omitted and the session starts normally.
+	if cfg.Harness == "pi" {
+		piSessionsDir := filepath.Join(home, ".local", "share", "pi", "sessions")
+		if _, err := os.Stat(piSessionsDir); err == nil {
+			args = append(args, "--bind", piSessionsDir, piSessionsDir)
+		}
+	}
+
 	// ── PI-specific bind mounts (harness=pi only) ────────────────────────────
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.

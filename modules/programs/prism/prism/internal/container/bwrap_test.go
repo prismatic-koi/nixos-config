@@ -2630,3 +2630,139 @@ func TestHelpers_HasSetenv(t *testing.T) {
 		t.Error("hasSetenv(FOO, wrong) should return false")
 	}
 }
+
+// ── PI session persistence dir bind mount ────────────────────────────────────
+
+// bwrapPIFixture extends bwrapFixture with the minimum PI-specific config
+// needed to exercise the pi harness code path in BuildArgs. It creates a fake
+// PI binary and extension directory and returns a Config with Harness="pi" set.
+func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) {
+	t.Helper()
+
+	// Create the fake PI binary and extension directory.
+	fakePIBin := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePIBin, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("bwrapPIFixture: write fake pi binary: %v", err)
+	}
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, "prism.ts"), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("bwrapPIFixture: write pi extension: %v", err)
+	}
+
+	m, fakeHome, cleanup = bwrapFixture(t, Config{
+		SessionName:        "repo@pi",
+		Worktree:           t.TempDir(),
+		AllocatedPort:      14010,
+		Harness:            "pi",
+		PIBinaryPath:       fakePIBin,
+		PIExtensionHostDir: extDir,
+	})
+	return m, fakeHome, cleanup
+}
+
+// TestBwrapBuildArgs_PISessionsDirBoundWhenExists verifies that when
+// ~/.local/share/pi/sessions exists on the host and cfg.Harness == "pi",
+// BuildArgs emits --bind SRC SRC for the directory (read-write).
+func TestBwrapBuildArgs_PISessionsDirBoundWhenExists(t *testing.T) {
+	m, fakeHome, cleanup := bwrapPIFixture(t)
+	defer cleanup()
+
+	// Create the PI sessions directory under the fake HOME.
+	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, piSessionsDir) {
+		t.Errorf("PI sessions dir %q not found as --bind SRC SRC in args: %v", piSessionsDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent verifies that when
+// ~/.local/share/pi/sessions does not exist on the host, BuildArgs does NOT
+// emit --bind for it — the session must start without error.
+func TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent(t *testing.T) {
+	m, fakeHome, cleanup := bwrapPIFixture(t)
+	defer cleanup()
+
+	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	// Do NOT create piSessionsDir — it should be absent from args.
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, piSessionsDir) {
+		t.Errorf("absent PI sessions dir %q should be omitted but found as --bind in args: %v", piSessionsDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI verifies that when
+// cfg.Harness != "pi", the PI sessions directory is NOT bound even when it
+// exists on the host — this is a PI-only concern.
+func TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		Harness:       "opencode", // not "pi"
+	})
+	defer cleanup()
+
+	// Create the PI sessions directory so the stat() would succeed if the
+	// code were wrong.
+	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, piSessionsDir) {
+		t.Errorf("PI sessions dir %q must not be bound for non-pi harness; found as --bind in args: %v", piSessionsDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator verifies that the PI
+// sessions directory bind mount appears before the "--" terminator in the arg
+// list. bwrap requires all namespace flags to appear before the "--" separator.
+func TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator(t *testing.T) {
+	m, fakeHome, cleanup := bwrapPIFixture(t)
+	defer cleanup()
+
+	piSessionsDir := filepath.Join(fakeHome, ".local", "share", "pi", "sessions")
+	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// Find the -- separator index.
+	sepIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			sepIdx = i
+			break
+		}
+	}
+	if sepIdx < 0 {
+		t.Fatalf("-- separator not found in args: %v", args)
+	}
+
+	// Verify the PI sessions --bind appears before the separator.
+	found := false
+	for i := 0; i < sepIdx-2; i++ {
+		if args[i] == "--bind" && args[i+1] == piSessionsDir && args[i+2] == piSessionsDir {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("PI sessions dir --bind %q %q not found before -- terminator in args: %v",
+			piSessionsDir, piSessionsDir, args)
+	}
+}
