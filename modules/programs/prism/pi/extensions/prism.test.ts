@@ -1420,8 +1420,15 @@ describe("shouldAttemptConnect", () => {
 // for clean stop turns. The isIdle gate is dropped — stopReason="stop" is a
 // stronger and more correct signal. The sidecar applies a 2 s debounce after
 // receiving state_change{finished} before writing StateFinished.
+//
+// #1472: hasPendingMessages gate removed. Steer messages queued by the
+// extension during turn_start (git-push reminder, doom-loop, review-cycle)
+// appear in hasPendingMessages at turn_end time but are resolved by the next
+// inner-loop iteration. The sidecar debounce correctly cancels if turn_start
+// arrives within the 2 s window, making the hasPendingMessages gate redundant
+// and harmful (it silently swallowed the post-resume finish notification).
 
-describe("resolveTurnEndSignal — clean stop (no pending, not reviewing)", () => {
+describe("resolveTurnEndSignal — clean stop (not reviewing)", () => {
   it("returns 'finished' when stopReason=stop, no pending, not reviewing", () => {
     // AC: clean turn end emits state_change{finished}; sidecar finished debounce
     // converts that to StateFinished + notifyCoordinator() after 2 s.
@@ -1434,9 +1441,23 @@ describe("resolveTurnEndSignal — clean stop (no pending, not reviewing)", () =
 
   it("returns 'finished' even when isIdle=false (stopReason=stop is the gate)", () => {
     // AC: resolveTurnEndSignal returns "finished" regardless of isIdle
-    // when stopReason=stop, no pending, not reviewing.
+    // when stopReason=stop, not reviewing.
     assert.equal(
       resolveTurnEndSignal("stop", false, false, false),
+      "finished",
+    )
+  })
+
+  it("returns 'finished' even when hasPendingMessages=true (#1472 fix)", () => {
+    // Root cause of #1472: hasPendingMessages=true (steer queued during
+    // turn_start) suppressed finished. Fix: remove hasPendingMessages gate.
+    // The sidecar debounce cancels if turn_start arrives within 2 s.
+    assert.equal(
+      resolveTurnEndSignal("stop", true, true, false),
+      "finished",
+    )
+    assert.equal(
+      resolveTurnEndSignal("stop", false, true, false),
       "finished",
     )
   })
@@ -1449,18 +1470,15 @@ describe("resolveTurnEndSignal — clean stop (no pending, not reviewing)", () =
     )
   })
 
-  it("returns 'none' when stopReason=stop but hasPendingMessages=true", () => {
-    // AC: stop + pending messages → agent has more work queued; no finished emitted.
-    assert.equal(
-      resolveTurnEndSignal("stop", true, true, false),
-      "none",
-    )
-  })
-
   it("returns 'none' when stopReason=stop and pendingReviewCall=true", () => {
     // AC: in reviewing state — do not emit finished; agent awaits review-complete.
     assert.equal(
       resolveTurnEndSignal("stop", true, false, true),
+      "none",
+    )
+    // pendingReviewCall=true dominates even with hasPendingMessages=true.
+    assert.equal(
+      resolveTurnEndSignal("stop", true, true, true),
       "none",
     )
   })
@@ -1597,10 +1615,13 @@ describe("#1434: turn_end emits finished for clean stop (all session types)", ()
     assert.equal(resolveTurnEndSignal("aborted", false, false, false), "interrupted")
   })
 
-  it("hasPendingMessages=true suppresses finished emission (agent continues)", () => {
-    // AC: pending messages → agent has more work; no state change emitted.
-    assert.equal(resolveTurnEndSignal("stop", true, true, false), "none")
-    assert.equal(resolveTurnEndSignal("stop", false, true, false), "none")
+  it("hasPendingMessages=true does NOT suppress finished emission (#1472 fix)", () => {
+    // hasPendingMessages gate removed in #1472: steer messages queued during
+    // turn_start appear as pending at turn_end time but are consumed by the
+    // next loop iteration. The sidecar debounce cancels spurious finished if
+    // turn_start arrives within 2 s.
+    assert.equal(resolveTurnEndSignal("stop", true, true, false), "finished")
+    assert.equal(resolveTurnEndSignal("stop", false, true, false), "finished")
   })
 
   it("pendingReviewCall=true suppresses finished emission (agent awaits review)", () => {
@@ -1848,6 +1869,132 @@ describe("#1440: writer.close() wire shape — FIN only, no session_shutdown fra
     server.listen(sockPath, () => {
       // Initiate the first connection (simulating the initial PI session).
       const clientSocket = net.createConnection(sockPath)
+      clientSocket.on("error", (err) => {
+        server.close()
+        fs.rmSync(sockDir, { recursive: true, force: true })
+        done(err)
+      })
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1472: state_change{finished} emitted on post-resume final turn
+// ---------------------------------------------------------------------------
+//
+// Root cause: hasPendingMessages=true (steer messages queued by the extension
+// during turn_start — e.g. git-push reminder) suppressed the finished emission
+// on the second task's final turn_end. The fix removes the hasPendingMessages
+// gate from resolveTurnEndSignal; the sidecar's 2 s debounce handles the case
+// where a genuine follow-up turn_start arrives after the emission.
+//
+// Captured forensic values from the reproduction (issue #1472):
+//   First task final turn_end:   {stopReason:"stop", isIdle:false,
+//                                  hasPendingMessages:false, pendingReviewCall:false}
+//                                 → signal="finished" ✓
+//   Second task final turn_end:  {stopReason:"stop", isIdle:false,
+//                                  hasPendingMessages:true, pendingReviewCall:false}
+//                                 → signal="none" (BUG — hasPendingMessages=true
+//                                   because git-push reminder steer was queued
+//                                   during turn_start of the final summary turn)
+//                                 → signal="finished" after fix ✓
+
+describe("#1472: post-resume state_change{finished} emitted on second task", () => {
+  it("resolveTurnEndSignal returns 'finished' for the post-resume scenario values", () => {
+    // Reproduces the exact values captured from the failing reproduction:
+    // stopReason="stop", hasPendingMessages=true, pendingReviewCall=false.
+    // Before fix: returned "none". After fix: returns "finished".
+    assert.equal(
+      resolveTurnEndSignal("stop", false, true, false),
+      "finished",
+      "post-resume turn_end with steer pending must return 'finished' (fix for #1472)",
+    )
+  })
+
+  it("pendingReviewCall=true still suppresses finished even after the fix", () => {
+    // The pendingReviewCall guard must remain. prism review in flight.
+    assert.equal(
+      resolveTurnEndSignal("stop", false, true, true),
+      "none",
+    )
+    assert.equal(
+      resolveTurnEndSignal("stop", false, false, true),
+      "none",
+    )
+  })
+
+  it("both state_change{finished} frames reach the wire: first task then post-resume", (_, done) => {
+    // Wire-level test: simulate the extension writing two state_change{finished}
+    // frames to a unix socket server, separated by a prompt inbound frame.
+    // The server verifies both arrive in order.
+    //
+    // Scenario:
+    //   1. Extension (client) writes turn_end + state_change{finished}
+    //   2. Server (sidecar) writes prompt inbound frame
+    //   3. Extension writes turn_end + state_change{finished} (second task)
+    //   4. Server verifies both state_change{finished} frames were received.
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-1472-"))
+    const sockPath = path.join(sockDir, "test.sock")
+
+    const receivedFrames: string[] = []
+    let serverConn: net.Socket | null = null
+
+    const server = net.createServer((conn) => {
+      serverConn = conn
+      attachJsonlReader(conn, (line) => {
+        if (line.length > 0) receivedFrames.push(line)
+      })
+      conn.on("end", () => {
+        // Connection ended: verify the received frames.
+        try {
+          const parsed = receivedFrames.map((l) => JSON.parse(l) as Record<string, unknown>)
+          const stateChanges = parsed.filter((f) => f.type === "state_change")
+          assert.equal(
+            stateChanges.length,
+            2,
+            `expected exactly 2 state_change frames, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+          )
+          assert.equal(stateChanges[0].state, "finished", "first state_change must be 'finished'")
+          assert.equal(stateChanges[1].state, "finished", "second state_change must be 'finished'")
+        } catch (err) {
+          server.close()
+          fs.rmSync(sockDir, { recursive: true, force: true })
+          done(err as Error)
+          return
+        }
+        server.close()
+        fs.rmSync(sockDir, { recursive: true, force: true })
+        done()
+      })
+    })
+
+    server.listen(sockPath, () => {
+      const clientSocket = net.createConnection(sockPath)
+      clientSocket.on("connect", () => {
+        const writer = makeFrameWriter(clientSocket)
+
+        // First task: emit turn_end + state_change{finished}
+        writer.write({ type: "turn_end" })
+        writer.write({ type: "state_change", state: "finished" })
+
+        // Server sends a prompt inbound frame (simulating coordinator follow-up).
+        // We simulate this by writing directly from the server side.
+        // Give the server a moment to set up its connection handle.
+        setImmediate(() => {
+          if (serverConn) {
+            // Server sends prompt frame to the extension (inbound).
+            const promptFrame = JSON.stringify({ type: "prompt", text: "do more work", deliver_as: "nextTurn" }) + "\n"
+            serverConn.write(promptFrame)
+          }
+
+          // Second task: extension runs another turn, emits turn_end + state_change{finished}.
+          writer.write({ type: "turn_end" })
+          writer.write({ type: "state_change", state: "finished" })
+
+          // Close the connection (simulates the session ending).
+          writer.close()
+        })
+      })
       clientSocket.on("error", (err) => {
         server.close()
         fs.rmSync(sockDir, { recursive: true, force: true })

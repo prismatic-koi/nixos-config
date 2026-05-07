@@ -1050,10 +1050,20 @@ export type TurnEndSignal = "interrupted" | "finished" | "none"
  *
  * Priority order:
  *  1. If stopReason is "aborted" → "interrupted" (always)
- *  2. If stopReason is "stop" AND !hasPendingMessages AND
- *     !pendingReviewCall → "finished" (protocol v2: drop the isIdle gate;
- *     stopReason="stop" is a stronger signal than the streaming flag)
+ *  2. If stopReason is "stop" AND !pendingReviewCall → "finished" (protocol
+ *     v2: drop the isIdle gate; stopReason="stop" is a stronger signal than
+ *     the streaming flag). hasPendingMessages is intentionally NOT gated here
+ *     (#1472): steer messages queued by the extension during turn_start
+ *     (git-push reminder, doom-loop, review-cycle) show up as pending at
+ *     turn_end time but are consumed in the next inner-loop iteration; the
+ *     sidecar's 2 s finished-debounce correctly cancels if turn_start arrives
+ *     within the window, so this guard was over-broad and silently swallowed
+ *     the post-resume finish notification.
  *  3. Otherwise → "none"
+ *
+ * hasPendingMessages is kept as a parameter so callers that already
+ * compute it do not need to change (and tests can continue to pass the
+ * value in). It is not used in the decision.
  *
  * This applies uniformly to all session types (worker, coordinator,
  * review agents). The sidecar's 2 s debounce handles the cancellation
@@ -1068,11 +1078,7 @@ export function resolveTurnEndSignal(
   if (stopReason === "aborted") {
     return "interrupted"
   }
-  if (
-    stopReason === "stop" &&
-    !hasPendingMessages &&
-    !pendingReviewCall
-  ) {
+  if (stopReason === "stop" && !pendingReviewCall) {
     return "finished"
   }
   return "none"
