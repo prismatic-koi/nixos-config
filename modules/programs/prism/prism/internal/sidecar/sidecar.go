@@ -484,10 +484,62 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}()
 	}
 
-	// B.3 Stage 1: transport-shape gate. Consult the harness registry to
+	// B.3 Stage 1: Mint or load instance_id. This is transport-agnostic and
+	// must run for ALL transport shapes (HTTP-port, socket-pipe, stdio-pipe).
+	// When --instance-id was passed at spawn time, s.cfg.InstanceID is already
+	// set (fast path). Otherwise, query the DB: if the row has a non-NULL
+	// instance_id, load it; if not, mint a fresh UUID and write it.
+	// This runs before the merge-queue watcher so the watcher always has an
+	// identity to key on.
+	if s.cfg.InstanceID == "" && s.cfg.DB != nil {
+		status, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
+		if status != nil && status.InstanceID != nil && *status.InstanceID != "" {
+			s.cfg.InstanceID = *status.InstanceID
+			log.Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
+		} else {
+			minted := uuid.New().String()
+			// Defensively ensure the row exists before writing instance_id.
+			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, s.cfg.Repo, s.cfg.Worktree, "idle", nil, nil)
+			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
+				log.Printf("sidecar: warning: could not write minted instance_id: %v", err)
+			} else {
+				s.cfg.InstanceID = minted
+				log.Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
+			}
+		}
+	}
+
+	// B.3 Stage 2: Start the merge-queue watcher for coordinator sessions.
+	// This is transport-agnostic and must run for ALL transport shapes so that
+	// PI coordinator sessions receive merge-queue notifications exactly like
+	// opencode coordinator sessions.
+	//
+	// The watcher polls the pending_merges head on a 45s ticker and drives PRs
+	// through the merge lifecycle. It is started only when:
+	//   - AgentRole is "coordinator" (explicit), OR
+	//   - SessionName ends with "@main" (legacy heuristic).
+	// The watcher context is stored so Shutdown() can cancel it before the
+	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
+	// a terminal transition after AbandonWatchingMerges clears the rows).
+	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
+		if s.cfg.InstanceID != "" {
+			watcherCtx, watcherCancel := context.WithCancel(ctx)
+			s.mu.Lock()
+			s.mergeWatcherCancel = watcherCancel
+			s.mu.Unlock()
+			watcher := mergequeue.New(s.cfg.DB, s.cfg.InstanceID, s.cfg.SessionName, s.cfg.HTTPClient)
+			go watcher.Run(watcherCtx)
+			log.Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
+		} else {
+			log.Printf("sidecar: merge-queue watcher NOT started — no instance_id")
+		}
+	}
+
+	// B.3 Stage 3: transport-shape gate. Consult the harness registry to
 	// determine the wire-level shape and dispatch to the appropriate startup
-	// helper. The back half of Run (merge-queue watcher, SSE loop, shutdown)
-	// is shape-agnostic and is unchanged.
+	// helper. Socket-pipe and stdio-pipe helpers run the duplex loop and return
+	// when the session ends — the remaining blocks below (TCP server, SSE loop)
+	// are HTTP-port-specific and are only reached for TransportHTTPPort.
 	//
 	// When HarnessName is empty (back-compat: callers that pre-date this field)
 	// the registry lookup is skipped and we fall through to runStartupHTTP,
@@ -539,52 +591,6 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			}
 		}()
 		log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
-	}
-
-	// Mint or load instance_id. The sidecar is the single owner of session
-	// identity. When --instance-id was passed at spawn time, s.cfg.InstanceID
-	// is already set (fast path). Otherwise, query the DB: if the row has a
-	// non-NULL instance_id, load it; if not, mint a fresh UUID and write it.
-	// This runs before the merge-queue watcher so the watcher always has an
-	// identity to key on.
-	if s.cfg.InstanceID == "" && s.cfg.DB != nil {
-		status, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
-		if status != nil && status.InstanceID != nil && *status.InstanceID != "" {
-			s.cfg.InstanceID = *status.InstanceID
-			log.Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
-		} else {
-			minted := uuid.New().String()
-			// Defensively ensure the row exists before writing instance_id.
-			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, s.cfg.Repo, s.cfg.Worktree, "idle", nil, nil)
-			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
-				log.Printf("sidecar: warning: could not write minted instance_id: %v", err)
-			} else {
-				s.cfg.InstanceID = minted
-				log.Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
-			}
-		}
-	}
-
-	// Start the merge-queue watcher for coordinator sessions. The watcher polls
-	// the pending_merges head on a 45s ticker and drives PRs through the merge
-	// lifecycle. It is started only when:
-	//   - AgentRole is "coordinator" (explicit), OR
-	//   - SessionName ends with "@main" (legacy heuristic).
-	// The watcher context is stored so Shutdown() can cancel it before the
-	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
-	// a terminal transition after AbandonWatchingMerges clears the rows).
-	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
-		if s.cfg.InstanceID != "" {
-			watcherCtx, watcherCancel := context.WithCancel(ctx)
-			s.mu.Lock()
-			s.mergeWatcherCancel = watcherCancel
-			s.mu.Unlock()
-			watcher := mergequeue.New(s.cfg.DB, s.cfg.InstanceID, s.cfg.SessionName, s.cfg.HTTPClient)
-			go watcher.Run(watcherCtx)
-			log.Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
-		} else {
-			log.Printf("sidecar: merge-queue watcher NOT started — no instance_id")
-		}
 	}
 
 	// Wrap ctx with a cancel so the startup-timeout goroutine (bwrap mode only)

@@ -10,7 +10,7 @@ name: validate-flakes
       - '.github/workflows/**'
   workflow_dispatch:
 jobs:
-  build-linux:
+  validate-flakes:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
