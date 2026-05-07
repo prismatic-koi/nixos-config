@@ -255,11 +255,14 @@ func proxyCheckin(apiURL, session string, limit int, before, after *string, type
 }
 
 // proxyPrompt proxies a prompt delivery request to the host-API sidecar.
-// apiURL is the value of PRISM_HOST_API.
-func proxyPrompt(apiURL, session, prompt string) error {
+// apiURL is the value of PRISM_HOST_API. deliverAs controls the delivery mode
+// ("steer", "followUp", or "nextTurn") and is forwarded as the "deliver_as"
+// JSON field so the sidecar can inject the prompt at the right time.
+func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 	return proxyToHostAPI(apiURL, "/prompt", map[string]any{
-		"session": session,
-		"prompt":  prompt,
+		"session":    session,
+		"prompt":     prompt,
+		"deliver_as": deliverAs,
 	}, nil)
 }
 
