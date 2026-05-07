@@ -421,15 +421,77 @@ describe("dispatchInboundFrame: prompt", () => {
     })
   })
 
-  it("translates nextTurn into an option-less call (PI decides)", async () => {
+  it("nextTurn while idle (isIdle=true) calls bare sendUserMessage", async () => {
     const { api, calls, emit } = makeMockApi()
+    // Default mock: isIdle is undefined (absent, older runtime) — treated as idle=true.
     await dispatchInboundFrame(
       { type: "prompt", text: "now", deliver_as: "nextTurn" },
       api,
       emit,
     )
     assert.equal(calls.sendUserMessage[0].content, "now")
-    assert.equal(calls.sendUserMessage[0].options, undefined)
+    assert.equal(
+      calls.sendUserMessage[0].options,
+      undefined,
+      "nextTurn while idle must call bare sendUserMessage (no deliverAs option)",
+    )
+  })
+
+  it("nextTurn while streaming (isIdle=false) routes to followUp", async () => {
+    const { api, calls, emit } = makeMockApi()
+    // Override isIdle to simulate a mid-stream runtime.
+    api.isIdle = () => false
+    await dispatchInboundFrame(
+      { type: "prompt", text: "queued", deliver_as: "nextTurn" },
+      api,
+      emit,
+    )
+    assert.equal(calls.sendUserMessage[0].content, "queued")
+    assert.deepEqual(
+      calls.sendUserMessage[0].options,
+      { deliverAs: "followUp" },
+      "nextTurn mid-stream must route to followUp to avoid the 'already processing' throw",
+    )
+  })
+
+  it("nextTurn with isIdle absent (older runtime) treats runtime as idle", async () => {
+    const { api, calls, emit } = makeMockApi()
+    // Explicitly ensure isIdle is absent on the api object (edge-case AC).
+    delete (api as Record<string, unknown>)["isIdle"]
+    await dispatchInboundFrame(
+      { type: "prompt", text: "legacy", deliver_as: "nextTurn" },
+      api,
+      emit,
+    )
+    assert.equal(calls.sendUserMessage[0].content, "legacy")
+    assert.equal(
+      calls.sendUserMessage[0].options,
+      undefined,
+      "absent isIdle must fall back to idle=true (bare sendUserMessage)",
+    )
+  })
+
+  it("nextTurn: sendUserMessage throw includes deliver_as and isIdle in error context", async () => {
+    const { api, calls, emit } = makeMockApi()
+    api.isIdle = () => false
+    api.sendUserMessage = () => {
+      throw new Error("invalid content shape")
+    }
+    await dispatchInboundFrame(
+      { type: "prompt", text: "bad", deliver_as: "nextTurn" },
+      api,
+      emit,
+    )
+    assert.equal(calls.errors.length, 1)
+    const errMsg = calls.errors[0].message
+    assert.ok(
+      errMsg.includes("deliver_as=nextTurn"),
+      `error should include deliver_as=nextTurn, got: ${errMsg}`,
+    )
+    assert.ok(
+      errMsg.includes("isIdle=false"),
+      `error should include isIdle=false, got: ${errMsg}`,
+    )
   })
 
   it("converts wire images (mime_type) to PI's mediaType ImageContent", async () => {

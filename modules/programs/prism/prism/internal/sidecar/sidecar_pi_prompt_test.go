@@ -11,12 +11,31 @@ package sidecar
 // The tests use the hostAPIHandler() directly (no real Unix socket needed).
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 )
+
+// jsonUnmarshal is a thin wrapper around json.Unmarshal for use in test
+// helpers that pass raw []byte from the pipe channel.
+func jsonUnmarshal(b []byte, v any) error {
+	// The pipe frames are JSONL — strip the trailing newline before unmarshalling.
+	return json.Unmarshal([]byte(strings.TrimRight(string(b), "\n")), v)
+}
+
+// containsAll reports whether s contains all of the provided substrings.
+func containsAll(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
+}
 
 // newPiSidecarForHostAPITest creates a Sidecar configured for the pi harness
 // and suitable for hostAPIHandler tests.
@@ -173,6 +192,116 @@ func TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight(t *testing.T) {
 	sc.mu.Unlock()
 	if inFlight {
 		t.Error("reviewingInFlight = true after review-complete delivery, want false")
+	}
+}
+
+// TestHostAPI_Prompt_DeliverAs_ForwardedToFrame verifies that the deliver_as
+// field from the POST /prompt request body is forwarded verbatim into the
+// prompt frame enqueued on the harness pipe channel. This is the key AC:
+// callers that set deliver_as="followUp" (e.g. notifyCoordinator) must have
+// their intent preserved end-to-end, not overridden with a hardcoded "nextTurn".
+func TestHostAPI_Prompt_DeliverAs_ForwardedToFrame(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantMode  string
+	}{
+		{
+			name:     "followUp is forwarded",
+			body:     `{"session":"myrepo@piworker","prompt":"follow","deliver_as":"followUp"}`,
+			wantMode: "followUp",
+		},
+		{
+			name:     "steer is forwarded",
+			body:     `{"session":"myrepo@piworker","prompt":"steer","deliver_as":"steer"}`,
+			wantMode: "steer",
+		},
+		{
+			name:     "nextTurn is forwarded",
+			body:     `{"session":"myrepo@piworker","prompt":"next","deliver_as":"nextTurn"}`,
+			wantMode: "nextTurn",
+		},
+		{
+			name:     "omitted defaults to nextTurn",
+			body:     `{"session":"myrepo@piworker","prompt":"default"}`,
+			wantMode: "nextTurn",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			if err := d.UpsertStatus("myrepo@piworker", "myrepo", "/wt", "active", nil, nil); err != nil {
+				t.Fatalf("seed DB: %v", err)
+			}
+
+			sc := newPiSidecarForHostAPITest(t, "myrepo@piworker", "myrepo", "worker", d)
+
+			// Inject a fake pipe channel so DeliverPrompt has somewhere to write.
+			fakePipeCh := make(chan []byte, 10)
+			sc.mu.Lock()
+			sc.harnessPipeOutCh = fakePipeCh
+			sc.mu.Unlock()
+
+			rr := doHostAPI(t, sc, http.MethodPost, "/prompt", tc.body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+			}
+
+			var frame map[string]string
+			select {
+			case raw := <-fakePipeCh:
+				if err := jsonUnmarshal(raw, &frame); err != nil {
+					t.Fatalf("unmarshal frame: %v", err)
+				}
+			default:
+				t.Fatal("expected a frame in pipe channel, but channel was empty")
+			}
+
+			if got := frame["deliver_as"]; got != tc.wantMode {
+				t.Errorf("frame deliver_as = %q, want %q", got, tc.wantMode)
+			}
+		})
+	}
+}
+
+// TestHostAPI_Prompt_DeliverAs_InvalidRejected verifies that the /prompt
+// handler rejects an unknown deliver_as value with HTTP 400 and does not
+// enqueue any frame — no deliver_as value bypasses the validation.
+func TestHostAPI_Prompt_DeliverAs_InvalidRejected(t *testing.T) {
+	d := openTestDB(t)
+	if err := d.UpsertStatus("myrepo@piworker", "myrepo", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
+
+	sc := newPiSidecarForHostAPITest(t, "myrepo@piworker", "myrepo", "worker", d)
+
+	// Inject a fake pipe channel to detect spurious frame delivery.
+	fakePipeCh := make(chan []byte, 10)
+	sc.mu.Lock()
+	sc.harnessPipeOutCh = fakePipeCh
+	sc.mu.Unlock()
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
+		`{"session":"myrepo@piworker","prompt":"hello","deliver_as":"bogus"}`)
+
+	// Expect 400 Bad Request.
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (invalid deliver_as), body=%s", rr.Code, rr.Body.String())
+	}
+
+	// Error body must mention the invalid value and the accepted set.
+	body := rr.Body.String()
+	if !containsAll(body, "bogus", "steer", "followUp", "nextTurn") {
+		t.Errorf("400 body %q should mention invalid value 'bogus' and accepted values", body)
+	}
+
+	// No frame must have been enqueued.
+	select {
+	case raw := <-fakePipeCh:
+		t.Errorf("unexpected frame enqueued after invalid deliver_as: %s", raw)
+	default:
+		// Good — nothing enqueued.
 	}
 }
 

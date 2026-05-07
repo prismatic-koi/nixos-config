@@ -540,7 +540,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /prompt
-	// Request:  {"session":"<target>", "prompt":"<text>"}
+	// Request:  {"session":"<target>", "prompt":"<text>", "deliver_as":"<mode>"}
 	// Permission: worker → own coordinator (@main) only;
 	//             coordinator → own repo any session, cross-repo coordinator only.
 	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
@@ -559,6 +559,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// unchanged — clearing on non-review prompts would prematurely end
 			// the reviewing window and reintroduce the race (#1372, AC #7).
 			Source string `json:"source,omitempty"`
+			// DeliverAs controls the delivery mode for same-session PI targets.
+			// Accepted values: "steer", "followUp", "nextTurn". When omitted the
+			// sidecar defaults to "nextTurn" (existing behaviour, backward
+			// compatible with callers that do not set this field). Unknown values
+			// are rejected with HTTP 400 before any frame is enqueued.
+			DeliverAs string `json:"deliver_as,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -570,6 +576,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Prompt == "" {
 			writeError(w, http.StatusBadRequest, "prompt is required")
+			return
+		}
+
+		// Validate deliver_as before any permission checks or delivery. Unknown
+		// values are rejected immediately so the caller gets a clear error
+		// instead of silently using the default.
+		deliverAs := req.DeliverAs
+		if deliverAs == "" {
+			deliverAs = "nextTurn"
+		} else if deliverAs != "steer" && deliverAs != "followUp" && deliverAs != "nextTurn" {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("invalid deliver_as %q: accepted values are \"steer\", \"followUp\", \"nextTurn\"", deliverAs))
 			return
 		}
 
@@ -609,8 +627,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					s.reviewingInFlight = false
 					s.mu.Unlock()
 				}
-				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s)", req.Session)
-				if !s.DeliverPrompt(req.Prompt, "nextTurn") {
+				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
+				if !s.DeliverPrompt(req.Prompt, deliverAs) {
 					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
 					return
 				}

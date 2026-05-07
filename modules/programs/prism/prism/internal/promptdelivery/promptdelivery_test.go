@@ -6,11 +6,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	_ "github.com/prismatic-koi/prism/internal/harness/pi" // register pi harness for ShapeOf("pi") in tests
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // TestDeliverToSession_OpencodePath verifies that DeliverToSession routes
@@ -38,7 +41,7 @@ func TestDeliverToSession_OpencodePath(t *testing.T) {
 		HarnessSessionID: &sid,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello opencode", nil, "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello opencode", nil, "", "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
@@ -59,7 +62,7 @@ func TestDeliverToSession_OpencodePath_NoPort(t *testing.T) {
 		// HarnessPort is nil — cannot deliver.
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "", "")
 	if err == nil {
 		t.Fatal("expected error for missing harness port, got nil")
 	}
@@ -79,7 +82,7 @@ func TestDeliverToSession_PiPath_MissingSocket(t *testing.T) {
 	}
 
 	// The socket path doesn't exist — we expect a clear error, not a hang.
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "", "")
 	if err == nil {
 		t.Fatal("expected error for missing socket, got nil")
 	}
@@ -111,7 +114,7 @@ func TestDeliverToSession_NilHarness(t *testing.T) {
 		HarnessSessionID: &sid,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello nil harness", nil, "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello nil harness", nil, "", "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
@@ -148,7 +151,7 @@ func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
 		return map[string]any{"custom_text": text, "extra": "field"}
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "custom body test", customBuilder, "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "custom body test", customBuilder, "", "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
@@ -157,5 +160,82 @@ func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
 	}
 	if gotBody["extra"] != "field" {
 		t.Errorf("extra = %v, want 'field'", gotBody["extra"])
+	}
+}
+
+// TestDeliverToSession_PiPath_DeliverAsForwarded verifies that DeliverToSession
+// forwards the deliverAs parameter as the "deliver_as" JSON field in the
+// /prompt POST body when the session uses the pi (TransportSocketPipe) harness.
+// This ensures callers that pass "followUp" (e.g. notifyCoordinator) have their
+// intent preserved end-to-end — not overridden with a hardcoded "nextTurn".
+func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
+	tests := []struct {
+		deliverAs string
+		want      string
+	}{
+		{deliverAs: "followUp", want: "followUp"},
+		{deliverAs: "steer", want: "steer"},
+		{deliverAs: "nextTurn", want: "nextTurn"},
+		{deliverAs: "", want: ""}, // empty → field omitted from body; sidecar defaults to nextTurn
+	}
+
+	for _, tc := range tests {
+		t.Run("deliverAs="+tc.deliverAs, func(t *testing.T) {
+			// Derive a session name that maps to a socket path we can control.
+			sessionName := "myrepo@feature"
+			sockPath, err := session.SidecarHostAPIPath(sessionName)
+			if err != nil {
+				t.Fatalf("resolve socket path: %v", err)
+			}
+
+			// Create the parent directory so the socket can be created there.
+			dir := sockPath[:strings.LastIndex(sockPath, "/")]
+			if mkErr := os.MkdirAll(dir, 0o700); mkErr != nil {
+				t.Fatalf("mkdir socket dir: %v", mkErr)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+			// Start a Unix-socket HTTP server that captures the /prompt body.
+			var gotBody map[string]string
+			lns, listenErr := net.Listen("unix", sockPath)
+			if listenErr != nil {
+				t.Fatalf("listen on socket: %v", listenErr)
+			}
+			srv := &http.Server{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					_ = json.Unmarshal(b, &gotBody)
+					w.WriteHeader(http.StatusOK)
+				}),
+			}
+			go func() { _ = srv.Serve(lns) }()
+			t.Cleanup(func() { _ = srv.Close() })
+
+			piHarness := "pi"
+			status := &db.Status{
+				SessionName: sessionName,
+				Harness:     &piHarness,
+			}
+
+			if deliverErr := promptdelivery.DeliverToSession(sessionName, status, "hello pi", nil, "", tc.deliverAs); deliverErr != nil {
+				t.Fatalf("DeliverToSession: %v", deliverErr)
+			}
+
+			// Verify deliver_as in the captured body.
+			if gotBody == nil {
+				t.Fatal("server received no request body")
+			}
+			if tc.want == "" {
+				// Empty deliverAs → field must be absent from the body.
+				if _, ok := gotBody["deliver_as"]; ok {
+					t.Errorf("deliver_as = %q in body, want absent (empty deliverAs omitted)",
+						gotBody["deliver_as"])
+				}
+			} else {
+				if got := gotBody["deliver_as"]; got != tc.want {
+					t.Errorf("deliver_as = %q, want %q", got, tc.want)
+				}
+			}
+		})
 	}
 }
