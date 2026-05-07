@@ -35,7 +35,7 @@ binds pipe.sock                                pi --mode rpc + extension
        │                                              │
        │  ◀── extension dials on session_start ─────  │
        │                                              │
-       │  ◀── hello (protocol_version=1, …) ────────  │
+       │  ◀── hello (protocol_version=2, …) ────────  │
        │  ─── hello_ack (session_name, role, …) ───▶  │
        │                                              │
        │  ◀── state_change, tool_call, tool_result, ──│ (PI hooks
@@ -210,13 +210,14 @@ metadata.
 ### 4.1 First frame: extension → sidecar
 
 ```json
-{"type":"hello","protocol_version":1,"harness":"pi","harness_version":"0.66.1"}
+{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1"}
 ```
 
 - `type` (string, required) — literal `"hello"`.
 - `protocol_version` (integer, required) — the wire protocol version the
-  extension speaks. Version 1 is what we ship. See §8 for how a future
-  version 2 may extend the schema.
+  extension speaks. Current version is **2** (bumped from 1 in #1434;
+  extension now emits `state_change{finished}` directly at turn
+  boundaries instead of `state_change{idle}`). See §8 for evolution.
 - `harness` (string, required) — the harness identifier. For PI this is
   the literal `"pi"`. The sidecar uses this to validate that the connected
   extension matches the harness configured for the session.
@@ -233,14 +234,13 @@ event frame. Sending any other frame first is a protocol violation
 In response, the sidecar sends:
 
 ```json
-{"type":"hello_ack","protocol_version":1,"session_name":"prism@feature","session_role":"worker","isolation_mode":"sandbox-exec","instance_id":"01HZ..."}
+{"type":"hello_ack","protocol_version":2,"session_name":"prism@feature","session_role":"worker","isolation_mode":"sandbox-exec","instance_id":"01HZ..."}
 ```
 
 - `type` (string, required) — literal `"hello_ack"`.
 - `protocol_version` (integer, required) — the wire protocol version the
-  **sidecar** speaks. The lower of `hello.protocol_version` and the
-  sidecar's max supported version is selected. For v1 this is always
-  `1`. See §8.
+  **sidecar** speaks. Must match the extension's version exactly; a
+  mismatch is rejected per §4.3. Current value is `2`. See §8.
 - `session_name` (string, required) — the prism session name (e.g.
   `"<repo>@<branch>"`). The extension surfaces this in PI's session-name
   display (§3.5 of #1210) so the user sees the prism context.
@@ -268,17 +268,17 @@ a clear error and disconnects.
 - If `hello.protocol_version` is **higher** than the sidecar's max
   supported version: the sidecar logs the version skew, sends a clear
   rejection (`{"type":"error","code":"protocol_version_unsupported",
-  "message":"sidecar supports protocol_version=1; extension sent 2"}`),
+  "message":"sidecar supports protocol_version=2; extension sent 3"}`),  <!-- example -->
   closes the connection. The session transitions to `error`.
 - If `hello.protocol_version` is **lower** than the sidecar's minimum
   supported version: same behaviour as above, with a `code` of
   `"protocol_version_too_old"`.
 - If `harness` is not the registered harness for this session: same
   behaviour, `code` of `"harness_mismatch"`.
-- For v1 there is no negotiation — `hello.protocol_version` must equal
-  the sidecar's max (which is `1`). When v2 ships, the sidecar will
-  accept both v1 and v2 extensions and select the lower of the two
-  values; this is described concretely in §8.
+- Versions are not negotiated; `hello.protocol_version` must exactly
+  equal the sidecar's supported version (currently `2`). A mismatch
+  results in rejection regardless of direction. §8 describes future
+  evolution.
 
 ### 4.4 Why this shape
 
@@ -310,7 +310,7 @@ For each frame:
 See §4.1.
 
 ```json
-{"type":"hello","protocol_version":1,"harness":"pi","harness_version":"0.66.1"}
+{"type":"hello","protocol_version":2,"harness":"pi","harness_version":"0.66.1"}
 ```
 
 ### 5.2 `state_change`
@@ -324,21 +324,29 @@ PI lifecycle state transitions, mapped to prism's `agent.AgentState` enum.
 - `state` (string, required) — one of:
   - `"active"` — agent is processing (entered on `before_agent_start`,
     or on `auto_retry_start`/`turn_start` after an idle).
-  - `"idle"` — agent is awaiting input. The extension emits this after
-    PI's `turn_end` when no pending steering or follow-up messages
-    are queued. The sidecar applies its standard idle-debounce window
-    (`internal/sidecar/sidecar.go:IdleDebounce`, currently 2s) before
-    materialising the transition.
   - `"waiting"` — agent is waiting on out-of-band input (e.g.
     permission prompt, extension UI dialog). Extension emits this when
     PI raises an `extension_ui_request` of `select`/`confirm`/`input`/
     `editor`.
-  - `"finished"` — terminal: the session has completed cleanly.
-    Emitted by the extension on PI's `session_shutdown` hook
-    (immediately followed by §5.10).
+  - `"finished"` — turn-boundary terminal signal (protocol v2, #1434).
+    Emitted by the extension at the end of each clean turn
+    (`stopReason=stop`, no pending messages, no pending review call).
+    The sidecar applies a **2 s debounce** (`handleSessionFinished`,
+    `internal/sidecar/sidecar.go:IdleDebounce`) before writing
+    `StateFinished` and calling `notifyCoordinator()`. A `turn_start`
+    frame arriving within the 2 s window cancels the debounce and
+    writes `StateActive` instead — the session does not transition to
+    `StateFinished`. This applies uniformly to all session types
+    (workers, coordinators, and review agents).
   - `"error"` — terminal: the session has hit an unrecoverable error.
     Emitted on `auto_retry_end` with `success=false`, or on extension
     catch-all error handlers.
+
+**Removed in protocol v2:** `state_change{idle}` is no longer emitted
+by the extension at turn boundaries. Any sidecar receiving this frame
+from a pre-v2 extension would have rejected the connection at the
+`hello_ack` handshake due to the protocol version mismatch, so no
+silent state corruption can occur.
 
 The sidecar validates the value against `agent.ValidTransitions`
 (`internal/agent/machine.go`). Invalid transitions are logged and the
@@ -503,9 +511,10 @@ The sidecar persists both as new event types on `agent_events`.
 
 ### 5.10 `session_shutdown`
 
-Clean shutdown signal. Emitted by the extension on PI's `session_shutdown`
-hook, immediately after a terminal `state_change` (typically
-`{"state":"finished"}`).
+Process-exit signal. Emitted by the extension on PI's `session_shutdown`
+hook (fired when the PI process is about to exit). This is a **process-exit
+only** signal — it is never emitted at turn boundaries (#1432).
+Per-turn completion is signalled via `state_change{finished}` (§5.2).
 
 ```json
 {"type":"session_shutdown"}
@@ -515,12 +524,10 @@ hook, immediately after a terminal `state_change` (typically
 
 Sidecar response:
 
-1. Mark the session finished if not already (apply idle-debounce as
-   normal).
-2. Close the socket connection cleanly.
-3. The extension is expected to close its end immediately after sending
-   `session_shutdown`; if it does not, the sidecar closes after a 1s
-   grace window.
+1. Flush any partial accumulator (in-progress assistant turn text).
+2. Cancel any in-flight finished-debounce or recovery timer.
+3. Write `StateFinished` to the DB and call `notifyCoordinator()`.
+4. Close the socket connection cleanly.
 
 This is the **clean** termination path. Connection drops without a
 preceding `session_shutdown` are handled per §7.2.
@@ -731,8 +738,8 @@ behaviour for opencode-on-bwrap.
 The sidecar distinguishes two kinds of disconnect:
 
 **Clean shutdown** — a `session_shutdown` frame (§5.10) precedes the drop.
-The sidecar marks the session `finished` (subject to idle-debounce) and
-exits its accept loop. No reconnect is attempted.
+The sidecar marks the session `finished` immediately (no debounce on the
+clean shutdown path) and exits its accept loop. No reconnect is attempted.
 
 **Unexpected drop** — the connection closes (FIN or RST) without a
 preceding `session_shutdown`. This is the normal path for PI's `/new`
@@ -924,15 +931,16 @@ single most important forward-compat guarantee in the protocol.
 
 ### 8.3 Sharing event-handling code paths between harnesses
 
-The sidecar's downstream event-handling code (idle debounce, state
+The sidecar's downstream event-handling code (finished debounce, state
 machine, DB writes, dashboard sentinel touches) is **harness-agnostic**
 by design. The same code paths handle opencode SSE events and PI socket
 frames once they are normalised into `agent_events` writes.
 
 Specifically, the following sidecar internals are shared:
 
-- `internal/sidecar/sidecar.go:IdleDebounce` (the 2s idle-to-finished
-  debounce window).
+- `internal/sidecar/sidecar.go:IdleDebounce` (the 2 s finished-debounce
+  window; used by both `handleSessionFinished` on the PI path and
+  `handleSessionIdle` on the opencode SSE path).
 - `internal/sidecar/sidecar.go:upsertState` and `writeStateChange` (the
   state-machine writes).
 - `internal/sidecar/sidecar.go:writeEvent` (the generic event writer).
@@ -1009,7 +1017,7 @@ B.3 §"Position 3" of the
 
 ### 9.3 Out of scope for this document
 
-- The sidecar's own state machine internals (idle-debounce timing,
+- The sidecar's own state machine internals (finished-debounce timing,
   reconnect-after-crash policy beyond §7.6, etc.) — these are
   documented in `internal/sidecar/sidecar.go` and apply
   unchanged.
