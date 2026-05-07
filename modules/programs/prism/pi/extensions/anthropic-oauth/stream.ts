@@ -112,7 +112,71 @@ export function buildAnthropicSystemPrompt(
   return blocks.length > 0 ? blocks : undefined
 }
 
-function sanitizeSystemText(text: string): string {
+/**
+ * Carve out machine-readable regions from `text` so the `\bpi\b` regex does
+ * not corrupt paths, identifiers, or structured data.  Each carved region is
+ * replaced with a UUID-based placeholder; the array returned in parallel
+ * maps placeholder index → original text so callers can splice them back.
+ */
+function carveOutRegions(text: string): { scrubbed: string; regions: string[] } {
+  const regions: string[] = []
+  const prefix = "\x00CARVE"
+  const suffix = "\x00"
+
+  function placeholder(original: string): string {
+    const idx = regions.length
+    regions.push(original)
+    return `${prefix}${idx}${suffix}`
+  }
+
+  let s = text
+
+  // 1. <available_skills>…</available_skills> (whole block, greedy across newlines)
+  s = s.replace(/<available_skills>[\s\S]*?<\/available_skills>/g, placeholder)
+
+  // 2. Content of <location>, <name>, <path> elements (anywhere in prompt)
+  s = s.replace(/<(location|name|path)>([\s\S]*?)<\/\1>/g, (_m, tag: string, body: string) =>
+    `<${tag}>${placeholder(body)}</${tag}>`,
+  )
+
+  // 3. Fenced code blocks (``` or ~~~, with optional language tag)
+  s = s.replace(/(`{3,}|~{3,})[^\n]*\n[\s\S]*?\1/g, placeholder)
+
+  // 4. Inline code spans (`…`)
+  s = s.replace(/`[^`\n]+`/g, placeholder)
+
+  // 5. Absolute Unix paths, ~ paths, and URLs that are whitespace-bounded
+  //    Matches tokens starting with /, ~/, http://, https://, file://
+  s = s.replace(
+    /(?<=\s|^)(\/[^\s]+|~\/[^\s]+|https?:\/\/[^\s]+|file:\/\/[^\s]+)(?=\s|$)/gm,
+    placeholder,
+  )
+
+  return { scrubbed: s, regions }
+}
+
+/**
+ * Restore the carved-out regions into `text` using the `regions` array
+ * produced by `carveOutRegions`.
+ */
+function restoreRegions(text: string, regions: string[]): string {
+  // Replace every placeholder with its original content.
+  // We iterate until stable to handle the unlikely case of nested placeholders.
+  let s = text
+  const prefix = "\x00CARVE"
+  const suffix = "\x00"
+  let changed = true
+  while (changed) {
+    changed = false
+    s = s.replace(new RegExp(`${prefix}(\\d+)${suffix}`, "g"), (_m, idx: string) => {
+      changed = true
+      return regions[parseInt(idx, 10)] ?? _m
+    })
+  }
+  return s
+}
+
+export function sanitizeSystemText(text: string): string {
   const paragraphs = text.split(/\n\n+/)
   const filtered = paragraphs.filter((paragraph) => {
     const lower = paragraph.toLowerCase()
@@ -120,11 +184,17 @@ function sanitizeSystemText(text: string): string {
     return !PI_REMOVAL_ANCHORS.some((anchor) => paragraph.includes(anchor))
   })
 
-  return filtered
-    .join("\n\n")
+  const joined = filtered.join("\n\n")
+
+  // Carve out machine-readable regions before applying the \bpi\b substitution
+  // so that paths, identifiers, and structured content reach the model verbatim.
+  const { scrubbed, regions } = carveOutRegions(joined)
+
+  const substituted = scrubbed
     .replace(/\bpi\b/g, "Claude Code")
     .replace(/\bPi\b/g, "Claude Code")
-    .trim()
+
+  return restoreRegions(substituted, regions).trim()
 }
 
 // ──────────────────────────────────────────────
