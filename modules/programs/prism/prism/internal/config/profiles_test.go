@@ -290,6 +290,7 @@ func sampleProfilesFileWithReview() *config.ProfilesFile {
 	pf.ContainerReviewSecurityConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-security":{}}}`
 	pf.ContainerReviewQaConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-qa":{}}}`
 	pf.ContainerReviewContextConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-context":{}}}`
+	pf.ContainerInvestigateConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"investigate":{}}}`
 	return pf
 }
 
@@ -439,6 +440,34 @@ func TestContainerConfigForRole_ReviewContext(t *testing.T) {
 	}
 }
 
+// TestContainerConfigForRole_Investigate verifies the investigate per-agent blob.
+func TestContainerConfigForRole_Investigate(t *testing.T) {
+	pf := sampleProfilesFileWithReview()
+	result, err := config.ContainerConfigForRole(pf, "investigate")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == "" {
+		t.Fatal("expected non-empty result for role=investigate")
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+	agents, ok := cfg["agent"].(map[string]any)
+	if !ok {
+		t.Fatal("expected 'agent' key in investigate config blob")
+	}
+	if _, ok := agents["investigate"]; !ok {
+		t.Error("expected 'investigate' agent in investigate config blob")
+	}
+	for _, other := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
+		if _, ok := agents[other]; ok {
+			t.Errorf("investigate blob must not declare agent %q", other)
+		}
+	}
+}
+
 // TestContainerConfigForRole_Worker verifies that "worker" still returns the
 // worker blob (regression guard).
 func TestContainerConfigForRole_Worker(t *testing.T) {
@@ -487,6 +516,7 @@ func TestContainerConfigForRole_NilProfilesFile(t *testing.T) {
 	roles := []string{
 		"worker", "coordinator",
 		"review-goal", "review-code", "review-security", "review-qa", "review-context",
+		"investigate",
 		"review", "plan", "unknown",
 	}
 	for _, role := range roles {
