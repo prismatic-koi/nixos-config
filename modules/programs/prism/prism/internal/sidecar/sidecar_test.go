@@ -59,6 +59,8 @@ type testClock struct {
 	mu     sync.Mutex
 	now    time.Time
 	timers []*testTimer
+	// sleeps records the durations passed to Sleep, in call order.
+	sleeps []time.Duration
 }
 
 func newTestClock() *testClock {
@@ -77,6 +79,23 @@ func (c *testClock) AfterFunc(d time.Duration, f func()) Timer {
 	t := &testTimer{fn: f}
 	c.timers = append(c.timers, t)
 	return t
+}
+
+// Sleep records the requested duration and returns immediately, avoiding any
+// real wall-clock wait. Callers can inspect Sleeps() to assert on backoff.
+func (c *testClock) Sleep(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sleeps = append(c.sleeps, d)
+}
+
+// Sleeps returns a copy of all durations passed to Sleep, in call order.
+func (c *testClock) Sleeps() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]time.Duration, len(c.sleeps))
+	copy(out, c.sleeps)
+	return out
 }
 
 // LastTimer returns the most recently created timer.

@@ -101,7 +101,7 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			time.Sleep(backoff[attempt-2])
+			s.cfg.Clock.Sleep(backoff[attempt-2])
 		}
 
 		targetSID, validationErr := validateOrRefreshCoordinatorSID(
@@ -279,7 +279,7 @@ func (s *Sidecar) notifyCoordinator() {
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if attempt > 1 {
-			time.Sleep(backoff[attempt-2])
+			s.cfg.Clock.Sleep(backoff[attempt-2])
 		}
 
 		// Pre-delivery SID validation: call GET /session to confirm the stored
