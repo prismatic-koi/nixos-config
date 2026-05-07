@@ -736,12 +736,12 @@ export function redactLine(line: string): string {
 // Frame writer — synchronous (per wire spec §7.5).
 // ---------------------------------------------------------------------------
 
-interface FrameWriter {
+export interface FrameWriter {
   write(frame: Record<string, unknown>): void
   close(): void
 }
 
-function makeFrameWriter(socket: net.Socket): FrameWriter {
+export function makeFrameWriter(socket: net.Socket): FrameWriter {
   let closed = false
   return {
     write(frame) {
@@ -1711,15 +1711,19 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     lastCtx = ctx
-    // Emit session_shutdown and close the writer. The pipe must stay open
-    // across /new and /resume reconnects during a session — writer.close()
-    // (not session_shutdown) is the signal that triggers pipe cleanup.
+    // Do NOT send a session_shutdown wire frame here. The PI `session_shutdown`
+    // hook fires on /new, /resume, /fork, and process exit — not only on
+    // process exit. The wire frame (per §5.10) is process-exit only: the
+    // sidecar treats it as terminal, breaks the reconnect loop, and removes
+    // pipe.sock. Sending it here would cause the sidecar to delete pipe.sock
+    // before PI fires `session_start` for the new/resumed session, resulting
+    // in ECONNRESET when the extension re-dials (#1440 / regression of #1432).
     //
-    // Per wire spec §5.10: session_shutdown is process-exit only and is never
-    // emitted at turn boundaries (#1432). The turn_end → state_change{finished}
-    // path handles per-turn completion for all session types (#1434).
+    // Only close the writer (issues a TCP FIN / half-close). The sidecar reads
+    // EOF, leaves the listener open, and waits for a reconnect. Process-exit
+    // cleanup of pipe.sock is handled by the sidecar's own Shutdown() path and
+    // by the reconnect-timeout path.
     if (writer) {
-      writer.write({ type: "session_shutdown" })
       writer.close()
     }
     if (socket && !connected) {

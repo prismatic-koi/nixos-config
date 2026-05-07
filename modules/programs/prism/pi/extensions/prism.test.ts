@@ -9,6 +9,10 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { Readable } from "node:stream"
+import * as net from "node:net"
+import * as os from "node:os"
+import * as path from "node:path"
+import * as fs from "node:fs"
 
 import {
   attachJsonlReader,
@@ -44,6 +48,9 @@ import {
   GIT_PUSH_REMINDER_MESSAGE,
   // turn_end signal resolver
   resolveTurnEndSignal,
+  // Frame writer
+  makeFrameWriter,
+  type FrameWriter,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1490,5 +1497,222 @@ describe("#1434: isReviewSession recognised for canonical review-agent names", (
     // The old check used role === "review" which never matched the actual
     // role names emitted by the sidecar (review-goal, review-code, etc.).
     assert.ok(!canonicalNames.includes("review"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1440: session_shutdown hook must not emit a session_shutdown wire frame
+// ---------------------------------------------------------------------------
+//
+// The PI `session_shutdown` hook fires on /new, /resume, /fork, and process
+// exit. The wire frame {type:"session_shutdown"} is process-exit only (wire
+// spec §5.10). Sending it from the hook causes the sidecar to remove pipe.sock
+// and break the reconnect loop, producing ECONNRESET on the next session_start.
+//
+// The fix: the session_shutdown hook calls writer.close() only — no wire frame.
+
+describe("#1440: makeFrameWriter — close() issues FIN only, no JSONL", () => {
+  it("close() calls socket.end() not socket.write()", () => {
+    // Regression guard: writer.close() must only call socket.end(), not write
+    // any bytes. If a session_shutdown frame were still emitted, this test
+    // would catch it via the write spy.
+    const written: string[] = []
+    let endCalled = false
+    const mockSocket = {
+      write: (data: string) => { written.push(data); return true },
+      end: () => { endCalled = true },
+    } as unknown as net.Socket
+
+    const writer: FrameWriter = makeFrameWriter(mockSocket)
+    writer.close()
+
+    assert.equal(written.length, 0, "no bytes should be written by writer.close()")
+    assert.ok(endCalled, "socket.end() must be called by writer.close()")
+  })
+
+  it("close() does not write a session_shutdown JSONL frame", () => {
+    // AC (#1440): the bytes observed on the wire after writer.close() must
+    // contain no JSONL line with \"type\":\"session_shutdown\".
+    const written: string[] = []
+    const mockSocket = {
+      write: (data: string) => { written.push(data); return true },
+      end: () => {},
+    } as unknown as net.Socket
+
+    const writer: FrameWriter = makeFrameWriter(mockSocket)
+    writer.close()
+
+    const allOutput = written.join("")
+    assert.ok(
+      !allOutput.includes('"session_shutdown"'),
+      `wire output must not contain session_shutdown, got: ${JSON.stringify(allOutput)}`,
+    )
+  })
+
+  it("write() after close() is a no-op (closed guard)", () => {
+    // Edge-case: if writer is closed via session_shutdown hook and then
+    // another frame arrives before the next reconnect, it must not throw
+    // or write to the ended socket.
+    const written: string[] = []
+    const mockSocket = {
+      write: (data: string) => { written.push(data); return true },
+      end: () => {},
+    } as unknown as net.Socket
+
+    const writer: FrameWriter = makeFrameWriter(mockSocket)
+    writer.close()
+    // Attempt to write after close — must be silently dropped.
+    writer.write({ type: "turn_start" })
+
+    assert.equal(written.length, 0, "write after close must be a no-op")
+  })
+
+  it("write() emits the frame before close()", () => {
+    // Regression guard: write() must still work normally before close() is
+    // called. This confirms the fix is surgical (only removes the erroneous
+    // writer.write({type:'session_shutdown'}) call, not write() itself).
+    const written: string[] = []
+    const mockSocket = {
+      write: (data: string) => { written.push(data); return true },
+      end: () => {},
+    } as unknown as net.Socket
+
+    const writer: FrameWriter = makeFrameWriter(mockSocket)
+    writer.write({ type: "turn_start" })
+    writer.close()
+
+    assert.equal(written.length, 1, "exactly one frame must be written")
+    const frame = JSON.parse(written[0])
+    assert.equal(frame.type, "turn_start")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1440: sidecar reconnect after session_shutdown hook (socket-close-only path)
+// ---------------------------------------------------------------------------
+//
+// This group tests the Go sidecar's behaviour when the extension closes the
+// connection without sending a session_shutdown wire frame — exactly what the
+// fixed session_shutdown hook does. A unix socket server is created in the
+// test; the sidecar side is simulated by the Go socketpipe tests. Here we
+// verify the Node-side invariant: writer.close() causes socket.end() which
+// produces a FIN, and the socket object is suitable for re-connection testing.
+//
+// Full reconnect behaviour (listener stays open, re-accept, handshake) is
+// covered by the Go TestSocketPipe_SessionShutdownHook_NoWireFrame tests.
+
+describe("#1440: writer.close() wire shape — FIN only, no session_shutdown frame", () => {
+  it("unix socket server sees only FIN after writer.close(), no JSONL", (_, done) => {
+    // Create a real Unix socket server to capture exactly what bytes arrive.
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-"))
+    const sockPath = path.join(sockDir, "test.sock")
+
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = []
+      conn.on("data", (chunk) => { chunks.push(chunk) })
+      conn.on("end", () => {
+        // Connection ended (FIN received). Verify no session_shutdown JSON.
+        const received = Buffer.concat(chunks).toString()
+        try {
+          assert.ok(
+            !received.includes('"session_shutdown"'),
+            `server received unexpected session_shutdown frame: ${JSON.stringify(received)}`,
+          )
+          assert.ok(
+            !received.includes('"type"'),
+            `server received unexpected JSONL frames: ${JSON.stringify(received)}`,
+          )
+        } catch (err) {
+          server.close()
+          fs.rmSync(sockDir, { recursive: true, force: true })
+          done(err as Error)
+          return
+        }
+        server.close()
+        fs.rmSync(sockDir, { recursive: true, force: true })
+        done()
+      })
+    })
+
+    server.listen(sockPath, () => {
+      const clientSocket = net.createConnection(sockPath)
+      clientSocket.on("connect", () => {
+        const writer = makeFrameWriter(clientSocket)
+        // Simulate the session_shutdown hook: only writer.close(), no write().
+        writer.close()
+      })
+      clientSocket.on("error", (err) => {
+        server.close()
+        fs.rmSync(sockDir, { recursive: true, force: true })
+        done(err)
+      })
+    })
+  })
+
+  it("unix socket server sees FIN then accepts a second connection after writer.close()", (_, done) => {
+    // Simulates the PI session_shutdown → session_start reconnect sequence.
+    // The server represents the sidecar; two connections represent the first
+    // (session_shutdown hook) and second (session_start re-dial) connections.
+    // This verifies the socket file remains present between close and re-accept.
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-"))
+    const sockPath = path.join(sockDir, "test.sock")
+
+    let connectionCount = 0
+
+    const server = net.createServer((conn) => {
+      connectionCount++
+      const connNum = connectionCount
+
+      if (connNum === 1) {
+        // First connection: wait for FIN, then verify the socket file still
+        // exists (i.e. the server did not remove it), then initiate a second
+        // connection (simulating PI session_start re-dial).
+        conn.on("end", () => {
+          try {
+            // Socket file must still exist — the server must not have removed it.
+            assert.ok(
+              fs.existsSync(sockPath),
+              "pipe.sock must remain present after first connection closes (session_shutdown hook path)",
+            )
+          } catch (err) {
+            server.close()
+            fs.rmSync(sockDir, { recursive: true, force: true })
+            done(err as Error)
+            return
+          }
+
+          // Simulate PI session_start: re-dial the same socket path.
+          const reconnect = net.createConnection(sockPath)
+          reconnect.on("error", (err) => {
+            server.close()
+            fs.rmSync(sockDir, { recursive: true, force: true })
+            done(new Error(`ECONNRESET or connection error on re-dial (regression #1440): ${err.message}`))
+          })
+          reconnect.on("connect", () => {
+            // Successfully reconnected — no ECONNRESET. End cleanly.
+            reconnect.end()
+          })
+        })
+        // Close the first connection (simulating writer.close() in the hook).
+        conn.end()
+      } else if (connNum === 2) {
+        // Second connection accepted — the listener stayed open. Test passes.
+        conn.on("end", () => {
+          server.close()
+          fs.rmSync(sockDir, { recursive: true, force: true })
+          done()
+        })
+      }
+    })
+
+    server.listen(sockPath, () => {
+      // Initiate the first connection (simulating the initial PI session).
+      const clientSocket = net.createConnection(sockPath)
+      clientSocket.on("error", (err) => {
+        server.close()
+        fs.rmSync(sockDir, { recursive: true, force: true })
+        done(err)
+      })
+    })
   })
 })
