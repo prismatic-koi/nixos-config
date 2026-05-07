@@ -25,8 +25,7 @@ SOFTWARE.
 Origin: https://github.com/leohenon/pi-anthropic-oauth
 
 Files in this vendored extension that primarily originate from this upstream:
-  - index.ts   (pi.registerProvider wrapper structure, ensureClaudeCodeSymlink,
-                getAnthropicModels, model list fallback)
+  - index.ts   (pi.registerProvider wrapper structure, getAnthropicModels, model list fallback)
   - auth.ts    (OAuth PKCE flow, local callback server, loginAnthropic,
                 refreshAnthropicToken, CLIENT_ID, TOKEN_URL, AUTHORIZE_URL)
   - stream.ts  (pi message conversion patterns from convert.ts + prompt.ts;
