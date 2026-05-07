@@ -62,6 +62,12 @@
       internal = true;
       description = "Serialised opencode.json blob for review-context containers.";
     };
+    nx.programs.prism.opencode.containerInvestigateConfigJson = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      internal = true;
+      description = "Serialised opencode.json blob for investigate containers.";
+    };
   };
   config = lib.mkIf config.nx.programs.prism.opencode.enable (
     let
@@ -884,6 +890,61 @@
         "gh run list *" = "allow";
       };
 
+      # investigate: read-only base plus gh issue/PR read commands (same as
+      # review-context) plus prism logs and git blame. All write-path commands
+      # are explicitly denied on top of the deny-all default.
+      containerInvestigateBashCommands = containerReviewBaseBashCommands // {
+        # gh read-only: issue and PR inspection
+        "gh issue view *" = "allow";
+        "gh issue list *" = "allow";
+        "gh pr view *" = "allow";
+        "gh pr list *" = "allow";
+        "gh pr diff *" = "allow";
+        "gh pr checks *" = "allow";
+        "gh repo view *" = "allow";
+        "gh run view *" = "allow";
+        "gh run list *" = "allow";
+        # prism read-only introspection (prism logs not in base)
+        "prism logs" = "allow";
+        "prism logs *" = "allow";
+        # git blame (not in base)
+        "git blame *" = "allow";
+        # Explicit denies — belt-and-suspenders over deny-all default.
+        # These must be listed here to make the intent auditable.
+        "gh issue create" = "deny";
+        "gh issue create *" = "deny";
+        "gh issue edit" = "deny";
+        "gh issue edit *" = "deny";
+        "gh issue close" = "deny";
+        "gh issue close *" = "deny";
+        "gh issue comment" = "deny";
+        "gh issue comment *" = "deny";
+        "gh pr create" = "deny";
+        "gh pr create *" = "deny";
+        "gh pr edit" = "deny";
+        "gh pr edit *" = "deny";
+        "gh pr merge" = "deny";
+        "gh pr merge *" = "deny";
+        "gh pr close" = "deny";
+        "gh pr close *" = "deny";
+        "gh pr review" = "deny";
+        "gh pr review *" = "deny";
+        "gh pr comment" = "deny";
+        "gh pr comment *" = "deny";
+        "git push" = "deny";
+        "git push *" = "deny";
+        "git commit" = "deny";
+        "git commit *" = "deny";
+        "git add" = "deny";
+        "git add *" = "deny";
+        "git rebase" = "deny";
+        "git rebase *" = "deny";
+        "git reset" = "deny";
+        "git reset *" = "deny";
+        "prism merges" = "deny";
+        "prism merges *" = "deny";
+      };
+
       # Shared deny-by-default bash base for all *host* review agents.
       # Mirrors containerReviewBaseBashCommands but for bwrap/host-mode sessions:
       # same deny-all default, same read-only allowlist, and explicit denies for
@@ -990,6 +1051,61 @@
         "gh run list *" = "allow";
       };
 
+      # investigate host: read-only base plus gh issue/PR read commands plus
+      # prism logs and git blame. Explicit write-path denies are
+      # belt-and-suspenders on top of the deny-all default.
+      hostInvestigateBashCommands = hostReviewBashCommands // {
+        # gh read-only: issue and PR inspection
+        "gh issue view *" = "allow";
+        "gh issue list *" = "allow";
+        "gh pr view *" = "allow";
+        "gh pr list *" = "allow";
+        "gh pr diff *" = "allow";
+        "gh pr checks *" = "allow";
+        "gh repo view *" = "allow";
+        "gh run view *" = "allow";
+        "gh run list *" = "allow";
+        # prism read-only introspection (prism logs not in base)
+        "prism logs" = "allow";
+        "prism logs *" = "allow";
+        # git blame (not in base)
+        "git blame *" = "allow";
+        # Explicit denies — belt-and-suspenders over deny-all default.
+        # These must be listed here to make the intent auditable.
+        "gh issue create" = "deny";
+        "gh issue create *" = "deny";
+        "gh issue edit" = "deny";
+        "gh issue edit *" = "deny";
+        "gh issue close" = "deny";
+        "gh issue close *" = "deny";
+        "gh issue comment" = "deny";
+        "gh issue comment *" = "deny";
+        "gh pr create" = "deny";
+        "gh pr create *" = "deny";
+        "gh pr edit" = "deny";
+        "gh pr edit *" = "deny";
+        "gh pr merge" = "deny";
+        "gh pr merge *" = "deny";
+        "gh pr close" = "deny";
+        "gh pr close *" = "deny";
+        "gh pr review" = "deny";
+        "gh pr review *" = "deny";
+        "gh pr comment" = "deny";
+        "gh pr comment *" = "deny";
+        "git push" = "deny";
+        "git push *" = "deny";
+        "git commit" = "deny";
+        "git commit *" = "deny";
+        "git add" = "deny";
+        "git add *" = "deny";
+        "git rebase" = "deny";
+        "git rebase *" = "deny";
+        "git reset" = "deny";
+        "git reset *" = "deny";
+        "prism merges" = "deny";
+        "prism merges *" = "deny";
+      };
+
       # Shared hardened permission block for all per-agent review containers.
       # Write operations are denied (belt-and-braces: worktree is mounted read-only).
       containerReviewPermission = bashCmds: {
@@ -1077,6 +1193,56 @@
       reviewQaContainerOpencodeJson = makeReviewAgentBlob "review-qa" containerReviewQaBashCommands;
 
       reviewContextContainerOpencodeJson = makeReviewAgentBlob "review-context" containerReviewContextBashCommands;
+
+      # investigate container opencode.json blob.
+      # Mirrors the review-agent pattern: only the investigate agent is declared,
+      # plan/build are disabled, write/edit/patch and task tool are denied.
+      investigateContainerOpencodeJson =
+        let
+          baseAgentMap = {
+            plan = {
+              disable = true;
+            };
+            build = {
+              disable = true;
+            };
+            investigate = {
+              mode = "primary";
+              prompt = builtins.readFile ./opencode/agents/investigate.md;
+              tools = {
+                task = false;
+                write = false;
+                edit = false;
+                patch = false;
+              };
+            };
+          };
+          profiledAgents = config.nx.programs.prism.profiles.applyProfile config.nx.programs.prism.profile.default baseAgentMap;
+          sanitisedAgents = lib.mapAttrs (
+            _name: cfg: if cfg ? disable && cfg.disable then builtins.removeAttrs cfg [ "variant" ] else cfg
+          ) profiledAgents;
+        in
+        {
+          "$schema" = "https://opencode.ai/opencode.json";
+          autoupdate = false;
+          default_agent = "investigate";
+          enabled_providers = containerEnabledProviders;
+          model = models.secondary;
+          agent = sanitisedAgents;
+          mcp = lib.optionalAttrs pkgs.stdenv.isDarwin {
+            atlasian = {
+              type = "local";
+              enabled = true;
+              command = [ "${hmUser.xdg.configHome}/opencode/mcp-atlassian-slim-proxy.mjs" ];
+              environment = {
+                ATLASSIAN_MCP_URL = "https://mcp.atlassian.com/v1/mcp";
+              };
+            };
+          };
+          permission = containerReviewPermission containerInvestigateBashCommands;
+          plugin = containerPlugins;
+          provider = providerSettings;
+        };
     in
     lib.mkMerge [
       # Set container config JSON blobs as options so profiles.nix can embed
@@ -1096,6 +1262,8 @@
           builtins.toJSON reviewQaContainerOpencodeJson;
         nx.programs.prism.opencode.containerReviewContextConfigJson =
           builtins.toJSON reviewContextContainerOpencodeJson;
+        nx.programs.prism.opencode.containerInvestigateConfigJson =
+          builtins.toJSON investigateContainerOpencodeJson;
       }
 
       # Common configuration for both platforms
@@ -1372,6 +1540,19 @@
                     };
                     permission = {
                       bash = hostReviewContextBashCommands;
+                    };
+                  };
+                  investigate = {
+                    mode = "primary";
+                    prompt = builtins.readFile ./opencode/agents/investigate.md;
+                    tools = {
+                      task = false;
+                      write = false;
+                      edit = false;
+                      patch = false;
+                    };
+                    permission = {
+                      bash = hostInvestigateBashCommands;
                     };
                   };
                 }

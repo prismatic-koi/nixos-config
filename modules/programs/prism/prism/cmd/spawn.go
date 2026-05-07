@@ -632,8 +632,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
-		ForceFresh: true,
-		Headless:   headless,
+		ForceFresh:       true,
+		Headless:         headless,
+		// WorktreeReadOnly: mount the worktree read-only for investigate sessions
+		// (defence in depth — denylist prevents writes at the bash level;
+		// read-only mount ensures even a denylist gap cannot modify the repo).
+		WorktreeReadOnly: agentRole == "investigate",
 		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
 		// return on opencode actually binding its port (#1051 AC-14).
 		// Single-worker spawns benefit from the same readiness check that
@@ -1284,6 +1288,8 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		ModelsByRole:     a.modelsByRole,
 		ForceFresh:       true,
 		Headless:         true,
+		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
+		WorktreeReadOnly: agentRole == "investigate",
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {

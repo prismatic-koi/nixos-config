@@ -108,6 +108,10 @@ type ProfilesFile struct {
 	ContainerReviewSecurityConfig string `json:"container_review_security_config"`
 	ContainerReviewQaConfig       string `json:"container_review_qa_config"`
 	ContainerReviewContextConfig  string `json:"container_review_context_config"`
+	// ContainerInvestigateConfig is the full opencode.json blob (serialised
+	// JSON string) to inject as OPENCODE_CONFIG_CONTENT for investigate
+	// containers. Written by Nix under container_investigate_config.
+	ContainerInvestigateConfig string `json:"container_investigate_config"`
 	// AgentEnvVars holds environment variables to inject into host-mode
 	// opencode processes. Values are fully expanded absolute paths (no $HOME).
 	// Written by Nix under agent_env_vars. These are prepended to the
@@ -161,6 +165,7 @@ type QuickProfile struct {
 //   - "review-security"  → ContainerReviewSecurityConfig
 //   - "review-qa"        → ContainerReviewQaConfig
 //   - "review-context"   → ContainerReviewContextConfig
+//   - "investigate"      → ContainerInvestigateConfig
 //
 // The old "review" role (from PR-A) is retired. Calling it returns ("", nil).
 // Subagent names like "plan", "explore", etc. also return ("", nil) — they
@@ -184,6 +189,8 @@ func ContainerConfigForRole(pf *ProfilesFile, role string) (string, error) {
 		return pf.ContainerReviewQaConfig, nil
 	case "review-context":
 		return pf.ContainerReviewContextConfig, nil
+	case "investigate":
+		return pf.ContainerInvestigateConfig, nil
 	default:
 		// Not a container-level role (e.g. "plan", "explore", or the retired "review").
 		// Return empty string — no config injection — without error.

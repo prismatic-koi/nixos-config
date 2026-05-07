@@ -113,8 +113,8 @@
             customMessageText = "";
             customMessageLabel = primary;
             toolPendingBg = bg_dim;
-            toolSuccessBg = colourLib.darken bg_green 25;
-            toolErrorBg = colourLib.darken bg_red 25;
+            toolSuccessBg = colourLib.darken bg_green 35;
+            toolErrorBg = colourLib.darken bg_red 35;
             toolTitle = primary;
             toolOutput = "";
             # Markdown
