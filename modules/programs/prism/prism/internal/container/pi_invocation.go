@@ -178,6 +178,31 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		_ = copyDirIfExists(themeSrc, themeDst)
 	}
 
+	// Symlink skills/ from the staging dir to the resolved target of
+	// ~/.pi/agent/skills. This allows PI inside bwrap to discover user skills
+	// via PI_CODING_AGENT_DIR. The source is often a home-manager symlink
+	// pointing at a Nix-store derivation; we resolve it so that the staging-dir
+	// symlink points directly at the store path (which is bind-mounted into
+	// bwrap via /nix). Absent or broken source is non-fatal — PI starts with
+	// no skills rather than crashing.
+	if home, err := os.UserHomeDir(); err == nil {
+		skillsSrc := filepath.Join(home, ".pi", "agent", "skills")
+		skillsLink := filepath.Join(stagingDir, "skills")
+		// Lstat to check existence without following symlinks.
+		if _, lstatErr := os.Lstat(skillsSrc); lstatErr == nil {
+			// Resolve any symlink chain (e.g. home-manager → /nix/store/…).
+			resolvedTarget := skillsSrc
+			if resolved, evalErr := filepath.EvalSymlinks(skillsSrc); evalErr == nil {
+				resolvedTarget = resolved
+			}
+			// Non-fatal: ignore error if the symlink already exists or if the
+			// OS call fails for any other reason.
+			_ = os.Symlink(resolvedTarget, skillsLink)
+		}
+		// When skillsSrc is absent (lstat failed), do nothing — no skills entry
+		// is created in the staging dir, and PI starts without skills.
+	}
+
 	return stagingDir, piAgentConfigSandboxDefault, nil
 }
 

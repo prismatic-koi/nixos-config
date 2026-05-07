@@ -759,3 +759,239 @@ func TestPIHarnessPipePath_DifferentForDifferentNames(t *testing.T) {
 		t.Errorf("expected different paths for different session names, got same: %q", p1)
 	}
 }
+
+// ── StagePIAgentConfigDir: skills/ symlink ────────────────────────────────────
+
+func TestStagePIAgentConfigDir_SkillsSymlink_SymlinkedToNix(t *testing.T) {
+	// When ~/.pi/agent/skills is a symlink to a Nix-store directory, the
+	// staging dir must contain a symlink named "skills" pointing to the resolved
+	// (real) Nix-store path, not to the intermediate home-manager symlink.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Simulate a Nix-store derivation directory acting as the real skills dir.
+	nixStorePath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nixStorePath, "my-skill.md"), []byte("# skill"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	// Create ~/.pi/agent/ and a symlink ~/.pi/agent/skills -> nixStorePath.
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	skillsSrc := filepath.Join(piAgentDir, "skills")
+	if err := os.Symlink(nixStorePath, skillsSrc); err != nil {
+		t.Fatalf("symlink skills: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-nix")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	skillsLink := filepath.Join(hostDir, "skills")
+
+	// The staging-dir entry must be a symlink.
+	info, statErr := os.Lstat(skillsLink)
+	if statErr != nil {
+		t.Fatalf("skills entry not present in staging dir: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("staging skills must be a symlink; mode = %v", info.Mode())
+	}
+
+	// The symlink target must resolve to the nixStorePath (the real directory),
+	// not to the intermediate home-manager symlink.
+	target, readErr := os.Readlink(skillsLink)
+	if readErr != nil {
+		t.Fatalf("readlink skills: %v", readErr)
+	}
+	if target != nixStorePath {
+		t.Errorf("skills symlink target = %q, want %q", target, nixStorePath)
+	}
+
+	// The target must be readable and contain the expected skill file.
+	if _, statErr2 := os.Stat(filepath.Join(skillsLink, "my-skill.md")); statErr2 != nil {
+		t.Errorf("skill file not accessible via staging-dir symlink: %v", statErr2)
+	}
+}
+
+func TestStagePIAgentConfigDir_SkillsSymlink_RegularDir(t *testing.T) {
+	// When ~/.pi/agent/skills is a plain directory (not a symlink), the staging
+	// dir must contain a symlink named "skills" pointing to that directory.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Create ~/.pi/agent/skills as a regular directory.
+	skillsDir := filepath.Join(fakeHome, ".pi", "agent", "skills")
+	if err := os.MkdirAll(skillsDir, 0o700); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillsDir, "plain-skill.md"), []byte("# plain"), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-regular")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	skillsLink := filepath.Join(hostDir, "skills")
+
+	// Must be a symlink.
+	info, statErr := os.Lstat(skillsLink)
+	if statErr != nil {
+		t.Fatalf("skills entry not present in staging dir: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("staging skills must be a symlink; mode = %v", info.Mode())
+	}
+
+	// Must be accessible and contain the expected file.
+	if _, statErr2 := os.Stat(filepath.Join(skillsLink, "plain-skill.md")); statErr2 != nil {
+		t.Errorf("skill file not accessible via staging-dir symlink: %v", statErr2)
+	}
+}
+
+func TestStagePIAgentConfigDir_SkillsSymlink_Absent(t *testing.T) {
+	// When ~/.pi/agent/skills does not exist on the host, StagePIAgentConfigDir
+	// must return no error and must NOT create a skills entry in the staging dir.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Create ~/.pi/agent/ but no skills subdirectory.
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-absent")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	// skills must not exist in the staging dir.
+	if _, statErr := os.Lstat(filepath.Join(hostDir, "skills")); statErr == nil {
+		t.Errorf("skills entry must not exist in staging dir when source is absent")
+	}
+}
+
+func TestStagePIAgentConfigDir_SkillsSymlink_BrokenSymlink(t *testing.T) {
+	// When ~/.pi/agent/skills is a broken symlink (target removed by GC),
+	// StagePIAgentConfigDir must not return an error. The staging-dir skills
+	// entry may be present (pointing at the now-missing target) or absent —
+	// either way PI starts with no skills.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+
+	// Create and immediately remove the target to produce a broken symlink.
+	goneTarget := filepath.Join(t.TempDir(), "gone-nix-path")
+	if err := os.Mkdir(goneTarget, 0o700); err != nil {
+		t.Fatalf("mkdir gone target: %v", err)
+	}
+	skillsSrc := filepath.Join(piAgentDir, "skills")
+	if err := os.Symlink(goneTarget, skillsSrc); err != nil {
+		t.Fatalf("symlink broken skills: %v", err)
+	}
+	if err := os.Remove(goneTarget); err != nil {
+		t.Fatalf("remove gone target: %v", err)
+	}
+
+	// Must not return an error despite the broken symlink.
+	_, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-broken")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir must not error on broken symlink; got: %v", err)
+	}
+}
+
+func TestStagePIAgentConfigDir_SkillsDoesNotAffectOtherEntries(t *testing.T) {
+	// Adding skills staging must not alter auth.json, settings.json, themes/,
+	// or APPEND_SYSTEM.md behaviour. Verify all four are still produced
+	// correctly when skills/ is also present.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	// Set up ~/.pi/agent with all files.
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(filepath.Join(piAgentDir, "themes"), 0o700); err != nil {
+		t.Fatalf("mkdir themes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piAgentDir, "auth.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piAgentDir, "settings.json"), []byte(`{"v":1}`), 0o600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piAgentDir, "themes", "t.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write theme: %v", err)
+	}
+	// skills is a symlink to a real temp dir.
+	skillsTarget := t.TempDir()
+	if err := os.Symlink(skillsTarget, filepath.Join(piAgentDir, "skills")); err != nil {
+		t.Fatalf("symlink skills: %v", err)
+	}
+
+	// Write a system prompt so APPEND_SYSTEM.md is produced.
+	promptFile := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(promptFile, []byte("role prompt"), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	slot := config.RoleSlot{SystemPromptPath: promptFile}
+
+	hostDir, _, err := StagePIAgentConfigDir(slot, "test-session@skills-combined")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	// auth.json must be a symlink.
+	authInfo, authErr := os.Lstat(filepath.Join(hostDir, "auth.json"))
+	if authErr != nil {
+		t.Fatalf("auth.json not in staging dir: %v", authErr)
+	}
+	if authInfo.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("auth.json must be a symlink; mode = %v", authInfo.Mode())
+	}
+
+	// settings.json must be a regular file.
+	settingsInfo, settingsErr := os.Lstat(filepath.Join(hostDir, "settings.json"))
+	if settingsErr != nil {
+		t.Fatalf("settings.json not in staging dir: %v", settingsErr)
+	}
+	if settingsInfo.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("settings.json must be a regular file, not a symlink; mode = %v", settingsInfo.Mode())
+	}
+
+	// themes/ must exist.
+	if _, statErr := os.Stat(filepath.Join(hostDir, "themes", "t.json")); statErr != nil {
+		t.Errorf("themes/t.json not accessible: %v", statErr)
+	}
+
+	// APPEND_SYSTEM.md must contain the prompt.
+	got, readErr := os.ReadFile(filepath.Join(hostDir, piAppendSystemFilename))
+	if readErr != nil {
+		t.Fatalf("APPEND_SYSTEM.md not in staging dir: %v", readErr)
+	}
+	if string(got) != "role prompt" {
+		t.Errorf("APPEND_SYSTEM.md = %q, want %q", string(got), "role prompt")
+	}
+
+	// skills/ must be a symlink pointing to the resolved skillsTarget.
+	skillsInfo, skillsErr := os.Lstat(filepath.Join(hostDir, "skills"))
+	if skillsErr != nil {
+		t.Fatalf("skills not in staging dir: %v", skillsErr)
+	}
+	if skillsInfo.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("skills must be a symlink; mode = %v", skillsInfo.Mode())
+	}
+}
