@@ -42,7 +42,13 @@ go build ./...
 go test ./...
 ```
 
-This is faster than a full nix build and should be the first check for any prism code change. Run the nix build as well if the change also touches `.nix` files.
+This is faster than a full nix build and should be the first check for any prism code change. Once the Go build and tests pass, verify the Nix derivation with:
+
+```bash
+nix build .#prism
+```
+
+Run `nix build .#prism` from the repo root whenever a change also touches `.nix` files or when confirming the final Nix build is correct.
 
 ### sandbox-exec testing convention
 
