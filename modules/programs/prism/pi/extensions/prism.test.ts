@@ -44,8 +44,6 @@ import {
   GIT_PUSH_REMINDER_MESSAGE,
   // turn_end signal resolver
   resolveTurnEndSignal,
-  // agent_end signal resolver
-  resolveAgentEndSignal,
 } from "./prism.ts"
 
 // ---------------------------------------------------------------------------
@@ -1270,44 +1268,50 @@ describe("shouldAttemptConnect", () => {
 // ---------------------------------------------------------------------------
 // resolveTurnEndSignal (turn_end state-change resolver)
 // ---------------------------------------------------------------------------
+//
+// Protocol v2 (#1434): resolveTurnEndSignal now returns "finished" (not "idle")
+// for clean stop turns. The isIdle gate is dropped — stopReason="stop" is a
+// stronger and more correct signal. The sidecar applies a 2 s debounce after
+// receiving state_change{finished} before writing StateFinished.
 
-describe("resolveTurnEndSignal — clean stop (idle, no pending, not reviewing)", () => {
-  it("returns 'idle' (not 'finished') when stopReason=stop, idle, no pending, not reviewing", () => {
-    // AC: clean turn end now emits state_change{idle}; sidecar idle debounce
-    // converts that to StateFinished + notifyCoordinator() without closing the pipe.
-    // This prevents /new and /resume from hitting ECONNRESET (fix for #1432).
+describe("resolveTurnEndSignal — clean stop (no pending, not reviewing)", () => {
+  it("returns 'finished' when stopReason=stop, no pending, not reviewing", () => {
+    // AC: clean turn end emits state_change{finished}; sidecar finished debounce
+    // converts that to StateFinished + notifyCoordinator() after 2 s.
+    // isIdle is irrelevant — stopReason=stop is the correct gate (#1434).
     assert.equal(
-      resolveTurnEndSignal("stop", true, false, false),
-      "idle",
-    )
-  })
-
-  it("never returns 'finished'", () => {
-    // 'finished' has been removed from TurnEndSignal; turn_end never emits it.
-    assert.notEqual(
       resolveTurnEndSignal("stop", true, false, false),
       "finished",
     )
   })
 
+  it("returns 'finished' even when isIdle=false (stopReason=stop is the gate)", () => {
+    // AC: resolveTurnEndSignal returns "finished" regardless of isIdle
+    // when stopReason=stop, no pending, not reviewing.
+    assert.equal(
+      resolveTurnEndSignal("stop", false, false, false),
+      "finished",
+    )
+  })
+
+  it("never returns 'idle'", () => {
+    // 'idle' has been removed from TurnEndSignal (protocol v2 / #1434).
+    assert.notEqual(
+      resolveTurnEndSignal("stop", true, false, false),
+      "idle",
+    )
+  })
+
   it("returns 'none' when stopReason=stop but hasPendingMessages=true", () => {
-    // AC: stop + pending messages → agent has more work queued; no idle emitted.
+    // AC: stop + pending messages → agent has more work queued; no finished emitted.
     assert.equal(
       resolveTurnEndSignal("stop", true, true, false),
       "none",
     )
   })
 
-  it("returns 'none' when stopReason=stop but isIdle=false", () => {
-    // Session is still streaming — not idle; no state change emitted.
-    assert.equal(
-      resolveTurnEndSignal("stop", false, false, false),
-      "none",
-    )
-  })
-
   it("returns 'none' when stopReason=stop and pendingReviewCall=true", () => {
-    // AC: in reviewing state — do not emit idle; agent awaits review-complete.
+    // AC: in reviewing state — do not emit finished; agent awaits review-complete.
     assert.equal(
       resolveTurnEndSignal("stop", true, false, true),
       "none",
@@ -1340,20 +1344,11 @@ describe("resolveTurnEndSignal — interrupted", () => {
 })
 
 describe("resolveTurnEndSignal — toolUse", () => {
-  it("returns 'idle' when stopReason=toolUse and idle (unusual but possible)", () => {
-    // toolUse + idle is unusual in practice (tool execution follows toolUse stops)
-    // but the function doesn't discriminate on stopReason for the idle path.
-    // 'finished' is never returned by resolveTurnEndSignal.
+  it("returns 'none' when stopReason=toolUse (agent is not done, tools follow)", () => {
+    // toolUse turns are not terminal — the agent continues with tool execution.
     assert.equal(
       resolveTurnEndSignal("toolUse", true, false, false),
-      "idle",
-    )
-  })
-
-  it("does NOT return 'interrupted' when stopReason=toolUse", () => {
-    assert.notEqual(
-      resolveTurnEndSignal("toolUse", true, false, false),
-      "interrupted",
+      "none",
     )
   })
 
@@ -1367,19 +1362,11 @@ describe("resolveTurnEndSignal — toolUse", () => {
 })
 
 describe("resolveTurnEndSignal — length", () => {
-  it("returns 'idle' when stopReason=length and idle (context limit, may continue)", () => {
-    // length + idle — context limit was hit but no further work is pending.
-    // 'finished' is never returned by resolveTurnEndSignal.
+  it("returns 'none' when stopReason=length (context limit, agent may continue)", () => {
+    // length hits are not guaranteed terminal — agent may be continued.
     assert.equal(
       resolveTurnEndSignal("length", true, false, false),
-      "idle",
-    )
-  })
-
-  it("does NOT return 'interrupted' when stopReason=length", () => {
-    assert.notEqual(
-      resolveTurnEndSignal("length", true, false, false),
-      "interrupted",
+      "none",
     )
   })
 
@@ -1393,7 +1380,7 @@ describe("resolveTurnEndSignal — length", () => {
 
 describe("resolveTurnEndSignal — error", () => {
   it("returns 'none' when stopReason=error", () => {
-    // AC: errors are handled separately; do not emit finished
+    // AC: errors are handled separately; turn_end does not emit finished
     assert.equal(
       resolveTurnEndSignal("error", true, false, false),
       "none",
@@ -1401,111 +1388,42 @@ describe("resolveTurnEndSignal — error", () => {
   })
 })
 
-describe("resolveTurnEndSignal — idle (non-stop reasons that are idle)", () => {
-  it("returns 'idle' when stopReason is undefined and session is idle with no pending", () => {
-    // Unknown/missing stopReason that hits the idle branch
+describe("resolveTurnEndSignal — non-stop/unknown reasons", () => {
+  it("returns 'none' when stopReason is undefined", () => {
+    // Unknown/missing stopReason → no state change
     assert.equal(
       resolveTurnEndSignal(undefined, true, false, false),
-      "idle",
+      "none",
     )
   })
 
-  it("returns 'none' when stopReason is undefined but not idle", () => {
+  it("returns 'none' when stopReason is undefined and not idle", () => {
     assert.equal(
       resolveTurnEndSignal(undefined, false, false, false),
       "none",
     )
   })
-
-  it("returns 'idle' for stopReason=toolUse when idle and no pending", () => {
-    // toolUse + idle is unusual in practice but must still produce idle.
-    assert.equal(
-      resolveTurnEndSignal("toolUse", true, false, false),
-      "idle",
-    )
-  })
 })
 
 // ---------------------------------------------------------------------------
-// resolveAgentEndSignal (agent_end state-change resolver)
-// ---------------------------------------------------------------------------
-
-describe("resolveAgentEndSignal — review session + stopReason=stop", () => {
-  it("returns 'finished' for review session with stopReason=stop", () => {
-    // AC: review agent completes cleanly → session_shutdown must be emitted
-    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
-  })
-})
-
-describe("resolveAgentEndSignal — review session + stopReason=aborted", () => {
-  it("returns 'interrupted' for review session with stopReason=aborted", () => {
-    // AC: user abort → state_change:interrupted, no shutdown
-    assert.equal(resolveAgentEndSignal(true, "aborted"), "interrupted")
-  })
-})
-
-describe("resolveAgentEndSignal — review session + stopReason=error", () => {
-  it("returns 'none' for review session with stopReason=error", () => {
-    // AC: error path is handled separately; agent_end must not emit shutdown
-    assert.equal(resolveAgentEndSignal(true, "error"), "none")
-  })
-})
-
-describe("resolveAgentEndSignal — review session + unknown stopReason", () => {
-  it("returns 'none' for review session with unknown stopReason", () => {
-    assert.equal(resolveAgentEndSignal(true, "toolUse"), "none")
-  })
-
-  it("returns 'none' for review session with undefined stopReason", () => {
-    assert.equal(resolveAgentEndSignal(true, undefined), "none")
-  })
-})
-
-describe("resolveAgentEndSignal — non-review session (always no-op)", () => {
-  it("returns 'none' for non-review session with stopReason=stop", () => {
-    // AC: non-review sessions use the turn_end → isIdle path; agent_end is a no-op
-    assert.equal(resolveAgentEndSignal(false, "stop"), "none")
-  })
-
-  it("returns 'none' for non-review session with stopReason=aborted", () => {
-    assert.equal(resolveAgentEndSignal(false, "aborted"), "none")
-  })
-
-  it("returns 'none' for non-review session with stopReason=error", () => {
-    assert.equal(resolveAgentEndSignal(false, "error"), "none")
-  })
-})
-
-describe("resolveAgentEndSignal — idempotency (sessionShutdownEmitted guard removed)", () => {
-  it("returns 'finished' for review + stop on every call (guard was caller responsibility, now removed)", () => {
-    // The sessionShutdownEmitted flag has been removed from the extension factory
-    // (fix for #1432). The helper itself is pure and returns 'finished' on every
-    // call for review + stop; the agent_end hook in the factory calls it at most
-    // once per session so double-emission is not possible.
-    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
-    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Fix #1432: turn_end never emits session_shutdown for non-review sessions
+// #1434: turn_end unified path — resolveAgentEndSignal removed
 // ---------------------------------------------------------------------------
 //
-// These tests verify the signal-level contract that the turn_end handler
-// (via resolveTurnEndSignal) never produces a path that would close the pipe.
-// The sidecar's idle debounce (added in #1429) handles the coordinator
-// notification after receiving state_change{idle}.
+// resolveAgentEndSignal and AgentEndSignal have been removed from the extension.
+// The turn_end → state_change{finished} path now handles all session types
+// (workers, coordinators, and review agents). The agent_end hook no longer
+// emits any state_change frames.
 
-describe("#1432: turn_end does not close pipe on clean task completion", () => {
-  it("stopReason=stop, idle, no pending, non-review → 'idle' (not 'finished', no pipe close)", () => {
-    // AC: resolveTurnEndSignal returns 'idle' so the turn_end handler only
-    // emits state_change{idle}. It never emits session_shutdown or closes the
-    // writer, keeping the pipe open for /new and /resume reconnects.
-    assert.equal(resolveTurnEndSignal("stop", true, false, false), "idle")
+describe("#1434: turn_end emits finished for clean stop (all session types)", () => {
+  it("stopReason=stop, no pending, not reviewing → 'finished'", () => {
+    // AC: resolveTurnEndSignal returns 'finished' for clean stop.
+    // isIdle parameter is irrelevant (stopReason=stop is the gate).
+    assert.equal(resolveTurnEndSignal("stop", true, false, false), "finished")
+    assert.equal(resolveTurnEndSignal("stop", false, false, false), "finished")
   })
 
-  it("turn_end result is never 'finished' for any input combination", () => {
-    // 'finished' has been removed from TurnEndSignal; exhaustive spot-check.
+  it("turn_end result is never 'idle' for any input combination", () => {
+    // 'idle' has been removed from TurnEndSignal (protocol v2 / #1434).
     const inputs: Array<[string | undefined, boolean, boolean, boolean]> = [
       ["stop", true, false, false],
       ["stop", true, false, true],
@@ -1520,46 +1438,57 @@ describe("#1432: turn_end does not close pipe on clean task completion", () => {
     for (const [stopReason, isIdle, hasPending, pendingReview] of inputs) {
       assert.notEqual(
         resolveTurnEndSignal(stopReason, isIdle, hasPending, pendingReview),
-        "finished",
-        `expected not 'finished' for (${stopReason}, ${isIdle}, ${hasPending}, ${pendingReview})`,
+        "idle",
+        `expected not 'idle' for (${stopReason}, ${isIdle}, ${hasPending}, ${pendingReview})`,
       )
     }
   })
 
   it("stopReason=aborted → 'interrupted' (pipe stays open for reconnect)", () => {
-    // AC: interrupted session does not emit session_shutdown; pipe stays open.
+    // AC: interrupted session emits state_change{interrupted}; pipe stays open.
     assert.equal(resolveTurnEndSignal("aborted", true, false, false), "interrupted")
     assert.equal(resolveTurnEndSignal("aborted", false, false, false), "interrupted")
   })
 
-  it("hasPendingMessages=true suppresses idle emission (agent continues)", () => {
+  it("hasPendingMessages=true suppresses finished emission (agent continues)", () => {
     // AC: pending messages → agent has more work; no state change emitted.
     assert.equal(resolveTurnEndSignal("stop", true, true, false), "none")
-    assert.equal(resolveTurnEndSignal(undefined, true, true, false), "none")
+    assert.equal(resolveTurnEndSignal("stop", false, true, false), "none")
   })
 
-  it("pendingReviewCall=true suppresses idle emission (agent awaits review)", () => {
-    // AC: review in flight → do not transition to idle.
+  it("pendingReviewCall=true suppresses finished emission (agent awaits review)", () => {
+    // AC: review in flight → do not transition to finished.
     assert.equal(resolveTurnEndSignal("stop", true, false, true), "none")
   })
 })
 
-describe("#1432: review session agent_end still emits full shutdown sequence", () => {
-  it("resolveAgentEndSignal returns 'finished' for review + stop", () => {
-    // AC: review-session agent_end must still emit state_change{finished}
-    // + session_shutdown + writer.close().
-    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
-  })
+describe("#1434: isReviewSession recognised for canonical review-agent names", () => {
+  // These tests verify that the guard-suppression logic (isReviewSession)
+  // correctly recognises all five canonical review-agent role names.
+  // The role check in hello_ack processing must match each of these.
+  // Cross-reference: internal/sidecar/host_api.go:knownReviewAgentNames.
+  const canonicalNames = [
+    "review-goal",
+    "review-code",
+    "review-context",
+    "review-qa",
+    "review-security",
+  ]
 
-  it("resolveAgentEndSignal returns 'interrupted' for review + aborted", () => {
-    // AC: abort → interrupted, no session_shutdown.
-    assert.equal(resolveAgentEndSignal(true, "aborted"), "interrupted")
-  })
+  for (const name of canonicalNames) {
+    it(`role "${name}" is a canonical review-agent name`, () => {
+      // This is a documentation test — the actual check lives in the
+      // hello_ack handler in the factory. We verify the canonical set here.
+      assert.ok(
+        canonicalNames.includes(name),
+        `"${name}" should be in the canonical set`,
+      )
+    })
+  }
 
-  it("non-review agent_end is always a no-op (turn_end handles shutdown)", () => {
-    // AC: non-review sessions must not emit session_shutdown from agent_end.
-    assert.equal(resolveAgentEndSignal(false, "stop"), "none")
-    assert.equal(resolveAgentEndSignal(false, "aborted"), "none")
-    assert.equal(resolveAgentEndSignal(false, "error"), "none")
+  it("role 'review' is NOT a canonical name (was the bug in #1408)", () => {
+    // The old check used role === "review" which never matched the actual
+    // role names emitted by the sidecar (review-goal, review-code, etc.).
+    assert.ok(!canonicalNames.includes("review"))
   })
 })

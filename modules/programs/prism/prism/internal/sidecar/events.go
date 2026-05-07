@@ -228,6 +228,73 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 	}
 }
 
+// handleSessionFinished is the PI-path handler for state_change{finished}
+// frames (protocol v2, issue #1434). It applies the same 2 s debounce as
+// the opencode handleSessionIdle path: on timer fire it writes StateFinished
+// and calls notifyCoordinator(), subject to the existing role-policy
+// suppression in notifyCoordinator. The debounce is cancelled if a turn_start
+// frame arrives before the timer fires (Gap 1 fix from #1430, preserved here).
+//
+// This function is only called from handlePipeFrame (PI socket-pipe path).
+// The opencode SSE path retains handleSessionIdle below.
+func (s *Sidecar) handleSessionFinished() {
+	// Cancel any in-flight debounce or recovery timer first.
+	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
+
+	// If the most recent assistant message was from a subagent (not the root
+	// agent), suppress the finished debounce entirely. The parent agent is
+	// likely about to resume — the next state_change{finished} after the root
+	// agent completes will start the timer normally.
+	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
+		log.Printf("sidecar: finished suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
+		return
+	}
+
+	log.Printf("sidecar: finished debounce started (%v)", IdleDebounce)
+	s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.idleTimer = nil
+
+		log.Printf("sidecar: finished debounce fired -> finished")
+
+		// If the user manually denied a permission, write interrupted not finished.
+		if s.manualDenial {
+			s.manualDenial = false
+			log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
+			s.upsertState(agent.StateInterrupted, nil, nil)
+			s.writeStateChange(agent.StateInterrupted)
+			return
+		}
+
+		// Check current DB state: if interrupted or error, don't overwrite.
+		// If reviewingInFlight, suppress finished — the worker is awaiting review
+		// results; it will transition to finished naturally after the
+		// review-complete prompt is delivered and the worker resolves the results.
+		currentState := s.currentDBState()
+		if currentState == agent.StateInterrupted || currentState == agent.StateError {
+			return
+		}
+		if s.reviewingInFlight && currentState == agent.StateReviewing {
+			log.Printf("sidecar: finished debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
+			return
+		}
+
+		log.Printf("sidecar: transition -> finished (cause=finished_debounce)")
+		s.upsertState(agent.StateFinished, nil, nil)
+		s.writeStateChange(agent.StateFinished)
+		go s.notifyCoordinator()
+	})
+}
+
+// handleSessionIdle is the opencode-SSE-path handler for the session.idle
+// event. It adapts the third-party opencode vocabulary (session.idle) into the
+// sidecar's StateFinished transition via the same 2 s debounce mechanism.
+//
+// This function is only called from the opencode SSE dispatcher in
+// handleOpenCodeEvent. The PI socket-pipe path uses handleSessionFinished
+// (renamed in #1434) to handle state_change{finished} frames instead.
 func (s *Sidecar) handleSessionIdle() {
 	// Snapshot current DB state before the timer fires.
 	s.cancelIdleTimer()
