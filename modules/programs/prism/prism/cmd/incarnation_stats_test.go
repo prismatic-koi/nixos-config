@@ -71,8 +71,11 @@ func writeSessionEvent(t *testing.T, d *db.DB, instanceID, sessionName, model st
 }
 
 // openIncarnationTestDB opens a temp DB and registers cleanup. Also sets testDBPath.
+// It also clears PRISM_HOST_API so stats commands use the direct-DB path.
 func openIncarnationTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	// Unset PRISM_HOST_API so stats commands use the direct-DB path.
+	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
 	if err != nil {
@@ -91,7 +94,7 @@ func TestRunStatsIncarnations_EmptyTable(t *testing.T) {
 	_ = openIncarnationTestDB(t)
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", 0); err != nil {
+		if err := runStatsIncarnations("", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -111,7 +114,7 @@ func TestRunStatsIncarnations_OneRow(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", 0); err != nil {
+		if err := runStatsIncarnations("", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -148,7 +151,7 @@ func TestRunStatsIncarnations_ActiveSession(t *testing.T) {
 		base.Add(-30*time.Minute), time.Time{}, "", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", 0); err != nil {
+		if err := runStatsIncarnations("", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -173,7 +176,7 @@ func TestRunStatsIncarnations_TokensAndCost(t *testing.T) {
 		100000, 10000, base.Add(-30*time.Minute))
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", 0); err != nil {
+		if err := runStatsIncarnations("", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -197,7 +200,7 @@ func TestRunStatsIncarnations_RepoFilter(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("repo-a", 0); err != nil {
+		if err := runStatsIncarnations("repo-a", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -228,7 +231,7 @@ func TestRunStatsIncarnations_SinceFilter(t *testing.T) {
 	sinceMs := base.Add(-7 * 24 * time.Hour).UnixMilli()
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", sinceMs); err != nil {
+		if err := runStatsIncarnations("", sinceMs, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})
@@ -253,7 +256,7 @@ func TestRunStatsDetail_ByFullUUID(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "/archive/path")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail(iid, false); err != nil {
+		if err := runStatsDetail(iid, false, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -283,7 +286,7 @@ func TestRunStatsDetail_BySessionName(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail("testrepo@main", false); err != nil {
+		if err := runStatsDetail("testrepo@main", false, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -305,7 +308,7 @@ func TestRunStatsDetail_ByUUIDPrefix(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		// Use first 8 chars as prefix.
-		if err := runStatsDetail("aaaabbbb", false); err != nil {
+		if err := runStatsDetail("aaaabbbb", false, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -328,7 +331,7 @@ func TestRunStatsDetail_AmbiguousPrefix(t *testing.T) {
 	insertTestSession(t, d, iid2, "s2@main", "r2", "/code/r2", "opencode",
 		base.Add(-1*time.Hour), base, "finished", "")
 
-	err := runStatsDetail("aaaabbbb", false)
+	err := runStatsDetail("aaaabbbb", false, false)
 	if err == nil {
 		t.Fatal("expected error for ambiguous prefix, got nil")
 	}
@@ -341,7 +344,7 @@ func TestRunStatsDetail_AmbiguousPrefix(t *testing.T) {
 func TestRunStatsDetail_Unknown(t *testing.T) {
 	_ = openIncarnationTestDB(t)
 
-	err := runStatsDetail("totally-unknown-session", false)
+	err := runStatsDetail("totally-unknown-session", false, false)
 	if err == nil {
 		t.Fatal("expected error for unknown arg, got nil")
 	}
@@ -359,7 +362,7 @@ func TestRunStatsDetail_NotYetArchived(t *testing.T) {
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
-		if err := runStatsDetail(iid, false); err != nil {
+		if err := runStatsDetail(iid, false, false); err != nil {
 			t.Errorf("runStatsDetail: %v", err)
 		}
 	})
@@ -472,7 +475,7 @@ func TestRunStatsIncarnations_NullInstanceIDExcluded(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := runStatsIncarnations("", 0); err != nil {
+		if err := runStatsIncarnations("", 0, false); err != nil {
 			t.Errorf("runStatsIncarnations: %v", err)
 		}
 	})

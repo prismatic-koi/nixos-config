@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,7 +16,8 @@ import (
 
 // runStatsIncarnations shows one row per row in the sessions table, ordered by
 // started_at DESC. Filtered by repo and/or sinceMs when provided.
-func runStatsIncarnations(repoFilter string, sinceMs int64) error {
+// jsonMode emits JSON when true.
+func runStatsIncarnations(repoFilter string, sinceMs int64, jsonMode bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
@@ -37,6 +39,26 @@ func runStatsIncarnations(repoFilter string, sinceMs int64) error {
 		return fmt.Errorf("stats: %w", err)
 	}
 
+	if jsonMode {
+		if sessions == nil {
+			sessions = []db.Session{}
+		}
+		out := map[string]any{"sessions": sessions}
+		data, merr := json.Marshal(out)
+		if merr != nil {
+			return fmt.Errorf("stats --json: marshal sessions: %w", merr)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Direct-DB path: render with token/cost data from the DB.
+	return renderIncarnationsWithDB(d, sessions)
+}
+
+// renderIncarnationsWithDB renders the incarnation table using DB-backed
+// token/cost lookup. Used by the direct-DB path only (d must be non-nil).
+func renderIncarnationsWithDB(d *db.DB, sessions []db.Session) error {
 	if len(sessions) == 0 {
 		fmt.Println("no sessions yet")
 		return nil
@@ -123,6 +145,99 @@ func runStatsIncarnations(repoFilter string, sinceMs int64) error {
 		if totalCost > 0 {
 			costStr = formatCost(totalCost)
 		}
+
+		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-*s", wState, truncateStr(state, wState)))
+
+		fmt.Printf("%-*s  %-*s  %-*s  %s  %-*s  %*s  %*s\n",
+			wID, shortID,
+			wName, sessionName,
+			wAgent, agentName,
+			stateStyled,
+			wDur, durStr,
+			wTokens, tokStr,
+			wCost, costStr,
+		)
+	}
+
+	fmt.Println()
+	fmt.Println(styleDim.Render("run `prism stats <instance-id>` or `prism stats <session-name>` for detail"))
+	return nil
+}
+
+// renderStatsIncarnationsFromSessions renders the incarnation table from a
+// pre-fetched sessions slice without DB access. Token/cost columns show '—'.
+// Used by the proxy path where DB access is not available.
+func renderStatsIncarnationsFromSessions(sessions []db.Session) error {
+	if len(sessions) == 0 {
+		fmt.Println("no sessions yet")
+		return nil
+	}
+
+	styleHeader := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	now := time.Now()
+
+	const (
+		wID     = 8
+		wName   = 32
+		wAgent  = 14
+		wState  = 10
+		wDur    = 10
+		wTokens = 8
+		wCost   = 8
+	)
+
+	header := fmt.Sprintf("%-*s  %-*s  %-*s  %-*s  %-*s  %*s  %*s",
+		wID, "INSTANCE",
+		wName, "SESSION_NAME",
+		wAgent, "AGENT",
+		wState, "STATE",
+		wDur, "DURATION",
+		wTokens, "TOKENS",
+		wCost, "COST",
+	)
+	fmt.Println(styleHeader.Render(header))
+	fmt.Println(styleDim.Render(strings.Repeat("─", len(header))))
+
+	for _, s := range sessions {
+		shortID := s.InstanceID
+		if len(shortID) > wID {
+			shortID = shortID[:wID]
+		}
+
+		sessionName := s.SessionName
+		if len(sessionName) > wName {
+			sessionName = sessionName[:wName-3] + "..."
+		}
+
+		agentName := "—"
+		if s.RootAgentName != nil && *s.RootAgentName != "" {
+			agentName = agentShortName(*s.RootAgentName)
+		} else if s.AgentRole != nil && *s.AgentRole != "" {
+			agentName = agentShortName(*s.AgentRole)
+		}
+		if len(agentName) > wAgent {
+			agentName = agentName[:wAgent-3] + "..."
+		}
+
+		state := "active"
+		if s.EndState != nil && *s.EndState != "" {
+			state = *s.EndState
+		} else if s.EndedAt != nil {
+			state = "ended"
+		}
+
+		var dur time.Duration
+		if s.EndedAt != nil {
+			dur = s.EndedAt.Sub(s.StartedAt)
+		} else {
+			dur = now.Sub(s.StartedAt)
+		}
+		durStr := formatDurationLong(dur)
+
+		// Proxy path: no DB available for token/cost lookup.
+		tokStr := "—"
+		costStr := "—"
 
 		stateStyled := stateStyle(state).Render(fmt.Sprintf("%-*s", wState, truncateStr(state, wState)))
 

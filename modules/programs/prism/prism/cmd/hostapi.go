@@ -175,6 +175,46 @@ func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, resp
 	return readHostAPIResponse(endpoint, resp, respDst)
 }
 
+// proxyReadToHostAPI sends a GET request to the host-API server for a read
+// operation (stats, sessions, checkin). apiURL is the value of PRISM_HOST_API.
+// endpoint is the URL path (e.g. "/stats"). params are appended as URL query
+// parameters. The raw JSON response body is returned for the caller to unmarshal
+// and render. This is the shared helper analogous to proxyEventToHostAPI for
+// read paths — callers do not repeat the env-var check or the GET plumbing.
+//
+// On connection failure the error message includes the socket path and the
+// underlying error (per the edge-case AC: clear error, not silent fallback).
+func proxyReadToHostAPI(apiURL, endpoint string, params map[string]string) ([]byte, error) {
+	var raw json.RawMessage
+	if err := proxyGetFromHostAPI(apiURL, endpoint, params, &raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
+// proxyStats proxies a stats request to the host-API sidecar.
+// apiURL is the value of PRISM_HOST_API. view selects the data set
+// (summary, doomloops, denials, asks, detail). sessionFilter, days, repoFilter,
+// and sinceMs are the corresponding query parameters. Returns raw JSON.
+func proxyStats(apiURL, view, sessionFilter string, days int, repoFilter string, sinceMs int64) ([]byte, error) {
+	params := map[string]string{
+		"view": view,
+	}
+	if sessionFilter != "" {
+		params["session"] = sessionFilter
+	}
+	if days > 0 {
+		params["days"] = fmt.Sprintf("%d", days)
+	}
+	if repoFilter != "" {
+		params["repo"] = repoFilter
+	}
+	if sinceMs > 0 {
+		params["since"] = fmt.Sprintf("%d", sinceMs)
+	}
+	return proxyReadToHostAPI(apiURL, "/stats", params)
+}
+
 // proxyListSessions proxies a list-sessions request to the host-API sidecar.
 // apiURL is the value of PRISM_HOST_API. showAll controls whether the all=true
 // query parameter is sent. Returns the raw JSON output for the caller to render.

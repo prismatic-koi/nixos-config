@@ -36,7 +36,7 @@ func TestRunStatsDoomLoops_EmptyWindow(t *testing.T) {
 	_ = openStatsTestDB(t)
 
 	out := captureStdout(t, func() {
-		if err := runStatsDoomLoops("", 7); err != nil {
+		if err := runStatsDoomLoops("", 7, false); err != nil {
 			t.Errorf("runStatsDoomLoops: %v", err)
 		}
 	})
@@ -56,7 +56,7 @@ func TestRunStatsDoomLoops_BasicOutput(t *testing.T) {
 	writeDoomLoopEvent(t, d, "testrepo@feature", "edit", "/workspace/foo.go", 5, base.Add(-2*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDoomLoops("", 7); err != nil {
+		if err := runStatsDoomLoops("", 7, false); err != nil {
 			t.Errorf("runStatsDoomLoops: %v", err)
 		}
 	})
@@ -95,7 +95,7 @@ func TestRunStatsDoomLoops_WindowFilter(t *testing.T) {
 	writeDoomLoopEvent(t, d, "testrepo@main", "bash", "go build ./...", 5, base.Add(-8*24*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDoomLoops("", 7); err != nil {
+		if err := runStatsDoomLoops("", 7, false); err != nil {
 			t.Errorf("runStatsDoomLoops: %v", err)
 		}
 	})
@@ -120,7 +120,7 @@ func TestRunStatsDoomLoops_SessionFilter(t *testing.T) {
 	writeDoomLoopEvent(t, d, "testrepo@feature", "edit", "/workspace/foo.go", 5, base.Add(-2*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDoomLoops("testrepo@main", 7); err != nil {
+		if err := runStatsDoomLoops("testrepo@main", 7, false); err != nil {
 			t.Errorf("runStatsDoomLoops: %v", err)
 		}
 	})
@@ -144,7 +144,7 @@ func TestRunStatsDoomLoops_DaysFlag(t *testing.T) {
 
 	// Should appear with 30-day window.
 	out30 := captureStdout(t, func() {
-		if err := runStatsDoomLoops("", 30); err != nil {
+		if err := runStatsDoomLoops("", 30, false); err != nil {
 			t.Errorf("runStatsDoomLoops(30): %v", err)
 		}
 	})
@@ -154,7 +154,7 @@ func TestRunStatsDoomLoops_DaysFlag(t *testing.T) {
 
 	// Should NOT appear with 2-day window.
 	out2 := captureStdout(t, func() {
-		if err := runStatsDoomLoops("", 2); err != nil {
+		if err := runStatsDoomLoops("", 2, false); err != nil {
 			t.Errorf("runStatsDoomLoops(2): %v", err)
 		}
 	})
