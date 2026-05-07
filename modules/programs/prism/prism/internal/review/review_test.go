@@ -2017,12 +2017,13 @@ func TestBuildReviewPrompt_ContextBeforeRoleSection(t *testing.T) {
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	// Files on disk use the "-subagent" suffix (Agent.ValidationName form, #1231).
 	roleDef := "# Test role rubric\n\nReview carefully."
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal.md"), []byte(roleDef), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal-subagent.md"), []byte(roleDef), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal")
+	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal-subagent")
 
 	contextHeaderIdx := findLineIndex(prompt, "## Context for your review")
 	separatorIdx := findLineIndex(prompt, "---")

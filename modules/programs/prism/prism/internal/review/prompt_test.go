@@ -34,15 +34,20 @@ func setupAgentsDir(t *testing.T) string {
 // TestBuildReviewPrompt_RoleFilePresentAndSpliced verifies that when the role
 // definition file exists and is non-empty, its full content appears in the
 // prompt under the "## Your role-specific instructions" heading.
+//
+// The file is named using the ValidationName form ("review-security-subagent.md")
+// to match the actual on-disk layout (#1231).
 func TestBuildReviewPrompt_RoleFilePresentAndSpliced(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
 	const roleContent = "# review-security\n\nYou are a security auditor. Check for vulnerabilities.\n"
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-security.md"), []byte(roleContent), 0o644); err != nil {
+	// Files on disk use the "-subagent" suffix (Agent.ValidationName form).
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-security-subagent.md"), []byte(roleContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security")
+	// Pass the ValidationName ("review-security-subagent") as the roleFile argument.
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security-subagent")
 
 	// Role-section header must be present.
 	if !findSubstring(prompt, "## Your role-specific instructions") {
@@ -61,32 +66,42 @@ func TestBuildReviewPrompt_RoleFilePresentAndSpliced(t *testing.T) {
 // TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric verifies that each of
 // the five review agents receives the content of its own definition file,
 // not a shared or empty block.
+//
+// Files are written using the ValidationName ("-subagent") suffix to match
+// the actual on-disk layout rendered by the NixOS module (#1231).
 func TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
-	roles := []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"}
-	for _, role := range roles {
-		content := "# " + role + " unique rubric content\n"
-		if err := os.WriteFile(filepath.Join(agentsDir, role+".md"), []byte(content), 0o644); err != nil {
-			t.Fatalf("WriteFile for %s: %v", role, err)
+	// validationNames mirrors Agent.ValidationName for each review agent.
+	validationNames := []string{
+		"review-goal-subagent",
+		"review-code-subagent",
+		"review-security-subagent",
+		"review-qa-subagent",
+		"review-context-subagent",
+	}
+	for _, vn := range validationNames {
+		content := "# " + vn + " unique rubric content\n"
+		if err := os.WriteFile(filepath.Join(agentsDir, vn+".md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("WriteFile for %s: %v", vn, err)
 		}
 	}
 
 	ctx := samplePRContext()
-	for _, role := range roles {
-		prompt := review.BuildReviewPromptForTest("99", ctx, role)
-		expectedContent := role + " unique rubric content"
+	for _, vn := range validationNames {
+		prompt := review.BuildReviewPromptForTest("99", ctx, vn)
+		expectedContent := vn + " unique rubric content"
 		if !findSubstring(prompt, expectedContent) {
-			t.Errorf("role %q: prompt missing expected rubric content %q\nprompt:\n%s", role, expectedContent, prompt)
+			t.Errorf("role %q: prompt missing expected rubric content %q\nprompt:\n%s", vn, expectedContent, prompt)
 		}
 		// Other roles' content must NOT appear (each prompt is distinct).
-		for _, otherRole := range roles {
-			if otherRole == role {
+		for _, otherVN := range validationNames {
+			if otherVN == vn {
 				continue
 			}
-			otherContent := otherRole + " unique rubric content"
+			otherContent := otherVN + " unique rubric content"
 			if findSubstring(prompt, otherContent) {
-				t.Errorf("role %q: prompt unexpectedly contains content for other role %q\nprompt:\n%s", role, otherRole, prompt)
+				t.Errorf("role %q: prompt unexpectedly contains content for other role %q\nprompt:\n%s", vn, otherVN, prompt)
 			}
 		}
 	}
@@ -114,18 +129,21 @@ func TestBuildReviewPrompt_MissingRoleFile_NoErrorNoPanic(t *testing.T) {
 // TestBuildReviewPrompt_MissingRoleFile_ContainsNotice verifies that when the
 // role definition file is absent, the prompt includes a clearly-marked notice
 // so the receiving agent and human readers can see what happened.
+//
+// The roleFile argument uses the ValidationName form ("review-goal-subagent")
+// since that is what the call sites pass.
 func TestBuildReviewPrompt_MissingRoleFile_ContainsNotice(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-goal")
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-goal-subagent")
 
-	// Must contain a notice mentioning the role and "not found".
-	if !findSubstring(prompt, "role definition for review-goal not found") {
-		t.Errorf("prompt should contain 'role definition for review-goal not found'\nprompt:\n%s", prompt)
+	// Must contain a notice mentioning the roleFile stem and "not found".
+	if !findSubstring(prompt, "role definition for review-goal-subagent not found") {
+		t.Errorf("prompt should contain 'role definition for review-goal-subagent not found'\nprompt:\n%s", prompt)
 	}
 	// The notice must name the path so readers know where to look.
-	if !findSubstring(prompt, "opencode/agents/review-goal.md") {
+	if !findSubstring(prompt, "opencode/agents/review-goal-subagent.md") {
 		t.Errorf("prompt should include the expected path in the notice\nprompt:\n%s", prompt)
 	}
 }
@@ -139,16 +157,16 @@ func TestBuildReviewPrompt_MissingRoleFile_ContainsNotice(t *testing.T) {
 func TestBuildReviewPrompt_EmptyRoleFile_ContainsSameNoticeAsMissing(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
-	// Write a whitespace-only file.
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-code.md"), []byte("   \n\t\n"), 0o644); err != nil {
+	// Write a whitespace-only file using the ValidationName ("-subagent") suffix.
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-code-subagent.md"), []byte("   \n\t\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-code")
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-code-subagent")
 
 	// Must contain the same "not found" notice as the missing-file case.
-	if !findSubstring(prompt, "role definition for review-code not found") {
-		t.Errorf("prompt should contain 'role definition for review-code not found' for empty file\nprompt:\n%s", prompt)
+	if !findSubstring(prompt, "role definition for review-code-subagent not found") {
+		t.Errorf("prompt should contain 'role definition for review-code-subagent not found' for empty file\nprompt:\n%s", prompt)
 	}
 }
 
@@ -158,11 +176,12 @@ func TestBuildReviewPrompt_EmptyRoleFile_ContainsSameNoticeAsMissing(t *testing.
 func TestBuildReviewPrompt_EmptyRoleFile_NoBlanksOnly(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-qa.md"), []byte(""), 0o644); err != nil {
+	// Use the ValidationName ("-subagent") suffix to match production layout.
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-qa-subagent.md"), []byte(""), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-qa")
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-qa-subagent")
 
 	// The role section must contain a notice, not just trailing whitespace.
 	if !findSubstring(prompt, "not found") {
@@ -178,11 +197,12 @@ func TestBuildReviewPrompt_EmptyRoleFile_NoBlanksOnly(t *testing.T) {
 func TestBuildReviewPrompt_TrailerAbsentWhenFilePresent(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-context.md"), []byte("# context rubric\n"), 0o644); err != nil {
+	// Use the ValidationName ("-subagent") suffix to match production layout.
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-context-subagent.md"), []byte("# context rubric\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-context")
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-context-subagent")
 
 	if findSubstring(prompt, "Your role-specific instructions follow below.") {
 		t.Errorf("prompt must not contain the old dangling trailer\nprompt:\n%s", prompt)
@@ -195,7 +215,7 @@ func TestBuildReviewPrompt_TrailerAbsentWhenFileMissing(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security")
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security-subagent")
 
 	if findSubstring(prompt, "Your role-specific instructions follow below.") {
 		t.Errorf("prompt must not contain the old dangling trailer\nprompt:\n%s", prompt)
@@ -210,12 +230,13 @@ func TestBuildReviewPrompt_TrailerAbsentWhenFileMissing(t *testing.T) {
 func TestBuildReviewPrompt_ContextSectionsUnchanged(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal.md"), []byte("role rubric\n"), 0o644); err != nil {
+	// Use the ValidationName ("-subagent") suffix to match production layout.
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal-subagent.md"), []byte("role rubric\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
 	ctx := samplePRContext()
-	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal")
+	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal-subagent")
 
 	// All core context sections must still be present.
 	required := []string{
