@@ -20,10 +20,14 @@ package cmd
 //	prism stats <session> --asks  filter permission ask events to a specific session
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
 // legacySentinel is the key used to group events that have a NULL harness_session_id.
@@ -103,6 +107,7 @@ func init() {
 	statsCmd.Flags().Bool("instance", false, "Treat the argument as a full instance_id (UUID) even if it might match a session name")
 	statsCmd.Flags().String("group-by", "", "Render a breakdown table grouped by this axis: harness, profile, variant, model")
 	statsCmd.Flags().Bool("abtest", false, "List all A/B test pairs with summary metrics")
+	statsCmd.Flags().Bool("json", false, "Emit structured JSON to stdout instead of the human-readable table. The shape mirrors the host-API response for the same view.")
 	rootCmd.AddCommand(statsCmd)
 }
 
@@ -143,8 +148,10 @@ func runStats(cmd *cobra.Command, args []string) error {
 	sinceStr, _ := cmd.Flags().GetString("since")
 	forceInstance, _ := cmd.Flags().GetBool("instance")
 	groupBy, _ := cmd.Flags().GetString("group-by")
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	// --abtest: list all A/B test pairs with summary metrics.
+	// Not proxied (coordinator-only, no sandbox concern).
 	if abtest {
 		return runStatsAbtestFlag()
 	}
@@ -164,6 +171,16 @@ func runStats(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// PRISM_HOST_API proxy dispatch: when running inside a container, proxy
+	// read operations to the host sidecar rather than opening the shadow DB.
+	// Flags that require local DB context (--abtest, --group-by, --days/--since
+	// for historical aggregate, --instance) are passed through as query params.
+	// --abtest has already returned above; --group-by, --days historical, and
+	// --instance fall through to the local path (not sandbox use-cases).
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return runStatsProxy(cmd, args, apiURL, days, doomloops, denials, asks, repoFilter, sinceStr, jsonMode)
+	}
+
 	// --doomloops, --denials, and --asks bypass the per-incarnation view.
 	// They each have their own session-filter path and --days is additive.
 	if doomloops || denials || asks {
@@ -178,17 +195,17 @@ func runStats(cmd *cobra.Command, args []string) error {
 		}
 
 		if doomloops {
-			if err := runStatsDoomLoops(sessionFilter, window); err != nil {
+			if err := runStatsDoomLoops(sessionFilter, window, jsonMode); err != nil {
 				return err
 			}
 		}
 		if denials {
-			if err := runStatsDenials(sessionFilter, window); err != nil {
+			if err := runStatsDenials(sessionFilter, window, jsonMode); err != nil {
 				return err
 			}
 		}
 		if asks {
-			if err := runStatsAsks(sessionFilter, window); err != nil {
+			if err := runStatsAsks(sessionFilter, window, jsonMode); err != nil {
 				return err
 			}
 		}
@@ -227,9 +244,136 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 	// With an argument: detail view for a specific incarnation or session name.
 	if len(args) == 1 {
-		return runStatsDetail(args[0], forceInstance)
+		return runStatsDetail(args[0], forceInstance, jsonMode)
 	}
 
 	// No argument: per-incarnation summary table.
-	return runStatsIncarnations(repoFilter, sinceMs)
+	return runStatsIncarnations(repoFilter, sinceMs, jsonMode)
+}
+
+// runStatsProxy handles the PRISM_HOST_API proxy path for prism stats.
+// It dispatches to the host sidecar's /stats endpoint and renders the result
+// using the same functions as the direct-DB path, keeping rendering on the
+// CLI side (byte-identical output between host and proxy paths).
+func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, doomloops, denials, asks bool, repoFilter, sinceStr string, jsonMode bool) error {
+	// Default window for event views.
+	window := 7
+	if days > 0 {
+		window = days
+	}
+	sessionFilter := ""
+	if len(args) == 1 {
+		sessionFilter = args[0]
+	}
+
+	if doomloops || denials || asks {
+		if doomloops {
+			raw, err := proxyStats(apiURL, "doomloops", sessionFilter, window, "", 0)
+			if err != nil {
+				return err
+			}
+			var resp struct {
+				Events []db.Event `json:"events"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("stats proxy: unmarshal doomloops response: %w", err)
+			}
+			if jsonMode {
+				return printJSON(raw)
+			}
+			renderStatsDoomLoops(sessionFilter, window, resp.Events)
+		}
+		if denials {
+			raw, err := proxyStats(apiURL, "denials", sessionFilter, window, "", 0)
+			if err != nil {
+				return err
+			}
+			var resp struct {
+				Events []db.Event `json:"events"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("stats proxy: unmarshal denials response: %w", err)
+			}
+			if jsonMode {
+				return printJSON(raw)
+			}
+			renderStatsDenials(sessionFilter, window, resp.Events)
+		}
+		if asks {
+			raw, err := proxyStats(apiURL, "asks", sessionFilter, window, "", 0)
+			if err != nil {
+				return err
+			}
+			var resp struct {
+				Events []db.Event `json:"events"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return fmt.Errorf("stats proxy: unmarshal asks response: %w", err)
+			}
+			if jsonMode {
+				return printJSON(raw)
+			}
+			renderStatsAsks(sessionFilter, window, resp.Events)
+		}
+		return nil
+	}
+
+	// Per-session detail view.
+	if sessionFilter != "" {
+		raw, err := proxyStats(apiURL, "detail", sessionFilter, 0, "", 0)
+		if err != nil {
+			return err
+		}
+		var resp struct {
+			Session *db.Session `json:"session"`
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return fmt.Errorf("stats proxy: unmarshal detail response: %w", err)
+		}
+		if jsonMode {
+			return printJSON(raw)
+		}
+		if resp.Session == nil {
+			return fmt.Errorf("stats: %q not found", sessionFilter)
+		}
+		// Render the session detail using the incarnation renderer.
+		// We need a DB handle for token lookup on the direct path, but for the
+		// proxy path we render the sessions fields only (token data not proxied).
+		renderIncarnationDetailFromSession(resp.Session)
+		return nil
+	}
+
+	// Summary view (no session, no event flag).
+	// Parse sinceMs for the query.
+	var sinceMs int64
+	if sinceStr != "" {
+		ms, err := parseSinceFlag(sinceStr)
+		if err != nil {
+			return err
+		}
+		sinceMs = ms
+	} else if days > 0 {
+		sinceMs = time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+	}
+	raw, err := proxyStats(apiURL, "summary", "", 0, repoFilter, sinceMs)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Sessions []db.Session `json:"sessions"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("stats proxy: unmarshal summary response: %w", err)
+	}
+	if jsonMode {
+		return printJSON(raw)
+	}
+	return renderStatsIncarnationsFromSessions(resp.Sessions)
+}
+
+// printJSON writes raw JSON to stdout followed by a newline. Used by all
+// --json paths to emit structured output.
+func printJSON(raw []byte) error {
+	_, err := fmt.Fprintln(os.Stdout, string(raw))
+	return err
 }

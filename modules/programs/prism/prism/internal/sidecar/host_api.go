@@ -151,6 +151,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /switch        — switch the tmux client to a session
 //	GET  /list-sessions — list active sessions (role-scoped)
 //	GET  /checkin       — return conversation history for a session (coordinator only)
+//	GET  /stats         — return stats/events for rendering (all roles)
 //	POST /prompt        — deliver a prompt to a target session (role-scoped)
 //	POST /merge         — enqueue a PR for the merge queue (coordinator only)
 //	GET  /merges        — list merge queue entries (coordinator only)
@@ -227,6 +228,156 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		return self
 	}
+
+	// GET /stats
+	// Query params:
+	//   view     — one of: summary, doomloops, denials, asks, detail (required)
+	//   session  — session name filter (optional for doomloops/denials/asks; required for detail)
+	//   days     — look-back window in days (default 7 for event views; unused for summary/detail)
+	//   repo     — repo filter (summary only, optional)
+	//   since    — sinceMs timestamp as string (summary only, optional)
+	//
+	// Response shapes (all roles permitted — read-only):
+	//   view=summary → {"sessions":[...db.Session...]} with token/cost totals per-session
+	//     when session is set: {"type":"detail","session":{...db.Session...}} (same as view=detail)
+	//   view=doomloops → {"events":[...db.Event...]}
+	//   view=denials   → {"events":[...db.Event...]}
+	//   view=asks      → {"events":[...db.Event...]}
+	//   view=detail    → {"session":{...db.Session...}} (single-session incarnation detail)
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+
+		q := r.URL.Query()
+		view := q.Get("view")
+		sessionFilter := q.Get("session")
+		daysStr := q.Get("days")
+		sinceStr := q.Get("since")
+		repoFilter := q.Get("repo")
+
+		// Parse days (default 7 for event views).
+		days := 7
+		if daysStr != "" {
+			if n, parseErr := strconv.Atoi(daysStr); parseErr == nil && n > 0 {
+				days = n
+			}
+		}
+
+		// Parse sinceMs for summary view.
+		var sinceMs int64
+		if sinceStr != "" {
+			if ms, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
+				sinceMs = ms
+			}
+		}
+
+		switch view {
+		case "doomloops":
+			since := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+			events, err := s.cfg.DB.QueryDoomLoopEvents(sessionFilter, since)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if events == nil {
+				events = []db.Event{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"events": events})
+
+		case "denials":
+			if sessionFilter != "" {
+				status, dbErr := s.cfg.DB.CurrentStatus(sessionFilter)
+				evts, _ := s.cfg.DB.AllSessionEvents(sessionFilter)
+				if dbErr == nil && status == nil && len(evts) == 0 {
+					writeError(w, http.StatusNotFound, fmt.Sprintf("session %q not found", sessionFilter))
+					return
+				}
+			}
+			since := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+			events, err := s.cfg.DB.QueryPermissionEvents("permission_denied", sessionFilter, since)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if events == nil {
+				events = []db.Event{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"events": events})
+
+		case "asks":
+			if sessionFilter != "" {
+				status, dbErr := s.cfg.DB.CurrentStatus(sessionFilter)
+				evts, _ := s.cfg.DB.AllSessionEvents(sessionFilter)
+				if dbErr == nil && status == nil && len(evts) == 0 {
+					writeError(w, http.StatusNotFound, fmt.Sprintf("session %q not found", sessionFilter))
+					return
+				}
+			}
+			since := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
+			events, err := s.cfg.DB.QueryPermissionEvents("permission_ask", sessionFilter, since)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if events == nil {
+				events = []db.Event{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"events": events})
+
+		case "summary":
+			var sessions []db.Session
+			var err error
+			switch {
+			case repoFilter != "" && sinceMs > 0:
+				sessions, err = s.cfg.DB.SessionsForRepoSince(repoFilter, sinceMs)
+			case repoFilter != "":
+				sessions, err = s.cfg.DB.SessionsForRepo(repoFilter)
+			case sinceMs > 0:
+				sessions, err = s.cfg.DB.SessionsSince(sinceMs)
+			default:
+				sessions, err = s.cfg.DB.AllSessions()
+			}
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if sessions == nil {
+				sessions = []db.Session{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+
+		case "detail":
+			if sessionFilter == "" {
+				writeError(w, http.StatusBadRequest, "session is required for view=detail")
+				return
+			}
+			// Try exact session_name match first.
+			sess, err := s.cfg.DB.MostRecentSessionForName(sessionFilter)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if sess == nil {
+				// Try UUID prefix/exact match.
+				if len(sessionFilter) == 36 {
+					sess, err = s.cfg.DB.SessionByInstanceID(sessionFilter)
+					if err != nil {
+						writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+						return
+					}
+				}
+				if sess == nil {
+					writeError(w, http.StatusNotFound, fmt.Sprintf("session %q not found", sessionFilter))
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"session": sess})
+
+		default:
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown view %q — must be one of: summary, doomloops, denials, asks, detail", view))
+		}
+	})
 
 	// GET /list-sessions
 	// Query param: all=true (optional, coordinator only)

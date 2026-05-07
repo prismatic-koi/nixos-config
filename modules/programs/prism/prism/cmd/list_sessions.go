@@ -27,8 +27,16 @@ var listSessionsCmd = &cobra.Command{
 	Short: "List agent sessions with their state and title",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("all")
+		jsonMode, _ := cmd.Flags().GetBool("json")
 
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			if jsonMode {
+				raw, err := proxyListSessions(apiURL, showAll)
+				if err != nil {
+					return err
+				}
+				return printJSON(raw)
+			}
 			return proxyListSessionsAndRender(apiURL, showAll)
 		}
 
@@ -78,12 +86,24 @@ var listSessionsCmd = &cobra.Command{
 		// Fetch abtest pair IDs for the ↔ indicator. Non-fatal.
 		abtestPairs, _ := d.AbtestPairsForSessions()
 
+		if jsonMode {
+			if ss == nil {
+				ss = []db.Status{}
+			}
+			data, merr := json.Marshal(ss)
+			if merr != nil {
+				return fmt.Errorf("list-sessions --json: marshal: %w", merr)
+			}
+			return printJSON(data)
+		}
+
 		return renderSessionTable(ss, groupParents, abtestPairs)
 	},
 }
 
 func init() {
 	listSessionsCmd.Flags().BoolP("all", "A", false, "List all sessions across all repos")
+	listSessionsCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
 	rootCmd.AddCommand(listSessionsCmd)
 }
 
