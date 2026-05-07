@@ -2149,5 +2149,319 @@ func TestSocketPipe_ProtocolVersion1_TooOld(t *testing.T) {
 	_ = wait()
 }
 
+// ── #1440 regression tests ────────────────────────────────────────────────
+//
+// These tests guard against the regression introduced in #1434 and fixed in
+// #1440: the PI extension's `session_shutdown` hook was erroneously sending a
+// `{type:"session_shutdown"}` wire frame before closing the connection. The
+// sidecar treats that frame as terminal, removes pipe.sock, and breaks the
+// reconnect loop — causing ECONNRESET when PI fires `session_start`.
+//
+// The fix: only call writer.close() from the hook (no wire frame). The sidecar
+// reads EOF, keeps the listener open, and accepts the re-dial.
+
+// TestSocketPipe_SessionShutdownHook_NoWireFrame_New verifies that when the
+// extension closes the connection without sending a session_shutdown wire frame
+// (the fixed session_shutdown hook path for /new), the sidecar keeps pipe.sock
+// and accepts a second connection — no ECONNRESET.
+func TestSocketPipe_SessionShutdownHook_NoWireFrame_New(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	// First connection — simulates the active PI session before /new.
+	conn1, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn1, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn1, map[string]any{"type": "msg_assistant", "text": "before-new"})
+	sendJSON(t, conn1, map[string]any{"type": "turn_end"})
+
+	// Simulate the fixed session_shutdown hook: close without wire frame.
+	// This is exactly what writer.close() does — it calls socket.end(), which
+	// sends a TCP FIN. The sidecar reads EOF and waits for reconnect.
+	conn1.Close()
+
+	// Give the sidecar a moment to process the drop and re-enter Accept.
+	time.Sleep(50 * time.Millisecond)
+
+	// The socket file must still exist (sidecar must NOT have removed it).
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("pipe.sock was removed after session_shutdown hook close (regression #1440): %v", err)
+	}
+
+	// Second connection — simulates PI session_start with reason "new".
+	// Must succeed without ECONNRESET.
+	conn2, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn2, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn2, map[string]any{"type": "msg_assistant", "text": "after-new"})
+	sendJSON(t, conn2, map[string]any{"type": "turn_end"})
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error after /new reconnect: %v", err)
+	}
+
+	// Both turns must be recorded.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	textSet := map[string]bool{}
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			var p struct{ Text string `json:"text"` }
+			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
+				textSet[p.Text] = true
+			}
+		}
+	}
+	if !textSet["before-new"] {
+		t.Error("msg_assistant 'before-new' not found in agent_events")
+	}
+	if !textSet["after-new"] {
+		t.Error("msg_assistant 'after-new' not found in agent_events")
+	}
+
+	// Session must be finished.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateFinished) {
+		t.Errorf("state after /new reconnect+shutdown = %q, want finished", s)
+	}
+}
+
+// TestSocketPipe_SessionShutdownHook_NoWireFrame_Resume is the same as _New
+// but named for the /resume case (same wire behaviour, different PI reason).
+func TestSocketPipe_SessionShutdownHook_NoWireFrame_Resume(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn1, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn1, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn1, map[string]any{"type": "msg_assistant", "text": "before-resume"})
+	sendJSON(t, conn1, map[string]any{"type": "turn_end"})
+	conn1.Close() // fixed hook: no wire frame, only FIN
+
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("pipe.sock was removed after session_shutdown hook close (/resume, regression #1440): %v", err)
+	}
+
+	conn2, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn2, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn2, map[string]any{"type": "msg_assistant", "text": "after-resume"})
+	sendJSON(t, conn2, map[string]any{"type": "turn_end"})
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error after /resume reconnect: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	textSet := map[string]bool{}
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			var p struct{ Text string `json:"text"` }
+			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
+				textSet[p.Text] = true
+			}
+		}
+	}
+	if !textSet["before-resume"] {
+		t.Error("msg_assistant 'before-resume' not found in agent_events")
+	}
+	if !textSet["after-resume"] {
+		t.Error("msg_assistant 'after-resume' not found in agent_events")
+	}
+
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateFinished) {
+		t.Errorf("state after /resume reconnect+shutdown = %q, want finished", s)
+	}
+}
+
+// TestSocketPipe_SessionShutdownHook_NoWireFrame_Fork is the same as _New
+// but named for the /fork case.
+func TestSocketPipe_SessionShutdownHook_NoWireFrame_Fork(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn1, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn1, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn1, map[string]any{"type": "msg_assistant", "text": "before-fork"})
+	sendJSON(t, conn1, map[string]any{"type": "turn_end"})
+	conn1.Close() // fixed hook: no wire frame, only FIN
+
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("pipe.sock was removed after session_shutdown hook close (/fork, regression #1440): %v", err)
+	}
+
+	conn2, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn2, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn2, map[string]any{"type": "msg_assistant", "text": "after-fork"})
+	sendJSON(t, conn2, map[string]any{"type": "turn_end"})
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error after /fork reconnect: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	textSet := map[string]bool{}
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			var p struct{ Text string `json:"text"` }
+			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
+				textSet[p.Text] = true
+			}
+		}
+	}
+	if !textSet["before-fork"] {
+		t.Error("msg_assistant 'before-fork' not found in agent_events")
+	}
+	if !textSet["after-fork"] {
+		t.Error("msg_assistant 'after-fork' not found in agent_events")
+	}
+
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateFinished) {
+		t.Errorf("state after /fork reconnect+shutdown = %q, want finished", s)
+	}
+}
+
+// TestSocketPipe_SessionShutdownHook_SockFilePresent verifies that when the
+// session_shutdown hook closes the connection without a wire frame, the unix
+// socket file at HarnessPipeSockPath is NOT removed between the first
+// connection's close and the second connection's accept. This is the key
+// invariant that prevents ECONNRESET on the session_start re-dial (#1440 AC).
+func TestSocketPipe_SessionShutdownHook_SockFilePresent(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	// Wait for socket file to appear.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(sockPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("socket file never appeared")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	conn1, _ := dialAndHandshake(t, sockPath)
+	// Simulate session_shutdown hook: close without wire frame.
+	conn1.Close()
+
+	// Give the sidecar a moment to process the drop.
+	time.Sleep(50 * time.Millisecond)
+
+	// The socket file must still be present — the sidecar must not have
+	// removed it (which would only happen after a genuine session_shutdown
+	// wire frame breaks the reconnect loop).
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("pipe.sock removed after session_shutdown hook close (regression #1440): %v", err)
+	}
+
+	// Second connection must be accepted without error.
+	conn2, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
+// TestSocketPipe_GenuineSessionShutdown_StillDrivesFinished verifies that a
+// genuine {type:"session_shutdown"} wire frame (e.g. from process exit) still
+// drives the session to StateFinished and breaks the reconnect loop. This
+// guards against any accidental change to handlePipeFrame semantics (#1440
+// out-of-scope: the sidecar must still handle the genuine frame correctly).
+func TestSocketPipe_GenuineSessionShutdown_StillDrivesFinished(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a genuine session_shutdown wire frame (as if from process exit).
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error on genuine session_shutdown: %v", err)
+	}
+
+	// State must be finished — the reconnect loop must have broken.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateFinished) {
+		t.Errorf("state after genuine session_shutdown = %q, want finished", s)
+	}
+
+	// The socket file must have been removed (closePipeListener cleanup).
+	if _, err := os.Stat(sockPath); err == nil {
+		t.Error("pipe.sock still present after genuine session_shutdown — listener should have closed and removed it")
+	}
+}
+
+// TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally verifies that
+// after the extension reconnects following a session_shutdown hook close, the
+// next inbound frame from the sidecar is parsed and dispatched normally with
+// no leftover state from the previous connection (#1440 edge-case AC).
+func TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	// First connection — session_shutdown hook close.
+	conn1, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn1, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn1, map[string]any{"type": "msg_assistant", "text": "first-turn"})
+	sendJSON(t, conn1, map[string]any{"type": "turn_end"})
+	conn1.Close() // no wire frame — fixed hook
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Second connection — session_start reconnect.
+	conn2, _ := dialAndHandshake(t, sockPath)
+
+	// The sidecar must deliver a prompt on the second connection without any
+	// leftover state from the first connection. Enqueue a prompt from the
+	// sidecar side and verify the extension receives it normally.
+	rd := bufio.NewReader(conn2)
+	const promptText = "post-reconnect prompt"
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		sc.DeliverPrompt(promptText, "nextTurn")
+	}()
+
+	_ = conn2.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := rd.ReadBytes('\n')
+	_ = conn2.SetReadDeadline(time.Time{})
+	if err != nil {
+		t.Fatalf("read prompt frame after reconnect: %v", err)
+	}
+	var frame map[string]any
+	if err := json.Unmarshal(line, &frame); err != nil {
+		t.Fatalf("unmarshal prompt frame: %v", err)
+	}
+	if frame["type"] != "prompt" {
+		t.Errorf("expected prompt frame after reconnect, got type %v", frame["type"])
+	}
+	if frame["text"] != promptText {
+		t.Errorf("prompt text = %v, want %q", frame["text"], promptText)
+	}
+
+	// Clean shutdown on second connection.
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error after reconnect: %v", err)
+	}
+}
+
 // Ensure db import is used.
 var _ *db.DB
