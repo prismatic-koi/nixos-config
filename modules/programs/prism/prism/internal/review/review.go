@@ -198,6 +198,24 @@ type FetchPRContextOpts struct {
 	// Worktree is the path to the git worktree for running git commands.
 	// When empty, git commands run in the current directory.
 	Worktree string
+	// StateDir is the directory to write the diff file into when the diff
+	// exceeds the inline threshold. It must be a directory that is already
+	// bind-mounted into every review agent's sandbox at the same host path
+	// so that the path in the prompt is reachable inside the sandbox without
+	// any additional mount configuration.
+	//
+	// Typically this is the `.prism-review/` subdirectory inside the worktree:
+	//
+	//   <worktree>/.prism-review/
+	//
+	// All sandbox isolation modes (bwrap, sandbox-exec) bind-mount the worktree
+	// at its host path (Dst==Src), so files written here are reachable at the
+	// same absolute path inside the sandbox. The directory is cleaned up
+	// automatically when the worktree is removed by `prism cleanup`.
+	//
+	// When empty, the diff file falls back to /tmp (host-mode and Darwin
+	// sandbox-exec agents, where the host filesystem is shared directly).
+	StateDir string
 }
 
 // FetchPRContext fetches PR metadata and diff from the gh CLI.

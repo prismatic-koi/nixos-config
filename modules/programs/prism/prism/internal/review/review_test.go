@@ -2395,3 +2395,68 @@ func TestTruncateProgressMsg_ShortPassthrough(t *testing.T) {
 		t.Errorf("truncateProgressMsg: short message modified unexpectedly\ngot: %q\nwant: %q", out, short)
 	}
 }
+
+// ── DiffFilePath / StateDir tests (issue #1446) ───────────────────────────────
+
+// TestDiffFilePathForTest_StateDirUsed verifies that when a StateDir is provided
+// the returned path is under that directory (not the /tmp fallback).
+func TestDiffFilePathForTest_StateDirUsed(t *testing.T) {
+	// Use an explicit non-/tmp directory to confirm the stateDir path is chosen.
+	dir := filepath.Join(t.TempDir(), "prism", "run", "abc123")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	got := review.DiffFilePathForTest(dir, "1234", 1)
+	if !strings.HasPrefix(got, dir) {
+		t.Errorf("DiffFilePathForTest(stateDir=%q): path %q does not begin with stateDir", dir, got)
+	}
+	// The filename under stateDir must contain the round number.
+	filename := filepath.Base(got)
+	if !strings.Contains(filename, "round-1") {
+		t.Errorf("DiffFilePathForTest(stateDir=%q): filename %q does not contain 'round-1'", dir, filename)
+	}
+}
+
+// TestDiffFilePathForTest_EmptyStateDirFallsBackToTmp verifies that when
+// StateDir is empty the function falls back to /tmp.
+func TestDiffFilePathForTest_EmptyStateDirFallsBackToTmp(t *testing.T) {
+	got := review.DiffFilePathForTest("", "1234", 1)
+	if !strings.HasPrefix(got, "/tmp/") {
+		t.Errorf("DiffFilePathForTest(stateDir=\"\"): path %q does not begin with /tmp/ — fallback must be /tmp", got)
+	}
+}
+
+// TestDiffFilePathForTest_RoundSuffixDisambiguates verifies that different round
+// numbers produce different paths (preventing cross-round collisions).
+func TestDiffFilePathForTest_RoundSuffixDisambiguates(t *testing.T) {
+	dir := t.TempDir()
+	path1 := review.DiffFilePathForTest(dir, "819", 1)
+	path2 := review.DiffFilePathForTest(dir, "819", 2)
+	if path1 == path2 {
+		t.Errorf("DiffFilePathForTest: round 1 and round 2 produced the same path %q — rounds must be disambiguated", path1)
+	}
+}
+
+// TestDiffFilePathForTest_DifferentPRsInTmpDisambiguate verifies that different
+// PRs produce different /tmp fallback paths (preserving the existing collision
+// avoidance guarantee for host-mode sessions).
+func TestDiffFilePathForTest_DifferentPRsInTmpDisambiguate(t *testing.T) {
+	pathA := review.DiffFilePathForTest("", "111", 1)
+	pathB := review.DiffFilePathForTest("", "222", 1)
+	if pathA == pathB {
+		t.Errorf("DiffFilePathForTest /tmp fallback: PR 111 and PR 222 share the same path %q — /tmp paths must embed the PR number", pathA)
+	}
+}
+
+// TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate verifies that when
+// two concurrent reviews run against different PRs sharing the same worktree
+// (stateDir), the resulting paths are distinct so the agents read the correct
+// diff (security / edge-case AC from issue #1446).
+func TestDiffFilePathForTest_DifferentPRsInStateDirDisambiguate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".prism-review")
+	pathA := review.DiffFilePathForTest(dir, "111", 1)
+	pathB := review.DiffFilePathForTest(dir, "222", 1)
+	if pathA == pathB {
+		t.Errorf("DiffFilePathForTest stateDir: PR 111 and PR 222 share the same path %q — concurrent reviews must not collide", pathA)
+	}
+}

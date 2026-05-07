@@ -41,8 +41,11 @@ func ParseLinkedIssuesForTest(body string) []string {
 }
 
 // DiffFilePathForTest is an exported wrapper around diffFilePath for tests.
-func DiffFilePathForTest(prNumber string, round int) string {
-	return diffFilePath(prNumber, round)
+// stateDir mirrors the StateDir field of FetchPRContextOpts: when non-empty the
+// diff file lands in the provided directory; when empty it falls back to /tmp
+// (matching the backward-compat path for host-mode agents).
+func DiffFilePathForTest(stateDir, prNumber string, round int) string {
+	return diffFilePath(stateDir, prNumber, round)
 }
 
 // BuildAsyncAckForTest is an exported wrapper around buildAsyncAck for use
