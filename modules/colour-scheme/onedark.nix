@@ -32,10 +32,10 @@
     bg3 = "#3b3f4c";
     bg4 = "#3b3f4c";
     bg5 = "#3b3f4c";
-    bg_visual = "#382b2c";
-    bg_red = "#8b3434";
-    bg_green = "#8cc265";
-    bg_blue = "#2c5372";
-    bg_yellow = "#93691d";
+    bg_visual = "#2f2d3a";
+    bg_red = "#3f2a30";
+    bg_green = "#2e3a30";
+    bg_blue = "#26384a";
+    bg_yellow = "#3a3220";
   };
 }
