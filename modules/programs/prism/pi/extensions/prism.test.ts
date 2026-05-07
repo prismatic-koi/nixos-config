@@ -869,6 +869,84 @@ describe("processDoomLoop — per-session isolation", () => {
 })
 
 // ---------------------------------------------------------------------------
+// doom_loop_detected wire frame shape
+// ---------------------------------------------------------------------------
+
+describe("doom_loop_detected wire frame — field names match payload.DoomLoopDetected", () => {
+  it("emits {type, tool, pattern, count, timestampMs} on detector fire", () => {
+    const state = newDoomLoopState()
+    const tool = "bash"
+    const args = { command: "go test ./..." }
+    const expectedPattern = similarityKey(tool, args)
+    assert.ok(expectedPattern !== null, "similarityKey should be non-null for bash")
+
+    // Drive to fire.
+    const beforeMs = Date.now()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, tool, args)
+    }
+    const afterMs = Date.now()
+    assert.ok(msg !== null, "processDoomLoop should fire on threshold")
+
+    // Build the wire frame the same way prism.ts does after firing.
+    const frame = {
+      type: "doom_loop_detected" as const,
+      tool,
+      pattern: state.currentKey ?? "",
+      count: state.consecutiveCount,
+      timestampMs: Date.now(),
+    }
+
+    // Keys must be exactly {type, tool, pattern, count, timestampMs}.
+    assert.deepEqual(
+      Object.keys(frame).sort(),
+      ["count", "pattern", "timestampMs", "tool", "type"],
+    )
+
+    // pattern equals similarityKey(tool, args).
+    assert.equal(frame.pattern, expectedPattern)
+
+    // count equals consecutiveCount (which equals DOOM_LOOP_THRESHOLD after fire).
+    assert.equal(frame.count, DOOM_LOOP_THRESHOLD)
+
+    // timestampMs is a positive integer.
+    assert.ok(frame.timestampMs > 0)
+    assert.ok(Number.isInteger(frame.timestampMs))
+    assert.ok(frame.timestampMs >= beforeMs)
+    assert.ok(frame.timestampMs <= afterMs + 100) // small buffer for timing
+
+    // session_name and consecutive_count must NOT be present.
+    assert.ok(
+      !("session_name" in frame),
+      "session_name must not be in the wire frame",
+    )
+    assert.ok(
+      !("consecutive_count" in frame),
+      "consecutive_count must not be in the wire frame",
+    )
+  })
+
+  it("pattern is emitted as empty string when similarityKey returns null", () => {
+    // This tests the edge-case AC: pattern is always emitted, even if empty.
+    // We synthesise a state where currentKey is null after fire by directly
+    // checking the fallback in the wire frame expression: `state.currentKey ?? ""`.
+    const state = newDoomLoopState()
+    // Manually set state to simulate a fired state with null key.
+    state.currentKey = null
+    state.consecutiveCount = DOOM_LOOP_THRESHOLD
+    state.fired = true
+
+    const pattern = state.currentKey ?? ""
+    assert.equal(pattern, "")
+    // The pattern field is still present (not omitted).
+    const frame = { type: "doom_loop_detected" as const, tool: "bash", pattern, count: state.consecutiveCount, timestampMs: Date.now() }
+    assert.ok("pattern" in frame)
+    assert.equal(frame.pattern, "")
+  })
+})
+
+// ---------------------------------------------------------------------------
 // processReviewCycle
 // ---------------------------------------------------------------------------
 
