@@ -81,15 +81,19 @@ subsystems.
 
 ### 2.2 Darwin: localhost TCP listener
 
-- TCP listener on `0.0.0.0:0` (OS-allocated port). The listener binds on
-  `0.0.0.0`, not `127.0.0.1`, so that the sandbox's network namespace can
-  reach it via the same `host.containers.internal` route the host-API
-  listener already uses (see `internal/sidecar/sidecar.go:runStartupHTTP`,
-  the `runtime.GOOS == "darwin"` block — the harness pipe TCP listener
-  uses the identical pattern).
+- TCP listener on `127.0.0.1:0` (OS-allocated port). The listener binds on
+  `127.0.0.1` (loopback only). Unlike the podman/gvproxy path — where the
+  listener binds `0.0.0.0` so gvproxy's bridge interface (`192.168.127.254`)
+  can reach it from the container VM — `sandbox-exec` runs **directly on the
+  host**. Both the sidecar and the sandboxed extension share the host
+  loopback, so binding only `127.0.0.1` is both sufficient and more secure
+  (the port is not reachable from external network interfaces).
 - The allocated port is captured at sidecar startup — *before* the
-  extension's network namespace is configured — and exposed as
-  `tcp://host.containers.internal:<port>` via the env var (§2.4).
+  extension is launched — and exposed as `tcp://127.0.0.1:<port>` via
+  the env var (§2.4). **Note:** `host.containers.internal` is a
+  podman/gvproxy convention (resolved by gvproxy inside the container VM)
+  and does **not** resolve on bare macOS; using it for sandbox-exec causes
+  `ENOTFOUND` on every dial.
 - Rationale: macOS `sandbox-exec` does not support reliable Unix-socket
   bind-mounts into the sandbox in the same way bwrap does on Linux;
   virtiofs returned ENOTSUP for cross-VM Unix-socket connect() in #661
@@ -126,11 +130,16 @@ The sandbox process environment must contain:
 PRISM_HARNESS_PIPE=unix:///home/ben/.local/state/prism/run/abc123def456/pipe.sock
 ```
 
-or on Darwin:
+or on Darwin (sandbox-exec, where both sidecar and extension run on the host loopback):
 
 ```
-PRISM_HARNESS_PIPE=tcp://host.containers.internal:54321
+PRISM_HARNESS_PIPE=tcp://127.0.0.1:54321
 ```
+
+> **Note:** `host.containers.internal` is a podman/gvproxy convention and
+> resolves only inside a container VM where gvproxy injects the hostname. It
+> does **not** resolve on bare macOS. The sandbox-exec path always uses
+> `127.0.0.1` instead.
 
 The URI scheme is the discriminator: `unix://` for a filesystem path,
 `tcp://` for a host:port. Extensions that handle both schemes are required

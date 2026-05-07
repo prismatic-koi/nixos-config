@@ -229,9 +229,11 @@ type Config struct {
 	HarnessPipeSockPath string
 	// HarnessPipeTCPPort is the OS-allocated TCP port for the harness pipe
 	// listener on Darwin (where Unix socket bind-mounts inside sandbox-exec
-	// are not reliable). The sidecar binds 0.0.0.0:<port> and exposes it to
-	// the sandboxed extension as tcp://host.containers.internal:<port> via
-	// PRISM_HARNESS_PIPE. Zero means no TCP listener (Linux path).
+	// are not reliable). The sidecar binds 127.0.0.1:<port> and exposes it to
+	// the sandboxed extension as tcp://127.0.0.1:<port> via PRISM_HARNESS_PIPE.
+	// Zero means no TCP listener (Linux path). Note: unlike the podman/gvproxy
+	// path (which uses host.containers.internal), sandbox-exec runs directly on
+	// the host, so loopback-only is both correct and more secure.
 	HarnessPipeTCPPort int
 }
 
@@ -1367,8 +1369,10 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	}
 
 	if s.cfg.HarnessPipeTCPPort != 0 {
-		// Darwin: TCP fallback.
-		ln, listenErr = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", s.cfg.HarnessPipeTCPPort))
+		// Darwin: TCP listener bound to loopback only. sandbox-exec and the
+		// sidecar run on the same host; there is no VM or gvproxy bridge, so
+		// 0.0.0.0 would unnecessarily expose the listener on all interfaces.
+		ln, listenErr = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.cfg.HarnessPipeTCPPort))
 		if listenErr != nil {
 			err := fmt.Errorf("sidecar: runStartupSocketPipe: TCP listen :%d: %w", s.cfg.HarnessPipeTCPPort, listenErr)
 			s.writeStartupError(err)
