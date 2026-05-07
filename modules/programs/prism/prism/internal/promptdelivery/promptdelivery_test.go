@@ -181,6 +181,19 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run("deliverAs="+tc.deliverAs, func(t *testing.T) {
+			// Redirect XDG_STATE_HOME into a per-subtest temp dir so that
+			// SidecarHostAPIPath never falls back to $HOME — which is
+			// /homeless-shelter (unwritable) inside the Nix build sandbox.
+			// Use os.MkdirTemp with a short prefix rather than t.TempDir() to
+			// keep the resulting socket path under the 108-byte sun_path limit
+			// (t.TempDir embeds the full subtest name which pushes it over).
+			xdgTmp, mkTmpErr := os.MkdirTemp("", "prism-pd-*")
+			if mkTmpErr != nil {
+				t.Fatalf("create temp dir: %v", mkTmpErr)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+			t.Setenv("XDG_STATE_HOME", xdgTmp)
+
 			// Derive a session name that maps to a socket path we can control.
 			sessionName := "myrepo@feature"
 			sockPath, err := session.SidecarHostAPIPath(sessionName)
