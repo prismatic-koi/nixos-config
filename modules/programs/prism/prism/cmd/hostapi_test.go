@@ -825,11 +825,12 @@ func TestProxyCheckin_SendsCorrectQueryParams(t *testing.T) {
 // ── proxyPrompt unit tests ────────────────────────────────────────────────────
 
 // TestProxyPrompt_SendsCorrectPayload verifies that proxyPrompt POSTs to
-// /prompt with the correct JSON body.
+// /prompt with the correct JSON body, including the deliver_as field.
 func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
 	type promptReq struct {
-		Session string `json:"session"`
-		Prompt  string `json:"prompt"`
+		Session   string `json:"session"`
+		Prompt    string `json:"prompt"`
+		DeliverAs string `json:"deliver_as"`
 	}
 
 	reqCh := make(chan promptReq, 1)
@@ -847,7 +848,7 @@ func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 
-	if err := proxyPrompt(srv.apiURL(), "myrepo@main", "do the thing"); err != nil {
+	if err := proxyPrompt(srv.apiURL(), "myrepo@main", "do the thing", "steer"); err != nil {
 		t.Fatalf("proxyPrompt: %v", err)
 	}
 
@@ -858,6 +859,9 @@ func TestProxyPrompt_SendsCorrectPayload(t *testing.T) {
 		}
 		if req.Prompt != "do the thing" {
 			t.Errorf("prompt = %q, want 'do the thing'", req.Prompt)
+		}
+		if req.DeliverAs != "steer" {
+			t.Errorf("deliver_as = %q, want \"steer\"", req.DeliverAs)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
@@ -873,12 +877,61 @@ func TestProxyPrompt_Returns403AsError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"workers can only prompt their own coordinator"}`))
 	})
 
-	err := proxyPrompt(srv.apiURL(), "otherrepo@main", "hello")
+	err := proxyPrompt(srv.apiURL(), "otherrepo@main", "hello", "steer")
 	if err == nil {
 		t.Fatal("expected non-nil error for 403 response")
 	}
 	if !strings.Contains(err.Error(), "workers can only prompt") {
 		t.Errorf("error %q does not contain expected message", err.Error())
+	}
+}
+
+// TestProxyPrompt_DeliverAsModes verifies that proxyPrompt forwards the
+// deliverAs argument as the "deliver_as" JSON field for all accepted modes.
+// This is the container-mode (PRISM_HOST_API set) path — the CLI validates
+// the mode client-side before calling proxyPrompt, so by the time proxyPrompt
+// is called the value is already known to be valid.
+func TestProxyPrompt_DeliverAsModes(t *testing.T) {
+	cases := []struct {
+		deliverAs string
+	}{
+		{"steer"},
+		{"followUp"},
+		{"nextTurn"},
+	}
+
+	for _, tc := range cases {
+		t.Run("deliverAs="+tc.deliverAs, func(t *testing.T) {
+			type promptReq struct {
+				Session   string `json:"session"`
+				Prompt    string `json:"prompt"`
+				DeliverAs string `json:"deliver_as"`
+			}
+
+			reqCh := make(chan promptReq, 1)
+
+			srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+				var req promptReq
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				reqCh <- req
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{}`))
+			})
+
+			if err := proxyPrompt(srv.apiURL(), "myrepo@main", "test prompt", tc.deliverAs); err != nil {
+				t.Fatalf("proxyPrompt: %v", err)
+			}
+
+			select {
+			case req := <-reqCh:
+				if req.DeliverAs != tc.deliverAs {
+					t.Errorf("deliver_as = %q, want %q", req.DeliverAs, tc.deliverAs)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for request")
+			}
+		})
 	}
 }
 

@@ -39,15 +39,29 @@ session. The session must already exist and have an agent window.
 
 The prompt is delivered directly via POST /session/:id/prompt_async for
 instant delivery. A record is also written to bus_messages (with delivered_at
-set) for audit. If HTTP delivery fails, an error is returned.`,
+set) for audit. If HTTP delivery fails, an error is returned.
+
+The --deliver-as flag controls the delivery mode for socket-pipe (PI) sessions:
+
+  steer     — inject mid-turn so the agent sees the correction immediately
+              (default — use for coordinator mid-flight redirections)
+  followUp  — queue as the next user turn after the current turn completes
+  nextTurn  — alias for followUp; the sidecar's own default when no mode is set
+
+For opencode (HTTP) sessions the flag is accepted but has no effect — opencode
+uses prompt_async and does not support delivery modes.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPrompt,
 }
 
 func init() {
 	addPromptFlags(promptCmd)
+	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe (PI) sessions: steer, followUp, nextTurn. Default "steer" injects the prompt mid-turn for immediate visibility. No-op for opencode (HTTP) sessions.`)
 	rootCmd.AddCommand(promptCmd)
 }
+
+// validDeliverAsModes lists the accepted values for --deliver-as.
+var validDeliverAsModes = []string{"steer", "followUp", "nextTurn"}
 
 func runPrompt(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
@@ -57,8 +71,22 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate --deliver-as client-side before any network call.
+	deliverAs, _ := cmd.Flags().GetString("deliver-as")
+	valid := false
+	for _, m := range validDeliverAsModes {
+		if deliverAs == m {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("invalid --deliver-as %q: accepted values are %q",
+			deliverAs, validDeliverAsModes)
+	}
+
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyPrompt(apiURL, sessionName, promptText)
+		return proxyPrompt(apiURL, sessionName, promptText, deliverAs)
 	}
 
 	// Open DB.
@@ -136,7 +164,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	// via the active pipe connection (P2.SIDECAR).
 	if status.Harness != nil {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
-			if err := deliverViaSidecarHostAPI(sessionName, promptText); err != nil {
+			if err := deliverViaSidecarHostAPI(sessionName, promptText, deliverAs); err != nil {
 				return fmt.Errorf("socket-pipe delivery failed: %w", err)
 			}
 			if err := database.WriteBusMessageDelivered(msg); err != nil {
@@ -171,11 +199,15 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 // socket-pipe path bypasses the HTTP harness API used for opencode and
 // instead routes through the sidecar's pipe-frame queue.
 //
+// deliverAs controls the delivery mode ("steer", "followUp", or "nextTurn").
+// It is forwarded as the "deliver_as" JSON field so the sidecar knows how to
+// inject the prompt. The sidecar validates unknown values and returns HTTP 400.
+//
 // The function dials the socket directly rather than going through the
 // PRISM_HOST_API proxy mechanism: PRISM_HOST_API is only set inside
 // containerised agent processes; the host-side prism CLI must look up the
 // per-session socket itself via session.SidecarHostAPIPath.
-func deliverViaSidecarHostAPI(sessionName, promptText string) error {
+func deliverViaSidecarHostAPI(sessionName, promptText, deliverAs string) error {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve sidecar host-api socket: %w", err)
@@ -186,8 +218,9 @@ func deliverViaSidecarHostAPI(sessionName, promptText string) error {
 	client := newHostAPIClient(sockPath)
 
 	body, err := json.Marshal(map[string]string{
-		"session": sessionName,
-		"prompt":  promptText,
+		"session":    sessionName,
+		"prompt":     promptText,
+		"deliver_as": deliverAs,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal prompt: %w", err)

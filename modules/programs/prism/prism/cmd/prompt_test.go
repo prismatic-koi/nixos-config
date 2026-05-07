@@ -3,14 +3,17 @@ package cmd
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // openPromptTestDB opens a temp DB, registers cleanup, and overrides the
@@ -385,6 +388,224 @@ func TestRunPrompt_SessionNotFound(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error should mention not found: got %q", err.Error())
+	}
+}
+
+// TestRunPrompt_DeliverAs_DefaultIsSteer verifies that prism prompt with no
+// --deliver-as flag sends deliver_as=steer in the sidecar host-API request body.
+func TestRunPrompt_DeliverAs_DefaultIsSteer(t *testing.T) {
+	stateHome, err := os.MkdirTemp("", "da")
+	if err != nil {
+		t.Fatalf("mkdir state home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	sessionName := "repo@da-steer"
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+
+	type req struct {
+		DeliverAs string `json:"deliver_as"`
+	}
+	reqCh := make(chan req, 1)
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var got req
+		_ = json.Unmarshal(body, &got)
+		reqCh <- got
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	d := openPromptTestDB(t)
+	seedSession(t, d, sessionName, "active", nil, nil, strPtr("worker"), nil)
+	setStatusHarness(t, d, sessionName, "pi")
+
+	// No --deliver-as flag — default should be steer.
+	rootCmd.SetArgs([]string{"prompt", sessionName, "--prompt", "mid-flight correction"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case got := <-reqCh:
+		if got.DeliverAs != "steer" {
+			t.Errorf("deliver_as = %q, want \"steer\" (default)", got.DeliverAs)
+		}
+	default:
+		t.Fatal("did not receive a /prompt request on the per-session socket")
+	}
+}
+
+// TestRunPrompt_DeliverAs_ExplicitFollowUp verifies that --deliver-as followUp
+// sends deliver_as=followUp in the request body.
+func TestRunPrompt_DeliverAs_ExplicitFollowUp(t *testing.T) {
+	stateHome, err := os.MkdirTemp("", "da")
+	if err != nil {
+		t.Fatalf("mkdir state home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	sessionName := "repo@da-follow"
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+
+	type req struct {
+		DeliverAs string `json:"deliver_as"`
+	}
+	reqCh := make(chan req, 1)
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var got req
+		_ = json.Unmarshal(body, &got)
+		reqCh <- got
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	d := openPromptTestDB(t)
+	seedSession(t, d, sessionName, "active", nil, nil, strPtr("worker"), nil)
+	setStatusHarness(t, d, sessionName, "pi")
+
+	rootCmd.SetArgs([]string{"prompt", sessionName, "--prompt", "follow-up message", "--deliver-as", "followUp"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case got := <-reqCh:
+		if got.DeliverAs != "followUp" {
+			t.Errorf("deliver_as = %q, want \"followUp\"", got.DeliverAs)
+		}
+	default:
+		t.Fatal("did not receive a /prompt request on the per-session socket")
+	}
+}
+
+// TestRunPrompt_DeliverAs_ExplicitNextTurn verifies that --deliver-as nextTurn
+// sends deliver_as=nextTurn in the request body.
+func TestRunPrompt_DeliverAs_ExplicitNextTurn(t *testing.T) {
+	stateHome, err := os.MkdirTemp("", "da")
+	if err != nil {
+		t.Fatalf("mkdir state home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	sessionName := "repo@da-next"
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sockPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+
+	type req struct {
+		DeliverAs string `json:"deliver_as"`
+	}
+	reqCh := make(chan req, 1)
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var got req
+		_ = json.Unmarshal(body, &got)
+		reqCh <- got
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	d := openPromptTestDB(t)
+	seedSession(t, d, sessionName, "active", nil, nil, strPtr("worker"), nil)
+	setStatusHarness(t, d, sessionName, "pi")
+
+	rootCmd.SetArgs([]string{"prompt", sessionName, "--prompt", "queued message", "--deliver-as", "nextTurn"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	select {
+	case got := <-reqCh:
+		if got.DeliverAs != "nextTurn" {
+			t.Errorf("deliver_as = %q, want \"nextTurn\"", got.DeliverAs)
+		}
+	default:
+		t.Fatal("did not receive a /prompt request on the per-session socket")
+	}
+}
+
+// TestRunPrompt_DeliverAs_InvalidValueRejected verifies that --deliver-as bogus
+// exits non-zero with a clear error before any HTTP request is made.
+func TestRunPrompt_DeliverAs_InvalidValueRejected(t *testing.T) {
+	// Ensure the host-API proxy is not active.
+	t.Setenv("PRISM_HOST_API", "")
+
+	// We use an HTTP server to verify no request is made.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("server should not receive a request for an invalid --deliver-as value")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	port := extractTestServerPort(t, srv.URL)
+	oldClient := httpClient
+	httpClient = srv.Client()
+	defer func() { httpClient = oldClient }()
+
+	d := openPromptTestDB(t)
+	seedSession(t, d, "repo@bogus", "active", intPtr(port), strPtr("oc-sid-x"), strPtr("worker"), strPtr("anthropic/claude-sonnet-4.6"))
+
+	rootCmd.SetArgs([]string{"prompt", "repo@bogus", "--prompt", "test", "--deliver-as", "bogus"})
+	execErr := rootCmd.Execute()
+	if execErr == nil {
+		t.Fatal("expected error for invalid --deliver-as value, got nil")
+	}
+	if !strings.Contains(execErr.Error(), "bogus") {
+		t.Errorf("error should mention the invalid value: got %q", execErr.Error())
+	}
+	// Error must name the accepted values.
+	for _, m := range []string{"steer", "followUp", "nextTurn"} {
+		if !strings.Contains(execErr.Error(), m) {
+			t.Errorf("error should mention accepted value %q: got %q", m, execErr.Error())
+		}
 	}
 }
 

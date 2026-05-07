@@ -385,6 +385,17 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 |---|---|
 | `--prompt <text>` | Prompt text to send. Supports `-` to read from stdin. |
 | `--prompt-file <path>` | Read prompt from a file. Mutually exclusive with `--prompt`. |
+| `--deliver-as <mode>` | Delivery mode for socket-pipe (PI) sessions: `steer` (default), `followUp`, or `nextTurn`. Has no effect for opencode (HTTP) sessions. |
+
+**Delivery modes** (relevant for PI / socket-pipe sessions):
+
+| Mode | Behaviour |
+|---|---|
+| `steer` **(default)** | Injects the prompt mid-turn so the agent sees it immediately, even during a long tool-call sequence. Use for coordinator mid-flight corrections and scope changes. |
+| `followUp` | Queues the prompt as the next user turn, delivered after the current turn completes. Use when the message is informational and does not need to interrupt the current turn. |
+| `nextTurn` | Alias for `followUp`; the sidecar's own default when `deliver_as` is absent from the request body. |
+
+The CLI validates the mode client-side before making any network call. An invalid value exits non-zero with a message listing the accepted values.
 
 The prompt is delivered directly via HTTP to the opencode session. The session must exist and have an active opencode port — use `prism list-sessions` to check first.
 
