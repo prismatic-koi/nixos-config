@@ -25,6 +25,40 @@ specification. Follow them to the letter.
 - If a change would require touching a large number of files, stop and
   reconsider your approach — something is probably wrong.
 
+## Pre-existing bugs and out-of-scope discoveries
+
+While working, you may surface a bug that is unrelated to your spec — a flaky
+test in the same package, a race in a shared helper, a lint failure that
+predates your branch. Two failure modes to avoid:
+
+- **Silent fix** — you patch it inline. Scope creeps past your ACs; reviewers
+  must evaluate unrelated code; the original work becomes harder to assess.
+- **Silent drop** — you ignore it. The information dies with the session; the
+  coordinator never learns a problem exists; no tracking issue is filed.
+
+The correct response is to **escalate the discovery** to the coordinator via
+`prism prompt <repo>@main` and then **continue with your assigned work**.
+
+**What the escalation message must include:**
+
+- A precise reproducer: commands, test name, and conditions under which it
+  fails.
+- Suspected root cause, if known.
+- Why you believe it is pre-existing / out of scope — e.g. "reproduces on
+  `main` without my changes" or "touches a system not named in my spec".
+- A statement that you are continuing with the original work and will not fix
+  it.
+
+**Informational vs. blocking escalation:**
+
+- **Informational** (the common case): the bug does not prevent you from
+  verifying your own ACs. Send the escalation and keep working — do not wait
+  for a response.
+- **Blocking**: the bug prevents you from building, running tests, or otherwise
+  verifying your ACs. Pause and wait for the coordinator's response before
+  proceeding. Treat this the same as the review-deadlock path described in
+  "Escalating to the coordinator — a first-class outcome" below.
+
 ## Committing and pushing
 
 **Override: the default "never commit unless asked" rule does not apply to you.**
