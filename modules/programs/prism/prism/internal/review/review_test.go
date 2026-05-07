@@ -2003,15 +2003,31 @@ func TestBuildReviewPrompt_ContainsFullDiffSection(t *testing.T) {
 	}
 }
 
-// TestBuildReviewPrompt_ContextBeforeRoleSeparator verifies that the PR-context
-// sections appear BEFORE the role-specific content separator ("---").
-func TestBuildReviewPrompt_ContextBeforeRoleSeparator(t *testing.T) {
+// TestBuildReviewPrompt_ContextBeforeRoleSection verifies that the PR-context
+// sections appear BEFORE the role-specific instructions section, and that the
+// old dangling trailer line is no longer present.
+func TestBuildReviewPrompt_ContextBeforeRoleSection(t *testing.T) {
 	ctx := samplePRContext()
-	prompt := review.BuildReviewPromptForTest("819", ctx)
+
+	// Use a temp dir with a fake role definition file so the role-splice path
+	// is exercised with known content.
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	agentsDir := filepath.Join(dir, "opencode", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Files on disk use the "-subagent" suffix (Agent.ValidationName form, #1231).
+	roleDef := "# Test role rubric\n\nReview carefully."
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal-subagent.md"), []byte(roleDef), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal-subagent")
 
 	contextHeaderIdx := findLineIndex(prompt, "## Context for your review")
 	separatorIdx := findLineIndex(prompt, "---")
-	roleNoteIdx := findLineIndex(prompt, "Your role-specific instructions follow below.")
+	roleSectionIdx := findLineIndex(prompt, "## Your role-specific instructions")
 
 	if contextHeaderIdx < 0 {
 		t.Fatalf("prompt missing '## Context for your review'\nprompt:\n%s", prompt)
@@ -2019,11 +2035,22 @@ func TestBuildReviewPrompt_ContextBeforeRoleSeparator(t *testing.T) {
 	if separatorIdx < 0 {
 		t.Fatalf("prompt missing separator '---'\nprompt:\n%s", prompt)
 	}
-	if roleNoteIdx < 0 {
-		t.Fatalf("prompt missing role note\nprompt:\n%s", prompt)
+	if roleSectionIdx < 0 {
+		t.Fatalf("prompt missing '## Your role-specific instructions' section\nprompt:\n%s", prompt)
 	}
 	if contextHeaderIdx >= separatorIdx {
 		t.Errorf("'## Context for your review' (line %d) should appear before '---' (line %d)", contextHeaderIdx, separatorIdx)
+	}
+	if separatorIdx >= roleSectionIdx {
+		t.Errorf("'---' separator (line %d) should appear before '## Your role-specific instructions' (line %d)", separatorIdx, roleSectionIdx)
+	}
+	// The old dangling trailer must NOT appear.
+	if findSubstring(prompt, "Your role-specific instructions follow below.") {
+		t.Errorf("prompt must not contain old dangling trailer 'Your role-specific instructions follow below.'\nprompt:\n%s", prompt)
+	}
+	// The role rubric must be spliced in.
+	if !findSubstring(prompt, "Test role rubric") {
+		t.Errorf("prompt missing spliced role rubric content\nprompt:\n%s", prompt)
 	}
 }
 

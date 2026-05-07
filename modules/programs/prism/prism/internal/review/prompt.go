@@ -23,7 +23,14 @@ import (
 //
 // The context block always appears BEFORE the role-specific content so
 // that agents read full context first and role directives second.
-func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
+//
+// roleFile is the filename stem for the agent's definition file under
+// $XDG_CONFIG_HOME/opencode/agents/ (e.g. "review-goal-subagent", which
+// is Agent.ValidationName). The file contents are spliced into the prompt
+// in place of the former "Your role-specific instructions follow below."
+// trailer so that every harness (including PI) receives the full role rubric
+// inline.
+func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) string {
 	if prCtx == nil || prCtx.FetchFailed {
 		// Fallback: minimal prompt with only the PR number.
 		return fmt.Sprintf(
@@ -161,15 +168,49 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext) string {
 		"it's faster, works offline, and doesn't consume API rate limits.\n\n")
 	sb.WriteString("---\n\n")
 
-	// ── PR under review (legacy compat section) ───────────────────────────
-	// Kept for AC: tests that check "## PR under review" are still met via
-	// the "### PR metadata" section. However, tests specifically looking for
-	// "## PR under review" need to be updated. We keep backward compat by
-	// noting this is now under "## Context for your review > ### PR metadata".
-	sb.WriteString("Your role-specific instructions follow below.\n\n")
-	sb.WriteString("---\n\n")
+	// ── Role-specific instructions ────────────────────────────────────────
+	// Splice the role definition file inline so that every harness (opencode,
+	// PI, etc.) receives the full rubric without relying on an out-of-band
+	// system-prompt injection. The redundancy in opencode (which also loads
+	// the file server-side) is harmless — same content, same agent.
+	sb.WriteString("## Your role-specific instructions\n\n")
+	sb.WriteString(resolveRoleDefinition(roleFile))
 
 	return sb.String()
+}
+
+// resolveRoleDefinition reads the role definition file for the given agent
+// from the opencode agents directory ($XDG_CONFIG_HOME/opencode/agents/).
+//
+// roleFile is the filename stem (without the .md extension). For the five
+// standard review agents this is Agent.ValidationName — the "-subagent"
+// form (e.g. "review-goal-subagent"), because the on-disk files are named
+// after the subagent declaration, not the primary agent name (#1231).
+//
+// When the file is present and non-empty its contents are returned verbatim.
+// When the file is missing or empty a clearly-marked notice is returned instead
+// so agents and human readers can see what happened without the prompt
+// silently providing no guidance.
+func resolveRoleDefinition(roleFile string) string {
+	configHome := os.Getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home, _ := os.UserHomeDir()
+		configHome = filepath.Join(home, ".config")
+	}
+	path := filepath.Join(configHome, "opencode", "agents", roleFile+".md")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Sprintf("(role definition for %s not found at %s)\n", roleFile, path)
+		}
+		// Other read errors (permissions, etc.) — surface the error.
+		return fmt.Sprintf("(role definition for %s could not be read from %s: %v)\n", roleFile, path, err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return fmt.Sprintf("(role definition for %s not found at %s)\n", roleFile, path)
+	}
+	return string(data)
 }
 
 // sortStrings sorts a slice of strings in-place (insertion sort — small slices only).

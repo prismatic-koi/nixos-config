@@ -19,8 +19,14 @@ import (
 // BuildReviewPromptForTest is an exported wrapper around buildReviewPrompt for
 // use in external test packages. It allows tests to verify prompt content,
 // section ordering, and fallback behaviour without needing a live tmux/DB.
-func BuildReviewPromptForTest(prNumber string, prCtx *PRContext) string {
-	return buildReviewPrompt(prNumber, prCtx)
+// role is the agent role name (e.g. "review-goal"); pass "" to exercise
+// the missing-file edge case without a pre-existing definition file.
+func BuildReviewPromptForTest(prNumber string, prCtx *PRContext, role ...string) string {
+	r := ""
+	if len(role) > 0 {
+		r = role[0]
+	}
+	return buildReviewPrompt(prNumber, prCtx, r)
 }
 
 // TruncateDiffForTest is an exported wrapper around truncateDiff for unit tests.
