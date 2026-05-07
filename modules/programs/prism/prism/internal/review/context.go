@@ -31,11 +31,39 @@ type prViewJSON struct {
 }
 
 // diffFilePath returns the path for the diff temp file for a given PR and round.
-// Format: /tmp/prism-review-<pr>-round-<N>.diff
-func diffFilePath(prNumber string, round int) string {
+//
+// When stateDir is non-empty the file is written there:
+//
+//	<stateDir>/pr-<prNumber>-round-<N>.diff
+//
+// stateDir is typically the per-review-run storage directory derived from the
+// worktree path: `<worktree>/.prism-review/`. The worktree is already bind-mounted
+// into every review agent's sandbox at its host path (Dst==Src for bwrap and
+// sandbox-exec), so the diff file is reachable inside each sandbox at the same
+// path without any additional mount configuration.
+//
+// The PR number is embedded in the filename so that two concurrent review runs
+// against different PRs in the same worktree do not collide. The round suffix
+// disambiguates multiple rounds against the same PR.
+//
+// When stateDir is empty the function falls back to /tmp for backward
+// compatibility (host-mode review agents, Darwin sandbox-exec).
+func diffFilePath(stateDir, prNumber string, round int) string {
 	if round <= 0 {
 		round = 1
 	}
+	if stateDir != "" {
+		// <stateDir>/pr-<prNumber>-round-<N>.diff
+		// Both the PR number and the round suffix are present: the PR number
+		// disambiguates concurrent reviews of different PRs within the same
+		// worktree, and the round suffix disambiguates multiple rounds of the
+		// same PR review.
+		return fmt.Sprintf("%s/pr-%s-round-%d.diff", stateDir, prNumber, round)
+	}
+	// Fallback: /tmp — used when StateDir was not provided. Host-mode agents
+	// share the host filesystem directly; sandbox-exec agents allow file-read*
+	// on (subpath "/tmp") so /tmp is reachable. This also covers any future
+	// isolation mode where the worktree path is not Dst==Src.
 	return fmt.Sprintf("/tmp/prism-review-%s-round-%d.diff", prNumber, round)
 }
 
@@ -201,8 +229,25 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 			// Small enough to inline.
 			prCtx.Diff = truncated
 		} else {
-			// Large diff — write to a temp file and point agents at the path.
-			diffPath := diffFilePath(opts.PRNumber, opts.Round)
+			// Large diff — write to a file reachable inside the sandbox and point
+			// agents at the path. Use the provided StateDir when available: it must
+			// be a directory already bind-mounted into every review agent sandbox at
+			// the same host path, so the path works inside and outside the sandbox
+			// with no namespace translation. Typically StateDir is
+			// <worktree>/.prism-review/, which is visible via the existing worktree
+			// bind-mount.
+			//
+			// Ensure the state directory exists before writing (it is pre-created by
+			// container.prepareVolumeDirs before any session is spawned, but for
+			// robustness we create it here if it is absent).
+			if opts.StateDir != "" {
+				if mkErr := os.MkdirAll(opts.StateDir, 0o755); mkErr != nil {
+					// Directory creation failed; fall back to /tmp path to preserve
+					// the write attempt rather than silently inlining.
+					fmt.Fprintf(os.Stderr, "[prism review] warning: could not create state dir %s: %v — using /tmp fallback\n", opts.StateDir, mkErr)
+				}
+			}
+			diffPath := diffFilePath(opts.StateDir, opts.PRNumber, opts.Round)
 			if writeErr := os.WriteFile(diffPath, []byte(diffOut), 0o644); writeErr != nil {
 				fmt.Fprintf(os.Stderr, "[prism review] warning: could not write diff to %s: %v — inlining diff instead\n", diffPath, writeErr)
 				prCtx.Diff = truncated

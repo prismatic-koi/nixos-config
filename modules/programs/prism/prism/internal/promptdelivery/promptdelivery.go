@@ -61,12 +61,19 @@ import (
 // sidecar uses this to gate reviewingInFlight clearing: only
 // source="review-complete" (the monitor's delivery) clears the flag; all other
 // deliveries leave it unchanged. Pass "" for non-monitor callers.
-func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string) error {
+//
+// deliverAs controls the prompt delivery mode for pi (TransportSocketPipe)
+// sessions. It is forwarded as the "deliver_as" JSON field to the sidecar's
+// /prompt handler, which validates and passes it through to DeliverPrompt.
+// Accepted values: "steer", "followUp", "nextTurn". Empty string defaults to
+// "nextTurn" (current behaviour, for backward-compatible callers).
+// For opencode sessions the parameter is ignored (opencode uses prompt_async).
+func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
 		shape, ok := harness.ShapeOf(*status.Harness)
 		if ok && shape == harness.TransportSocketPipe {
-			return deliverViaSidecarSocket(sessionName, text, source)
+			return deliverViaSidecarSocket(sessionName, text, source, deliverAs)
 		}
 	}
 
@@ -75,7 +82,8 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 }
 
 // deliverViaSidecarSocket dials the target session's host-API Unix socket and
-// POSTs /prompt with {"session": sessionName, "prompt": text, "source": source}.
+// POSTs /prompt with {"session": sessionName, "prompt": text, "source": source,
+// "deliver_as": deliverAs}.
 //
 // The sidecar's /prompt handler checks that req.Session == s.cfg.SessionName
 // and that the harness shape is TransportSocketPipe, then calls s.DeliverPrompt
@@ -85,9 +93,14 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 // reviewingInFlight clearing: only source="review-complete" clears the flag.
 // Pass "" for non-monitor callers (the field is omitted when empty).
 //
+// deliverAs is forwarded as the "deliver_as" JSON field. Pass "followUp" for
+// post-turn notifications (coordinator notify, merge-queue outcome, startup
+// failure). Pass "" to default to "nextTurn" (existing caller behaviour).
+// The sidecar validates the value and rejects unknown strings with HTTP 400.
+//
 // Returns an error if the socket does not exist (session ended / socket cleaned
 // up) or the HTTP request fails.
-func deliverViaSidecarSocket(sessionName, text, source string) error {
+func deliverViaSidecarSocket(sessionName, text, source, deliverAs string) error {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
@@ -105,6 +118,9 @@ func deliverViaSidecarSocket(sessionName, text, source string) error {
 	}
 	if source != "" {
 		bodyMap["source"] = source
+	}
+	if deliverAs != "" {
+		bodyMap["deliver_as"] = deliverAs
 	}
 	body, err := json.Marshal(bodyMap)
 	if err != nil {

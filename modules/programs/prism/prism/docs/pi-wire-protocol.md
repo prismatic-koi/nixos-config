@@ -622,11 +622,32 @@ Deliver a user message into the PI session.
 
 The extension's PI runtime call:
 
-| `deliver_as` | PI RPC call |
-|---|---|
-| `steer` | `pi.sendUserMessage(text, {deliverAs: "steer", images})` |
-| `followUp` | `pi.sendUserMessage(text, {deliverAs: "followUp", images})` |
-| `nextTurn` | `pi.sendUserMessage(text, {deliverAs: "nextTurn", images})` |
+| `deliver_as` | PI RPC call (idle) | PI RPC call (streaming) |
+|---|---|---|
+| `steer` | `pi.sendUserMessage(text, {deliverAs: "steer"})` | `pi.sendUserMessage(text, {deliverAs: "steer"})` |
+| `followUp` | `pi.sendUserMessage(text, {deliverAs: "followUp"})` | `pi.sendUserMessage(text, {deliverAs: "followUp"})` |
+| `nextTurn` | `pi.sendUserMessage(text)` *(bare call, idle path)* | `pi.sendUserMessage(text, {deliverAs: "followUp"})` *(resolved mid-stream)* |
+
+**`nextTurn` resolution detail:** PI's `sendUserMessage` requires an explicit
+`deliverAs` whenever the runtime is streaming a turn. Calling it without
+`deliverAs` mid-stream throws `"Agent is already processing. Specify
+streamingBehavior ('steer' or 'followUp') to queue the message."` — the
+throw would propagate into the dispatcher's outer try/catch and silently
+drop the frame. The extension therefore queries `ctx.isIdle()` at delivery
+time and routes:
+- **Idle** (`isIdle() === true` or `ctx.isIdle` not a function on older
+  runtimes): calls bare `sendUserMessage(text)` — equivalent to the
+  `nextTurn` PI RPC command, scheduling the message for the next turn.
+- **Streaming** (`isIdle() === false`): calls
+  `sendUserMessage(text, {deliverAs: "followUp"})` — queues the message
+  to be delivered after the current turn finishes, which is the correct
+  semantic for notification deliveries (coordinator finish-notifications,
+  merge-queue outcomes, startup-failure alerts) that arrive mid-stream.
+
+Callers that want deterministic post-turn queuing regardless of idle state
+should send `deliver_as: "followUp"` explicitly (which is what
+`notifyCoordinator`, `notifyParentWorkerOnStartupFailure`, and the
+merge-queue watcher all do).
 
 ### 6.3 `set_model`
 

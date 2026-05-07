@@ -785,11 +785,21 @@ export interface InboundDispatchAPI {
     content:
       | string
       | Array<{ type: "text"; text: string } | Record<string, unknown>>,
-    // The dispatcher only ever passes "steer" or "followUp"; for the wire
-    // protocol's `nextTurn` it omits options entirely so PI's idle-vs-
-    // streaming logic decides. The narrower union here documents that.
-    options?: { deliverAs?: "steer" | "followUp" },
+    // For "steer" and "followUp" the option is forwarded verbatim.
+    // For "nextTurn", the dispatcher queries isIdle() and routes to
+    // "followUp" mid-stream (when isIdle returns false) or calls bare
+    // sendUserMessage (when idle). The full union is kept here so the
+    // adapter in the factory can forward the value PI actually supports.
+    options?: { deliverAs?: "steer" | "followUp" | "nextTurn" },
   ) => void
+  // isIdle returns true when the PI runtime is not currently streaming a
+  // turn. Used by the dispatcher to choose between bare sendUserMessage
+  // (idle) and sendUserMessage({ deliverAs: "followUp" }) (mid-stream)
+  // when the wire frame carries deliver_as="nextTurn". Implementations on
+  // older PI runtimes that do not expose isIdle may omit the method; the
+  // dispatcher treats its absence as idle=true (pre-streaming behaviour
+  // preserved).
+  isIdle?: () => boolean
   setModel: (model: unknown) => Promise<boolean>
   setThinkingLevel: (level: string) => void
   registerProvider: (name: string, config: ProviderConfig) => void
@@ -862,14 +872,44 @@ export async function dispatchInboundFrame(
           content = text
         }
 
-        // PI's sendUserMessage extension surface accepts steer | followUp; for
-        // nextTurn we omit deliverAs so PI's internal logic decides based on
-        // idle state (immediate when idle; queued when streaming). This is
-        // the closest mapping to the RPC `prompt` command's behaviour.
-        if (deliverAs === "nextTurn") {
-          api.sendUserMessage(content)
-        } else {
-          api.sendUserMessage(content, { deliverAs })
+        // PI's sendUserMessage requires an explicit deliverAs whenever the
+        // runtime is streaming. For the wire's "nextTurn" value, query
+        // isIdle and route to "followUp" mid-stream so the message queues
+        // until the current turn settles. Calling sendUserMessage without
+        // deliverAs while streaming throws "Agent is already processing",
+        // which would silently drop the frame in this dispatcher's outer
+        // try/catch. When isIdle is unavailable (older PI runtime), treat
+        // the runtime as idle and call bare sendUserMessage (pre-streaming
+        // behaviour preserved).
+        let isIdleAtDecision: boolean | undefined
+        try {
+          if (deliverAs === "nextTurn") {
+            isIdleAtDecision =
+              typeof api.isIdle === "function" ? api.isIdle() : true
+            if (isIdleAtDecision) {
+              api.sendUserMessage(content)
+            } else {
+              api.sendUserMessage(content, { deliverAs: "followUp" })
+            }
+          } else {
+            api.sendUserMessage(content, { deliverAs })
+          }
+        } catch (sendErr) {
+          // Re-emit with enough context to diagnose the failure from logs alone:
+          // frame type, the wire deliver_as value, and the isIdle state at the
+          // moment the delivery decision was made.
+          const sendMsg =
+            sendErr instanceof Error ? sendErr.message : String(sendErr)
+          const idleCtx =
+            isIdleAtDecision === undefined
+              ? "(not evaluated)"
+              : String(isIdleAtDecision)
+          emitError(
+            "dispatch_error",
+            `prompt: ${sendMsg} (deliver_as=${deliverAs}, isIdle=${idleCtx})`,
+            "prompt",
+          )
+          break
         }
         break
       }
@@ -1301,6 +1341,14 @@ export default function prismExtension(pi: ExtensionAPI): void {
             content as Parameters<ExtensionAPI["sendUserMessage"]>[0],
             options as Parameters<ExtensionAPI["sendUserMessage"]>[1],
           ),
+        isIdle: () => {
+          // ctx.isIdle is available on PI runtimes that expose it (the same
+          // guard used in the turn_end handler at ~line 1509). Fall back to
+          // true (treat as idle) for older runtimes without the method, which
+          // preserves the pre-streaming sendUserMessage behaviour.
+          const ctx = lastCtx
+          return typeof ctx?.isIdle === "function" ? ctx.isIdle() : true
+        },
         setModel: (model) =>
           pi.setModel(model as Parameters<ExtensionAPI["setModel"]>[0]),
         setThinkingLevel: (level) =>
