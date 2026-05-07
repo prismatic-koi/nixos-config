@@ -61,6 +61,7 @@
               "review-context"
               "ac"
               "retro"
+              "investigate"
             ];
             lightweight = [
               "explore"
@@ -87,6 +88,7 @@
                 "review-context" = "review-context-subagent";
                 ac = "ac";
                 retro = "retro";
+                investigate = "investigate";
                 explore = "worker";
                 title = "worker";
                 summary = "worker";
@@ -162,7 +164,8 @@
             anthropic-pi = profileFromTiers {
               primary = slot {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-4-6";
+                model = "anthropic/claude-opus-4-7";
+                thinking = "medium";
                 harness = "pi";
               };
               secondary = slot {
@@ -334,6 +337,7 @@
               container_review_qa_config = config.nx.programs.prism.opencode.containerReviewQaConfigJson;
               container_review_context_config =
                 config.nx.programs.prism.opencode.containerReviewContextConfigJson;
+              container_investigate_config = config.nx.programs.prism.opencode.containerInvestigateConfigJson;
               # Agent environment variables to inject into host-mode opencode processes.
               # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
               # always contains absolute paths regardless of which form is used.

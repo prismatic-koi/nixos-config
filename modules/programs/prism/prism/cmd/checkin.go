@@ -27,12 +27,15 @@ package cmd
 //	checkin_legacy.go  — runCheckinSessionLegacy (screen-scrape fallback)
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
 var checkinCmd = &cobra.Command{
@@ -60,6 +63,7 @@ func init() {
 	checkinCmd.Flags().Bool("all", false, "List all sessions across all repos (no-arg mode only)")
 	checkinCmd.Flags().Bool("compare", false, "Side-by-side comparison of two A/B test sessions (requires two session args)")
 	checkinCmd.Flags().Bool("diff", false, "Emit a text diff (use with --compare)")
+	checkinCmd.Flags().Bool("json", false, "Emit structured JSON ({\"session\":\"...\",\"state\":\"...\",\"events\":[...]}) instead of the human-readable rendering")
 	rootCmd.AddCommand(checkinCmd)
 }
 
@@ -85,6 +89,7 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 	beforeID, _ := cmd.Flags().GetString("before")
 	typesRaw, _ := cmd.Flags().GetString("types")
 	verbose, _ := cmd.Flags().GetBool("verbose")
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	var afterPtr *string
 	if fromID != "" {
@@ -130,7 +135,7 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 		return runCheckinReviewRounds(sessionArg, verbose)
 	}
 
-	return runCheckinSession(sessionArg, last, beforePtr, afterPtr, types, verbose)
+	return runCheckinSession(sessionArg, last, beforePtr, afterPtr, types, verbose, jsonMode)
 }
 
 // runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
@@ -141,14 +146,25 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 // For each turn it fetches all associated tool/permission/thinking events via
 // a secondary query keyed by messageId. msg_user events within the time window
 // of the fetched assistant turns are also included.
-func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool) error {
+// jsonMode causes the raw host-API response (or a JSON-encoded local result) to
+// be emitted to stdout instead of the human-readable rendering.
+func runCheckinSession(session string, limit int, before, after *string, types []string, verbose bool, jsonMode bool) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		raw, err := proxyCheckin(apiURL, session, limit, before, after, types, verbose)
 		if err != nil {
 			return err
 		}
+		if jsonMode {
+			return printJSON(raw)
+		}
 		return renderProxiedCheckin(raw, verbose)
 	}
+	// When --json is requested on the direct-DB path, query events and emit
+	// the same JSON shape as the host-API /checkin endpoint.
+	if jsonMode {
+		return runCheckinSessionJSON(session, limit, before, after, types)
+	}
+
 	// When --types is explicitly set, use the old raw-event query path.
 	// The new assistant-turn-centric path only applies to the default view.
 	if len(types) > 0 {
@@ -177,6 +193,97 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 
 	// No DB rows (or DB unavailable) — fall back to screen capture.
 	return runCheckinSessionLegacy(session, 100)
+}
+
+// runCheckinSessionJSON emits the checkin data as JSON in the same shape as
+// the host-API /checkin response: {"session":"...","state":"...","events":[...]}.
+// Used by the direct-DB path when --json is set, producing byte-identical output
+// to the proxy path (both produce the same JSON shape for the same inputs).
+func runCheckinSessionJSON(session string, limit int, before, after *string, types []string) error {
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("checkin --json: open db: %w", err)
+	}
+	defer d.Close()
+
+	// Fetch session state.
+	var state string
+	if status, stErr := d.CurrentStatus(session); stErr == nil && status != nil {
+		state = status.State
+	}
+
+	// Fetch events using the same logic as the host-API /checkin handler.
+	var events []db.Event
+	if len(types) > 0 {
+		evts, qerr := d.QueryEvents(session, limit, before, after, types)
+		if qerr != nil {
+			return fmt.Errorf("checkin --json: query events: %w", qerr)
+		}
+		events = evts
+	} else {
+		// Default assistant-turn-centric mode: mirror host-API logic.
+		assistantEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_assistant"})
+		if qerr != nil {
+			return fmt.Errorf("checkin --json: query events: %w", qerr)
+		}
+		if len(assistantEvents) > 0 {
+			// Collect messageIds and fetch child events.
+			messageIDs := make([]string, 0, len(assistantEvents))
+			for _, e := range assistantEvents {
+				if msgID := extractMessageID(e.Payload); msgID != "" {
+					messageIDs = append(messageIDs, msgID)
+				}
+			}
+			childTypes := []string{"tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
+			childEvents, _ := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
+
+			// Fetch user events in time window.
+			earliest := assistantEvents[0].CreatedAt
+			latest := assistantEvents[len(assistantEvents)-1].CreatedAt
+			for _, ae := range assistantEvents {
+				if ae.CreatedAt.Before(earliest) {
+					earliest = ae.CreatedAt
+				}
+				if ae.CreatedAt.After(latest) {
+					latest = ae.CreatedAt
+				}
+			}
+			allUserEvents, _ := d.QueryEvents(session, 0, nil, nil, []string{"msg_user"})
+			var userEvents []db.Event
+			for _, ue := range allUserEvents {
+				if !ue.CreatedAt.Before(earliest) && !ue.CreatedAt.After(latest) {
+					userEvents = append(userEvents, ue)
+				}
+			}
+
+			// Merge all into a single sorted timeline (insertion sort, ASC).
+			merged := make([]db.Event, 0, len(assistantEvents)+len(childEvents)+len(userEvents))
+			merged = append(merged, assistantEvents...)
+			merged = append(merged, childEvents...)
+			merged = append(merged, userEvents...)
+			for i := 1; i < len(merged); i++ {
+				for j := i; j > 0 && merged[j].CreatedAt.Before(merged[j-1].CreatedAt); j-- {
+					merged[j], merged[j-1] = merged[j-1], merged[j]
+				}
+			}
+			events = merged
+		}
+	}
+
+	if events == nil {
+		events = []db.Event{}
+	}
+	out := map[string]any{
+		"session": session,
+		"state":   state,
+		"events":  events,
+	}
+	data, merr := json.Marshal(out)
+	if merr != nil {
+		return fmt.Errorf("checkin --json: marshal: %w", merr)
+	}
+	fmt.Println(string(data))
+	return nil
 }
 
 // runCheckinSessionRaw is the legacy raw-event query path, used when --types

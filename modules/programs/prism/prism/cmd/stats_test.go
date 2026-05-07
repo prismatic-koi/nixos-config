@@ -16,8 +16,14 @@ import (
 
 // openStatsTestDB opens a temp DB, registers t.Cleanup, and sets the global
 // testDBPath so that openDB() in the stats command uses this DB.
+// It also clears PRISM_HOST_API so that stats functions use the direct-DB
+// path regardless of whether the test is running inside a prism container.
 func openStatsTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	// Unset PRISM_HOST_API so stats commands use the direct-DB path.
+	// Tests that specifically exercise the proxy path set up their own mock
+	// servers and t.Setenv("PRISM_HOST_API", ...) explicitly.
+	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(path)
 	if err != nil {

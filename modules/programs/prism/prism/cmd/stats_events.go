@@ -9,15 +9,16 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
 )
 
 // ---------- doom-loop events ----------
 
-// runStatsDoomLoops queries doom_loop_detected events and renders them as a
-// table sorted by timestamp descending. sessionFilter narrows to a specific
-// session when non-empty. days is the look-back window (must be > 0).
-func runStatsDoomLoops(sessionFilter string, days int) error {
+// runStatsDoomLoops queries doom_loop_detected events and renders them.
+// sessionFilter narrows to a specific session when non-empty.
+// days is the look-back window (must be > 0). jsonMode emits JSON when true.
+func runStatsDoomLoops(sessionFilter string, days int, jsonMode bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats --doomloops: %w", err)
@@ -31,6 +32,21 @@ func runStatsDoomLoops(sessionFilter string, days int) error {
 		return fmt.Errorf("stats --doomloops: %w", err)
 	}
 
+	if jsonMode {
+		return emitEventsJSON(events)
+	}
+	return renderStatsDoomLoopsErr(sessionFilter, days, events)
+}
+
+// renderStatsDoomLoops renders doom loop events as a table (no error return;
+// used by the proxy path which has already fetched the events).
+func renderStatsDoomLoops(sessionFilter string, days int, events []db.Event) {
+	_ = renderStatsDoomLoopsErr(sessionFilter, days, events)
+}
+
+// renderStatsDoomLoopsErr is the shared renderer used by both the direct-DB
+// and proxy paths.
+func renderStatsDoomLoopsErr(sessionFilter string, days int, events []db.Event) error {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleHeaderDim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -115,11 +131,10 @@ type denialKey struct {
 	Tool    string
 }
 
-// runStatsDenials queries permission_denied events and renders them as a table
-// aggregated by (session_name, tool), sorted by count descending.
+// runStatsDenials queries permission_denied events and renders them.
 // sessionFilter narrows to a specific session when non-empty.
-// days is the look-back window (must be > 0).
-func runStatsDenials(sessionFilter string, days int) error {
+// days is the look-back window (must be > 0). jsonMode emits JSON when true.
+func runStatsDenials(sessionFilter string, days int, jsonMode bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats --denials: %w", err)
@@ -132,8 +147,8 @@ func runStatsDenials(sessionFilter string, days int) error {
 		if err != nil {
 			return fmt.Errorf("stats --denials: %w", err)
 		}
-		events, _ := d.AllSessionEvents(sessionFilter)
-		if status == nil && len(events) == 0 {
+		evts, _ := d.AllSessionEvents(sessionFilter)
+		if status == nil && len(evts) == 0 {
 			return fmt.Errorf("session %q not found", sessionFilter)
 		}
 	}
@@ -145,6 +160,19 @@ func runStatsDenials(sessionFilter string, days int) error {
 		return fmt.Errorf("stats --denials: %w", err)
 	}
 
+	if jsonMode {
+		return emitEventsJSON(events)
+	}
+	return renderStatsDenialsErr(sessionFilter, days, events)
+}
+
+// renderStatsDenials renders denial events as a table (no error return).
+func renderStatsDenials(sessionFilter string, days int, events []db.Event) {
+	_ = renderStatsDenialsErr(sessionFilter, days, events)
+}
+
+// renderStatsDenialsErr is the shared renderer.
+func renderStatsDenialsErr(sessionFilter string, days int, events []db.Event) error {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleHeaderDim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -243,11 +271,10 @@ type askKey struct {
 	Pattern string
 }
 
-// runStatsAsks queries permission_ask events and renders them as a table
-// aggregated by (session_name, tool, pattern), sorted by count descending.
+// runStatsAsks queries permission_ask events and renders them.
 // sessionFilter narrows to a specific session when non-empty.
-// days is the look-back window (must be > 0).
-func runStatsAsks(sessionFilter string, days int) error {
+// days is the look-back window (must be > 0). jsonMode emits JSON when true.
+func runStatsAsks(sessionFilter string, days int, jsonMode bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats --asks: %w", err)
@@ -260,8 +287,8 @@ func runStatsAsks(sessionFilter string, days int) error {
 		if err != nil {
 			return fmt.Errorf("stats --asks: %w", err)
 		}
-		events, _ := d.AllSessionEvents(sessionFilter)
-		if status == nil && len(events) == 0 {
+		evts, _ := d.AllSessionEvents(sessionFilter)
+		if status == nil && len(evts) == 0 {
 			return fmt.Errorf("session %q not found", sessionFilter)
 		}
 	}
@@ -273,6 +300,19 @@ func runStatsAsks(sessionFilter string, days int) error {
 		return fmt.Errorf("stats --asks: %w", err)
 	}
 
+	if jsonMode {
+		return emitEventsJSON(events)
+	}
+	return renderStatsAsksErr(sessionFilter, days, events)
+}
+
+// renderStatsAsks renders ask events as a table (no error return).
+func renderStatsAsks(sessionFilter string, days int, events []db.Event) {
+	_ = renderStatsAsksErr(sessionFilter, days, events)
+}
+
+// renderStatsAsksErr is the shared renderer.
+func renderStatsAsksErr(sessionFilter string, days int, events []db.Event) error {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleHeaderDim := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -380,5 +420,20 @@ func runStatsAsks(sessionFilter string, days int) error {
 	if sessionFilter == "" {
 		fmt.Println(styleDim.Render("use `prism stats <session> --asks` to filter to a specific session"))
 	}
+	return nil
+}
+
+// emitEventsJSON emits a JSON object {"events":[...]} to stdout.
+// Used by runStatsDoomLoops, runStatsDenials, runStatsAsks when --json is set.
+func emitEventsJSON(events []db.Event) error {
+	if events == nil {
+		events = []db.Event{}
+	}
+	out := map[string]any{"events": events}
+	data, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("stats --json: marshal events: %w", err)
+	}
+	fmt.Println(string(data))
 	return nil
 }

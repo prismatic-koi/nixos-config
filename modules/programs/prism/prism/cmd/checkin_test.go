@@ -228,11 +228,12 @@ func TestRenderCheckinTurns_LastN(t *testing.T) {
 	}
 	d.Close()
 
+	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	out := captureStdout(t, func() {
-		if err := runCheckinSession(session, 3, nil, nil, nil, false); err != nil {
+		if err := runCheckinSession(session, 3, nil, nil, nil, false, false); err != nil {
 			t.Errorf("runCheckinSession: %v", err)
 		}
 	})
@@ -270,12 +271,13 @@ func TestRenderCheckinTurns_DefaultLast10(t *testing.T) {
 	}
 	d.Close()
 
+	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Default limit is 10: last 10 of 15 are indices 5-14.
 	out := captureStdout(t, func() {
-		if err := runCheckinSession(session, 10, nil, nil, nil, false); err != nil {
+		if err := runCheckinSession(session, 10, nil, nil, nil, false, false); err != nil {
 			t.Errorf("runCheckinSession: %v", err)
 		}
 	})
@@ -553,11 +555,12 @@ func TestRunCheckinSession_NoAssistantEventsButHasUserEvents(t *testing.T) {
 		userPayload("umsg-only", "a prompt with no reply yet"), base)
 	d.Close()
 
+	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	out := captureStdout(t, func() {
-		if err := runCheckinSession(session, 10, nil, nil, nil, false); err != nil {
+		if err := runCheckinSession(session, 10, nil, nil, nil, false, false); err != nil {
 			t.Errorf("runCheckinSession returned unexpected error: %v", err)
 		}
 	})
@@ -587,12 +590,13 @@ func TestRunCheckinSession_TypesRoutesToRaw(t *testing.T) {
 		toolCallPayload(msgID, "bash", "ls"), base.Add(100*time.Millisecond))
 	d.Close()
 
+	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// --types msg_assistant,tool_call routes to raw path.
 	out := captureStdout(t, func() {
-		if err := runCheckinSession(session, 10, nil, nil, []string{"msg_assistant", "tool_call"}, false); err != nil {
+		if err := runCheckinSession(session, 10, nil, nil, []string{"msg_assistant", "tool_call"}, false, false); err != nil {
 			t.Errorf("runCheckinSession: %v", err)
 		}
 	})
@@ -929,11 +933,12 @@ func TestRunCheckinSession_LegacyFallbackNoRows(t *testing.T) {
 	dbPath := d.Path()
 	d.Close()
 
+	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Session "repo@ghost" has no DB rows — should fall through to legacy.
-	err := runCheckinSession("repo@ghost", 10, nil, nil, nil, false)
+	err := runCheckinSession("repo@ghost", 10, nil, nil, nil, false, false)
 	// The legacy path returns an error when tmux is unavailable (no TMUX env
 	// in tests). We just verify the call doesn't panic and the error message
 	// references the session name.

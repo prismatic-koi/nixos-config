@@ -65,7 +65,7 @@ func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
 		fmt.Printf("  state: %s\n", stateStyled)
 
 		if verbose {
-			if err := runCheckinSession(m.SessionName, 20, nil, nil, nil, true); err != nil {
+			if err := runCheckinSession(m.SessionName, 20, nil, nil, nil, true, false); err != nil {
 				fmt.Fprintf(os.Stderr, "  [error reading session %s: %v]\n", m.SessionName, err)
 			}
 		} else {
@@ -232,7 +232,7 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 
 			if verbose {
 				// Show full conversation for this agent session.
-				if err := runCheckinSession(ag.sessionName, 20, nil, nil, nil, true); err != nil {
+				if err := runCheckinSession(ag.sessionName, 20, nil, nil, nil, true, false); err != nil {
 					fmt.Fprintf(os.Stderr, "  [error reading session %s: %v]\n", ag.label, err)
 				}
 			} else {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,8 +16,8 @@ import (
 
 // runStatsDetail resolves an argument to a specific sessions row and renders
 // detail for it. The argument may be a full UUID, a UUID prefix (when
-// unambiguous), or a session name.
-func runStatsDetail(arg string, forceInstance bool) error {
+// unambiguous), or a session name. jsonMode emits JSON when true.
+func runStatsDetail(arg string, forceInstance bool, jsonMode bool) error {
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats: %w", err)
@@ -28,8 +29,69 @@ func runStatsDetail(arg string, forceInstance bool) error {
 		return err
 	}
 
+	if jsonMode {
+		out := map[string]any{"session": sess}
+		data, merr := json.Marshal(out)
+		if merr != nil {
+			return fmt.Errorf("stats --json: marshal session: %w", merr)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
 	renderIncarnationDetail(d, sess)
 	return nil
+}
+
+// renderIncarnationDetailFromSession renders the session detail for the proxy
+// path, where no DB is available for token/cost lookup.
+func renderIncarnationDetailFromSession(sess *db.Session) {
+	if sess == nil {
+		return
+	}
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	now := time.Now()
+
+	fmt.Println(styleHeader.Render("incarnation: " + sess.InstanceID))
+	fmt.Println()
+
+	fmt.Printf("%s %s\n", styleLabel.Render("session:"), sess.SessionName)
+	fmt.Printf("%s %s\n", styleLabel.Render("repo:"), sess.Repo)
+
+	if sess.RootAgentName != nil && *sess.RootAgentName != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.RootAgentName)
+	} else if sess.AgentRole != nil && *sess.AgentRole != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("agent:"), *sess.AgentRole)
+	}
+
+	state := "active"
+	if sess.EndState != nil && *sess.EndState != "" {
+		state = *sess.EndState
+	} else if sess.EndedAt != nil {
+		state = "ended"
+	}
+	fmt.Printf("%s %s\n", styleLabel.Render("state:"), stateStyle(state).Render(state))
+
+	fmt.Printf("%s %s\n", styleLabel.Render("started:"), sess.StartedAt.Format("2006-01-02 15:04:05"))
+	if sess.EndedAt != nil {
+		fmt.Printf("%s %s\n", styleLabel.Render("ended:"), sess.EndedAt.Format("2006-01-02 15:04:05"))
+		dur := sess.EndedAt.Sub(sess.StartedAt)
+		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
+	} else {
+		dur := now.Sub(sess.StartedAt)
+		fmt.Printf("%s %s\n", styleLabel.Render("duration:"), formatDurationLong(dur))
+	}
+
+	if sess.ArchivePath != nil && *sess.ArchivePath != "" {
+		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), *sess.ArchivePath)
+	} else {
+		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), styleDim.Render("(not yet archived)"))
+	}
+	fmt.Println()
+	fmt.Println(styleHeader.Render("Token Usage"))
+	fmt.Println(styleDim.Render("  token data requires host DB access (use prism stats on host for full detail)"))
 }
 
 // resolveSessionArg resolves an argument to a single sessions row.

@@ -95,7 +95,7 @@ func TestRunStatsDenials_EmptyWindow(t *testing.T) {
 	_ = openStatsTestDB(t)
 
 	out := captureStdout(t, func() {
-		if err := runStatsDenials("", 7); err != nil {
+		if err := runStatsDenials("", 7, false); err != nil {
 			t.Errorf("runStatsDenials: %v", err)
 		}
 	})
@@ -122,7 +122,7 @@ func TestRunStatsDenials_AggregationCorrectness(t *testing.T) {
 	writeDenialEvent(t, d, "repo@feature", "kubectl", base.Add(-30*time.Minute))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDenials("", 7); err != nil {
+		if err := runStatsDenials("", 7, false); err != nil {
 			t.Errorf("runStatsDenials: %v", err)
 		}
 	})
@@ -180,7 +180,7 @@ func TestRunStatsDenials_SessionFilter(t *testing.T) {
 	writeDenialEvent(t, d, "repo@feature", "kubectl", base.Add(-2*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDenials("repo@main", 7); err != nil {
+		if err := runStatsDenials("repo@main", 7, false); err != nil {
 			t.Errorf("runStatsDenials: %v", err)
 		}
 	})
@@ -208,7 +208,7 @@ func TestRunStatsDenials_WindowFilter(t *testing.T) {
 	writeDenialEvent(t, d, "repo@main", "kubectl", base.Add(-8*24*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsDenials("", 7); err != nil {
+		if err := runStatsDenials("", 7, false); err != nil {
 			t.Errorf("runStatsDenials: %v", err)
 		}
 	})
@@ -226,7 +226,7 @@ func TestRunStatsDenials_WindowFilter(t *testing.T) {
 func TestRunStatsDenials_MissingSession(t *testing.T) {
 	_ = openStatsTestDB(t)
 
-	err := runStatsDenials("nonexistent@main", 7)
+	err := runStatsDenials("nonexistent@main", 7, false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent session, got nil")
 	}
@@ -288,7 +288,7 @@ func TestRunStatsAsks_EmptyWindow(t *testing.T) {
 	_ = openStatsTestDB(t)
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -314,7 +314,7 @@ func TestRunStatsAsks_AggregationCorrectness(t *testing.T) {
 	writeAskEvent(t, d, "repo@feature", "webfetch", []string{}, base.Add(-1*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -373,7 +373,7 @@ func TestRunStatsAsks_MultiplePatternsSplitRows(t *testing.T) {
 	writeAskEvent(t, d, "repo@main", "bash", []string{"git push*", "gh pr*"}, base)
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -410,7 +410,7 @@ func TestRunStatsAsks_NullPatterns(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -429,7 +429,7 @@ func TestRunStatsAsks_LegacyToolObject(t *testing.T) {
 	writeAskEventLegacyTool(t, d, "repo@main", []string{"some-pattern"}, base)
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -458,7 +458,7 @@ func TestRunStatsAsks_SessionFilter(t *testing.T) {
 	writeAskEvent(t, d, "repo@feature", "kubectl", []string{"apply*"}, base.Add(-2*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("repo@main", 7); err != nil {
+		if err := runStatsAsks("repo@main", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -486,7 +486,7 @@ func TestRunStatsAsks_WindowFilter(t *testing.T) {
 	writeAskEvent(t, d, "repo@main", "bash", []string{"outside-window"}, base.Add(-8*24*time.Hour))
 
 	out := captureStdout(t, func() {
-		if err := runStatsAsks("", 7); err != nil {
+		if err := runStatsAsks("", 7, false); err != nil {
 			t.Errorf("runStatsAsks: %v", err)
 		}
 	})
@@ -504,7 +504,7 @@ func TestRunStatsAsks_WindowFilter(t *testing.T) {
 func TestRunStatsAsks_MissingSession(t *testing.T) {
 	_ = openStatsTestDB(t)
 
-	err := runStatsAsks("nonexistent@main", 7)
+	err := runStatsAsks("nonexistent@main", 7, false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent session, got nil")
 	}
