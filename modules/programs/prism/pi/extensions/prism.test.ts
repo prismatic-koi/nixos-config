@@ -1271,17 +1271,27 @@ describe("shouldAttemptConnect", () => {
 // resolveTurnEndSignal (turn_end state-change resolver)
 // ---------------------------------------------------------------------------
 
-describe("resolveTurnEndSignal — finished", () => {
-  it("returns 'finished' when stopReason=stop, idle, no pending, not reviewing", () => {
+describe("resolveTurnEndSignal — clean stop (idle, no pending, not reviewing)", () => {
+  it("returns 'idle' (not 'finished') when stopReason=stop, idle, no pending, not reviewing", () => {
+    // AC: clean turn end now emits state_change{idle}; sidecar idle debounce
+    // converts that to StateFinished + notifyCoordinator() without closing the pipe.
+    // This prevents /new and /resume from hitting ECONNRESET (fix for #1432).
     assert.equal(
+      resolveTurnEndSignal("stop", true, false, false),
+      "idle",
+    )
+  })
+
+  it("never returns 'finished'", () => {
+    // 'finished' has been removed from TurnEndSignal; turn_end never emits it.
+    assert.notEqual(
       resolveTurnEndSignal("stop", true, false, false),
       "finished",
     )
   })
 
   it("returns 'none' when stopReason=stop but hasPendingMessages=true", () => {
-    // AC: stop + pending messages → agent has more work queued, NOT finished.
-    // hasPendingMessages also suppresses idle emission (same as old behaviour).
+    // AC: stop + pending messages → agent has more work queued; no idle emitted.
     assert.equal(
       resolveTurnEndSignal("stop", true, true, false),
       "none",
@@ -1289,7 +1299,7 @@ describe("resolveTurnEndSignal — finished", () => {
   })
 
   it("returns 'none' when stopReason=stop but isIdle=false", () => {
-    // Session is still streaming — not idle, cannot be finished
+    // Session is still streaming — not idle; no state change emitted.
     assert.equal(
       resolveTurnEndSignal("stop", false, false, false),
       "none",
@@ -1297,7 +1307,7 @@ describe("resolveTurnEndSignal — finished", () => {
   })
 
   it("returns 'none' when stopReason=stop and pendingReviewCall=true", () => {
-    // AC: in reviewing state — do not emit finished; agent awaits review-complete
+    // AC: in reviewing state — do not emit idle; agent awaits review-complete.
     assert.equal(
       resolveTurnEndSignal("stop", true, false, true),
       "none",
@@ -1330,12 +1340,13 @@ describe("resolveTurnEndSignal — interrupted", () => {
 })
 
 describe("resolveTurnEndSignal — toolUse", () => {
-  it("does NOT return 'finished' when stopReason=toolUse", () => {
-    // AC: turn ended to execute tools, agent is not done — no finished emitted.
-    // In practice isIdle=false when toolUse fires, but even if idle, not finished.
-    assert.notEqual(
+  it("returns 'idle' when stopReason=toolUse and idle (unusual but possible)", () => {
+    // toolUse + idle is unusual in practice (tool execution follows toolUse stops)
+    // but the function doesn't discriminate on stopReason for the idle path.
+    // 'finished' is never returned by resolveTurnEndSignal.
+    assert.equal(
       resolveTurnEndSignal("toolUse", true, false, false),
-      "finished",
+      "idle",
     )
   })
 
@@ -1356,11 +1367,12 @@ describe("resolveTurnEndSignal — toolUse", () => {
 })
 
 describe("resolveTurnEndSignal — length", () => {
-  it("does NOT return 'finished' when stopReason=length", () => {
-    // AC: context limit hit, agent may continue — no finished emitted.
-    assert.notEqual(
+  it("returns 'idle' when stopReason=length and idle (context limit, may continue)", () => {
+    // length + idle — context limit was hit but no further work is pending.
+    // 'finished' is never returned by resolveTurnEndSignal.
+    assert.equal(
       resolveTurnEndSignal("length", true, false, false),
-      "finished",
+      "idle",
     )
   })
 
@@ -1402,6 +1414,14 @@ describe("resolveTurnEndSignal — idle (non-stop reasons that are idle)", () =>
     assert.equal(
       resolveTurnEndSignal(undefined, false, false, false),
       "none",
+    )
+  })
+
+  it("returns 'idle' for stopReason=toolUse when idle and no pending", () => {
+    // toolUse + idle is unusual in practice but must still produce idle.
+    assert.equal(
+      resolveTurnEndSignal("toolUse", true, false, false),
+      "idle",
     )
   })
 })
@@ -1456,14 +1476,90 @@ describe("resolveAgentEndSignal — non-review session (always no-op)", () => {
   })
 })
 
-describe("resolveAgentEndSignal — double-emission guard (sessionShutdownEmitted)", () => {
-  it("returns 'finished' for review + stop regardless of guard (guard is caller responsibility)", () => {
-    // The sessionShutdownEmitted guard is checked by the caller (the agent_end hook
-    // in the extension factory), not by this pure helper. Verify the helper itself
-    // consistently returns 'finished' for stop — the caller gates on the flag.
+describe("resolveAgentEndSignal — idempotency (sessionShutdownEmitted guard removed)", () => {
+  it("returns 'finished' for review + stop on every call (guard was caller responsibility, now removed)", () => {
+    // The sessionShutdownEmitted flag has been removed from the extension factory
+    // (fix for #1432). The helper itself is pure and returns 'finished' on every
+    // call for review + stop; the agent_end hook in the factory calls it at most
+    // once per session so double-emission is not possible.
     assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
-    // A second call still returns 'finished'; the factory will skip emission because
-    // sessionShutdownEmitted is already true in that code path.
     assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fix #1432: turn_end never emits session_shutdown for non-review sessions
+// ---------------------------------------------------------------------------
+//
+// These tests verify the signal-level contract that the turn_end handler
+// (via resolveTurnEndSignal) never produces a path that would close the pipe.
+// The sidecar's idle debounce (added in #1429) handles the coordinator
+// notification after receiving state_change{idle}.
+
+describe("#1432: turn_end does not close pipe on clean task completion", () => {
+  it("stopReason=stop, idle, no pending, non-review → 'idle' (not 'finished', no pipe close)", () => {
+    // AC: resolveTurnEndSignal returns 'idle' so the turn_end handler only
+    // emits state_change{idle}. It never emits session_shutdown or closes the
+    // writer, keeping the pipe open for /new and /resume reconnects.
+    assert.equal(resolveTurnEndSignal("stop", true, false, false), "idle")
+  })
+
+  it("turn_end result is never 'finished' for any input combination", () => {
+    // 'finished' has been removed from TurnEndSignal; exhaustive spot-check.
+    const inputs: Array<[string | undefined, boolean, boolean, boolean]> = [
+      ["stop", true, false, false],
+      ["stop", true, false, true],
+      ["stop", false, false, false],
+      ["stop", true, true, false],
+      ["toolUse", true, false, false],
+      ["length", true, false, false],
+      ["error", true, false, false],
+      [undefined, true, false, false],
+      ["aborted", true, false, false],
+    ]
+    for (const [stopReason, isIdle, hasPending, pendingReview] of inputs) {
+      assert.notEqual(
+        resolveTurnEndSignal(stopReason, isIdle, hasPending, pendingReview),
+        "finished",
+        `expected not 'finished' for (${stopReason}, ${isIdle}, ${hasPending}, ${pendingReview})`,
+      )
+    }
+  })
+
+  it("stopReason=aborted → 'interrupted' (pipe stays open for reconnect)", () => {
+    // AC: interrupted session does not emit session_shutdown; pipe stays open.
+    assert.equal(resolveTurnEndSignal("aborted", true, false, false), "interrupted")
+    assert.equal(resolveTurnEndSignal("aborted", false, false, false), "interrupted")
+  })
+
+  it("hasPendingMessages=true suppresses idle emission (agent continues)", () => {
+    // AC: pending messages → agent has more work; no state change emitted.
+    assert.equal(resolveTurnEndSignal("stop", true, true, false), "none")
+    assert.equal(resolveTurnEndSignal(undefined, true, true, false), "none")
+  })
+
+  it("pendingReviewCall=true suppresses idle emission (agent awaits review)", () => {
+    // AC: review in flight → do not transition to idle.
+    assert.equal(resolveTurnEndSignal("stop", true, false, true), "none")
+  })
+})
+
+describe("#1432: review session agent_end still emits full shutdown sequence", () => {
+  it("resolveAgentEndSignal returns 'finished' for review + stop", () => {
+    // AC: review-session agent_end must still emit state_change{finished}
+    // + session_shutdown + writer.close().
+    assert.equal(resolveAgentEndSignal(true, "stop"), "finished")
+  })
+
+  it("resolveAgentEndSignal returns 'interrupted' for review + aborted", () => {
+    // AC: abort → interrupted, no session_shutdown.
+    assert.equal(resolveAgentEndSignal(true, "aborted"), "interrupted")
+  })
+
+  it("non-review agent_end is always a no-op (turn_end handles shutdown)", () => {
+    // AC: non-review sessions must not emit session_shutdown from agent_end.
+    assert.equal(resolveAgentEndSignal(false, "stop"), "none")
+    assert.equal(resolveAgentEndSignal(false, "aborted"), "none")
+    assert.equal(resolveAgentEndSignal(false, "error"), "none")
   })
 })

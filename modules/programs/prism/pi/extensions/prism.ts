@@ -26,7 +26,7 @@
 //   tool_execution_start  → tool_call           (truncated args)
 //   tool_execution_end    → tool_result         (truncated output)
 //   turn_start            → turn_start
-//   turn_end              → turn_end + state_change:finished + session_shutdown
+//   turn_end              → turn_end + state_change:idle
 //                            (stopReason=stop, idle, no pending, not reviewing)
 //                         → turn_end + state_change:interrupted (stopReason=aborted)
 //                         → turn_end + state_change:idle (other idle turns)
@@ -38,7 +38,8 @@
 //                         → provider_error
 //   auto_retry_start      → auto_retry_start
 //   auto_retry_end        → auto_retry_end
-//   session_shutdown      → state_change:finished + session_shutdown
+//   session_shutdown      → writer.close() only (non-review sessions)
+//                        → no-op (review sessions; agent_end already emitted shutdown)
 //
 // Inbound frames → PI runtime
 // ---------------------------
@@ -1030,12 +1031,17 @@ export type StopReason = "stop" | "toolUse" | "length" | "error" | "aborted"
 /**
  * Signal that the turn_end handler should emit.
  *
- * - "finished"     — emit state_change:finished, session_shutdown, close writer
  * - "interrupted"  — emit state_change:interrupted
- * - "idle"         — emit state_change:idle (existing behaviour)
+ * - "idle"         — emit state_change:idle
  * - "none"         — do not emit any state_change frame
+ *
+ * Note: the former "finished" variant has been removed. A clean turn
+ * completion (stopReason=stop, idle, no pending, not reviewing) now emits
+ * "idle" — the sidecar's idle debounce (added in #1429) converts
+ * state_change{idle} into StateFinished + notifyCoordinator() after 2s,
+ * without closing the pipe and breaking /new or /resume.
  */
-export type TurnEndSignal = "finished" | "interrupted" | "idle" | "none"
+export type TurnEndSignal = "interrupted" | "idle" | "none"
 
 /**
  * Determines which state-change signal to emit at the end of a turn.
@@ -1043,13 +1049,14 @@ export type TurnEndSignal = "finished" | "interrupted" | "idle" | "none"
  * Priority order:
  *  1. If stopReason is "aborted" → "interrupted" (always, regardless of idle)
  *  2. If stopReason is "stop" AND isIdle AND !hasPendingMessages AND
- *     !pendingReviewCall → "finished"
+ *     !pendingReviewCall → "idle"
  *  3. If stopReason is "stop" (or any non-aborted, non-error reason) AND
  *     isIdle AND !hasPendingMessages AND !pendingReviewCall → "idle"
  *  4. Otherwise → "none"
  *
- * The "finished" path is only taken on a clean "stop" to avoid false-positives
- * from tool-use mid-turn or context-limit truncation.
+ * A clean "stop" turn and other idle turns both produce "idle". The sidecar's
+ * idle debounce (added in #1429) converts state_change{idle} to StateFinished
+ * + notifyCoordinator() without permanently closing the pipe.
  */
 export function resolveTurnEndSignal(
   stopReason: StopReason | string | undefined,
@@ -1059,14 +1066,6 @@ export function resolveTurnEndSignal(
 ): TurnEndSignal {
   if (stopReason === "aborted") {
     return "interrupted"
-  }
-  if (
-    stopReason === "stop" &&
-    isIdle &&
-    !hasPendingMessages &&
-    !pendingReviewCall
-  ) {
-    return "finished"
   }
   if (
     stopReason !== "error" &&
@@ -1184,10 +1183,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
   let writer: FrameWriter | null = null
   let handshakeComplete = false
   let connected = false
-  // Flag: session_shutdown has already been emitted from the turn_end handler
-  // (clean-finish path). When true, the session_shutdown hook must not emit
-  // a second finished+shutdown sequence or attempt to write to a closed writer.
-  let sessionShutdownEmitted = false
   // Track the latest active turn's abort handle. ctx.abort() requires an
   // ExtensionContext, so we capture one whenever a turn-active hook fires.
   let lastCtx: ExtensionContext | null = null
@@ -1525,9 +1520,9 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       // Determine which state-change signal to emit based on stopReason and
       // session context. resolveTurnEndSignal handles all cases:
-      //   "finished"    → clean finish; emit finished + shutdown and close
       //   "interrupted" → user abort; emit interrupted
-      //   "idle"        → normal idle; emit idle (existing behaviour)
+      //   "idle"        → clean finish or normal idle; emit idle
+      //                   (sidecar idle debounce converts to finished after 2s)
       //   "none"        → do nothing
       try {
         const stopReason =
@@ -1546,12 +1541,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
           hasPending,
           pendingReviewCall,
         )
-        if (signal === "finished") {
-          sessionShutdownEmitted = true
-          writer.write({ type: "state_change", state: "finished" })
-          writer.write({ type: "session_shutdown" })
-          writer.close()
-        } else if (signal === "interrupted") {
+        if (signal === "interrupted") {
           writer.write({ type: "state_change", state: "interrupted" })
         } else if (signal === "idle") {
           writer.write({ type: "state_change", state: "idle" })
@@ -1577,14 +1567,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // sets isStreaming=false before emitting agent_end), making it the correct
   // place to emit session_shutdown for review sessions.
   //
-  // For non-review sessions the existing turn_end → isIdle path works: between
-  // turns the agent returns to idle, isIdle() returns true, and the normal
-  // resolveTurnEndSignal("finished", ...) path fires correctly when the agent
-  // eventually completes with stopReason=stop.
+  // For non-review sessions, the turn_end → isIdle path works: between turns
+  // the agent returns to idle, isIdle() returns true, and resolveTurnEndSignal
+  // returns "idle". The sidecar's idle debounce converts state_change{idle} to
+  // StateFinished + notifyCoordinator() after 2s without closing the pipe.
   //
-  // The sessionShutdownEmitted guard prevents double-emission if this hook
-  // fires after the session_shutdown PI hook has already closed the writer
-  // (unlikely for review agents but required for correctness).
   pi.on("agent_end", async (event, ctx) => {
     lastCtx = ctx
     if (!isReviewSession) {
@@ -1592,10 +1579,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
       return
     }
     if (!writer || !handshakeComplete) return
-    if (sessionShutdownEmitted) {
-      // session_shutdown PI hook already fired — do not double-emit.
-      return
-    }
 
     // Extract stopReason from the last message in the event payload.
     // The agent_end event carries the final messages from the run; the last
@@ -1614,7 +1597,6 @@ export default function prismExtension(pi: ExtensionAPI): void {
     const signal = resolveAgentEndSignal(isReviewSession, stopReason)
     if (signal === "finished") {
       // Clean finish: emit finished + shutdown and close the writer.
-      sessionShutdownEmitted = true
       writer.write({ type: "state_change", state: "finished" })
       writer.write({ type: "session_shutdown" })
       writer.close()
@@ -1809,15 +1791,16 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async (_event, ctx) => {
     lastCtx = ctx
-    if (writer && handshakeComplete) {
-      // If the turn_end handler already emitted finished+shutdown (clean-finish
-      // path), do not double-emit. The writer is already closed in that case.
-      if (!sessionShutdownEmitted) {
-        writer.write({ type: "state_change", state: "finished" })
-        writer.write({ type: "session_shutdown" })
-        writer.close()
-      }
-    } else if (writer) {
+    // For non-review sessions: only close the writer. The pipe must stay open
+    // across /new and /resume reconnects — emitting session_shutdown here would
+    // cause the sidecar to permanently close pipe.sock, breaking any subsequent
+    // session_start reconnect attempt.
+    //
+    // For review sessions: agent_end has already emitted state_change{finished}
+    // + session_shutdown + writer.close(), so there is nothing left to do here.
+    //
+    // In both cases, closing the writer is the only action needed.
+    if (writer) {
       writer.close()
     }
     if (socket && !connected) {
