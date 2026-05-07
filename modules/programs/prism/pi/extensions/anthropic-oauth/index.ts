@@ -11,9 +11,6 @@
 //
 // See UPSTREAM.md for the port procedure.
 
-import { existsSync, symlinkSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 import {
   AuthStorage,
   ModelRegistry,
@@ -50,18 +47,6 @@ const DEFAULT_OPUS_4_7: NonNullable<ProviderConfig["models"]>[number] = {
   contextWindow: 1000000,
   maxTokens: 128000,
   compat: undefined,
-}
-
-// pi-specific: create a ~/.Claude Code → ~/.pi symlink so that pi's jiti
-// resolver can find modules in the expected Claude Code credential path.
-function ensureClaudeCodeSymlink() {
-  const target = join(homedir(), ".pi")
-  const link = join(homedir(), ".Claude Code")
-  if (existsSync(target) && !existsSync(link)) {
-    try {
-      symlinkSync(target, link)
-    } catch {}
-  }
 }
 
 function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
@@ -102,7 +87,6 @@ export default function (pi: ExtensionAPI) {
 
   repairCredentials()
 
-  ensureClaudeCodeSymlink()
   const models = getAnthropicModels()
 
   pi.registerProvider("anthropic", {
