@@ -161,6 +161,7 @@
         home.packages = with pkgs; [
           pi-coding-agent
           fd
+          tsx # for testing pi extensions
         ];
 
         programs.zsh.shellAliases = {
