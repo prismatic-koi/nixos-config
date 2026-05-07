@@ -173,11 +173,18 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 	// PRISM_HOST_API proxy dispatch: when running inside a container, proxy
 	// read operations to the host sidecar rather than opening the shadow DB.
-	// Flags that require local DB context (--abtest, --group-by, --days/--since
-	// for historical aggregate, --instance) are passed through as query params.
-	// --abtest has already returned above; --group-by, --days historical, and
-	// --instance fall through to the local path (not sandbox use-cases).
-	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+	//
+	// Two cases fall through to the local DB path even inside a container:
+	//   - --group-by <axis>: breakdown table that aggregates across sessions;
+	//     not a sandbox visibility concern (coordinators run on the host).
+	//   - --days N with no event flags and no session arg: maps to
+	//     runStatsHistorical, which aggregates events differently from the
+	//     per-incarnation summary view returned by /stats?view=summary.
+	// --abtest has already returned above.
+	// --instance on the proxy path is forwarded as part of the session arg
+	// (the session string is passed verbatim to view=detail).
+	historical := days > 0 && !doomloops && !denials && !asks && len(args) == 0
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" && groupBy == "" && !historical {
 		return runStatsProxy(cmd, args, apiURL, days, doomloops, denials, asks, repoFilter, sinceStr, jsonMode)
 	}
 

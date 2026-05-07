@@ -275,6 +275,65 @@ func TestRunStatsProxy_SummaryJSON(t *testing.T) {
 	}
 }
 
+// TestRunStatsProxy_GroupByFallsThrough verifies that --group-by skips the
+// proxy and uses the local DB path even when PRISM_HOST_API is set.
+// This guards against the regression where --group-by was silently dropped.
+func TestRunStatsProxy_GroupByFallsThrough(t *testing.T) {
+	_ = openStatsTestDB(t) // sets up empty DB, unsets PRISM_HOST_API via Setenv
+
+	// Stand up a server that records requests — it should NOT be contacted
+	// when --group-by is set.
+	requestCount := 0
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"sessions":[]}`)) //nolint:errcheck
+	})
+
+	// Set PRISM_HOST_API after openStatsTestDB cleared it.
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	statsCmd.Flags().Set("group-by", "harness") //nolint:errcheck
+	defer statsCmd.Flags().Set("group-by", "") //nolint:errcheck
+
+	_ = captureStdout(t, func() {
+		// Uses local DB (empty) — should produce output from runStatsGroupBy,
+		// not from the proxy. Any error is acceptable; no request to proxy.
+		_ = runStats(statsCmd, nil)
+	})
+
+	if requestCount > 0 {
+		t.Errorf("proxy server received %d request(s) for --group-by; should use local DB", requestCount)
+	}
+}
+
+// TestRunStatsProxy_DaysHistoricalFallsThrough verifies that --days N with no
+// event flags and no session arg skips the proxy (uses runStatsHistorical on
+// the local DB) even when PRISM_HOST_API is set.
+func TestRunStatsProxy_DaysHistoricalFallsThrough(t *testing.T) {
+	_ = openStatsTestDB(t)
+
+	requestCount := 0
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"sessions":[]}`)) //nolint:errcheck
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	statsCmd.Flags().Set("days", "7")  //nolint:errcheck
+	defer statsCmd.Flags().Set("days", "0") //nolint:errcheck
+
+	_ = captureStdout(t, func() {
+		_ = runStats(statsCmd, nil)
+	})
+
+	if requestCount > 0 {
+		t.Errorf("proxy server received %d request(s) for --days historical; should use local DB", requestCount)
+	}
+}
+
 // TestRunStatsProxy_HostPathUnchanged verifies that when PRISM_HOST_API is
 // NOT set, runStats does not contact any server (the proxy path is not taken).
 func TestRunStatsProxy_HostPathUnchanged(t *testing.T) {
