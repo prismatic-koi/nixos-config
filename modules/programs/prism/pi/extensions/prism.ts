@@ -1608,9 +1608,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
           pi.sendUserMessage(steeringMsg, { deliverAs: "steer" })
           writer.write({
             type: "doom_loop_detected",
-            session_name: process.env.PRISM_SESSION_NAME ?? "",
             tool: name,
-            consecutive_count: doomLoopState.consecutiveCount,
+            pattern: doomLoopState.currentKey ?? "",
+            count: doomLoopState.consecutiveCount,
+            timestampMs: Date.now(),
           })
         }
       }
