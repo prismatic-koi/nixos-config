@@ -64,6 +64,9 @@ func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 		HarnessName:           "pi",
 		HarnessPipeSockPath:   sockPath,
 		StartupConnectTimeout: 5 * time.Second,
+		// PipeReconnectTimeout is set to a short value so tests that close the
+		// connection without a session_shutdown don't block for 30s.
+		PipeReconnectTimeout:  200 * time.Millisecond,
 		Harness:               pih.New("", "", ""),
 	}
 	return New(cfg)

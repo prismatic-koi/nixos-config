@@ -96,6 +96,11 @@ const ErrorResumeDebounce = 5 * time.Second
 type Clock interface {
 	Now() time.Time
 	AfterFunc(d time.Duration, f func()) Timer
+	// Sleep pauses the current goroutine for d. The real implementation calls
+	// time.Sleep; the test implementation returns immediately, recording the
+	// requested duration so tests can assert on backoff behaviour without
+	// incurring real wall-clock waits.
+	Sleep(d time.Duration)
 }
 
 // Timer abstracts a stoppable timer for testing.
@@ -108,6 +113,7 @@ type realClock struct{}
 
 func (realClock) Now() time.Time                            { return time.Now() }
 func (realClock) AfterFunc(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }
+func (realClock) Sleep(d time.Duration)                     { time.Sleep(d) }
 
 // RealClock returns a Clock backed by the standard library.
 func RealClock() Clock { return realClock{} }
