@@ -124,7 +124,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			ctxCopy.WorktreePath = worktree
 			prCtxWithWorktree = &ctxCopy
 		}
-		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
+		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
 
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
@@ -436,7 +436,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			ctxCopy.WorktreePath = worktree
 			prCtxWithWorktree = &ctxCopy
 		}
-		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree)
+		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
 
 		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
 		if configErr != nil {
