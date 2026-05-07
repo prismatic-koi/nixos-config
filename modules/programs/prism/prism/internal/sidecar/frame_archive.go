@@ -21,7 +21,6 @@ package sidecar
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/db"
@@ -88,6 +87,6 @@ func (s *Sidecar) archiveFrame(direction string, payload []byte) {
 	if err := s.cfg.DB.WriteHarnessFrame(f); err != nil {
 		// Non-fatal: log once per failure. The wire-protocol path keeps
 		// running.
-		log.Printf("sidecar: archive harness frame (%s): %v", direction, err)
+		s.logger().Printf("sidecar: archive harness frame (%s): %v", direction, err)
 	}
 }

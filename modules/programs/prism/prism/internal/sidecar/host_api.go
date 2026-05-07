@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -206,7 +205,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// isCoordinator) which reads root_agent_name and falls back to AgentRole
 	// for pre-migration rows. Returns false and writes HTTP 403 if not.
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
-		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
+		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("workers cannot perform %s", operation))
 			return false
@@ -454,7 +453,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		crossRepo := targetRepo != ownRepo
-		if crossRepo && !isCoordinatorSession(targetSession, s.cfg.DB) {
+		if crossRepo && !isCoordinatorSession(targetSession, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("cross-repo checkin can only target coordinators (<repo>@main), got %q", targetSession))
 			return
@@ -621,7 +620,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
 			return
 		}
-		if targetRepo != ownRepo && !isCoordinatorSession(targetSession, s.cfg.DB) {
+		if targetRepo != ownRepo && !isCoordinatorSession(targetSession, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,
 				fmt.Sprintf("cross-repo logs can only target coordinators (<repo>@main), got %q", targetSession))
 			return
@@ -778,7 +777,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					s.reviewingInFlight = false
 					s.mu.Unlock()
 				}
-				log.Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
+				s.logger().Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
 				if !s.DeliverPrompt(req.Prompt, deliverAs) {
 					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
 					return
@@ -803,7 +802,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		if s.cfg.AgentRole == "coordinator" {
 			// Coordinator: own repo any session allowed; cross-repo only @main.
-			if crossRepo && !isCoordinatorSession(req.Session, s.cfg.DB) {
+			if crossRepo && !isCoordinatorSession(req.Session, s.cfg.DB, s.logger()) {
 				writeError(w, http.StatusForbidden,
 					fmt.Sprintf("cross-repo prompts can only target coordinators (<repo>@main), got %q", req.Session))
 				return
@@ -813,7 +812,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// DB-backed: look up the coordinator for this repo.
 			coordStatus, coordErr := s.cfg.DB.CoordinatorForRepo(ownRepo)
 			if coordErr != nil {
-				log.Printf("sidecar: /prompt worker check: DB error looking up coordinator for %q: %v — falling back to name heuristic", ownRepo, coordErr)
+				s.logger().Printf("sidecar: /prompt worker check: DB error looking up coordinator for %q: %v — falling back to name heuristic", ownRepo, coordErr)
 				coordStatus = nil
 			}
 			var ownCoordinator string
@@ -827,7 +826,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				if fallbackStatus != nil {
 					// Pre-migration row found via name convention — log deprecation
 					// only when the fallback actually finds a row.
-					log.Printf("[deprecation] sidecar: /prompt worker check: no DB-backed coordinator for %q — using name convention %q (pre-migration row)", ownRepo, fallbackCoord)
+					s.logger().Printf("[deprecation] sidecar: /prompt worker check: no DB-backed coordinator for %q — using name convention %q (pre-migration row)", ownRepo, fallbackCoord)
 					ownCoordinator = fallbackCoord
 				} else {
 					// Normal "no coordinator running" state — silent fallback.
@@ -843,11 +842,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Deliver via prism prompt on the host.
 		args := []string{"prompt", req.Session, "--prompt", req.Prompt}
-		log.Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
+		s.logger().Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("sidecar: host-API /prompt: %v: %s", err, out)
+			s.logger().Printf("sidecar: host-API /prompt: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prompt delivery failed: %v", err))
 			return
 		}
@@ -1067,11 +1066,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			logArgs = append(logArgs, "--harness", req.Harness)
 		}
 		logArgs = append(logArgs, "--repo", ownRepo)
-		log.Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
+		s.logger().Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("sidecar: host-API /spawn: %v: %s", err, out)
+			s.logger().Printf("sidecar: host-API /spawn: %v: %s", err, out)
 			msg := fmt.Sprintf("spawn failed: %v", err)
 			if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
 				msg = fmt.Sprintf("spawn failed: %v\n%s", err, trimmed)
@@ -1176,9 +1175,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			reviewingWriteBackoff  = 10 * time.Millisecond
 		)
 		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
-			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — CurrentStatus error: %v", dbErr)
+			s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — CurrentStatus error: %v", dbErr)
 		} else if status == nil {
-			log.Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — no agent_status row for session %q", s.cfg.SessionName)
+			s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — no agent_status row for session %q", s.cfg.SessionName)
 		} else {
 			var lastUpsertErr error
 			for attempt := range reviewingWriteAttempts {
@@ -1190,13 +1189,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					// Non-transient error — no point retrying.
 					break
 				}
-				log.Printf("sidecar: host-API /review: pre-emptive reviewing write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, lastUpsertErr)
+				s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, lastUpsertErr)
 				if attempt < reviewingWriteAttempts-1 {
 					time.Sleep(reviewingWriteBackoff)
 				}
 			}
 			if lastUpsertErr != nil {
-				log.Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
+				s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
 				return
 			}
@@ -1248,7 +1247,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--timeout", req.Timeout)
 		}
 
-		log.Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
+		s.logger().Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
 
 		// Async review: `prism review` spawns agents and a monitor, then exits
 		// quickly (well under 30 s in practice). We stream its stdout as it
@@ -1277,14 +1276,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		//      fails or the directory no longer exists, so that the existing
 		//      degraded-context path keeps working rather than hard-failing.
 		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
-			log.Printf("sidecar: host-API /review: worktree lookup failed (DB error): %v — using default CWD", dbErr)
+			s.logger().Printf("sidecar: host-API /review: worktree lookup failed (DB error): %v — using default CWD", dbErr)
 		} else if status == nil || status.Worktree == "" {
-			log.Printf("sidecar: host-API /review: worktree not set for session %q — using default CWD", s.cfg.SessionName)
+			s.logger().Printf("sidecar: host-API /review: worktree not set for session %q — using default CWD", s.cfg.SessionName)
 		} else if _, statErr := os.Stat(status.Worktree); statErr != nil {
-			log.Printf("sidecar: host-API /review: worktree %q is not accessible: %v — using default CWD", status.Worktree, statErr)
+			s.logger().Printf("sidecar: host-API /review: worktree %q is not accessible: %v — using default CWD", status.Worktree, statErr)
 		} else {
 			cmd.Dir = status.Worktree
-			log.Printf("sidecar: host-API /review: subprocess CWD set to worktree %q", status.Worktree)
+			s.logger().Printf("sidecar: host-API /review: subprocess CWD set to worktree %q", status.Worktree)
 		}
 
 		// Build the subprocess environment:
@@ -1349,13 +1348,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		waitErr := cmd.Wait()
 		if stderrBuf.Len() > 0 {
-			log.Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(stderrBuf.String()))
+			s.logger().Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(stderrBuf.String()))
 		}
 
 		// Write pass/fail sentinel. The client (proxyReviewAsync) consumes
 		// this line and does not print it to its own stdout.
 		if waitErr != nil {
-			log.Printf("sidecar: host-API /review: review process failed: %v", waitErr)
+			s.logger().Printf("sidecar: host-API /review: review process failed: %v", waitErr)
 			_, _ = fmt.Fprintln(w, ReviewSentinelFailed)
 		} else {
 			_, _ = fmt.Fprintln(w, ReviewSentinelPassed)
@@ -1410,11 +1409,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--yes")
 		}
 
-		log.Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
+		s.logger().Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("sidecar: host-API /cleanup: %v: %s", err, out)
+			s.logger().Printf("sidecar: host-API /cleanup: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cleanup failed: %v", err))
 			return
 		}
@@ -1450,11 +1449,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		args := []string{"switch", "--path", worktreePath}
-		log.Printf("sidecar: host-API /switch: prism %s", strings.Join(args, " "))
+		s.logger().Printf("sidecar: host-API /switch: prism %s", strings.Join(args, " "))
 		cmd := exec.Command(prismBinary(), args...)
 		out, switchErr := cmd.CombinedOutput()
 		if switchErr != nil {
-			log.Printf("sidecar: host-API /switch: %v: %s", switchErr, out)
+			s.logger().Printf("sidecar: host-API /switch: %v: %s", switchErr, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("switch failed: %v", switchErr))
 			return
 		}
@@ -1492,7 +1491,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
-			log.Printf("sidecar: host-API /merge: no instance_id — sidecar startup did not run correctly")
+			s.logger().Printf("sidecar: host-API /merge: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
 			return
@@ -1504,11 +1503,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// sidecar at all (#1043).
 		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
 		if err != nil {
-			log.Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
+			s.logger().Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "enqueue merge: "+err.Error())
 			return
 		}
-		log.Printf("sidecar: host-API /merge: PR #%d enqueued (queue_position=%d, status=%s)",
+		s.logger().Printf("sidecar: host-API /merge: PR #%d enqueued (queue_position=%d, status=%s)",
 			row.PR, row.QueuePosition, row.Status)
 		writeJSON(w, http.StatusOK, row)
 	})
@@ -1529,7 +1528,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
-			log.Printf("sidecar: host-API /merges: no instance_id — sidecar startup did not run correctly")
+			s.logger().Printf("sidecar: host-API /merges: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
 			return
@@ -1538,7 +1537,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		filter := r.URL.Query().Get("filter")
 		merges, err := s.cfg.DB.MergeQueueForInstance(s.cfg.InstanceID, s.cfg.SessionName, filter)
 		if err != nil {
-			log.Printf("sidecar: host-API /merges: MergeQueueForInstance: %v", err)
+			s.logger().Printf("sidecar: host-API /merges: MergeQueueForInstance: %v", err)
 			writeError(w, http.StatusInternalServerError, "list merges: "+err.Error())
 			return
 		}
@@ -1576,7 +1575,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		if s.cfg.InstanceID == "" {
-			log.Printf("sidecar: host-API /merges/cancel: no instance_id — sidecar startup did not run correctly")
+			s.logger().Printf("sidecar: host-API /merges/cancel: no instance_id — sidecar startup did not run correctly")
 			writeError(w, http.StatusInternalServerError,
 				"sidecar has no instance_id — sidecar startup did not run")
 			return
@@ -1584,7 +1583,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.InstanceID)
 		if err != nil {
-			log.Printf("sidecar: host-API /merges/cancel: CancelMerge: %v", err)
+			s.logger().Printf("sidecar: host-API /merges/cancel: CancelMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "cancel merge: "+err.Error())
 			return
 		}
@@ -1593,11 +1592,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// means the row does not exist at all.
 		row, lookupErr := s.cfg.DB.PendingMergeByPR(req.PR)
 		if lookupErr != nil {
-			log.Printf("sidecar: host-API /merges/cancel: PendingMergeByPR: %v", lookupErr)
+			s.logger().Printf("sidecar: host-API /merges/cancel: PendingMergeByPR: %v", lookupErr)
 			// Lookup error is non-fatal — return cancelled status without the row.
 			row = nil
 		}
-		log.Printf("sidecar: host-API /merges/cancel: PR #%d cancelled=%v", req.PR, cancelled)
+		s.logger().Printf("sidecar: host-API /merges/cancel: PR #%d cancelled=%v", req.PR, cancelled)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"cancelled": cancelled,
 			"row":       row,
@@ -1671,18 +1670,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
-		log.Printf("sidecar: host-API /event: kind=%s session=%s", req.Kind, req.Session)
+		s.logger().Printf("sidecar: host-API /event: kind=%s session=%s", req.Kind, req.Session)
 		cmd := exec.Command(prismBinary(), args...)
 		// Propagate PRISM_SESSION_NAME so that any internal lookup resolves correctly.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+req.Session)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			log.Printf("sidecar: host-API /event: %v: %s", err, out)
+			s.logger().Printf("sidecar: host-API /event: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("event write failed: %v\n%s", err, strings.TrimSpace(string(out))))
 			return
 		}
 
-		log.Printf("sidecar: host-API /event: kind=%s session=%s written to host DB", req.Kind, req.Session)
+		s.logger().Printf("sidecar: host-API /event: kind=%s session=%s written to host DB", req.Kind, req.Session)
 		writeJSON(w, http.StatusOK, map[string]string{})
 	})
 
@@ -1730,7 +1729,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// (the target's own session name), so the guard passes correctly.
 		// There is no sidecar-to-sidecar authentication beyond the per-session
 		// Unix socket filesystem permissions (same as /register-provider-direct).
-		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		callerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
 		if !callerIsCoordinator && req.Session != s.cfg.SessionName {
 			writeError(w, http.StatusForbidden, "workers can only call /set-model for their own session")
 			return
@@ -1783,7 +1782,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		applyCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		applyCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !applyCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -1862,7 +1861,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Look up slot for role.
 			slot, ok := pf.Profiles[req.Profile][role]
 			if !ok {
-				log.Printf("sidecar: host-API /apply-profile: profile %q has no slot for role %q (session %s) — skipping",
+				s.logger().Printf("sidecar: host-API /apply-profile: profile %q has no slot for role %q (session %s) — skipping",
 					req.Profile, role, targetSess)
 				results = append(results, sessionResult{Session: targetSess, Status: "skipped:no-matching-slot"})
 				continue
@@ -1908,7 +1907,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission: global and coordinator scopes require coordinator role.
-		regCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB))
+		regCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
 		if req.Scope == "global" || req.Scope == "coordinator" {
 			if !regCallerIsCoordinator {
 				writeError(w, http.StatusForbidden,
@@ -2160,7 +2159,7 @@ func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking s
 	}
 
 	if err := forwardSetModel(targetSess, provider, model, thinking); err != nil {
-		log.Printf("sidecar: liveModelSwapForSession: forward to %s: %v", targetSess, err)
+		s.logger().Printf("sidecar: liveModelSwapForSession: forward to %s: %v", targetSess, err)
 		return "error:disconnected"
 	}
 	return "applied"
@@ -2185,7 +2184,7 @@ func liveRegisterProviderForSession(s *Sidecar, targetSess, name string, cfg map
 	}
 
 	if err := forwardRegisterProvider(targetSess, name, cfg); err != nil {
-		log.Printf("sidecar: liveRegisterProviderForSession: forward to %s: %v", targetSess, err)
+		s.logger().Printf("sidecar: liveRegisterProviderForSession: forward to %s: %v", targetSess, err)
 		return "error:disconnected"
 	}
 	return "applied"

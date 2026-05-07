@@ -3,7 +3,6 @@ package sidecar
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
@@ -22,13 +21,13 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	// the real event type is embedded in the JSON `type` field of the payload.
 	eventType := s.harness.ExtractEventType(evt)
 
-	log.Printf("sidecar: event: %s", eventType)
+	s.logger().Printf("sidecar: event: %s", eventType)
 
 	// Gap 1b: log the first event received from opencode (once per session).
 	if !s.firstEventLogged {
 		s.firstEventLogged = true
 		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
-		log.Printf("sidecar: first event received from opencode (%s after spawn)", elapsed)
+		s.logger().Printf("sidecar: first event received from opencode (%s after spawn)", elapsed)
 
 		// Bwrap path `[timing]` markers (#1052). The podman path emits these
 		// from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
@@ -51,10 +50,10 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		//     Emitted at the same moment for symmetry with the podman line
 		//     at sidecar.go:489.
 		if !container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
-			log.Printf("[timing] opencode listening: %s from start", elapsed)
-			log.Printf("[timing] ready: %s from start", elapsed)
+			s.logger().Printf("[timing] opencode listening: %s from start", elapsed)
+			s.logger().Printf("[timing] ready: %s from start", elapsed)
 			if s.cfg.InitialPrompt != "" {
-				log.Printf("[timing] prompt delivered: %s from start", elapsed)
+				s.logger().Printf("[timing] prompt delivered: %s from start", elapsed)
 			}
 		}
 	}
@@ -108,11 +107,11 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 			if len(s.seenUnknown) >= seenUnknownCap {
 				if !s.seenUnknownCapReached {
 					s.seenUnknownCapReached = true
-					log.Printf("sidecar: unknown-event log cap reached")
+					s.logger().Printf("sidecar: unknown-event log cap reached")
 				}
 			} else {
 				s.seenUnknown[eventType] = true
-				log.Printf("sidecar: event: %s (unhandled — opencode may have added a new event type)", eventType)
+				s.logger().Printf("sidecar: event: %s (unhandled — opencode may have added a new event type)", eventType)
 			}
 		}
 	}
@@ -148,7 +147,7 @@ func (s *Sidecar) handleServerConnected() {
 	// Reconnect while active — start a recovery timer in case session.idle was
 	// missed during the gap.
 	s.cancelRecoveryTimer()
-	log.Printf("sidecar: reconnected while active, starting %v recovery timer", ReconnectRecoveryDelay)
+	s.logger().Printf("sidecar: reconnected while active, starting %v recovery timer", ReconnectRecoveryDelay)
 	s.recoveryTimer = s.cfg.Clock.AfterFunc(ReconnectRecoveryDelay, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -170,11 +169,11 @@ func (s *Sidecar) handleServerConnected() {
 		// "active" (not "reviewing"), the guard is false, and suppression is
 		// lifted. See #1384.
 		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
-			log.Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
+			s.logger().Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
-		log.Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
-		log.Printf("sidecar: transition -> finished (cause=recovery_timer)")
+		s.logger().Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
+		s.logger().Printf("sidecar: transition -> finished (cause=recovery_timer)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
@@ -190,7 +189,7 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: session.status parse error: %v", err)
+		s.logger().Printf("sidecar: session.status parse error: %v", err)
 		return
 	}
 
@@ -209,7 +208,7 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		// the genuine reviewing→active transition still happens. See
 		// internal/review/monitor.go and #1049.
 		if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
-			log.Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
+			s.logger().Printf("sidecar: busy event suppressed (cause=reviewing — awaiting review-complete prompt)")
 		} else if !s.compacting {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
@@ -222,7 +221,7 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 		// StateError; without this, an immediate session.updated would bypass the
 		// debounce guard and false-resume.
 		s.lastErrorAt = s.cfg.Clock.Now()
-		log.Printf("sidecar: transition -> error (cause=error_finish)")
+		s.logger().Printf("sidecar: transition -> error (cause=error_finish)")
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 	}
@@ -247,22 +246,22 @@ func (s *Sidecar) handleSessionFinished() {
 	// likely about to resume — the next state_change{finished} after the root
 	// agent completes will start the timer normally.
 	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
-		log.Printf("sidecar: finished suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
+		s.logger().Printf("sidecar: finished suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
 		return
 	}
 
-	log.Printf("sidecar: finished debounce started (%v)", IdleDebounce)
+	s.logger().Printf("sidecar: finished debounce started (%v)", IdleDebounce)
 	s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.idleTimer = nil
 
-		log.Printf("sidecar: finished debounce fired -> finished")
+		s.logger().Printf("sidecar: finished debounce fired -> finished")
 
 		// If the user manually denied a permission, write interrupted not finished.
 		if s.manualDenial {
 			s.manualDenial = false
-			log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
+			s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 			s.upsertState(agent.StateInterrupted, nil, nil)
 			s.writeStateChange(agent.StateInterrupted)
 			return
@@ -277,11 +276,11 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 		if s.reviewingInFlight && currentState == agent.StateReviewing {
-			log.Printf("sidecar: finished debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
+			s.logger().Printf("sidecar: finished debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
 
-		log.Printf("sidecar: transition -> finished (cause=finished_debounce)")
+		s.logger().Printf("sidecar: transition -> finished (cause=finished_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
@@ -305,22 +304,22 @@ func (s *Sidecar) handleSessionIdle() {
 	// likely about to resume — the next session.idle after the root agent
 	// completes will start the timer normally.
 	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
-		log.Printf("sidecar: idle suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
+		s.logger().Printf("sidecar: idle suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
 		return
 	}
 
-	log.Printf("sidecar: idle debounce started (%v)", IdleDebounce)
+	s.logger().Printf("sidecar: idle debounce started (%v)", IdleDebounce)
 	s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.idleTimer = nil
 
-		log.Printf("sidecar: idle debounce fired -> finished")
+		s.logger().Printf("sidecar: idle debounce fired -> finished")
 
 		// If the user manually denied a permission, write interrupted not finished.
 		if s.manualDenial {
 			s.manualDenial = false
-			log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
+			s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 			s.upsertState(agent.StateInterrupted, nil, nil)
 			s.writeStateChange(agent.StateInterrupted)
 			return
@@ -335,11 +334,11 @@ func (s *Sidecar) handleSessionIdle() {
 			return
 		}
 		if s.reviewingInFlight && currentState == agent.StateReviewing {
-			log.Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
+			s.logger().Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
 
-		log.Printf("sidecar: transition -> finished (cause=idle_debounce)")
+		s.logger().Printf("sidecar: transition -> finished (cause=idle_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
@@ -356,7 +355,7 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: session.created parse error: %v", err)
+		s.logger().Printf("sidecar: session.created parse error: %v", err)
 		return
 	}
 
@@ -371,7 +370,7 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	// fresh session ID always replaces a stale one. (#694)
 	if info.ID != "" {
 		if err := s.cfg.DB.UpdateHarnessSessionID(s.cfg.SessionName, info.ID); err != nil {
-			log.Printf("sidecar: handleSessionCreated: UpdateHarnessSessionID failed: %v", err)
+			s.logger().Printf("sidecar: handleSessionCreated: UpdateHarnessSessionID failed: %v", err)
 		}
 	}
 
@@ -394,7 +393,7 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: session.updated parse error: %v", err)
+		s.logger().Printf("sidecar: session.updated parse error: %v", err)
 		return
 	}
 
@@ -435,13 +434,13 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		// resumes (e.g. user presses Enter) transition normally.
 		if !s.lastErrorAt.IsZero() && s.cfg.Clock.Now().Sub(s.lastErrorAt) < ErrorResumeDebounce {
 			// Within debounce window: treat as churn. Update metadata only.
-			log.Printf("sidecar: session.updated within error-resume debounce window (%v since error) — suppressing resume", s.cfg.Clock.Now().Sub(s.lastErrorAt))
+			s.logger().Printf("sidecar: session.updated within error-resume debounce window (%v since error) — suppressing resume", s.cfg.Clock.Now().Sub(s.lastErrorAt))
 			s.upsertState(currentState, title, sid)
 			return
 		}
 		// Outside debounce window (or no error recorded): genuine resume.
 		if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
-			log.Printf("sidecar: ClearEnded failed on resume: %v", err)
+			s.logger().Printf("sidecar: ClearEnded failed on resume: %v", err)
 		}
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
@@ -450,7 +449,7 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 		// becomes visible again in AllActiveStatus / dashboard filters
 		// (both query WHERE ended_at IS NULL).
 		if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
-			log.Printf("sidecar: ClearEnded failed on resume: %v", err)
+			s.logger().Printf("sidecar: ClearEnded failed on resume: %v", err)
 		}
 		s.upsertState(agent.StateActive, title, sid)
 		s.writeStateChange(agent.StateActive)
@@ -472,7 +471,7 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: session.error parse error: %v", err)
+		s.logger().Printf("sidecar: session.error parse error: %v", err)
 		return
 	}
 
@@ -488,16 +487,16 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 	// condition (user pressed Escape/Ctrl-C) whereas other errors are unexpected.
 	truncatedMsg := truncate(errorMessage, 200)
 	if errorName == "MessageAbortedError" {
-		log.Printf("sidecar: session.error: name=%q message=%s [MessageAbortedError — user-initiated]", errorName, truncatedMsg)
+		s.logger().Printf("sidecar: session.error: name=%q message=%s [MessageAbortedError — user-initiated]", errorName, truncatedMsg)
 	} else {
-		log.Printf("sidecar: session.error: name=%q message=%s", errorName, truncatedMsg)
+		s.logger().Printf("sidecar: session.error: name=%q message=%s", errorName, truncatedMsg)
 	}
 
 	if errorName == "MessageAbortedError" {
 		// User pressed Escape/Ctrl-C — record as interrupted.
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
-		log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
+		s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	} else {
@@ -507,7 +506,7 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		// post-error session.updated churn that opencode emits in the same
 		// millisecond as session.error (see ErrorResumeDebounce).
 		s.lastErrorAt = s.cfg.Clock.Now()
-		log.Printf("sidecar: transition -> error (cause=error_finish)")
+		s.logger().Printf("sidecar: transition -> error (cause=error_finish)")
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
@@ -541,7 +540,7 @@ func (s *Sidecar) handleSessionDeleted(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: session.deleted parse error: %v", err)
+		s.logger().Printf("sidecar: session.deleted parse error: %v", err)
 		return
 	}
 
@@ -549,7 +548,7 @@ func (s *Sidecar) handleSessionDeleted(evt harness.HarnessEvent) {
 	sid := strPtr(payload.Properties.Info.ID)
 	s.upsertState(agent.StateDeleted, nil, sid)
 	if err := s.cfg.DB.SetEnded(s.cfg.SessionName); err != nil {
-		log.Printf("sidecar: SetEnded failed: %v", err)
+		s.logger().Printf("sidecar: SetEnded failed: %v", err)
 	}
 	s.writeStateChangeWithSID(agent.StateDeleted, sid)
 }
@@ -592,7 +591,7 @@ func (s *Sidecar) handlePermissionReplied(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: permission.replied parse error: %v", err)
+		s.logger().Printf("sidecar: permission.replied parse error: %v", err)
 		return
 	}
 
@@ -637,7 +636,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: message.updated parse error: %v", err)
+		s.logger().Printf("sidecar: message.updated parse error: %v", err)
 		return
 	}
 
@@ -675,7 +674,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
 		if model != "" && isRootAgent {
 			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
-				log.Printf("sidecar: UpdateRootModelID (user msg) failed: %v", err)
+				s.logger().Printf("sidecar: UpdateRootModelID (user msg) failed: %v", err)
 			}
 		}
 
@@ -724,7 +723,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		// session.idle fires, this is used to suppress the finished
 		// debounce if a subagent (non-root) was most recently active —
 		// the parent agent is likely about to resume.
-		log.Printf("sidecar: lastAssistantAgent: %q -> %q (rootAgent=%q)", s.lastAssistantAgent, agentName, s.rootAgent)
+		s.logger().Printf("sidecar: lastAssistantAgent: %q -> %q (rootAgent=%q)", s.lastAssistantAgent, agentName, s.rootAgent)
 		s.lastAssistantAgent = agentName
 		// If the root agent just completed, clear the tracking so the
 		// next session.idle can proceed normally to finished. Also start
@@ -741,10 +740,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			if info.Tokens != nil {
 				totalTokens = info.Tokens.Input + info.Tokens.Output
 			}
-			log.Printf("sidecar: assistant turn complete (agent=%s root=%t model=%s messageId=%s tokens=%d)",
+			s.logger().Printf("sidecar: assistant turn complete (agent=%s root=%t model=%s messageId=%s tokens=%d)",
 				agentName, isRoot, model, info.ID, totalTokens)
 
-			log.Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
+			s.logger().Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
 
 			// Start the idle debounce timer immediately. opencode emits only
@@ -762,7 +761,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			// additional safety net for the race where Stop() returns false
 			// (the goroutine already started running).
 			epochAtStart := s.busyEpoch
-			log.Printf("sidecar: root-agent message completed — starting idle debounce early (%v)", IdleDebounce)
+			s.logger().Printf("sidecar: root-agent message completed — starting idle debounce early (%v)", IdleDebounce)
 			s.cancelIdleTimer()
 			s.idleTimer = s.cfg.Clock.AfterFunc(IdleDebounce, func() {
 				s.mu.Lock()
@@ -772,15 +771,15 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				// If a new busy event arrived after this timer started, the
 				// agent began a new turn — do not transition to finished.
 				if s.busyEpoch != epochAtStart {
-					log.Printf("sidecar: idle debounce (root-agent message path) suppressed — busy fired after timer start (epochAtStart=%d, busyEpoch=%d)", epochAtStart, s.busyEpoch)
+					s.logger().Printf("sidecar: idle debounce (root-agent message path) suppressed — busy fired after timer start (epochAtStart=%d, busyEpoch=%d)", epochAtStart, s.busyEpoch)
 					return
 				}
 
-				log.Printf("sidecar: idle debounce fired (root-agent message path) -> finished")
+				s.logger().Printf("sidecar: idle debounce fired (root-agent message path) -> finished")
 
 				if s.manualDenial {
 					s.manualDenial = false
-					log.Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
+					s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 					s.upsertState(agent.StateInterrupted, nil, nil)
 					s.writeStateChange(agent.StateInterrupted)
 					return
@@ -791,11 +790,11 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 					return
 				}
 				if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
-					log.Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
+					s.logger().Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
 					return
 				}
 
-				log.Printf("sidecar: transition -> finished (cause=root_agent_idle_debounce)")
+				s.logger().Printf("sidecar: transition -> finished (cause=root_agent_idle_debounce)")
 				s.upsertState(agent.StateFinished, nil, nil)
 				s.writeStateChange(agent.StateFinished)
 				go s.notifyCoordinator()
@@ -813,7 +812,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
 		if model != "" && isRootAgent {
 			if err := s.cfg.DB.UpdateRootModelID(s.cfg.SessionName, model); err != nil {
-				log.Printf("sidecar: UpdateRootModelID failed: %v", err)
+				s.logger().Printf("sidecar: UpdateRootModelID failed: %v", err)
 			}
 		}
 
@@ -889,7 +888,7 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal(evt.Data, &payload); err != nil {
-		log.Printf("sidecar: message.part.updated parse error: %v", err)
+		s.logger().Printf("sidecar: message.part.updated parse error: %v", err)
 		return
 	}
 
@@ -946,13 +945,13 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 						"harnessSessionID": s.opencodeSID,
 						"messageId":        part.MessageID,
 					}, nil)
-					log.Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
+					s.logger().Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
 				}
 			}
 		} else if part.State != nil && part.State.Status == "error" {
 			// Gap 5: log tool call failures and write a tool_error DB event.
 			errStr := truncate(fmt.Sprintf("%v", part.State.Output), 200)
-			log.Printf("sidecar: tool call failed (tool=%s messageId=%s err=%s)", part.Tool, part.MessageID, errStr)
+			s.logger().Printf("sidecar: tool call failed (tool=%s messageId=%s err=%s)", part.Tool, part.MessageID, errStr)
 			s.writeEvent("tool_error", map[string]string{
 				"tool":      part.Tool,
 				"err":       errStr,

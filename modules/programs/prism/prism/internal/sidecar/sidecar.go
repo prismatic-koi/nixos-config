@@ -159,6 +159,15 @@ type Config struct {
 	// to_instance_id on bus messages addressed to the coordinator, so that the
 	// coordinator only receives messages intended for its current instance.
 	InstanceID string
+	// Logger, when non-nil, is the logger used for all sidecar log output.
+	// When nil, New() defaults it to log.Default() so existing production log
+	// output is unchanged. Tests should supply a per-test logger backed by a
+	// bytes.Buffer so that parallel test runs do not race on the global logger.
+	//
+	// Doc: once set on a Sidecar, the logger is never changed. All goroutines
+	// spawned by the sidecar capture it at construction time via the parent
+	// sidecar's cfg.Logger field.
+	Logger *log.Logger
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
@@ -383,6 +392,9 @@ func New(cfg Config) *Sidecar {
 	if cfg.Clock == nil {
 		cfg.Clock = RealClock()
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = log.Default()
+	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
 	}
@@ -405,6 +417,10 @@ func New(cfg Config) *Sidecar {
 	}
 	return s
 }
+
+// logger returns the sidecar's per-instance logger. It is always non-nil
+// after New() runs (New defaults a nil Logger to log.Default()).
+func (s *Sidecar) logger() *log.Logger { return s.cfg.Logger }
 
 // containerMgr holds the container.Manager when running in container mode.
 // It is set in Run before the SSE loop starts, and used by Shutdown.
@@ -460,7 +476,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// here so net.Listen succeeds. For podman, prepareVolumeDirs already ran
 		// inside mgr.Create(), so this is a no-op.
 		if err := os.MkdirAll(filepath.Dir(s.cfg.HostAPISockPath), 0o700); err != nil {
-			log.Printf("sidecar: host-API socket dir: %v", err)
+			s.logger().Printf("sidecar: host-API socket dir: %v", err)
 		}
 		_ = os.Remove(s.cfg.HostAPISockPath)
 		ln, listenErr := net.Listen("unix", s.cfg.HostAPISockPath)
@@ -475,7 +491,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// anything is wrong. Returning the error here surfaces it via the
 			// sidecar log and exits with a non-zero status so the operator
 			// sees the failure immediately.
-			log.Printf("sidecar: host-API server: listen unix: %v", listenErr)
+			s.logger().Printf("sidecar: host-API server: listen unix: %v", listenErr)
 			return fmt.Errorf("sidecar: host-API socket bind failed for %q: %w", s.cfg.HostAPISockPath, listenErr)
 		}
 		srv := &http.Server{Handler: s.hostAPIHandler()}
@@ -487,7 +503,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			if err := srv.Serve(ln); err != nil &&
 				!errors.Is(err, http.ErrServerClosed) &&
 				!errors.Is(err, net.ErrClosed) {
-				log.Printf("sidecar: host-API server (unix): %v", err)
+				s.logger().Printf("sidecar: host-API server (unix): %v", err)
 			}
 		}()
 	}
@@ -503,16 +519,16 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		status, _ := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
 		if status != nil && status.InstanceID != nil && *status.InstanceID != "" {
 			s.cfg.InstanceID = *status.InstanceID
-			log.Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
+			s.logger().Printf("sidecar: instance_id loaded from DB (%s)", s.cfg.InstanceID)
 		} else {
 			minted := uuid.New().String()
 			// Defensively ensure the row exists before writing instance_id.
 			_ = s.cfg.DB.UpsertStatus(s.cfg.SessionName, s.cfg.Repo, s.cfg.Worktree, "idle", nil, nil)
 			if err := s.cfg.DB.SetInstanceID(s.cfg.SessionName, minted); err != nil {
-				log.Printf("sidecar: warning: could not write minted instance_id: %v", err)
+				s.logger().Printf("sidecar: warning: could not write minted instance_id: %v", err)
 			} else {
 				s.cfg.InstanceID = minted
-				log.Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
+				s.logger().Printf("sidecar: instance_id minted (%s)", s.cfg.InstanceID)
 			}
 		}
 	}
@@ -529,7 +545,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// The watcher context is stored so Shutdown() can cancel it before the
 	// abandon-watching-rows SQL runs (preventing a race where the watcher fires
 	// a terminal transition after AbandonWatchingMerges clears the rows).
-	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
+	if s.cfg.AgentRole == "coordinator" || isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 		if s.cfg.InstanceID != "" {
 			watcherCtx, watcherCancel := context.WithCancel(ctx)
 			s.mu.Lock()
@@ -537,9 +553,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			s.mu.Unlock()
 			watcher := mergequeue.New(s.cfg.DB, s.cfg.InstanceID, s.cfg.SessionName, s.cfg.HTTPClient)
 			go watcher.Run(watcherCtx)
-			log.Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
+			s.logger().Printf("sidecar: merge-queue watcher started (instance=%s)", s.cfg.InstanceID)
 		} else {
-			log.Printf("sidecar: merge-queue watcher NOT started — no instance_id")
+			s.logger().Printf("sidecar: merge-queue watcher NOT started — no instance_id")
 		}
 	}
 
@@ -633,10 +649,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			if err := tcpSrv.Serve(tcpLn); err != nil &&
 				!errors.Is(err, http.ErrServerClosed) &&
 				!errors.Is(err, net.ErrClosed) {
-				log.Printf("sidecar: host-API server (tcp): %v", err)
+				s.logger().Printf("sidecar: host-API server (tcp): %v", err)
 			}
 		}()
-		log.Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
+		s.logger().Printf("sidecar: host-API TCP server serving on 0.0.0.0:%d", s.cfg.HostAPITCPPort)
 	}
 
 	// Wrap ctx with a cancel so the startup-timeout goroutine (bwrap mode only)
@@ -664,7 +680,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		sid := s.opencodeSID
 		s.mu.Unlock()
 		if sid == "" {
-			log.Printf("[warning] opencode_sid not received after 30s — session may be invisible to forensics")
+			s.logger().Printf("[warning] opencode_sid not received after 30s — session may be invisible to forensics")
 		}
 	}()
 
@@ -713,7 +729,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// Write StateError and cancel the SSE context to stop the retry loop.
 			startupErr := fmt.Errorf("bwrap harness for %s never bound to %s within %v",
 				s.cfg.SessionName, url, startupTimeout)
-			log.Printf("sidecar: startup-connect timeout fired: %v", startupErr)
+			s.logger().Printf("sidecar: startup-connect timeout fired: %v", startupErr)
 			// Emit a `[timing] opencode listening` line recording the timeout
 			// duration so the grep-the-log workflow yields a coherent timeline
 			// even on the failure path (#1052 AC: "When opencode never reaches
@@ -721,7 +737,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// emitted records the timeout duration, not silence."). The
 			// "(timed out)" suffix distinguishes failure from a real listening
 			// marker without changing the leading prefix that grep targets.
-			log.Printf("[timing] opencode listening: %s from start (timed out)",
+			s.logger().Printf("[timing] opencode listening: %s from start (timed out)",
 				time.Since(s.spawnTime).Round(time.Millisecond))
 			s.writeStartupError(startupErr)
 			// writeStartupError notifies the parent worker for review-agent sessions.
@@ -730,7 +746,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// notification path (notifyCoordinator is suppressed for review agents
 			// and self-notifications internally). This satisfies the routing requirement
 			// from #1022: "worker agents notify the coordinator."
-			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB) {
+			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 				go s.notifyCoordinator()
 			}
 			sseCancel()
@@ -769,12 +785,12 @@ func (s *Sidecar) Shutdown() {
 	// Abandon all watching merge rows for this coordinator incarnation.
 	if s.cfg.InstanceID != "" {
 		if err := s.cfg.DB.AbandonWatchingMerges(s.cfg.InstanceID); err != nil {
-			log.Printf("sidecar: AbandonWatchingMerges: %v", err)
+			s.logger().Printf("sidecar: AbandonWatchingMerges: %v", err)
 		} else {
-			log.Printf("sidecar: watching merge rows abandoned (instance=%s)", s.cfg.InstanceID)
+			s.logger().Printf("sidecar: watching merge rows abandoned (instance=%s)", s.cfg.InstanceID)
 		}
 		if err := s.cfg.DB.UpdateSessionEnded(s.cfg.InstanceID, "finished"); err != nil {
-			log.Printf("sidecar: UpdateSessionEnded: %v", err)
+			s.logger().Printf("sidecar: UpdateSessionEnded: %v", err)
 		}
 	}
 
@@ -869,7 +885,7 @@ func (s *Sidecar) Shutdown() {
 		// Note: StateError is excluded because writeStartupError may have already
 		// written it before Run() returned on the startup-failure path. Overwriting
 		// error with interrupted here would clobber the correct terminal state.
-		log.Printf("sidecar: transition -> interrupted (cause=sigterm)")
+		s.logger().Printf("sidecar: transition -> interrupted (cause=sigterm)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
 	}
@@ -908,7 +924,7 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 				return fmt.Errorf("sidecar: host-API TCP listener: %w", tcpErr)
 			}
 			port := tcpLn.Addr().(*net.TCPAddr).Port
-			log.Printf("sidecar: host-API TCP listener bound on 0.0.0.0:%d", port)
+			s.logger().Printf("sidecar: host-API TCP listener bound on 0.0.0.0:%d", port)
 			s.cfg.HostAPITCPPort = port
 			s.cfg.Container.HostAPITCPPort = port
 			s.mu.Lock()
@@ -940,19 +956,19 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		s.container = &containerMgr{mgr: mgr}
 		s.mu.Unlock()
 
-		log.Printf("[timing] pre-Create: %s", time.Since(sessionStart).Round(time.Millisecond))
-		log.Printf("sidecar: creating container %q", mgr.Name())
+		s.logger().Printf("[timing] pre-Create: %s", time.Since(sessionStart).Round(time.Millisecond))
+		s.logger().Printf("sidecar: creating container %q", mgr.Name())
 		t0 := time.Now()
 		if err := mgr.Create(ctx); err != nil {
 			closeTCPListenerOnError()
 			return fmt.Errorf("sidecar: container create: %w", err)
 		}
-		log.Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
+		s.logger().Printf("[timing] Create: %s", time.Since(t0).Round(time.Millisecond))
 
-		log.Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
+		s.logger().Printf("sidecar: waiting for container %q to become healthy", mgr.Name())
 		t0 = time.Now()
 		if err := mgr.WaitHealthy(ctx); err != nil {
-			log.Printf("sidecar: health check failed: %v", err)
+			s.logger().Printf("sidecar: health check failed: %v", err)
 			// AC-14: genuine timeout — Shutdown() has not been called yet, so we
 			// must stop/remove the container here.
 			// When SIGTERM arrives, the signal goroutine calls Shutdown() (which
@@ -986,8 +1002,8 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 			return startupErr
 		}
 		healthyAt := time.Now()
-		log.Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
-		log.Printf("sidecar: container %q is healthy", mgr.Name())
+		s.logger().Printf("[timing] WaitHealthy: %s", healthyAt.Sub(t0).Round(time.Millisecond))
+		s.logger().Printf("sidecar: container %q is healthy", mgr.Name())
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
 		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
@@ -1011,10 +1027,10 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
 		//    so it only runs in container mode; host-mode sessions never reach here.
 		if !isShuttingDown && s.cfg.InitialPrompt != "" {
-			log.Printf("[timing] CreateSession start: %s after WaitHealthy", time.Since(healthyAt).Round(time.Millisecond))
+			s.logger().Printf("[timing] CreateSession start: %s after WaitHealthy", time.Since(healthyAt).Round(time.Millisecond))
 			_, createErr := s.harness.CreateSession(ctx)
 			if createErr != nil {
-				log.Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
+				s.logger().Printf("sidecar: deliverInitialPrompt: create session: %v", createErr)
 				startupErr := fmt.Errorf("sidecar: create session: %w", createErr)
 				// Use shuttingDown (not ctx.Err()) as the SIGTERM guard — same
 				// rationale as the WaitHealthy path above. The outer isShuttingDown
@@ -1030,20 +1046,20 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 				}
 				return startupErr
 			}
-			log.Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
-			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			s.logger().Printf("[timing] CreateSession done: %s after container healthy", time.Since(healthyAt).Round(time.Millisecond))
+			s.logger().Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if !isShuttingDown && s.cfg.OnReady != nil {
 				s.cfg.OnReady()
 			}
 			initialPrompt := s.cfg.InitialPrompt
 			go func() {
 				if err := s.harness.DeliverInitialPrompt(ctx, initialPrompt, s.cfg.AgentRole); err != nil {
-					log.Printf("sidecar: deliverInitialPrompt: %v", err)
+					s.logger().Printf("sidecar: deliverInitialPrompt: %v", err)
 				}
-				log.Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+				s.logger().Printf("[timing] prompt delivered: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			}()
 		} else if !isShuttingDown {
-			log.Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
+			s.logger().Printf("[timing] ready: %s from start", time.Since(sessionStart).Round(time.Millisecond))
 			if s.cfg.OnReady != nil {
 				s.cfg.OnReady()
 			}
@@ -1112,15 +1128,15 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": note}, nil)
 		s.lastState = agent.StateError
 		s.mu.Unlock()
-		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.logger().Printf("sidecar: runStartupStdio: %v", startupErr)
 		return startupErr
 	}
 
 	cmd, usedBwrap := s.buildStdioHarnessCmd(ctx)
 	if usedBwrap {
-		log.Printf("sidecar: runStartupStdio: launching harness binary %q under bwrap", s.cfg.HarnessBinaryPath)
+		s.logger().Printf("sidecar: runStartupStdio: launching harness binary %q under bwrap", s.cfg.HarnessBinaryPath)
 	} else {
-		log.Printf("sidecar: runStartupStdio: launching harness binary %q (no bwrap)", s.cfg.HarnessBinaryPath)
+		s.logger().Printf("sidecar: runStartupStdio: launching harness binary %q (no bwrap)", s.cfg.HarnessBinaryPath)
 	}
 
 	// Inherit stderr so harness log output reaches the sidecar's log.
@@ -1176,14 +1192,14 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 			Text  string `json:"text"`
 		}
 		if err := json.Unmarshal(line, &frame); err != nil {
-			log.Printf("sidecar: runStartupStdio: parse frame: %v (raw: %s)", err, truncateBytes(line, 200))
+			s.logger().Printf("sidecar: runStartupStdio: parse frame: %v (raw: %s)", err, truncateBytes(line, 200))
 			continue
 		}
 
 		// Only count parseable frames; corrupt lines are logged and skipped.
 		framesRead++
 
-		log.Printf("sidecar: runStartupStdio: frame type=%q", frame.Type)
+		s.logger().Printf("sidecar: runStartupStdio: frame type=%q", frame.Type)
 
 		if hasNormaliser {
 			// B5.TR path: the harness adapter normalises PI frames to
@@ -1300,7 +1316,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		log.Printf("sidecar: runStartupStdio: scanner error: %v", err)
+		s.logger().Printf("sidecar: runStartupStdio: scanner error: %v", err)
 	}
 
 	// Flush any partial accumulator before writing error state (mid-turn exit).
@@ -1315,26 +1331,26 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	if framesRead == 0 {
 		// Harness exited before writing any parseable frames — startup failure.
 		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness %q exited before writing any frames", s.cfg.HarnessBinaryPath)
-		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.logger().Printf("sidecar: runStartupStdio: %v", startupErr)
 		s.writeStartupError(startupErr)
 		return startupErr
 	}
 
 	if waitErr != nil {
 		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness process exited with error: %w", waitErr)
-		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.logger().Printf("sidecar: runStartupStdio: %v", startupErr)
 		s.writeStartupError(startupErr)
 		return startupErr
 	}
 
 	if lastState != string(agent.StateFinished) {
 		startupErr := fmt.Errorf("sidecar: runStartupStdio: harness exited without writing state=finished (last state: %q)", lastState)
-		log.Printf("sidecar: runStartupStdio: %v", startupErr)
+		s.logger().Printf("sidecar: runStartupStdio: %v", startupErr)
 		s.writeStartupError(startupErr)
 		return startupErr
 	}
 
-	log.Printf("sidecar: runStartupStdio: harness finished cleanly (%d frames)", framesRead)
+	s.logger().Printf("sidecar: runStartupStdio: harness finished cleanly (%d frames)", framesRead)
 	return nil
 }
 
@@ -1416,7 +1432,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			s.writeStartupError(err)
 			return err
 		}
-		log.Printf("sidecar: runStartupSocketPipe: listening on TCP :%d", s.cfg.HarnessPipeTCPPort)
+		s.logger().Printf("sidecar: runStartupSocketPipe: listening on TCP :%d", s.cfg.HarnessPipeTCPPort)
 	} else if s.cfg.HarnessPipeSockPath != "" {
 		// Linux: Unix socket.
 		if err := os.MkdirAll(filepath.Dir(s.cfg.HarnessPipeSockPath), 0o700); err != nil {
@@ -1431,7 +1447,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			s.writeStartupError(err)
 			return err
 		}
-		log.Printf("sidecar: runStartupSocketPipe: listening on unix %s", s.cfg.HarnessPipeSockPath)
+		s.logger().Printf("sidecar: runStartupSocketPipe: listening on unix %s", s.cfg.HarnessPipeSockPath)
 	} else {
 		err := fmt.Errorf("sidecar: runStartupSocketPipe: neither HarnessPipeSockPath nor HarnessPipeTCPPort configured")
 		s.writeStartupError(err)
@@ -1504,7 +1520,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				continue
 			}
 			if _, err := c.Write(frame); err != nil {
-				log.Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
+				s.logger().Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
 				// Don't return — the reader loop will detect the drop and
 				// reconnect. The writer stays alive for the next connection.
 			}
@@ -1538,7 +1554,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				s.lastState = agent.StateError
 				s.mu.Unlock()
 				err := fmt.Errorf("sidecar: runStartupSocketPipe: timed out waiting for extension to (re)connect (timeout=%s)", acceptTimeout)
-				log.Printf("%v", err)
+				s.logger().Printf("%v", err)
 				// Drain and stop the writer goroutine.
 				s.mu.Lock()
 				s.harnessPipeOutCh = nil
@@ -1555,7 +1571,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		log.Printf("sidecar: runStartupSocketPipe: extension connected from %s", conn.RemoteAddr())
+		s.logger().Printf("sidecar: runStartupSocketPipe: extension connected from %s", conn.RemoteAddr())
 		connMu.Lock()
 		activeConn = conn
 		connMu.Unlock()
@@ -1571,7 +1587,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			err2 := fmt.Errorf("sidecar: runStartupSocketPipe: reading hello: %w", err)
-			log.Printf("%v", err2)
+			s.logger().Printf("%v", err2)
 			_ = conn.Close()
 			connMu.Lock()
 			activeConn = nil
@@ -1629,7 +1645,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				code = "protocol_version_too_old"
 			}
 			msg := fmt.Sprintf("protocol_version %d is not supported (sidecar supports %d)", helloFrame.ProtocolVersion, piWireProtocolVersion)
-			log.Printf("sidecar: runStartupSocketPipe: %s: %s", code, msg)
+			s.logger().Printf("sidecar: runStartupSocketPipe: %s: %s", code, msg)
 			s.sendPipeError(conn, code, msg)
 			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: protocol version mismatch: extension=%d sidecar=%d", helloFrame.ProtocolVersion, piWireProtocolVersion)
 			s.writeStartupError(startupErr)
@@ -1664,7 +1680,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		s.archiveOutboundFrame(ackBytes)
 		if _, err := conn.Write(ackBytes); err != nil {
 			startupErr := fmt.Errorf("sidecar: runStartupSocketPipe: write hello_ack: %w", err)
-			log.Printf("%v", startupErr)
+			s.logger().Printf("%v", startupErr)
 			_ = conn.Close()
 			connMu.Lock()
 			activeConn = nil
@@ -1673,7 +1689,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			continue
 		}
 
-		log.Printf("sidecar: runStartupSocketPipe: handshake complete (harness=%q version=%q)", helloFrame.Harness, helloFrame.HarnessVersion)
+		s.logger().Printf("sidecar: runStartupSocketPipe: handshake complete (harness=%q version=%q)", helloFrame.Harness, helloFrame.HarnessVersion)
 
 		// Signal readiness on the first successful handshake only.
 		if !onReadyFired {
@@ -1705,7 +1721,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				}
 			}
 			if readErr != nil {
-				log.Printf("sidecar: runStartupSocketPipe: connection dropped: %v", readErr)
+				s.logger().Printf("sidecar: runStartupSocketPipe: connection dropped: %v", readErr)
 				s.mu.Lock()
 				s.flushPipeAccum()
 				s.mu.Unlock()
@@ -1725,7 +1741,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 		// Non-shutdown disconnect: wait for PI to reconnect within
 		// reconnectTimeout (e.g. after /new triggers session_start).
-		log.Printf("sidecar: runStartupSocketPipe: waiting up to %s for reconnect", reconnectTimeout)
+		s.logger().Printf("sidecar: runStartupSocketPipe: waiting up to %s for reconnect", reconnectTimeout)
 		acceptTimeout = reconnectTimeout
 	}
 
@@ -1767,15 +1783,15 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	}
 	if err := json.Unmarshal(line, &frame); err != nil {
 		// P2.WIRE §7.3: log and skip.
-		log.Printf("sidecar: runStartupSocketPipe: parse frame error: %v (raw: %s)", err, truncateBytes(line, 200))
+		s.logger().Printf("sidecar: runStartupSocketPipe: parse frame error: %v (raw: %s)", err, truncateBytes(line, 200))
 		return false
 	}
 	if frame.Type == "" {
-		log.Printf("sidecar: runStartupSocketPipe: frame missing type field (raw: %s)", truncateBytes(line, 200))
+		s.logger().Printf("sidecar: runStartupSocketPipe: frame missing type field (raw: %s)", truncateBytes(line, 200))
 		return false
 	}
 
-	log.Printf("sidecar: runStartupSocketPipe: inbound frame type=%q", frame.Type)
+	s.logger().Printf("sidecar: runStartupSocketPipe: inbound frame type=%q", frame.Type)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1800,7 +1816,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.cancelIdleTimer()
 			s.cancelRecoveryTimer()
 			s.lastErrorAt = s.cfg.Clock.Now()
-			log.Printf("sidecar: transition -> error (cause=pi_state_change)")
+			s.logger().Printf("sidecar: transition -> error (cause=pi_state_change)")
 			s.upsertState(st, nil, nil)
 			s.writeStateChange(st)
 			s.lastState = st
@@ -1844,14 +1860,14 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			}
 			if prevState == agent.StateError || prevState == agent.StateInterrupted {
 				if err := s.cfg.DB.ClearEnded(s.cfg.SessionName); err != nil {
-					log.Printf("sidecar: ClearEnded failed on pi resume: %v", err)
+					s.logger().Printf("sidecar: ClearEnded failed on pi resume: %v", err)
 				}
 			}
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 			s.lastState = agent.StateActive
 		} else {
-			log.Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
+			s.logger().Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
 		}
 		// Reset the accumulator for the new turn, then persist the frame.
 		empty := ""
@@ -1901,14 +1917,14 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		if agentName == "" {
 			agentName = s.rootAgent
 		}
-		log.Printf("sidecar: pi turn_end: lastAssistantAgent: %q -> %q (rootAgent=%q)",
+		s.logger().Printf("sidecar: pi turn_end: lastAssistantAgent: %q -> %q (rootAgent=%q)",
 			s.lastAssistantAgent, agentName, s.rootAgent)
 		s.lastAssistantAgent = agentName
 		// When the root agent just completed its turn, clear lastAssistantAgent
 		// so the next state_change{finished} starts the debounce normally
 		// (mirrors the opencode handleMessageUpdated behaviour for root-agent completion).
 		if agentName != "" && agentName == s.rootAgent {
-			log.Printf("sidecar: pi turn_end: lastAssistantAgent cleared (root agent completed)")
+			s.logger().Printf("sidecar: pi turn_end: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
 		}
 
@@ -2046,7 +2062,7 @@ func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
 	case ch <- frame:
 		return true
 	default:
-		log.Printf("sidecar: enqueueHarnessPipeFrame: outbound queue full, dropping frame")
+		s.logger().Printf("sidecar: enqueueHarnessPipeFrame: outbound queue full, dropping frame")
 		return false
 	}
 }
@@ -2077,7 +2093,7 @@ func (s *Sidecar) DeliverPrompt(text, deliverAs string) bool {
 	}
 	b, err := json.Marshal(frame)
 	if err != nil {
-		log.Printf("sidecar: DeliverPrompt: marshal: %v", err)
+		s.logger().Printf("sidecar: DeliverPrompt: marshal: %v", err)
 		return false
 	}
 	b = append(b, '\n')
