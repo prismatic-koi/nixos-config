@@ -141,6 +141,10 @@
         };
       };
 
+      packages = forEachSystem (pkgs: {
+        prism = pkgs.callPackage ./pkgs/prism.nix { };
+      });
+
       devShells = forEachSystem (pkgs: {
         default = pkgs.mkShell {
           buildInputs = [
