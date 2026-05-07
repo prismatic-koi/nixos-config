@@ -42,13 +42,28 @@ go build ./...
 go test ./...
 ```
 
-This is faster than a full nix build and should be the first check for any prism code change. Once the Go build and tests pass, verify the Nix derivation with:
+This is faster than a full nix build and should be the first check for any prism code change.
+
+**Prism Go-source and `.nix` changes: `nix build .#prism` is a required gate.**
+
+Any PR that touches files under `modules/programs/prism/prism/` (Go source) **or** any prism `*.nix` file must run:
 
 ```bash
+# From the repo root
 nix build .#prism
 ```
 
-Run `nix build .#prism` from the repo root whenever a change also touches `.nix` files or when confirming the final Nix build is correct.
+before opening the PR. This is not optional and not covered by `go test ./...` alone.
+
+**Why this gate exists — the homeless-shelter failure class.** The Nix build runs the test suite inside a sandbox where `$HOME=/homeless-shelter`, an intentionally unwritable path. This catches tests that touch the user's actual home directory and pass in a normal dev shell but fail in the sandbox:
+
+- `os.MkdirAll` on a path derived from `$HOME` or an unset `$XDG_STATE_HOME`
+- `os.UserHomeDir()` followed by a write
+- Opening a Unix socket under `~/.local/state/...`
+
+This is not a hypothetical: PR #1455 (`TestDeliverToSession_PiPath_DeliverAsForwarded`) introduced exactly this failure. `go test ./...` passed, `prism review` passed, the PR merged — and main went red on the next `nh switch` because the test created a directory under `$HOME`. The fix was a one-liner, but the break surfaced only in the Nix sandbox.
+
+**Scope — this gate applies only to prism-touching PRs.** PRs that touch only non-prism files (other modules, dotfiles, docs) do **not** need to run `nix build .#prism`. The relaxation introduced in #1441 stands for those paths.
 
 ### sandbox-exec testing convention
 
