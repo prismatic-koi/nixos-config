@@ -353,7 +353,7 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6c. ~/Library/Keychains read (issue #1487) ───────────────────────
+	// ── 6b. ~/Library/Keychains read (issue #1487) ───────────────────────
 	// The Keychain Services API (Mach IPC via securityd) requires both
 	// file-read* AND file-test-existence on ~/Library/Keychains to service
 	// credential lookups. securityd probes and reads the keychain databases
@@ -376,7 +376,7 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
-	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
+	// ── 6c. BareRoot ancestor probe allows ───────────────────────────────
 	// opencode's fs.up() walk probes multiple targets (.opencode, .git) at
 	// every ancestor of the worktree with no stop parameter. Under deny-default
 	// any EPERM (not ENOENT) is fatal. We grant file-test-existence on:

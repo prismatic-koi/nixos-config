@@ -530,9 +530,12 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 // (literal login.keychain-db) rule is present. This test therefore can only
 // confirm that the Mach IPC path to securityd is reachable (not "Operation not
 // permitted") — NOT that the file-read rule from issue #1487 is working. The
-// authoritative tests for the #1487 SBPL rule are in internal/integration/:
+// authoritative test for the #1487 SBPL rule is in internal/integration/:
 //   - TestSandboxExecProfile_KeychainAPIAccessible (positive, uses real HOME)
-//   - TestSandboxExecProfile_KeychainAPIDeniedWithoutKeychainRule (negative)
+// No paired negative test exists: the withMutatedProfile pattern cannot isolate
+// the Keychains rule on a fully set-up machine because the full production
+// profile grants ~/Library/Keychains access through other rules too. The
+// profile string-content assertion in the positive test is the regression guard.
 //
 // Exit 44 ("item not found") with any HOME value is treated as "API reachable,
 // item absent" and causes a skip — this test cannot distinguish rule-present
