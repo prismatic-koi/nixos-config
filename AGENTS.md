@@ -51,7 +51,7 @@ The gate now runs in CI, not locally. Any PR that touches `modules/programs/pris
 - the `go-tests` CI job — runs `go test ./... -race` from `modules/programs/prism/prism/` on a Linux runner with bwrap available; and
 - the `nix-build-prism-checked` CI job — builds prism with `runChecks = true` so the test suite executes inside the nix sandbox (`$HOME=/homeless-shelter`).
 
-Both jobs must pass before merge. They live in `.github/workflows/pr-gate.yml`.
+Both jobs must pass before merge. They live in `.github/workflows/pr-gate.yml`. The required status check on `main` is `pr-gate`, which is a fan-in job that explicitly fails if either `go-tests` or `nix-build-prism-checked` did not succeed — so a failure in either is a hard block.
 
 **Pipeline split (issue #1494).** Go test execution is split from the default `nix build` so that local `nh switch` and `nix build .#prism` are fast:
 

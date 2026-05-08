@@ -4,14 +4,37 @@ name: pr-gate
     branches:
       - main
 jobs:
-  # Stub gate retained as a cheap always-on PR check so the workflow
-  # itself is exercised on every PR (including non-Go PRs).
+  # Fan-in gate. This is the single status check required by the
+  # main-branch ruleset (`required_status_checks` -> `pr-gate`).
+  # It depends on every other job in this workflow and explicitly
+  # fails if any upstream job did not succeed, so a failing `go-tests`
+  # or `nix-build-prism-checked` job blocks the PR via the required
+  # check. `if: always()` ensures the gate runs even when an upstream
+  # job fails (default `needs:` semantics would skip it instead, which
+  # the ruleset would interpret as neutral / not-failed).
+  #
+  # On non-Go PRs both upstream jobs short-circuit to a success echo,
+  # so this gate still passes cheaply.
   gate:
     name: pr-gate
     runs-on: ubuntu-latest
+    needs:
+      - go-tests
+      - nix-build-prism-checked
+    if: always()
     steps:
-      - name: Gate passed
-        run: echo "pr-gate ok"
+      - name: Check upstream job results
+        env:
+          GO_TESTS_RESULT: ${{ needs.go-tests.result }}
+          NIX_BUILD_PRISM_CHECKED_RESULT: ${{ needs.nix-build-prism-checked.result }}
+        run: |
+          echo "go-tests: $GO_TESTS_RESULT"
+          echo "nix-build-prism-checked: $NIX_BUILD_PRISM_CHECKED_RESULT"
+          if [ "$GO_TESTS_RESULT" != "success" ] || [ "$NIX_BUILD_PRISM_CHECKED_RESULT" != "success" ]; then
+            echo "pr-gate: one or more required jobs did not succeed" >&2
+            exit 1
+          fi
+          echo "pr-gate ok"
 
   # Full Go test suite with -race. Runs on PRs that touch Go-relevant
   # paths only. See issue #1494.
