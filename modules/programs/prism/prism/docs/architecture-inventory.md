@@ -2025,7 +2025,7 @@ For each top-level prism subcommand, the function chain and side-effects.
 - `prism convert` — `cmd/convert.go`, opencode raw archive → pi-mono trace via `internal/piexport`.
 - `prism archive` — `cmd/archive.go`, export a session to its archive dir.
 - `prism audit` — `cmd/audit.go`, audit-event query.
-- `prism db` — `cmd/db.go`, internal DB-test helper.
+- `prism db` — `cmd/db.go` (parent command + DB-path helpers), `cmd/db_query.go` / `cmd/db_schema.go` / `cmd/db_tables.go` (read-only SQL query and schema introspection subcommands; #1467). Read-only enforcement via SQLite `?mode=ro`; sandbox routing via host-API endpoints (`GET /db/query`, `GET /db/schema`, `GET /db/tables`).
 - `prism clone` — `cmd/clone.go`, clone a remote into the prism layout.
 - `prism pr` — `cmd/pr.go`, spawn a session for an existing PR.
 - `prism merges list/cancel` — `cmd/merges.go`, merge-queue list and cancellation.

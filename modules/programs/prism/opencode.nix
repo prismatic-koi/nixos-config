@@ -796,6 +796,11 @@
         # prism merge — coordinator-only; review agents must not enqueue (#783)
         "prism merge" = "deny";
         "prism merge *" = "deny";
+        # prism db — read-only SQL/schema introspection (#1467). The CLI opens
+        # the DB with ?mode=ro and SQLite rejects any write at the engine level,
+        # so this is safe under deny-by-default for review agents.
+        "prism db" = "allow";
+        "prism db *" = "allow";
         # Standard read-only file/text operations
         "cat *" = "allow";
         "head *" = "allow";
@@ -962,6 +967,10 @@
         # prism merge — coordinator-only; review agents must not enqueue (#783)
         "prism merge" = "deny";
         "prism merge *" = "deny";
+        # prism db — read-only SQL/schema introspection (#1467). Same rationale
+        # as containerReviewBaseBashCommands above: ?mode=ro is the safety net.
+        "prism db" = "allow";
+        "prism db *" = "allow";
         # Standard read-only file/text operations (mirrors readOnlyBashCommands)
         "cat *" = "allow";
         "head *" = "allow";
@@ -1416,6 +1425,10 @@
                         "prism checkin" = "allow";
                         "prism checkin *" = "allow";
                         "prism list-sessions" = "allow";
+                        # prism db — read-only SQL/schema introspection (#1467).
+                        # ?mode=ro at the engine level is the safety net.
+                        "prism db" = "allow";
+                        "prism db *" = "allow";
                         # SQLite read-only access to prism DB — the ?mode=ro flag enforces
                         # read-only at the SQLite engine level, rejecting all write operations.
                         # The path is baked in at Nix eval time via hmUser.xdg.stateHome.
