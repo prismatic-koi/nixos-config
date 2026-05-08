@@ -692,6 +692,14 @@
                 "*" = "deny";
               }
               // readOnlyBashCommands
+              // {
+                # prism db — read-only SQL/schema introspection (#1467). The CLI
+                # opens the DB with ?mode=ro and SQLite rejects writes at the
+                # engine level, so it is safe under the deny-by-default plan
+                # bash policy. Plan agents are a primary debugging consumer.
+                "prism db" = "allow";
+                "prism db *" = "allow";
+              }
               // tmuxDenyCommands;
             };
           };
@@ -1349,6 +1357,12 @@
                         "*" = "deny";
                       }
                       // readOnlyBashCommands
+                      // {
+                        # prism db — read-only SQL/schema introspection (#1467).
+                        # ?mode=ro at the engine level is the safety net.
+                        "prism db" = "allow";
+                        "prism db *" = "allow";
+                      }
                       // tmuxDenyCommands;
                     };
                   };
