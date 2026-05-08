@@ -27,14 +27,15 @@ package cmd
 //   prism profile list         Print every profile defined in profiles.json,
 //                              one per line, with the active profile marked
 //                              by a leading "*".
+//                              Use --json to emit a JSON array of profile
+//                              objects (snake_case keys).
 //
 //   prism profile show [name]  Print the per-role slot table for the named
 //                              profile, defaulting to the active profile.
 //                              Output is plain TSV-friendly text: one row per
 //                              role, columns role | provider | model |
-//                              thinking. The intent is human-readable
-//                              diagnosis, not machine consumption — there
-//                              is no JSON output flag in this issue.
+//                              thinking. Use --json to emit a single JSON
+//                              object describing the profile's slot table.
 //
 // Resolution order for "the active profile" (mirrors spawn.go):
 //   1. Runtime state file at $XDG_STATE_HOME/prism/active-profile
@@ -42,6 +43,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -105,6 +107,9 @@ func init() {
 	profileCmd.AddCommand(profileListCmd)
 	profileCmd.AddCommand(profileShowCmd)
 	rootCmd.AddCommand(profileCmd)
+
+	profileListCmd.Flags().Bool("json", false, "Emit a JSON array of profile objects to stdout instead of the human-readable list")
+	profileShowCmd.Flags().Bool("json", false, "Emit a JSON object describing the profile's slot table to stdout instead of the human-readable view")
 
 	profileUseCmd.Flags().StringVar(&profileUseFlags.scope, "scope", "",
 		`Live-session swap scope: session=<name>, coordinator, global, or all.
@@ -283,8 +288,47 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// profileSlotJSON is the snake_case JSON shape for a single role slot.
+type profileSlotJSON struct {
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Thinking         string `json:"thinking"`
+	Harness          string `json:"harness"`
+	SystemPromptPath string `json:"system_prompt_path"`
+}
+
+// profileJSON is the snake_case JSON shape for a single profile entry. The
+// `slots` map is keyed by role name ("coordinator", "worker", "plan", ...).
+type profileJSON struct {
+	Name   string                     `json:"name"`
+	Active bool                       `json:"active"`
+	Slots  map[string]profileSlotJSON `json:"slots"`
+}
+
+// buildProfileJSON converts a config.ProfileEntry to the snake_case JSON
+// shape, with `active` set when the profile is the resolved active one.
+func buildProfileJSON(name string, entry config.ProfileEntry, active string) profileJSON {
+	slots := make(map[string]profileSlotJSON, len(entry))
+	for role, slot := range entry {
+		slots[role] = profileSlotJSON{
+			Provider:         slot.Provider,
+			Model:            slot.Model,
+			Thinking:         slot.Thinking,
+			Harness:          slot.Harness,
+			SystemPromptPath: slot.SystemPromptPath,
+		}
+	}
+	return profileJSON{
+		Name:   name,
+		Active: name == active && active != "",
+		Slots:  slots,
+	}
+}
+
 func runProfileList(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
+
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	pf, err := config.LoadProfiles()
 	if err != nil {
@@ -302,6 +346,18 @@ func runProfileList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", resolveErr)
 	}
 
+	if jsonMode {
+		rows := make([]profileJSON, 0, len(pf.Profiles))
+		for _, name := range config.AvailableProfileNames(pf) {
+			rows = append(rows, buildProfileJSON(name, pf.Profiles[name], active))
+		}
+		data, mErr := json.Marshal(rows)
+		if mErr != nil {
+			return fmt.Errorf("prism profile list --json: marshal: %w", mErr)
+		}
+		return printJSON(data)
+	}
+
 	w := cmd.OutOrStdout()
 	for _, name := range config.AvailableProfileNames(pf) {
 		marker := "  "
@@ -315,6 +371,8 @@ func runProfileList(cmd *cobra.Command, args []string) error {
 
 func runProfileShow(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
+
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	pf, err := config.LoadProfiles()
 	if err != nil {
@@ -339,6 +397,16 @@ func runProfileShow(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return fmt.Errorf("unknown profile %q — available: %s",
 			name, strings.Join(config.AvailableProfileNames(pf), ", "))
+	}
+
+	if jsonMode {
+		active, _, _ := config.ResolveActiveProfile(pf, "")
+		obj := buildProfileJSON(name, entry, active)
+		data, mErr := json.Marshal(obj)
+		if mErr != nil {
+			return fmt.Errorf("prism profile show --json: marshal: %w", mErr)
+		}
+		return printJSON(data)
 	}
 
 	// Sort roles for stable output.

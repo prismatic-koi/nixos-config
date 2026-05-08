@@ -129,7 +129,8 @@ func TestRunSessionsList_SinceFilter(t *testing.T) {
 	}
 }
 
-// TestRunSessionsList_JSONOutput verifies that --json emits valid JSONL.
+// TestRunSessionsList_JSONOutput verifies that --json emits a JSON array of
+// session-incarnation objects with snake_case keys (issue #1499).
 func TestRunSessionsList_JSONOutput(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -152,30 +153,33 @@ func TestRunSessionsList_JSONOutput(t *testing.T) {
 		}
 	})
 
-	// Every line must be independently parseable as a JSON object.
-	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) != 2 {
-		t.Errorf("expected 2 JSONL lines, got %d\n%s", len(lines), out)
+	var rows []map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
+		t.Fatalf("--json output is not a valid JSON array: %v\noutput: %s", err, out)
 	}
-	for i, line := range lines {
-		if line == "" {
-			continue
+	if len(rows) != 2 {
+		t.Errorf("expected 2 rows in JSON array, got %d\n%s", len(rows), out)
+	}
+	// Required snake_case fields must be present on every row (null is OK
+	// for optional fields, but the keys themselves must be there).
+	for i, row := range rows {
+		for _, field := range []string{"instance_id", "session_name", "repo", "harness", "started_at", "ended_at", "end_state", "archive_path", "agent_role", "root_agent_name", "harness_session_id", "group_id", "prism_version"} {
+			if _, ok := row[field]; !ok {
+				t.Errorf("row %d missing required snake_case JSON field %q\n%s", i, field, out)
+			}
 		}
-		var obj map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &obj); err != nil {
-			t.Errorf("line %d is not valid JSON: %v\nline: %s", i, err, line)
-		}
-		// Required fields must be present.
-		for _, field := range []string{"instanceId", "sessionName", "repo", "harness", "startedAt"} {
-			if _, ok := obj[field]; !ok {
-				t.Errorf("line %d missing required JSON field %q\n%s", i, field, line)
+		// Reject any leftover camelCase keys.
+		for _, badField := range []string{"instanceId", "sessionName", "startedAt", "endedAt", "endState", "archivePath", "agentRole", "rootAgentName", "harnessSessionId", "groupId", "prismVersion"} {
+			if _, ok := row[badField]; ok {
+				t.Errorf("row %d has unexpected camelCase JSON field %q (must be snake_case)\n%s", i, badField, out)
 			}
 		}
 	}
 }
 
 // TestRunSessionsList_JSONOutput_Empty verifies that --json with no sessions
-// produces no output (empty JSONL is valid).
+// emits an empty JSON array "[]", never null and never absent (AC: empty
+// list is `[]`).
 func TestRunSessionsList_JSONOutput_Empty(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := renderSessionsListJSON(nil); err != nil {
@@ -183,9 +187,9 @@ func TestRunSessionsList_JSONOutput_Empty(t *testing.T) {
 		}
 	})
 
-	// Should produce no output (valid empty JSONL).
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output for empty sessions list, got: %q", out)
+	trimmed := strings.TrimSpace(out)
+	if trimmed != "[]" {
+		t.Errorf("expected empty JSON array '[]' for empty sessions list, got: %q", trimmed)
 	}
 }
 
