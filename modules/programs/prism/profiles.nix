@@ -161,24 +161,6 @@
                 model = "anthropic/claude-haiku-4-5";
               };
             };
-            anthropic-pi = profileFromTiers {
-              primary = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
-                thinking = "medium";
-                harness = "pi";
-              };
-              secondary = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-sonnet-4-6";
-                harness = "pi";
-              };
-              lightweight = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-haiku-4-5";
-                harness = "pi";
-              };
-            };
             anthropic-opus = profileFromTiers {
               primary = slot {
                 provider = "anthropic";

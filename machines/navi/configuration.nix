@@ -27,8 +27,10 @@
     };
     programs = {
       prism = {
-        profile.default = "anthropic-pi";
+        profile.default = "anthropic-opus";
+        harness.default = "pi";
         agent.isolation.default = "bwrap";
+
         bwrapConcurrencyCap = 50;
       };
       anki.enable = false; # build broken as of 2025-08-30
