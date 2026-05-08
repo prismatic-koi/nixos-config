@@ -76,7 +76,36 @@ jobs:
       - name: go test ./... -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
-        run: go test ./... -race
+        # Capture verbose output to a log file so the next step can extract
+        # the skipped-test list without re-running the whole suite. Tee
+        # stdout so the live log on Actions still shows progress.
+        run: |
+          set -o pipefail
+          go test -v ./... -race 2>&1 | tee /tmp/go-test-v.log
+      # Surface the skipped-tests list in the Actions job summary so the gap
+      # is visible on every PR run rather than buried in -v output. See
+      # AGENTS.md and issue #1510 for why these skips exist; if the list
+      # ever grows, reviewers should notice. The grep is best-effort — if
+      # it produces nothing we emit "(none)" so the section is never empty.
+      - name: Summarise skipped tests
+        # always() ensures this step runs even if the test step failed, so
+        # the skip summary is emitted on red builds too.
+        if: always() && steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: |
+          {
+            echo "## Skipped tests"
+            echo
+            echo 'Tests skipped on GitHub Actions runner. See #1510 for the tracking issue.'
+            echo
+            echo '```'
+            if [ -f /tmp/go-test-v.log ]; then
+              grep -E '^(=== SKIP|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-v.log || echo "(none)"
+            else
+              echo "(go test log not found — likely the test step did not run)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: No Go-relevant changes
         if: steps.changes.outputs.go != 'true'
         run: echo "no Go-relevant paths touched; skipping go-tests"

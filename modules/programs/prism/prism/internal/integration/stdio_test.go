@@ -30,9 +30,24 @@ import (
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
-// requireBwrap skips the test if bwrap is not available in PATH.
+// requireBwrap skips the test if bwrap is not available in a usable form.
+//
+// Two skip paths:
+//
+//   - PATH lookup fails: bwrap is not installed.
+//   - GitHub Actions ubuntu-latest runner: bwrap is in PATH (we apt-install
+//     it in the workflow) but unprivileged user-namespace uid-map setup is
+//     blocked by the runner's apparmor profile, so any actual bwrap exec
+//     fails with "setting up uid map: Permission denied". See issue #1510.
+//
+// The skip messages are loud and named per #1510 — reviewers should see the
+// specific reason in test output rather than a vague "skipping" string.
 func requireBwrap(t *testing.T) string {
 	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
+			"unprivileged userns uid-map setup is disallowed (kernel.apparmor_restrict_unprivileged_userns=1)")
+	}
 	bin, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Skip("bwrap not found in PATH — skipping bwrap stdio integration test")

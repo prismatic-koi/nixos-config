@@ -34,8 +34,8 @@ import (
 // ─── sandbox detection ────────────────────────────────────────────────────────
 
 // insideSandbox returns true when the test process is running inside an
-// isolated sandbox environment where PTY-based tmux client attachment does not
-// work reliably. Two environments are detected:
+// isolated environment where PTY-based tmux client attachment does not work
+// reliably. Three environments are detected:
 //
 //  1. Nix build sandbox: detects via $NIX_BUILD_TOP being non-empty (always set
 //     by nix during buildGoModule's checkPhase). In the nix sandbox, script(1)
@@ -48,8 +48,16 @@ import (
 //     causes both clients to exit immediately due to bwrap devpts namespace
 //     constraints.
 //
+//  3. GitHub Actions ubuntu-latest runner: detects via $GITHUB_ACTIONS == "true".
+//     Actions runner steps lack the controlling-terminal semantics script(1)
+//     needs for tmux client attachment. See issue #1510.
+//
 // Callers should only skip PTY-attach tests on this basis, not all tmux tests.
 func insideSandbox() bool {
+	// GitHub Actions runner step.
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		return true
+	}
 	// Nix build sandbox: NIX_BUILD_TOP is always exported during nix builds.
 	if os.Getenv("NIX_BUILD_TOP") != "" {
 		return true
@@ -63,19 +71,29 @@ func insideSandbox() bool {
 }
 
 // skipIfSandboxPTY calls t.Skip when the test requires script-based PTY
-// attachment and the process is running in a sandbox that prevents it.
+// attachment and the process is running in an environment that prevents it.
 //
 // In the nix build sandbox (detectable via $NIX_BUILD_TOP), script(1) runs
 // but tmux's client process cannot acquire a controlling terminal, so the
 // client never appears in list-clients. In the opencode bwrap sandbox
 // (/proc/1/comm == "bwrap"), a second concurrent script-attached client causes
-// both clients to exit immediately. Neither environment supports the full PTY
-// attach lifecycle needed by multi-client tests.
+// both clients to exit immediately. On a GitHub Actions runner step
+// (GITHUB_ACTIONS=true) script(1) cannot supply a controlling TTY for the
+// child process. None of these environments support the full PTY attach
+// lifecycle needed by these tests.
 //
 // Tests needing only non-PTY tmux operations (session creation, window listing,
-// option setting) do not need this guard and will run in both environments.
+// option setting) do not need this guard and will run in all environments.
+//
+// The skip message is loud and named per issue #1510 — reviewers should see
+// the specific environment and reason in test output rather than a vague
+// "skipping in a sandbox" string.
 func skipIfSandboxPTY(t *testing.T) {
 	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
+			"script(1) cannot supply a controlling TTY in a GHA runner step")
+	}
 	if insideSandbox() {
 		t.Skip("skipping PTY-attach integration test: running in a sandbox " +
 			"(nix build or bwrap) where script-based tmux client attachment is " +

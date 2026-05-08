@@ -161,12 +161,31 @@ func runStdioSidecarAsync(sc *Sidecar) func() error {
 	}
 }
 
+// requireUsableBwrap skips the test when bwrap is not available in a usable
+// form. buildStdioHarnessCmd resolves bwrap via exec.LookPath and only falls
+// back to direct exec when bwrap is absent from PATH — so on environments
+// where bwrap is in PATH but cannot actually run (e.g. GitHub Actions
+// ubuntu-latest, where unprivileged userns uid-map setup is blocked by the
+// runner's apparmor profile), the wrapped exec fails with "setting up uid
+// map: Permission denied" and the harness exits before writing any frames.
+//
+// The skip message is loud and named per issue #1510 — see the follow-up for
+// alternative-runner / privileged-container investigations.
+func requireUsableBwrap(t *testing.T) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		t.Skipf("skipping on GitHub Actions ubuntu-latest: %s — see #1510",
+			"unprivileged userns uid-map setup is disallowed (kernel.apparmor_restrict_unprivileged_userns=1)")
+	}
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 // TestStdio_MsgAssistantCoalesced verifies that multiple msg_assistant
 // fragments between turn_start and turn_end produce exactly one msg_assistant
 // row per turn with concatenated text and token/cost fields (issue #1316 AC).
 func TestStdio_MsgAssistantCoalesced(t *testing.T) {
+	requireUsableBwrap(t)
 	sc := newStdioSidecar(t, "coalesced_2turn", nil)
 	wait := runStdioSidecarAsync(sc)
 	_ = wait() // state=finished is written, so this returns nil; ignore either way
@@ -263,6 +282,7 @@ func TestStdio_ToolOnlyTurnNoSpuriousRow(t *testing.T) {
 // mid-turn without turn_end, any accumulated text is flushed as a partial
 // msg_assistant row.
 func TestStdio_PartialAccumulatorFlushedOnExit(t *testing.T) {
+	requireUsableBwrap(t)
 	sc := newStdioSidecar(t, "partial_exit", nil)
 	wait := runStdioSidecarAsync(sc)
 	_ = wait() // expected to return an error; ignore
@@ -289,6 +309,7 @@ func TestStdio_PartialAccumulatorFlushedOnExit(t *testing.T) {
 // TestStdio_LegacyCoalesced verifies that the legacy fallback path (no
 // FrameNormaliser) also coalesces msg_assistant fragments per turn.
 func TestStdio_LegacyCoalesced(t *testing.T) {
+	requireUsableBwrap(t)
 	sc := newStdioSidecar(t, "legacy_coalesced", &legacyFakeHarness{})
 	wait := runStdioSidecarAsync(sc)
 	_ = wait()
