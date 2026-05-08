@@ -131,6 +131,14 @@ type Config struct {
 	// When empty, agent-run falls back to a relative-to-executable heuristic.
 	PIExtensionDir string `json:"pi_extension_dir"`
 
+	// FeedbackEndpoint is the upstream URL that `prism feedback` POSTs each
+	// new entry to (in addition to writing it locally). Empty means upstream
+	// reporting is disabled — the local JSONL store remains the source of
+	// truth. The PRISM_FEEDBACK_ENDPOINT environment variable takes
+	// precedence over this config key, so a one-off `PRISM_FEEDBACK_ENDPOINT=...
+	// prism feedback ...` invocation works without editing config.json.
+	FeedbackEndpoint string `json:"feedback_endpoint,omitempty"`
+
 	// ProjectIsolationOverrides maps path strings (with optional "~/" prefix)
 	// to isolation mode strings. When a session path matches a key (after "~/"
 	// expansion), the associated mode is used instead of DefaultIsolationMode.
@@ -169,6 +177,7 @@ type parsedConfig struct {
 	ProjectLocations               *[]string          `json:"project_locations"`
 	ProjectSpecific                *[]string          `json:"project_specific"`
 	ProjectIsolationOverrides      *map[string]string `json:"project_isolation_overrides"`
+	FeedbackEndpoint               string             `json:"feedback_endpoint"`
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
@@ -313,6 +322,9 @@ func load() Config {
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir
+	}
+	if parsed.FeedbackEndpoint != "" {
+		cfg.FeedbackEndpoint = parsed.FeedbackEndpoint
 	}
 
 	// For integer pointer fields: nil means absent (keep default); non-nil

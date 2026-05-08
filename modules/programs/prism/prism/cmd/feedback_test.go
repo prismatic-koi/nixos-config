@@ -1,0 +1,458 @@
+package cmd
+
+// Tests for `prism feedback`. All tests redirect the store path to a
+// t.TempDir() via XDG_STATE_HOME so they pass inside the nix-build
+// sandbox where HOME=/homeless-shelter is unwritable.
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/feedback"
+)
+
+// withTempFeedbackStore points the feedback store at a tempdir and clears
+// PRISM_FEEDBACK_ENDPOINT so tests don't accidentally hit the real one.
+// Returns the on-disk path so individual tests can inspect the JSONL.
+func withTempFeedbackStore(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", dir)
+	t.Setenv(PRISMFeedbackEndpointEnv, "")
+	return filepath.Join(dir, "prism", "feedback.jsonl")
+}
+
+// buildFreshFeedbackTree returns a freshly-constructed `feedback` cobra
+// subtree so flag state from one test does not leak into another. The
+// real production tree (cmd.feedbackCmd / feedbackListCmd / feedbackPruneCmd)
+// is a package singleton; building a parallel one for tests sidesteps that.
+func buildFreshFeedbackTree(t *testing.T) *cobra.Command {
+	t.Helper()
+	root := &cobra.Command{Use: "prism", SilenceUsage: true, SilenceErrors: true}
+
+	rec := &cobra.Command{
+		Use:          "feedback",
+		Args:         cobra.MaximumNArgs(1),
+		RunE:         runFeedbackRecord,
+		SilenceUsage: true,
+	}
+
+	list := &cobra.Command{Use: "list", Args: cobra.NoArgs, RunE: runFeedbackList, SilenceUsage: true}
+	list.Flags().Bool("json", false, "")
+	list.Flags().Int("days", 0, "")
+
+	prune := &cobra.Command{Use: "prune", Args: cobra.NoArgs, RunE: runFeedbackPrune, SilenceUsage: true}
+	prune.Flags().Int("days", 0, "")
+	prune.Flags().Bool("yes", false, "")
+
+	rec.AddCommand(list, prune)
+	root.AddCommand(rec)
+	return root
+}
+
+// runFeedbackCmd executes the test-only feedback tree with the given args.
+// Returns combined stdout+stderr and the RunE error.
+func runFeedbackCmd(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	root := buildFreshFeedbackTree(t)
+	root.SetArgs(append([]string{"feedback"}, args...))
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	err := root.Execute()
+	return buf.String(), err
+}
+
+// ── record ──────────────────────────────────────────────────────────────────
+
+func TestFeedback_Record_AppendsLocallyAndPrintsConfirmation(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	out, err := runFeedbackCmd(t, "the --tier flag rejects 'enterprise'")
+	if err != nil {
+		t.Fatalf("feedback: %v\nout=%s", err, out)
+	}
+	if !strings.Contains(out, "feedback recorded locally") {
+		t.Errorf("output missing confirmation: %q", out)
+	}
+
+	data, readErr := os.ReadFile(storePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile %s: %v", storePath, readErr)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d lines, want 1: %q", len(lines), data)
+	}
+	var e feedback.Entry
+	if err := json.Unmarshal([]byte(lines[0]), &e); err != nil {
+		t.Fatalf("parse entry: %v (raw: %s)", err, lines[0])
+	}
+	if e.Text != "the --tier flag rejects 'enterprise'" {
+		t.Errorf("text = %q", e.Text)
+	}
+	if e.Timestamp == "" {
+		t.Errorf("timestamp is empty")
+	}
+	if _, err := time.Parse(time.RFC3339, e.Timestamp); err != nil {
+		t.Errorf("timestamp not RFC3339: %v", err)
+	}
+}
+
+// AC edge-case: invoked with no argument prism feedback should refuse with
+// a clear usage hint and a non-zero exit.
+func TestFeedback_Record_NoArgErrors(t *testing.T) {
+	withTempFeedbackStore(t)
+
+	out, err := runFeedbackCmd(t)
+	if err == nil {
+		t.Fatalf("expected error for no-arg invocation, got out=%q", out)
+	}
+	if !strings.Contains(err.Error(), "feedback text is required") {
+		t.Errorf("err = %v; want 'feedback text is required'", err)
+	}
+}
+
+// AC: prism feedback - reads from stdin.
+func TestFeedback_Record_StdinDash(t *testing.T) {
+	withTempFeedbackStore(t)
+
+	stdin := strings.NewReader("piped feedback text\n")
+	got, err := readFeedbackText([]string{"-"}, stdin)
+	if err != nil {
+		t.Fatalf("readFeedbackText: %v", err)
+	}
+	if got != "piped feedback text" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestFeedback_Record_StdinDash_EmptyErrors(t *testing.T) {
+	withTempFeedbackStore(t)
+	_, err := readFeedbackText([]string{"-"}, strings.NewReader(""))
+	if err == nil {
+		t.Fatal("expected error for empty stdin")
+	}
+}
+
+// AC: when PRISM_FEEDBACK_ENDPOINT is set, feedback is also POSTed upstream
+// after being recorded locally. The local record is unaffected by upstream
+// failure; HTTP status is reported in the success message.
+func TestFeedback_Record_PostsUpstreamWhenConfigured(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	var (
+		gotMethod      string
+		gotContentType string
+		gotBody        []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv(PRISMFeedbackEndpointEnv, srv.URL)
+
+	out, err := runFeedbackCmd(t, "test note")
+	if err != nil {
+		t.Fatalf("feedback: %v\nout=%s", err, out)
+	}
+	if !strings.Contains(out, "sent upstream") || !strings.Contains(out, "200") {
+		t.Errorf("output missing upstream confirmation: %q", out)
+	}
+	if gotMethod != "POST" {
+		t.Errorf("method = %q", gotMethod)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q", gotContentType)
+	}
+	var posted feedback.Entry
+	if err := json.Unmarshal(gotBody, &posted); err != nil {
+		t.Errorf("posted body not JSON: %v (raw: %s)", err, gotBody)
+	}
+	if posted.Text != "test note" {
+		t.Errorf("posted text = %q", posted.Text)
+	}
+
+	data, _ := os.ReadFile(storePath)
+	if !strings.Contains(string(data), "test note") {
+		t.Errorf("local record missing: %q", data)
+	}
+}
+
+func TestFeedback_Record_UpstreamFailureDoesNotLoseLocal(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	t.Setenv(PRISMFeedbackEndpointEnv, srv.URL)
+
+	out, err := runFeedbackCmd(t, "test note")
+	if err != nil {
+		t.Fatalf("feedback should not fail on upstream 500, got: %v", err)
+	}
+	if !strings.Contains(out, "upstream POST failed") {
+		t.Errorf("output should report upstream failure: %q", out)
+	}
+	data, _ := os.ReadFile(storePath)
+	if !strings.Contains(string(data), "test note") {
+		t.Errorf("local record missing despite upstream failure: %q", data)
+	}
+}
+
+// ── list ────────────────────────────────────────────────────────────────────
+
+func TestFeedback_List_HumanReadable(t *testing.T) {
+	withTempFeedbackStore(t)
+	if _, err := runFeedbackCmd(t, "first note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runFeedbackCmd(t, "second note"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runFeedbackCmd(t, "list")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if !strings.Contains(out, "first note") || !strings.Contains(out, "second note") {
+		t.Errorf("list output missing entries: %q", out)
+	}
+}
+
+func TestFeedback_List_JSON(t *testing.T) {
+	withTempFeedbackStore(t)
+	if _, err := runFeedbackCmd(t, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runFeedbackCmd(t, "beta"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runFeedbackCmd(t, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json: %v", err)
+	}
+	var entries []feedback.Entry
+	if jerr := json.Unmarshal([]byte(out), &entries); jerr != nil {
+		t.Fatalf("not JSON: %v\nout=%s", jerr, out)
+	}
+	if len(entries) != 2 {
+		t.Errorf("got %d entries, want 2", len(entries))
+	}
+}
+
+func TestFeedback_List_JSON_EmptyIsArrayNotNull(t *testing.T) {
+	withTempFeedbackStore(t)
+	out, err := runFeedbackCmd(t, "list", "--json")
+	if err != nil {
+		t.Fatalf("list --json: %v", err)
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed != "[]" {
+		t.Errorf("empty list --json should be []; got %q", trimmed)
+	}
+}
+
+func TestFeedback_List_DaysFilter(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	old := feedback.Entry{
+		Timestamp:    time.Now().Add(-30 * 24 * time.Hour).Format(time.RFC3339),
+		Text:         "old note",
+		PrismVersion: "v",
+	}
+	recent := feedback.Entry{
+		Timestamp:    time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		Text:         "recent note",
+		PrismVersion: "v",
+	}
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := json.NewEncoder(f)
+	_ = enc.Encode(old)
+	_ = enc.Encode(recent)
+	_ = f.Close()
+
+	out, err := runFeedbackCmd(t, "list", "--days", "7")
+	if err != nil {
+		t.Fatalf("list --days 7: %v", err)
+	}
+	if !strings.Contains(out, "recent note") {
+		t.Errorf("output missing recent note: %q", out)
+	}
+	if strings.Contains(out, "old note") {
+		t.Errorf("output unexpectedly contains old note: %q", out)
+	}
+}
+
+// ── prune ───────────────────────────────────────────────────────────────────
+
+// AC: prune without --yes errors instead of prompting (principle 1).
+func TestFeedback_Prune_RequiresYes(t *testing.T) {
+	withTempFeedbackStore(t)
+	out, err := runFeedbackCmd(t, "prune", "--days", "30")
+	if err == nil {
+		t.Fatalf("expected error without --yes; got out=%q", out)
+	}
+	if !strings.Contains(err.Error(), "--yes") {
+		t.Errorf("err = %v; want --yes-required message", err)
+	}
+}
+
+func TestFeedback_Prune_RequiresPositiveDays(t *testing.T) {
+	withTempFeedbackStore(t)
+	out, err := runFeedbackCmd(t, "prune", "--yes")
+	if err == nil {
+		t.Fatalf("expected error without --days; got out=%q", out)
+	}
+	if !strings.Contains(err.Error(), "--days") {
+		t.Errorf("err = %v; want --days-required message", err)
+	}
+}
+
+func TestFeedback_Prune_DropsOldEntries(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.Create(storePath)
+	enc := json.NewEncoder(f)
+	_ = enc.Encode(feedback.Entry{
+		Timestamp:    time.Now().Add(-60 * 24 * time.Hour).Format(time.RFC3339),
+		Text:         "old",
+		PrismVersion: "v",
+	})
+	_ = enc.Encode(feedback.Entry{
+		Timestamp:    time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
+		Text:         "recent",
+		PrismVersion: "v",
+	})
+	_ = f.Close()
+
+	out, err := runFeedbackCmd(t, "prune", "--days", "30", "--yes")
+	if err != nil {
+		t.Fatalf("prune: %v\nout=%s", err, out)
+	}
+	if !strings.Contains(out, "removed 1") {
+		t.Errorf("output missing removed-1: %q", out)
+	}
+
+	data, _ := os.ReadFile(storePath)
+	if strings.Contains(string(data), `"text":"old"`) {
+		t.Errorf("old entry not pruned: %s", data)
+	}
+	if !strings.Contains(string(data), `"text":"recent"`) {
+		t.Errorf("recent entry pruned by mistake: %s", data)
+	}
+}
+
+// AC: feedback entry includes the calling session name when
+// PRISM_SESSION_NAME is set.
+func TestFeedback_BuildEntry_IncludesSessionFromEnv(t *testing.T) {
+	t.Setenv("PRISM_SESSION_NAME", "myrepo@feature")
+	e := buildFeedbackEntry("hi", time.Now().UTC())
+	if e.Session != "myrepo@feature" {
+		t.Errorf("session = %q, want myrepo@feature", e.Session)
+	}
+}
+
+func TestFeedback_BuildEntry_OmitsSessionWhenUnset(t *testing.T) {
+	t.Setenv("PRISM_SESSION_NAME", "")
+	e := buildFeedbackEntry("hi", time.Now().UTC())
+	if e.Session != "" {
+		t.Errorf("session = %q, want empty", e.Session)
+	}
+}
+
+// AC: when feedback_endpoint is set in the config file (and
+// PRISM_FEEDBACK_ENDPOINT is unset), the upstream POST is still attempted.
+func TestFeedback_Record_ReadsEndpointFromConfigFile(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+
+	var gotPosted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPosted = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Write a config file with feedback_endpoint set.
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	cfg := []byte(`{"feedback_endpoint":"` + srv.URL + `"}`)
+	if err := os.WriteFile(cfgPath, cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	t.Setenv(PRISMFeedbackEndpointEnv, "") // env unset; config wins
+
+	out, err := runFeedbackCmd(t, "config-key note")
+	if err != nil {
+		t.Fatalf("feedback: %v\nout=%s", err, out)
+	}
+	if !gotPosted {
+		t.Errorf("upstream was not POSTed despite config feedback_endpoint")
+	}
+	if !strings.Contains(out, "sent upstream") {
+		t.Errorf("output missing 'sent upstream': %q", out)
+	}
+	if _, statErr := os.Stat(storePath); statErr != nil {
+		t.Errorf("local store missing: %v", statErr)
+	}
+}
+
+// AC: PRISM_FEEDBACK_ENDPOINT (env) takes precedence over the config key.
+func TestFeedback_Record_EnvOverridesConfigEndpoint(t *testing.T) {
+	withTempFeedbackStore(t)
+
+	var (
+		envHit    bool
+		configHit bool
+	)
+	envSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		envHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer envSrv.Close()
+	cfgSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		configHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer cfgSrv.Close()
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "config.json")
+	cfg := []byte(`{"feedback_endpoint":"` + cfgSrv.URL + `"}`)
+	_ = os.WriteFile(cfgPath, cfg, 0o644)
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	t.Setenv(PRISMFeedbackEndpointEnv, envSrv.URL)
+
+	if _, err := runFeedbackCmd(t, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if !envHit {
+		t.Errorf("env endpoint should have been hit")
+	}
+	if configHit {
+		t.Errorf("config endpoint should NOT have been hit when env is set")
+	}
+}
