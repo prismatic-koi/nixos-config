@@ -401,19 +401,27 @@ func seedAssistantEvent(t *testing.T, d *db.DB, sessionName, text string) {
 	}
 }
 
-// TestBuildResults_InterruptedState verifies Layer 2: an agent whose DB state
-// is "interrupted" produces an error result regardless of msg_assistant events.
-func TestBuildResults_InterruptedState(t *testing.T) {
+// TestBuildResults_InterruptedThenResumedToFinishedPasses verifies the #1495
+// contract at the BuildResults layer: an agent that was interrupted, then
+// redirected via `prism prompt`, and then reached the "finished" state with
+// a PASS verdict must be counted as a normal pass — not as an error.
+//
+// This is the post-fix behaviour: "interrupted" is no longer in the layer-2
+// error branch, so an agent whose final DB state is "finished" proceeds to
+// AssessPassed regardless of whether it was previously interrupted.
+func TestBuildResults_InterruptedThenResumedToFinishedPasses(t *testing.T) {
 	d := openTestDB(t)
 	ag := review.Agent{Name: "review-goal"}
 	sess := "test@parent~review-1-review-goal"
 
-	// Seed the agent as interrupted with benign assistant output.
-	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "interrupted", nil, nil)
-	// Even with a benign (no-verdict) assistant message, the result must be error.
-	seedAssistantEvent(t, d, sess, "I'll start by reading the PR...")
+	// The agent was interrupted, the user sent a redirection via
+	// `prism prompt`, and the agent finished with an explicit PASS verdict.
+	// The DB only retains the latest state — "finished" — so BuildResults sees
+	// no trace of the earlier interruption.
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil)
+	seedAssistantEvent(t, d, sess, "All ACs verified. <verdict>PASS</verdict>")
 
-	finished := []bool{true} // "interrupted" was a terminal state → finished=true
+	finished := []bool{true}
 	timedOut := []bool{false}
 	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
 
@@ -421,14 +429,41 @@ func TestBuildResults_InterruptedState(t *testing.T) {
 		t.Fatalf("BuildResults returned %d results, want 1", len(results))
 	}
 	r := results[0]
+	if !r.Passed {
+		t.Errorf("BuildResults interrupted-then-resumed-to-finished: Passed=false, want true (#1495)")
+	}
+	if r.IsError {
+		t.Errorf("BuildResults interrupted-then-resumed-to-finished: IsError=true, want false (#1495)")
+	}
+}
+
+// TestBuildResults_InterruptedThenResumedToError verifies the #1495 edge case:
+// an agent that was interrupted, redirected, and then crashed (e.g. the
+// redirect itself caused the crash) must still surface as IsError=true via the
+// genuine-error branch. The redirection does not mask a subsequent failure.
+func TestBuildResults_InterruptedThenResumedToError(t *testing.T) {
+	d := openTestDB(t)
+	ag := review.Agent{Name: "review-code"}
+	sess := "test@parent~review-1-review-code"
+
+	// User interrupted, redirected, agent crashed during processing of the
+	// redirect — final state is "error".
+	_ = d.UpsertStatus(sess, "nixos-config", "/wt", "error", nil, nil)
+	seedAssistantEvent(t, d, sess, "Some partial output before crash.")
+
+	finished := []bool{true}
+	timedOut := []bool{false}
+	results := review.BuildResults([]review.Agent{ag}, []string{sess}, d, finished, timedOut, 10*time.Minute, false, "")
+
+	r := results[0]
 	if r.Passed {
-		t.Errorf("BuildResults with interrupted state: Passed=true, want false")
+		t.Errorf("BuildResults interrupted-then-resumed-to-error: Passed=true, want false")
 	}
 	if !r.IsError {
-		t.Errorf("BuildResults with interrupted state: IsError=false, want true")
+		t.Errorf("BuildResults interrupted-then-resumed-to-error: IsError=false, want true (genuine-error branch must still fire)")
 	}
-	if !findSubstring(r.Output, "interrupted") {
-		t.Errorf("BuildResults with interrupted state: output does not mention 'interrupted': %q", r.Output)
+	if !findSubstring(r.Output, "error") {
+		t.Errorf("BuildResults interrupted-then-resumed-to-error: output should mention 'error': %q", r.Output)
 	}
 }
 
