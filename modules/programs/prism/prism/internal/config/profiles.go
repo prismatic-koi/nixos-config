@@ -87,9 +87,19 @@ type ProfileEntry map[string]RoleSlot
 
 // ProfilesFile is the on-disk structure of profiles.json.
 type ProfilesFile struct {
-	Default     string                  `json:"default"`
-	RoleMapping map[string][]string     `json:"role_mapping"`
-	Profiles    map[string]ProfileEntry `json:"profiles"`
+	Default string `json:"default"`
+	// DefaultHarness is the Nix-level fallback harness (#1491). When a
+	// profile slot has no `harness` field, resolution falls back to this
+	// value before resorting to the hardcoded "opencode". Empty string
+	// means "use the hardcoded fallback" — preserved for forward
+	// compatibility with profiles.json files written by prism builds that
+	// predate this option.
+	//
+	// Validated at LoadProfiles time: if non-empty, must name a registered
+	// harness in the harness package's registry.
+	DefaultHarness string                  `json:"default_harness,omitempty"`
+	RoleMapping    map[string][]string     `json:"role_mapping"`
+	Profiles       map[string]ProfileEntry `json:"profiles"`
 	// ContainerWorkerConfig is the full opencode.json blob (serialised JSON
 	// string) to inject as OPENCODE_CONFIG_CONTENT for worker containers.
 	// Written by Nix under container_worker_config.
@@ -212,8 +222,23 @@ func profilesFilePath() string {
 	return filepath.Join(configHome, "prism", "profiles.json")
 }
 
+// HarnessValidator is the validator hook used at LoadProfiles time to check
+// that pf.DefaultHarness names a registered harness (#1491). It is set by
+// the harness package's init() so the config package does not import
+// internal/harness (which would create a cycle: harness/opencode/adapter.go
+// already imports config).
+//
+// Signature: returns ("", true) when the name is valid; otherwise returns
+// (sortedListOfRegisteredNames, false) so the caller can build a helpful
+// error message.
+//
+// Left as nil in tests that do not need validation — LoadProfiles treats nil
+// as "no validation configured" and skips the check.
+var HarnessValidator func(name string) (validNames []string, ok bool)
+
 // LoadProfiles reads and parses the profiles.json file.
-// Returns a descriptive error if the file is missing, unreadable, or malformed.
+// Returns a descriptive error if the file is missing, unreadable, or malformed,
+// or if the file's `default_harness` field names an unregistered harness.
 func LoadProfiles() (*ProfilesFile, error) {
 	path := profilesFilePath()
 	if path == "" {
@@ -229,6 +254,18 @@ func LoadProfiles() (*ProfilesFile, error) {
 	var pf ProfilesFile
 	if err := json.Unmarshal(data, &pf); err != nil {
 		return nil, fmt.Errorf("profiles: parse %s: %w", path, err)
+	}
+	// #1491 validation: when default_harness is set, it must name a harness
+	// that the registry knows about. Empty string is allowed (it means "use
+	// the hardcoded fallback") so old profiles.json files written by prism
+	// builds that predate this option continue to load.
+	if pf.DefaultHarness != "" && HarnessValidator != nil {
+		if validNames, ok := HarnessValidator(pf.DefaultHarness); !ok {
+			return nil, fmt.Errorf(
+				"profiles: %s declares default_harness %q which is not a registered harness — valid: %s",
+				path, pf.DefaultHarness, strings.Join(validNames, ", "),
+			)
+		}
 	}
 	return &pf, nil
 }
@@ -260,17 +297,32 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 	return slot, ok
 }
 
-// HarnessForSlot returns the harness name declared in the given slot, defaulting
-// to "opencode" when the slot's Harness field is absent or empty.
+// HarnessForSlot returns the effective harness name for the given slot,
+// applying the resolution-precedence ladder introduced by #1328 / #1491:
 //
-// This is the canonical accessor for the per-role harness resolution introduced
-// by #1328: callers should not read slot.Harness directly, so the default logic
-// lives in one place.
-func HarnessForSlot(slot RoleSlot) string {
-	if slot.Harness == "" {
-		return "opencode"
+//  1. Slot-level Harness field (when non-empty).
+//  2. ProfilesFile.DefaultHarness (the Nix-level `default_harness` fallback,
+//     #1491) when set.
+//  3. Hardcoded "opencode" — the final safety net, used only when both the
+//     slot and the profiles file omit a harness.
+//
+// `pf` may be nil — callers without a loaded profiles file (tests, error
+// recovery paths) get the slot value or the hardcoded "opencode".
+//
+// The `--harness` flag at spawn / pr / review time takes precedence over all
+// of the above; it is enforced by the call sites by short-circuiting before
+// they reach this function.
+//
+// This is the canonical accessor — callers must not read slot.Harness or
+// pf.DefaultHarness directly so the resolution logic lives in one place.
+func HarnessForSlot(pf *ProfilesFile, slot RoleSlot) string {
+	if slot.Harness != "" {
+		return slot.Harness
 	}
-	return slot.Harness
+	if pf != nil && pf.DefaultHarness != "" {
+		return pf.DefaultHarness
+	}
+	return "opencode"
 }
 
 // RequireSlot validates that the named profile defines a slot for the given

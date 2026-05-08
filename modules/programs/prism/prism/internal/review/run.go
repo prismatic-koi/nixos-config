@@ -214,9 +214,11 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// precedence (defaulting to "opencode" via HarnessForSlot).
 		agentHarnessName := opts.Harness
 		if !opts.HarnessExplicit {
-			if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-				agentHarnessName = config.HarnessForSlot(slot)
+			var slot config.RoleSlot
+			if s, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+				slot = s
 			}
+			agentHarnessName = config.HarnessForSlot(opts.ProfilesFile, slot)
 		}
 		agentH, agentHErr := harness.New(agentHarnessName, "", nil, "", "")
 		if agentHErr != nil {
@@ -497,9 +499,11 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// opts.HarnessExplicit guards whether the profile slot or the flag wins.
 		asyncAgentHarnessName := opts.Harness
 		if !opts.HarnessExplicit {
-			if slot, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-				asyncAgentHarnessName = config.HarnessForSlot(slot)
+			var slot config.RoleSlot
+			if s, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
+				slot = s
 			}
+			asyncAgentHarnessName = config.HarnessForSlot(opts.ProfilesFile, slot)
 		}
 		asyncAgentH, asyncAgentHErr := harness.New(asyncAgentHarnessName, "", nil, "", "")
 		if asyncAgentHErr != nil {
