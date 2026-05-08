@@ -27,9 +27,14 @@ import (
 
 // testTimer implements Timer and allows manual firing.
 type testTimer struct {
-	mu      sync.Mutex
-	stopped bool
-	fn      func()
+	mu        sync.Mutex
+	stopped   bool
+	fn        func()
+	// stoppedCh is closed exactly once when the timer transitions to the
+	// stopped state (via Stop or Fire). Tests can use this to synchronise on
+	// timer cancellation deterministically rather than polling the Stopped()
+	// accessor with a wall-clock delay. See issue #1515.
+	stoppedCh chan struct{}
 }
 
 func (t *testTimer) Stop() bool {
@@ -37,6 +42,9 @@ func (t *testTimer) Stop() bool {
 	defer t.mu.Unlock()
 	was := !t.stopped
 	t.stopped = true
+	if was && t.stoppedCh != nil {
+		close(t.stoppedCh)
+	}
 	return was
 }
 
@@ -58,9 +66,35 @@ func (t *testTimer) Fire() {
 	}
 	t.stopped = true
 	fn := t.fn
+	if t.stoppedCh != nil {
+		close(t.stoppedCh)
+	}
 	t.mu.Unlock()
 	if fn != nil {
 		fn()
+	}
+}
+
+// WaitStopped blocks until Stop or Fire has been called on this timer, or
+// until timeout elapses. Returns true on success, false on timeout. This is a
+// deterministic synchronisation seam — preferred over polling Stopped() with
+// a sleep — for tests that assert a sidecar code path cancelled a timer.
+func (t *testTimer) WaitStopped(timeout time.Duration) bool {
+	t.mu.Lock()
+	if t.stopped {
+		t.mu.Unlock()
+		return true
+	}
+	ch := t.stoppedCh
+	t.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -71,10 +105,19 @@ type testClock struct {
 	timers []*testTimer
 	// sleeps records the durations passed to Sleep, in call order.
 	sleeps []time.Duration
+	// timerCreatedCh is closed and replaced on every AfterFunc call so that
+	// WaitForTimerCount can block on the next timer creation without polling.
+	// See issue #1515 — the previous "sleep 50ms then call LastTimer" pattern
+	// flaked under load because 50ms was not always enough for the sidecar
+	// goroutine to reach AfterFunc.
+	timerCreatedCh chan struct{}
 }
 
 func newTestClock() *testClock {
-	return &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	return &testClock{
+		now:            time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		timerCreatedCh: make(chan struct{}),
+	}
 }
 
 func (c *testClock) Now() time.Time {
@@ -86,8 +129,16 @@ func (c *testClock) Now() time.Time {
 func (c *testClock) AfterFunc(d time.Duration, f func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &testTimer{fn: f}
+	t := &testTimer{fn: f, stoppedCh: make(chan struct{})}
 	c.timers = append(c.timers, t)
+	// Notify any waiter blocked in WaitForTimerCount that a new timer was
+	// registered. Close-and-replace gives a broadcast semantics: every
+	// outstanding waiter wakes up, then we install a fresh channel for the
+	// next round.
+	if c.timerCreatedCh != nil {
+		close(c.timerCreatedCh)
+	}
+	c.timerCreatedCh = make(chan struct{})
 	return t
 }
 
@@ -123,6 +174,90 @@ func (c *testClock) TimerCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.timers)
+}
+
+// WaitForTimerCount blocks until the clock has registered at least n timers,
+// or until timeout elapses. Returns the timer at index n-1 on success (i.e.
+// the n-th timer in registration order) or nil on timeout. This is the
+// deterministic alternative to "sleep 50ms then call LastTimer" — it observes
+// the actual creation event and is independent of scheduler load. See #1515.
+func (c *testClock) WaitForTimerCount(n int, timeout time.Duration) *testTimer {
+	deadline := time.Now().Add(timeout)
+	for {
+		c.mu.Lock()
+		if len(c.timers) >= n {
+			t := c.timers[n-1]
+			c.mu.Unlock()
+			return t
+		}
+		ch := c.timerCreatedCh
+		c.mu.Unlock()
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		select {
+		case <-ch:
+			// A new timer was registered; loop to re-check the count.
+		case <-time.After(remaining):
+			return nil
+		}
+	}
+}
+
+// WaitForNextTimer is a convenience wrapper around WaitForTimerCount that
+// returns the timer registered after the call site's most recent observation
+// of the timer count. It is equivalent to TimerCount() + WaitForTimerCount(n+1).
+func (c *testClock) WaitForNextTimer(timeout time.Duration) *testTimer {
+	c.mu.Lock()
+	n := len(c.timers)
+	c.mu.Unlock()
+	return c.WaitForTimerCount(n+1, timeout)
+}
+
+// waitForCondition polls fn at a short interval until it returns true, or
+// until timeout elapses. Returns true on success, false on timeout. This is a
+// targeted helper for socket-pipe tests that need to wait for a sidecar-side
+// state mutation (e.g. lastAssistantAgent updated, lastErrorAt recorded) for
+// which there is no observable channel — the alternative is a fixed sleep,
+// which flakes under contended scheduling. The polling interval is small (1ms)
+// so the helper still completes promptly when the condition is met quickly.
+// See issue #1515.
+func waitForCondition(t *testing.T, fn func() bool, timeout time.Duration, msg string) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if fn() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			if msg != "" {
+				t.Logf("waitForCondition timed out after %s: %s", timeout, msg)
+			}
+			return false
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+
+// waitForState polls the DB until CurrentStatus reports the given state, or
+// until timeout elapses. Returns the observed state on success or the empty
+// string on timeout. Use this in place of "sleep 50ms then call getState" —
+// the previous pattern flaked under load because the sidecar handler had not
+// yet committed the state change to the DB. See issue #1515.
+func waitForState(t *testing.T, d *db.DB, session, want string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		st := getState(t, d, session)
+		if st == want {
+			return st
+		}
+		if time.Now().After(deadline) {
+			return st
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
 }
 
 // Advance moves the clock forward by d.
