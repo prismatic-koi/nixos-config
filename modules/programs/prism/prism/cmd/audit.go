@@ -46,13 +46,21 @@ func init() {
 	auditCmd.Flags().Int("days", 0, "Restrict to events from the last N days")
 	auditCmd.Flags().String("pattern", "", "Filter by command substring (case-insensitive)")
 	auditCmd.Flags().Int("limit", 0, "Maximum number of events to return (default 20 when no session filter)")
+	auditCmd.Flags().Bool("json", false, "Emit a JSON object with an events array (and a truncated bool with hint when applicable) to stdout instead of the human-readable table")
 	rootCmd.AddCommand(auditCmd)
 }
+
+// auditDefaultLimit mirrors the implicit default applied by
+// db.QueryAuditEvents when limit == 0 and no session filter is set. We
+// duplicate the value here so --json can know whether the result is
+// likely truncated (i.e. the implicit cap was hit).
+const auditDefaultLimit = 20
 
 func runAudit(cmd *cobra.Command, args []string) error {
 	days, _ := cmd.Flags().GetInt("days")
 	pattern, _ := cmd.Flags().GetString("pattern")
 	limit, _ := cmd.Flags().GetInt("limit")
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	sessionName := ""
 	if len(args) == 1 {
@@ -75,6 +83,10 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("audit: %w", err)
 	}
 
+	if jsonMode {
+		return renderAuditEventsJSON(events, sessionName, sinceMs, pattern, limit)
+	}
+
 	if len(events) == 0 {
 		if sessionName != "" {
 			fmt.Printf("no audit events found for session %q\n", sessionName)
@@ -89,6 +101,74 @@ func runAudit(cmd *cobra.Command, args []string) error {
 
 	renderAuditEvents(events)
 	return nil
+}
+
+// auditEventJSON is the snake_case JSON shape for a single audit event.
+type auditEventJSON struct {
+	ID          string  `json:"id"`
+	SessionName string  `json:"session_name"`
+	InstanceID  *string `json:"instance_id"`
+	Command     string  `json:"command"`
+	Timestamp   string  `json:"timestamp"` // RFC3339
+	Payload     any     `json:"payload"`
+}
+
+// renderAuditEventsJSON marshals the audit events as a JSON object containing
+// an `events` array and a `truncated` bool (with `hint` when truncated).
+func renderAuditEventsJSON(events []db.Event, sessionName string, sinceMs int64, pattern string, limit int) error {
+	out := make([]auditEventJSON, 0, len(events))
+	for _, e := range events {
+		var p payload.Audit
+		command := ""
+		var payloadAny any = nil
+		if err := json.Unmarshal([]byte(e.Payload), &p); err == nil {
+			command = p.Command
+			// Keep the raw payload available so consumers that need
+			// additional context (cwd, exit_code, etc.) can read it.
+			var generic any
+			if err := json.Unmarshal([]byte(e.Payload), &generic); err == nil {
+				payloadAny = generic
+			}
+		}
+		row := auditEventJSON{
+			ID:          e.ID,
+			SessionName: e.SessionName,
+			InstanceID:  e.InstanceID,
+			Command:     command,
+			Timestamp:   e.CreatedAt.UTC().Format(time.RFC3339),
+			Payload:     payloadAny,
+		}
+		out = append(out, row)
+	}
+
+	// Truncation heuristic: we hit the cap when the result count equals the
+	// effective limit. The DB layer applies an implicit default cap of 20
+	// when limit == 0 and no session filter is set.
+	effectiveLimit := limit
+	if effectiveLimit == 0 && sessionName == "" {
+		effectiveLimit = auditDefaultLimit
+	}
+	truncated := effectiveLimit > 0 && len(events) >= effectiveLimit
+
+	resp := struct {
+		Events    []auditEventJSON `json:"events"`
+		Truncated bool             `json:"truncated"`
+		Hint      *string          `json:"hint"`
+	}{
+		Events:    out,
+		Truncated: truncated,
+		Hint:      nil,
+	}
+	if truncated {
+		hint := "results capped — pass --limit=N to raise, or refine with --pattern, --days, or a session argument"
+		resp.Hint = &hint
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("audit --json: marshal: %w", err)
+	}
+	return printJSON(data)
 }
 
 func renderAuditEvents(events []db.Event) {

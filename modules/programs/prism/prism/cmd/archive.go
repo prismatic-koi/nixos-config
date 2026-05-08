@@ -7,10 +7,13 @@ package cmd
 //	prism archive <instance-id>                  print archive_path and exit 0
 //	prism archive <session-name>                 print archive_path for most recent incarnation
 //	prism archive <session-name> --all           print one archive_path per line, newest first
+//	prism archive <session-name> --all --json    emit a JSON array of archive entries
 //	prism archive --instance <full-uuid>         force UUID lookup (disambiguate from session name)
 
 import (
+	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -41,12 +44,18 @@ Exits non-zero when the incarnation is unknown or archive_path IS NULL
 func init() {
 	archiveCmd.Flags().Bool("all", false, "Print archive_path for every incarnation of the session name, newest first")
 	archiveCmd.Flags().String("instance", "", "Force UUID instance_id lookup for this full UUID (alternative to positional arg)")
+	archiveCmd.Flags().Bool("json", false, "With --all, emit a JSON array of archive entries (instance_id, started_at, archive_path) instead of one path per line")
 	rootCmd.AddCommand(archiveCmd)
 }
 
 func runArchive(cmd *cobra.Command, args []string) error {
 	all, _ := cmd.Flags().GetBool("all")
 	instanceFlag, _ := cmd.Flags().GetString("instance")
+	jsonMode, _ := cmd.Flags().GetBool("json")
+
+	if jsonMode && !all {
+		return fmt.Errorf("archive: --json is only supported together with --all")
+	}
 
 	d, err := openDB()
 	if err != nil {
@@ -69,12 +78,61 @@ func runArchive(cmd *cobra.Command, args []string) error {
 
 	// --all: iterate all incarnations of the session name.
 	if all {
+		if jsonMode {
+			return printArchivePathAllJSON(d, arg)
+		}
 		return printArchivePathAll(d, arg)
 	}
 
 	// Disambiguate: full UUID or session name.
 	forceInstance := len(arg) == 36
 	return printArchivePath(d, arg, forceInstance)
+}
+
+// archiveJSONRow is the snake_case JSON shape for one archive entry.
+// archive_path is null when the incarnation has not yet been archived.
+type archiveJSONRow struct {
+	InstanceID  string  `json:"instance_id"`
+	SessionName string  `json:"session_name"`
+	StartedAt   string  `json:"started_at"` // RFC3339
+	EndedAt     *string `json:"ended_at"`
+	ArchivePath *string `json:"archive_path"`
+}
+
+// printArchivePathAllJSON emits a JSON array of archive entries for every
+// incarnation of session_name = arg, ordered newest first. Unarchived rows
+// have archive_path: null. An empty result is `[]` (never null).
+func printArchivePathAllJSON(d *db.DB, sessionName string) error {
+	sessions, err := d.SessionsByName(sessionName)
+	if err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	if len(sessions) == 0 {
+		return fmt.Errorf("archive: no incarnations found for session %q", sessionName)
+	}
+
+	rows := make([]archiveJSONRow, 0, len(sessions))
+	for _, s := range sessions {
+		row := archiveJSONRow{
+			InstanceID:  s.InstanceID,
+			SessionName: s.SessionName,
+			StartedAt:   s.StartedAt.UTC().Format(time.RFC3339),
+		}
+		if s.EndedAt != nil {
+			endedStr := s.EndedAt.UTC().Format(time.RFC3339)
+			row.EndedAt = &endedStr
+		}
+		if s.ArchivePath != nil && *s.ArchivePath != "" {
+			row.ArchivePath = s.ArchivePath
+		}
+		rows = append(rows, row)
+	}
+
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("archive --json: marshal: %w", err)
+	}
+	return printJSON(data)
 }
 
 // printArchivePath resolves arg to a single sessions row and prints its archive_path.

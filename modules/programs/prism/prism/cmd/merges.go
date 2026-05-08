@@ -12,6 +12,7 @@ package cmd
 //	prism merges cancel <pr>             cancel a watching entry
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -61,12 +62,14 @@ func init() {
 	mergesListCmd.Flags().Bool("failed", false, "Show failed entries")
 	mergesListCmd.Flags().Bool("abandoned", false, "Show abandoned entries from previous coordinator incarnations")
 	mergesListCmd.Flags().Bool("all", false, "Show all non-abandoned entries from the last 7 days")
+	mergesListCmd.Flags().Bool("json", false, "Emit a JSON array of merge-queue entries to stdout instead of the human-readable table")
 
 	// Also add the filter flags to the root mergesCmd so `prism merges --failed`
 	// works as a shorthand for `prism merges list --failed`.
 	mergesCmd.Flags().Bool("failed", false, "Show failed entries")
 	mergesCmd.Flags().Bool("abandoned", false, "Show abandoned entries from previous coordinator incarnations")
 	mergesCmd.Flags().Bool("all", false, "Show all non-abandoned entries from the last 7 days")
+	mergesCmd.Flags().Bool("json", false, "Emit a JSON array of merge-queue entries to stdout instead of the human-readable table")
 
 	mergesCmd.AddCommand(mergesListCmd)
 	mergesCmd.AddCommand(mergesCancelCmd)
@@ -77,6 +80,7 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 	failed, _ := cmd.Flags().GetBool("failed")
 	abandoned, _ := cmd.Flags().GetBool("abandoned")
 	all, _ := cmd.Flags().GetBool("all")
+	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	filter := ""
 	switch {
@@ -104,6 +108,9 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 		if proxyErr := proxyGetFromHostAPI(apiURL, "/merges", params, &merges); proxyErr != nil {
 			return fmt.Errorf("prism merges list: %w", proxyErr)
 		}
+		if jsonMode {
+			return renderMergesListJSON(merges)
+		}
 		return renderMergesList(merges, filter)
 	}
 
@@ -125,7 +132,63 @@ func runMergesList(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("prism merges list: %w", err)
 	}
 
+	if jsonMode {
+		return renderMergesListJSON(merges)
+	}
 	return renderMergesList(merges, filter)
+}
+
+// mergeJSONRow is the snake_case JSON shape for a single merge-queue entry.
+// Defined explicitly so the JSON contract is decoupled from db.PendingMerge
+// (which has no struct tags). RFC3339 timestamps; null for absent fields.
+type mergeJSONRow struct {
+	QueuePosition      int64   `json:"queue_position"`
+	PR                 int     `json:"pr"`
+	Title              *string `json:"title"`
+	Status             string  `json:"status"`
+	Error              *string `json:"error"`
+	EnqueuedAt         string  `json:"enqueued_at"`
+	LastCheckedAt      *string `json:"last_checked_at"`
+	MergedAt           *string `json:"merged_at"`
+	EndedAt            *string `json:"ended_at"`
+	CoordinatorSession string  `json:"coordinator_session"`
+	InstanceID         string  `json:"instance_id"`
+}
+
+// renderMergesListJSON marshals merges to a JSON array (snake_case keys,
+// RFC3339 timestamps) and writes it to stdout. An empty list renders as `[]`.
+func renderMergesListJSON(merges []db.PendingMerge) error {
+	rows := make([]mergeJSONRow, 0, len(merges))
+	for _, m := range merges {
+		row := mergeJSONRow{
+			QueuePosition:      m.QueuePosition,
+			PR:                 m.PR,
+			Title:              m.Title,
+			Status:             m.Status,
+			Error:              m.Error,
+			EnqueuedAt:         m.QueuedAt.UTC().Format(time.RFC3339),
+			CoordinatorSession: m.SessionName,
+			InstanceID:         m.InstanceID,
+		}
+		if m.LastCheckedAt != nil {
+			s := m.LastCheckedAt.UTC().Format(time.RFC3339)
+			row.LastCheckedAt = &s
+		}
+		if m.MergedAt != nil {
+			s := m.MergedAt.UTC().Format(time.RFC3339)
+			row.MergedAt = &s
+		}
+		if m.EndedAt != nil {
+			s := m.EndedAt.UTC().Format(time.RFC3339)
+			row.EndedAt = &s
+		}
+		rows = append(rows, row)
+	}
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("prism merges list --json: marshal: %w", err)
+	}
+	return printJSON(data)
 }
 
 func runMergesCancel(cmd *cobra.Command, args []string) error {

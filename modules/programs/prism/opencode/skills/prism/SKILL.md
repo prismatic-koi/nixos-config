@@ -224,6 +224,8 @@ A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watchin
 | `prism merges list --all` | Include terminal-state history (last 7 days). |
 | `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
 
+Add `--json` to any `prism merges` / `prism merges list` invocation (including with `--failed`, `--abandoned`, or `--all`) to get a JSON array of merge-queue entries instead of the table — use this when scripting or polling.
+
 ### Notification contract
 
 When a queued PR reaches a terminal outcome, the watcher delivers a bus notification to the coordinator session. The text is:
@@ -305,15 +307,33 @@ prism cleanup --yes --session "nixos-config@update-plex"
 
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
+## Querying prism state — prefer `--json` for scripting
+
+Every list-style and lookup-style prism subcommand supports a `--json` flag that emits a single JSON document to stdout — keys are snake_case, timestamps are RFC 3339, empty lists are `[]` (never null, never absent), and any informational/progress text routes to stderr. **When you need to parse prism output programmatically, always pass `--json`.** Screen-scraping tabular human-readable output is fragile and burns tokens.
+
+| Command | `--json` shape |
+|---|---|
+| `prism list-sessions --json` | array of session-status objects |
+| `prism sessions list --json` | array of session-incarnation objects |
+| `prism checkin <session> --json` | session + events object |
+| `prism stats --json` (and `prism stats <id> --json`) | rows mirroring the host-API |
+| `prism merges --json` (and `prism merges list --json`, `--failed --json`, `--abandoned --json`, `--all --json`) | array of merge-queue entries |
+| `prism audit --json` | object with `events` array, `truncated` bool, optional `hint` |
+| `prism status --json` | object keyed by state (`active`, `waiting`, `idle`, `finished`, `error`) with integer counts (mutually exclusive with `--tmux-format`) |
+| `prism profile list --json` | array of profile objects |
+| `prism profile show [name] --json` | single profile object describing the slot table |
+| `prism archive <session> --all --json` | array of archive-entry objects (instance_id, started_at, archive_path) |
+
 ## Checking in on a running session
 
 Use `prism list-sessions` to see all active agent sessions with their state and current task title:
 
 ```bash
-prism list-sessions
+prism list-sessions          # human-readable table
+prism list-sessions --json   # JSON array (use this when scripting)
 ```
 
-Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically.
+Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically.
 
 ```bash
 prism checkin nixos-config@update-plex
@@ -423,7 +443,8 @@ Use this decision tree when a session appears stuck, produces no output, or fail
 **Step 1 — Session state check:**
 
 ```bash
-prism list-sessions
+prism list-sessions          # human-readable table
+prism list-sessions --json   # parseable when scripting
 ```
 
 Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), the port, and the `last_seen` timestamp. If a session has a DB row but no live tmux session, it may be a zombie (DB row without a live process). Proceed to step 2.

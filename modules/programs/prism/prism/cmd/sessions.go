@@ -7,7 +7,7 @@ package cmd
 //	prism sessions list                  tabular listing of all sessions rows
 //	prism sessions list --repo <name>    filter by repo
 //	prism sessions list --since <date>   filter by started_at
-//	prism sessions list --json           emit one JSON object per line (JSONL)
+//	prism sessions list --json           emit a JSON array of session-incarnation objects (snake_case keys, RFC3339 timestamps)
 
 import (
 	"encoding/json"
@@ -33,7 +33,8 @@ var sessionsListCmd = &cobra.Command{
 	Long: `List all rows in the sessions table as a tabular display.
 
 Use --repo to filter by repo name, --since to filter by start date, and
---json to emit one JSON object per line (JSONL) for scripting.`,
+--json to emit a JSON array of session-incarnation objects with snake_case
+keys and RFC3339 timestamps.`,
 	Args: cobra.NoArgs,
 	RunE: runSessionsList,
 }
@@ -41,27 +42,29 @@ Use --repo to filter by repo name, --since to filter by start date, and
 func init() {
 	sessionsListCmd.Flags().String("repo", "", "Filter by repo name")
 	sessionsListCmd.Flags().String("since", "", "Filter by started_at >= date (ISO 8601 or YYYY-MM-DD)")
-	sessionsListCmd.Flags().Bool("json", false, "Emit one JSON object per line (JSONL)")
+	sessionsListCmd.Flags().Bool("json", false, "Emit a JSON array of session-incarnation objects to stdout (snake_case keys, RFC3339 timestamps)")
 	sessionsCmd.AddCommand(sessionsListCmd)
 	rootCmd.AddCommand(sessionsCmd)
 }
 
-// sessionJSONRow is the JSONL schema for one sessions row.
+// sessionJSONRow is the snake_case JSON schema for a single sessions row.
+// Null is preferred over omitting optional keys so consumers see a stable
+// key set across rows.
 type sessionJSONRow struct {
-	InstanceID       string  `json:"instanceId"`
-	SessionName      string  `json:"sessionName"`
-	AgentRole        *string `json:"agentRole"`
-	RootAgentName    *string `json:"rootAgentName"`
+	InstanceID       string  `json:"instance_id"`
+	SessionName      string  `json:"session_name"`
+	AgentRole        *string `json:"agent_role"`
+	RootAgentName    *string `json:"root_agent_name"`
 	Repo             string  `json:"repo"`
 	Worktree         string  `json:"worktree"`
 	Harness          string  `json:"harness"`
-	HarnessSessionID *string `json:"harnessSessionId,omitempty"`
-	GroupID          *string `json:"groupId,omitempty"`
-	StartedAt        string  `json:"startedAt"` // RFC3339
-	EndedAt          *string `json:"endedAt,omitempty"`
-	EndState         *string `json:"endState,omitempty"`
-	ArchivePath      *string `json:"archivePath,omitempty"`
-	PrismVersion     *string `json:"prismVersion,omitempty"`
+	HarnessSessionID *string `json:"harness_session_id"`
+	GroupID          *string `json:"group_id"`
+	StartedAt        string  `json:"started_at"` // RFC3339
+	EndedAt          *string `json:"ended_at"`
+	EndState         *string `json:"end_state"`
+	ArchivePath      *string `json:"archive_path"`
+	PrismVersion     *string `json:"prism_version"`
 }
 
 func runSessionsList(cmd *cobra.Command, _ []string) error {
@@ -103,6 +106,7 @@ func runSessionsList(cmd *cobra.Command, _ []string) error {
 }
 
 func renderSessionsListJSON(sessions []db.Session) error {
+	rows := make([]sessionJSONRow, 0, len(sessions))
 	for _, s := range sessions {
 		row := sessionJSONRow{
 			InstanceID:       s.InstanceID,
@@ -123,13 +127,13 @@ func renderSessionsListJSON(sessions []db.Session) error {
 			endedStr := s.EndedAt.UTC().Format(time.RFC3339)
 			row.EndedAt = &endedStr
 		}
-		b, err := json.Marshal(row)
-		if err != nil {
-			return fmt.Errorf("sessions list: marshal: %w", err)
-		}
-		fmt.Println(string(b))
+		rows = append(rows, row)
 	}
-	return nil
+	data, err := json.Marshal(rows)
+	if err != nil {
+		return fmt.Errorf("sessions list: marshal: %w", err)
+	}
+	return printJSON(data)
 }
 
 func renderSessionsListTable(sessions []db.Session) error {
