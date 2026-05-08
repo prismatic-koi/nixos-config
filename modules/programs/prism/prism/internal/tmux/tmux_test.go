@@ -105,6 +105,7 @@ func TestCallerSessionStamp_Direct(t *testing.T) {
 // TestClientSession_Direct verifies that clientSession returns the session
 // a real attached client is viewing.
 func TestClientSession_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -123,6 +124,7 @@ func TestClientSession_Direct(t *testing.T) {
 // TestSwitchClient_Direct verifies that switchClient moves a real client from
 // one session to another.
 func TestSwitchClient_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -154,6 +156,7 @@ func TestSwitchClient_Direct(t *testing.T) {
 
 // TestListClients_Direct verifies that listClients returns attached clients.
 func TestListClients_Direct(t *testing.T) {
+	skipIfSandboxPTY(t)
 	t.Parallel()
 	s := newServer(t)
 
@@ -476,6 +479,7 @@ func TestAPI_CallerSessionStamp(t *testing.T) {
 
 // TestAPI_ClientSession verifies tmux.ClientSession against a real client.
 func TestAPI_ClientSession(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newServer(t)
 	withServer(t, s)
 
@@ -493,6 +497,7 @@ func TestAPI_ClientSession(t *testing.T) {
 
 // TestAPI_SwitchClient verifies tmux.SwitchClient moves a real client.
 func TestAPI_SwitchClient(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newServer(t)
 	withServer(t, s)
 
@@ -517,6 +522,7 @@ func TestAPI_SwitchClient(t *testing.T) {
 // TestAPI_SwitchClientLast verifies that SwitchClientLast returns a client to
 // its previously-viewed session (equivalent to switch-client -l).
 func TestAPI_SwitchClientLast(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newServer(t)
 	withServer(t, s)
 
@@ -554,6 +560,7 @@ func TestAPI_SwitchClientLast(t *testing.T) {
 
 // TestAPI_ListClients verifies tmux.ListClients returns attached clients.
 func TestAPI_ListClients(t *testing.T) {
+	skipIfSandboxPTY(t)
 	s := newServer(t)
 	withServer(t, s)
 

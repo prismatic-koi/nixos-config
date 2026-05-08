@@ -142,6 +142,13 @@
       };
 
       packages = forEachSystem (pkgs: {
+        # Default prism build — no Go test execution. Used by
+        # nixosConfigurations / darwinConfigurations and by local
+        # `nh switch` so rebuilds are fast. The Go test suite is owned
+        # by the `go-tests` CI job (see .github/workflows/pr-gate.yml).
+        # The homeless-shelter sandbox signal is preserved by the
+        # `nix-build-prism-checked` CI job, which builds prism with
+        # `runChecks = true` (see pkgs/prism.nix).
         prism = pkgs.callPackage ./pkgs/prism.nix { };
       });
 
