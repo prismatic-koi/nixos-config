@@ -248,19 +248,25 @@ func TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort(t *testing.T) {
 
 	// Observe the listen failure via DB state — Run() does NOT return the
 	// error directly under the post-#1490 contract.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if getState(t, sc.cfg.DB, sc.cfg.SessionName) == string(agent.StateError) {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
-		t.Fatalf("session state = %q after TCP listen failure, want %q within 2s", state, agent.StateError)
+	//
+	// Synchronisation (issue #1515): waitForState polls the DB at 1ms intervals
+	// up to a 10s deadline rather than the previous 20ms / 2s loop. The
+	// previous bound was tight enough to flake under the contended scheduling
+	// of the Nix build sandbox, where the path Run() → instance_id mint →
+	// transport switch → net.Listen → writeStartupError can take noticeably
+	// longer than 2s when the host is under heavy load. The fix is structural
+	// because waitForState observes the actual DB transition rather than
+	// trusting an arbitrary timeout magnitude — the only knob that changed is
+	// the upper bound of the wait, which does not affect production behaviour.
+	if state := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 10*time.Second); state != string(agent.StateError) {
+		t.Fatalf("session state = %q after TCP listen failure, want %q within 10s", state, agent.StateError)
 	}
 
 	// Verify the recorded startup-error message contains the port number.
-	errMsg := getStartupErrorMessage(t, sc.cfg.DB, sc.cfg.SessionName)
+	// waitForStartupErrorMessage polls because writeStartupError commits the
+	// state transition (StateError) and the startup_error event in two separate
+	// DB writes — a read between them returns the new state but no event yet.
+	errMsg := waitForStartupErrorMessage(t, sc.cfg.DB, sc.cfg.SessionName, 5*time.Second)
 	if errMsg == "" {
 		t.Fatal("no startup_error event recorded after TCP listen failure")
 	}

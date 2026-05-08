@@ -356,6 +356,29 @@ func getEvents(t *testing.T, d *db.DB, session string) []db.Event {
 	return events
 }
 
+// waitForStartupErrorMessage polls AllSessionEvents until a startup_error
+// event is observed for session, or until timeout elapses. Returns the
+// "reason" field on success or "" on timeout. This is the deterministic
+// alternative to "check getStartupErrorMessage immediately after asserting
+// state==error": writeStartupError writes the state transition before the
+// startup_error event, so the two are observable at slightly different
+// moments — a same-instant read between the two writes returns "". See
+// issue #1515.
+func waitForStartupErrorMessage(t *testing.T, d *db.DB, session string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		msg := getStartupErrorMessage(t, d, session)
+		if msg != "" {
+			return msg
+		}
+		if time.Now().After(deadline) {
+			return ""
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+}
+
 // getStartupErrorMessage returns the "reason" field from the most-recent
 // startup_error event for session, or "" if none has been written. The
 // startup_error event is emitted by writeStartupError (state.go) when the
