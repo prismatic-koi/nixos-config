@@ -353,7 +353,30 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
+	// ── 6b. ~/Library/Keychains/login.keychain-db read (issue #1487) ──────
+	// The Keychain Services API (Mach IPC via securityd) requires file-read*
+	// access to ~/Library/Keychains/login.keychain-db to service credential
+	// lookups, even when the lookup is routed over Mach IPC to securityd.
+	// Without this, securityd returns "item not found" (exit 44) from inside
+	// the sandbox.
+	//
+	// We use (literal ...) on the specific file rather than (subpath
+	// ~/Library/Keychains) to avoid granting read access to the UUID-keyed
+	// modern keychain databases (keychain-2.db, user.kb, TrustedPeersHelper)
+	// in the same directory. The literal is sufficient — confirmed by direct
+	// sandbox-exec experiments (issue #1487).
+	//
+	// Rule is omitted when the file does not exist (e.g. fresh machine / CI).
+	if home != "" {
+		keychainDB := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+		if _, err := os.Stat(keychainDB); err == nil {
+			sb.WriteString("(allow file-read*\n")
+			sb.WriteString("  (literal " + quoteSBPL(keychainDB) + "))\n")
+			sb.WriteString("\n")
+		}
+	}
+
+	// ── 6c. BareRoot ancestor probe allows ───────────────────────────────
 	// opencode's fs.up() walk probes multiple targets (.opencode, .git) at
 	// every ancestor of the worktree with no stop parameter. Under deny-default
 	// any EPERM (not ENOENT) is fatal. We grant file-test-existence on:

@@ -470,10 +470,18 @@ func TestSandboxExecIntegration_HomeCodeDirectoryDenied(t *testing.T) {
 	}
 }
 
-// TestSandboxExecIntegration_KeychainDenied verifies that the host
-// ~/Library/Keychains/login.keychain-db is NOT readable from inside the
-// sandbox (N4 in F.1 §3.2).
-func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
+// TestSandboxExecIntegration_ModernKeychainDBDenied verifies that the
+// UUID-keyed modern keychain database (~/Library/Keychains/<UUID>/keychain-2.db)
+// is NOT readable from inside the sandbox (N4 in F.1 §3.2, updated for #1487).
+//
+// The #1487 fix grants (literal ~/Library/Keychains/login.keychain-db) rather
+// than (subpath ~/Library/Keychains). This preserves the security property that
+// the UUID-keyed keychain-2.db — which holds all keychain item payloads — is
+// not directly readable from inside the sandbox. Only login.keychain-db (needed
+// by securityd to service Mach IPC lookups) is exposed.
+//
+// Skips when no UUID keychain directory exists on this host.
+func TestSandboxExecIntegration_ModernKeychainDBDenied(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
 	}
@@ -481,21 +489,42 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 	if err != nil {
 		t.Skip("cannot determine home directory")
 	}
-	keychainPath := filepath.Join(realHome, "Library", "Keychains", "login.keychain-db")
-	if _, err := os.Stat(keychainPath); err != nil {
-		t.Skipf("login.keychain-db does not exist — skipping: %v", err)
+
+	// Find the UUID-keyed keychain-2.db under ~/Library/Keychains/<UUID>/.
+	keychainsDir := filepath.Join(realHome, "Library", "Keychains")
+	entries, readErr := os.ReadDir(keychainsDir)
+	if readErr != nil {
+		t.Skipf("~/Library/Keychains not readable: %v", readErr)
+	}
+	var modernKeychainDB string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		candidate := filepath.Join(keychainsDir, e.Name(), "keychain-2.db")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			modernKeychainDB = candidate
+			break
+		}
+	}
+	if modernKeychainDB == "" {
+		t.Skip("no UUID-keyed keychain-2.db found on this host — skipping")
 	}
 
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 	env := baseEnv(stagingHome)
 
-	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", keychainPath)
+	// keychain-2.db must remain inaccessible. The (literal login.keychain-db)
+	// rule added by #1487 does NOT cover the UUID-keyed database. (#1487)
+	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", modernKeychainDB)
 	if code == 0 {
-		t.Errorf("cat login.keychain-db: expected non-zero exit (denied), got exit 0\noutput: %s", out)
+		t.Errorf("cat keychain-2.db: expected non-zero exit (denied), got exit 0\n"+
+			"The (literal login.keychain-db) rule must NOT expose UUID keychain databases (#1487).\n"+
+			"output: %s", out)
 	}
 	if !strings.Contains(out, "Operation not permitted") && !strings.Contains(out, "Permission denied") {
-		t.Errorf("cat login.keychain-db: expected 'Operation not permitted' in output; got: %q", out)
+		t.Errorf("cat keychain-2.db: expected 'Operation not permitted' in output; got: %q", out)
 	}
 }
 
@@ -508,14 +537,16 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 // The Keychain API operates over Mach IPC (securityd/secd), not direct file
 // access. The SBPL profile grants mach-lookup and network*, so the API is
 // reachable from inside the sandbox even when direct file reads of
-// ~/Library/Keychains/ are denied (see TestSandboxExecIntegration_KeychainDenied).
+// ~/Library/Keychains/ are denied (see TestSandboxExecIntegration_ModernKeychainDBDenied).
 //
 // A missing Keychain entry (exit 44 from security, meaning "item not found")
 // is treated as a successful API call — the test skips gracefully when the
 // "Claude Code-credentials" entry is absent so that CI hosts without a Claude
-// login still pass. This is the regression guard ensuring that
-// opencode-claude-auth can call the Keychain API directly from inside the
-// sandbox (issue #1413).
+// login still pass. Note: this test uses $HOME=stagingHome, so the `security`
+// CLI (which uses $HOME to find the keychain search list) always returns exit 44
+// here regardless of the SBPL rule. The authoritative test for the #1487 literal
+// rule is TestSandboxExecProfile_KeychainAPIAccessible in internal/integration/,
+// which passes real HOME to security inside the sandbox. (#1487)
 func TestSandboxExecIntegration_KeychainAPIAccessible(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
@@ -531,16 +562,20 @@ func TestSandboxExecIntegration_KeychainAPIAccessible(t *testing.T) {
 		"/usr/bin/security", "find-generic-password", "-l", "Claude Code-credentials", "-w")
 
 	// exit 0: credentials found — Keychain API accessible and entry present.
-	// exit 44: "item not found" — Keychain API accessible but entry absent.
+	// exit 44: "item not found" — Keychain API reachable but the `security`
+	//   CLI uses $HOME to find the keychain search list; with $HOME=stagingHome
+	//   it always returns 44 regardless of the SBPL rule. Skip gracefully.
 	// Any other exit (e.g. sandbox deny producing "Operation not permitted") is a failure.
 	const securityItemNotFound = 44
 	switch code {
 	case 0:
 		// Credentials retrieved successfully — Keychain API is accessible.
 	case securityItemNotFound:
-		// Entry absent from host Keychain. API is still accessible — skip so
-		// the test does not require a Claude login to pass.
-		t.Skipf("Claude Code-credentials entry absent from host Keychain — Keychain API is accessible inside sandbox (security exit 44); skipping")
+		// Entry absent from host Keychain (or staging HOME mismatch — see comment
+		// above). API is still accessible — skip so the test does not require a
+		// Claude login to pass.
+		t.Skipf("Claude Code-credentials entry absent from host Keychain (or staging HOME used) — "+
+			"Keychain API is accessible inside sandbox (security exit 44); skipping")
 	default:
 		// Unexpected exit. A sandbox deny would produce "Operation not permitted"
 		// in stderr. Treat any other code as a failure.
