@@ -288,10 +288,7 @@ func TestSocketPipe_TurnStartEmitsStateActive(t *testing.T) {
 	// was processed.
 	deadline = time.Now().Add(2 * time.Second)
 	for {
-		idleTimer.mu.Lock()
-		stopped := idleTimer.stopped
-		idleTimer.mu.Unlock()
-		if stopped {
+		if idleTimer.Stopped() {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1583,7 +1580,7 @@ func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
 	if firstTimer == secondTimer {
 		t.Fatal("same timer object — second state_change{finished} did not create a new timer")
 	}
-	if !firstTimer.stopped {
+	if !firstTimer.Stopped() {
 		t.Error("first finished debounce timer was not stopped when second state_change{finished} arrived")
 	}
 
@@ -1629,7 +1626,7 @@ func TestSocketPipe_ErrorState_CancelsTimers(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// The finished debounce timer must be stopped.
-	if !idleTimer.stopped {
+	if !idleTimer.Stopped() {
 		t.Error("finished debounce timer was not stopped by state_change{error}")
 	}
 
@@ -1798,7 +1795,7 @@ func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "waiting"})
 	time.Sleep(50 * time.Millisecond)
 
-	if !idleTimer.stopped {
+	if !idleTimer.Stopped() {
 		t.Error("finished debounce timer was not stopped by state_change{waiting}")
 	}
 
@@ -1840,7 +1837,7 @@ func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "auto_retry_start", "attempt": 1})
 	time.Sleep(50 * time.Millisecond)
 
-	if !idleTimer.stopped {
+	if !idleTimer.Stopped() {
 		t.Error("finished debounce timer was not stopped by auto_retry_start")
 	}
 
@@ -1934,7 +1931,7 @@ func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
 	_ = wait()
 
 	// The idle timer must be stopped.
-	if !idleTimer.stopped {
+	if !idleTimer.Stopped() {
 		t.Error("idle timer was not stopped by session_shutdown")
 	}
 
@@ -2048,7 +2045,7 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Finished debounce timer must be cancelled.
-	if idleTimer != nil && !idleTimer.stopped {
+	if idleTimer != nil && !idleTimer.Stopped() {
 		t.Error("finished debounce timer was not cancelled by turn_start while reviewing")
 	}
 

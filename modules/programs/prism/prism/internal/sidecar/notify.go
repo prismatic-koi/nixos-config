@@ -53,15 +53,15 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 	// Look up the parent worker in the DB.
 	parentStatus, err := s.cfg.DB.CurrentStatus(parentSession)
 	if err != nil {
-		log.Printf("sidecar: notifyParentWorker: DB lookup for parent %q: %v — skipping notification", parentSession, err)
+		s.logger().Printf("sidecar: notifyParentWorker: DB lookup for parent %q: %v — skipping notification", parentSession, err)
 		return
 	}
 	if parentStatus == nil {
-		log.Printf("sidecar: notifyParentWorker: parent session %q not found in DB — skipping notification", parentSession)
+		s.logger().Printf("sidecar: notifyParentWorker: parent session %q not found in DB — skipping notification", parentSession)
 		return
 	}
 	if parentStatus.EndedAt != nil {
-		log.Printf("sidecar: notifyParentWorker: parent session %q has ended — skipping notification", parentSession)
+		s.logger().Printf("sidecar: notifyParentWorker: parent session %q has ended — skipping notification", parentSession)
 		return
 	}
 
@@ -71,21 +71,21 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 	// through the parent session's host-API Unix socket instead (#1364).
 	if parentStatus.Harness != nil {
 		if shape, ok := harness.ShapeOf(*parentStatus.Harness); ok && shape == harness.TransportSocketPipe {
-			log.Printf("sidecar: notifyParentWorker: routing via host-API socket for pi parent=%s", parentSession)
+			s.logger().Printf("sidecar: notifyParentWorker: routing via host-API socket for pi parent=%s", parentSession)
 				// Use "followUp" so the message queues until the parent's current
 				// turn completes, even if the parent is streaming when delivery
 				// arrives. Startup-failure notifications are post-turn signals.
 				if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
-				log.Printf("sidecar: notifyParentWorker: FAILED (pi path) — parent=%s reason=%v", parentSession, err)
+				s.logger().Printf("sidecar: notifyParentWorker: FAILED (pi path) — parent=%s reason=%v", parentSession, err)
 			} else {
-				log.Printf("sidecar: notifyParentWorker: delivered to pi parent=%s via host-API socket", parentSession)
+				s.logger().Printf("sidecar: notifyParentWorker: delivered to pi parent=%s via host-API socket", parentSession)
 			}
 			return
 		}
 	}
 
 	if parentStatus.HarnessPort == nil {
-		log.Printf("sidecar: notifyParentWorker: parent session %q has no harness port — cannot deliver notification", parentSession)
+		s.logger().Printf("sidecar: notifyParentWorker: parent session %q has no harness port — cannot deliver notification", parentSession)
 		return
 	}
 	port := *parentStatus.HarnessPort
@@ -105,11 +105,11 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 		}
 
 		targetSID, validationErr := validateOrRefreshCoordinatorSID(
-			port, storedSID, parentSession, s.cfg.DB, s.cfg.HTTPClient,
+			port, storedSID, parentSession, s.cfg.DB, s.cfg.HTTPClient, s.logger(),
 		)
 		if validationErr != nil {
 			lastErr = fmt.Errorf("attempt %d: SID validation failed: %w", attempt, validationErr)
-			log.Printf("sidecar: notifyParentWorker: %v (parent=%s)", lastErr, parentSession)
+			s.logger().Printf("sidecar: notifyParentWorker: %v (parent=%s)", lastErr, parentSession)
 			if errors.Is(validationErr, errEmptySessionList) {
 				break
 			}
@@ -117,22 +117,22 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 		}
 		storedSID = targetSID
 
-		log.Printf("sidecar: notifyParentWorker: attempt %d/%d POST to parent=%s sid=%s",
+		s.logger().Printf("sidecar: notifyParentWorker: attempt %d/%d POST to parent=%s sid=%s",
 			attempt, maxAttempts, parentSession, targetSID)
 
 		httpErr := deliverNotificationViaHTTP(port, targetSID, notifyText, parentStatus, s.cfg.HTTPClient)
 		if httpErr != nil {
 			lastErr = fmt.Errorf("attempt %d: HTTP delivery failed: %w", attempt, httpErr)
-			log.Printf("sidecar: notifyParentWorker: %v (parent=%s sid=%s)", lastErr, parentSession, targetSID)
+			s.logger().Printf("sidecar: notifyParentWorker: %v (parent=%s sid=%s)", lastErr, parentSession, targetSID)
 			continue
 		}
 
-		log.Printf("sidecar: notifyParentWorker: delivered to parent=%s sid=%s", parentSession, targetSID)
+		s.logger().Printf("sidecar: notifyParentWorker: delivered to parent=%s sid=%s", parentSession, targetSID)
 		return
 	}
 
 	// All retries exhausted — log and exit cleanly (notification failure is not fatal).
-	log.Printf("sidecar: notifyParentWorker: FAILED after %d attempts — parent=%s reason=%v",
+	s.logger().Printf("sidecar: notifyParentWorker: FAILED after %d attempts — parent=%s reason=%v",
 		maxAttempts, parentSession, lastErr)
 }
 
@@ -164,7 +164,7 @@ func (s *Sidecar) notifyCoordinator() {
 	// Self-notification guard: if this session IS the coordinator, skip.
 	// DB-backed: check root_agent_name == "coordinator" for self.
 	// Fallback to name heuristic for pre-migration rows.
-	if isCoordinatorSession(s.cfg.SessionName, s.cfg.DB) {
+	if isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 		return
 	}
 
@@ -172,15 +172,15 @@ func (s *Sidecar) notifyCoordinator() {
 	// prism review invocation. Their finish events are discovered by the
 	// worker's pollAgents DB poll and must not be forwarded to the coordinator
 	// as noise notifications.
-	if isReviewAgentSession(s.cfg.SessionName, s.cfg.DB) {
-		log.Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
+	if isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+		s.logger().Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
 		return
 	}
 
 	// DB-backed coordinator lookup: find the active coordinator for this repo.
 	coordStatus, err := s.cfg.DB.CoordinatorForRepo(s.cfg.Repo)
 	if err != nil {
-		log.Printf("sidecar: notifyCoordinator: DB lookup coordinator for repo %q: %v — falling back to name-based lookup", s.cfg.Repo, err)
+		s.logger().Printf("sidecar: notifyCoordinator: DB lookup coordinator for repo %q: %v — falling back to name-based lookup", s.cfg.Repo, err)
 	}
 	if coordStatus == nil {
 		// No coordinator with root_agent_name='coordinator' found — fall back to
@@ -189,14 +189,14 @@ func (s *Sidecar) notifyCoordinator() {
 		var fallbackStatus *db.Status
 		fallbackStatus, err = s.cfg.DB.CurrentStatus(fallbackName)
 		if err != nil {
-			log.Printf("sidecar: notifyCoordinator: fallback look up coordinator: %v", err)
+			s.logger().Printf("sidecar: notifyCoordinator: fallback look up coordinator: %v", err)
 			return
 		}
 		if fallbackStatus != nil {
 			// Name-based fallback succeeded: a pre-migration coordinator row was
 			// found via the @main name convention. Log deprecation only here,
 			// not when no coordinator is running at all (which is a normal state).
-			log.Printf("[deprecation] sidecar: notifyCoordinator: no DB-backed coordinator found for %q — falling back to name convention %q (pre-migration row)", s.cfg.Repo, fallbackName)
+			s.logger().Printf("[deprecation] sidecar: notifyCoordinator: no DB-backed coordinator found for %q — falling back to name convention %q (pre-migration row)", s.cfg.Repo, fallbackName)
 		}
 		coordStatus = fallbackStatus
 	}
@@ -237,29 +237,29 @@ func (s *Sidecar) notifyCoordinator() {
 	// through the coordinator's host-API Unix socket instead (#1364).
 	if coordStatus.Harness != nil {
 		if shape, ok := harness.ShapeOf(*coordStatus.Harness); ok && shape == harness.TransportSocketPipe {
-			log.Printf("sidecar: notifyCoordinator: routing via host-API socket for pi coordinator=%s", coordinatorName)
+			s.logger().Printf("sidecar: notifyCoordinator: routing via host-API socket for pi coordinator=%s", coordinatorName)
 				// Use "followUp" so the coordinator receives the notification after
 				// its current turn completes, even when it is mid-stream at delivery
 				// time. Finish notifications are post-turn signals; "followUp" is
 				// the semantically correct delivery mode.
 				if err := promptdelivery.DeliverToSession(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
-				log.Printf("sidecar: notifyCoordinator: FAILED (pi path) — coordinator=%s reason=%v", coordinatorName, err)
+				s.logger().Printf("sidecar: notifyCoordinator: FAILED (pi path) — coordinator=%s reason=%v", coordinatorName, err)
 				if writeErr := s.cfg.DB.WriteBusMessageFailed(msg); writeErr != nil {
-					log.Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)
+					s.logger().Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)
 				}
 				return
 			}
 			if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
-				log.Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
+				s.logger().Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
 			}
-			log.Printf("sidecar: notifyCoordinator: delivered to pi coordinator=%s via host-API socket", coordinatorName)
+			s.logger().Printf("sidecar: notifyCoordinator: delivered to pi coordinator=%s via host-API socket", coordinatorName)
 			return
 		}
 	}
 
 	// Require port for HTTP delivery (opencode path).
 	if coordStatus.HarnessPort == nil {
-		log.Printf("sidecar: notifyCoordinator: coordinator has no harness port — cannot deliver notification")
+		s.logger().Printf("sidecar: notifyCoordinator: coordinator has no harness port — cannot deliver notification")
 		return
 	}
 	port := *coordStatus.HarnessPort
@@ -287,11 +287,11 @@ func (s *Sidecar) notifyCoordinator() {
 		// the most recently active session and update the DB so future
 		// deliveries use the fresh SID.
 		targetSID, validationErr := validateOrRefreshCoordinatorSID(
-			port, storedSID, coordinatorName, s.cfg.DB, s.cfg.HTTPClient,
+			port, storedSID, coordinatorName, s.cfg.DB, s.cfg.HTTPClient, s.logger(),
 		)
 		if validationErr != nil {
 			lastErr = fmt.Errorf("attempt %d: SID validation failed: %w", attempt, validationErr)
-			log.Printf("sidecar: notifyCoordinator: %v (coordinator=%s)", lastErr, coordinatorName)
+			s.logger().Printf("sidecar: notifyCoordinator: %v (coordinator=%s)", lastErr, coordinatorName)
 			// An empty session list is not a transient condition — retrying
 			// will not help. Break immediately to avoid unnecessary backoff.
 			if errors.Is(validationErr, errEmptySessionList) {
@@ -302,29 +302,29 @@ func (s *Sidecar) notifyCoordinator() {
 		// Keep storedSID current for next iteration if it was refreshed.
 		storedSID = targetSID
 
-		log.Printf("sidecar: notifyCoordinator: attempt %d/%d POST to coordinator=%s sid=%s",
+		s.logger().Printf("sidecar: notifyCoordinator: attempt %d/%d POST to coordinator=%s sid=%s",
 			attempt, maxAttempts, coordinatorName, targetSID)
 
 		httpErr := deliverNotificationViaHTTP(port, targetSID, notifyText, coordStatus, s.cfg.HTTPClient)
 		if httpErr != nil {
 			lastErr = fmt.Errorf("attempt %d: HTTP delivery failed: %w", attempt, httpErr)
-			log.Printf("sidecar: notifyCoordinator: %v (coordinator=%s sid=%s)", lastErr, coordinatorName, targetSID)
+			s.logger().Printf("sidecar: notifyCoordinator: %v (coordinator=%s sid=%s)", lastErr, coordinatorName, targetSID)
 			continue
 		}
 
 		// Confirmed delivery: SID validated + POST returned 200.
 		if err := s.cfg.DB.WriteBusMessageDelivered(msg); err != nil {
-			log.Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
+			s.logger().Printf("sidecar: notifyCoordinator: write delivered audit: %v", err)
 		}
-		log.Printf("sidecar: notifyCoordinator: delivered to coordinator=%s sid=%s", coordinatorName, targetSID)
+		s.logger().Printf("sidecar: notifyCoordinator: delivered to coordinator=%s sid=%s", coordinatorName, targetSID)
 		return
 	}
 
 	// All retries exhausted — write failed_at and log structured error.
 	if err := s.cfg.DB.WriteBusMessageFailed(msg); err != nil {
-		log.Printf("sidecar: notifyCoordinator: write failed audit: %v", err)
+		s.logger().Printf("sidecar: notifyCoordinator: write failed audit: %v", err)
 	}
-	log.Printf("sidecar: notifyCoordinator: FAILED after %d attempts — coordinator=%s sid=%s reason=%v",
+	s.logger().Printf("sidecar: notifyCoordinator: FAILED after %d attempts — coordinator=%s sid=%s reason=%v",
 		maxAttempts, coordinatorName, storedSID, lastErr)
 }
 
@@ -351,7 +351,7 @@ type opencodeSessionEntry struct {
 //   - If GET /session fails, an error is returned.
 //   - If GET /session returns an empty list, errEmptySessionList is returned
 //     (sentinel — caller should not retry).
-func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName string, database *db.DB, httpClient *http.Client) (string, error) {
+func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName string, database *db.DB, httpClient *http.Client, logger *log.Logger) (string, error) {
 	url := fmt.Sprintf("http://localhost:%d/session", port)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -397,11 +397,11 @@ func validateOrRefreshCoordinatorSID(port int, storedSID string, coordinatorName
 		}
 	}
 
-	log.Printf("sidecar: notifyCoordinator: stored SID %q not found in coordinator session list — using most recent SID %q", storedSID, bestSID)
+	logger.Printf("sidecar: notifyCoordinator: stored SID %q not found in coordinator session list — using most recent SID %q", storedSID, bestSID)
 
 	// Persist the refreshed SID so future deliveries use it.
 	if err := database.UpdateHarnessSessionID(coordinatorName, bestSID); err != nil {
-		log.Printf("sidecar: notifyCoordinator: UpdateHarnessSessionID failed: %v", err)
+		logger.Printf("sidecar: notifyCoordinator: UpdateHarnessSessionID failed: %v", err)
 	}
 
 	return bestSID, nil

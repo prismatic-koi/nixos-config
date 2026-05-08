@@ -2,7 +2,6 @@ package sidecar
 
 import (
 	"encoding/json"
-	"log"
 
 	"github.com/google/uuid"
 
@@ -14,7 +13,7 @@ import (
 
 func (s *Sidecar) cancelIdleTimer() {
 	if s.idleTimer != nil {
-		log.Printf("sidecar: idle debounce cancelled")
+		s.logger().Printf("sidecar: idle debounce cancelled")
 		s.idleTimer.Stop()
 		s.idleTimer = nil
 	}
@@ -70,7 +69,7 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 			&effectiveRole,
 			agentModel,
 		); err != nil {
-			log.Printf("sidecar: UpsertStatusWithRootAgent failed: %v", err)
+			s.logger().Printf("sidecar: UpsertStatusWithRootAgent failed: %v", err)
 		}
 		return
 	}
@@ -82,7 +81,7 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 		title,
 		opencodeSID,
 	); err != nil {
-		log.Printf("sidecar: UpsertStatus failed: %v", err)
+		s.logger().Printf("sidecar: UpsertStatus failed: %v", err)
 	}
 }
 
@@ -92,10 +91,10 @@ func (s *Sidecar) writeStateChange(state agent.AgentState) {
 
 func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, opencodeSID *string) {
 	if state == s.lastState {
-		log.Printf("sidecar: state dedup: %s (no change)", state)
+		s.logger().Printf("sidecar: state dedup: %s (no change)", state)
 		return
 	}
-	log.Printf("sidecar: state: %s -> %s", s.lastState, state)
+	s.logger().Printf("sidecar: state: %s -> %s", s.lastState, state)
 	s.writeEvent("state_change", map[string]string{"state": string(state)}, opencodeSID)
 	s.lastState = state
 	// Push to the persistent dashboard socket (fire-and-forget, non-blocking).
@@ -110,7 +109,7 @@ func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, opencodeSID *s
 func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("sidecar: marshal event payload: %v", err)
+		s.logger().Printf("sidecar: marshal event payload: %v", err)
 		return
 	}
 
@@ -137,7 +136,7 @@ func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string)
 		CreatedAt:        s.cfg.Clock.Now(),
 	}
 	if err := s.cfg.DB.WriteEvent(e); err != nil {
-		log.Printf("sidecar: WriteEvent(%s) failed: %v", eventType, err)
+		s.logger().Printf("sidecar: WriteEvent(%s) failed: %v", eventType, err)
 	}
 }
 
@@ -156,7 +155,7 @@ func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string)
 //   - The parent worker is notified when a review-agent container fails to start.
 func (s *Sidecar) writeStartupError(startupErr error) {
 	s.mu.Lock()
-	log.Printf("sidecar: startup failure — writing error state: %v", startupErr)
+	s.logger().Printf("sidecar: startup failure — writing error state: %v", startupErr)
 	s.upsertState(agent.StateError, nil, nil)
 	s.writeStateChange(agent.StateError)
 	// Write a startup_error event recording the failure reason so the review

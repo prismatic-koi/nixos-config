@@ -125,7 +125,7 @@ func isCoordinator(sessionName string) bool {
 // (e.g. "worker" written during an SSE inference race); a [debug] log is emitted
 // on mismatch. Falls back to the name-suffix heuristic for pre-migration rows
 // (NULL root_agent_name) and when d is nil.
-func isCoordinatorSession(sessionName string, d *db.DB) bool {
+func isCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool {
 	if d != nil {
 		name, rowExists, err := d.RootAgentName(sessionName)
 		if err == nil && rowExists {
@@ -133,15 +133,15 @@ func isCoordinatorSession(sessionName string, d *db.DB) bool {
 				nameBased := strings.HasSuffix(sessionName, "@main")
 				dbBased := name == "coordinator"
 				if dbBased != nameBased {
-					log.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v — heuristic wins",
+					logger.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v — heuristic wins",
 						sessionName, dbBased, name, nameBased)
 				}
 				return dbBased || nameBased
 			}
 			// Row exists but root_agent_name is NULL — pre-migration row.
-			log.Printf("[deprecation] sidecar: isCoordinatorSession(%q): root_agent_name is NULL — pre-migration row, using name heuristic", sessionName)
+			logger.Printf("[deprecation] sidecar: isCoordinatorSession(%q): root_agent_name is NULL — pre-migration row, using name heuristic", sessionName)
 		} else if err != nil {
-			log.Printf("sidecar: isCoordinatorSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
+			logger.Printf("sidecar: isCoordinatorSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
 		}
 		// rowExists=false means no row — no log needed, just use heuristic.
 	}
@@ -170,18 +170,18 @@ func isHostAPITerminalState(state agent.AgentState) bool {
 // DB-backed check: a session is a review agent if it belongs to a session group
 // (non-NULL group_id). The name-match heuristic is used as a fallback when the
 // DB is unavailable or the row has no group_id (pre-migration rows).
-func isReviewAgentSession(sessionName string, d *db.DB) bool {
+func isReviewAgentSession(sessionName string, d *db.DB, logger *log.Logger) bool {
 	nameBased := strings.Contains(sessionName, "~review")
 	if d != nil {
 		isMember, err := d.IsGroupMember(sessionName)
 		if err != nil {
-			log.Printf("sidecar: isReviewAgentSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
+			logger.Printf("sidecar: isReviewAgentSession: DB error for %q: %v — falling back to name heuristic", sessionName, err)
 			return nameBased
 		}
 		if isMember {
 			// DB-backed: confirmed group member.
 			if !nameBased {
-				log.Printf("[debug] sidecar: isReviewAgentSession(%q): DB says group member, name heuristic says false",
+				logger.Printf("[debug] sidecar: isReviewAgentSession(%q): DB says group member, name heuristic says false",
 					sessionName)
 			}
 			return true
@@ -190,7 +190,7 @@ func isReviewAgentSession(sessionName string, d *db.DB) bool {
 		// agent, this is likely a pre-migration row (group_id not yet set).
 		// Fall back to the name heuristic.
 		if nameBased {
-			log.Printf("[deprecation] sidecar: isReviewAgentSession(%q): group_id not set but name heuristic matches — pre-migration row, using name heuristic", sessionName)
+			logger.Printf("[deprecation] sidecar: isReviewAgentSession(%q): group_id not set but name heuristic matches — pre-migration row, using name heuristic", sessionName)
 			return true
 		}
 		return false

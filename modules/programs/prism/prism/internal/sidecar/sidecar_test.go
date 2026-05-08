@@ -40,6 +40,16 @@ func (t *testTimer) Stop() bool {
 	return was
 }
 
+// Stopped reports whether Stop or Fire has run on this timer. Safe for
+// concurrent use — mirrors the lock acquisition in Stop/Fire so that test
+// assertions on the stopped state do not race with the sidecar goroutine
+// that may call cancelIdleTimer (and thus Stop) concurrently. See #1483.
+func (t *testTimer) Stopped() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopped
+}
+
 func (t *testTimer) Fire() {
 	t.mu.Lock()
 	if t.stopped {
@@ -126,12 +136,29 @@ func (c *testClock) Advance(d time.Duration) {
 
 func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "test.db")
-	d, err := db.Open(dbPath)
+	// Use os.MkdirTemp rather than t.TempDir() so that we control the removal
+	// order. Background goroutines (notifyCoordinator, idle-debounce timers)
+	// may write to the DB after the test function returns. If those writes
+	// create new WAL frames after d.Close() runs, a TempDir-managed directory
+	// removal would fail with "directory not empty". By managing the directory
+	// ourselves we can close the DB first and then remove — and accept any
+	// removal error as non-fatal rather than failing the test.
+	// Use a fixed prefix rather than t.Name(): subtest names contain '/' which
+	// os.MkdirTemp rejects as an invalid pattern.
+	dir, err := os.MkdirTemp("", "sidecar-test-db-")
 	if err != nil {
-		t.Fatalf("open test db: %v", err)
+		t.Fatalf("openTestDB MkdirTemp: %v", err)
 	}
-	t.Cleanup(func() { d.Close() })
+	dbPath := filepath.Join(dir, "test.db")
+	d, err2 := db.Open(dbPath)
+	if err2 != nil {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("open test db: %v", err2)
+	}
+	t.Cleanup(func() {
+		d.Close()
+		_ = os.RemoveAll(dir) // best-effort; ignore error if WAL files linger
+	})
 	return d
 }
 
@@ -2611,7 +2638,7 @@ func TestIsReviewAgentSession(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Pass nil DB to exercise the name-heuristic fallback path.
-			got := isReviewAgentSession(tc.sessionName, nil)
+			got := isReviewAgentSession(tc.sessionName, nil, log.Default())
 			if got != tc.want {
 				t.Errorf("isReviewAgentSession(%q) = %v, want %v", tc.sessionName, got, tc.want)
 			}
@@ -2657,17 +2684,17 @@ func TestIsReviewAgentSession_DBBackedPath(t *testing.T) {
 	}
 
 	// Conventional reviewer: DB group membership takes precedence over name check.
-	if !isReviewAgentSession(reviewSession, d) {
+	if !isReviewAgentSession(reviewSession, d, log.Default()) {
 		t.Error("isReviewAgentSession(conventional, DB group set): got false, want true")
 	}
 
 	// Unconventional reviewer: DB identifies it without relying on the name heuristic.
-	if !isReviewAgentSession(unconventionalReviewer, d) {
+	if !isReviewAgentSession(unconventionalReviewer, d, log.Default()) {
 		t.Errorf("isReviewAgentSession(%q, DB group set, no ~review in name): got false, want true — DB path must identify group members regardless of name", unconventionalReviewer)
 	}
 
 	// Parent session itself: NOT a group member.
-	if isReviewAgentSession(parentSession, d) {
+	if isReviewAgentSession(parentSession, d, log.Default()) {
 		t.Error("isReviewAgentSession(parent session): got true, want false — parent is not a group member")
 	}
 
@@ -2678,7 +2705,7 @@ func TestIsReviewAgentSession_DBBackedPath(t *testing.T) {
 		t.Fatalf("UpsertStatus pre-migration: %v", err)
 	}
 	// group_id is NOT set — simulates pre-migration row.
-	if !isReviewAgentSession(preMigrationReviewer, d) {
+	if !isReviewAgentSession(preMigrationReviewer, d, log.Default()) {
 		t.Errorf("isReviewAgentSession(pre-migration ~review name, no group_id): got false, want true — name heuristic fallback must fire")
 	}
 }
@@ -2692,7 +2719,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
-	if !isCoordinatorSession("repo@main", d) {
+	if !isCoordinatorSession("repo@main", d, log.Default()) {
 		t.Error("isCoordinatorSession(post-migration coordinator @main): got false, want true")
 	}
 
@@ -2702,7 +2729,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	if err := d.UpsertStatusSeedRootAgentName("other-repo@custom-branch", "other-repo", "/code/custom", "active", nil, nil, "coordinator", ""); err != nil {
 		t.Fatalf("seed coordinator on custom branch: %v", err)
 	}
-	if !isCoordinatorSession("other-repo@custom-branch", d) {
+	if !isCoordinatorSession("other-repo@custom-branch", d, log.Default()) {
 		t.Error("isCoordinatorSession(post-migration coordinator on non-main branch): got false, want true — this is the core correctness assertion of the DB-backed migration")
 	}
 
@@ -2710,7 +2737,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 	if err := d.UpsertStatusSeedRootAgentName("repo@feature", "repo", "/code/feature", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
-	if isCoordinatorSession("repo@feature", d) {
+	if isCoordinatorSession("repo@feature", d, log.Default()) {
 		t.Error("isCoordinatorSession(post-migration worker): got true, want false")
 	}
 
@@ -2719,7 +2746,7 @@ func TestIsCoordinatorSession(t *testing.T) {
 		t.Fatalf("seed pre-migration coordinator: %v", err)
 	}
 	// repo@main-old does NOT end with "@main", so heuristic returns false.
-	if isCoordinatorSession("repo@main-old", d) {
+	if isCoordinatorSession("repo@main-old", d, log.Default()) {
 		t.Error("isCoordinatorSession(pre-migration non-main): got true, want false")
 	}
 	// Create a session that ends with @main but has NULL root_agent_name.
@@ -2727,15 +2754,15 @@ func TestIsCoordinatorSession(t *testing.T) {
 		t.Fatalf("seed other@main: %v", err)
 	}
 	// Pre-migration row with @main suffix: heuristic returns true.
-	if !isCoordinatorSession("other@main", d) {
+	if !isCoordinatorSession("other@main", d, log.Default()) {
 		t.Error("isCoordinatorSession(pre-migration @main): got false, want true (name heuristic)")
 	}
 
 	// No DB row: falls back to name heuristic.
-	if !isCoordinatorSession("newrepo@main", nil) {
+	if !isCoordinatorSession("newrepo@main", nil, log.Default()) {
 		t.Error("isCoordinatorSession(nil DB, @main): got false, want true")
 	}
-	if isCoordinatorSession("newrepo@feature", nil) {
+	if isCoordinatorSession("newrepo@feature", nil, log.Default()) {
 		t.Error("isCoordinatorSession(nil DB, non-main): got true, want false")
 	}
 }
@@ -2799,7 +2826,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainWins(t *testing.T) {
 		t.Fatalf("seed stale worker: %v", err)
 	}
 
-	if !isCoordinatorSession(sess, d) {
+	if !isCoordinatorSession(sess, d, log.Default()) {
 		t.Errorf("isCoordinatorSession(%q) = false, want true (@main heuristic must win over stale root_agent_name)", sess)
 	}
 
@@ -2808,7 +2835,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainWins(t *testing.T) {
 	if err := d.UpsertStatusSeedRootAgentName(workerSess, "myrepo", "/code/feature", "active", nil, nil, "worker", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
-	if isCoordinatorSession(workerSess, d) {
+	if isCoordinatorSession(workerSess, d, log.Default()) {
 		t.Errorf("isCoordinatorSession(%q) = true, want false (non-@main worker must not be promoted)", workerSess)
 	}
 }
@@ -6668,7 +6695,7 @@ func TestValidateOrRefreshCoordinatorSID_SIDPresent(t *testing.T) {
 
 	srvPort := parseSrvPort(t, srv.URL)
 
-	got, err := validateOrRefreshCoordinatorSID(srvPort, storedSID, "test-repo@main", d, srv.Client())
+	got, err := validateOrRefreshCoordinatorSID(srvPort, storedSID, "test-repo@main", d, srv.Client(), log.Default())
 	if err != nil {
 		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
 	}
@@ -6702,7 +6729,7 @@ func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
 	srvPort := parseSrvPort(t, srv.URL)
 
 	staleSID := "stale-sid"
-	got, err := validateOrRefreshCoordinatorSID(srvPort, staleSID, coordName, d, srv.Client())
+	got, err := validateOrRefreshCoordinatorSID(srvPort, staleSID, coordName, d, srv.Client(), log.Default())
 	if err != nil {
 		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
 	}
@@ -6725,7 +6752,7 @@ func TestValidateOrRefreshCoordinatorSID_EmptyList(t *testing.T) {
 	defer srv.Close()
 	srvPort := parseSrvPort(t, srv.URL)
 
-	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client())
+	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client(), log.Default())
 	if err == nil {
 		t.Error("expected error for empty session list, got nil")
 	}
@@ -6744,7 +6771,7 @@ func TestValidateOrRefreshCoordinatorSID_GetFails(t *testing.T) {
 	defer srv.Close()
 	srvPort := parseSrvPort(t, srv.URL)
 
-	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client())
+	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client(), log.Default())
 	if err == nil {
 		t.Error("expected error when GET /session returns 500, got nil")
 	}
@@ -7913,13 +7940,18 @@ func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
 
 // ── Gap 3: finish-cause annotation ──────────────────────────────────────────
 
-// captureLog redirects the standard logger to a buffer for the duration of the
-// test and returns a function that reads everything logged so far.
-func captureLog(t *testing.T) func() string {
-	t.Helper()
+// captureLog installs a per-sidecar logger backed by an isolated buffer,
+// replacing the sidecar's current logger. It returns a function that reads
+// everything logged so far through that logger.
+//
+// captureLog must be called after the sidecar is constructed (so the sidecar
+// exists) but before any events are dispatched (so no log lines are missed).
+// Because each sidecar owns its logger, parallel test runs can never
+// contaminate each other's buffers, and background goroutines spawned by the
+// sidecar write to the same isolated buffer for the lifetime of that sidecar.
+func captureLog(sc *Sidecar) func() string {
 	var buf strings.Builder
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	sc.cfg.Logger = log.New(&buf, "", 0)
 	return func() string { return buf.String() }
 }
 
@@ -7927,7 +7959,7 @@ func captureLog(t *testing.T) func() string {
 // the session.idle debounce emits cause=idle_debounce.
 func TestTransitionCause_IdleDebounce(t *testing.T) {
 	sc, clk := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
@@ -7952,7 +7984,7 @@ func TestTransitionCause_IdleDebounce(t *testing.T) {
 func TestTransitionCause_RootAgentIdleDebounce(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 	sc.rootAgent = "worker"
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -7991,7 +8023,7 @@ func TestTransitionCause_RootAgentIdleDebounce(t *testing.T) {
 // cause=error_finish.
 func TestTransitionCause_ErrorFinish(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -8016,7 +8048,7 @@ func TestTransitionCause_ErrorFinish(t *testing.T) {
 // emits cause=interrupted_by_denial.
 func TestTransitionCause_InterruptedByDenial(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -8041,7 +8073,7 @@ func TestTransitionCause_InterruptedByDenial(t *testing.T) {
 // emits cause=recovery_timer.
 func TestTransitionCause_RecoveryTimer(t *testing.T) {
 	sc, clk := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	// Pre-set to active so handleServerConnected starts the recovery timer.
 	sc.lastState = agent.StateActive
@@ -8070,7 +8102,7 @@ func TestTransitionCause_RecoveryTimer(t *testing.T) {
 // status=error writes a tool_error event to the DB and logs the failure.
 func TestToolCallFailed_WritesToolErrorEvent(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 	sc.opencodeSID = "sid-abc"
@@ -8170,7 +8202,7 @@ func TestToolCallFailed_ErrTruncated(t *testing.T) {
 // logged exactly once, not on every occurrence.
 func TestUnknownEventType_LoggedOnce(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -8197,7 +8229,7 @@ func TestUnknownEventType_LoggedOnce(t *testing.T) {
 // type is logged once.
 func TestUnknownEventType_MultipleTypes(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -8220,7 +8252,7 @@ func TestUnknownEventType_MultipleTypes(t *testing.T) {
 // at seenUnknownCap and a "cap reached" log line fires once.
 func TestUnknownEventType_CapReached(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
@@ -8253,7 +8285,7 @@ func TestUnknownEventType_CapReached(t *testing.T) {
 // sending more unique unknown types does not emit additional "cap reached" lines.
 func TestUnknownEventType_CapReachedOnce(t *testing.T) {
 	sc, _ := newTestSidecar(t)
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 
 	// Fill to cap.
 	for i := range seenUnknownCap + 20 {
@@ -9717,7 +9749,7 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 	// Set spawnTime so duration math produces a real value.
 	sc.spawnTime = time.Now().Add(-100 * time.Millisecond)
 
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	out := getLogs()
 
@@ -9752,7 +9784,7 @@ func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
 	sc := New(cfg)
 	sc.spawnTime = time.Now().Add(-50 * time.Millisecond)
 
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	out := getLogs()
 
@@ -9780,7 +9812,7 @@ func TestBwrapTimingMarkers_NoPromptDelivered(t *testing.T) {
 	sc := New(cfg)
 	sc.spawnTime = time.Now().Add(-50 * time.Millisecond)
 
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	out := getLogs()
 
@@ -9807,7 +9839,7 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 	sc := New(cfg)
 	sc.spawnTime = time.Now().Add(-100 * time.Millisecond)
 
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 	// First event: emits markers.
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	first := getLogs()
@@ -9843,7 +9875,7 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	getLogs := captureLog(t)
+	getLogs := captureLog(sc)
 	done := make(chan error, 1)
 	go func() { done <- sc.Run(ctx) }()
 	select {
