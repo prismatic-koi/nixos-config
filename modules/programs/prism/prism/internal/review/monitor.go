@@ -147,6 +147,29 @@ func MonitorFunc(opts MonitorOpts) error {
 	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, 0)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
 
+	// LOOP-LIMIT footer (#1512). Append the footer to the prompt body when
+	//   (a) the cycle has not converged (¬allPassed),
+	//   (b) THIS cycle is itself a verdict-producing cycle (otherwise the
+	//       "infrastructure failure" branch in buildDeliveryMessage already
+	//       tells the worker to re-run — it is not yet at the limit), AND
+	//   (c) the total count of verdict-producing cycles for this parent
+	//       (including this one) is ≥ REVIEW_CYCLE_THRESHOLD.
+	//
+	// The footer is naturally rate-limited — it appears once per actual
+	// completed verdict-producing cycle, embedded in the prompt the worker is
+	// already going to act on. This dissolves the per-turn-spam and the
+	// bash-substring false-match defects at the source (#1512).
+	if !allPassed {
+		if currentCycleProducedVerdicts(groupData) {
+			prior, ccErr := CompletedReviewCyclesForParent(d, opts.WorkerSession, opts.GroupID)
+			if ccErr != nil {
+				fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: cycle count failed: %v — footer suppressed\n", ccErr)
+			} else if prior+1 >= REVIEW_CYCLE_THRESHOLD {
+				deliveryText += buildLoopLimitFooter(prior+1, opts.PRNumber)
+			}
+		}
+	}
+
 	// Before delivery, clear the worker's `reviewing` state by writing `active`.
 	// Background: RunAsync writes `reviewing` to the DB so that incidental busy
 	// turns + idle debounces in the worker session do not produce a premature
@@ -530,6 +553,139 @@ func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) 
 		}
 	}
 	return "", nil
+}
+
+// currentCycleProducedVerdicts reports whether the current group's
+// GroupResults contain at least one finished member with a non-empty
+// LastMessage and no startup_error — the same condition
+// CompletedReviewCyclesForParent applies to historical groups. Used by the
+// monitor to decide whether the in-flight cycle counts toward the LOOP-LIMIT
+// threshold.
+func currentCycleProducedVerdicts(groupData map[string]db.GroupMemberResult) bool {
+	for _, mr := range groupData {
+		if mr.State == "finished" && mr.LastMessage != "" && mr.StartupError == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// REVIEW_CYCLE_THRESHOLD is the number of completed verdict-producing review
+// cycles after which the review-complete prompt gets a LOOP-LIMIT footer
+// appended. The threshold itself is out of scope for #1512; this constant is
+// the single source of truth for the firing condition.
+const REVIEW_CYCLE_THRESHOLD = 3
+
+// loopLimitFooterTemplate is the LOOP-LIMIT footer appended to the
+// review-complete prompt body when a review group completes the Nth
+// non-converged verdict-producing cycle (N ≥ REVIEW_CYCLE_THRESHOLD) for the
+// same PR. The template is exported for testing.
+//
+// Format args (in order):
+//   1. cycle count (int)
+//   2. PR label (string, e.g. "PR #42")
+const loopLimitFooterTemplate = "\n---\n" +
+	"⚠️ **REVIEW LOOP LIMIT.** You have run %d review cycles for %s without all agents passing. " +
+	"Stop and escalate to the coordinator. Do NOT run another review cycle. " +
+	"Summarise: (1) what was originally requested, (2) what each cycle found, " +
+	"and (3) why the fixes are not converging.\n"
+
+// buildLoopLimitFooter renders the LOOP-LIMIT footer for the given cycle
+// count and PR number.
+func buildLoopLimitFooter(cycles int, prNumber string) string {
+	prLabel := "this PR"
+	if prNumber != "" {
+		prLabel = fmt.Sprintf("PR #%s", prNumber)
+	}
+	return fmt.Sprintf(loopLimitFooterTemplate, cycles, prLabel)
+}
+
+// CompletedReviewCyclesForParent returns the count of completed
+// verdict-producing review cycles for parentSession, optionally excluding the
+// group given by excludeGroupID. A cycle is "completed and verdict-producing"
+// when:
+//
+//   1. Every member of the group is in a terminal state (so the group is no
+//      longer running), AND
+//   2. At least one member finished with a non-empty assistant message AND no
+//      startup_error event — i.e. the group produced real per-agent verdicts.
+//
+// This is the single source of truth for cycle counting in the LOOP-LIMIT
+// firing logic. Pure-infrastructure failures (every member never bound its
+// port) are excluded by condition 2 — mirroring the documented contract in
+// `modules/programs/prism/opencode/skills/prism/SKILL.md`:
+//
+//   "Count re-run cycles from the first round that had a full set of agent
+//    results; do not count infrastructure-failure rounds toward your 3-cycle
+//    limit."
+//
+// Pass excludeGroupID="" to count every group; pass the current group's id
+// when computing "cycles before this one" so that a caller can ask
+// "is the current cycle the 3rd?".
+func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID string) (int, error) {
+	members, err := d.GroupMembersForParent(parentSession)
+	if err != nil {
+		return 0, fmt.Errorf("completed review cycles: GroupMembersForParent: %w", err)
+	}
+	if len(members) == 0 {
+		return 0, nil
+	}
+
+	// Bucket members by group_id.
+	byGroup := make(map[string][]db.Status)
+	for _, m := range members {
+		if m.GroupID == nil {
+			continue
+		}
+		gid := *m.GroupID
+		if gid == excludeGroupID {
+			continue
+		}
+		byGroup[gid] = append(byGroup[gid], m)
+	}
+
+	count := 0
+	for gid, gMembers := range byGroup {
+		// Condition 1: every member must be terminal.
+		allTerminal := true
+		for _, m := range gMembers {
+			if !isTerminalState(m.State) && m.EndedAt == nil {
+				allTerminal = false
+				break
+			}
+		}
+		if !allTerminal {
+			continue
+		}
+
+		// Condition 2: at least one member produced a verdict-shaped result.
+		// We use GroupResults to read the last assistant message and any
+		// startup_error — a member with non-empty LastMessage AND empty
+		// StartupError (and state == "finished") is treated as "produced a
+		// verdict". Even if the verdict body lacks an explicit PASS/FAIL
+		// marker (which AssessPassed would classify as VerdictNone), the
+		// agent still ran and produced output — that is a real cycle.
+		groupData, gErr := d.GroupResults(gid)
+		if gErr != nil {
+			// Be defensive: a bad row should not silently underreport cycle
+			// count. Log and skip the group so we do not fire LOOP-LIMIT
+			// based on partial data, but do not return the error — callers
+			// (the monitor) treat a missing footer as a benign degradation.
+			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
+			continue
+		}
+		producedVerdict := false
+		for _, mr := range groupData {
+			if mr.State == "finished" && mr.LastMessage != "" && mr.StartupError == "" {
+				producedVerdict = true
+				break
+			}
+		}
+		if producedVerdict {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // ReviewRoundForGroup returns the round number for the given group_id by
