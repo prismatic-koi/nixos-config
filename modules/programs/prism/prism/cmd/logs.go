@@ -23,6 +23,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -84,6 +85,14 @@ func init() {
 	logsCmd.Flags().Bool("harness-events", false, "Print raw PI JSONL frames recorded for this session (P5.LOGS / #1218)")
 	logsCmd.Flags().String("direction", "", "With --harness-events: filter frames by direction (in|out)")
 	logsCmd.Flags().String("types", "", "With --harness-events: comma-separated list of frame types to include")
+	logsCmd.Flags().String(
+		"deliver", "stdout",
+		"Where to send the log content. Valid sinks:\n"+
+			"    stdout              (default) write to stdout\n"+
+			"    file:<path>         atomic write to <path>; prints {\"delivered_to\":..., \"bytes\":N}\n"+
+			"    webhook:<url>       POST content to <url>; prints {\"delivered_to\":..., \"status\":N}\n"+
+			"    Unknown schemes are refused with the valid set listed.",
+	)
 	rootCmd.AddCommand(logsCmd)
 }
 
@@ -98,6 +107,12 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	harnessEvents, _ := cmd.Flags().GetBool("harness-events")
 	direction, _ := cmd.Flags().GetString("direction")
 	typesCSV, _ := cmd.Flags().GetString("types")
+	deliverFlag, _ := cmd.Flags().GetString("deliver")
+
+	sink, err := parseDeliverFlag(deliverFlag)
+	if err != nil {
+		return err
+	}
 
 	// --harness-events is its own pipeline (DB-backed, not a log file). It
 	// supersedes --agent-run / --startup / --tail and only honours --follow,
@@ -109,7 +124,10 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		if tailSet {
 			return fmt.Errorf("--harness-events does not support --tail (use --follow to stream new frames)")
 		}
-		return runHarnessEvents(sessionName, direction, typesCSV, follow, os.Stdout)
+		if sink.kind != "stdout" && follow {
+			return fmt.Errorf("--deliver and --follow are mutually exclusive (delivery captures a snapshot)")
+		}
+		return runHarnessEvents(sessionName, direction, typesCSV, follow, sink, os.Stdout)
 	}
 
 	if direction != "" || typesCSV != "" {
@@ -128,16 +146,28 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--tail must be a non-negative integer")
 	}
 
+	if sink.kind != "stdout" && follow {
+		return fmt.Errorf("--deliver and --follow are mutually exclusive (delivery captures a snapshot)")
+	}
+
 	// Container proxy path: delegate to the host-API sidecar.
 	// (--startup is host-only because the agent-startup log is written by
 	// the host-side SpawnSession; container coordinators have no use for it.)
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" && !startup {
+		if sink.kind != "stdout" {
+			// Buffer the proxied content so we can hand the whole artifact
+			// to deliverContent atomically (file rename / single POST).
+			var buf bytes.Buffer
+			if err := proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, agentRun, &buf); err != nil {
+				return err
+			}
+			return deliverContent(sink, buf.Bytes(), "text/plain", os.Stdout)
+		}
 		return proxyLogsFromHostAPI(apiURL, sessionName, tailN, tailSet, follow, agentRun, os.Stdout)
 	}
 
 	// Host path: resolve the appropriate log file.
 	var logPath string
-	var err error
 	switch {
 	case startup:
 		logPath, err = session.AgentStartupLogPath(sessionName)
@@ -177,6 +207,17 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 	if follow {
 		return runLogsFollow(sessionName, logPath)
+	}
+
+	// Non-stdout sinks: read the resolved log into memory and hand it to
+	// deliverContent. Atomic file delivery and webhook POST both want the
+	// whole artifact in one shot, so the buffering is unavoidable here.
+	if sink.kind != "stdout" {
+		content, readErr := readLogForDelivery(logPath, tailSet, tailN)
+		if readErr != nil {
+			return readErr
+		}
+		return deliverContent(sink, content, "text/plain", os.Stdout)
 	}
 
 	if tailSet {
@@ -253,6 +294,34 @@ func sidecarLogIsStuckOnSSERetries(logPath string) bool {
 		break
 	}
 	return !hasRealEvent
+}
+
+// readLogForDelivery reads the log file at logPath into a byte slice,
+// honouring --tail when set. Used by the --deliver pipeline so the file
+// or webhook sink receives the same content the operator would have seen
+// on stdout.
+func readLogForDelivery(logPath string, tailSet bool, tailN int) ([]byte, error) {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("open log: %w", err)
+	}
+	defer f.Close()
+	if !tailSet {
+		return io.ReadAll(f)
+	}
+	if tailN == 0 {
+		return nil, nil
+	}
+	lines, err := tailLinesFromReader(f, tailN)
+	if err != nil {
+		return nil, fmt.Errorf("tail log: %w", err)
+	}
+	var buf bytes.Buffer
+	for _, line := range lines {
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes(), nil
 }
 
 // runLogsFull prints the full contents of the log file to stdout.

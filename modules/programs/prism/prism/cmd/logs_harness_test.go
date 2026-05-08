@@ -52,7 +52,7 @@ func TestRunHarnessEvents_NonPISession(t *testing.T) {
 	setUpHarnessFramesDB(t)
 
 	var buf bytes.Buffer
-	err := runHarnessEvents("opencode-session@main", "", "", false, &buf)
+	err := runHarnessEvents("opencode-session@main", "", "", false, deliverSink{kind: "stdout"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for non-PI session, got nil")
 	}
@@ -75,7 +75,7 @@ func TestRunHarnessEvents_PrintsAllFramesChronologically(t *testing.T) {
 	writeFrameForCLI(t, d, "s@main", "in", "tool_call", `{"type":"tool_call","i":3}`, t0.Add(2*time.Millisecond))
 
 	var buf bytes.Buffer
-	if err := runHarnessEvents("s@main", "", "", false, &buf); err != nil {
+	if err := runHarnessEvents("s@main", "", "", false, deliverSink{kind: "stdout"}, &buf); err != nil {
 		t.Fatalf("runHarnessEvents: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestRunHarnessEvents_DirectionFilter(t *testing.T) {
 	writeFrameForCLI(t, d, "s@main", "in", "tool_call", `{"d":"in2"}`, t0.Add(2*time.Millisecond))
 
 	var inBuf bytes.Buffer
-	if err := runHarnessEvents("s@main", "in", "", false, &inBuf); err != nil {
+	if err := runHarnessEvents("s@main", "in", "", false, deliverSink{kind: "stdout"}, &inBuf); err != nil {
 		t.Fatalf("runHarnessEvents in: %v", err)
 	}
 	if !strings.Contains(inBuf.String(), "in1") || !strings.Contains(inBuf.String(), "in2") {
@@ -111,7 +111,7 @@ func TestRunHarnessEvents_DirectionFilter(t *testing.T) {
 	}
 
 	var outBuf bytes.Buffer
-	if err := runHarnessEvents("s@main", "out", "", false, &outBuf); err != nil {
+	if err := runHarnessEvents("s@main", "out", "", false, deliverSink{kind: "stdout"}, &outBuf); err != nil {
 		t.Fatalf("runHarnessEvents out: %v", err)
 	}
 	if !strings.Contains(outBuf.String(), "out1") {
@@ -125,7 +125,7 @@ func TestRunHarnessEvents_DirectionFilter(t *testing.T) {
 func TestRunHarnessEvents_DirectionInvalid(t *testing.T) {
 	setUpHarnessFramesDB(t)
 	var buf bytes.Buffer
-	err := runHarnessEvents("s@main", "sideways", "", false, &buf)
+	err := runHarnessEvents("s@main", "sideways", "", false, deliverSink{kind: "stdout"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for invalid direction")
 	}
@@ -145,7 +145,7 @@ func TestRunHarnessEvents_TypesFilter(t *testing.T) {
 	writeFrameForCLI(t, d, "s@main", "in", "msg_assistant", `{"t":"msg_assistant"}`, t0.Add(3*time.Millisecond))
 
 	var buf bytes.Buffer
-	if err := runHarnessEvents("s@main", "", "tool_call,tool_result", false, &buf); err != nil {
+	if err := runHarnessEvents("s@main", "", "tool_call,tool_result", false, deliverSink{kind: "stdout"}, &buf); err != nil {
 		t.Fatalf("runHarnessEvents: %v", err)
 	}
 	out := buf.String()
@@ -200,7 +200,7 @@ func TestRunHarnessEvents_FollowStreamsNewFrames(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runHarnessEvents("s@main", "", "", true, sb)
+		done <- runHarnessEvents("s@main", "", "", true, deliverSink{kind: "stdout"}, sb)
 	}()
 
 	// Wait for the initial frame to appear.
