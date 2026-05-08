@@ -506,9 +506,18 @@ func TestBuildMonitorResults_FinishedPassed(t *testing.T) {
 	}
 }
 
-// TestBuildMonitorResults_InterruptedState verifies that an interrupted agent
-// produces an error result.
-func TestBuildMonitorResults_InterruptedState(t *testing.T) {
+// TestBuildMonitorResults_InterruptedState_FallsToDefault verifies the #1495
+// contract at the buildMonitorResults layer.
+//
+// Under the new contract, db.GroupCompleted does NOT consider "interrupted"
+// terminal, so the monitor's poll loop only flushes results once every agent
+// has reached "finished", "error", or "deleted". The only way an agent's
+// state in groupData can still be "interrupted" when buildMonitorResults
+// runs is if the monitor's overall safety timeout fired — in which case the
+// switch's default branch labels the agent as timed-out / unexpected-state.
+// It must NOT take the genuine-error branch (which would surface as a
+// no-start or mid-run crash, neither of which is accurate).
+func TestBuildMonitorResults_InterruptedState_FallsToDefault(t *testing.T) {
 	agents := []review.Agent{{Name: "review-code"}}
 	sess := "nixos-config@parent~review-1-review-code"
 	sessions := []string{sess}
@@ -522,13 +531,100 @@ func TestBuildMonitorResults_InterruptedState(t *testing.T) {
 	}
 	r := results[0]
 	if r.Passed {
-		t.Errorf("interrupted: Passed=true, want false")
+		t.Errorf("interrupted (default branch): Passed=true, want false")
 	}
 	if !r.IsError {
-		t.Errorf("interrupted: IsError=false, want true")
+		t.Errorf("interrupted (default branch): IsError=false, want true")
 	}
-	if !findSubstring(r.Output, "interrupted") {
-		t.Errorf("interrupted: output should mention 'interrupted': %q", r.Output)
+	// The default branch labels the agent as in an unexpected (timed out)
+	// state. It must NOT use the genuine-error branch's wording.
+	if !findSubstring(r.Output, "unexpected state") {
+		t.Errorf("interrupted (default branch): output should mention 'unexpected state' (timeout fallback): %q", r.Output)
+	}
+	if findSubstring(r.Output, "did not complete cleanly") {
+		t.Errorf("interrupted (default branch): output must NOT use the genuine-error wording: %q", r.Output)
+	}
+	if findSubstring(r.Output, "failed to start") {
+		t.Errorf("interrupted (default branch): output must NOT use the no-start wording: %q", r.Output)
+	}
+}
+
+// TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses verifies the
+// #1495 contract: an agent that was interrupted, redirected via `prism
+// prompt`, and ultimately reached "finished" with a PASS verdict must be
+// counted as a normal pass. The earlier interruption leaves no trace in
+// groupData (only the latest state is retained).
+func TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses(t *testing.T) {
+	agents := []review.Agent{{Name: "review-goal"}}
+	sess := "nixos-config@parent~review-1-review-goal"
+	sessions := []string{sess}
+	payload := `{"text":"All ACs verified. <verdict>PASS</verdict>"}`
+	groupData := map[string]db.GroupMemberResult{
+		sess: {SessionName: sess, State: "finished", LastMessage: payload},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Passed {
+		t.Errorf("interrupted-then-resumed-to-finished: Passed=false, want true (#1495)")
+	}
+	if r.IsError {
+		t.Errorf("interrupted-then-resumed-to-finished: IsError=true, want false (#1495)")
+	}
+}
+
+// TestBuildMonitorResults_InterruptedThenCleanedUp verifies the #1495 escape
+// hatch: when the user runs `prism cleanup --yes --session <agent>` on an
+// interrupted agent, the agent's row is removed from agent_status. The
+// monitor's GroupCompleted check then no longer counts that session as a
+// non-terminal member, the group completes, and buildMonitorResults sees the
+// session as missing from groupData — routed to the existing
+// 'session not found in group' branch with IsError=true.
+func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
+	agents := []review.Agent{
+		{Name: "review-goal"},
+		{Name: "review-code"},
+	}
+	sessions := []string{
+		"nixos-config@parent~review-1-review-goal",
+		"nixos-config@parent~review-1-review-code",
+	}
+	// The first agent was cleaned up via `prism cleanup` and is missing from
+	// groupData. The second agent finished normally with a PASS verdict.
+	groupData := map[string]db.GroupMemberResult{
+		sessions[1]: {
+			SessionName: sessions[1],
+			State:       "finished",
+			LastMessage: `{"text":"<verdict>PASS</verdict>"}`,
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+
+	// The cleaned-up agent is reported as IsError via the missing-session
+	// branch — unchanged behaviour, just exercised via the new flow.
+	cleanedUp := results[0]
+	if !cleanedUp.IsError {
+		t.Errorf("cleaned-up agent: IsError=false, want true")
+	}
+	if !findSubstring(cleanedUp.Output, "not found in group") {
+		t.Errorf("cleaned-up agent: output should use the missing-session message: %q", cleanedUp.Output)
+	}
+
+	// The other agent is reported normally — the cleanup of one agent does
+	// not contaminate the others.
+	other := results[1]
+	if !other.Passed {
+		t.Errorf("other agent: Passed=false, want true")
+	}
+	if other.IsError {
+		t.Errorf("other agent: IsError=true, want false")
 	}
 }
 

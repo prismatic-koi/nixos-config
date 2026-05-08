@@ -11,12 +11,25 @@ import (
 )
 
 // terminalStates is the set of agent states that indicate a session has stopped
-// working and will not make further progress. Note: this includes "deleted"
-// (cleaned up mid-run) intentionally — a deleted session will never complete,
-// so it counts as terminal for GroupCompleted purposes. This differs from
-// review.go's isTerminalState, which omits "deleted" because prism review
-// uses separate cleanup detection logic.
-var terminalStates = []string{"finished", "interrupted", "error", "deleted"}
+// working and will not make further progress.
+//
+// Note: this includes "deleted" (cleaned up mid-run) intentionally — a deleted
+// session will never complete, so it counts as terminal for GroupCompleted
+// purposes.
+//
+// Note: this deliberately EXCLUDES "interrupted". An interrupted session may
+// resume — the user can redirect it via `prism prompt <agent-session>` and the
+// agent will continue toward a terminal state (#1495). Treating "interrupted"
+// as terminal here would close out a review group the moment the user reaches
+// for Esc to redirect a review agent, contaminating the review-complete prompt
+// with a false-error verdict before the redirection has a chance to take
+// effect. The user's escape hatch for genuinely abandoning an interrupted
+// agent is `prism cleanup --yes --session <agent>`, which transitions the
+// session to "deleted" — and "deleted" IS terminal here.
+//
+// This differs from review.go's isTerminalState, which omits "deleted" because
+// prism review uses separate cleanup detection logic.
+var terminalStates = []string{"finished", "error", "deleted"}
 
 // isTerminalState reports whether state is a terminal agent state.
 func isTerminalState(state string) bool {
@@ -41,7 +54,8 @@ func (d *DB) RegisterGroup(parentSession string) (string, error) {
 }
 
 // GroupCompleted reports whether every agent_status row with this group_id has
-// reached a terminal state (finished, interrupted, error, or deleted).
+// reached a terminal state (finished, error, or deleted).
+// "interrupted" is intentionally not terminal here — see terminalStates.
 // Returns (true, nil) when all members are terminal (including the case where
 // there are no members yet — caller should guard against that if needed).
 // Returns (false, nil) when at least one member is still running.

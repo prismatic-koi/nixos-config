@@ -2629,7 +2629,7 @@ func TestGroupCompleted_AllTerminal(t *testing.T) {
 	}{
 		{"nixos-config@feature~review-1-goal", "finished"},
 		{"nixos-config@feature~review-1-code", "finished"},
-		{"nixos-config@feature~review-1-security", "interrupted"},
+		{"nixos-config@feature~review-1-security", "error"},
 	}
 	for _, m := range members {
 		if err := d.UpsertStatus(m.name, "nixos-config", "/wt", m.state, nil, nil); err != nil {
@@ -2649,6 +2649,105 @@ func TestGroupCompleted_AllTerminal(t *testing.T) {
 	}
 	if !done {
 		t.Error("GroupCompleted: got false, want true (all members terminal)")
+	}
+}
+
+// TestGroupCompleted_InterruptedNotTerminal verifies the #1495 contract:
+// an agent in "interrupted" state must NOT count as terminal for
+// GroupCompleted. The user can redirect an interrupted agent via
+// `prism prompt`, after which it will progress toward "finished" or "error".
+// If GroupCompleted treated interrupted as terminal, the review monitor
+// would close out the group the moment Esc is pressed, contaminating the
+// review-complete prompt with a false-error verdict before the redirection
+// has a chance to take effect.
+func TestGroupCompleted_InterruptedNotTerminal(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	members := []struct {
+		name  string
+		state string
+	}{
+		{"nixos-config@feature~review-1-goal", "finished"},
+		{"nixos-config@feature~review-1-code", "finished"},
+		{"nixos-config@feature~review-1-security", "interrupted"},
+	}
+	for _, m := range members {
+		if err := d.UpsertStatus(m.name, "nixos-config", "/wt", m.state, nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", m.name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, m.name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", m.name, err)
+		}
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if done {
+		t.Error("GroupCompleted: got true, want false (interrupted member is not terminal per #1495)")
+	}
+
+	// After the user redirects the interrupted agent and it finishes, the
+	// group must complete normally.
+	if err := d.UpsertStatus("nixos-config@feature~review-1-security", "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus to finished: %v", err)
+	}
+	done, err = d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted (after resume): %v", err)
+	}
+	if !done {
+		t.Error("GroupCompleted (after resume to finished): got false, want true")
+	}
+}
+
+// TestGroupCompleted_DeletedIsTerminal verifies that the user's escape hatch
+// for abandoning an interrupted agent — `prism cleanup --yes --session
+// <agent>`, which transitions the session to "deleted" — still counts as
+// terminal for GroupCompleted purposes. Without this, a user who interrupts
+// an agent and then decides to abandon it would have the group hang forever.
+func TestGroupCompleted_DeletedIsTerminal(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	members := []struct {
+		name  string
+		state string
+	}{
+		{"nixos-config@feature~review-1-goal", "finished"},
+		{"nixos-config@feature~review-1-code", "deleted"},
+	}
+	for _, m := range members {
+		if err := d.UpsertStatus(m.name, "nixos-config", "/wt", m.state, nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", m.name, err)
+		}
+		if err := d.QueryRow(
+			"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+			groupID, m.name,
+		).Scan(new(int)); err != nil {
+			t.Fatalf("set group_id for %s: %v", m.name, err)
+		}
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if !done {
+		t.Error("GroupCompleted: got false, want true (deleted IS terminal per #1495 contract)")
 	}
 }
 

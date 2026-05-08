@@ -121,10 +121,18 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 	return buildResults(agents, agentSessions, d, finished, timedOut, timeout, false, groupID), nil
 }
 
-// isTerminalState returns true if the state is considered terminal (finished or error).
+// isTerminalState returns true if the state is considered terminal for the
+// purposes of the per-agent progress tracker in pollAgents.
+//
+// "interrupted" is intentionally NOT terminal here (#1495): a user-driven
+// interrupt is a transient pause that may resolve to "finished" or "error"
+// after the user sends a redirection prompt. Treating it as terminal would
+// emit a premature "X finished" progress line and stop polling that agent
+// before its real terminal transition. Only "finished" and "error" are
+// genuinely terminal for an in-flight review agent.
 func isTerminalState(state string) bool {
 	switch state {
-	case "finished", "interrupted", "error":
+	case "finished", "error":
 		return true
 	}
 	return false
@@ -150,9 +158,12 @@ func BuildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 // Every result is either IsError=true or annotated as incomplete. This prevents
 // a false PASS even if layers 1 or 2 develop regressions later.
 //
-// Layer 2: agents whose DB terminal state is "interrupted" or "error" always
-// produce an error result, regardless of any msg_assistant events they may have.
-// Only agents that reached the "finished" state cleanly proceed to AssessPassed.
+// Layer 2: agents whose DB terminal state is "error" always produce an error
+// result, regardless of any msg_assistant events they may have. Only agents
+// that reached the "finished" state cleanly proceed to AssessPassed.
+// "interrupted" is no longer bucketed here — see #1495: an interrupted agent
+// that was redirected and resumed should be evaluated by its eventual
+// terminal state (finished or error), not by the fact it was interrupted.
 func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, timedOut []bool, timeout time.Duration, cancelled bool, groupID string) []AgentResult {
 	// Pre-fetch group member data when a group_id is available. This replaces
 	// individual per-session CurrentStatus + QueryEvents calls with a single
@@ -226,9 +237,17 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 		}
 
 		// Layer 2: check the agent's actual DB terminal state. Only "finished"
-		// is considered a clean completion; "interrupted" and "error" are errors
-		// regardless of what msg_assistant events may exist.
-		if agentState == "interrupted" || agentState == "error" {
+		// is considered a clean completion; "error" is an error regardless of
+		// what msg_assistant events may exist.
+		//
+		// "interrupted" is intentionally NOT in this branch (#1495). pollAgents
+		// no longer treats "interrupted" as terminal, so an interrupted agent
+		// either (a) resumes via `prism prompt` and reaches finished/error, or
+		// (b) is cleaned up by the user (state → "deleted", surfaced via the
+		// missing-session branch in buildMonitorResults), or (c) hits the
+		// overall poll deadline and falls through to the timed-out branch
+		// above. In all three cases this branch is irrelevant.
+		if agentState == "error" {
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
