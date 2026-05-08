@@ -353,25 +353,25 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6b. ~/Library/Keychains read (issue #1487) ───────────────────────
-	// The Keychain Services API (Mach IPC via securityd) requires both
-	// file-read* AND file-test-existence on ~/Library/Keychains to service
-	// credential lookups. securityd probes and reads the keychain databases
-	// in this directory even when the lookup is routed over Mach IPC rather
-	// than direct file access. Without this rule, securityd returns "item not
-	// found" (exit 44) from inside the sandbox.
-	// We use (subpath ~/Library/Keychains) rather than a (literal ...) on
-	// login.keychain-db alone, because modern macOS also writes credentials
-	// into UUID-keyed databases in the same directory (e.g. 889FEFC9-.../
-	// keychain-2.db) and securityd needs to probe those too. The Keychains
-	// directory contains only keychain metadata and databases — no unrelated
-	// sensitive files. Rule is omitted when the directory does not exist
-	// (e.g. fresh machine / CI).
+	// ── 6b. ~/Library/Keychains/login.keychain-db read (issue #1487) ──────
+	// The Keychain Services API (Mach IPC via securityd) requires file-read*
+	// access to ~/Library/Keychains/login.keychain-db to service credential
+	// lookups, even when the lookup is routed over Mach IPC to securityd.
+	// Without this, securityd returns "item not found" (exit 44) from inside
+	// the sandbox.
+	//
+	// We use (literal ...) on the specific file rather than (subpath
+	// ~/Library/Keychains) to avoid granting read access to the UUID-keyed
+	// modern keychain databases (keychain-2.db, user.kb, TrustedPeersHelper)
+	// in the same directory. The literal is sufficient — confirmed by direct
+	// sandbox-exec experiments (issue #1487).
+	//
+	// Rule is omitted when the file does not exist (e.g. fresh machine / CI).
 	if home != "" {
-		keychainsDir := filepath.Join(home, "Library", "Keychains")
-		if _, err := os.Stat(keychainsDir); err == nil {
-			sb.WriteString("(allow file-read* file-test-existence\n")
-			sb.WriteString("  (subpath " + quoteSBPL(keychainsDir) + "))\n")
+		keychainDB := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+		if _, err := os.Stat(keychainDB); err == nil {
+			sb.WriteString("(allow file-read*\n")
+			sb.WriteString("  (literal " + quoteSBPL(keychainDB) + "))\n")
 			sb.WriteString("\n")
 		}
 	}

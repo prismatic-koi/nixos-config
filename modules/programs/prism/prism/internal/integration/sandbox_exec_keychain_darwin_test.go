@@ -3,37 +3,38 @@
 package integration_test
 
 // sandbox_exec_keychain_darwin_test.go — integration coverage for the
-// ~/Library/Keychains file-read rule added to the SBPL profile (issue #1487).
+// login.keychain-db file-read rule added to the SBPL profile (issue #1487).
 //
 // Background: the Keychain Services API routes credential lookups over Mach IPC
-// to securityd, but securityd also requires file-read* + file-test-existence on
-// ~/Library/Keychains to service the lookup. Without the subpath rule, securityd
-// returns exit 44 ("item not found") from inside the sandbox even though the
-// Mach IPC path is open.
+// to securityd, but securityd also requires file-read* access to
+// ~/Library/Keychains/login.keychain-db to service the lookup. Without this,
+// securityd returns exit 44 ("item not found") from inside the sandbox even
+// though the Mach IPC path is open.
 //
 // generateProfile now emits:
 //
-//	(allow file-read* file-test-existence
-//	  (subpath "<home>/Library/Keychains"))
+//	(allow file-read*
+//	  (literal "<home>/Library/Keychains/login.keychain-db"))
 //
-// conditionally, when the directory exists on the host.
+// conditionally, when the file exists on the host.
 //
 // This file tests:
 //
-//  1. Positive case: when ~/Library/Keychains exists, /usr/bin/security
+//  1. Positive case: when login.keychain-db exists, /usr/bin/security
 //     find-generic-password exits 0 (credentials present) or 44 (API
 //     reachable, entry absent). "Operation not permitted" in output is always
-//     a failure. Also asserts the generated profile contains the Keychains
-//     subpath — this string check is the load-bearing regression guard for
-//     the SBPL rule.
+//     a failure. Also asserts the generated profile contains the literal path
+//     (load-bearing regression guard).
+//     Security is invoked with real HOME (not staging HOME) so the CLI can
+//     locate the host keychain search list.
 //
-// Note on negative test: the standard negative-test pattern (mutate profile,
-// assert operation fails) cannot be made to work for this rule because the
-// full production profile (with staging-home symlink targets and the BareRoot
-// ancestor block) grants file-read access to ~/Library/Keychains via other
-// rules on a fully set-up machine. The profile string-content assertion in the
-// positive test serves as the regression guard: if generateProfile stops
-// emitting the Keychains rule, the assertion fails before security even runs.
+// Note on negative test: the withMutatedProfile pattern cannot isolate the
+// keychain literal as load-bearing on a fully set-up machine — the full
+// production profile (with staging-home symlink targets) grants access to
+// ~/Library/Keychains via other rules in this configuration. The profile
+// string-content assertion in the positive test is the regression guard: if
+// generateProfile stops emitting the rule, that assertion fails before the
+// sandbox invocation runs.
 //
 // Shared helpers (requireSandboxExec, newProfileManagerWithBareRoot,
 // preparePositiveProfile, writeAugmentedPositiveProfile) live in
@@ -53,26 +54,25 @@ import (
 // keychainServiceName is the Keychain service name for Claude credentials.
 const keychainServiceName = "Claude Code-credentials"
 
-// keychainsDir returns the path to the user's ~/Library/Keychains directory.
+// loginKeychainPath returns the path to the user's login.keychain-db.
 // Returns an empty string if the user's home directory cannot be determined.
-func keychainsDir(t *testing.T) string {
+func loginKeychainPath(t *testing.T) string {
 	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Keychains")
+	return filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 }
 
 // TestSandboxExecProfile_KeychainAPIAccessible is the integration test for the
-// ~/Library/Keychains file-read rule (issue #1487).
+// login.keychain-db file-read rule (issue #1487).
 //
 // It asserts that:
-//   - The generated profile contains the (subpath ~/Library/Keychains) rule
-//     (load-bearing regression guard: if generateProfile stops emitting the
-//     rule, this assertion fails before the sandbox invocation even runs).
+//   - The generated profile contains the (literal login.keychain-db) path
+//     (load-bearing regression guard — fails before sandbox runs if missing).
 //   - /usr/bin/security find-generic-password exits 0 or 44 inside the sandbox
-//     (no "Operation not permitted" sandbox denial).
+//     when invoked with real HOME (no "Operation not permitted" sandbox denial).
 func TestSandboxExecProfile_KeychainAPIAccessible(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -83,12 +83,17 @@ func TestSandboxExecProfile_KeychainAPIAccessible(t *testing.T) {
 		t.Skip("/usr/bin/security not present")
 	}
 
-	kDir := keychainsDir(t)
-	if kDir == "" {
+	keychainPath := loginKeychainPath(t)
+	if keychainPath == "" {
 		t.Skip("cannot determine home directory")
 	}
-	if _, err := os.Stat(kDir); err != nil {
-		t.Skipf("~/Library/Keychains does not exist at %s — skipping: %v", kDir, err)
+	if _, err := os.Stat(keychainPath); err != nil {
+		t.Skipf("login.keychain-db does not exist at %s — skipping: %v", keychainPath, err)
+	}
+
+	realHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("cannot determine home directory")
 	}
 
 	m := newProfileManagerWithBareRoot(t)
@@ -102,19 +107,21 @@ func TestSandboxExecProfile_KeychainAPIAccessible(t *testing.T) {
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// Load-bearing regression guard: the generated profile must contain the
-	// ~/Library/Keychains subpath rule. If generateProfile stops emitting it,
-	// this check catches the regression before the sandbox invocation below.
-	if !strings.Contains(prepared.content, kDir) {
-		t.Fatalf("generated profile does not contain the ~/Library/Keychains subpath %q.\n"+
-			"The (allow file-read* file-test-existence (subpath ...)) rule was not emitted by generateProfile.\nProfile:\n%s",
-			kDir, prepared.content)
+	// literal login.keychain-db path. If generateProfile stops emitting it,
+	// this assertion fails before the sandbox invocation below.
+	if !strings.Contains(prepared.content, keychainPath) {
+		t.Fatalf("generated profile does not contain the login.keychain-db literal path %q.\n"+
+			"The (allow file-read* (literal ...)) rule was not emitted by generateProfile.\nProfile:\n%s",
+			keychainPath, prepared.content)
 	}
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	// Run /usr/bin/security inside sandbox-exec. Apple-signed binary; uses
-	// Mach IPC to contact securityd — exactly the code path we need to exercise.
+	// Pass real HOME (not staging HOME) so the security CLI can locate the
+	// host keychain search list. With staging HOME the CLI always returns
+	// exit 44 regardless of the SBPL rule.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
+		"/usr/bin/env", "HOME="+realHome,
 		"/usr/bin/security", "find-generic-password", "-l", keychainServiceName, "-w")
 	out, runErr := cmd.CombinedOutput()
 	output := string(out)
@@ -122,7 +129,7 @@ func TestSandboxExecProfile_KeychainAPIAccessible(t *testing.T) {
 	// "Operation not permitted" means a sandbox denial — always a failure.
 	if strings.Contains(output, "Operation not permitted") {
 		t.Fatalf("Keychain API call produced 'Operation not permitted' inside sandbox.\n"+
-			"This indicates a sandbox denial — the (subpath ~/Library/Keychains) rule is not working.\n"+
+			"This indicates a sandbox denial — the (literal login.keychain-db) rule is not working.\n"+
 			"Exit: %v\nOutput: %s\nProfile: %s",
 			runErr, output, testProfilePath)
 	}
@@ -139,7 +146,6 @@ func TestSandboxExecProfile_KeychainAPIAccessible(t *testing.T) {
 	}
 
 	if exitCode == securityItemNotFound {
-		// Entry absent — API is reachable, item is simply missing. Acceptable on CI.
 		t.Logf("Keychain API accessible inside sandbox (security exit 44: item not found). "+
 			"Claude Code-credentials not present on this host — expected on CI. (#1487)")
 		return
