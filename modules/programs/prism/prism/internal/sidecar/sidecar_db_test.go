@@ -8,6 +8,13 @@ package sidecar
 // from sidecar_test.go which provides a real on-disk SQLite file — required
 // because the new endpoints re-open the DB in read-only mode (?mode=ro)
 // rather than sharing the writable handle.
+//
+// All three endpoints are coordinator-only (#1467 round-3 review): /db/query
+// exposes a strict superset of /checkin's data, so it inherits /checkin's
+// gating. Tests that exercise post-auth happy / error paths use a coordinator
+// sidecar; the *_WorkerForbidden tests at the bottom verify the role gate
+// itself (matching the TestHostAPI_Checkin_WorkerForbidden precedent in
+// sidecar_test.go).
 
 import (
 	"encoding/json"
@@ -22,7 +29,7 @@ import (
 
 func TestHostAPI_DBTables_HappyPath(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/db/tables", "")
 	if rr.Code != http.StatusOK {
@@ -51,7 +58,7 @@ func TestHostAPI_DBTables_HappyPath(t *testing.T) {
 
 func TestHostAPI_DBTables_PostRejected(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/db/tables", "")
 	if rr.Code != http.StatusMethodNotAllowed {
@@ -63,7 +70,7 @@ func TestHostAPI_DBTables_PostRejected(t *testing.T) {
 
 func TestHostAPI_DBSchema_All(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/db/schema", "")
 	if rr.Code != http.StatusOK {
@@ -84,7 +91,7 @@ func TestHostAPI_DBSchema_All(t *testing.T) {
 
 func TestHostAPI_DBSchema_FilteredTable(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/db/schema?table=agent_events", "")
 	if rr.Code != http.StatusOK {
@@ -104,7 +111,7 @@ func TestHostAPI_DBSchema_FilteredTable(t *testing.T) {
 
 func TestHostAPI_DBSchema_UnknownTable(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/db/schema?table=nope_does_not_exist", "")
 	if rr.Code != http.StatusNotFound {
@@ -123,7 +130,7 @@ func TestHostAPI_DBSchema_UnknownTable(t *testing.T) {
 
 func TestHostAPI_DBQuery_HappyPath(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape("SELECT 1 AS one, 'hi' AS greeting"), "")
@@ -149,7 +156,7 @@ func TestHostAPI_DBQuery_HappyPath(t *testing.T) {
 
 func TestHostAPI_DBQuery_EmptyResult(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape("SELECT name FROM sqlite_master WHERE 1=0"), "")
@@ -167,7 +174,7 @@ func TestHostAPI_DBQuery_EmptyResult(t *testing.T) {
 
 func TestHostAPI_DBQuery_RejectsWrite(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape(
@@ -188,7 +195,7 @@ func TestHostAPI_DBQuery_RejectsWrite(t *testing.T) {
 
 func TestHostAPI_DBQuery_RejectsMultiStatement(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape("SELECT 1; SELECT 2"), "")
@@ -207,7 +214,7 @@ func TestHostAPI_DBQuery_RejectsMultiStatement(t *testing.T) {
 
 func TestHostAPI_DBQuery_MalformedSQL(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape("SELECTX from where !!!"), "")
@@ -225,11 +232,64 @@ func TestHostAPI_DBQuery_MalformedSQL(t *testing.T) {
 
 func TestHostAPI_DBQuery_MissingSQL(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "worker", d)
+	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/db/query", "")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
+// ── GET /db/* — role gating (#1467 round-3 review) ──────────────────────
+//
+// All three endpoints are coordinator-only because /db/query exposes a strict
+// superset of /checkin's data. These mirror TestHostAPI_Checkin_WorkerForbidden
+// in sidecar_test.go: a worker-role sidecar must receive 403, with a non-empty
+// error message.
+
+func TestHostAPI_DBQuery_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+
+	rr := doHostAPI(t, sc, http.MethodGet,
+		"/db/query?sql="+queryEscape("SELECT 1"), "")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %q, want 403", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+func TestHostAPI_DBSchema_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+
+	rr := doHostAPI(t, sc, http.MethodGet, "/db/schema", "")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %q, want 403", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
+	}
+}
+
+func TestHostAPI_DBTables_WorkerForbidden(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
+
+	rr := doHostAPI(t, sc, http.MethodGet, "/db/tables", "")
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %q, want 403", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if errResp["error"] == "" {
+		t.Error("expected error field in 403 response")
 	}
 }
 

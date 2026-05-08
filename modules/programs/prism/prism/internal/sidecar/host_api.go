@@ -151,11 +151,22 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /list-sessions — list active sessions (role-scoped)
 //	GET  /checkin       — return conversation history for a session (coordinator only)
 //	GET  /stats         — return stats/events for rendering (all roles)
+//	GET  /db/query      — run a single read-only SQL statement (coordinator only)
+//	GET  /db/schema     — return CREATE TABLE / CREATE INDEX DDL (coordinator only)
+//	GET  /db/tables     — return user table names (coordinator only)
 //	POST /prompt        — deliver a prompt to a target session (role-scoped)
 //	POST /merge         — enqueue a PR for the merge queue (coordinator only)
 //	GET  /merges        — list merge queue entries (coordinator only)
 //	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
 //	POST /event         — write a lifecycle event to the host DB (all roles)
+//
+// /db/query, /db/schema, /db/tables are coordinator-only because /db/query
+// exposes a strict superset of /checkin: raw cross-session payloads (e.g.
+// SELECT * FROM harness_frames) versus /checkin's single-session rendered
+// view. Gating these at the same level as /checkin preserves the
+// cross-session privilege isolation /checkin already enforces. The /stats
+// analogue does not apply — /stats is aggregate counts, /db/query is
+// row-level conversation content (#1467 round-3 review).
 //
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
@@ -2026,8 +2037,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// All three open a fresh read-only handle (?mode=ro) per request rather
 	// than sharing the sidecar's writable handle. Handlers live in
 	// host_api_db.go so the wiring stays minimal here.
+	//
+	// Coordinator-only: /db/query exposes a strict superset of /checkin
+	// (raw cross-session payloads vs. rendered single-session view), so it
+	// is gated at the same level as /checkin. /db/schema and /db/tables are
+	// also coordinator-only for consistency — a worker that cannot read
+	// payloads has no need to enumerate the schema either.
 	mux.HandleFunc("/db/query", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "db query") {
 			return
 		}
 		s.hostAPIDBQuery(w, r)
@@ -2036,10 +2056,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if !requireGet(w, r) {
 			return
 		}
+		if !requireCoordinator(w, "db schema") {
+			return
+		}
 		s.hostAPIDBSchema(w, r)
 	})
 	mux.HandleFunc("/db/tables", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "db tables") {
 			return
 		}
 		s.hostAPIDBTables(w, r)
