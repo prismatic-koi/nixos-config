@@ -607,7 +607,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 				// was already called inside runStartupSocketPipe, so the DB row is
 				// in error state). Keep the host-API server alive until the
 				// session receives an external shutdown trigger.
-				log.Printf("sidecar: harness-pipe handshake failed; keeping host-API alive until session shutdown: %v", pipeErr)
+				s.logger().Printf("sidecar: harness-pipe handshake failed; keeping host-API alive until session shutdown: %v", pipeErr)
 				// Block until context cancellation (SIGTERM / prism cleanup).
 				<-ctx.Done()
 				// Return nil — Shutdown() is responsible for writing the final
