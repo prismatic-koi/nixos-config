@@ -27,4 +27,12 @@ const (
 	// The coordinator must not receive a "has finished" notification while the
 	// worker is in the reviewing state.
 	StateReviewing AgentState = "reviewing"
+	// StateEscalated is a non-terminal state entered by a worker session via
+	// `prism escalate`. The worker has handed a question to its coordinator
+	// and stops its current turn while awaiting guidance. Any incoming
+	// turn_start (from `prism prompt`, a human typing into tmux, or any
+	// other source) transitions the session back to active. While in this
+	// state the sidecar must NOT emit the "has finished" notification — the
+	// `session.escalated` bus event already informed the coordinator.
+	StateEscalated AgentState = "escalated"
 )

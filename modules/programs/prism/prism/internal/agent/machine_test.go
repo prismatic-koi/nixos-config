@@ -48,6 +48,14 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateReviewing, StateInterrupted, "pane-died or SIGTERM while awaiting review results"},
 		{StateReviewing, StateDeleted, "session.deleted while reviewing"},
 
+		// Escalated state (issue #1517)
+		{StateActive, StateEscalated, "prism escalate called — entering escalated state"},
+		{StateEscalated, StateActive, "any incoming turn_start — worker resumes"},
+		{StateEscalated, StateFinished, "task completes while escalated (rare)"},
+		{StateEscalated, StateInterrupted, "pane-died while escalated"},
+		{StateEscalated, StateError, "sidecar startup failure while escalated"},
+		{StateEscalated, StateDeleted, "session.deleted while escalated"},
+
 		// Deleted from any state
 		{StateActive, StateDeleted, "session.deleted while active"},
 		{StateWaiting, StateDeleted, "session.deleted while waiting"},
@@ -86,6 +94,12 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateCompacting, StateFinished, "compacting → finished (compaction ≠ task completion)"},
 		{StateCompacting, StateWaiting, "compacting → waiting"},
 		{StateCompacting, StateError, "compacting → error"},
+
+		// Escalated cannot directly enter reviewing/waiting/compacting; the worker
+		// must first resume to active via turn_start.
+		{StateEscalated, StateReviewing, "escalated → reviewing (must go through active)"},
+		{StateEscalated, StateWaiting, "escalated → waiting"},
+		{StateEscalated, StateCompacting, "escalated → compacting"},
 	}
 
 	for _, tc := range invalid {
@@ -113,6 +127,7 @@ func TestTransition_DeletedIsTerminal(t *testing.T) {
 	allStates := []AgentState{
 		StateActive, StateWaiting, StateFinished, StateCompacting,
 		StateError, StateIdle, StateInterrupted, StateDeleted, StateReviewing,
+		StateEscalated,
 	}
 	for _, to := range allStates {
 		if to == StateDeleted {
@@ -142,6 +157,7 @@ func TestValidTransitionsCompleteness(t *testing.T) {
 	allStates := []AgentState{
 		StateActive, StateWaiting, StateFinished, StateCompacting,
 		StateError, StateIdle, StateInterrupted, StateDeleted, StateReviewing,
+		StateEscalated,
 	}
 	for _, s := range allStates {
 		if _, ok := ValidTransitions[s]; !ok {

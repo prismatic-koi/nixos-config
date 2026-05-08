@@ -18,6 +18,16 @@ import "fmt"
 //     `prism review`. The worker remains here until the review-complete prompt
 //     arrives. The coordinator does NOT receive a "has finished" notification
 //     while the worker is in this state.
+//   - active → escalated: entered by a worker immediately after calling
+//     `prism escalate`. The worker has handed a question to its coordinator
+//     and stops its current turn until any incoming turn_start clears the
+//     state. The coordinator does NOT receive a "has finished" notification
+//     while the worker is in this state — the `session.escalated` bus event
+//     is the notification.
+//   - escalated → active: any incoming turn_start clears escalated and
+//     resumes normal lifecycle, identical to the reviewing→active path.
+//   - escalated → finished/interrupted/error/deleted: terminal exits remain
+//     possible if the worker is killed or otherwise ended while escalated.
 //   - reviewing → finished: PASS verdict received; coordinator is notified now.
 //   - reviewing → active: FAIL verdict received; worker returns to active to
 //     fix blocking issues and re-run the review.
@@ -50,6 +60,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateError:       true,
 		StateCompacting:  true,
 		StateReviewing:   true, // prism review called — awaiting review results
+		StateEscalated:   true, // prism escalate called — awaiting coordinator guidance
 		StateDeleted:     true,
 	},
 	StateWaiting: {
@@ -77,6 +88,17 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateFinished:    true,
 		StateActive:      true,
 		StateInterrupted: true,
+		StateDeleted:     true,
+	},
+	// escalated→active: any incoming turn_start clears escalated.
+	// escalated→finished/interrupted/error: terminal exits while escalated.
+	// (escalated→reviewing/waiting/compacting are not modelled — those flows
+	// require the worker to first transition back to active via turn_start.)
+	StateEscalated: {
+		StateActive:      true,
+		StateFinished:    true,
+		StateInterrupted: true,
+		StateError:       true,
 		StateDeleted:     true,
 	},
 	// finished→interrupted: non-zero pane exit overrides a clean finish.

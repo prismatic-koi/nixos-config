@@ -757,6 +757,26 @@ WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiti
 	return d.queryStatuses(q)
 }
 
+// CoordinatorCandidatesForRepo returns all active agent_status rows for repo
+// that look like coordinator candidates: same repo, ended_at IS NULL, and
+// either root_agent_name = "coordinator" OR (root_agent_name IS NULL AND
+// session_name = "<repo>@main") so that pre-migration rows are still
+// surfaced via the name convention. Rows are ordered by last_seen DESC so
+// the most-recently-active candidate appears first.
+//
+// This is the discovery primitive for `prism escalate`: zero candidates means
+// no coordinator is running; one candidate means auto-discovery succeeds; two
+// or more means the worker must specify --to explicitly.
+func (d *DB) CoordinatorCandidatesForRepo(repo string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE repo = ? AND ended_at IS NULL
+  AND (root_agent_name = 'coordinator' OR (root_agent_name IS NULL AND session_name = ? || '@main'))
+ORDER BY last_seen DESC`
+	return d.queryStatuses(q, repo, repo)
+}
+
 // CoordinatorForRepo returns the agent_status row for the active coordinator
 // session of repo (i.e. the row where repo = repo AND root_agent_name =
 // "coordinator" AND ended_at IS NULL). Returns nil when no coordinator exists.
