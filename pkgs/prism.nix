@@ -3,6 +3,14 @@
   buildGoModule,
   git,
   tmux,
+  # When true, run the Go test suite inside the nix build sandbox.
+  # Default is false so that local `nix build .#prism` and `nh switch`
+  # are fast and do not re-run tests that the developer / CI has already
+  # run via `go test ./...`. The `nix-build-prism-checked` CI job
+  # (see .github/workflows/pr-gate.yml) builds this package with
+  # `runChecks = true` to preserve the homeless-shelter sandbox-environment
+  # signal in the PR pipeline (see AGENTS.md and issue #1494).
+  runChecks ? false,
 }:
 
 buildGoModule {
@@ -10,6 +18,8 @@ buildGoModule {
   version = "0.1.0";
 
   src = ../modules/programs/prism/prism;
+
+  doCheck = runChecks;
 
   vendorHash = "sha256-tU+rnXKz3ALl7pJx7GYTo1hdr3CFMQS4Ih3UYLr4v54=";
 

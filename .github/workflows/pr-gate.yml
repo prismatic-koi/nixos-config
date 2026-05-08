@@ -1,12 +1,108 @@
 name: pr-gate
-on:
+"on":
   pull_request:
     branches:
       - main
 jobs:
+  # Stub gate retained as a cheap always-on PR check so the workflow
+  # itself is exercised on every PR (including non-Go PRs).
   gate:
     name: pr-gate
     runs-on: ubuntu-latest
     steps:
       - name: Gate passed
         run: echo "pr-gate ok"
+
+  # Full Go test suite with -race. Runs on PRs that touch Go-relevant
+  # paths only. See issue #1494.
+  go-tests:
+    name: go-tests
+    runs-on: ubuntu-latest
+    # Path filtering is applied via dorny/paths-filter so the rest of
+    # the gate (the cheap stub) still runs on non-Go PRs. On non-Go
+    # PRs the job reports success after a single echo step.
+    steps:
+      - uses: actions/checkout@v6
+      - name: Detect Go-relevant changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            go:
+              - 'modules/programs/prism/prism/**'
+              - 'pkgs/prism.nix'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '.github/workflows/pr-gate.yml'
+      - name: Set up Go
+        if: steps.changes.outputs.go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: modules/programs/prism/prism/go.mod
+          cache-dependency-path: modules/programs/prism/prism/go.sum
+      - name: Install bwrap
+        if: steps.changes.outputs.go == 'true'
+        run: |
+          DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -q -y
+          sudo apt-get install -q -y bubblewrap
+      - name: go build
+        if: steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: go build ./...
+      - name: go test ./... -race
+        if: steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: go test ./... -race
+      - name: No Go-relevant changes
+        if: steps.changes.outputs.go != 'true'
+        run: echo "no Go-relevant paths touched; skipping go-tests"
+
+  # Builds prism with doCheck=true so the homeless-shelter sandbox
+  # signal ($HOME=/homeless-shelter) is preserved in the PR pipeline.
+  # This is the single nix-build path that runs Go tests; all other
+  # nix builds (build-and-cache, validate-flakes, local nh switch)
+  # build prism with doCheck=false. See issue #1494.
+  nix-build-prism-checked:
+    name: nix-build-prism-checked
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Detect prism-relevant changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            prism:
+              - 'modules/programs/prism/prism/**'
+              - 'pkgs/prism.nix'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '.github/workflows/pr-gate.yml'
+      - uses: cachix/install-nix-action@v31
+        if: steps.changes.outputs.prism == 'true'
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        if: steps.changes.outputs.prism == 'true'
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
+      # Build prism with runChecks=true via .override on the flake's
+      # `prism` package. This runs the Go test suite inside the nix
+      # sandbox ($HOME=/homeless-shelter) without exposing a separate
+      # `prism-checked` flake output (which would slow down
+      # `nix flake check --all-systems` on every PR, including non-Go
+      # PRs). See issue #1494.
+      - name: nix build prism with runChecks=true
+        if: steps.changes.outputs.prism == 'true'
+        run: |
+          nix build --print-build-logs --impure --no-link \
+            --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.prism.override { runChecks = true; }'
+      - name: No prism-relevant changes
+        if: steps.changes.outputs.prism != 'true'
+        run: echo "no prism-relevant paths touched; skipping nix-build-prism-checked"

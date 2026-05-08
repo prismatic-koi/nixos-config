@@ -44,16 +44,40 @@ go test ./...
 
 This is faster than a full nix build and should be the first check for any prism code change.
 
-**Prism Go-source and `.nix` changes: `nix build .#prism` is a required gate.**
+**Prism Go-source and `.nix` changes: the homeless-shelter gate is enforced by CI.**
 
-Any PR that touches files under `modules/programs/prism/prism/` (Go source) **or** any prism `*.nix` file must run:
+The gate now runs in CI, not locally. Any PR that touches `modules/programs/prism/prism/**`, `pkgs/prism.nix`, `**/go.mod`, `**/go.sum`, or `.github/workflows/pr-gate.yml` triggers:
+
+- the `go-tests` CI job — runs `go test ./... -race` from `modules/programs/prism/prism/` on a Linux runner with bwrap available; and
+- the `nix-build-prism-checked` CI job — builds prism with `runChecks = true` so the test suite executes inside the nix sandbox (`$HOME=/homeless-shelter`).
+
+Both jobs must pass before merge. They live in `.github/workflows/pr-gate.yml`.
+
+**Pipeline split (issue #1494).** Go test execution is split from the default `nix build` so that local `nh switch` and `nix build .#prism` are fast:
+
+- `.#prism` — default attribute, `runChecks = false` (so `doCheck = false`). Used by `nixosConfigurations`, `darwinConfigurations`, and local `nh switch`. No Go tests run.
+- `pkgs.prism.override { runChecks = true; }` — same derivation with `doCheck = true`. Runs the Go suite inside the nix sandbox so the homeless-shelter signal is preserved. Built by the `nix-build-prism-checked` CI job. Not exposed as a flake output, so `nix flake check` does not pay for the test phase on every PR.
+
+**Local pre-PR self-check (recommended).** Before pushing a prism-touching PR, run:
 
 ```bash
+# From modules/programs/prism/prism/
+go build ./...
+go test ./...
+
 # From the repo root
 nix build .#prism
 ```
 
-before opening the PR. This is not optional and not covered by `go test ./...` alone.
+This catches build/test failures fast. The full homeless-shelter signal is then exercised by CI on the PR. If you want to reproduce CI's checked build locally:
+
+```bash
+# From the repo root
+nix build --impure --no-link \
+  --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.prism.override { runChecks = true; }'
+```
+
+The `go-tests` job catches race conditions and integration-test failures the nix sandbox masks (e.g. tests that `t.Skip` when bwrap is unavailable). The `nix-build-prism-checked` job catches the homeless-shelter failure class.
 
 **Why this gate exists — the homeless-shelter failure class.** The Nix build runs the test suite inside a sandbox where `$HOME=/homeless-shelter`, an intentionally unwritable path. This catches tests that touch the user's actual home directory and pass in a normal dev shell but fail in the sandbox:
 
@@ -63,7 +87,7 @@ before opening the PR. This is not optional and not covered by `go test ./...` a
 
 This is not a hypothetical: PR #1455 (`TestDeliverToSession_PiPath_DeliverAsForwarded`) introduced exactly this failure. `go test ./...` passed, `prism review` passed, the PR merged — and main went red on the next `nh switch` because the test created a directory under `$HOME`. The fix was a one-liner, but the break surfaced only in the Nix sandbox.
 
-**Scope — this gate applies only to prism-touching PRs.** PRs that touch only non-prism files (other modules, dotfiles, docs) do **not** need to run `nix build .#prism`. The relaxation introduced in #1441 stands for those paths.
+**Scope — this gate applies only to prism-touching PRs.** PRs that touch only non-prism files (other modules, dotfiles, docs) do **not** trigger the `go-tests` or `nix-build-prism-checked` jobs. The relaxation introduced in #1441 stands for those paths.
 
 ### sandbox-exec testing convention
 
