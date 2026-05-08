@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -32,6 +33,13 @@ import (
 
 // newHostAPIClient returns an *http.Client that dials sockPath over a Unix
 // socket. Used when PRISM_HOST_API begins with "unix://".
+//
+// Tombstone hygiene: when the dial returns ECONNREFUSED and the socket file
+// still exists on disk, the sidecar process has exited abnormally without
+// removing the socket. In that case we surface a clearer diagnostic so the
+// user sees "sidecar has exited" rather than the raw "connection refused" with
+// no additional context. This is the client-side branch of the tombstone
+// hygiene described in issue #1486.
 func newHostAPIClient(sockPath string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -39,6 +47,14 @@ func newHostAPIClient(sockPath string) *http.Client {
 				d := &net.Dialer{Timeout: 5 * time.Second}
 				conn, dialErr := d.DialContext(ctx, "unix", sockPath)
 				if dialErr != nil {
+					// Check for the tombstone case: socket file exists on disk
+					// but connect() returned ECONNREFUSED — the sidecar has
+					// exited abnormally without cleaning up the socket file.
+					// Surface a more informative error than the raw syscall
+					// message so diagnostics are immediately actionable.
+					if isStaleTombstoneSocket(sockPath, dialErr) {
+						return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, dialErr)
+					}
 					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
 				}
 				return conn, nil
@@ -46,6 +62,17 @@ func newHostAPIClient(sockPath string) *http.Client {
 		},
 		Timeout: 60 * time.Second,
 	}
+}
+
+// isStaleTombstoneSocket returns true when the dial error is ECONNREFUSED and
+// the socket file at sockPath exists on disk. This indicates the sidecar
+// exited abnormally, leaving a stale socket file — the "tombstone" case.
+func isStaleTombstoneSocket(sockPath string, dialErr error) bool {
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return false
+	}
+	_, statErr := os.Stat(sockPath)
+	return statErr == nil
 }
 
 // newTCPHostAPIClient returns a standard *http.Client that dials over TCP.
@@ -328,6 +355,9 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 					d := &net.Dialer{Timeout: 5 * time.Second}
 					conn, dialErr := d.DialContext(ctx, "unix", sockPath)
 					if dialErr != nil {
+						if isStaleTombstoneSocket(sockPath, dialErr) {
+							return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, dialErr)
+						}
 						return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, dialErr)
 					}
 					return conn, nil

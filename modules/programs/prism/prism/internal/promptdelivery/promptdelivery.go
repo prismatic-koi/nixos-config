@@ -28,10 +28,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -189,6 +191,10 @@ func deliverViaHTTP(status *db.Status, text string, buildBody func(string, *db.S
 }
 
 // newUnixClient returns an *http.Client that dials sockPath over a Unix socket.
+//
+// Tombstone hygiene: when the dial returns ECONNREFUSED and the socket file
+// exists on disk, the sidecar has exited abnormally without removing the
+// socket. A clearer diagnostic is surfaced in that case.
 func newUnixClient(sockPath string) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
@@ -196,6 +202,9 @@ func newUnixClient(sockPath string) *http.Client {
 				d := &net.Dialer{Timeout: 5 * time.Second}
 				conn, err := d.DialContext(ctx, "unix", sockPath)
 				if err != nil {
+					if isStaleTombstoneSocket(sockPath, err) {
+						return nil, fmt.Errorf("host-API socket at %s is a stale tombstone — sidecar has exited without cleanup (ECONNREFUSED on existing socket file): %w", sockPath, err)
+					}
 					return nil, fmt.Errorf("host-API socket not available at %s: %w", sockPath, err)
 				}
 				return conn, nil
@@ -203,4 +212,15 @@ func newUnixClient(sockPath string) *http.Client {
 		},
 		Timeout: 10 * time.Second,
 	}
+}
+
+// isStaleTombstoneSocket returns true when dialErr is ECONNREFUSED and the
+// socket file at sockPath still exists on disk — the "tombstone" case where
+// the sidecar exited abnormally without removing the socket file.
+func isStaleTombstoneSocket(sockPath string, dialErr error) bool {
+	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		return false
+	}
+	_, statErr := os.Stat(sockPath)
+	return statErr == nil
 }
