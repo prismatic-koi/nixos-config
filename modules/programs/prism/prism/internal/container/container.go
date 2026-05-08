@@ -207,7 +207,10 @@ type Config struct {
 
 	// HarnessPipeTCPPort is the host-side TCP port for the PI harness pipe
 	// listener (Darwin only). When non-zero, PRISM_HARNESS_PIPE is set to
-	// tcp://host.containers.internal:<HarnessPipeTCPPort>. On Linux this is zero.
+	// tcp://127.0.0.1:<HarnessPipeTCPPort> for sandbox-exec sessions (both
+	// the sidecar and the sandboxed extension run on the host loopback, so
+	// host.containers.internal — a podman/gvproxy convention — must not be
+	// used here). On Linux this is zero.
 	HarnessPipeTCPPort int
 
 	// InstanceID is the UUID instance identifier for the prism session that owns
