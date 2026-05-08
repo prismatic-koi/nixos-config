@@ -232,11 +232,14 @@ var prCmd = &cobra.Command{
 			}
 		}
 
-		// Resolve the effective harness: --harness flag takes precedence; when
-		// absent, derive from the active profile slot (matching spawn.go #1328).
-		// Default to "opencode" when no profile/slot is configured.
+		// Resolve the effective harness via the canonical precedence ladder
+		// (#1328 / #1491):
+		//   1. --harness flag (when explicitly set).
+		//   2. Slot-level Harness from the active profile.
+		//   3. File-level default_harness from profiles.json.
+		//   4. Hardcoded "opencode" — encapsulated inside HarnessForSlot.
 		effectiveHarness := harnessFlag
-		if !cmd.Flags().Changed("harness") && pf != nil && resolvedProfile != "" {
+		if !cmd.Flags().Changed("harness") {
 			plannedRole := agentFlag
 			if plannedRole == "" {
 				if branch == "main" {
@@ -245,15 +248,13 @@ var prCmd = &cobra.Command{
 					plannedRole = "worker"
 				}
 			}
-			if slot, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
-				slotHarness := config.HarnessForSlot(slot)
-				if slotHarness != "" {
-					effectiveHarness = slotHarness
+			var slot config.RoleSlot
+			if pf != nil && resolvedProfile != "" {
+				if s, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
+					slot = s
 				}
 			}
-		}
-		if effectiveHarness == "" {
-			effectiveHarness = "opencode"
+			effectiveHarness = config.HarnessForSlot(pf, slot)
 		}
 		if _, ok := harness.Lookup(effectiveHarness); !ok {
 			return fmt.Errorf("unknown harness %q: valid harnesses: %s", effectiveHarness, strings.Join(harness.Names(), ", "))

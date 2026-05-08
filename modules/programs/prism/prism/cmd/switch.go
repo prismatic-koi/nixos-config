@@ -356,9 +356,15 @@ var switchCmd = &cobra.Command{
 				return fmt.Errorf("prism switch: resolve active profile: %w", profErr)
 			}
 			if resolvedProfile != "" {
-				if slot, ok := config.SlotForRole(pf, resolvedProfile, "worker"); ok {
-					switchHarnessName = config.HarnessForSlot(slot)
+				var slot config.RoleSlot
+				if s, ok := config.SlotForRole(pf, resolvedProfile, "worker"); ok {
+					slot = s
 				}
+				switchHarnessName = config.HarnessForSlot(pf, slot)
+			} else if pf.DefaultHarness != "" {
+				// No active profile resolved but the profiles file declares a
+				// file-level default_harness (#1491) — honour it.
+				switchHarnessName = config.HarnessForSlot(pf, config.RoleSlot{})
 			}
 		}
 

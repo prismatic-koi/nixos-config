@@ -440,12 +440,19 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
 	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
 	// value written here.
-	// Resolve effective harness for DB seeding — default to "opencode" when
-	// empty so sessions without an explicit --harness flag continue to write
-	// the same value they wrote before this fix.
+	//
+	// Resolve effective harness for DB seeding via the canonical accessor
+	// (#1491). Callers normally pre-resolve opts.HarnessName via
+	// config.HarnessForSlot, so this branch is the empty-string safety net
+	// for the rare callers (or future ones) that leave HarnessName blank —
+	// we load profiles.json on demand so the file-level default_harness
+	// fallback is honoured before the hardcoded "opencode" final-resort.
 	effectiveHarness := opts.HarnessName
 	if effectiveHarness == "" {
-		effectiveHarness = "opencode"
+		// Best-effort: a missing or unreadable profiles.json simply yields
+		// the hardcoded "opencode" — same behaviour as before #1491.
+		pf, _ := config.LoadProfiles()
+		effectiveHarness = config.HarnessForSlot(pf, config.RoleSlot{})
 	}
 	if err := d.UpsertStatusSeedRootAgentName(
 		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness,

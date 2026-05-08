@@ -491,12 +491,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// the profile slot provides the default when the flag is absent.
 		if !cmd.Flags().Changed("harness") {
 			if slot, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
-				slotHarness := config.HarnessForSlot(slot)
+				slotHarness := config.HarnessForSlot(pf, slot)
 				if _, validHarness := harness.Lookup(slotHarness); !validHarness {
 					return fmt.Errorf("profile %q role %q declares unknown harness %q: valid harnesses: %s",
 						resolvedProfile, plannedRole, slotHarness, strings.Join(harness.Names(), ", "))
 				}
 				harnessFlag = slotHarness
+			} else if pf != nil && pf.DefaultHarness != "" {
+				// Profile defines no slot for this role — fall back to the
+				// file-level default_harness (#1491) before resorting to the
+				// hardcoded "opencode" baked into harness construction.
+				harnessFlag = config.HarnessForSlot(pf, config.RoleSlot{})
 			}
 		}
 	}
@@ -1081,7 +1086,11 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		legHarness := harnessFlag
 		if !cmd.Flags().Changed("harness") {
 			if slot, ok := config.SlotForRole(pf, profileName, plannedRole); ok {
-				legHarness = config.HarnessForSlot(slot)
+				legHarness = config.HarnessForSlot(pf, slot)
+			} else if pf != nil && pf.DefaultHarness != "" {
+				// Profile defines no slot for this role — fall back to the
+				// file-level default_harness (#1491).
+				legHarness = config.HarnessForSlot(pf, config.RoleSlot{})
 			}
 		}
 		if _, ok := harness.Lookup(legHarness); !ok {
