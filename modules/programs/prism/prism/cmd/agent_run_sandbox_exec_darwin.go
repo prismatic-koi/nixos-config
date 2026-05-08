@@ -293,8 +293,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// For socket-pipe harnesses (PI) on Darwin, the sidecar allocates a TCP
 	// port at startup and stores it in harness_port. Expose it here so the
 	// harness can connect back to the sidecar's pipe listener.
+	//
+	// sandbox-exec runs directly on the host — there is no VM, no gvproxy,
+	// and no synthetic hostname resolution. The sidecar listener and the
+	// sandboxed extension are both on the host loopback, so 127.0.0.1 is the
+	// correct address. host.containers.internal is a podman/gvproxy convention
+	// that does NOT resolve on bare macOS.
 	if ctrCfg.HarnessPipeTCPPort != 0 {
-		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://host.containers.internal:%d", ctrCfg.HarnessPipeTCPPort))
+		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
 	}
 
 	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers APPEND_SYSTEM.md
