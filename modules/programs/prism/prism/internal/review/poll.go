@@ -294,10 +294,26 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 	return results
 }
 
-// isTerminalAgentState mirrors the terminalStates set in internal/db/db.go
-// (finished, interrupted, error, deleted). Duplicated here so the review
-// package does not have to widen the db package's exported surface for a
-// single check.
+// isTerminalAgentState reports whether a state is one that
+// cleanupAgentSession should leave alone (rather than overwriting to
+// "error"). It is intentionally broader than db.terminalStates and
+// review.isTerminalState: it includes "interrupted" so that the cleanup
+// path does NOT clobber an interrupted session's state — doing so would
+// prevent the user from redirecting the agent later (#1495).
+//
+// In other words:
+//
+//   - db.terminalStates: {finished, error, deleted} — used by GroupCompleted
+//     to decide when the review group is done. "interrupted" is excluded
+//     because an interrupted agent may still resume.
+//   - review.isTerminalState: {finished, error} — used by pollAgents'
+//     per-agent progress tracker. Same reasoning as above; "deleted" is
+//     additionally excluded because pollAgents has its own missing-session
+//     handling.
+//   - review.isTerminalAgentState (this function): {finished, interrupted,
+//     error, deleted} — used only by cleanupAgentSession to decide whether
+//     to overwrite a row to "error". The broader set here is correct
+//     because cleanup must not destroy the interrupted state.
 func isTerminalAgentState(state string) bool {
 	switch state {
 	case "finished", "interrupted", "error", "deleted":

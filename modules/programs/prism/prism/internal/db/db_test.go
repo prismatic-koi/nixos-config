@@ -2696,8 +2696,14 @@ func TestGroupCompleted_InterruptedNotTerminal(t *testing.T) {
 		t.Error("GroupCompleted: got true, want false (interrupted member is not terminal per #1495)")
 	}
 
-	// After the user redirects the interrupted agent and it finishes, the
-	// group must complete normally.
+	// After the user redirects the interrupted agent it goes interrupted
+	// → active (when `prism prompt` triggers a new turn) → finished. Mirror
+	// the production state-machine path here rather than jumping directly
+	// from interrupted to finished (which the state machine flags as
+	// invalid).
+	if err := d.UpsertStatus("nixos-config@feature~review-1-security", "nixos-config", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus to active (resume): %v", err)
+	}
 	if err := d.UpsertStatus("nixos-config@feature~review-1-security", "nixos-config", "/wt", "finished", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus to finished: %v", err)
 	}
@@ -2748,6 +2754,95 @@ func TestGroupCompleted_DeletedIsTerminal(t *testing.T) {
 	}
 	if !done {
 		t.Error("GroupCompleted: got false, want true (deleted IS terminal per #1495 contract)")
+	}
+}
+
+// TestGroupCompleted_EndedAtIsTerminal verifies the #1495 escape-hatch flow:
+// `prism cleanup` sets ended_at without rewriting state, and the row's state
+// remains "interrupted" (not in terminalStates). GroupCompleted must still
+// treat such a row as terminal because ended_at IS NOT NULL signals the
+// session is closed and will not progress further. Without this gate, an
+// interrupted-then-cleaned-up agent would hang the review monitor forever.
+func TestGroupCompleted_EndedAtIsTerminal(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	const sessCleaned = "nixos-config@feature~review-1-goal"
+	const sessFinished = "nixos-config@feature~review-1-code"
+
+	for _, name := range []string{sessCleaned, sessFinished} {
+		if err := d.UpsertStatus(name, "nixos-config", "/wt", "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", name, err)
+		}
+		if err := d.SetGroupID(name, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", name, err)
+		}
+	}
+
+	// Simulate `prism cleanup` on an interrupted agent: state stays
+	// interrupted, ended_at is set.
+	if err := d.UpsertStatus(sessCleaned, "nixos-config", "/wt", "interrupted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus(interrupted): %v", err)
+	}
+	if err := d.SetEnded(sessCleaned); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// The other agent finishes normally.
+	if err := d.UpsertStatus(sessFinished, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus(finished): %v", err)
+	}
+
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if !done {
+		t.Error("GroupCompleted: got false, want true (ended_at IS NOT NULL must count as terminal even when state=\"interrupted\")")
+	}
+}
+
+// TestGroupResults_ExcludesEndedRows verifies that GroupResults skips rows
+// whose ended_at is non-NULL. This is what makes the escape-hatch flow
+// route through buildMonitorResults's missing-session branch (#1495).
+func TestGroupResults_ExcludesEndedRows(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	const sessCleaned = "nixos-config@feature~review-1-goal"
+	const sessFinished = "nixos-config@feature~review-1-code"
+
+	for _, name := range []string{sessCleaned, sessFinished} {
+		if err := d.UpsertStatus(name, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q): %v", name, err)
+		}
+		if err := d.SetGroupID(name, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", name, err)
+		}
+	}
+
+	// One row is ended (cleaned up); the other is not.
+	if err := d.SetEnded(sessCleaned); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	results, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	if _, present := results[sessCleaned]; present {
+		t.Errorf("GroupResults still contains the ended row %q; want it excluded", sessCleaned)
+	}
+	if _, present := results[sessFinished]; !present {
+		t.Errorf("GroupResults missing the live row %q", sessFinished)
 	}
 }
 

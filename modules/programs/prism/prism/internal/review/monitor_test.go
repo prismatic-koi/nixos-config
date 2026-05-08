@@ -577,12 +577,14 @@ func TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses(t *testing.T
 }
 
 // TestBuildMonitorResults_InterruptedThenCleanedUp verifies the #1495 escape
-// hatch: when the user runs `prism cleanup --yes --session <agent>` on an
-// interrupted agent, the agent's row is removed from agent_status. The
-// monitor's GroupCompleted check then no longer counts that session as a
-// non-terminal member, the group completes, and buildMonitorResults sees the
-// session as missing from groupData — routed to the existing
-// 'session not found in group' branch with IsError=true.
+// hatch at the buildMonitorResults layer: when the row is missing from
+// groupData, buildMonitorResults routes it through the missing-session
+// branch with IsError=true, while the remaining agents are reported normally.
+//
+// (The end-to-end flow that produces "row missing from groupData" — cleanup
+// sets ended_at, GroupResults excludes ended rows — is verified by
+// TestGroupResults_ExcludesEndedRows in internal/db/db_test.go and by
+// TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB below.)
 func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 	agents := []review.Agent{
 		{Name: "review-goal"},
@@ -592,8 +594,9 @@ func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 		"nixos-config@parent~review-1-review-goal",
 		"nixos-config@parent~review-1-review-code",
 	}
-	// The first agent was cleaned up via `prism cleanup` and is missing from
-	// groupData. The second agent finished normally with a PASS verdict.
+	// The first agent was cleaned up via `prism cleanup`; GroupResults skips
+	// rows where ended_at IS NOT NULL, so it is missing from groupData here.
+	// The second agent finished normally with a PASS verdict.
 	groupData := map[string]db.GroupMemberResult{
 		sessions[1]: {
 			SessionName: sessions[1],
@@ -625,6 +628,153 @@ func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 	}
 	if other.IsError {
 		t.Errorf("other agent: IsError=true, want false")
+	}
+}
+
+// TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB is the end-to-end
+// regression test for #1495's escape hatch. It exercises the actual DB
+// state that `prism cleanup --yes --session <interrupted-agent>` produces
+// (state="interrupted" + ended_at set) and verifies the full flow:
+//
+//   1. db.GroupCompleted returns true (because ended_at IS NOT NULL counts
+//      as terminal even when state="interrupted").
+//   2. db.GroupResults excludes the ended row from the returned map.
+//   3. buildMonitorResults sees the session as missing and routes it through
+//      the existing 'session not found in group' branch with IsError=true.
+//
+// Without the (1) and (2) gates, an interrupted-then-cleaned-up agent would
+// hang the review monitor forever — the regression review-context flagged on
+// PR #1509 round 1.
+func TestMonitor_InterruptedThenCleanedUp_FlowsThroughDB(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+
+	groupID, err := d.RegisterGroup("nixos-config@parent")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	const (
+		sessCleaned  = "nixos-config@parent~review-1-review-goal"
+		sessRunning  = "nixos-config@parent~review-1-review-code"
+		sessFinished = "nixos-config@parent~review-1-review-security"
+	)
+
+	// All three start active.
+	for _, s := range []string{sessCleaned, sessRunning, sessFinished} {
+		if err := d.UpsertStatus(s, "nixos-config", "/wt", "active", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus(%q, active): %v", s, err)
+		}
+		if err := d.SetGroupID(s, groupID); err != nil {
+			t.Fatalf("SetGroupID(%q): %v", s, err)
+		}
+	}
+
+	// Simulate the user interrupting one agent: state → interrupted.
+	if err := d.UpsertStatus(sessCleaned, "nixos-config", "/wt", "interrupted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus(interrupted): %v", err)
+	}
+
+	// At this point the group is NOT done — interrupted is non-terminal
+	// (#1495) and the other two are still active.
+	if done, _ := d.GroupCompleted(groupID); done {
+		t.Fatal("pre-cleanup: GroupCompleted = true; want false (interrupted is non-terminal, others still active)")
+	}
+
+	// Simulate `prism cleanup --yes --session <interrupted-agent>`: the
+	// cleanup path SIGTERMs the sidecar (state stays interrupted) and calls
+	// SetEnded which sets ended_at without changing state.
+	if err := d.SetEnded(sessCleaned); err != nil {
+		t.Fatalf("SetEnded(%q): %v", sessCleaned, err)
+	}
+
+	// Sanity: the row is still there with state=interrupted and ended_at set.
+	st, err := d.CurrentStatus(sessCleaned)
+	if err != nil || st == nil {
+		t.Fatalf("CurrentStatus(%q) = %v, %v", sessCleaned, st, err)
+	}
+	if st.State != "interrupted" {
+		t.Errorf("post-cleanup state = %q, want %q (cleanup must NOT rewrite state)", st.State, "interrupted")
+	}
+	if st.EndedAt == nil {
+		t.Errorf("post-cleanup ended_at is NULL, want set (cleanup must call SetEnded)")
+	}
+
+	// The other two transition to finished with verdicts.
+	if err := d.UpsertStatus(sessRunning, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus(running→finished): %v", err)
+	}
+	if err := d.UpsertStatus(sessFinished, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus(finished): %v", err)
+	}
+	for _, s := range []string{sessRunning, sessFinished} {
+		if err := d.WriteEvent(db.Event{
+			ID:          s + "-evt-1",
+			SessionName: s,
+			Repo:        "nixos-config",
+			Worktree:    "/wt",
+			Type:        "msg_assistant",
+			Payload:     `{"text":"<verdict>PASS</verdict>"}`,
+		}); err != nil {
+			t.Fatalf("WriteEvent(%q): %v", s, err)
+		}
+	}
+
+	// Layer 1: GroupCompleted must now return true — the cleaned-up row's
+	// ended_at IS NOT NULL counts as terminal even with state=interrupted.
+	done, err := d.GroupCompleted(groupID)
+	if err != nil {
+		t.Fatalf("GroupCompleted: %v", err)
+	}
+	if !done {
+		t.Fatal("GroupCompleted = false after cleanup + finishes; want true (regression: review monitor would hang forever)")
+	}
+
+	// Layer 2: GroupResults must EXCLUDE the cleaned-up row so the missing-
+	// session branch in buildMonitorResults fires.
+	groupData, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	if _, present := groupData[sessCleaned]; present {
+		t.Errorf("GroupResults still contains the cleaned-up session %q; want it excluded (ended_at IS NOT NULL)", sessCleaned)
+	}
+	if _, present := groupData[sessRunning]; !present {
+		t.Errorf("GroupResults missing the still-live finished session %q", sessRunning)
+	}
+
+	// Layer 3: buildMonitorResults routes the missing session through the
+	// existing 'session not found in group' branch with IsError=true, while
+	// the other two agents are reported normally with their PASS verdicts.
+	agents := []review.Agent{
+		{Name: "review-goal"},
+		{Name: "review-code"},
+		{Name: "review-security"},
+	}
+	sessions := []string{sessCleaned, sessRunning, sessFinished}
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 3 {
+		t.Fatalf("got %d results, want 3", len(results))
+	}
+	if !results[0].IsError {
+		t.Errorf("cleaned-up agent: IsError=false, want true")
+	}
+	if !findSubstring(results[0].Output, "not found in group") {
+		t.Errorf("cleaned-up agent: output = %q, want missing-session message", results[0].Output)
+	}
+	for i, name := range []string{"running", "finished"} {
+		r := results[i+1]
+		if !r.Passed {
+			t.Errorf("%s agent: Passed=false, want true", name)
+		}
+		if r.IsError {
+			t.Errorf("%s agent: IsError=true, want false", name)
+		}
 	}
 }
 

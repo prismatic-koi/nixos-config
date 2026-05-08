@@ -54,8 +54,28 @@ func (d *DB) RegisterGroup(parentSession string) (string, error) {
 }
 
 // GroupCompleted reports whether every agent_status row with this group_id has
-// reached a terminal state (finished, error, or deleted).
-// "interrupted" is intentionally not terminal here — see terminalStates.
+// reached a terminal state. A row is considered terminal when EITHER:
+//
+//   - its `state` is in terminalStates (finished, error, deleted), OR
+//   - its `ended_at` is non-NULL (the session row has been closed by
+//     `prism cleanup`, `prism reset`, or any other lifecycle path that
+//     calls SetEnded / MarkAllEnded).
+//
+// The `ended_at` arm is what makes the user's escape hatch work. When the
+// user runs `prism cleanup --yes --session <interrupted-agent>` to abandon
+// an interrupted review agent, the cleanup path:
+//
+//   1. SIGTERMs the sidecar, which writes state="interrupted".
+//   2. Calls SetEnded(session), which sets ended_at but leaves state alone.
+//
+// Without the `ended_at` arm here, an interrupted-then-cleaned-up agent's
+// row would have state="interrupted" forever, which is no longer terminal
+// per terminalStates (#1495), and GroupCompleted would never return true.
+// The review monitor would then spin until its overall safety timeout.
+// Treating `ended_at IS NOT NULL` as terminal closes that gap for any path
+// that ends a session row without rewriting state — not just `prism cleanup`,
+// but also `prism reset`'s MarkAllEnded.
+//
 // Returns (true, nil) when all members are terminal (including the case where
 // there are no members yet — caller should guard against that if needed).
 // Returns (false, nil) when at least one member is still running.
@@ -69,8 +89,10 @@ func (d *DB) GroupCompleted(groupID string) (bool, error) {
 		placeholders[i] = "?"
 		args = append(args, s)
 	}
-	q := `SELECT COUNT(*) FROM agent_status WHERE group_id = ? AND state NOT IN (` +
-		strings.Join(placeholders, ",") + `)`
+	q := `SELECT COUNT(*) FROM agent_status
+          WHERE group_id = ?
+            AND state NOT IN (` + strings.Join(placeholders, ",") + `)
+            AND ended_at IS NULL`
 	var nonTerminalCount int
 	if err := d.conn.QueryRow(q, args...).Scan(&nonTerminalCount); err != nil {
 		return false, fmt.Errorf("db: group completed: %w", err)
@@ -83,14 +105,28 @@ func (d *DB) GroupCompleted(groupID string) (bool, error) {
 // GroupCompleted returns true. Members that are still active are included but
 // their State may be non-terminal.
 //
+// Rows whose `ended_at` is non-NULL are intentionally EXCLUDED from the
+// returned map. This is what makes the user's escape hatch flow correctly
+// through `buildMonitorResults`'s missing-session branch (#1495): when the
+// user runs `prism cleanup --yes --session <interrupted-agent>` to abandon
+// an interrupted review agent, the cleanup path sets ended_at without
+// rewriting state. By dropping ended rows here, the cleaned-up agent
+// surfaces as "session not found in group" — IsError=true with the
+// pre-existing missing-session message — and the remaining agents are
+// reported normally. (For any race in which a normally-finished agent has
+// ended_at set before the monitor reads results, that agent's verdict is
+// also dropped; this is rare and acceptable, since the user must have
+// initiated cleanup mid-review.)
+//
 // LastMessage is populated from the most recent msg_assistant event payload
 // for each session. It is empty when no such event has been recorded.
 func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) {
 	// Fetch each member's session_name, state, and root_agent_name.
+	// Exclude rows that have been ended (ended_at IS NOT NULL) — see comment above.
 	const statusQ = `
 SELECT session_name, state, COALESCE(root_agent_name, '')
 FROM agent_status
-WHERE group_id = ?`
+WHERE group_id = ? AND ended_at IS NULL`
 	rows, err := d.conn.Query(statusQ, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("db: group results: query statuses: %w", err)
