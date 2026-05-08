@@ -131,6 +131,14 @@ type Config struct {
 	// When empty, agent-run falls back to a relative-to-executable heuristic.
 	PIExtensionDir string `json:"pi_extension_dir"`
 
+	// FeedbackEndpoint is the upstream URL that `prism feedback` POSTs each
+	// new entry to (in addition to writing it locally). Empty means upstream
+	// reporting is disabled — the local JSONL store remains the source of
+	// truth. The PRISM_FEEDBACK_ENDPOINT environment variable takes
+	// precedence over this config key, so a one-off `PRISM_FEEDBACK_ENDPOINT=...
+	// prism feedback ...` invocation works without editing config.json.
+	FeedbackEndpoint string `json:"feedback_endpoint,omitempty"`
+
 	// ProjectIsolationOverrides maps path strings (with optional "~/" prefix)
 	// to isolation mode strings. When a session path matches a key (after "~/"
 	// expansion), the associated mode is used instead of DefaultIsolationMode.
@@ -143,32 +151,33 @@ type Config struct {
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or
 // absent key is distinguishable from an explicit empty array [].
 type parsedConfig struct {
-	ColorPrimary                   string    `json:"color_primary"`
-	ColorSecondary                 string    `json:"color_secondary"`
-	ColorPurple                    string    `json:"color_purple"`
-	ColorYellow                    string    `json:"color_yellow"`
-	ColorGreen                     string    `json:"color_green"`
-	ColorBlue                      string    `json:"color_blue"`
-	ColorRed                       string    `json:"color_red"`
-	ColorForeground                string    `json:"color_foreground"`
-	ColorBg0                       string    `json:"color_bg0"`
-	KittyBin                       string    `json:"kitty_bin"`
-	DefaultIsolationMode           string    `json:"default_isolation_mode"`
-	SidecarPluginPath              string    `json:"sidecar_plugin_path"`
-	GitUserName                    string    `json:"git_user_name"`
-	GitUserEmail                   string    `json:"git_user_email"`
-	SshAccessKeyName               string    `json:"ssh_access_key_name"`
-	SshSigningKeyName              string    `json:"ssh_signing_key_name"`
-	SshBin                         string    `json:"ssh_bin"`
-	PIExtensionDir                 string    `json:"pi_extension_dir"`
-	RestoreStaggerDelayMs          *int      `json:"restore_stagger_delay_ms"`
-	SidecarCircuitBreakerThreshold *int      `json:"sidecar_circuit_breaker_threshold"`
-	BwrapConcurrencyCap            *int      `json:"bwrap_concurrency_cap"`
-	SandboxExecConcurrencyCap      *int      `json:"sandbox_exec_concurrency_cap"`
+	ColorPrimary                   string             `json:"color_primary"`
+	ColorSecondary                 string             `json:"color_secondary"`
+	ColorPurple                    string             `json:"color_purple"`
+	ColorYellow                    string             `json:"color_yellow"`
+	ColorGreen                     string             `json:"color_green"`
+	ColorBlue                      string             `json:"color_blue"`
+	ColorRed                       string             `json:"color_red"`
+	ColorForeground                string             `json:"color_foreground"`
+	ColorBg0                       string             `json:"color_bg0"`
+	KittyBin                       string             `json:"kitty_bin"`
+	DefaultIsolationMode           string             `json:"default_isolation_mode"`
+	SidecarPluginPath              string             `json:"sidecar_plugin_path"`
+	GitUserName                    string             `json:"git_user_name"`
+	GitUserEmail                   string             `json:"git_user_email"`
+	SshAccessKeyName               string             `json:"ssh_access_key_name"`
+	SshSigningKeyName              string             `json:"ssh_signing_key_name"`
+	SshBin                         string             `json:"ssh_bin"`
+	PIExtensionDir                 string             `json:"pi_extension_dir"`
+	RestoreStaggerDelayMs          *int               `json:"restore_stagger_delay_ms"`
+	SidecarCircuitBreakerThreshold *int               `json:"sidecar_circuit_breaker_threshold"`
+	BwrapConcurrencyCap            *int               `json:"bwrap_concurrency_cap"`
+	SandboxExecConcurrencyCap      *int               `json:"sandbox_exec_concurrency_cap"`
 	WorktreeExclude                *[]string          `json:"worktree_exclude"`
 	ProjectLocations               *[]string          `json:"project_locations"`
 	ProjectSpecific                *[]string          `json:"project_specific"`
 	ProjectIsolationOverrides      *map[string]string `json:"project_isolation_overrides"`
+	FeedbackEndpoint               string             `json:"feedback_endpoint"`
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
@@ -189,24 +198,24 @@ const DefaultSandboxExecConcurrencyCap = 20
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
 	return Config{
-		ColorPrimary:         "#d4be98",
-		ColorSecondary:       "#a89984",
-		ColorPurple:          "#d3869b",
-		ColorYellow:          "#d8a657",
-		ColorGreen:           "#a9b665",
-		ColorBlue:            "#7daea3",
-		ColorRed:             "#ea6962",
-		ColorForeground:      "#d3c6aa",
-		ColorBg0:             "#2d353b",
+		ColorPrimary:              "#d4be98",
+		ColorSecondary:            "#a89984",
+		ColorPurple:               "#d3869b",
+		ColorYellow:               "#d8a657",
+		ColorGreen:                "#a9b665",
+		ColorBlue:                 "#7daea3",
+		ColorRed:                  "#ea6962",
+		ColorForeground:           "#d3c6aa",
+		ColorBg0:                  "#2d353b",
 		KittyBin:                  "kitty",
 		DefaultIsolationMode:      IsolationHost,
 		SshAccessKeyName:          "prismatic-koi-ed25519",
 		SshSigningKeyName:         "prismatic-koi-ed25519-signingkey",
 		BwrapConcurrencyCap:       DefaultBwrapConcurrencyCap,
 		SandboxExecConcurrencyCap: DefaultSandboxExecConcurrencyCap,
-		WorktreeExclude:  []string{"obsidian"},
-		ProjectLocations: []string{"~/code"},
-		ProjectSpecific:  []string{"~/documents/obsidian"},
+		WorktreeExclude:           []string{"obsidian"},
+		ProjectLocations:          []string{"~/code"},
+		ProjectSpecific:           []string{"~/documents/obsidian"},
 		ProjectIsolationOverrides: map[string]string{
 			"~/documents/obsidian": "host",
 		},
@@ -313,6 +322,9 @@ func load() Config {
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir
+	}
+	if parsed.FeedbackEndpoint != "" {
+		cfg.FeedbackEndpoint = parsed.FeedbackEndpoint
 	}
 
 	// For integer pointer fields: nil means absent (keep default); non-nil

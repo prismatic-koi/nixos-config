@@ -489,9 +489,27 @@ prism logs <session>              # full sidecar log to stdout
 prism logs <session> --tail N     # last N lines only
 prism logs <session> --follow     # stream new lines as they arrive (ends ~5s after terminal state)
 prism logs <session> -f           # alias for --follow
+prism logs <session> --harness-events     # raw PI JSONL frames (P5.LOGS / #1218)
 ```
 
 Works identically from a host shell and from inside a coordinator container. When `PRISM_HOST_API` is set (container mode), `prism logs` proxies through the host-API Unix socket — no special handling required. The output is the raw log and can be piped to `grep` / `rg`.
+
+#### `--deliver=<sink>` — route the artifact directly
+
+The `--deliver` flag short-circuits the usual "pipe stdout into something" two-step. Three sinks are supported:
+
+```bash
+prism logs <session>                                      # stdout (default)
+prism logs <session> --deliver=stdout                     # explicit stdout
+prism logs <session> --deliver=file:/tmp/sidecar.log      # atomic write to a file
+prism logs <session> --deliver=webhook:https://example.com/triage
+prism logs <session> --harness-events --deliver=webhook:https://example.com/frames
+```
+
+- `file:<path>` writes via tempfile + rename so a failed deliver cannot leave a half-written file. On success it prints `{"delivered_to":"file:<path>","bytes":N}` to stdout.
+- `webhook:<url>` POSTs the content with `Content-Type: text/plain` (or `application/x-ndjson` for `--harness-events`). On success it prints `{"delivered_to":"webhook:<url>","status":<code>}`. A 4xx or 5xx response is surfaced as a non-zero exit with a JSON object containing `status` and a truncated `body`. The local log file is read on demand so a failed delivery never modifies the source.
+- Unknown schemes (`s3:...`, `mailto:...`, etc.) are refused with the valid set listed (principle 3 of #1497).
+- `--deliver` and `--follow` are mutually exclusive: delivery captures a snapshot.
 
 ### Common failure signatures
 
@@ -512,3 +530,22 @@ A lookup table of log patterns, their causes, and remediation hints:
 ### Escalation
 
 If two diagnostic cycles (`prism checkin` + `prism logs`) do not clarify the issue, **escalate to the user** rather than continuing to probe in circles. Document what you observed in each cycle and what remains unclear. Do not run a third diagnostic cycle on your own.
+
+### `prism feedback` — record CLI friction
+
+Use `prism feedback` to record short notes about CLI rough edges — flags rejected for the wrong reason, error messages that don't enumerate, race conditions in async paths. Each entry is appended as one JSON object per line to `$XDG_STATE_HOME/prism/feedback.jsonl` (defaults to `~/.local/state/prism/feedback.jsonl`).
+
+```bash
+prism feedback "the --tier flag rejects 'enterprise' but the docs list it as valid"
+echo "feedback from a script" | prism feedback -        # read from stdin
+prism feedback list                                       # human-readable list
+prism feedback list --json                                # JSON array of all entries
+prism feedback list --days 7                              # only entries from the last 7 days
+prism feedback prune --days 90 --yes                      # drop entries older than 90 days
+```
+
+Each entry includes `timestamp` (RFC 3339), `text`, `session` (the value of `PRISM_SESSION_NAME` if set), and `prism_version`. Optional fields cover `cwd` and other contextual hints.
+
+**Upstream POST (opt-in).** When the `PRISM_FEEDBACK_ENDPOINT` environment variable is set (or a `feedback_endpoint` field is present in `~/.config/prism/config.json`), each new entry is POSTed to the configured URL after being written locally. The local record is the source of truth: if the upstream POST fails, the local entry is unaffected and the failure is reported in the success message. Env var wins over config.
+
+**Pruning safety (principle 1).** `prism feedback prune` requires `--yes` to confirm — omitting it errors instead of prompting. This matches the rest of the prism CLI's no-implicit-confirmations stance.
