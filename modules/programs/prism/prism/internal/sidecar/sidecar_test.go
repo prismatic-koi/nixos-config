@@ -40,6 +40,16 @@ func (t *testTimer) Stop() bool {
 	return was
 }
 
+// Stopped reports whether Stop or Fire has run on this timer. Safe for
+// concurrent use — mirrors the lock acquisition in Stop/Fire so that test
+// assertions on the stopped state do not race with the sidecar goroutine
+// that may call cancelIdleTimer (and thus Stop) concurrently. See #1483.
+func (t *testTimer) Stopped() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopped
+}
+
 func (t *testTimer) Fire() {
 	t.mu.Lock()
 	if t.stopped {
