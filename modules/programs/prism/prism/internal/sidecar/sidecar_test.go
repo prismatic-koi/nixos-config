@@ -221,6 +221,34 @@ func getEvents(t *testing.T, d *db.DB, session string) []db.Event {
 	return events
 }
 
+// getStartupErrorMessage returns the "reason" field from the most-recent
+// startup_error event for session, or "" if none has been written. The
+// startup_error event is emitted by writeStartupError (state.go) when the
+// sidecar transitions a session to StateError during startup; its payload is
+// {"reason":"<error.Error()>"}. See #1222 for the producer side and #1493 for
+// the consumer side that motivated this helper.
+func getStartupErrorMessage(t *testing.T, d *db.DB, session string) string {
+	t.Helper()
+	events, err := d.AllSessionEvents(session)
+	if err != nil {
+		t.Fatalf("AllSessionEvents: %v", err)
+	}
+	// Walk newest-last events backwards to find the most recent startup_error.
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != "startup_error" {
+			continue
+		}
+		var p struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(events[i].Payload), &p); err != nil {
+			return events[i].Payload
+		}
+		return p.Reason
+	}
+	return ""
+}
+
 // ── tests ───────────────────────────────────────────────────────────────────
 
 func TestSessionStatusBusy_WritesActive(t *testing.T) {
