@@ -1464,6 +1464,13 @@ func countBusMessages(t *testing.T, d *db.DB, toSession string) int {
 // TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce verifies that
 // state_change{finished} starts the 2s finished debounce and, when it fires,
 // writes StateFinished and calls notifyCoordinator (Gap 1 fix, protocol v2).
+//
+// Synchronisation (issue #1515): rather than sleeping for a fixed 50ms before
+// calling clk.LastTimer(), this test blocks on clk.WaitForTimerCount(1, ...)
+// which observes the actual AfterFunc registration event. Under load the old
+// 50ms sleep was not always enough for the sidecar goroutine to reach
+// AfterFunc, so LastTimer() returned nil and the test failed deterministically
+// in the Nix sandbox even though the production code was correct.
 func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1475,8 +1482,11 @@ func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Give the sidecar a moment to process.
-	time.Sleep(50 * time.Millisecond)
+	// Wait deterministically for the finished debounce timer to be registered.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer was created")
+	}
 
 	// State should NOT be finished yet (debounce has not fired).
 	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
@@ -1484,11 +1494,6 @@ func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
 		t.Error("state reached finished before finished debounce fired")
 	}
 
-	// Fire the debounce timer manually.
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("no finished debounce timer was created")
-	}
 	timer.Fire()
 
 	// State must now be finished.
@@ -1511,6 +1516,11 @@ func TestSocketPipe_IdleDebounce_WritesFinishedAfterDebounce(t *testing.T) {
 // TestSocketPipe_IdleDebounce_CancelledByTurnStart verifies that a turn_start
 // arriving while the finished debounce timer is running cancels the timer and
 // transitions the session to StateActive, not StateFinished (Gap 1 + 2 fix).
+//
+// Synchronisation (issue #1515): waits for timer registration via
+// clk.WaitForTimerCount and for cancellation via timer.WaitStopped — no
+// wall-clock sleeps. The DB-state assertion uses waitForState so a slow handler
+// commit does not race with the assertion.
 func TestSocketPipe_IdleDebounce_CancelledByTurnStart(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1521,23 +1531,24 @@ func TestSocketPipe_IdleDebounce_CancelledByTurnStart(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Give the sidecar time to create the finished debounce timer.
-	time.Sleep(50 * time.Millisecond)
-
-	timer := clk.LastTimer()
+	// Wait for the finished debounce timer to be registered.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
 	if timer == nil {
 		t.Fatal("no finished debounce timer was created after state_change{finished}")
 	}
 
 	// Send turn_start — must cancel the debounce.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
-	time.Sleep(50 * time.Millisecond)
+	if !timer.WaitStopped(5 * time.Second) {
+		t.Fatal("finished debounce timer was not stopped by turn_start within 5s")
+	}
 
 	// Firing the (now-cancelled) timer must not write StateFinished.
 	timer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
-	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	// State must be active after the turn_start (waitForState polls the DB to
+	// avoid racing the handler's commit).
+	st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateActive), 2*time.Second)
 	if st == string(agent.StateFinished) {
 		t.Errorf("state became finished after cancelled debounce, want active")
 	}
@@ -1553,6 +1564,10 @@ func TestSocketPipe_IdleDebounce_CancelledByTurnStart(t *testing.T) {
 // TestSocketPipe_MultipleIdle_OnlyOneTimer verifies that multiple consecutive
 // state_change{finished} frames result in exactly one debounce timer running
 // at a time — earlier timers are cancelled before a new one starts (Gap 2 fix).
+//
+// Synchronisation (issue #1515): each timer is awaited via WaitForTimerCount
+// (registration) and WaitStopped (cancellation), so the test does not depend
+// on a fixed sleep being long enough for the sidecar goroutine to run.
 func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1562,37 +1577,33 @@ func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
 
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 
-	// First finished signal.
+	// First finished signal: wait for timer #1 to be registered.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-	firstTimer := clk.LastTimer()
+	firstTimer := clk.WaitForTimerCount(1, 5*time.Second)
 	if firstTimer == nil {
 		t.Fatal("no timer after first state_change{finished}")
 	}
 
-	// Second finished signal — first timer must be cancelled before the new one starts.
+	// Second finished signal: wait for timer #2 — the first must already be stopped.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-	secondTimer := clk.LastTimer()
+	secondTimer := clk.WaitForTimerCount(2, 5*time.Second)
 	if secondTimer == nil {
 		t.Fatal("no timer after second state_change{finished}")
 	}
 	if firstTimer == secondTimer {
 		t.Fatal("same timer object — second state_change{finished} did not create a new timer")
 	}
-	if !firstTimer.Stopped() {
+	if !firstTimer.WaitStopped(5 * time.Second) {
 		t.Error("first finished debounce timer was not stopped when second state_change{finished} arrived")
 	}
 
 	// Firing the second timer must write StateFinished exactly once.
 	secondTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
 	// Also firing the first (already-stopped) timer must be a no-op.
 	firstTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
-	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateFinished), 2*time.Second)
 	if st != string(agent.StateFinished) {
 		t.Errorf("state after second debounce = %q, want finished", st)
 	}
@@ -1604,6 +1615,11 @@ func TestSocketPipe_MultipleIdle_OnlyOneTimer(t *testing.T) {
 // TestSocketPipe_ErrorState_CancelsTimers verifies that state_change{error}
 // cancels any in-flight finished-debounce or recovery timer and records
 // lastErrorAt, so a stale debounce cannot overwrite StateError (Gap 3 fix).
+//
+// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped + waitForState
+// replace the previous fixed sleeps so the assertions wait on the actual
+// events (timer registered, timer cancelled, DB state committed) rather than
+// on wall-clock elapsed time.
 func TestSocketPipe_ErrorState_CancelsTimers(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1611,39 +1627,37 @@ func TestSocketPipe_ErrorState_CancelsTimers(t *testing.T) {
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Start finished debounce.
+	// Start finished debounce and wait for the timer to be registered.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-
-	idleTimer := clk.LastTimer()
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
 	if idleTimer == nil {
 		t.Fatal("no finished debounce timer after state_change{finished}")
 	}
 
 	// Send state_change{error} — must cancel the finished debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "error"})
-	time.Sleep(50 * time.Millisecond)
-
-	// The finished debounce timer must be stopped.
-	if !idleTimer.Stopped() {
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("finished debounce timer was not stopped by state_change{error}")
 	}
 
 	// Firing the stale timer must not overwrite StateError.
 	idleTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
-	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second)
 	if st != string(agent.StateError) {
 		t.Errorf("state after stale debounce fire = %q, want error", st)
 	}
 
-	// lastErrorAt must be set (non-zero).
-	sc.mu.Lock()
-	lastErrorAt := sc.lastErrorAt
-	sc.mu.Unlock()
-	if lastErrorAt.IsZero() {
+	// lastErrorAt must be set (non-zero). Wait for the handler to commit the
+	// field under s.mu — the state-change observation above guarantees the
+	// frame has been processed, but lastErrorAt is set in the same critical
+	// section so a poll under the lock is sufficient and race-free.
+	if !waitForCondition(t, func() bool {
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		return !sc.lastErrorAt.IsZero()
+	}, 2*time.Second, "lastErrorAt set after state_change{error}") {
 		t.Error("lastErrorAt was not set after state_change{error}")
 	}
 
@@ -1774,6 +1788,9 @@ func TestSocketPipe_TurnStart_ClearsEndedOnInterruptedResume(t *testing.T) {
 // TestSocketPipe_WaitingState_CancelsIdleTimer verifies that state_change{waiting}
 // cancels any in-flight finished-debounce timer so the session does not spuriously
 // transition to StateFinished while waiting for user input (Gap 5 fix).
+//
+// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped + waitForState
+// replace fixed sleeps; the test now reacts to the actual sidecar transitions.
 func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1781,29 +1798,24 @@ func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Start finished debounce.
+	// Start finished debounce and wait for the timer.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-
-	idleTimer := clk.LastTimer()
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
 	if idleTimer == nil {
 		t.Fatal("no finished debounce timer after state_change{finished}")
 	}
 
 	// Send state_change{waiting} — must cancel the finished debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "waiting"})
-	time.Sleep(50 * time.Millisecond)
-
-	if !idleTimer.Stopped() {
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("finished debounce timer was not stopped by state_change{waiting}")
 	}
 
 	// Firing the stale timer must not write StateFinished.
 	idleTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
-	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateWaiting), 2*time.Second)
 	if st == string(agent.StateFinished) {
 		t.Errorf("state became finished after cancelled finished debounce timer during waiting, want waiting")
 	}
@@ -1816,6 +1828,10 @@ func TestSocketPipe_WaitingState_CancelsIdleTimer(t *testing.T) {
 // TestSocketPipe_AutoRetryStart_CancelsIdleTimer verifies that an auto_retry_start
 // frame cancels any in-flight finished-debounce timer so the session does not
 // spuriously finish during the retry window (Gap 6 fix).
+//
+// Synchronisation (issue #1515): WaitForTimerCount + WaitStopped replace fixed
+// sleeps. The trailing state assertion is bounded by waitForCondition so a
+// stray race cannot let StateFinished slip in unnoticed.
 func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1823,29 +1839,30 @@ func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Start finished debounce.
+	// Start finished debounce and wait for the timer.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-
-	idleTimer := clk.LastTimer()
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
 	if idleTimer == nil {
 		t.Fatal("no finished debounce timer after state_change{finished}")
 	}
 
 	// Send auto_retry_start — must cancel the finished debounce timer.
 	sendJSON(t, conn, map[string]any{"type": "auto_retry_start", "attempt": 1})
-	time.Sleep(50 * time.Millisecond)
-
-	if !idleTimer.Stopped() {
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("finished debounce timer was not stopped by auto_retry_start")
 	}
 
-	// Firing the stale timer must not write StateFinished.
+	// Firing the stale timer must not write StateFinished. The state should
+	// remain active (we transitioned via turn_start above and auto_retry_start
+	// does not change the DB state).
 	idleTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
 
-	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	// Assert the state is NOT finished. We wait briefly to give any erroneous
+	// transition a chance to surface, then assert. waitForState returns when
+	// either the target is reached or the deadline passes — we explicitly want
+	// the deadline path here, so we use a short window.
+	st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateFinished), 200*time.Millisecond)
 	if st == string(agent.StateFinished) {
 		t.Errorf("state became finished after cancelled finished debounce timer during retry, want active")
 	}
@@ -1858,6 +1875,10 @@ func TestSocketPipe_AutoRetryStart_CancelsIdleTimer(t *testing.T) {
 // TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent verifies that a turn_end
 // frame updates lastAssistantAgent so that handleSessionFinished()'s subagent-
 // suppression logic works correctly for PI sessions (Gap 7 fix).
+//
+// Synchronisation (issue #1515): turn_end has no observable timer or DB-state
+// effect by itself, so the test polls sc.lastAssistantAgent under sc.mu via
+// waitForCondition rather than racing a 50ms sleep.
 func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, _ := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1873,13 +1894,16 @@ func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
 		"type":  "turn_end",
 		"agent": "subagent",
 	})
-	time.Sleep(50 * time.Millisecond)
 
 	// lastAssistantAgent must be "subagent" (not cleared because it != rootAgent).
-	sc.mu.Lock()
-	laa := sc.lastAssistantAgent
-	sc.mu.Unlock()
-	if laa != "subagent" {
+	if !waitForCondition(t, func() bool {
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		return sc.lastAssistantAgent == "subagent"
+	}, 5*time.Second, "lastAssistantAgent==\"subagent\" after subagent turn_end") {
+		sc.mu.Lock()
+		laa := sc.lastAssistantAgent
+		sc.mu.Unlock()
 		t.Errorf("lastAssistantAgent = %q after subagent turn_end, want %q", laa, "subagent")
 	}
 
@@ -1890,13 +1914,16 @@ func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
 		"type":  "turn_end",
 		"agent": sc.rootAgent,
 	})
-	time.Sleep(50 * time.Millisecond)
 
 	// lastAssistantAgent must be cleared after root-agent turn_end.
-	sc.mu.Lock()
-	laa = sc.lastAssistantAgent
-	sc.mu.Unlock()
-	if laa != "" {
+	if !waitForCondition(t, func() bool {
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		return sc.lastAssistantAgent == ""
+	}, 5*time.Second, "lastAssistantAgent cleared after root turn_end") {
+		sc.mu.Lock()
+		laa := sc.lastAssistantAgent
+		sc.mu.Unlock()
 		t.Errorf("lastAssistantAgent = %q after root turn_end, want empty (cleared)", laa)
 	}
 
@@ -1908,6 +1935,11 @@ func TestSocketPipe_TurnEnd_UpdatesLastAssistantAgent(t *testing.T) {
 // TestSocketPipe_SessionShutdown_CancelsTimers verifies that session_shutdown
 // cancels any in-flight finished-debounce/recovery timer before writing
 // StateFinished so the coordinator receives exactly one notification (Gap 8 fix).
+//
+// Synchronisation (issue #1515): WaitForTimerCount replaces the leading sleep;
+// the post-shutdown assertion that no extra finished event was emitted now
+// uses a brief polling window to give a (would-be-buggy) timer fire a chance
+// to surface, rather than a fixed sleep that may be too short under load.
 func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1915,12 +1947,10 @@ func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
 
 	conn, _ := dialAndHandshake(t, sockPath)
 
-	// Start finished debounce.
+	// Start finished debounce and wait for the timer.
 	sendJSON(t, conn, map[string]any{"type": "turn_start"})
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
-	time.Sleep(50 * time.Millisecond)
-
-	idleTimer := clk.LastTimer()
+	idleTimer := clk.WaitForTimerCount(1, 5*time.Second)
 	if idleTimer == nil {
 		t.Fatal("no finished debounce timer after state_change{finished}")
 	}
@@ -1931,7 +1961,7 @@ func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
 	_ = wait()
 
 	// The idle timer must be stopped.
-	if !idleTimer.Stopped() {
+	if !idleTimer.WaitStopped(5 * time.Second) {
 		t.Error("idle timer was not stopped by session_shutdown")
 	}
 
@@ -1942,11 +1972,20 @@ func TestSocketPipe_SessionShutdown_CancelsTimers(t *testing.T) {
 	}
 
 	// Firing the (now-stopped) timer must not produce a second StateFinished write.
-	// We verify indirectly: the timer was stopped so Fire() is a no-op.
+	// We verify indirectly: the timer was stopped so Fire() is a no-op. Use a
+	// short polling window after Fire() so any erroneous extra write would have
+	// time to surface; the loop returns on first observed change or at deadline.
 	beforeCount := countStateChangeEvents(t, sc.cfg.DB, sc.cfg.SessionName, "finished")
 	idleTimer.Fire()
-	time.Sleep(50 * time.Millisecond)
-	afterCount := countStateChangeEvents(t, sc.cfg.DB, sc.cfg.SessionName, "finished")
+	deadline := time.Now().Add(200 * time.Millisecond)
+	afterCount := beforeCount
+	for time.Now().Before(deadline) {
+		afterCount = countStateChangeEvents(t, sc.cfg.DB, sc.cfg.SessionName, "finished")
+		if afterCount != beforeCount {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if afterCount != beforeCount {
 		t.Errorf("firing stopped idle timer after session_shutdown wrote %d extra finished event(s)",
 			afterCount-beforeCount)
@@ -1980,6 +2019,9 @@ func countStateChangeEvents(t *testing.T, d *db.DB, session, state string) int {
 // the lastErrorAt prerequisite: that a turn_start arriving within the debounce
 // window DOES still proceed normally (since the PI path uses turn_start, not
 // session.updated), but that lastErrorAt is set after an error state.
+// Synchronisation (issue #1515): the test waits for the DB to reflect the
+// state change, then polls sc.lastErrorAt under sc.mu via waitForCondition.
+// This replaces a fixed 50ms sleep that flaked under contended scheduling.
 func TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -1988,15 +2030,19 @@ func TestSocketPipe_ErrorResumeDebounce_LastErrorAtRecorded(t *testing.T) {
 	conn, _ := dialAndHandshake(t, sockPath)
 
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "error"})
-	time.Sleep(50 * time.Millisecond)
 
-	// lastErrorAt must be recorded at the clock's current time.
+	// Wait for the handler to commit StateError and lastErrorAt under s.mu.
+	if !waitForCondition(t, func() bool {
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		return !sc.lastErrorAt.IsZero()
+	}, 5*time.Second, "lastErrorAt set after state_change{error}") {
+		t.Fatal("lastErrorAt was not set after state_change{error}")
+	}
+
 	sc.mu.Lock()
 	lastErrorAt := sc.lastErrorAt
 	sc.mu.Unlock()
-	if lastErrorAt.IsZero() {
-		t.Fatal("lastErrorAt was not set after state_change{error}")
-	}
 	expectedTime := clk.Now()
 	if !lastErrorAt.Equal(expectedTime) {
 		t.Errorf("lastErrorAt = %v, want %v (clock.Now())", lastErrorAt, expectedTime)
@@ -2064,6 +2110,9 @@ func TestSocketPipe_ReviewingGuardPreservedAfterGapFixes(t *testing.T) {
 // session (AgentRole = "review-goal") reaches StateFinished via the unified
 // turn_end → state_change{finished} path, without requiring the agent_end hook
 // or role-specific branching (issue #1434).
+//
+// Synchronisation (issue #1515): WaitForTimerCount replaces the previous 50ms
+// sleep so the test waits on the actual debounce-timer registration event.
 func TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd(t *testing.T) {
 	sockPath := shortSockPath(t)
 	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
@@ -2080,10 +2129,8 @@ func TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd(t *testing.T) {
 	// Extension emits state_change{finished} directly (protocol v2).
 	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
 
-	// Give the sidecar time to process and create the debounce timer.
-	time.Sleep(50 * time.Millisecond)
-
-	timer := clk.LastTimer()
+	// Wait deterministically for the finished-debounce timer to be registered.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
 	if timer == nil {
 		t.Fatal("no finished debounce timer created after state_change{finished} from review agent")
 	}
@@ -2096,16 +2143,8 @@ func TestSocketPipe_ReviewAgent_ReachesFinishedViaTurnEnd(t *testing.T) {
 	// Fire the debounce timer — state must become finished.
 	timer.Fire()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if st := getState(t, sc.cfg.DB, sc.cfg.SessionName); st == string(agent.StateFinished) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("review-agent session never reached finished after debounce, got %q",
-				getState(t, sc.cfg.DB, sc.cfg.SessionName))
-		}
-		time.Sleep(20 * time.Millisecond)
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateFinished), 2*time.Second); st != string(agent.StateFinished) {
+		t.Fatalf("review-agent session never reached finished after debounce, got %q", st)
 	}
 
 	conn.Close()
