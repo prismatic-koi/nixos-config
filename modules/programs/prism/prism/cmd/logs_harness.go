@@ -21,6 +21,7 @@ package cmd
 // to pipe into jq, grep, etc.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ import (
 // hint to stderr and returns a non-zero error so the caller's shell sees an
 // exit code distinguishable from "session has zero frames yet" — this matches
 // the edge-case AC.
-func runHarnessEvents(sessionName, direction, typesCSV string, follow bool, w io.Writer) error {
+func runHarnessEvents(sessionName, direction, typesCSV string, follow bool, sink deliverSink, w io.Writer) error {
 	if direction != "" && direction != directionIn && direction != directionOut {
 		return fmt.Errorf("--direction must be %q or %q (got %q)", directionIn, directionOut, direction)
 	}
@@ -69,6 +70,19 @@ func runHarnessEvents(sessionName, direction, typesCSV string, follow bool, w io
 	frames, err := d.QueryHarnessFrames(sessionName, direction, types, "")
 	if err != nil {
 		return fmt.Errorf("query harness frames: %w", err)
+	}
+
+	// Non-stdout sink: collect all current frames into a single buffer and
+	// hand it to deliverContent. JSONL frames go out with the
+	// application/x-ndjson content type for consumers that key off it.
+	// --follow is rejected upstream when --deliver != stdout.
+	if sink.kind != "stdout" && sink.kind != "" {
+		var buf bytes.Buffer
+		for _, f := range frames {
+			buf.WriteString(f.Payload)
+			buf.WriteByte('\n')
+		}
+		return deliverContent(sink, buf.Bytes(), "application/x-ndjson", w)
 	}
 
 	// Print the existing frames (one JSONL object per line).
