@@ -7513,9 +7513,21 @@ exit 0
 	if err != nil {
 		t.Fatalf("read captured CWD: %v", err)
 	}
-	got := strings.TrimSpace(string(capturedCWD))
-	if got != worktreeDir {
-		t.Errorf("subprocess CWD = %q, want %q (must be set to session worktree)", got, worktreeDir)
+	// Resolve symlinks on both sides before comparing so the assertion is
+	// symlink-agnostic on Darwin, where /tmp → /private/tmp and the
+	// subprocess's pwd resolves to the canonical /private/tmp/… form while
+	// t.TempDir() returns the /tmp/… form. See #1489.
+	gotResolved, err := filepath.EvalSymlinks(strings.TrimSpace(string(capturedCWD)))
+	if err != nil {
+		t.Fatalf("EvalSymlinks(captured CWD): %v", err)
+	}
+	wantResolved, err := filepath.EvalSymlinks(worktreeDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(worktreeDir): %v", err)
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("subprocess CWD = %q (resolved %q), want %q (resolved %q) (must be set to session worktree)",
+			strings.TrimSpace(string(capturedCWD)), gotResolved, worktreeDir, wantResolved)
 	}
 }
 
