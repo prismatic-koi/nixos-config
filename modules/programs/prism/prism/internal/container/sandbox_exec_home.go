@@ -12,11 +12,12 @@ package container
 // Design decisions locked by the coordinator in issue #1017:
 //
 //  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment at
-//     bwrap.go:306-308). On Darwin, opencode-claude-auth calls the Keychain API
-//     (Mach IPC) directly from inside the sandbox — no pre-seeded credentials
-//     file is needed. Writes to .credentials.json (e.g. token refreshes) flow
-//     through the symlink to the host's ~/.claude/.credentials.json.
-//     This is the accepted trade-off (simplest, matches bwrap's RW treatment).
+//     bwrap.go:306-308). Writes to .credentials.json (e.g. token refreshes)
+//     flow through the symlink to the host's ~/.claude/.credentials.json.
+//  2. Library/Keychains/login.keychain-db is symlinked so that opencode-claude-auth
+//     (which uses `security dump-keychain` with $HOME to find the keychain search
+//     list) can locate the user's login keychain. The SBPL profile grants
+//     file-read* on the resolved path via (literal login.keychain-db) (#1487).
 //
 //  2. .config/opencode/agents/ is role-conditional: included as a symlink for
 //     non-review roles, omitted for review-prefixed roles. Mirrors bwrap.go:447-448.
@@ -29,6 +30,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -236,16 +238,33 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".kube", "config"),
 	)
 
+	// ── Library/Keychains/login.keychain-db — symlink for Keychain API ──────
+	// On Darwin, opencode-claude-auth uses `security dump-keychain` and
+	// `security find-generic-password` to retrieve Claude credentials from the
+	// macOS Keychain. Both commands use $HOME to locate the keychain search
+	// list, and inside the sandbox $HOME points at the staging directory. By
+	// symlinking $stagingHome/Library/Keychains/login.keychain-db → the real
+	// login.keychain-db, `security` finds the correct search list and can
+	// retrieve credentials. The SBPL profile grants file-read* on the resolved
+	// (real) path via the (literal login.keychain-db) rule (issue #1487).
+	// Token refresh writes go through the `security add-generic-password`
+	// Mach IPC path which is not affected by this symlink.
+	if runtime.GOOS == "darwin" {
+		realKeychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+		if _, err := os.Stat(realKeychain); err == nil {
+			keychainLink := filepath.Join(stagingHome, "Library", "Keychains", "login.keychain-db")
+			if mkErr := os.MkdirAll(filepath.Dir(keychainLink), 0o755); mkErr == nil {
+				_ = os.Symlink(realKeychain, keychainLink)
+			}
+		}
+	}
+
 	// ── .claude/ — symlink to host ~/.claude (RW write-through) ──────────────
-	// On Darwin, opencode-claude-auth calls the Keychain API (Mach IPC)
-	// directly from inside the sandbox — no pre-seeded credentials file is
-	// needed at spawn time. Token refreshes performed by opencode-claude-auth
-	// during a session write .credentials.json inside ~/.claude/, and since
-	// this is a symlink to host ~/.claude, those writes flow through to the
-	// host path and are immediately reflected in subsequent sessions.
-	// On Linux, ~/.claude/.credentials.json already lives on disk; the bwrap
-	// path bind-mounts ~/.claude/ with RW access (bwrap.go:306-308), matching
-	// the same write-through semantics via a different mechanism.
+	// opencode-claude-auth token refreshes write .credentials.json inside
+	// ~/.claude/, and since this is a symlink to host ~/.claude, those writes
+	// flow through to the host path and are immediately reflected in subsequent
+	// sessions. On Linux, ~/.claude/.credentials.json already lives on disk;
+	// the bwrap path bind-mounts ~/.claude/ with RW access (bwrap.go:306-308).
 	symlinkIfExists(
 		filepath.Join(home, ".claude"),
 		filepath.Join(stagingHome, ".claude"),

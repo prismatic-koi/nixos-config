@@ -565,7 +565,45 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		case harness.TransportStdioPipe:
 			return s.runStartupStdio(ctx)
 		case harness.TransportSocketPipe:
-			return s.runStartupSocketPipe(ctx)
+			// The host-API and harness-pipe are independent surfaces. When the
+			// harness-pipe handshake fails (extension never dials, bad hello,
+			// version mismatch, timeout), we must NOT tear down the host-API
+			// server — the in-sandbox `prism` CLI depends on it for the full
+			// session lifetime. Instead: log/record the failure, transition
+			// the harness to error state, and then hold until the external
+			// shutdown trigger arrives (context cancel, SIGTERM, prism cleanup).
+			//
+			// runStartupSocketPipe already records the error state in the DB and
+			// logs via writeStartupError before returning. Here we just need to
+			// decide whether to propagate the error (fatal path) or absorb it
+			// (harness-error, host-API still alive path).
+			//
+			// When runStartupSocketPipe returns nil (clean session_shutdown or
+			// ctx cancellation), we fall through to ctx.Err() at the bottom —
+			// same as the clean path today.
+			//
+			// When it returns a non-nil error, we absorb it: the harness has
+			// already been placed in error state; the host-API listener is still
+			// running. We block on ctx.Done() so Run() outlives the handshake
+			// failure and the host-API server keeps accepting connections.
+			if pipeErr := s.runStartupSocketPipe(ctx); pipeErr != nil {
+				// The harness-pipe loop failed. Log the failure (writeStartupError
+				// was already called inside runStartupSocketPipe, so the DB row is
+				// in error state). Keep the host-API server alive until the
+				// session receives an external shutdown trigger.
+				log.Printf("sidecar: harness-pipe handshake failed; keeping host-API alive until session shutdown: %v", pipeErr)
+				// Block until context cancellation (SIGTERM / prism cleanup).
+				<-ctx.Done()
+				// Return nil — Shutdown() is responsible for writing the final
+				// state and cleaning up the host-API listener. Returning nil
+				// (rather than the pipe error) prevents cmd/sidecar.go from
+				// treating this as a fatal error exit; the normal deferred
+				// Shutdown() path handles all cleanup.
+				return nil
+			}
+			// Clean pipe exit (session_shutdown or ctx cancel): fall through to
+			// return ctx.Err() at the bottom of Run().
+			return ctx.Err()
 		default:
 			return fmt.Errorf("sidecar: unsupported transport shape %q for harness %q", shape, s.cfg.HarnessName)
 		}
