@@ -25,7 +25,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/db"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 )
 
@@ -185,16 +188,27 @@ func TestHarnessPipeTCP_ListenerBinds127001(t *testing.T) {
 }
 
 // TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort verifies that when the
-// harness-pipe TCP listen fails (e.g. the port is already in use),
-// runStartupSocketPipe returns an error whose message contains the port number,
-// and the session is moved to error state.
+// harness-pipe TCP listen fails (e.g. the port is already in use), the sidecar
 //
-// This is the edge-case AC from issue #1482:
+//   - records the failure as a startup_error event whose reason contains the
+//     port number, and
+//   - transitions the session to StateError,
+//
+// and that Run() then exits promptly when the outer context is cancelled.
+//
+// Originally written for the edge-case AC from issue #1482:
 //
 //	[edge-case] When the sidecar's harness-pipe TCP listen fails (e.g. port
 //	already in use), runStartupSocketPipe returns an error whose message
 //	contains the port number, the session is moved to error, and no extension
 //	is left dialling a non-existent listener.
+//
+// Updated for #1493 to match the post-#1490 contract: a non-nil return from
+// runStartupSocketPipe is absorbed by Run() (host-API stays alive for the
+// in-sandbox `prism` CLI) and Run() blocks on ctx.Done() rather than returning
+// the listen error directly. The contract under test is therefore the
+// observable side effects (DB state + startup_error event) plus prompt exit on
+// context cancel — not Run()'s return value during the listen failure itself.
 func TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort(t *testing.T) {
 	port := allocateFreePort(t)
 
@@ -207,28 +221,65 @@ func TestHarnessPipeTCP_ListenFail_ReturnsErrorWithPort(t *testing.T) {
 
 	sc := newTCPPortSidecar(t, port)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Pre-seed an instance_id and a matching sessions row so that the
+	// startup_error event written by writeStartupError satisfies the
+	// agent_events.instance_id REFERENCES sessions(instance_id) FK constraint.
+	// Without this, the startup_error event would be silently dropped (logged
+	// as a WriteEvent error), leaving the test unable to read back the
+	// recorded error reason. The instance_id is the contract bridge between
+	// agent_status (FK-free) and agent_events (FK-enforced).
+	instanceID := uuid.New().String()
+	sc.cfg.InstanceID = instanceID
+	if err := sc.cfg.DB.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: sc.cfg.SessionName,
+		Repo:        sc.cfg.Repo,
+		Worktree:    sc.cfg.Worktree,
+		Harness:     sc.cfg.HarnessName,
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	errc := make(chan error, 1)
 	go func() { errc <- sc.Run(ctx) }()
 
+	// Observe the listen failure via DB state — Run() does NOT return the
+	// error directly under the post-#1490 contract.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if getState(t, sc.cfg.DB, sc.cfg.SessionName) == string(agent.StateError) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if state := getState(t, sc.cfg.DB, sc.cfg.SessionName); state != string(agent.StateError) {
+		t.Fatalf("session state = %q after TCP listen failure, want %q within 2s", state, agent.StateError)
+	}
+
+	// Verify the recorded startup-error message contains the port number.
+	errMsg := getStartupErrorMessage(t, sc.cfg.DB, sc.cfg.SessionName)
+	if errMsg == "" {
+		t.Fatal("no startup_error event recorded after TCP listen failure")
+	}
+	portStr := fmt.Sprintf("%d", port)
+	if !strings.Contains(errMsg, portStr) {
+		t.Errorf("startup_error reason %q does not contain port number %q", errMsg, portStr)
+	}
+
+	// Cancel the context and assert Run() exits promptly. Post-#1490 the
+	// host-API is held open until external shutdown; cancel is the trigger.
+	cancel()
 	select {
-	case runErr := <-errc:
-		if runErr == nil {
-			t.Fatal("Run() returned nil — expected an error when TCP port is already in use")
-		}
-		portStr := fmt.Sprintf("%d", port)
-		if !strings.Contains(runErr.Error(), portStr) {
-			t.Errorf("error %q does not contain port number %q", runErr.Error(), portStr)
-		}
-		// Verify the session is in error state.
-		state := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if state != string(agent.StateError) {
-			t.Errorf("session state = %q after TCP listen failure, want %q", state, agent.StateError)
-		}
-	case <-ctx.Done():
-		t.Fatal("Run() did not exit within 10s after TCP listen failure")
+	case err := <-errc:
+		// Run() may return nil or ctx.Err() after cancel; either is acceptable
+		// per the post-#1490 absorb contract. We deliberately do NOT require
+		// the listen error to surface here.
+		_ = err
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not exit within 2s after context cancel")
 	}
 }
 
