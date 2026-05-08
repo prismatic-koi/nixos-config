@@ -470,9 +470,17 @@ func TestSandboxExecIntegration_HomeCodeDirectoryDenied(t *testing.T) {
 	}
 }
 
-// TestSandboxExecIntegration_KeychainDenied verifies that the host
-// ~/Library/Keychains/login.keychain-db is NOT readable from inside the
-// sandbox (N4 in F.1 §3.2).
+// TestSandboxExecIntegration_KeychainDenied verifies that ~/Library/Keychains
+// is accessible from inside the sandbox — specifically that the Keychain
+// Services API can operate, and that login.keychain-db is directly readable
+// (as granted by the (subpath ~/Library/Keychains) rule from issue #1487).
+//
+// This test was updated from N4 in F.1 §3.2 which previously asserted that
+// login.keychain-db is denied. The #1487 fix intentionally grants
+// file-read* + file-test-existence on ~/Library/Keychains so that securityd
+// can service Keychain API lookups from inside the sandbox. The test now
+// confirms the rule is present in the profile and that login.keychain-db is
+// readable (not denied) when the file exists.
 func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
@@ -488,14 +496,25 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
-	env := baseEnv(stagingHome)
 
-	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", keychainPath)
-	if code == 0 {
-		t.Errorf("cat login.keychain-db: expected non-zero exit (denied), got exit 0\noutput: %s", out)
+	// Verify the profile contains the (subpath ~/Library/Keychains) rule (#1487).
+	content, readErr := os.ReadFile(profilePath)
+	if readErr != nil {
+		t.Fatalf("read profile: %v", readErr)
 	}
-	if !strings.Contains(out, "Operation not permitted") && !strings.Contains(out, "Permission denied") {
-		t.Errorf("cat login.keychain-db: expected 'Operation not permitted' in output; got: %q", out)
+	keychainsDir := filepath.Join(realHome, "Library", "Keychains")
+	if !strings.Contains(string(content), keychainsDir) {
+		t.Errorf("profile does not contain the ~/Library/Keychains subpath rule (#1487).\n"+
+			"Expected to find %q in profile.", keychainsDir)
+	}
+
+	// login.keychain-db must now be READABLE (not denied) because the
+	// (subpath ~/Library/Keychains) rule grants file-read* on the whole dir.
+	env := baseEnv(stagingHome)
+	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", keychainPath)
+	if code != 0 && (strings.Contains(out, "Operation not permitted") || strings.Contains(out, "Permission denied")) {
+		t.Errorf("cat login.keychain-db: got sandbox denial — expected the #1487 rule to grant access.\n"+
+			"exit: %d, output: %s", code, out)
 	}
 }
 
@@ -505,17 +524,21 @@ func TestSandboxExecIntegration_KeychainDenied(t *testing.T) {
 // "Claude Code-credentials" service inside the sandbox and asserts that the
 // command does not fail with a sandbox deny.
 //
-// The Keychain API operates over Mach IPC (securityd/secd), not direct file
-// access. The SBPL profile grants mach-lookup and network*, so the API is
-// reachable from inside the sandbox even when direct file reads of
-// ~/Library/Keychains/ are denied (see TestSandboxExecIntegration_KeychainDenied).
+// Note on test scope: the `security` CLI tool constructs the keychain search
+// path from $HOME, so with $HOME set to the staging home (as this test does),
+// it always returns exit 44 ("item not found") regardless of whether the SBPL
+// (literal login.keychain-db) rule is present. This test therefore can only
+// confirm that the Mach IPC path to securityd is reachable (not "Operation not
+// permitted") — NOT that the file-read rule from issue #1487 is working. The
+// authoritative tests for the #1487 SBPL rule are in internal/integration/:
+//   - TestSandboxExecProfile_KeychainAPIAccessible (positive, uses real HOME)
+//   - TestSandboxExecProfile_KeychainAPIDeniedWithoutKeychainRule (negative)
 //
-// A missing Keychain entry (exit 44 from security, meaning "item not found")
-// is treated as a successful API call — the test skips gracefully when the
-// "Claude Code-credentials" entry is absent so that CI hosts without a Claude
-// login still pass. This is the regression guard ensuring that
-// opencode-claude-auth can call the Keychain API directly from inside the
-// sandbox (issue #1413).
+// Exit 44 ("item not found") with any HOME value is treated as "API reachable,
+// item absent" and causes a skip — this test cannot distinguish rule-present
+// from rule-absent when $HOME doesn't point to the real home directory.
+// See also: TestSandboxExecIntegration_KeychainDenied (confirms the
+// ~/Library/Keychains subpath rule is present in the profile). (#1487)
 func TestSandboxExecIntegration_KeychainAPIAccessible(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
@@ -531,16 +554,24 @@ func TestSandboxExecIntegration_KeychainAPIAccessible(t *testing.T) {
 		"/usr/bin/security", "find-generic-password", "-l", "Claude Code-credentials", "-w")
 
 	// exit 0: credentials found — Keychain API accessible and entry present.
-	// exit 44: "item not found" — Keychain API accessible but entry absent.
+	// exit 44: "item not found" — Keychain API reachable but the `security`
+	//   CLI uses $HOME to find the keychain search list; with $HOME=stagingHome
+	//   it always returns 44 regardless of the SBPL rule. Skip gracefully.
 	// Any other exit (e.g. sandbox deny producing "Operation not permitted") is a failure.
 	const securityItemNotFound = 44
 	switch code {
 	case 0:
 		// Credentials retrieved successfully — Keychain API is accessible.
 	case securityItemNotFound:
-		// Entry absent from host Keychain. API is still accessible — skip so
-		// the test does not require a Claude login to pass.
-		t.Skipf("Claude Code-credentials entry absent from host Keychain — Keychain API is accessible inside sandbox (security exit 44); skipping")
+		// `security` CLI uses $HOME for its keychain search list. With staging
+		// HOME, it cannot find entries in the host keychain. Skip — this test
+		// cannot distinguish "SBPL rule absent" from "staging HOME mismatch".
+		// See TestSandboxExecProfile_KeychainAPIAccessible in internal/integration/
+		// for the authoritative #1487 rule test (uses real HOME). (#1487)
+		t.Skipf("security find-generic-password returned exit 44 (item not found) — "+
+			"Keychain API is reachable (no sandbox deny) but the security CLI uses $HOME "+
+			"for its keychain search list; with HOME=stagingHome this is expected. "+
+			"See TestSandboxExecProfile_KeychainAPIAccessible for the #1487 SBPL rule test.")
 	default:
 		// Unexpected exit. A sandbox deny would produce "Operation not permitted"
 		// in stderr. Treat any other code as a failure.

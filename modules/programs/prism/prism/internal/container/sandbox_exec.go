@@ -353,6 +353,29 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 6c. ~/Library/Keychains read (issue #1487) ───────────────────────
+	// The Keychain Services API (Mach IPC via securityd) requires both
+	// file-read* AND file-test-existence on ~/Library/Keychains to service
+	// credential lookups. securityd probes and reads the keychain databases
+	// in this directory even when the lookup is routed over Mach IPC rather
+	// than direct file access. Without this rule, securityd returns "item not
+	// found" (exit 44) from inside the sandbox.
+	// We use (subpath ~/Library/Keychains) rather than a (literal ...) on
+	// login.keychain-db alone, because modern macOS also writes credentials
+	// into UUID-keyed databases in the same directory (e.g. 889FEFC9-.../
+	// keychain-2.db) and securityd needs to probe those too. The Keychains
+	// directory contains only keychain metadata and databases — no unrelated
+	// sensitive files. Rule is omitted when the directory does not exist
+	// (e.g. fresh machine / CI).
+	if home != "" {
+		keychainsDir := filepath.Join(home, "Library", "Keychains")
+		if _, err := os.Stat(keychainsDir); err == nil {
+			sb.WriteString("(allow file-read* file-test-existence\n")
+			sb.WriteString("  (subpath " + quoteSBPL(keychainsDir) + "))\n")
+			sb.WriteString("\n")
+		}
+	}
+
 	// ── 6b. BareRoot ancestor probe allows ───────────────────────────────
 	// opencode's fs.up() walk probes multiple targets (.opencode, .git) at
 	// every ancestor of the worktree with no stop parameter. Under deny-default
