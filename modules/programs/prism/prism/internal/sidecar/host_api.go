@@ -2022,6 +2022,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
 	})
 
+	// GET /db/query, /db/schema, /db/tables — read-only query surface (#1467).
+	// All three open a fresh read-only handle (?mode=ro) per request rather
+	// than sharing the sidecar's writable handle. Handlers live in
+	// host_api_db.go so the wiring stays minimal here.
+	mux.HandleFunc("/db/query", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		s.hostAPIDBQuery(w, r)
+	})
+	mux.HandleFunc("/db/schema", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		s.hostAPIDBSchema(w, r)
+	})
+	mux.HandleFunc("/db/tables", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		s.hostAPIDBTables(w, r)
+	})
+
 	return mux
 }
 
