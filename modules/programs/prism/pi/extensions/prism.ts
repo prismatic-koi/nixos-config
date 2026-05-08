@@ -89,8 +89,13 @@ export const PROTOCOL_VERSION = 2
 /** Number of consecutive matching tool calls that triggers the doom-loop. */
 export const DOOM_LOOP_THRESHOLD = 5
 
-/** Number of review cycles before the escalation warning fires. */
-export const REVIEW_CYCLE_THRESHOLD = 3
+// NOTE: review-cycle escalation is now driven entirely by Go-side code. The
+// `prism review` monitor appends a LOOP-LIMIT footer to the review-complete
+// prompt body when the parent's review-group history shows >= 3 verdict-
+// producing cycles without convergence (#1512, Shape B). The TS extension
+// no longer counts cycles and no longer injects per-turn warnings, which
+// dissolves both the per-turn spam and the bash-substring false-match
+// defects at the source.
 
 /**
  * Tools excluded from doom-loop detection. Legitimate exploration revisits
@@ -191,40 +196,12 @@ export interface DoomLoopState {
   fired: boolean
 }
 
-/** Review-cycle tracker state (per session). */
-export interface ReviewCycleState {
-  /** Cycle counts keyed by PR number (or "unknown"). */
-  cycles: Map<string, number>
-  /** The PR number most recently detected. */
-  detectedPrNumber: string | null
-  /**
-   * Prevents counting 5 parallel review-agent invocations as 5 cycles.
-   * Set to true when the first review agent fires; cleared on turn_start
-   * so each full round counts as exactly one cycle.
-   */
-  pendingCycleCount: boolean
-  /**
-   * Tracks whether we've already emitted the review_cycle_exceeded wire
-   * frame for the current PR. Prevents flooding the harness_frames table.
-   * Reset when detectedPrNumber changes.
-   */
-  frameEmitted: boolean
-}
-
 /**
  * Create a fresh doom-loop state object.
  * Exported for unit testing.
  */
 export function newDoomLoopState(): DoomLoopState {
   return { currentKey: null, consecutiveCount: 0, fired: false }
-}
-
-/**
- * Create a fresh review-cycle state object.
- * Exported for unit testing.
- */
-export function newReviewCycleState(): ReviewCycleState {
-  return { cycles: new Map(), detectedPrNumber: null, pendingCycleCount: false, frameEmitted: false }
 }
 
 /**
@@ -279,79 +256,6 @@ export function processDoomLoop(
 }
 
 /**
- * Process a single tool call against the review-cycle tracker.
- *
- * This handles both `bash` calls to `prism review <N>` and `task` calls
- * to review subagents. Returns true when the review-cycle threshold is
- * exceeded (caller should inject escalation message).
- *
- * Exported for unit testing.
- */
-export function processReviewCycle(
-  state: ReviewCycleState,
-  toolName: string,
-  toolArgs: unknown,
-): boolean {
-  if (toolName === "bash") {
-    const command: string =
-      typeof toolArgs === "object" && toolArgs !== null
-        ? (toolArgs as Record<string, unknown>).command as string ?? ""
-        : String(toolArgs ?? "")
-
-    const prismReviewMatch = command.match(/\bprism\s+review\s+(\d+)\b/)
-    if (prismReviewMatch) {
-      const newPr = prismReviewMatch[1]
-      if (newPr !== state.detectedPrNumber) {
-        state.detectedPrNumber = newPr
-        state.cycles.clear()
-        state.frameEmitted = false
-      }
-      if (!state.pendingCycleCount) {
-        state.pendingCycleCount = true
-        const prKey = state.detectedPrNumber ?? "unknown"
-        state.cycles.set(prKey, (state.cycles.get(prKey) ?? 0) + 1)
-      }
-    }
-  }
-
-  if (toolName === "task") {
-    const prompt: string =
-      typeof toolArgs === "object" && toolArgs !== null
-        ? (toolArgs as Record<string, unknown>).prompt as string ?? ""
-        : String(toolArgs ?? "")
-    const subagentType: string =
-      typeof toolArgs === "object" && toolArgs !== null
-        ? (toolArgs as Record<string, unknown>).subagent_type as string ?? ""
-        : ""
-
-    const isReviewAgent = /^review(-goal|-code|-security|-qa|-context)?$/.test(subagentType)
-    if (isReviewAgent) {
-      const prMatch =
-        prompt.match(/\bPR\s*#(\d+)\b/i) ??
-        prompt.match(/pull\s+request\s*#(\d+)/i) ??
-        prompt.match(/\bpr[_\s-]?number[:\s]+(\d+)/i) ??
-        prompt.match(/\b#(\d+)\b/)
-      if (prMatch) {
-        const newPr = prMatch[1]
-        if (newPr !== state.detectedPrNumber) {
-          state.detectedPrNumber = newPr
-          state.cycles.clear()
-          state.frameEmitted = false
-        }
-      }
-      if (!state.pendingCycleCount) {
-        state.pendingCycleCount = true
-        const prKey = state.detectedPrNumber ?? "unknown"
-        state.cycles.set(prKey, (state.cycles.get(prKey) ?? 0) + 1)
-      }
-    }
-  }
-
-  const prKey = state.detectedPrNumber ?? "unknown"
-  return (state.cycles.get(prKey) ?? 0) >= REVIEW_CYCLE_THRESHOLD
-}
-
-/**
  * Custom entry type used to persist guard state snapshots in the session file.
  *
  * Snapshots are written via `pi.appendEntry(GUARD_STATE_ENTRY_TYPE, snapshot)`
@@ -372,12 +276,6 @@ export interface GuardStateSnapshot {
     consecutiveCount: number
     fired: boolean
   }
-  /** Review-cycle state: PR number and cycle counts as a plain object (Map not JSON-safe). */
-  reviewCycle: {
-    detectedPrNumber: string | null
-    cycles: Record<string, number>
-    frameEmitted: boolean
-  }
   /** Whether a git-push reminder is pending injection. */
   pendingGitPushReminder: boolean
   /**
@@ -392,27 +290,21 @@ export interface GuardStateSnapshot {
 /**
  * Serialise the current guard state into a snapshot object for persistence.
  * Exported for unit testing.
+ *
+ * NOTE: review-cycle counting was removed in #1512 (Shape B). Old snapshots
+ * with a `reviewCycle` field still parse correctly via restoreGuardState
+ * — the field is simply ignored.
  */
 export function snapshotGuardState(
   doomLoop: DoomLoopState,
-  reviewCycle: ReviewCycleState,
   pendingGitPushReminder: boolean,
   pendingReviewCall: boolean,
 ): GuardStateSnapshot {
-  const cycles: Record<string, number> = {}
-  for (const [k, v] of reviewCycle.cycles) {
-    cycles[k] = v
-  }
   return {
     doomLoop: {
       currentKey: doomLoop.currentKey,
       consecutiveCount: doomLoop.consecutiveCount,
       fired: doomLoop.fired,
-    },
-    reviewCycle: {
-      detectedPrNumber: reviewCycle.detectedPrNumber,
-      cycles,
-      frameEmitted: reviewCycle.frameEmitted,
     },
     pendingGitPushReminder,
     pendingReviewCall,
@@ -422,46 +314,24 @@ export function snapshotGuardState(
 /**
  * Restore guard state from a snapshot. Mutates the provided state objects in
  * place. Exported for unit testing.
+ *
+ * Tolerates legacy snapshots that include a `reviewCycle` field (pre-#1512);
+ * such fields are silently ignored.
  */
 export function restoreGuardState(
   snapshot: GuardStateSnapshot,
   doomLoop: DoomLoopState,
-  reviewCycle: ReviewCycleState,
 ): { pendingGitPushReminder: boolean; pendingReviewCall: boolean } {
-  doomLoop.currentKey = snapshot.doomLoop.currentKey ?? null
-  doomLoop.consecutiveCount = typeof snapshot.doomLoop.consecutiveCount === "number"
+  doomLoop.currentKey = snapshot.doomLoop?.currentKey ?? null
+  doomLoop.consecutiveCount = typeof snapshot.doomLoop?.consecutiveCount === "number"
     ? snapshot.doomLoop.consecutiveCount
     : 0
-  doomLoop.fired = snapshot.doomLoop.fired === true
-
-  reviewCycle.detectedPrNumber = snapshot.reviewCycle.detectedPrNumber ?? null
-  reviewCycle.cycles.clear()
-  if (snapshot.reviewCycle.cycles && typeof snapshot.reviewCycle.cycles === "object") {
-    for (const [k, v] of Object.entries(snapshot.reviewCycle.cycles)) {
-      if (typeof v === "number") {
-        reviewCycle.cycles.set(k, v)
-      }
-    }
-  }
-  reviewCycle.frameEmitted = snapshot.reviewCycle.frameEmitted === true
+  doomLoop.fired = snapshot.doomLoop?.fired === true
 
   return {
     pendingGitPushReminder: snapshot.pendingGitPushReminder === true,
     pendingReviewCall: snapshot.pendingReviewCall === true,
   }
-}
-export function reviewCycleEscalationMessage(
-  state: ReviewCycleState,
-): string {
-  const prKey = state.detectedPrNumber ?? "unknown"
-  const cycles = state.cycles.get(prKey) ?? 0
-  const prLabel = state.detectedPrNumber ? `PR #${state.detectedPrNumber}` : "this PR"
-  return (
-    `⚠️ REVIEW LOOP LIMIT: You have run ${cycles} review cycles for ${prLabel} without all agents passing. ` +
-    `You MUST stop and escalate to the user now. Do NOT run another review cycle. ` +
-    `Instead, summarise: (1) what was originally requested, (2) what each review cycle found, ` +
-    `and (3) why the fixes are not converging. Hand off to the coordinator.`
-  )
 }
 
 /**
@@ -1152,17 +1022,18 @@ export default function prismExtension(pi: ExtensionAPI): void {
   //
   // Disabled via env vars for debugging:
   //   PRISM_DOOM_LOOP_DISABLE=1        — disable doom-loop detector
-  //   PRISM_REVIEW_CYCLE_DISABLE=1     — disable review-cycle escalation
   //   PRISM_GIT_PUSH_REMINDER_DISABLE=1 — disable git-push reminder
+  //
+  // Review-cycle escalation moved to the Go-side review monitor in #1512;
+  // see internal/review/monitor.go: the LOOP-LIMIT footer is appended to the
+  // review-complete prompt body, so no per-turn injection lives here anymore.
   //
   // Review agents have legitimate repeated tool patterns so all guards are
   // suppressed when session_role from hello_ack is a canonical review-agent name.
   const doomLoopEnabled = !process.env.PRISM_DOOM_LOOP_DISABLE
-  const reviewCycleEnabled = !process.env.PRISM_REVIEW_CYCLE_DISABLE
   const gitPushReminderEnabled = !process.env.PRISM_GIT_PUSH_REMINDER_DISABLE
 
   const doomLoopState = newDoomLoopState()
-  const reviewCycleState = newReviewCycleState()
 
   // Set to true when hello_ack.session_role matches a canonical review-agent name
   // (review-goal, review-code, review-context, review-qa, review-security).
@@ -1323,18 +1194,19 @@ export default function prismExtension(pi: ExtensionAPI): void {
         handshakeComplete = true
 
         // Set the status bar immediately after handshake.
-        const prCycles = sessionRole === "review"
-          ? (reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0)
-          : 0
-        const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
+        // Review-cycle counting now lives in the Go-side monitor (#1512), so
+        // the status bar's review_cycles field is fixed at 0 and pr_number is
+        // empty — the worker reads cycle/PR context from the LOOP-LIMIT footer
+        // on the review-complete prompt instead.
+        const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, null, 0)
         lastCtx?.ui?.setStatus("prism", statusText)
         if (writer) {
           writer.write({
             type: "session_status",
             role: sessionRole,
             branch: sessionBranch,
-            review_cycles: prCycles,
-            pr_number: reviewCycleState.detectedPrNumber ?? "",
+            review_cycles: 0,
+            pr_number: "",
           })
         }
         return
@@ -1435,7 +1307,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
       ) {
         const snapshot = (entry as { data?: unknown }).data as GuardStateSnapshot | undefined
         if (snapshot && typeof snapshot === "object") {
-          const restored = restoreGuardState(snapshot, doomLoopState, reviewCycleState)
+          const restored = restoreGuardState(snapshot, doomLoopState)
           pendingGitPushReminder = restored.pendingGitPushReminder
           pendingReviewCall = restored.pendingReviewCall
         }
@@ -1457,50 +1329,27 @@ export default function prismExtension(pi: ExtensionAPI): void {
     if (writer && handshakeComplete) {
       writer.write({ type: "turn_start" })
     }
-    // Clear per-turn review-cycle deduplication so the next batch of
-    // review agent invocations counts as a fresh cycle.
-    reviewCycleState.pendingCycleCount = false
 
-    // Refresh status bar on each turn_start so review-cycle count is live.
+    // Refresh status bar on each turn_start. Review-cycle counting is owned
+    // by the Go-side monitor (#1512); the TS extension no longer reads or
+    // tracks cycle counts here, so we always emit pr_number="" and
+    // review_cycles=0. The LOOP-LIMIT footer on the review-complete prompt
+    // is the canonical signal that the worker should escalate.
     if (handshakeComplete) {
-      const prCycles = reviewCycleState.cycles.get(reviewCycleState.detectedPrNumber ?? "unknown") ?? 0
-      const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, reviewCycleState.detectedPrNumber, prCycles)
+      const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, null, 0)
       lastCtx?.ui?.setStatus("prism", statusText)
       if (writer) {
         writer.write({
           type: "session_status",
           role: sessionRole,
           branch: sessionBranch,
-          review_cycles: prCycles,
-          pr_number: reviewCycleState.detectedPrNumber ?? "",
+          review_cycles: 0,
+          pr_number: "",
         })
       }
     }
 
     if (!isReviewSession) {
-      // Inject review-cycle escalation warning when the threshold is exceeded.
-      // This fires on every turn after the threshold so the agent cannot
-      // simply ignore it and continue.
-      if (reviewCycleEnabled) {
-        const prKey = reviewCycleState.detectedPrNumber ?? "unknown"
-        const cycles = reviewCycleState.cycles.get(prKey) ?? 0
-        if (cycles >= REVIEW_CYCLE_THRESHOLD) {
-          pi.sendUserMessage(reviewCycleEscalationMessage(reviewCycleState), {
-            deliverAs: "steer",
-          })
-          // Emit the wire frame only once per PR (not on every turn).
-          if (!reviewCycleState.frameEmitted && writer && handshakeComplete) {
-            reviewCycleState.frameEmitted = true
-            writer.write({
-              type: "review_cycle_exceeded",
-              session_name: process.env.PRISM_SESSION_NAME ?? "",
-              pr_number: reviewCycleState.detectedPrNumber ?? "",
-              cycle_count: cycles,
-            })
-          }
-        }
-      }
-
       // Inject git-push reminder if a push was detected on the previous turn.
       if (gitPushReminderEnabled && pendingGitPushReminder) {
         pendingGitPushReminder = false
@@ -1636,23 +1485,22 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
         // Reviewing-state guard: set flag when `prism review` is called so
         // that the turn_end idle emission is suppressed until the
-        // review-complete prompt arrives.
+        // review-complete prompt arrives. NOTE: this is intentionally a
+        // separate flag from cycle counting (the latter moved to the Go
+        // monitor in #1512). The reviewing-state flag's substring-detection
+        // class is tracked in #1519 and is out of scope here.
         if (/\bprism\s+review\b/.test(command)) {
           pendingReviewCall = true
         }
       }
 
-      if (reviewCycleEnabled) {
-        processReviewCycle(reviewCycleState, name, rawArgs)
-      }
-
       // Persist guard state after each tool call so session resume can
-      // reconstruct the current doom-loop run and review-cycle counts.
+      // reconstruct the current doom-loop run and review-wait flag.
       // pi.appendEntry is lightweight (appends to the session JSON file);
       // we do it unconditionally — the reviewer can deduplicate via the
       // "latest entry wins" pattern in session_switch above.
       pi.appendEntry(GUARD_STATE_ENTRY_TYPE,
-        snapshotGuardState(doomLoopState, reviewCycleState, pendingGitPushReminder, pendingReviewCall))
+        snapshotGuardState(doomLoopState, pendingGitPushReminder, pendingReviewCall))
     }
   })
 

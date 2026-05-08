@@ -149,25 +149,15 @@ export const PrismHooks: Plugin = async (pluginInput) => {
   // a review reminder into the system prompt.
   let pendingReviewReminder = false;
 
-  // Track review cycles per PR for escalation enforcement.
-  // A cycle is counted each time the worker invokes a review agent Task —
-  // not on each git push, which would misfire for pre-review amendment pushes.
-  // Since all 5 agents are invoked in parallel (same LLM response), the first
-  // detected invocation per PR per cycle increments the counter; subsequent
-  // parallel invocations in the same batch are deduplicated by the
-  // pendingCycleCount flag below.
-  // Key: PR number string (or "unknown"), Value: number of review cycles.
-  const reviewCycles = new Map<string, number>();
-
-  // The PR number most recently detected from a Task tool invocation of a
-  // review agent. Used to scope cycle counts to the correct PR.
-  let detectedPrNumber: string | null = null;
-
-  // Prevents counting 5 parallel review-agent invocations as 5 cycles.
-  // Set to true when the first review agent Task fires; cleared on the next
-  // LLM turn (system.transform), so each full round of parallel invocations
-  // counts as exactly one cycle.
-  let pendingCycleCount = false;
+  // Review-cycle escalation moved to the Go-side review monitor in #1512
+  // (Shape B). The monitor appends a LOOP-LIMIT footer to the
+  // review-complete prompt body when the parent's review-group history
+  // shows >= 3 verdict-producing cycles without convergence — see
+  // internal/review/monitor.go: buildLoopLimitFooter. The TS plugin no
+  // longer counts cycles or injects per-turn warnings, which dissolves
+  // both the per-turn spam and the bash-substring false-match defects at
+  // the source. The duplicate implementation that previously lived here
+  // is gone.
 
   // ── Doom-loop state (per session / per plugin instance) ──────────────────
   const doomLoop: DoomLoopState = {
@@ -230,60 +220,11 @@ export const PrismHooks: Plugin = async (pluginInput) => {
           pendingReviewReminder = true;
         }
 
-        // Detect `prism review <pr-number>` Bash invocations.
-        // This counts as one review cycle (same as a parallel batch of Task calls).
-        const prismReviewMatch = command.match(
-          /\bprism\s+review\s+(\d+)\b/,
-        );
-        if (prismReviewMatch) {
-          const newPr = prismReviewMatch[1];
-          if (newPr !== detectedPrNumber) {
-            detectedPrNumber = newPr;
-            reviewCycles.clear();
-          }
-          if (!pendingCycleCount) {
-            pendingCycleCount = true;
-            const prKey = detectedPrNumber ?? "unknown";
-            reviewCycles.set(prKey, (reviewCycles.get(prKey) ?? 0) + 1);
-          }
-        }
-      }
-
-      // Detect review agent Task invocations (fallback path — direct @review-* calls).
-      // Each invocation (or parallel batch of invocations) for a given PR
-      // counts as one review cycle.
-      if (input.tool === "task") {
-        const prompt: string = (input.args as any)?.prompt ?? "";
-        const subagentType: string = (input.args as any)?.subagent_type ?? "";
-
-        const isReviewAgent =
-          /^review(-goal|-code|-security|-qa|-context)?$/.test(subagentType);
-
-        if (isReviewAgent) {
-          // Try to extract a PR number from the prompt text.
-          const prMatch =
-            prompt.match(/\bPR\s*#(\d+)\b/i) ??
-            prompt.match(/pull\s+request\s*#(\d+)/i) ??
-            prompt.match(/\bpr[_\s-]?number[:\s]+(\d+)/i) ??
-            prompt.match(/\b#(\d+)\b/);
-          if (prMatch) {
-            const newPr = prMatch[1];
-            // If the PR number changed, reset cycle counts for the new PR.
-            if (newPr !== detectedPrNumber) {
-              detectedPrNumber = newPr;
-              reviewCycles.clear();
-            }
-          }
-
-          // Count this as a review cycle — but only once per batch of parallel
-          // invocations. pendingCycleCount is set here and cleared on the next
-          // system.transform, so 5 parallel Task calls count as exactly 1 cycle.
-          if (!pendingCycleCount) {
-            pendingCycleCount = true;
-            const prKey = detectedPrNumber ?? "unknown";
-            reviewCycles.set(prKey, (reviewCycles.get(prKey) ?? 0) + 1);
-          }
-        }
+        // Cycle counting for `prism review` was deleted in #1512 (Shape B).
+        // The Go-side review monitor now owns the LOOP-LIMIT decision and
+        // appends a footer to the review-complete prompt body when
+        // appropriate. No bash-substring detection happens here — which is
+        // exactly what dissolves the false-match defect class for this hook.
       }
 
       // ── Doom-loop detection ──────────────────────────────────────────────
@@ -348,29 +289,18 @@ export const PrismHooks: Plugin = async (pluginInput) => {
       }
     },
 
-    // Inject messages into the system prompt on the next LLM turn:
-    // 1. Escalation warning if the review cycle limit has been reached.
-    // 2. Review reminder after a git push (one-shot, cleared after injection).
-    // Note: doom-loop steering is handled by experimental.chat.messages.transform,
-    // not here. This hook only manages the review-related system prompt injections.
+    // Inject the post-push review reminder into the system prompt on the
+    // next LLM turn. Doom-loop steering is handled by
+    // experimental.chat.messages.transform, not here.
+    //
+    // The review-cycle escalation message that previously lived in this
+    // hook was removed in #1512 (Shape B): the Go-side monitor now appends
+    // the LOOP-LIMIT footer to the review-complete prompt body, so the
+    // warning is delivered exactly once — embedded in the prompt the
+    // worker is already going to act on — instead of being re-injected on
+    // every turn. This eliminates the per-turn spam and the bash-substring
+    // false-match miscount in one structural move.
     "experimental.chat.system.transform": async (_input, output) => {
-      // Clear the per-turn cycle deduplication flag so the next batch of
-      // review agent invocations counts as a fresh cycle.
-      pendingCycleCount = false;
-
-      // Inject escalation reminder if 3 or more review cycles have elapsed
-      // for the current PR without all agents passing.
-      const prKey = detectedPrNumber ?? "unknown";
-      const cycles = reviewCycles.get(prKey) ?? 0;
-      if (cycles >= 3) {
-        const prLabel = detectedPrNumber
-          ? `PR #${detectedPrNumber}`
-          : "this PR";
-        output.system.push(
-          `⚠️ REVIEW LOOP LIMIT: You have run ${cycles} review cycles for ${prLabel} without all agents passing. You MUST stop and escalate to the user now. Do NOT run another review cycle. Instead, summarise: (1) what was originally requested, (2) what each review cycle found, and (3) why the fixes are not converging. Hand off to the coordinator.`,
-        );
-      }
-
       if (!pendingReviewReminder) return output;
       pendingReviewReminder = false;
 

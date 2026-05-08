@@ -29,16 +29,12 @@ import {
   // Behavioural guards
   similarityKey,
   processDoomLoop,
-  processReviewCycle,
-  reviewCycleEscalationMessage,
   isGitPush,
   newDoomLoopState,
-  newReviewCycleState,
   snapshotGuardState,
   restoreGuardState,
   GUARD_STATE_ENTRY_TYPE,
   DOOM_LOOP_THRESHOLD,
-  REVIEW_CYCLE_THRESHOLD,
   // Status bar
   formatPrismStatus,
   extractBranch,
@@ -947,103 +943,73 @@ describe("doom_loop_detected wire frame — field names match payload.DoomLoopDe
 })
 
 // ---------------------------------------------------------------------------
-// processReviewCycle
+// review-cycle injection removed in #1512 (Shape B)
 // ---------------------------------------------------------------------------
+//
+// processReviewCycle, reviewCycleEscalationMessage, REVIEW_CYCLE_THRESHOLD,
+// newReviewCycleState, and the per-turn LOOP-LIMIT injection were deleted
+// because cycle counting and the LOOP-LIMIT footer now live exclusively in
+// the Go-side review monitor (internal/review/monitor.go). Tests for the new
+// behaviour live in internal/review/loop_limit_test.go.
+//
+// The block below pins that the TS module no longer carries any LOOP-LIMIT
+// text or cycle-counting export — i.e. the duplicate implementation defect
+// (#1512 defect 4) cannot regress without these tests failing first.
 
-describe("processReviewCycle — bash prism review", () => {
-  it("counts a prism review bash call", () => {
-    const state = newReviewCycleState()
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    assert.equal(state.cycles.get("42"), 1)
-    assert.equal(state.detectedPrNumber, "42")
+import { readFileSync } from "node:fs"
+import * as path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const __filename2 = fileURLToPath(import.meta.url)
+const __dirname2 = path.dirname(__filename2)
+
+describe("#1512 — review-cycle injection has been removed from prism.ts", () => {
+  it("prism.ts does NOT contain the LOOP-LIMIT injection text", () => {
+    const src = readFileSync(path.join(__dirname2, "prism.ts"), "utf8")
+    assert.ok(
+      !src.includes("REVIEW LOOP LIMIT"),
+      "prism.ts must not contain 'REVIEW LOOP LIMIT' — the warning text now lives in Go (internal/review/monitor.go)",
+    )
+    assert.ok(
+      !/REVIEW_CYCLE_THRESHOLD\s*=\s*\d/.test(src),
+      "prism.ts must not declare REVIEW_CYCLE_THRESHOLD — the threshold lives in Go",
+    )
   })
 
-  it("does not double-count parallel invocations within the same turn", () => {
-    const state = newReviewCycleState()
-    // Simulate two bash calls with prism review in the same turn.
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    // pendingCycleCount guard: only counted once.
-    assert.equal(state.cycles.get("42"), 1)
+  it("prism.ts does NOT match the bash-substring 'prism review N' regex anywhere it could increment a counter", () => {
+    const src = readFileSync(path.join(__dirname2, "prism.ts"), "utf8")
+    // The dangerous pattern is /\bprism\s+review\s+(\d+)\b/ — a regex that
+    // captures a numeric PR. Its only legitimate use after #1512 would be
+    // to detect cycle increments, which we removed. The reviewing-state
+    // guard uses a *different* pattern (no capture group, no digit) and is
+    // explicitly out of scope; #1519 owns it. Pin that no
+    // "capture-group-with-digit" pattern leaks back in.
+    assert.ok(
+      !/\\bprism\\s\+review\\s\+\(\\d\+\)\\b/.test(src),
+      "prism.ts must not contain /\\bprism\\s+review\\s+(\\d+)\\b/ — cycle counting moved to Go (#1512)",
+    )
   })
 
-  it("counts a new cycle after pendingCycleCount is cleared", () => {
-    const state = newReviewCycleState()
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    state.pendingCycleCount = false // simulates turn_start clearing the flag
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    assert.equal(state.cycles.get("42"), 2)
-  })
-
-  it("resets cycles when PR number changes", () => {
-    const state = newReviewCycleState()
-    processReviewCycle(state, "bash", { command: "prism review 42" })
-    state.pendingCycleCount = false
-    processReviewCycle(state, "bash", { command: "prism review 43" })
-    assert.equal(state.detectedPrNumber, "43")
-    assert.equal(state.cycles.get("42"), undefined)
-    assert.equal(state.cycles.get("43"), 1)
-    assert.equal(state.frameEmitted, false)
-  })
-
-  it("returns true after REVIEW_CYCLE_THRESHOLD cycles", () => {
-    const state = newReviewCycleState()
-    let exceeded = false
-    for (let i = 0; i < REVIEW_CYCLE_THRESHOLD; i++) {
-      state.pendingCycleCount = false
-      exceeded = processReviewCycle(state, "bash", { command: "prism review 42" })
-    }
-    assert.equal(exceeded, true)
-  })
-})
-
-describe("processReviewCycle — task review subagent", () => {
-  it("counts a review-goal task invocation", () => {
-    const state = newReviewCycleState()
-    processReviewCycle(state, "task", {
-      subagent_type: "review-goal",
-      prompt: "please review PR #99",
-    })
-    assert.equal(state.cycles.get("99"), 1)
-    assert.equal(state.detectedPrNumber, "99")
-  })
-
-  it("ignores non-review task invocations", () => {
-    const state = newReviewCycleState()
-    processReviewCycle(state, "task", {
-      subagent_type: "general",
-      prompt: "do some work",
-    })
-    assert.equal(state.cycles.size, 0)
-  })
-
-  it("returns false for non-review tool calls", () => {
-    const state = newReviewCycleState()
-    const exceeded = processReviewCycle(state, "read", { filePath: "/foo.go" })
-    assert.equal(exceeded, false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// reviewCycleEscalationMessage
-// ---------------------------------------------------------------------------
-
-describe("reviewCycleEscalationMessage", () => {
-  it("includes the PR number and cycle count", () => {
-    const state = newReviewCycleState()
-    state.detectedPrNumber = "42"
-    state.cycles.set("42", 3)
-    const msg = reviewCycleEscalationMessage(state)
-    assert.ok(msg.includes("PR #42"))
-    assert.ok(msg.includes("3"))
-    assert.ok(msg.includes("escalate"))
-  })
-
-  it("handles unknown PR number gracefully", () => {
-    const state = newReviewCycleState()
-    state.cycles.set("unknown", 4)
-    const msg = reviewCycleEscalationMessage(state)
-    assert.ok(msg.includes("this PR"))
+  it("prism-hooks.ts does NOT contain the LOOP-LIMIT injection text", () => {
+    // The opencode plugin previously had a duplicate of the same warning;
+    // #1512 deleted it. This pins the single-source-of-truth invariant.
+    const hooksPath = path.resolve(
+      __dirname2,
+      "..",
+      "..",
+      "opencode",
+      "plugins",
+      "prism-hooks.ts",
+    )
+    const src = readFileSync(hooksPath, "utf8")
+    assert.ok(
+      !src.includes("REVIEW LOOP LIMIT"),
+      "prism-hooks.ts must not contain 'REVIEW LOOP LIMIT' — the warning text now lives in Go",
+    )
+    assert.ok(
+      !/\\bprism\\s\+review\\s\+\(\\d\+\)\\b/.test(src),
+      "prism-hooks.ts must not contain the cycle-increment regex",
+    )
   })
 })
 
@@ -1061,123 +1027,97 @@ describe("snapshotGuardState", () => {
     dl.currentKey = "bash:git push"
     dl.consecutiveCount = 3
     dl.fired = false
-    const rc = newReviewCycleState()
-    const snap = snapshotGuardState(dl, rc, false, false)
+    const snap = snapshotGuardState(dl, false, false)
     assert.equal(snap.doomLoop.currentKey, "bash:git push")
     assert.equal(snap.doomLoop.consecutiveCount, 3)
     assert.equal(snap.doomLoop.fired, false)
   })
 
-  it("serialises review-cycle state (Map → plain object)", () => {
+  it("serialises pendingGitPushReminder", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    rc.detectedPrNumber = "42"
-    rc.cycles.set("42", 2)
-    rc.frameEmitted = true
-    const snap = snapshotGuardState(dl, rc, true, false)
-    assert.equal(snap.reviewCycle.detectedPrNumber, "42")
-    assert.equal(snap.reviewCycle.cycles["42"], 2)
-    assert.equal(snap.reviewCycle.frameEmitted, true)
+    const snap = snapshotGuardState(dl, true, false)
     assert.equal(snap.pendingGitPushReminder, true)
-    assert.equal(snap.pendingReviewCall, false)
   })
 
   it("serialises pendingReviewCall", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    const snap = snapshotGuardState(dl, rc, false, true)
+    const snap = snapshotGuardState(dl, false, true)
     assert.equal(snap.pendingReviewCall, true)
   })
 
-  it("produces a JSON-safe value (no Map objects)", () => {
+  it("produces a JSON-safe value", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    rc.cycles.set("99", 1)
-    const snap = snapshotGuardState(dl, rc, false, false)
-    // JSON round-trip must succeed and preserve cycles
+    dl.currentKey = "bash:nix build"
+    dl.consecutiveCount = 2
+    const snap = snapshotGuardState(dl, false, false)
     const json = JSON.stringify(snap)
     const parsed = JSON.parse(json)
-    assert.equal(parsed.reviewCycle.cycles["99"], 1)
+    assert.equal(parsed.doomLoop.currentKey, "bash:nix build")
+    assert.equal(parsed.doomLoop.consecutiveCount, 2)
+  })
+
+  it("never references a removed reviewCycle field on the new shape", () => {
+    // Pin #1512: the snapshot must NOT carry reviewCycle data — cycle
+    // counting moved to the Go-side monitor.
+    const dl = newDoomLoopState()
+    const snap = snapshotGuardState(dl, false, false) as Record<string, unknown>
+    assert.ok(!("reviewCycle" in snap), "snapshotGuardState must not emit a reviewCycle field")
   })
 })
 
 describe("restoreGuardState", () => {
   it("restores doom-loop fields", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
     const snap = {
       doomLoop: { currentKey: "bash:nix build", consecutiveCount: 4, fired: true },
-      reviewCycle: { detectedPrNumber: null, cycles: {}, frameEmitted: false },
       pendingGitPushReminder: false,
       pendingReviewCall: false,
     }
-    restoreGuardState(snap, dl, rc)
+    restoreGuardState(snap, dl)
     assert.equal(dl.currentKey, "bash:nix build")
     assert.equal(dl.consecutiveCount, 4)
     assert.equal(dl.fired, true)
   })
 
-  it("restores review-cycle fields including Map entries", () => {
+  it("restores pendingGitPushReminder and pendingReviewCall", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
     const snap = {
       doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
-      reviewCycle: { detectedPrNumber: "77", cycles: { "77": 3 }, frameEmitted: true },
       pendingGitPushReminder: true,
-      pendingReviewCall: false,
-    }
-    const result = restoreGuardState(snap, dl, rc)
-    assert.equal(rc.detectedPrNumber, "77")
-    assert.equal(rc.cycles.get("77"), 3)
-    assert.equal(rc.frameEmitted, true)
-    assert.equal(result.pendingGitPushReminder, true)
-    assert.equal(result.pendingReviewCall, false)
-  })
-
-  it("restores pendingReviewCall=true from snapshot", () => {
-    const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    const snap = {
-      doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
-      reviewCycle: { detectedPrNumber: "10", cycles: {}, frameEmitted: false },
-      pendingGitPushReminder: false,
       pendingReviewCall: true,
     }
-    const result = restoreGuardState(snap, dl, rc)
+    const result = restoreGuardState(snap, dl)
+    assert.equal(result.pendingGitPushReminder, true)
     assert.equal(result.pendingReviewCall, true)
   })
 
-  it("clears existing Map entries before restoring", () => {
+  it("tolerates legacy snapshots that include a reviewCycle field", () => {
+    // #1512 backward-compat: pre-fix sessions persisted a reviewCycle
+    // sub-object. After restoring, that data is silently ignored.
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    rc.cycles.set("old", 99)
-    const snap = {
-      doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
-      reviewCycle: { detectedPrNumber: null, cycles: {}, frameEmitted: false },
+    const legacySnap = {
+      doomLoop: { currentKey: "bash:foo", consecutiveCount: 1, fired: false },
+      reviewCycle: { detectedPrNumber: "77", cycles: { "77": 3 }, frameEmitted: true },
       pendingGitPushReminder: false,
       pendingReviewCall: false,
-    }
-    restoreGuardState(snap, dl, rc)
-    assert.equal(rc.cycles.size, 0)
+    } as unknown as Parameters<typeof restoreGuardState>[0]
+    const result = restoreGuardState(legacySnap, dl)
+    assert.equal(dl.currentKey, "bash:foo")
+    assert.equal(result.pendingReviewCall, false)
   })
 
   it("handles missing/malformed snapshot fields gracefully", () => {
     const dl = newDoomLoopState()
-    const rc = newReviewCycleState()
-    // Deliberately omit / corrupt fields
     const snap = {
       doomLoop: { currentKey: undefined, consecutiveCount: "not-a-number" as unknown as number, fired: undefined },
-      reviewCycle: { detectedPrNumber: undefined, cycles: null as unknown as Record<string, number>, frameEmitted: undefined },
       pendingGitPushReminder: undefined as unknown as boolean,
       pendingReviewCall: undefined as unknown as boolean,
     }
-    const result = restoreGuardState(snap, dl, rc)
+    const result = restoreGuardState(snap, dl)
     assert.equal(dl.currentKey, null)
     assert.equal(dl.consecutiveCount, 0)
     assert.equal(dl.fired, false)
-    assert.equal(rc.detectedPrNumber, null)
-    assert.equal(rc.cycles.size, 0)
-    assert.equal(rc.frameEmitted, false)
+    assert.equal(result.pendingGitPushReminder, false)
     assert.equal(result.pendingReviewCall, false)
   })
 })
@@ -1188,25 +1128,17 @@ describe("snapshotGuardState + restoreGuardState round-trip", () => {
     dl.currentKey = "bash:git status"
     dl.consecutiveCount = 2
     dl.fired = false
-    const rc = newReviewCycleState()
-    rc.detectedPrNumber = "55"
-    rc.cycles.set("55", 2)
-    rc.frameEmitted = false
 
-    const snap = snapshotGuardState(dl, rc, true, true)
+    const snap = snapshotGuardState(dl, true, true)
     // Simulate writing to and reading from the session JSON file.
     const persisted = JSON.parse(JSON.stringify(snap))
 
     const dl2 = newDoomLoopState()
-    const rc2 = newReviewCycleState()
-    const { pendingGitPushReminder, pendingReviewCall } = restoreGuardState(persisted, dl2, rc2)
+    const { pendingGitPushReminder, pendingReviewCall } = restoreGuardState(persisted, dl2)
 
     assert.equal(dl2.currentKey, "bash:git status")
     assert.equal(dl2.consecutiveCount, 2)
     assert.equal(dl2.fired, false)
-    assert.equal(rc2.detectedPrNumber, "55")
-    assert.equal(rc2.cycles.get("55"), 2)
-    assert.equal(rc2.frameEmitted, false)
     assert.equal(pendingGitPushReminder, true)
     assert.equal(pendingReviewCall, true)
   })

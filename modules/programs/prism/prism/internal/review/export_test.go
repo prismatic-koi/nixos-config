@@ -91,3 +91,15 @@ func TruncateProgressMsgForTest(prNumber, agentName, msg string) string {
 
 // MaxProgressMsgBytesForTest exposes maxProgressMsgBytes for assertions.
 const MaxProgressMsgBytesForTest = maxProgressMsgBytes
+
+// BuildLoopLimitFooterForTest is an exported wrapper around buildLoopLimitFooter
+// for use in external test packages (#1512).
+func BuildLoopLimitFooterForTest(cycles int, prNumber string) string {
+	return buildLoopLimitFooter(cycles, prNumber)
+}
+
+// CurrentCycleProducedVerdictsForTest is an exported wrapper around
+// currentCycleProducedVerdicts for use in external test packages (#1512).
+func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResult) bool {
+	return currentCycleProducedVerdicts(groupData)
+}
