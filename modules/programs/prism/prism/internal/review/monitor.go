@@ -220,12 +220,22 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 		}
 
 		switch mr.State {
-		case "interrupted", "error":
+		case "error":
 			// Distinguish a no-start failure from a mid-run crash: when a
 			// startup_error event was written by the sidecar's writeStartupError,
 			// StartupError is non-empty and indicates the container never bound
 			// its port. Label it clearly so the coordinator treats it as an
 			// infrastructure failure rather than a code-quality verdict (#1222).
+			//
+			// Note: "interrupted" is intentionally NOT bucketed with "error" here
+			// (#1495). An interrupted agent that was redirected via `prism prompt`
+			// and subsequently crashes still lands here with state="error" — the
+			// genuine-error path is unchanged. "interrupted" only reaches this
+			// switch via the default branch below, which would only fire if the
+			// MonitorFunc poll loop hit its overall safety timeout while an agent
+			// was still in the interrupted state (i.e. the user neither redirected
+			// nor cleaned up). Without that safety timeout, GroupCompleted keeps
+			// returning false and the monitor keeps waiting.
 			if mr.StartupError != "" {
 				results[i] = AgentResult{
 					Agent:   ag,
