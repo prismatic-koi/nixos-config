@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
@@ -59,6 +61,15 @@ func testBinaryPath(t *testing.T) string {
 // newStdioSidecar constructs a sidecar configured for the "fake-stdio" harness
 // with the given binary path. The sidecar is not started; callers must invoke
 // sc.Run(ctx).
+//
+// A deterministic instance_id is minted up-front and a matching row is
+// inserted into the sessions table before the sidecar is returned. Without
+// this pre-seed the FK constraint
+// agent_events.instance_id REFERENCES sessions(instance_id) fails when
+// runStartupStdio writes state_change / startup_error / msg_assistant events,
+// and those events are silently dropped (logged as WriteEvent errors) — which
+// causes the downstream assertions to fail. See #1503 (and the same fix
+// shape in #1496).
 func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *sidecar.Sidecar {
 	t.Helper()
 
@@ -66,11 +77,26 @@ func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *s
 		sessionName = "test-repo@stdio-test"
 		repo        = "test-repo"
 		worktree    = "/tmp/test-stdio-worktree"
+		harnessName = "fake-stdio"
 	)
 
-	h, err := harness.New("fake-stdio", "", nil, "", "")
+	h, err := harness.New(harnessName, "", nil, "", "")
 	if err != nil {
 		t.Fatalf("harness.New(fake-stdio): %v", err)
+	}
+
+	// Pre-mint the instance_id and seed a matching sessions row so the FK on
+	// agent_events.instance_id REFERENCES sessions(instance_id) is satisfied
+	// for every event runStartupStdio writes.
+	instanceID := uuid.New().String()
+	if err := d.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    worktree,
+		Harness:     harnessName,
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
 	}
 
 	cfg := sidecar.Config{
@@ -80,9 +106,10 @@ func newStdioSidecar(t *testing.T, d *db.DB, bwrapBin, harnessBinPath string) *s
 		DB:                d,
 		Clock:             sidecar.RealClock(),
 		Harness:           h,
-		HarnessName:       "fake-stdio",
+		HarnessName:       harnessName,
 		HarnessBinaryPath: harnessBinPath,
 		BwrapPath:         bwrapBin,
+		InstanceID:        instanceID,
 	}
 	return sidecar.New(cfg)
 }
