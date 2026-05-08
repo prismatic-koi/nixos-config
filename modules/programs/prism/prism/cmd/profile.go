@@ -290,11 +290,11 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 
 // profileSlotJSON is the snake_case JSON shape for a single role slot.
 type profileSlotJSON struct {
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
-	Thinking           string `json:"thinking"`
-	Harness            string `json:"harness"`
-	SystemPromptPath   string `json:"system_prompt_path"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Thinking         string `json:"thinking"`
+	Harness          string `json:"harness"`
+	SystemPromptPath string `json:"system_prompt_path"`
 }
 
 // profileJSON is the snake_case JSON shape for a single profile entry. The

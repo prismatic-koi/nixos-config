@@ -102,6 +102,44 @@ func TestStatusCmd_JSON_DBOpenFailureStillEmitsJSON(t *testing.T) {
 	}
 }
 
+// TestStatusCmd_HumanRenderer_ShowsErrorSessions is a regression test for
+// the bug where introducing a dedicated nError counter (for --json) made
+// error-state sessions silently disappear from the human-readable summary
+// and the tmux status bar (review-code blocker on PR #1511 round 2).
+//
+// Both renderers must surface error sessions; they should never be silently
+// rolled into idle or omitted entirely.
+func TestStatusCmd_HumanRenderer_ShowsErrorSessions(t *testing.T) {
+	d := openStatsTestDB(t)
+
+	if err := d.UpsertStatus("repo@bad", "repo", "/code", string(agent.StateError), nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+
+	// Plain human-readable summary.
+	out := captureStdout(t, func() {
+		if err := statusCmd.RunE(statusCmd, nil); err != nil {
+			t.Errorf("statusCmd.RunE (plain): %v", err)
+		}
+	})
+	if !strings.Contains(out, "1 error") {
+		t.Errorf("plain summary must surface error sessions, got: %q", out)
+	}
+
+	// Tmux-format renderer.
+	statusCmd.Flags().Set("tmux-format", "true")        //nolint:errcheck
+	defer statusCmd.Flags().Set("tmux-format", "false") //nolint:errcheck
+
+	out = captureStdout(t, func() {
+		if err := statusCmd.RunE(statusCmd, nil); err != nil {
+			t.Errorf("statusCmd.RunE (tmux-format): %v", err)
+		}
+	})
+	if !strings.Contains(out, "1 error") {
+		t.Errorf("tmux-format must surface error sessions, got: %q", out)
+	}
+}
+
 // TestStatusCmd_JSON_StateAggregation verifies that statuses bucket into the
 // expected JSON keys.
 func TestStatusCmd_JSON_StateAggregation(t *testing.T) {

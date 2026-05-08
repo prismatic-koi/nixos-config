@@ -34,13 +34,13 @@ func TestRenderMergesListJSON_SnakeCaseKeysAndRFC3339(t *testing.T) {
 	title := "feat: foo"
 	merges := []db.PendingMerge{
 		{
-			PR:                 1484,
-			SessionName:        "nixos-config@main",
-			InstanceID:         "abc-123",
-			QueuePosition:      1778224434415,
-			Status:             "watching",
-			Title:              &title,
-			QueuedAt:           queuedAt,
+			PR:            1484,
+			SessionName:   "nixos-config@main",
+			InstanceID:    "abc-123",
+			QueuePosition: 1778224434415,
+			Status:        "watching",
+			Title:         &title,
+			QueuedAt:      queuedAt,
 		},
 	}
 

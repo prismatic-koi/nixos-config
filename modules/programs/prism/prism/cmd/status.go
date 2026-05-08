@@ -84,6 +84,13 @@ JSON object keyed by state with integer counts.
 		}
 
 		// Default: human-readable summary of all states.
+		//
+		// Errored sessions must remain visible in both renderers. Pre-#1499
+		// they were folded into the `idle` bucket via the `default:` arm of
+		// the state switch, so they showed up as "N idle" — the new dedicated
+		// `nError` counter (added for --json) must be rendered explicitly
+		// here, otherwise error sessions silently disappear from the status
+		// bar. Render in red so they're visually distinct from idle.
 		if tmuxFormat {
 			var parts []string
 			if nWaiting > 0 {
@@ -94,6 +101,9 @@ JSON object keyed by state with integer counts.
 			}
 			if nFinished > 0 {
 				parts = append(parts, fmt.Sprintf("#[fg=%s]%d done", ColorGreen, nFinished))
+			}
+			if nError > 0 {
+				parts = append(parts, fmt.Sprintf("#[fg=%s]%d error", ColorRed, nError))
 			}
 			if len(parts) > 0 {
 				fmt.Printf("%s #[fg=%s]| ", strings.Join(parts, " "), ColorPrimary)
@@ -108,6 +118,9 @@ JSON object keyed by state with integer counts.
 			}
 			if nFinished > 0 {
 				parts = append(parts, fmt.Sprintf("%d done", nFinished))
+			}
+			if nError > 0 {
+				parts = append(parts, fmt.Sprintf("%d error", nError))
 			}
 			if nIdle > 0 || len(parts) == 0 {
 				parts = append(parts, fmt.Sprintf("%d idle", nIdle))
