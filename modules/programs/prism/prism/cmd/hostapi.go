@@ -281,6 +281,103 @@ func proxyCheckin(apiURL, session string, limit int, before, after *string, type
 	return raw, nil
 }
 
+// cleanupResponse is the host-API /cleanup response shape. stdout/stderr are
+// the captured byte streams of the host-side `prism cleanup` subprocess. The
+// container-side caller writes them verbatim to its own stdout/stderr so that
+// the byte content is identical to a host invocation (modulo trailing
+// whitespace from the buffer). On success Error is empty; on failure the
+// host-API still returns stdout/stderr alongside Error so the caller can
+// surface the underlying cause. See issue #1527.
+type cleanupResponse struct {
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+	Error  string `json:"error,omitempty"`
+}
+
+// proxyCleanupToHostAPI sends a cleanup request to the host-API sidecar and
+// forwards the host-side stdout and stderr to the caller's stdout/stderr.
+//
+// This makes the container-path output of `prism cleanup` byte-equivalent to
+// the host-path output (modulo trailing whitespace), per issue #1527 AC #1.
+// Without this forwarding, the container path was silent on success because
+// the previous handler discarded the captured CombinedOutput.
+func proxyCleanupToHostAPI(apiURL, session string, yes, jsonMode bool) error {
+	return proxyCleanupToHostAPIWithWriters(apiURL, session, yes, jsonMode, os.Stdout, os.Stderr)
+}
+
+// proxyCleanupToHostAPIWithWriters is the testable form of
+// proxyCleanupToHostAPI: stdout/stderr destinations are injectable so unit
+// tests can capture forwarded output without redirecting os.Stdout.
+func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode bool, stdout, stderr io.Writer) error {
+	body := map[string]any{
+		"session": session,
+		"yes":     yes,
+		"json":    jsonMode,
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("proxyCleanupToHostAPI: marshal request body: %w", err)
+	}
+
+	var client *http.Client
+	var reqURL string
+	if strings.HasPrefix(apiURL, "http://") {
+		client = newTCPHostAPIClient()
+		reqURL = apiURL + "/cleanup"
+	} else {
+		sockPath, parseErr := parseUnixSocketURL(apiURL)
+		if parseErr != nil {
+			return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+		}
+		client = newHostAPIClient(sockPath)
+		reqURL = "http://prism-hostapi/cleanup"
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("proxyCleanupToHostAPI: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("host-API /cleanup: read response: %w", readErr)
+	}
+
+	var parsed cleanupResponse
+	// Tolerate empty bodies; we'll surface a clearer error below.
+	if len(respBody) > 0 {
+		if unmarshalErr := json.Unmarshal(respBody, &parsed); unmarshalErr != nil {
+			return fmt.Errorf("host-API /cleanup: unmarshal response: %w (body=%s)", unmarshalErr, strings.TrimSpace(string(respBody)))
+		}
+	}
+
+	// Forward the host-side streams unconditionally — even on error — so the
+	// caller can see partial-success progress lines and stderr warnings
+	// (e.g. archive collision). This addresses both the silent-success defect
+	// and the error-message-names-the-wrong-layer issue noted in the comment
+	// on issue #1527.
+	if parsed.Stdout != "" {
+		_, _ = io.WriteString(stdout, parsed.Stdout)
+	}
+	if parsed.Stderr != "" {
+		_, _ = io.WriteString(stderr, parsed.Stderr)
+	}
+
+	if resp.StatusCode >= 400 {
+		if parsed.Error != "" {
+			return fmt.Errorf("host-API /cleanup: %s", parsed.Error)
+		}
+		return fmt.Errorf("host-API /cleanup: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // proxyPrompt proxies a prompt delivery request to the host-API sidecar.
 // apiURL is the value of PRISM_HOST_API. deliverAs controls the delivery mode
 // ("steer", "followUp", or "nextTurn") and is forwarded as the "deliver_as"

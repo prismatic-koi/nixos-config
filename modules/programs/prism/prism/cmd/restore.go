@@ -135,6 +135,12 @@ func Restore(dryRun bool) error {
 	// *pendingStagger is true, then resets it to false.
 	pendingStagger := false
 
+	// Aggregate counts for the final summary line (issue #1527 AC).
+	// restored:  outcome == restoreOutcomeCreated
+	// skipped:   outcome == restoreOutcomeSkipped or restoreOutcomeCircuitOpen
+	// failed:    restErr != nil (per-session error from restoreSession)
+	var restored, skipped, failed int
+
 	for _, s := range statuses {
 		if dryRun {
 			// In dry-run mode, show what would happen but never sleep or write.
@@ -148,16 +154,26 @@ func Restore(dryRun bool) error {
 				if failures >= threshold {
 					fmt.Printf("would skip (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` or `prism cleanup` to unblock\n",
 						s.SessionName, failures, s.SessionName)
+					skipped++
 					continue
 				}
 			}
 			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)
+			restored++
 			continue
 		}
 
 		outcome, restErr := restoreSession(d, s, threshold, &pendingStagger, staggerDelay)
 		if restErr != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, restErr)
+			failed++
+		} else {
+			switch outcome {
+			case restoreOutcomeCreated:
+				restored++
+			case restoreOutcomeSkipped, restoreOutcomeCircuitOpen:
+				skipped++
+			}
 		}
 
 		// A created session sets pendingStagger so that the NEXT actual create
@@ -177,6 +193,12 @@ func Restore(dryRun bool) error {
 			fmt.Fprintf(os.Stderr, "prism restore: ensure dashboard session: %v\n", err)
 		}
 	}
+
+	// Final aggregate summary line (issue #1527 AC). Emitted on stdout after
+	// all per-session lines so callers can grep for the totals reliably. Also
+	// emitted in dry-run mode so dry-run output is non-empty when there are
+	// no sessions.
+	fmt.Printf("restore complete: %d restored, %d skipped, %d failed\n", restored, skipped, failed)
 
 	return nil
 }
