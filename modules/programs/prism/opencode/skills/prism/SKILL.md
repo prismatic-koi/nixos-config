@@ -165,6 +165,19 @@ prism review <pr-number>
 **Do NOT commit, merge, or announce completion** until the review-complete
 prompt arrives. When it does, handle PASS/FAIL per the worker agent instructions.
 
+For a synchronous flow (one-shot script, no other work to do meanwhile) pass
+`--wait`:
+
+```bash
+prism review <pr-number> --wait
+prism review <pr-number> --wait --json   # script-friendly
+```
+
+`--wait` blocks until the review group reaches a terminal state and exits 0
+on all-PASS, non-zero on any FAIL / no-start / timeout. See the `--wait`
+section above for the full contract (exit codes, Ctrl-C semantic, idempotent
+observation).
+
 ### Pre-flight rebase gate (`prism review` refuses when behind `origin/main`)
 
 Before spawning any review agents, `prism review` runs a **one-shot pre-flight
@@ -289,6 +302,47 @@ A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watchin
 | `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
 
 Add `--json` to any `prism merges` / `prism merges list` invocation (including with `--failed`, `--abandoned`, or `--all`) to get a JSON array of merge-queue entries instead of the table — use this when scripting or polling.
+
+### `--wait` for synchronous flows (#1500)
+
+`prism merge`, `prism review`, and `prism spawn` accept `--wait` for cases where the agent's workflow is genuinely synchronous — for example, a one-shot script that wants to merge a PR and then immediately deploy. With `--wait`, the command blocks until the underlying job reaches a terminal state and exits non-zero on any non-success terminal.
+
+| Command | Terminal definition | Default `--timeout` |
+|---|---|---|
+| `prism merge <pr> --wait` | merged / failed / cancelled / abandoned (in `pending_merges`) | `30m` |
+| `prism review <pr> --wait` | All review agents reached `finished`/`error`/`deleted` (group complete) | `20m` |
+| `prism spawn ... --wait` | Spawned agent reached `finished` / `error` / `interrupted` / `deleted` for its first turn | `10m` |
+
+**When to prefer `--wait` vs the notification path:**
+
+- Prefer `--wait` when you have **no other useful work** to do until the job lands — a one-shot script, a deploy that depends on the merge, or a review that gates further commits.
+- Prefer the **notification path** (no `--wait`) when you have **other tasks in flight**. Coordinators with several PRs in flight should never `--wait` — `prism merge <pr>` returns immediately and the merge-queue watcher delivers a notification when each PR lands. Same shape for `prism review` and `prism spawn`.
+- Add `--json` when scripting: `prism merge <pr> --wait --json` emits a single JSON object on stdout (no human-readable chatter) so consumers can `jq` the status.
+
+**Idempotent observation.** `prism merge <pr> --wait` on an already-merged PR returns immediately with the merged status — safe to call any number of times.
+
+**Ctrl-C semantic.** Killing a `--wait` invocation (Ctrl-C, SIGTERM) interrupts the **local** wait only — the underlying merge / review / spawn keeps running. To recover the result later, re-run the same command (or `prism merges list` / `prism reviews list` / `prism checkin <session>`).
+
+**Exit codes.** `--wait` paths use exit codes that distinguish failure modes:
+
+| Exit | Meaning |
+|---|---|
+| `0` | terminal success (merged / all-PASS / finished) |
+| `2` | terminal failure (failed CI, any-FAIL, error state) |
+| `3` | local `--timeout` elapsed (the underlying job continues) |
+| `4` | user interrupted with Ctrl-C (the underlying job continues) |
+
+### Reviews ledger: `prism reviews list`
+
+Reviews now have a dedicated ledger surface analogous to `prism merges`. Use it instead of `prism list-sessions | grep '~review-N-'` (fragile, missing group metadata).
+
+```bash
+prism reviews            # alias for `prism reviews list`
+prism reviews list       # all review groups, newest first
+prism reviews list --json
+```
+
+Each row carries: PR number (when derivable from the parent branch), parent (worker) session, agent sessions, group state (`in-progress` / `completed` / `empty`), round number, and `started_at` timestamp.
 
 ### Notification contract
 

@@ -63,6 +63,9 @@ func init() {
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
 	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
 	reviewCmd.Flags().Bool("rebase", false, "Fetch origin/main, rebase HEAD onto it, and force-push before running the review (inline fix for the rebase-gate refusal)")
+	reviewCmd.Flags().Bool("wait", false, "Block until the review group reaches a terminal state (all-PASS, any-FAIL, or no-start). Without --wait, returns immediately and the monitor delivers results later via prism prompt.")
+	reviewCmd.Flags().Duration("wait-timeout", defaultReviewWaitTimeout, "Timeout for --wait. On expiry, exits non-zero with a status payload distinguishable from a real review failure. Ignored when --wait is not set.")
+	reviewCmd.Flags().Bool("json", false, "Emit the terminal verdict as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -342,6 +345,21 @@ func runReview(cmd *cobra.Command, args []string) error {
 	result, runErr := review.RunAsync(opts, "")
 	if runErr != nil {
 		return fmt.Errorf("prism review: %w", runErr)
+	}
+
+	// --wait: block until the review group reaches a terminal state.
+	waitFlag, _ := cmd.Flags().GetBool("wait")
+	jsonFlag, _ := cmd.Flags().GetBool("json")
+	waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
+	if waitFlag {
+		// In --wait mode and --json, we suppress the ack to keep stdout
+		// JSON-only. In textual mode the ack is still useful so the user
+		// can see which agents were spawned before the wait begins.
+		if !jsonFlag {
+			fmt.Print(result.Ack)
+			_ = os.Stdout.Sync()
+		}
+		return waitForReviewTerminal(prNumber, result.GroupID, jsonFlag, waitTimeout)
 	}
 
 	// Print acknowledgement to stdout immediately.
