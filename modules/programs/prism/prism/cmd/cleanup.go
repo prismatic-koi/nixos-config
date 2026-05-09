@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -330,18 +331,25 @@ var cleanupCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		sessionFlag, _ := cmd.Flags().GetString("session")
+		jsonFlag, _ := cmd.Flags().GetBool("json")
+
+		// --json implies --yes: emitting a single structured object is
+		// incompatible with an interactive TUI.
+		if jsonFlag && !yesFlag {
+			return fmt.Errorf("--json requires --yes (interactive cleanup is incompatible with structured output)")
+		}
 
 		// Inside a container: proxy all cleanup invocations to the host sidecar.
 		// The proxy handles both --yes (headless) and any future interactive paths.
+		// stdout and stderr from the host-side subprocess are forwarded verbatim,
+		// so the container caller sees the same per-resource progress lines as a
+		// host invocation (issue #1527).
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 			target := sessionFlag
 			if target == "" {
 				return fmt.Errorf("--session is required when running inside a container")
 			}
-			return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
-				"session": target,
-				"yes":     yesFlag,
-			}, nil)
+			return proxyCleanupToHostAPI(apiURL, target, yesFlag, jsonFlag)
 		}
 
 		// Only require tmux when we need to auto-detect the current session.
@@ -365,7 +373,7 @@ var cleanupCmd = &cobra.Command{
 			// kill the tmux session, kill the sidecar, mark the DB as ended.
 			// No git operations (no worktree removal, no branch deletion).
 			if yesFlag {
-				return headlessCloseSession(session)
+				return headlessCloseSessionWithJSON(session, jsonFlag)
 			}
 			// Interactive path: simplified confirmation (no worktree/branch prompts).
 			if os.Getenv("TMUX") == "" {
@@ -406,7 +414,7 @@ var cleanupCmd = &cobra.Command{
 				} else {
 					fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
 				}
-				return headlessCleanup(session, worktreeName, "", "")
+				return headlessCleanupWithJSON(session, worktreeName, "", "", jsonFlag)
 			} else {
 				return fmt.Errorf("could not determine worktree path for session %q (not found in tmux windows or DB)", session)
 			}
@@ -430,7 +438,7 @@ var cleanupCmd = &cobra.Command{
 			// session and mark the DB as ended, but keep the worktree
 			// and branch intact.
 			if yesFlag {
-				return headlessCloseSession(session)
+				return headlessCloseSessionWithJSON(session, jsonFlag)
 			}
 			// Interactive path: simplified confirmation (no worktree/branch prompts).
 			if os.Getenv("TMUX") == "" {
@@ -448,7 +456,7 @@ var cleanupCmd = &cobra.Command{
 
 		// Non-interactive path: --yes skips all prompts and runs headlessly.
 		if yesFlag {
-			return headlessCleanup(session, worktreeName, worktreePath, bareRoot)
+			return headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot, jsonFlag)
 		}
 
 		// Interactive TUI requires tmux (bubbletea needs a real TTY).
@@ -463,6 +471,33 @@ var cleanupCmd = &cobra.Command{
 	},
 }
 
+// cleanupResult tracks per-resource outcomes for one headless cleanup. It is
+// the source of truth for both the textual progress lines (host-path output)
+// and the structured --json object. Empty/false fields mean the corresponding
+// resource was not touched (e.g. worktree path unknown — see
+// worktreeRemoved=nil for the JSON encoding).
+type cleanupResult struct {
+	Session         string  `json:"session"`
+	WorktreeRemoved *string `json:"worktree_removed"` // nil when no worktree was touched
+	BranchDeleted   *string `json:"branch_deleted"`   // nil when no branch was deleted
+	SessionKilled   bool    `json:"session_killed"`
+}
+
+// emitCleanupJSON writes the cleanup result as a single JSON object on a line
+// to os.Stdout. Used by the --json path; mutually exclusive with the textual
+// per-step lines.
+func emitCleanupJSON(r cleanupResult) {
+	data, err := json.Marshal(r)
+	if err != nil {
+		// Marshal of a small fixed-shape struct should never fail; surface
+		// the error on stderr so the caller has something to work with
+		// rather than empty stdout.
+		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup --json: marshal: %v\n", err)
+		return
+	}
+	fmt.Println(string(data))
+}
+
 // headlessCleanup removes the worktree and session without any TUI interaction.
 // It always force-deletes the branch, relying on the orchestrator-trust
 // contract: the orchestrator should only call this after confirming the PR has
@@ -475,29 +510,48 @@ var cleanupCmd = &cobra.Command{
 // missing on disk).  In that case the worktree and branch removal steps are
 // skipped, and cleanup continues with sidecar teardown and DB updates.
 func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error {
+	return headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot, false)
+}
+
+// headlessCleanupWithJSON is the JSON-aware form of headlessCleanup. When
+// jsonMode is true, per-step textual progress lines are suppressed and a
+// single JSON object is emitted on success. Stderr warnings (e.g. branch
+// delete failure, archive collision) are preserved in both modes per AC.
+func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot string, jsonMode bool) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
-			"session": session,
-			"yes":     true,
-		}, nil)
+		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode)
+	}
+
+	result := cleanupResult{Session: session}
+
+	printLine := func(format string, a ...any) {
+		if !jsonMode {
+			fmt.Printf(format, a...)
+		}
 	}
 
 	if worktreePath == "" {
-		fmt.Printf("worktree path unknown — skipping worktree removal for session %s\n", session)
+		printLine("worktree path unknown — skipping worktree removal for session %s\n", session)
 	} else {
-		fmt.Printf("removing worktree %s...\n", worktreePath)
+		printLine("removing worktree %s...\n", worktreePath)
 		if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
 			// Non-fatal: the path may no longer be a registered git worktree
 			// (e.g. already removed, or pointing at the prism source dir).
 			// Log a warning and continue so sidecar/DB cleanup still happens.
 			fmt.Fprintf(os.Stderr, "[prism] warning: worktree remove: %v — continuing cleanup\n", err)
+		} else {
+			wt := worktreePath
+			result.WorktreeRemoved = &wt
 		}
 	}
 
 	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
-		fmt.Printf("deleting branch %s...\n", worktreeName)
+		printLine("deleting branch %s...\n", worktreeName)
 		if err := git.ForceDeleteBranch(bareRoot, worktreeName); err != nil {
 			fmt.Fprintf(os.Stderr, "[prism] warning: branch delete: %v — continuing cleanup\n", err)
+		} else {
+			bn := worktreeName
+			result.BranchDeleted = &bn
 		}
 	}
 
@@ -518,9 +572,21 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		}
 	}
 
-	fmt.Printf("killing session %s\n", session)
+	printLine("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	// session_killed reflects the post-condition (tmux session is gone),
+	// which is true whether the session was alive or already-dead before this
+	// call. KillSession's error is intentionally ignored above (it returns
+	// non-nil for already-dead sessions, which is not a failure for our
+	// purposes), so we set the field unconditionally here.
+	result.SessionKilled = true
+	// archiveCollisionWarning records a non-fatal archive-already-exists
+	// outcome so it can be surfaced as a stderr warning at the end of cleanup
+	// rather than aborting (per the issue-comment AC: archive.ErrAlreadyExists
+	// is a benign collision once worktree/branch/session are already torn
+	// down). Other steps continue as normal.
+	var archiveCollisionWarning string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
@@ -549,9 +615,13 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-					_ = d.PurgeBusMessages(session)
-					d.Close()
-					return archiveErr
+					// Non-fatal: by this point the worktree, branch, tmux
+					// session, and DB rows are already torn down. The collision
+					// just means a previous cleanup attempt for the same
+					// instance_id already wrote the archive directory. Surface
+					// it as a stderr warning instead of aborting (issue #1527
+					// follow-up).
+					archiveCollisionWarning = archiveErr.Error()
 				}
 				// Other archive errors are non-fatal — cleanup continues.
 			}
@@ -568,7 +638,14 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
-	fmt.Println("done")
+	if archiveCollisionWarning != "" {
+		fmt.Fprintf(os.Stderr, "[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
+	}
+	if jsonMode {
+		emitCleanupJSON(result)
+	} else {
+		fmt.Println("done")
+	}
 	return nil
 }
 
@@ -639,14 +716,26 @@ func closeSession(session string) error {
 // It kills the tmux session and marks the DB as ended without touching the
 // worktree or branch (for @main) or without any git operations (for non-@ sessions).
 func headlessCloseSession(session string) error {
+	return headlessCloseSessionWithJSON(session, false)
+}
+
+// headlessCloseSessionWithJSON is the JSON-aware form of headlessCloseSession.
+// When jsonMode is true, per-step textual progress lines are suppressed and a
+// single JSON object is emitted on success (worktree_removed=null,
+// branch_deleted=null since this path never touches them).
+func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyToHostAPI(apiURL, "/cleanup", map[string]any{
-			"session": session,
-			"yes":     true,
-		}, nil)
+		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode)
 	}
 
-	fmt.Printf("closing session %s...\n", session)
+	result := cleanupResult{Session: session}
+	printLine := func(format string, a ...any) {
+		if !jsonMode {
+			fmt.Printf(format, a...)
+		}
+	}
+
+	printLine("closing session %s...\n", session)
 
 	// Ensure scratchpad exists.
 	if !tmux.HasSession("scratchpad") {
@@ -664,9 +753,11 @@ func headlessCloseSession(session string) error {
 		}
 	}
 
-	fmt.Printf("killing session %s\n", session)
+	printLine("killing session %s\n", session)
+	result.SessionKilled = true
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	var archiveCollisionWarning string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
 		// DB rows — so a failed stop still has a record to retry against.
@@ -693,9 +784,8 @@ func headlessCloseSession(session string) error {
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
 				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-					_ = d.PurgeBusMessages(session)
-					d.Close()
-					return archiveErr
+					// Non-fatal: see headlessCleanup for rationale.
+					archiveCollisionWarning = archiveErr.Error()
 				}
 				// Other archive errors are non-fatal — cleanup continues.
 			}
@@ -710,7 +800,14 @@ func headlessCloseSession(session string) error {
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
-	fmt.Println("done")
+	if archiveCollisionWarning != "" {
+		fmt.Fprintf(os.Stderr, "[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
+	}
+	if jsonMode {
+		emitCleanupJSON(result)
+	} else {
+		fmt.Println("done")
+	}
 	return nil
 }
 
@@ -985,6 +1082,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
+	cleanupCmd.Flags().Bool("json", false, "Emit a single JSON object describing per-resource outcomes (requires --yes)")
 	rootCmd.AddCommand(cleanupCmd)
 }
 

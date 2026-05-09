@@ -1383,8 +1383,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /cleanup
-	// Request:  {"session":"nixos-config@my-feature","yes":true}
-	// Response: {} | {"error":"..."}
+	// Request:  {"session":"nixos-config@my-feature","yes":true,"json":false}
+	// Response: {"stdout":"...","stderr":"..."} | {"error":"...","stdout":"...","stderr":"..."}
+	//
+	// stdout/stderr from the spawned `prism cleanup` subprocess are captured
+	// separately and forwarded to the caller. The container-side proxy
+	// (proxyCleanupToHostAPI) writes them verbatim to its own stdout/stderr so
+	// that an agent running inside a coordinator container sees the same
+	// per-resource progress lines a host invocation would print. Without this
+	// forwarding, the container path was silent on success — issue #1527.
 	mux.HandleFunc("/cleanup", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -1395,6 +1402,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 			Yes     bool   `json:"yes"`
+			JSON    bool   `json:"json"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1426,17 +1434,35 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Yes {
 			args = append(args, "--yes")
 		}
+		if req.JSON {
+			args = append(args, "--json")
+		}
 
 		s.logger().Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
 		cmd := exec.Command(prismBinary(), args...)
-		out, err := cmd.CombinedOutput()
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
+		err := cmd.Run()
+		stdoutStr := stdoutBuf.String()
+		stderrStr := stderrBuf.String()
 		if err != nil {
-			s.logger().Printf("sidecar: host-API /cleanup: %v: %s", err, out)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("cleanup failed: %v", err))
+			s.logger().Printf("sidecar: host-API /cleanup: %v: stdout=%q stderr=%q", err, stdoutStr, stderrStr)
+			// Forward stdout and stderr alongside the error so the caller can
+			// surface the underlying cause (e.g. archive collision) instead of
+			// just the outer transport's exit shape.
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":  fmt.Sprintf("cleanup failed: %v", err),
+				"stdout": stdoutStr,
+				"stderr": stderrStr,
+			})
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stdout": stdoutStr,
+			"stderr": stderrStr,
+		})
 	})
 
 	// POST /switch
