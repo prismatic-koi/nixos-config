@@ -80,6 +80,23 @@ func resetRootCmdFlags(t *testing.T) {
 
 	doReset := func() {
 		walkAllFlags(rootCmd, func(f *pflag.Flag) {
+			// Slice / array flags need special handling. For these,
+			// pflag's Value.Set() *appends* (not replaces) once the
+			// underlying value's internal `changed` bit has been set,
+			// so calling Set(DefValue) corrupts the slice instead of
+			// resetting it (DefValue for an empty default is "[]",
+			// which would also be appended literally). The pflag
+			// SliceValue interface exposes Replace() which assigns
+			// outright and clears the internal changed bit — use it.
+			if sv, ok := f.Value.(pflag.SliceValue); ok {
+				if err := sv.Replace(nil); err != nil {
+					t.Fatalf("resetRootCmdFlags: cannot Replace --%s slice: %v",
+						f.Name, err)
+				}
+				f.Changed = false
+				return
+			}
+
 			def, ok := rootCmdFlagDefaults[f]
 			if !ok {
 				// A flag that did not exist at capture time. Cobra/pflag
