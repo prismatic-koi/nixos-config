@@ -409,7 +409,13 @@ func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 //	sidecar.ReviewSentinelFailed — subprocess exited non-zero
 //
 // This function consumes the sentinel and does NOT print it to stdout.
-func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool) (string, error) {
+//
+// quietStdout suppresses the per-line streaming print to os.Stdout while
+// still buffering the output for the caller's return value. It is used by
+// the in-sandbox `prism review --wait --json` path to honour the
+// JSON-exclusive contract (#1500): otherwise the streamed Ack lines would
+// land on stdout before waitForReviewTerminal emits its JSON object.
+func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool, quietStdout bool) (string, error) {
 	// Build request body.
 	body := map[string]any{
 		"pr_number": prNumber,
@@ -525,9 +531,12 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, 
 			sentinelSeen = true
 			passed = false
 		default:
-			// Regular output line — print to stdout immediately and buffer for
-			// the caller so it can be used in the return value if needed.
-			fmt.Fprintln(os.Stdout, line)
+			// Regular output line — buffer for the caller's return value, and
+			// (unless quietStdout is set) stream to stdout immediately so the
+			// worker sees progress as it arrives.
+			if !quietStdout {
+				fmt.Fprintln(os.Stdout, line)
+			}
 			outputBuf.WriteString(line)
 			outputBuf.WriteByte('\n')
 		}

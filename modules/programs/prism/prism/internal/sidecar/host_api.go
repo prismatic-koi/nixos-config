@@ -1732,6 +1732,135 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// POST /escalate
 	// Request:  {"prompt":"...","to":"<session>" (optional),"from":"<session>" (optional)}
 	// Response: {} on success, {"error":"..."} otherwise.
+	// Wait-probe endpoints (issue #1500) — read-only DB lookups used by the
+	// `--wait` flag on prism merge / review / spawn when the CLI runs inside a
+	// sandbox. The CLI cannot poll the host's prism.db directly (the sandbox
+	// has its own shadow DB), so it polls these endpoints instead. Each is a
+	// single-row / single-shape lookup; rendering and aggregation stay on the
+	// CLI side.
+
+	// GET /merges/by-pr?pr=N
+	// Response: 200 with PendingMerge JSON when the row exists,
+	//           404 {"error":"not found"} when no row exists for that PR.
+	mux.HandleFunc("/merges/by-pr", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		prStr := r.URL.Query().Get("pr")
+		if prStr == "" {
+			writeError(w, http.StatusBadRequest, "pr is required")
+			return
+		}
+		prNum, parseErr := strconv.Atoi(prStr)
+		if parseErr != nil || prNum <= 0 {
+			writeError(w, http.StatusBadRequest, "pr must be a positive integer")
+			return
+		}
+		row, lookupErr := s.cfg.DB.PendingMergeByPR(prNum)
+		if lookupErr != nil {
+			writeError(w, http.StatusInternalServerError, "lookup merge: "+lookupErr.Error())
+			return
+		}
+		if row == nil {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, row)
+	})
+
+	// GET /sessions/status?session=NAME
+	// Response: 200 with db.Status JSON when the row exists,
+	//           404 {"error":"not found"} when no row exists.
+	mux.HandleFunc("/sessions/status", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		sessionName := r.URL.Query().Get("session")
+		if sessionName == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		st, lookupErr := s.cfg.DB.CurrentStatus(sessionName)
+		if lookupErr != nil {
+			writeError(w, http.StatusInternalServerError, "lookup status: "+lookupErr.Error())
+			return
+		}
+		if st == nil {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+	})
+
+	// GET /groups/list?limit=N
+	// Response: 200 with []db.ReviewGroupSummary (newest first).
+	//
+	// Backs `prism reviews list` (issue #1500) when invoked from inside a
+	// sandbox — the in-sandbox prism.db is a tmpfs shadow with no review
+	// groups, so a direct read returns an empty list. Routing through this
+	// endpoint lets the in-sandbox CLI see the host's session_groups
+	// table. Same #1043 pattern as /merges.
+	mux.HandleFunc("/groups/list", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		limit := 0
+		if l := r.URL.Query().Get("limit"); l != "" {
+			n, parseErr := strconv.Atoi(l)
+			if parseErr != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+				return
+			}
+			limit = n
+		}
+		groups, gErr := s.cfg.DB.ReviewGroupsList(limit)
+		if gErr != nil {
+			writeError(w, http.StatusInternalServerError, "list groups: "+gErr.Error())
+			return
+		}
+		if groups == nil {
+			groups = []db.ReviewGroupSummary{}
+		}
+		writeJSON(w, http.StatusOK, groups)
+	})
+
+	// GET /groups/poll?group_id=UUID
+	// Response: 200 with {"completed": bool, "members": [Status...],
+	//          "results": map[session]GroupMemberResult}.
+	// The CLI uses `completed` to decide when to stop polling, and the
+	// other fields to aggregate the per-agent verdicts (so a single
+	// terminal poll fetches everything needed).
+	mux.HandleFunc("/groups/poll", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		groupID := r.URL.Query().Get("group_id")
+		if groupID == "" {
+			writeError(w, http.StatusBadRequest, "group_id is required")
+			return
+		}
+		completed, gErr := s.cfg.DB.GroupCompleted(groupID)
+		if gErr != nil {
+			writeError(w, http.StatusInternalServerError, "group completed: "+gErr.Error())
+			return
+		}
+		members, mErr := s.cfg.DB.GroupMembersForGroup(groupID)
+		if mErr != nil {
+			writeError(w, http.StatusInternalServerError, "group members: "+mErr.Error())
+			return
+		}
+		results, rErr := s.cfg.DB.GroupResults(groupID)
+		if rErr != nil {
+			writeError(w, http.StatusInternalServerError, "group results: "+rErr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"completed": completed,
+			"members":   members,
+			"results":   results,
+		})
+	})
+
 	//
 	// Forwards an escalation request from a worker container to the host's
 	// `prism escalate` CLI. The from field defaults to the calling sidecar's

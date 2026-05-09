@@ -121,6 +121,13 @@ const (
 
 // extractAssistantText parses the text field from a msg_assistant payload.
 func extractAssistantText(payload string) string {
+	return ExtractAssistantText(payload)
+}
+
+// ExtractAssistantText is the exported counterpart to extractAssistantText —
+// shared with cmd/ (notably `prism review --wait`'s verdict aggregator)
+// so the JSON-unwrapping logic stays in one place.
+func ExtractAssistantText(payload string) string {
 	var p struct {
 		Text string `json:"text"`
 	}

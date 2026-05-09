@@ -169,6 +169,12 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		for _, sn := range resp.SessionNames {
 			fmt.Printf("session %q created\n", sn)
 		}
+		// --wait on the abtest path is not supported — there are two
+		// sessions and no single terminal definition. Surface this rather
+		// than silently dropping the flag (issue #1500 review-code feedback).
+		if waitFlag, _ := cmd.Flags().GetBool("wait"); waitFlag {
+			fmt.Fprintln(os.Stderr, "prism spawn --wait: not supported with --abtest (two sessions, no single terminal); skipping wait")
+		}
 		return nil
 	}
 
@@ -210,6 +216,19 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
 		return err
 	}
+	// --wait: route through waitForSpawnTerminal using the sandbox-aware
+	// probe. Without this the proxy path silently dropped --wait and
+	// returned immediately even though the caller asked for synchronous
+	// behaviour (issue #1500 review-code feedback).
+	waitFlag, _ := cmd.Flags().GetBool("wait")
+	if waitFlag {
+		jsonFlag, _ := cmd.Flags().GetBool("json")
+		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
+		if !jsonFlag {
+			fmt.Printf("session %q spawned; waiting for terminal state...\n", resp.SessionName)
+		}
+		return waitForSpawnTerminal(resp.SessionName, jsonFlag, waitTimeout)
+	}
 	fmt.Printf("session %q created\n", resp.SessionName)
 	return nil
 }
@@ -235,6 +254,9 @@ func init() {
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt (state transitions to finished or error). Without --wait, returns immediately and the agent runs in the background.")
+	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. On expiry, exits non-zero with a status payload distinguishable from a real spawn failure. Ignored when --wait is not set.")
+	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait or to script over the spawn output). Suppresses textual output.")
 	// --prompt-source is an internal flag used by the host-API /spawn handler
 	// to override the auto-detected prompt source (C.4.SRC, issue #1148).
 	// It is hidden from --help because end users should never pass it directly.
@@ -720,6 +742,18 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		promptSource:       promptSource,
 		modelsByRole:       modelsByRole,
 	})
+
+	waitFlag, _ := cmd.Flags().GetBool("wait")
+	jsonFlag, _ := cmd.Flags().GetBool("json")
+	waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
+	if waitFlag {
+		// In --wait + --json mode, suppress the "session %q created" line
+		// so stdout is JSON-only at the end of the wait.
+		if !jsonFlag {
+			fmt.Printf("session %q spawned; waiting for terminal state...\n", sessionName)
+		}
+		return waitForSpawnTerminal(sessionName, jsonFlag, waitTimeout)
+	}
 
 	if headless {
 		fmt.Printf("session %q created\n", sessionName)
