@@ -335,11 +335,205 @@ export function restoreGuardState(
 }
 
 /**
- * Check whether a bash command string is a git push.
+ * Check whether a bash command string is a real `git push` invocation.
+ *
+ * The previous implementation matched the literal substring `git ... push`
+ * anywhere in the raw command, which produced false positives for:
+ *   - quoted arguments:  echo "git push", rg "git push"
+ *   - heredoc bodies:    cat <<'EOF' ... git push ... EOF
+ *   - log filters:       git log --grep="git push"
+ *   - awk/sed patterns:  awk '/git push/ { ... }'
+ *
+ * The principled fix (issue #1519) is to:
+ *   1. Strip heredoc bodies, single-quoted regions, and double-quoted
+ *      regions from the command — these never contain a real invocation.
+ *   2. Split what remains on shell separators (`;`, newline, `&&`, `||`,
+ *      `|`, `&`, and command/process substitution boundaries) so each
+ *      pipeline / sequence stage is examined independently.
+ *   3. Tokenise each segment on whitespace and check whether the leading
+ *      tokens form `git [-C <path>] [--git-dir=...|--git-dir <path>] push`.
+ *
  * Exported for unit testing.
  */
 export function isGitPush(command: string): boolean {
-  return /\bgit(\s+-C\s+\S+|\s+--git-dir\S*)*\s+push\b/.test(command)
+  const stripped = stripQuotedAndHeredocRegions(command)
+  for (const segment of splitShellSegments(stripped)) {
+    if (segmentIsGitPush(segment)) return true
+  }
+  return false
+}
+
+/**
+ * Remove heredoc bodies, single-quoted strings, and double-quoted strings
+ * from a bash command. Heredoc start tokens (`<<EOF`, `<<-EOF`, `<<'EOF'`,
+ * `<<"EOF"`) are also removed so they do not pollute the surrounding
+ * segment, but the rest of the command line containing them is preserved.
+ *
+ * This is a deliberately small lexer — it does not implement full POSIX
+ * shell quoting (no `$'...'`, no parameter expansion). It targets the
+ * dominant false-match cases described in #1519.
+ *
+ * Exported for unit testing.
+ */
+export function stripQuotedAndHeredocRegions(command: string): string {
+  // Pass 1: strip heredocs.
+  // Find each `<<[-]?(['"]?)WORD\1` marker on a line, drop the marker, then
+  // drop subsequent lines until a line whose trimmed content equals WORD.
+  const lines = command.split("\n")
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    // Match the first heredoc opener on this line. We do not try to handle
+    // multiple heredocs on a single line — that is a vanishingly rare shape
+    // in agent-issued commands and stripping the first marker is sufficient
+    // to avoid a false match on its body.
+    const heredocRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/
+    const m = line.match(heredocRe)
+    if (m && m.index !== undefined) {
+      const word = m[2]
+      // Keep the line with the marker removed.
+      out.push(line.slice(0, m.index) + line.slice(m.index + m[0].length))
+      i++
+      // Skip body lines until we see the terminator. For `<<-WORD` the
+      // terminator may be indented; for `<<WORD` it must be flush. We treat
+      // both the same because being lenient errs on the side of stripping.
+      while (i < lines.length && lines[i].trim() !== word) {
+        i++
+      }
+      // Skip the terminator line itself if present.
+      if (i < lines.length) i++
+      continue
+    }
+    out.push(line)
+    i++
+  }
+
+  // Pass 2: strip quoted regions on the surviving text.
+  const text = out.join("\n")
+  let result = ""
+  let j = 0
+  while (j < text.length) {
+    const ch = text[j]
+    if (ch === "\\" && j + 1 < text.length) {
+      // Preserve escaped characters as-is so e.g. `\"` does not open a
+      // double-quoted region. We replace with a space so token boundaries
+      // are not accidentally created/removed.
+      result += " "
+      j += 2
+      continue
+    }
+    if (ch === "'") {
+      // Single quotes: no escapes inside; consume to next `'`.
+      const end = text.indexOf("'", j + 1)
+      if (end === -1) {
+        // Unterminated — drop the rest.
+        break
+      }
+      result += " " // placeholder to preserve token boundaries
+      j = end + 1
+      continue
+    }
+    if (ch === '"') {
+      // Double quotes: skip to next unescaped `"`.
+      let k = j + 1
+      while (k < text.length) {
+        if (text[k] === "\\" && k + 1 < text.length) {
+          k += 2
+          continue
+        }
+        if (text[k] === '"') break
+        k++
+      }
+      if (k >= text.length) break
+      result += " "
+      j = k + 1
+      continue
+    }
+    result += ch
+    j++
+  }
+  return result
+}
+
+/**
+ * Split a (quote-stripped) command string into individual command segments
+ * along shell separators. Process substitutions `<(...)` and `>(...)`,
+ * command substitutions `$(...)`, and backtick `` `...` `` regions are
+ * promoted to their own segments so a `git push` nested inside one is
+ * still considered a real invocation, while the surrounding command is
+ * also examined.
+ */
+export function splitShellSegments(command: string): string[] {
+  // Replace top-level shell separators with a sentinel \x00, while also
+  // splitting out substitution bodies as their own segments by replacing
+  // their delimiters with sentinels too.
+  const SEP = "\x00"
+  let s = ""
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    const next = command[i + 1]
+    // Two-char operators first.
+    if ((c === "&" && next === "&") || (c === "|" && next === "|")) {
+      s += SEP
+      i++
+      continue
+    }
+    // Process / command substitution openers: `<(`, `>(`, `$(`.
+    if ((c === "<" || c === ">" || c === "$") && next === "(") {
+      s += SEP
+      i++
+      continue
+    }
+    if (
+      c === "|" ||
+      c === "&" ||
+      c === ";" ||
+      c === "\n" ||
+      c === "(" ||
+      c === ")" ||
+      c === "`"
+    ) {
+      s += SEP
+      continue
+    }
+    s += c
+  }
+  return s
+    .split(SEP)
+    .map((seg) => seg.trim())
+    .filter((seg) => seg.length > 0)
+}
+
+/**
+ * Decide whether a single tokenised command segment is a `git push`
+ * invocation. Accepts the leading-flag forms the prior regex accepted:
+ *   git push ...
+ *   git -C <path> push ...
+ *   git --git-dir <path> push ...
+ *   git --git-dir=<path> push ...
+ * and any combination/repetition of -C and --git-dir before `push`.
+ */
+function segmentIsGitPush(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter((t) => t.length > 0)
+  if (tokens.length < 2) return false
+  if (tokens[0] !== "git") return false
+  let i = 1
+  while (i < tokens.length) {
+    const t = tokens[i]
+    if (t === "-C" || t === "--git-dir") {
+      // Two-token form: skip the option and its argument.
+      if (i + 1 >= tokens.length) return false
+      i += 2
+      continue
+    }
+    if (t.startsWith("--git-dir=")) {
+      i += 1
+      continue
+    }
+    break
+  }
+  return tokens[i] === "push"
 }
 
 /** Per-field byte cap for tool args, tool output, and assistant message deltas. */
