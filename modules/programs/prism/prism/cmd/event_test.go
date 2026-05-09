@@ -28,6 +28,10 @@ import (
 // event_proxy_test.go).
 func setupEventTestDB(t *testing.T, session string) string {
 	t.Helper()
+	// Wipe any rootCmd flag values left behind by a previous test (or a
+	// previous iteration under `go test -count=N`) before this test drives
+	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute. See #1521.
+	resetRootCmdFlags(t)
 	t.Setenv("PRISM_HOST_API", "")
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbFile)
