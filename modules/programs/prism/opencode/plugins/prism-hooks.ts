@@ -144,6 +144,182 @@ interface DoomLoopState {
   fired: boolean;
 }
 
+/**
+ * Check whether a bash command string is a real `git push` invocation.
+ *
+ * The previous implementation matched the literal substring `git ... push`
+ * anywhere in the raw command, which produced false positives for quoted
+ * arguments, heredoc bodies, and grep / awk / sed patterns (issue #1519).
+ *
+ * Strategy:
+ *   1. Strip heredoc bodies, single-quoted regions, and double-quoted
+ *      regions from the command — these never contain a real invocation.
+ *   2. Split what remains on shell separators (`;`, newline, `&&`, `||`,
+ *      `|`, `&`, and command/process substitution boundaries) so each
+ *      pipeline / sequence stage is examined independently.
+ *   3. Tokenise each segment on whitespace and check whether the leading
+ *      tokens form `git [-C <path>] [--git-dir=...|--git-dir <path>] push`.
+ *
+ * The implementation is intentionally duplicated in
+ * `modules/programs/prism/pi/extensions/prism.ts` (`isGitPush`,
+ * `stripQuotedAndHeredocRegions`, `splitShellSegments`) — the two files
+ * live in different package trees and a shared-package refactor is out of
+ * scope for #1519. Keep the two implementations in sync.
+ *
+ * Exported for unit testing.
+ */
+export function isGitPush(command: string): boolean {
+  const stripped = stripQuotedAndHeredocRegions(command);
+  for (const segment of splitShellSegments(stripped)) {
+    if (segmentIsGitPush(segment)) return true;
+  }
+  return false;
+}
+
+/**
+ * Remove heredoc bodies, single-quoted strings, and double-quoted strings
+ * from a bash command. Heredoc start tokens (`<<EOF`, `<<-EOF`, `<<'EOF'`,
+ * `<<"EOF"`) are also removed so they do not pollute the surrounding
+ * segment, but the rest of the command line containing them is preserved.
+ *
+ * Exported for unit testing.
+ */
+export function stripQuotedAndHeredocRegions(command: string): string {
+  // Pass 1: strip heredocs.
+  const lines = command.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const heredocRe = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/;
+    const m = line.match(heredocRe);
+    if (m && m.index !== undefined) {
+      const word = m[2];
+      // Keep the line with the marker removed.
+      out.push(line.slice(0, m.index) + line.slice(m.index + m[0].length));
+      i++;
+      while (i < lines.length && lines[i].trim() !== word) {
+        i++;
+      }
+      if (i < lines.length) i++;
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+
+  // Pass 2: strip quoted regions.
+  const text = out.join("\n");
+  let result = "";
+  let j = 0;
+  while (j < text.length) {
+    const ch = text[j];
+    if (ch === "\\" && j + 1 < text.length) {
+      result += " ";
+      j += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = text.indexOf("'", j + 1);
+      if (end === -1) break;
+      result += " ";
+      j = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      let k = j + 1;
+      while (k < text.length) {
+        if (text[k] === "\\" && k + 1 < text.length) {
+          k += 2;
+          continue;
+        }
+        if (text[k] === '"') break;
+        k++;
+      }
+      if (k >= text.length) break;
+      result += " ";
+      j = k + 1;
+      continue;
+    }
+    result += ch;
+    j++;
+  }
+  return result;
+}
+
+/**
+ * Split a (quote-stripped) command string into individual command segments
+ * along shell separators. Process substitutions `<(...)` and `>(...)`,
+ * command substitutions `$(...)`, and backtick `` `...` `` regions are
+ * promoted to their own segments.
+ *
+ * Exported for unit testing.
+ */
+export function splitShellSegments(command: string): string[] {
+  const SEP = "\x00";
+  let s = "";
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    const next = command[i + 1];
+    if ((c === "&" && next === "&") || (c === "|" && next === "|")) {
+      s += SEP;
+      i++;
+      continue;
+    }
+    if ((c === "<" || c === ">" || c === "$") && next === "(") {
+      s += SEP;
+      i++;
+      continue;
+    }
+    if (
+      c === "|" ||
+      c === "&" ||
+      c === ";" ||
+      c === "\n" ||
+      c === "(" ||
+      c === ")" ||
+      c === "`"
+    ) {
+      s += SEP;
+      continue;
+    }
+    s += c;
+  }
+  return s
+    .split(SEP)
+    .map((seg) => seg.trim())
+    .filter((seg) => seg.length > 0);
+}
+
+/**
+ * Decide whether a single tokenised command segment is a `git push`
+ * invocation. Accepts the leading-flag forms the prior regex accepted:
+ *   git push ...
+ *   git -C <path> push ...
+ *   git --git-dir <path> push ...
+ *   git --git-dir=<path> push ...
+ */
+function segmentIsGitPush(segment: string): boolean {
+  const tokens = segment.split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length < 2) return false;
+  if (tokens[0] !== "git") return false;
+  let i = 1;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (t === "-C" || t === "--git-dir") {
+      if (i + 1 >= tokens.length) return false;
+      i += 2;
+      continue;
+    }
+    if (t.startsWith("--git-dir=")) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return tokens[i] === "push";
+}
+
 export const PrismHooks: Plugin = async (pluginInput) => {
   // Set when a git push is detected; consumed on the next LLM turn to inject
   // a review reminder into the system prompt.
@@ -211,12 +387,11 @@ export const PrismHooks: Plugin = async (pluginInput) => {
     "tool.execute.after": async (input) => {
       if (input.tool === "bash") {
         const command: string = (input.args as any)?.command ?? "";
-        // Match push commands: `git push`, `git push <remote> <branch>`, etc.
-        // Also match `git -C <path> push` and `git --git-dir=... push` variants.
-        const isPush = /\bgit(\s+-C\s+\S+|\s+--git-dir\S*)*\s+push\b/.test(
-          command,
-        );
-        if (isPush) {
+        // Match real `git push` invocations only — see isGitPush() below for
+        // the tokenised check that ignores quoted arguments and heredoc
+        // bodies (issue #1519). The previous raw-string regex fired on
+        // commands such as `echo "git push"` and `rg "git push"`.
+        if (isGitPush(command)) {
           pendingReviewReminder = true;
         }
 
