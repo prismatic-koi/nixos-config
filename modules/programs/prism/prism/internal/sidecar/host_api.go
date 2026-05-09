@@ -1703,6 +1703,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Forwards an escalation request from a worker container to the host's
 	// `prism escalate` CLI. The from field defaults to the calling sidecar's
 	// session name when omitted (the common case from a containerised worker).
+	//
+	// Cross-session integrity: when `from` is set explicitly it must equal the
+	// calling sidecar's own session name (the per-session host-API socket is
+	// the auth boundary), unless the caller is a coordinator. This mirrors
+	// the rule applied by /prompt and /set-model in this same file. Without
+	// the check, a non-coordinator could mutate `agent_status.state`,
+	// emit a `session.escalated` bus event attributed to a victim, and pin
+	// that victim in `escalated` so its legitimate finish notifications are
+	// suppressed.
 	mux.HandleFunc("/escalate", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -1723,6 +1732,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		fromSession := req.From
 		if fromSession == "" {
 			fromSession = s.cfg.SessionName
+		} else if fromSession != s.cfg.SessionName {
+			// Cross-session: only coordinators may escalate on behalf of
+			// another session. The DB-backed coordinator check matches the
+			// pattern used by /prompt's cross-repo branch and /set-model.
+			if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("workers can only escalate from their own session (%s), got from=%q",
+						s.cfg.SessionName, fromSession))
+				return
+			}
 		}
 
 		args := []string{"escalate", "--prompt", req.Prompt}
