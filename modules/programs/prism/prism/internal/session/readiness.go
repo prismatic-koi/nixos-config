@@ -32,6 +32,7 @@ package session
 // others).
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -106,14 +107,45 @@ func formatTimeout(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", m, s)
 }
 
-// WaitForReady polls the prism DB for the named session until either:
+// ReadinessOpts tunes WaitForReadyWithOpts. The zero value reproduces the
+// pre-#1507 behaviour (any state_change or harness_session_id signal
+// satisfies the gate).
+type ReadinessOpts struct {
+	// Timeout is the deadline for the gate. ≤ 0 falls back to
+	// DefaultReadinessTimeout.
+	Timeout time.Duration
+
+	// RequirePromptDelivered, when true, raises the bar for the gate:
+	// a bare "state_change → active" event is not sufficient evidence
+	// that the spawn succeeded, because the agent may transition to
+	// active on harness-handshake completion and then sit idle if the
+	// initial prompt was lost between the spawn driver and the agent's
+	// input queue (issue #1507 Symptom 2 — the "silently broken" mode
+	// where the spawn returns success but the prompt never arrives).
+	//
+	// When true, the gate additionally requires evidence that the
+	// agent is actually processing the prompt:
+	//
+	//   - a turn_start, msg_user, or msg_assistant event has been
+	//     written, OR
+	//   - harness_session_id is set (opencode session.created — implies
+	//     opencode received the prompt via --prompt CLI flag), OR
+	//   - state_change observed a non-"active" terminal transition
+	//     ("finished", "interrupted", "error") — the agent ran to
+	//     completion or failed in a way that is now visible.
+	//
+	// Set this when SpawnOpts.Prompt is non-empty.
+	RequirePromptDelivered bool
+}
+
+// WaitForReady is the legacy entry point for the readiness gate. It is
+// equivalent to WaitForReadyWithOpts(d, sessionName, ReadinessOpts{Timeout: timeout})
+// — the pre-#1507 "any state_change satisfies the gate" semantics.
 //
-//   - The session has at least one event of type "state_change" (the sidecar
-//     successfully connected to opencode's SSE stream and emitted a state
-//     transition — see writeStateChange in internal/sidecar/sidecar.go), OR
-//   - agent_status.harness_session_id is non-NULL (opencode emitted
-//     session.created and the sidecar wrote the session ID), OR
-//   - the timeout elapses.
+// New call sites that have an initial prompt should call WaitForReadyWithOpts
+// with RequirePromptDelivered: true so the lost-prompt failure mode
+// (#1507 Symptom 2) surfaces as a *ReadinessTimeoutError instead of a
+// silently-broken "session created" success.
 //
 // On success returns nil. On timeout returns *ReadinessTimeoutError; check
 // with IsReadinessTimeout. DB-error returns from CurrentStatus / QueryEvents
@@ -128,34 +160,44 @@ func formatTimeout(d time.Duration) string {
 // kill it. Both code paths handle the cleanup explicitly via
 // KillSidecar + cleanupAgentSession + tmux.KillSession.
 func WaitForReady(d *db.DB, sessionName string, timeout time.Duration) error {
+	return WaitForReadyWithOpts(d, sessionName, ReadinessOpts{Timeout: timeout})
+}
+
+// WaitForReadyWithOpts polls the prism DB for the named session until either:
+//
+//   - the gate's success condition (depends on opts.RequirePromptDelivered)
+//     is met, OR
+//   - the timeout elapses.
+//
+// Default condition (RequirePromptDelivered=false):
+//   - any "state_change" event written by the sidecar (the harness
+//     handshake/SSE-connection signal), OR
+//   - agent_status.harness_session_id is non-NULL.
+//
+// Strict condition (RequirePromptDelivered=true):
+//   - a turn_start / msg_user / msg_assistant event (proves the agent has
+//     started processing the prompt), OR
+//   - a state_change to a non-"active" terminal state, OR
+//   - agent_status.harness_session_id is non-NULL — this fires when opencode
+//     emits session.created, which (for opencode in CLI-prompt mode) means
+//     opencode parsed --prompt and accepted the message.
+//
+// On timeout returns *ReadinessTimeoutError. DB-error returns are transient.
+func WaitForReadyWithOpts(d *db.DB, sessionName string, opts ReadinessOpts) error {
 	if d == nil {
 		return fmt.Errorf("wait for ready: db handle is required")
 	}
 	if sessionName == "" {
 		return fmt.Errorf("wait for ready: session name is required")
 	}
+	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = DefaultReadinessTimeout
 	}
 
 	deadline := time.Now().Add(timeout)
 	for {
-		// Primary signal: any state_change event written by the sidecar means
-		// opencode produced at least one SSE event, which can only happen
-		// after opencode bound its port and accepted the sidecar's TCP
-		// connection. This is the cleanest and earliest readiness marker.
-		evts, evtErr := d.QueryEvents(sessionName, 1, nil, nil, []string{"state_change"})
-		if evtErr == nil && len(evts) > 0 {
-			return nil
-		}
-
-		// Secondary signal: harness_session_id set on the agent_status row.
-		// The sidecar writes this on session.created, which arrives shortly
-		// after server.connected. Useful as a belt-and-braces check in case
-		// the state_change query has a transient error or in case future
-		// sidecar refactors order the writes differently.
-		st, stErr := d.CurrentStatus(sessionName)
-		if stErr == nil && st != nil && st.HarnessSessionID != nil && *st.HarnessSessionID != "" {
+		if promptReadinessSatisfied(d, sessionName, opts.RequirePromptDelivered) {
 			return nil
 		}
 
@@ -179,4 +221,73 @@ func WaitForReady(d *db.DB, sessionName string, timeout time.Duration) error {
 			time.Sleep(sleep)
 		}
 	}
+}
+
+// promptReadinessSatisfied returns true when the gate's success condition has
+// been met, given whether the strict (prompt-delivered) condition is required.
+// Pulled out as a helper so the polling loop in WaitForReadyWithOpts stays
+// linear and easy to read.
+func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDelivered bool) bool {
+	// Secondary (and strict-condition) signal: harness_session_id non-NULL.
+	// opencode writes session.created → sidecar updates harness_session_id
+	// when it parses --prompt and accepts the message; for the strict path
+	// this is enough proof the prompt landed. For the loose path it is
+	// belt-and-braces alongside state_change.
+	st, stErr := d.CurrentStatus(sessionName)
+	if stErr == nil && st != nil && st.HarnessSessionID != nil && *st.HarnessSessionID != "" {
+		return true
+	}
+
+	if !requirePromptDelivered {
+		// Loose path: any state_change is sufficient. This is the legacy
+		// behaviour and the path used by callers that have no prompt to
+		// deliver (or that defer the prompt-delivery question to a later
+		// stage, e.g. the review-monitor's per-agent state poll).
+		evts, evtErr := d.QueryEvents(sessionName, 1, nil, nil, []string{"state_change"})
+		if evtErr == nil && len(evts) > 0 {
+			return true
+		}
+		return false
+	}
+
+	// Strict path: require evidence the agent is actually processing.
+	//
+	// Primary: turn_start / msg_user / msg_assistant event. Any of these
+	// only fires after the agent has consumed the prompt and entered the
+	// turn loop, so they are unambiguous "prompt delivered" markers.
+	procEvts, procErr := d.QueryEvents(sessionName, 1, nil, nil, []string{"turn_start", "msg_user", "msg_assistant"})
+	if procErr == nil && len(procEvts) > 0 {
+		return true
+	}
+
+	// Secondary strict-path signal: a state_change to a NON-"active" state.
+	// "active" is written on harness handshake — even when the prompt was
+	// lost — so it is not on its own evidence of prompt delivery. Any
+	// transition past "active" ("finished" on completion, "interrupted" /
+	// "error" on failure) is unambiguous.
+	stateEvts, stateErr := d.QueryEvents(sessionName, 50, nil, nil, []string{"state_change"})
+	if stateErr == nil {
+		for _, e := range stateEvts {
+			if !payloadIsBareActive(e.Payload) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// payloadIsBareActive reports whether a state_change payload is the bare
+// "agent transitioned to active" event. Returns true only when the payload
+// parses as {"state":"active"} — anything else (idle, finished, error,
+// interrupted, parse failure) is treated as "not bare active" and counts as
+// progress evidence. Conservative on parse failure: an unparseable payload
+// is assumed to be progress (rather than risk the gate hanging).
+func payloadIsBareActive(payload string) bool {
+	var p struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return false
+	}
+	return p.State == "active"
 }

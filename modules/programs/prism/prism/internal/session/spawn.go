@@ -28,6 +28,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -470,23 +472,39 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		}
 	}
 
-	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148). Non-fatal:
-	// spawn_inputs is best-effort telemetry; a failure here must never block
-	// session creation. The write requires a non-empty instance_id.
+	// Issue #1507 (FK race): mint instance_id host-side and pre-insert the
+	// sessions row BEFORE the sidecar starts, so that the sidecar's first
+	// agent_events writes (state_change, session_status, turn_start, …) can
+	// satisfy the foreign-key constraint on agent_events.instance_id →
+	// sessions(instance_id).
 	//
-	// LayoutFull (CLI) spawns: the richer writeSpawnInputs call in cmd/spawn.go
-	// carries all flag-value columns (profile, model, variant, agent, harness,
-	// branch, skills hash, etc.) and will write the row after SpawnSession
-	// returns. Avoid writing here so INSERT OR IGNORE does not silently drop
-	// that richer payload.
+	// Pre-#1507 the sessions row was inserted only by the tmux-session-start
+	// event hook, which fires asynchronously when the agent window is created.
+	// Under concurrent-spawn load the sidecar's mint-or-load-instance_id
+	// path won the race against the hook, the sidecar wrote events keyed on
+	// an instance_id that had no sessions row yet, every insert failed with
+	// FOREIGN KEY constraint failed (787), and the agent's first ~30s of work
+	// was silently dropped before the extension reconnect-timeout killed the
+	// sidecar.
 	//
-	// LayoutAgentOnly (review fan-out) spawns: the caller pre-populates
-	// InstanceID; there is no subsequent writeSpawnInputs call, so SpawnSession
-	// owns the only write.
-	if opts.InstanceID != "" && opts.Layout != LayoutFull {
-		// Pre-seed the sessions row so the FK constraint on spawn_inputs is
-		// satisfied. InsertSession uses INSERT OR IGNORE so the call in the
-		// tmux-session-start hook is a safe no-op when the row already exists.
+	// Fix: own the instance_id and the sessions-row insert here, host-side,
+	// synchronously, before tmux/sidecar start. Both downstream minting paths
+	// (the sidecar's startup-time mint and the tmux-session-start hook's
+	// mint+InsertSession) are idempotent — they observe the existing
+	// instance_id on agent_status and the existing sessions row (INSERT OR
+	// IGNORE) and become safe no-ops.
+	if opts.InstanceID == "" {
+		opts.InstanceID = uuid.New().String()
+		startup.log("spawn-session: minted instance_id %s host-side (#1507)", opts.InstanceID)
+	}
+	if setErr := d.SetInstanceID(opts.SessionName, opts.InstanceID); setErr != nil {
+		// SetInstanceID is a plain UPDATE; the row was just seeded by
+		// UpsertStatusSeedRootAgentName above so a zero-row UPDATE here
+		// would be a real bug. Surface it.
+		startup.log("spawn-session: SetInstanceID FAILED: %v", setErr)
+		return fmt.Errorf("spawn session: set instance_id: %w", setErr)
+	}
+	{
 		var agentRolePtr *string
 		if opts.AgentRole != "" {
 			agentRolePtr = &opts.AgentRole
@@ -495,19 +513,39 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		if opts.GroupID != "" {
 			groupIDPtr = &opts.GroupID
 		}
-		if insertErr := d.InsertSession(db.Session{
+		sessRow := db.Session{
 			InstanceID:  opts.InstanceID,
 			SessionName: opts.SessionName,
 			AgentRole:   agentRolePtr,
 			Repo:        opts.Repo,
 			Worktree:    opts.Worktree,
 			GroupID:     groupIDPtr,
-		}); insertErr != nil {
-			fmt.Fprintf(os.Stderr,
-				"warning: could not pre-seed sessions row for %q: %v\n",
-				opts.SessionName, insertErr)
+			Harness:     effectiveHarness,
 		}
+		if insertErr := d.InsertSession(sessRow); insertErr != nil {
+			// Pre-inserting the sessions row is the FK-race fix; if it
+			// fails we cannot guarantee event writes will succeed. Surface
+			// the error rather than letting the spawn proceed into the
+			// pre-#1507 racy state.
+			startup.log("spawn-session: InsertSession FAILED: %v", insertErr)
+			return fmt.Errorf("spawn session: insert sessions row: %w", insertErr)
+		}
+		startup.log("spawn-session: sessions row pre-inserted (instance_id=%s)", opts.InstanceID)
+	}
 
+	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148). Non-fatal:
+	// spawn_inputs is best-effort telemetry; a failure here must never block
+	// session creation.
+	//
+	// LayoutFull (CLI) spawns: the richer writeSpawnInputs call in cmd/spawn.go
+	// carries all flag-value columns (profile, model, variant, agent, harness,
+	// branch, skills hash, etc.) and will write the row after SpawnSession
+	// returns. Avoid writing here so INSERT OR IGNORE does not silently drop
+	// that richer payload.
+	//
+	// LayoutAgentOnly (review fan-out) spawns: the caller does not run
+	// writeSpawnInputs afterwards, so SpawnSession owns the only write.
+	if opts.Layout != LayoutFull {
 		si := db.SpawnInputs{
 			InstanceID: opts.InstanceID,
 			CreatedAt:  time.Now().UnixMilli(),
@@ -570,8 +608,26 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// and call WaitForReady directly in goroutines, so per-agent gates run
 	// concurrently and one slow agent does not delay the others.
 	if opts.ReadinessTimeout > 0 {
-		startup.log("spawn-session: waiting for readiness (timeout=%s)", opts.ReadinessTimeout)
-		if readyErr := WaitForReady(d, opts.SessionName, opts.ReadinessTimeout); readyErr != nil {
+		// Issue #1507 Symptom 2 (lost prompt): when the spawn carries an
+		// initial prompt, raise the readiness bar so a bare
+		// state_change->active (which fires on harness handshake even when
+		// the prompt is lost between the spawn driver and the agent's
+		// input queue) does not satisfy the gate. The strict path waits for
+		// turn_start / msg_user / msg_assistant evidence that the agent is
+		// actually processing the prompt. Without this, a lost-prompt spawn
+		// returns success and leaves a silently-broken session—the most
+		// dangerous failure mode the issue describes.
+		requirePromptDelivered := opts.Prompt != ""
+		if requirePromptDelivered {
+			startup.log("spawn-session: waiting for readiness (timeout=%s, require prompt-delivered #1507)", opts.ReadinessTimeout)
+		} else {
+			startup.log("spawn-session: waiting for readiness (timeout=%s)", opts.ReadinessTimeout)
+		}
+		readyErr := WaitForReadyWithOpts(d, opts.SessionName, ReadinessOpts{
+			Timeout:                opts.ReadinessTimeout,
+			RequirePromptDelivered: requirePromptDelivered,
+		})
+		if readyErr != nil {
 			startup.log("spawn-session: readiness gate FAILED: %v", readyErr)
 			// #1064 AC-7: enrich the readiness-gate error when the host-mode
 			// launch command was unusually large. The bare timeout message
