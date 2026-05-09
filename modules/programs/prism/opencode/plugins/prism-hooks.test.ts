@@ -4,7 +4,12 @@
  * Run with: bun test prism-hooks.test.ts
  */
 import { describe, expect, test } from "bun:test";
-import { similarityKey } from "./prism-hooks";
+import {
+  similarityKey,
+  isGitPush,
+  stripQuotedAndHeredocRegions,
+  splitShellSegments,
+} from "./prism-hooks";
 
 // ── similarityKey tests ──────────────────────────────────────────────────────
 
@@ -206,6 +211,175 @@ describe("similarityKey — webfetch similarity", () => {
   test("key is prefixed with 'webfetch:'", () => {
     const key = similarityKey("webfetch", { url: "https://example.com" });
     expect(key).toMatch(/^webfetch:/);
+  });
+});
+
+// ── isGitPush tests (issue #1519) ───────────────────────────────────────────
+//
+// The detector is duplicated in pi/extensions/prism.ts — keep these tests in
+// step with prism.test.ts's `isGitPush` describe block.
+
+describe("isGitPush — positive cases", () => {
+  test("matches plain git push", () => {
+    expect(isGitPush("git push")).toBe(true);
+  });
+  test("matches git push origin main", () => {
+    expect(isGitPush("git push origin main")).toBe(true);
+  });
+  test("matches git push -u origin feat/x", () => {
+    expect(isGitPush("git push -u origin feat/x")).toBe(true);
+  });
+  test("matches git push --force-with-lease", () => {
+    expect(isGitPush("git push --force-with-lease")).toBe(true);
+  });
+  test("matches git -C /worktree push", () => {
+    expect(isGitPush("git -C /worktree push")).toBe(true);
+  });
+  test("matches git --git-dir=/path/.git push", () => {
+    expect(isGitPush("git --git-dir=/path/.git push")).toBe(true);
+  });
+  test("matches git --git-dir /path/.git push", () => {
+    expect(isGitPush("git --git-dir /path/.git push")).toBe(true);
+  });
+  test("matches cd /worktree && git push", () => {
+    expect(isGitPush("cd /worktree && git push")).toBe(true);
+  });
+  test("matches git status && git push (sequence)", () => {
+    expect(isGitPush("git status && git push")).toBe(true);
+  });
+  test("matches git status; git push (semicolon)", () => {
+    expect(isGitPush("git status; git push")).toBe(true);
+  });
+  test("matches a real git push at the end of a multi-line script", () => {
+    expect(
+      isGitPush("set -e\ngit add .\ngit commit -m wip\ngit push"),
+    ).toBe(true);
+  });
+});
+
+describe("isGitPush — false-positive guards (#1519)", () => {
+  test("echo with double-quoted git push does not match", () => {
+    expect(isGitPush('echo "git push"')).toBe(false);
+  });
+  test("echo with single-quoted git push does not match", () => {
+    expect(isGitPush("echo 'git push'")).toBe(false);
+  });
+  test("rg with quoted git push pattern does not match", () => {
+    expect(isGitPush('rg "git push"')).toBe(false);
+  });
+  test("rg with single-quoted git push pattern does not match", () => {
+    expect(isGitPush("rg 'git push'")).toBe(false);
+  });
+  test("grep with quoted git push pattern does not match", () => {
+    expect(isGitPush('grep -r "git push" modules/')).toBe(false);
+  });
+  test("ag with quoted git push pattern does not match", () => {
+    expect(isGitPush('ag "git push" .')).toBe(false);
+  });
+  test("awk with single-quoted git push pattern does not match", () => {
+    expect(isGitPush("awk '/git push/ { print }'")).toBe(false);
+  });
+  test("sed with single-quoted git push pattern does not match", () => {
+    expect(isGitPush("sed -n '/git push/p' file")).toBe(false);
+  });
+  test('git log --grep="git push" does not match', () => {
+    expect(isGitPush('git log --grep="git push"')).toBe(false);
+  });
+  test("heredoc body containing git push does not match", () => {
+    expect(isGitPush("cat <<'EOF'\ngit push\nEOF")).toBe(false);
+  });
+  test("multi-line heredoc issue template does not match", () => {
+    const cmd = [
+      "cat > /tmp/issue.md <<'EOF'",
+      "## Reproducer",
+      "",
+      "    git rebase origin/main",
+      "    git push --force-with-lease",
+      "",
+      "That is the recommended workflow.",
+      "EOF",
+    ].join("\n");
+    expect(isGitPush(cmd)).toBe(false);
+  });
+  test("<<-EOF heredoc body does not match", () => {
+    expect(isGitPush("cat <<-EOF\n\tgit push\n\tEOF")).toBe(false);
+  });
+  test('<<"EOF" heredoc body does not match', () => {
+    expect(isGitPush('cat <<"EOF"\ngit push\nEOF')).toBe(false);
+  });
+  test('echo "remember to git push" does not match', () => {
+    expect(isGitPush('echo "remember to git push"')).toBe(false);
+  });
+  test('git status | tee >(echo "git push") does not match', () => {
+    expect(isGitPush('git status | tee >(echo "git push")')).toBe(false);
+  });
+  test('git status | grep "git push" does not match', () => {
+    expect(isGitPush('git status | grep "git push"')).toBe(false);
+  });
+  test("git pushy (longer word) does not match", () => {
+    expect(isGitPush("git pushy")).toBe(false);
+  });
+  test("mygit push (different leading command) does not match", () => {
+    expect(isGitPush("mygit push")).toBe(false);
+  });
+  test("bare push (no git) does not match", () => {
+    expect(isGitPush("push origin main")).toBe(false);
+  });
+  test("git pull does not match", () => {
+    expect(isGitPush("git pull")).toBe(false);
+  });
+});
+
+describe("stripQuotedAndHeredocRegions", () => {
+  test("removes single-quoted body", () => {
+    expect(stripQuotedAndHeredocRegions("echo 'git push'")).not.toContain(
+      "git push",
+    );
+  });
+  test("removes double-quoted body", () => {
+    expect(stripQuotedAndHeredocRegions('echo "git push"')).not.toContain(
+      "git push",
+    );
+  });
+  test("removes heredoc body and marker", () => {
+    const out = stripQuotedAndHeredocRegions("cat <<'EOF'\ngit push\nEOF");
+    expect(out).not.toContain("git push");
+    expect(out).not.toContain("EOF");
+  });
+  test("preserves the rest of the heredoc command line", () => {
+    const out = stripQuotedAndHeredocRegions(
+      "cat > /tmp/x.md <<'EOF'\nbody\nEOF",
+    );
+    expect(out).toContain("cat");
+    expect(out).toContain("/tmp/x.md");
+    expect(out).not.toContain("body");
+  });
+});
+
+describe("splitShellSegments", () => {
+  test("splits on &&", () => {
+    expect(splitShellSegments("a && b")).toEqual(["a", "b"]);
+  });
+  test("splits on ||, |, ;, newline", () => {
+    expect(splitShellSegments("a || b | c ; d\ne")).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+    ]);
+  });
+  test("promotes process substitution body to its own segment", () => {
+    // After stripping the inner quoted region, `tee >(echo )` would split
+    // into ["tee", "echo"]. Verify against a concrete case.
+    const segs = splitShellSegments("tee >(echo hi)");
+    expect(segs).toContain("tee");
+    expect(segs).toContain("echo hi");
+  });
+  test("promotes $(...) body to its own segment", () => {
+    const segs = splitShellSegments("echo $(date +%s)");
+    expect(segs).toContain("echo");
+    expect(segs).toContain("date +%s");
   });
 });
 

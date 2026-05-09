@@ -1152,6 +1152,7 @@ describe("GUARD_STATE_ENTRY_TYPE", () => {
 })
 
 describe("isGitPush", () => {
+  // ── Existing positive cases (preserved) ──────────────────────────────────
   it("matches plain git push", () => {
     assert.equal(isGitPush("git push"), true)
   })
@@ -1174,6 +1175,133 @@ describe("isGitPush", () => {
 
   it("does not match unrelated commands", () => {
     assert.equal(isGitPush("go test ./..."), false)
+  })
+
+  // ── #1519: additional positive cases ─────────────────────────────────────
+  it("matches git push --force-with-lease", () => {
+    assert.equal(isGitPush("git push --force-with-lease"), true)
+  })
+
+  it("matches git push -u origin feat/x", () => {
+    assert.equal(isGitPush("git push -u origin feat/x"), true)
+  })
+
+  it("matches git --git-dir=/path/.git push", () => {
+    assert.equal(isGitPush("git --git-dir=/path/.git push"), true)
+  })
+
+  it("matches git --git-dir /path/.git push (space form)", () => {
+    assert.equal(isGitPush("git --git-dir /path/.git push"), true)
+  })
+
+  it("matches cd /worktree && git push", () => {
+    assert.equal(isGitPush("cd /worktree && git push"), true)
+  })
+
+  it("matches git status && git push (sequence)", () => {
+    assert.equal(isGitPush("git status && git push"), true)
+  })
+
+  it("matches git status; git push origin main (semicolon)", () => {
+    assert.equal(isGitPush("git status; git push origin main"), true)
+  })
+
+  it("matches git push at the end of a multi-line script", () => {
+    assert.equal(isGitPush("set -e\ngit add .\ngit commit -m wip\ngit push"), true)
+  })
+
+  // ── #1519: false positives the old regex accepted ────────────────────────
+  it("does NOT match echo with double-quoted git push", () => {
+    assert.equal(isGitPush('echo "git push"'), false)
+  })
+
+  it("does NOT match echo with single-quoted git push", () => {
+    assert.equal(isGitPush("echo 'git push'"), false)
+  })
+
+  it("does NOT match rg with quoted git push pattern", () => {
+    assert.equal(isGitPush('rg "git push"'), false)
+  })
+
+  it("does NOT match rg with single-quoted git push pattern", () => {
+    assert.equal(isGitPush("rg 'git push'"), false)
+  })
+
+  it("does NOT match grep with quoted git push pattern", () => {
+    assert.equal(isGitPush('grep -r "git push" modules/'), false)
+  })
+
+  it("does NOT match ag with quoted git push pattern", () => {
+    assert.equal(isGitPush('ag "git push" .'), false)
+  })
+
+  it("does NOT match awk with single-quoted git push pattern", () => {
+    assert.equal(isGitPush("awk '/git push/ { print }'"), false)
+  })
+
+  it("does NOT match sed with single-quoted git push pattern", () => {
+    assert.equal(isGitPush("sed -n '/git push/p' file"), false)
+  })
+
+  it("does NOT match git log --grep=\"git push\"", () => {
+    assert.equal(isGitPush('git log --grep="git push"'), false)
+  })
+
+  it("does NOT match a heredoc body containing git push (single-line)", () => {
+    const cmd = "cat <<'EOF'\ngit push\nEOF"
+    assert.equal(isGitPush(cmd), false)
+  })
+
+  it("does NOT match a heredoc body containing git push (multi-line issue template)", () => {
+    const cmd = [
+      "cat > /tmp/issue.md <<'EOF'",
+      "## Reproducer",
+      "",
+      "    git rebase origin/main",
+      "    git push --force-with-lease",
+      "",
+      "That is the recommended workflow.",
+      "EOF",
+    ].join("\n")
+    assert.equal(isGitPush(cmd), false)
+  })
+
+  it("does NOT match a <<-EOF heredoc body", () => {
+    const cmd = "cat <<-EOF\n\tgit push\n\tEOF"
+    assert.equal(isGitPush(cmd), false)
+  })
+
+  it("does NOT match a <<\"EOF\" heredoc body", () => {
+    const cmd = 'cat <<"EOF"\ngit push\nEOF'
+    assert.equal(isGitPush(cmd), false)
+  })
+
+  it("does NOT match echo \"remember to git push\"", () => {
+    assert.equal(isGitPush('echo "remember to git push"'), false)
+  })
+
+  // ── #1519: pipeline / process-substitution edge cases ────────────────────
+  it("does NOT match git status | tee >(echo \"git push\")", () => {
+    assert.equal(isGitPush('git status | tee >(echo "git push")'), false)
+  })
+
+  it("does NOT match git status when piped to a quoted-arg consumer", () => {
+    assert.equal(isGitPush('git status | grep "git push"'), false)
+  })
+
+  it("matches git push at the end of a real pipeline", () => {
+    // Contrived but verifies pipeline tokenisation: a real git push as the
+    // tail stage of a pipeline still triggers.
+    assert.equal(isGitPush("true | git push"), true)
+  })
+
+  it("does NOT match the string 'git push' embedded in a longer word", () => {
+    assert.equal(isGitPush("git pushy"), false)
+    assert.equal(isGitPush("mygit push"), false)
+  })
+
+  it("does NOT match a bare 'push' subcommand without git", () => {
+    assert.equal(isGitPush("push origin main"), false)
   })
 })
 
