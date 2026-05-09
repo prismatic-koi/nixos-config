@@ -301,8 +301,9 @@ func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 //
 // prNumber is the PR number to review (e.g. "123"). agents is an optional
 // list of agent names for --only filtering. timeout is an optional duration
-// string (e.g. "10m"). Returns an error if the host-side subprocess failed or
-// the connection was lost mid-stream.
+// string (e.g. "10m"). rebase requests an inline rebase onto origin/main
+// before the review (issue #1518). Returns an error if the host-side
+// subprocess failed or the connection was lost mid-stream.
 //
 // The response from the sidecar /review endpoint is a plain-text chunked stream
 // terminated by one of two sentinel lines:
@@ -311,7 +312,7 @@ func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 //	sidecar.ReviewSentinelFailed — subprocess exited non-zero
 //
 // This function consumes the sentinel and does NOT print it to stdout.
-func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) (string, error) {
+func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string, rebase bool) (string, error) {
 	// Build request body.
 	body := map[string]any{
 		"pr_number": prNumber,
@@ -321,6 +322,9 @@ func proxyReviewAsync(apiURL, prNumber string, agents []string, timeout string) 
 	}
 	if timeout != "" {
 		body["timeout"] = timeout
+	}
+	if rebase {
+		body["rebase"] = true
 	}
 
 	// The sidecar streams output as it arrives and closes the response body

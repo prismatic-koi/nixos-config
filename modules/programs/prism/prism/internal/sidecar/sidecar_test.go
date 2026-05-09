@@ -7275,6 +7275,98 @@ exit 0
 	}
 }
 
+// TestHostAPI_Review_RebaseForwarded verifies that when {"rebase": true} is
+// supplied in the /review request body, --rebase is appended to the prism
+// review subprocess argv. This is the container-routed path of the rebase
+// gate (issue #1518): the gate itself runs in the host subprocess, but the
+// rebase opt-in must thread through from the container worker.
+func TestHostAPI_Review_RebaseForwarded(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+echo "✓ review-code          passed"
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@feature",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123","rebase":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if !strings.Contains(string(capturedArgs), "--rebase") {
+		t.Errorf("captured args %q do not contain '--rebase'", string(capturedArgs))
+	}
+}
+
+// TestHostAPI_Review_RebaseDefaultOmitted verifies that when {"rebase":false}
+// (or when the field is absent) the --rebase flag is NOT forwarded to the
+// host subprocess. Defence against accidentally turning the opt-in into a
+// default.
+func TestHostAPI_Review_RebaseDefaultOmitted(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@feature",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review",
+		`{"pr_number":"123"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	if strings.Contains(string(capturedArgs), "--rebase") {
+		t.Errorf("captured args %q must NOT contain '--rebase' when rebase=false", string(capturedArgs))
+	}
+}
+
 // TestHostAPI_Review_AckReturnedOnSuccess verifies that when `prism review`
 // exits 0 with an ack message (async model), the streaming response body
 // contains the ack lines followed by ReviewSentinelPassed.

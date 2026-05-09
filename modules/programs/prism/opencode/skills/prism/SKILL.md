@@ -165,6 +165,70 @@ prism review <pr-number>
 **Do NOT commit, merge, or announce completion** until the review-complete
 prompt arrives. When it does, handle PASS/FAIL per the worker agent instructions.
 
+### Pre-flight rebase gate (`prism review` refuses when behind `origin/main`)
+
+Before spawning any review agents, `prism review` runs a **one-shot pre-flight
+check**:
+
+1. `git fetch origin main` (one network round-trip).
+2. Strict ancestor check: `git merge-base --is-ancestor origin/main HEAD`.
+3. If `origin/main` is an ancestor of `HEAD`: proceed unchanged.
+4. If not: refuse, exit non-zero, **no agents spawn**, and **no cycle counter
+   increment**. The error message names the number of commits behind and the
+   recommended fix:
+
+   ```
+   prism review: branch is N commits behind origin/main
+
+       git fetch origin main
+       git rebase origin/main
+       git push --force-with-lease
+
+   Or rerun with --rebase to do this inline.
+   ```
+
+The `--rebase` flag is the inline opt-in fix:
+
+```bash
+prism review <pr> --rebase
+```
+
+It performs the fetch + rebase + force-push inline and then proceeds to the
+review against the rebased HEAD. If the rebase produces conflicts, the rebase
+is aborted, the worktree is restored to the original `HEAD`, and the command
+exits non-zero — never leaves the worktree mid-rebase. Resolve conflicts
+manually and re-run.
+
+**Why this gate exists.** Reviewers regularly produce noisy findings of the
+form "you should also update X" when X landed on `main` after the branch was
+cut. A simple rebase makes the diff smaller and the finding disappear, but
+discovering this from a FAIL verdict burns a full 5-agent cycle. The gate
+catches drift in one fetch, before any agent spawns.
+
+**Cycle-counter contract.** Gate failures (behind-main refusal, fetch failure,
+missing `origin/main`, rebase conflict abort) **do not increment** the
+review-cycle counter. They are the same category as "round already in
+progress" / pure-infrastructure failures: no agents spawned, no verdicts
+produced. A worker that hits the gate three times in a row and then runs
+three real reviews still has all three real cycles available before the
+LOOP-LIMIT footer fires.
+
+**Design notes:**
+
+- **Strict ancestor check, not loose.** A "files-touched-in-common" variant
+  sounds clever but breaks on renames, deletes, and cross-cutting helper
+  introductions. Strict `is-ancestor` is unambiguous and cheap.
+- **Refuse-by-default + opt-in `--rebase`, not auto-rebase.** A `review` verb
+  that silently mutates the branch is a footgun if the worker has uncommitted
+  work or local-only commits. Default refusal forces a deliberate choice.
+- **One-shot at the start, not continuous.** `main` can advance during a
+  review run; we do not chase that. The gate is a snapshot at review-spawn
+  time, consistent with how CI works.
+- **Same gate in host-direct and container-routed paths.** A container worker
+  routes through `/review` on the host sidecar; the gate runs on the host
+  side, and the refusal streams back to the container worker as a non-zero
+  review exit — same UX as a host-direct refusal.
+
 ### Handling no-start errors in review-complete prompts
 
 When a review-complete prompt says **"One or more review agents failed to start

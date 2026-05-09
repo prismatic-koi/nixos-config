@@ -16,6 +16,7 @@ package cmd
 //	--harness <name>    Runtime harness (default: "opencode")
 //	--timeout <dur>     Per-agent timeout (default: 10m)
 //	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
+//	--rebase            Inline-rebase onto origin/main (fetch + rebase + force-push) before review
 
 import (
 	"fmt"
@@ -61,6 +62,7 @@ func init() {
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
 	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
+	reviewCmd.Flags().Bool("rebase", false, "Fetch origin/main, rebase HEAD onto it, and force-push before running the review (inline fix for the rebase-gate refusal)")
 	rootCmd.AddCommand(reviewCmd)
 }
 
@@ -82,6 +84,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 	onlyFlag, _ := cmd.Flags().GetString("only")
 	onlyChanged := cmd.Flags().Changed("only")
+	rebaseFlag, _ := cmd.Flags().GetBool("rebase")
 	diffInlineMaxFlag, _ := cmd.Flags().GetInt("diff-inline-max")
 	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
 	modelsByRole, err := parseModelOverrides(modelOverrideRaw)
@@ -123,6 +126,13 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// Container-mode detection: when PRISM_HOST_API is set the process is
 	// running inside a container where tmux is not available. Route the review
 	// through the host sidecar instead of calling review.RunAsync() directly.
+	//
+	// The pre-flight rebase gate runs on the host side, inside the subprocess
+	// spawned by the sidecar's /review handler (which sets cmd.Dir to the
+	// session's worktree). When the gate refuses, the host subprocess exits
+	// non-zero, the sidecar emits ReviewSentinelFailed, and proxyReviewAsync
+	// returns an error to the container worker — same UX as a host-direct
+	// refusal. See internal/review/preflight.go for the gate implementation.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		// Agent list was already resolved and validated above (client-side,
 		// inside the container). This ensures that the --only flag is applied
@@ -139,7 +149,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// proxyReviewAsync streams each output line to os.Stdout as it
 		// arrives — no further printing is needed here. The returned string
 		// is the buffered copy used for error context only.
-		_, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr)
+		_, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag)
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
 		}
@@ -161,6 +171,25 @@ func runReview(cmd *cobra.Command, args []string) error {
 	worktree, wtErr := resolveReviewWorktree(parentSession)
 	if wtErr != nil {
 		return wtErr
+	}
+
+	// Pre-flight rebase gate (#1518). Runs BEFORE any review-agent sessions
+	// are spawned and BEFORE any DB rows are written for this round, so a
+	// gate failure (refusal, fetch failure, conflict abort, missing upstream)
+	// cannot increment the review-cycle counter — that counter is derived
+	// from per-agent session rows by review.NextRoundNumber, and no such
+	// rows exist on the gate-failure path.
+	//
+	// Strict ancestor check: `git merge-base --is-ancestor origin/main HEAD`.
+	// On --rebase, the gate also performs fetch + rebase + force-push inline;
+	// on rebase conflict it aborts the rebase and restores HEAD before
+	// returning a non-zero error. Never leaves the worktree mid-rebase.
+	if gateErr := review.Preflight(review.PreflightOpts{
+		Worktree:   worktree,
+		Rebase:     rebaseFlag,
+		OnProgress: progressLineEager,
+	}); gateErr != nil {
+		return gateErr
 	}
 
 	// Resolve the effective isolation mode for spawning review agents.
@@ -221,10 +250,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// Flushing after each write is critical: the enclosing bash tool invocation
 	// makes stdout a pipe (not a TTY), so Go's default buffering would hold
 	// lines until the buffer fills. os.Stdout.Sync() forces an immediate flush.
-	progressLine := func(line string) {
-		fmt.Fprintln(os.Stdout, line)
-		_ = os.Stdout.Sync()
-	}
+	progressLine := progressLineEager
 
 	// Resolve the inline-max threshold from flag → env var → default.
 	// PRISM_REVIEW_DIFF_INLINE_MAX overrides the compiled-in default.
@@ -322,6 +348,18 @@ func runReview(cmd *cobra.Command, args []string) error {
 	fmt.Print(result.Ack)
 	_ = os.Stdout.Sync()
 	return nil
+}
+
+// progressLineEager writes and flushes a single progress line to stdout.
+// Flushing after each write is critical: the enclosing bash tool invocation
+// makes stdout a pipe (not a TTY), so Go's default buffering would hold
+// lines until the buffer fills. os.Stdout.Sync() forces an immediate flush.
+//
+// Used by both the pre-flight rebase gate (review.Preflight) and the
+// review-agent spawn loop (review.Opts.OnProgress).
+func progressLineEager(line string) {
+	fmt.Fprintln(os.Stdout, line)
+	_ = os.Stdout.Sync()
 }
 
 // agentsForHarness returns the agent list for the given harness.
