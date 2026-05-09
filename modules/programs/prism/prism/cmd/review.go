@@ -159,7 +159,11 @@ func runReview(cmd *cobra.Command, args []string) error {
 		waitFlag, _ := cmd.Flags().GetBool("wait")
 		jsonFlag, _ := cmd.Flags().GetBool("json")
 		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
-		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag)
+		// Suppress the streamed-stdout print when --wait --json is set so
+		// the JSON terminal status is the only thing on stdout. The Ack is
+		// still buffered in ackOutput so we can parse the group_id from it.
+		quietStdout := waitFlag && jsonFlag
+		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag, quietStdout)
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
 		}

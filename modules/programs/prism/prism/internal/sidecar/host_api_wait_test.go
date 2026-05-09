@@ -14,6 +14,7 @@ package sidecar
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,13 +173,78 @@ func TestHostAPI_GroupsPoll_RejectsMissingGroupID(t *testing.T) {
 	}
 }
 
+// ── /groups/list ──────────────────────────────────────────────────────────────
+
+// TestHostAPI_GroupsList_ReturnsGroupsNewestFirst exercises the new
+// /groups/list endpoint added in #1500 round-3 to fix the shadow-DB
+// regression for `prism reviews list` from inside a sandbox.
+func TestHostAPI_GroupsList_ReturnsGroupsNewestFirst(t *testing.T) {
+	d := openTestDB(t)
+	// Two groups; ReviewGroupsList sorts by created_at DESC (newest
+	// first). Both register on the same DATETIME tick so we cannot
+	// assert ordering precisely — but we can assert both rows are
+	// returned and carry the right parent.
+	g1, err := d.RegisterGroup("repo@pr-1")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	g2, err := d.RegisterGroup("repo@pr-2")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	sc := newSidecarWithRole(t, "repo@main", "repo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodGet, "/groups/list", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var groups []db.ReviewGroupSummary
+	decodeJSONBody(t, rr, &groups)
+	if len(groups) != 2 {
+		t.Fatalf("want 2 groups, got %d: %v", len(groups), groups)
+	}
+	seen := map[string]string{}
+	for _, g := range groups {
+		seen[g.GroupID] = g.ParentSession
+	}
+	if seen[g1] != "repo@pr-1" {
+		t.Errorf("group %s: want parent repo@pr-1, got %q", g1, seen[g1])
+	}
+	if seen[g2] != "repo@pr-2" {
+		t.Errorf("group %s: want parent repo@pr-2, got %q", g2, seen[g2])
+	}
+}
+
+func TestHostAPI_GroupsList_EmptyReturnsEmptyArray(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "repo@main", "repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/groups/list", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	// Must be `[]` literally, not `null` (the empty-list contract that
+	// prism CLI consumers depend on across `--json` paths).
+	if strings.TrimSpace(rr.Body.String()) != "[]" {
+		t.Errorf("empty groups list: want '[]', got %q", rr.Body.String())
+	}
+}
+
+func TestHostAPI_GroupsList_RejectsBadLimit(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "repo@main", "repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/groups/list?limit=abc", "")
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 // TestHostAPI_WaitProbeEndpoints_RejectPost ensures the wait-probe endpoints
 // only accept GET (read-only). A misconfigured client should not be able to
 // POST through them and silently change state.
 func TestHostAPI_WaitProbeEndpoints_RejectPost(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "repo@main", "repo", "coordinator", d)
-	for _, path := range []string{"/merges/by-pr?pr=1", "/sessions/status?session=x", "/groups/poll?group_id=x"} {
+	for _, path := range []string{"/merges/by-pr?pr=1", "/sessions/status?session=x", "/groups/poll?group_id=x", "/groups/list"} {
 		rr := doHostAPI(t, sc, http.MethodPost, path, "{}")
 		if rr.Code != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s: status = %d, want 405; body = %s", path, rr.Code, rr.Body.String())

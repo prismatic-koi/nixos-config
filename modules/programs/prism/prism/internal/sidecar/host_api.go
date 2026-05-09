@@ -1792,6 +1792,38 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, st)
 	})
 
+	// GET /groups/list?limit=N
+	// Response: 200 with []db.ReviewGroupSummary (newest first).
+	//
+	// Backs `prism reviews list` (issue #1500) when invoked from inside a
+	// sandbox — the in-sandbox prism.db is a tmpfs shadow with no review
+	// groups, so a direct read returns an empty list. Routing through this
+	// endpoint lets the in-sandbox CLI see the host's session_groups
+	// table. Same #1043 pattern as /merges.
+	mux.HandleFunc("/groups/list", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		limit := 0
+		if l := r.URL.Query().Get("limit"); l != "" {
+			n, parseErr := strconv.Atoi(l)
+			if parseErr != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "limit must be a non-negative integer")
+				return
+			}
+			limit = n
+		}
+		groups, gErr := s.cfg.DB.ReviewGroupsList(limit)
+		if gErr != nil {
+			writeError(w, http.StatusInternalServerError, "list groups: "+gErr.Error())
+			return
+		}
+		if groups == nil {
+			groups = []db.ReviewGroupSummary{}
+		}
+		writeJSON(w, http.StatusOK, groups)
+	})
+
 	// GET /groups/poll?group_id=UUID
 	// Response: 200 with {"completed": bool, "members": [Status...],
 	//          "results": map[session]GroupMemberResult}.

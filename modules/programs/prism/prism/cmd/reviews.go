@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sandboxenv"
 )
 
 var reviewsCmd = &cobra.Command{
@@ -85,6 +86,29 @@ var reviewParentBranchPattern = regexp.MustCompile(`@(.+)$`)
 func runReviewsList(cmd *cobra.Command, _ []string) error {
 	jsonMode, _ := cmd.Flags().GetBool("json")
 	limit, _ := cmd.Flags().GetInt("limit")
+
+	// Inside a bwrap / podman / sandbox-exec sandbox: proxy the list to
+	// the host sidecar (#1043 pattern). The host's prism.db is invisible
+	// to direct reads from inside the sandbox — falling through to the DB
+	// path would silently return an empty list (the shadow tmpfs DB has
+	// no rows the host watcher writes). The sibling `prism merges list`
+	// already does this; without the same branch, `prism reviews list`
+	// inside a sandbox would silently return [] (#1500 round-2
+	// review-context blocker).
+	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
+		params := map[string]string{}
+		if limit > 0 {
+			params["limit"] = strconv.Itoa(limit)
+		}
+		var groups []db.ReviewGroupSummary
+		if proxyErr := proxyGetFromHostAPI(apiURL, "/groups/list", params, &groups); proxyErr != nil {
+			return fmt.Errorf("prism reviews list: %w", proxyErr)
+		}
+		if jsonMode {
+			return renderReviewsListJSON(groups)
+		}
+		return renderReviewsList(groups)
+	}
 
 	d, err := openDB()
 	if err != nil {

@@ -112,9 +112,16 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		}, &row); proxyErr != nil {
 			return fmt.Errorf("prism merge: %w", proxyErr)
 		}
-		fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", row.PR, row.QueuePosition, row.Status)
-		if title != "" {
-			fmt.Printf("  %s\n", title)
+		// JSON-exclusive contract (#1500): when --wait and --json are both
+		// set, the terminal status is the only thing on stdout. Suppress
+		// the textual enqueue-confirmation lines on that path so a
+		// `--wait --json` consumer sees a single parseable JSON object.
+		quietStdout := waitFlag && jsonFlag
+		if !quietStdout {
+			fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", row.PR, row.QueuePosition, row.Status)
+			if title != "" {
+				fmt.Printf("  %s\n", title)
+			}
 		}
 		if waitFlag {
 			return waitForMergeTerminal(pr, jsonFlag, timeoutFlag)
@@ -182,9 +189,14 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: %w", err)
 	}
 
-	fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", pr, row.QueuePosition, row.Status)
-	if title != "" {
-		fmt.Printf("  %s\n", title)
+	// JSON-exclusive contract (#1500): suppress the textual enqueue
+	// confirmation when --wait and --json are both set.
+	quietStdout := waitFlag && jsonFlag
+	if !quietStdout {
+		fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", pr, row.QueuePosition, row.Status)
+		if title != "" {
+			fmt.Printf("  %s\n", title)
+		}
 	}
 	if waitFlag {
 		return waitForMergeTerminal(pr, jsonFlag, timeoutFlag)

@@ -193,6 +193,59 @@ func captureStdoutAndStderr(t *testing.T, fn func()) string {
 	return out
 }
 
+// TestRunMerge_WaitJSON_StdoutIsJSONOnly is the regression test for the
+// JSON-exclusive contract on the host-direct path (#1500 round-2
+// review-code blocker). When --wait and --json are both set, the only
+// thing on stdout must be the single JSON object emitted by
+// emitMergeWaitTerminal — not the textual "PR #N enqueued ..." line.
+func TestRunMerge_WaitJSON_StdoutIsJSONOnly(t *testing.T) {
+	openMergeTestDB(t)
+
+	// Seed the row in the terminal state up front so observeAlreadyTerminal
+	// short-circuits without going through gh / preflight. This isolates
+	// the test to the JSON-output assertion.
+	d, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	if _, err := d.EnqueueMerge(777, "nixos-config@main", "inst", nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+	if err := d.TerminateMerge(777, "merged", ""); err != nil {
+		t.Fatalf("TerminateMerge: %v", err)
+	}
+	d.Close()
+
+	// Set the flags on the cobra command.
+	t.Cleanup(func() {
+		_ = mergeCmd.Flags().Set("wait", "false")
+		_ = mergeCmd.Flags().Set("json", "false")
+	})
+	if err := mergeCmd.Flags().Set("wait", "true"); err != nil {
+		t.Fatalf("set --wait: %v", err)
+	}
+	if err := mergeCmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runMerge(mergeCmd, []string{"777"}); err != nil {
+			t.Fatalf("runMerge: %v", err)
+		}
+	})
+	trimmed := strings.TrimSpace(out)
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		t.Errorf("stdout is not pure JSON — textual chatter leaked through:\n%s", out)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("stdout not parseable as JSON: %v\nout: %s", err, out)
+	}
+	if payload["status"] != "merged" {
+		t.Errorf("status: want merged, got %v", payload["status"])
+	}
+}
+
 // TestEmitMergeWaitTerminal_JSONShape verifies the JSON contract for the
 // merged terminal payload.
 func TestEmitMergeWaitTerminal_JSONShape(t *testing.T) {

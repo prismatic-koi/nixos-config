@@ -243,6 +243,83 @@ func TestWaitForReviewTerminal_RoutesViaHostAPI(t *testing.T) {
 	}
 }
 
+// TestRunReviewsList_RoutesViaHostAPIInSandbox is the regression test for
+// the round-2 review-context blocker: `prism reviews list` must not open
+// the local (shadow) DB when running inside a sandbox — doing so silently
+// returns [] and replicates the original #1043 bug for review groups.
+// The fixed path proxies through the sidecar's /groups/list endpoint.
+func TestRunReviewsList_RoutesViaHostAPIInSandbox(t *testing.T) {
+	openMergeTestDB(t) // clears PRISM_HOST_API; we set it next.
+
+	sockDir, err := os.MkdirTemp("/tmp", "rl")
+	if err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockPath := filepath.Join(sockDir, "h.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	var requests []string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/groups/list", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, "/groups/list?"+r.URL.RawQuery)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]db.ReviewGroupSummary{
+			{
+				GroupID:       "g-1",
+				ParentSession: "repo@pr-42",
+				CreatedAt:     time.Now().UTC(),
+				Members:       []string{"repo@pr-42~review-1-review-goal"},
+				AgentStates:   []string{"finished"},
+				GroupState:    "completed",
+			},
+		})
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	t.Setenv("PRISM_HOST_API", "unix://"+sockPath)
+
+	t.Cleanup(func() { _ = reviewsListCmd.Flags().Set("json", "false") })
+	if err := reviewsListCmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runReviewsList(reviewsListCmd, nil); err != nil {
+			t.Fatalf("runReviewsList: %v", err)
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) == 0 {
+		t.Fatal("server received no requests — reviews list did not route via host-API")
+	}
+	if !strings.HasPrefix(requests[0], "/groups/list") {
+		t.Errorf("first request was %q, expected /groups/list", requests[0])
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
+		t.Fatalf("output not JSON: %v\nout: %s", err, out)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row, got %d: %v", len(rows), rows)
+	}
+	if rows[0]["parent_session"] != "repo@pr-42" {
+		t.Errorf("parent_session: want repo@pr-42, got %v", rows[0]["parent_session"])
+	}
+}
+
 // TestParseReviewGroupIDFromAck verifies the regex-based extraction used
 // by the in-sandbox `prism review --wait` proxy path.
 func TestParseReviewGroupIDFromAck(t *testing.T) {

@@ -1116,7 +1116,7 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false, false)
 	})
 
 	if callErr != nil {
@@ -1139,6 +1139,37 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 	}
 }
 
+// TestProxyReviewAsync_QuietStdoutSuppressesStreaming verifies the
+// JSON-exclusive contract for `prism review --wait --json` from inside a
+// sandbox (#1500 round-2 review-code blocker). When quietStdout is true,
+// proxyReviewAsync must NOT write any of the streamed Ack lines to stdout,
+// but the buffered return value must still contain them so the caller can
+// parse the group_id.
+func TestProxyReviewAsync_QuietStdoutSuppressesStreaming(t *testing.T) {
+	const ackLine = "Review in progress — PR #1, round 1 (group: aaaa-bbbb-cccc-dddd-eeeeffffaaaa)"
+	srv := newMockTCPServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(ackLine + "\n"))
+		_, _ = w.Write([]byte("Review-Goal started\n"))
+		_, _ = w.Write([]byte(sidecar.ReviewSentinelPassed + "\n"))
+	})
+
+	var stdout, ack string
+	var callErr error
+	stdout = captureStdout(t, func() {
+		ack, callErr = proxyReviewAsync(srv.apiURL(), "1", nil, "", false, true /* quietStdout */)
+	})
+	if callErr != nil {
+		t.Fatalf("proxyReviewAsync: %v", callErr)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("quietStdout=true: expected empty stdout, got %q", stdout)
+	}
+	if !strings.Contains(ack, ackLine) {
+		t.Errorf("buffered Ack must still contain the ack line so the caller can parse group_id; got %q", ack)
+	}
+}
+
 // TestProxyReviewAsync_SentinelConsumedNotEchoed verifies that proxyReviewAsync
 // consumes the sentinel line and does NOT echo it to stdout (AC: sentinel marker
 // is NOT printed to the worker's stdout).
@@ -1152,7 +1183,7 @@ func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false, false)
 	})
 
 	if callErr != nil {
@@ -1186,7 +1217,7 @@ func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false, false)
 	})
 
 	// proxyReviewAsync must return a non-nil error when sentinel says failed.
@@ -1223,7 +1254,7 @@ func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false, false)
 	})
 
 	if callErr == nil {
@@ -1246,7 +1277,7 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false)
+		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false, false)
 	})
 
 	if callErr == nil {
