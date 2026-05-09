@@ -47,6 +47,11 @@ type reviewWaitAgentJSON struct {
 // waitForReviewTerminal polls the review group until db.GroupCompleted
 // returns true, then aggregates per-agent verdicts and emits the result.
 //
+// Sandbox-aware via newWaitProbe(): in-sandbox callers route reads through
+// the sidecar's /groups/poll endpoint so the host's session_groups table is
+// visible. Without this, --wait inside a sandbox would poll a tmpfs shadow
+// DB and never observe completion (issue #1500 review-code feedback).
+//
 // Exit codes:
 //
 //   - all-PASS: 0
@@ -54,18 +59,18 @@ type reviewWaitAgentJSON struct {
 //   - timeout:                          waitExitTimeout (3)
 //   - user interrupt:                   waitExitUserInterrupt (4)
 func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time.Duration) error {
-	d, dbErr := openDB()
-	if dbErr != nil {
-		return fmt.Errorf("prism review --wait: open db: %w", dbErr)
+	probe, err := newWaitProbe()
+	if err != nil {
+		return fmt.Errorf("prism review --wait: %w", err)
 	}
-	defer d.Close()
+	defer probe.Close()
 
 	pollErr := pollWait(context.Background(), timeout,
 		1*time.Second, 10*time.Second,
 		func() (bool, error) {
-			done, gErr := d.GroupCompleted(groupID)
+			done, _, _, gErr := probe.GroupPoll(groupID)
 			if gErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism review --wait] db error: %v (will retry)\n", gErr)
+				fmt.Fprintf(os.Stderr, "[prism review --wait] probe error: %v (will retry)\n", gErr)
 				return false, nil
 			}
 			return done, nil
@@ -73,7 +78,7 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 
 	switch exitCodeOf(pollErr) {
 	case waitExitTimeout:
-		_ = emitReviewWaitTimeout(prNumber, groupID, d, jsonMode, timeout)
+		_ = emitReviewWaitTimeout(prNumber, groupID, probe, jsonMode, timeout)
 		return newExitErr(waitExitTimeout, "")
 	case waitExitUserInterrupt:
 		return pollErr
@@ -82,25 +87,38 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 		return pollErr
 	}
 
-	// Group is complete. Aggregate verdicts.
-	return emitReviewWaitTerminal(prNumber, groupID, d, jsonMode)
+	// Group is complete. Fetch the final state once and aggregate verdicts.
+	_, allMembers, members, gErr := probe.GroupPoll(groupID)
+	if gErr != nil {
+		return fmt.Errorf("prism review --wait: final group poll: %w", gErr)
+	}
+	return emitReviewWaitTerminalAgg(prNumber, groupID, allMembers, members, jsonMode)
 }
 
-// emitReviewWaitTerminal aggregates per-agent verdicts from db.GroupResults
-// and emits a JSON object or a textual summary, then returns 0 on all-PASS
-// or waitExitTerminalFail (2) on any FAIL / NONE / missing.
+// emitReviewWaitTerminal is kept for tests that pre-date the probe
+// abstraction. Production code calls emitReviewWaitTerminalAgg with
+// pre-fetched member data so the live path never opens a DB handle behind
+// the probe's back.
 func emitReviewWaitTerminal(prNumber, groupID string, d *db.DB, jsonMode bool) error {
 	members, mErr := d.GroupResults(groupID)
 	if mErr != nil {
 		return fmt.Errorf("prism review --wait: aggregate group results: %w", mErr)
 	}
-	// We also need the full member list (including ended_at-set rows that
-	// GroupResults intentionally drops) so the JSON output reports every
-	// agent that was spawned, even when one was cleaned up mid-run.
 	allMembers, allErr := d.GroupMembersForGroup(groupID)
 	if allErr != nil {
 		return fmt.Errorf("prism review --wait: list group members: %w", allErr)
 	}
+	return emitReviewWaitTerminalAgg(prNumber, groupID, allMembers, members, jsonMode)
+}
+
+// emitReviewWaitTerminalAgg aggregates per-agent verdicts from already-fetched
+// group state and emits a JSON object or a textual summary. Returns 0 on
+// all-PASS or waitExitTerminalFail (2) on any FAIL / NONE / missing.
+//
+// allMembers is the raw agent_status rows for the group (including ones
+// whose ended_at is set, which `members` intentionally drops). members is
+// the GroupResults map keyed by session name.
+func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status, members map[string]db.GroupMemberResult, jsonMode bool) error {
 
 	allPass := true
 	rows := make([]reviewWaitAgentJSON, 0, len(allMembers))
@@ -203,8 +221,12 @@ func emitReviewWaitTerminal(prNumber, groupID string, d *db.DB, jsonMode bool) e
 	return newExitErr(waitExitTerminalFail, "")
 }
 
-func emitReviewWaitTimeout(prNumber, groupID string, d *db.DB, jsonMode bool, timeout time.Duration) error {
-	allMembers, _ := d.GroupMembersForGroup(groupID)
+func emitReviewWaitTimeout(prNumber, groupID string, probe waitProbe, jsonMode bool, timeout time.Duration) error {
+	var allMembers []db.Status
+	if probe != nil {
+		_, m, _, _ := probe.GroupPoll(groupID)
+		allMembers = m
+	}
 	rows := make([]reviewWaitAgentJSON, 0, len(allMembers))
 	for _, m := range allMembers {
 		rows = append(rows, reviewWaitAgentJSON{

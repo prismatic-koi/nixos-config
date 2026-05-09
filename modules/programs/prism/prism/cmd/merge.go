@@ -200,15 +200,22 @@ See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
 // existing terminal row in pending_merges and --wait should return
 // immediately with that status. Returns (false, nil) when the row is missing
 // or non-terminal (the caller should proceed with the normal enqueue path).
-// On DB errors, returns (false, nil) so the caller falls through to the
-// regular path — best-effort short-circuit, never a hard failure.
+// On DB / proxy errors, returns (false, nil) so the caller falls through to
+// the regular path — best-effort short-circuit, never a hard failure.
+//
+// Uses newWaitProbe() so the lookup is correct both on the host (direct DB)
+// and inside a sandbox (host-API proxy). Reading the host's prism.db
+// directly from inside a sandbox would hit a shadow tmpfs DB the merge-queue
+// watcher never writes to, silently returning "no row" and skipping the
+// short-circuit — see issue #1500 review-code feedback for the parallel bug
+// in the wait poll loop below.
 func observeAlreadyTerminal(pr int, jsonMode bool) (bool, error) {
-	d, dbErr := openDB()
-	if dbErr != nil {
+	probe, err := newWaitProbe()
+	if err != nil {
 		return false, nil
 	}
-	defer d.Close()
-	row, err := d.PendingMergeByPR(pr)
+	defer probe.Close()
+	row, err := probe.Merge(pr)
 	if err != nil || row == nil {
 		return false, nil
 	}
@@ -219,27 +226,31 @@ func observeAlreadyTerminal(pr int, jsonMode bool) (bool, error) {
 	return false, nil
 }
 
-// waitForMergeTerminal polls the prism DB for the given PR's row in
-// pending_merges until it reaches a terminal state (merged/failed/
-// cancelled/abandoned), the timeout elapses, or the user interrupts. The
-// merge-queue watcher (running in the host sidecar) writes the terminal row
-// — this poll loop only observes it; killing this process does NOT cancel
-// the merge.
+// waitForMergeTerminal polls the merge-queue ledger for the given PR until it
+// reaches a terminal state (merged/failed/cancelled/abandoned), the timeout
+// elapses, or the user interrupts. The merge-queue watcher (running in the
+// host sidecar) writes the terminal row — this poll loop only observes it;
+// killing this process does NOT cancel the merge.
+//
+// Sandbox-aware via newWaitProbe(): host shells read prism.db directly,
+// in-sandbox callers route reads through the sidecar's /merges/by-pr
+// endpoint. Without this, --wait inside a sandbox would poll a tmpfs shadow
+// DB and never observe the terminal (issue #1500 review-code feedback).
 func waitForMergeTerminal(pr int, jsonMode bool, timeout time.Duration) error {
-	d, dbErr := openDB()
-	if dbErr != nil {
-		return fmt.Errorf("prism merge --wait: open db: %w", dbErr)
+	probe, err := newWaitProbe()
+	if err != nil {
+		return fmt.Errorf("prism merge --wait: %w", err)
 	}
-	defer d.Close()
+	defer probe.Close()
 
 	var lastRow *db.PendingMerge
-	err := pollWait(context.Background(), timeout,
+	err = pollWait(context.Background(), timeout,
 		500*time.Millisecond, 5*time.Second,
 		func() (bool, error) {
-			row, qErr := d.PendingMergeByPR(pr)
+			row, qErr := probe.Merge(pr)
 			if qErr != nil {
 				// Transient — keep polling.
-				fmt.Fprintf(os.Stderr, "[prism merge --wait] db error: %v (will retry)\n", qErr)
+				fmt.Fprintf(os.Stderr, "[prism merge --wait] probe error: %v (will retry)\n", qErr)
 				return false, nil
 			}
 			if row == nil {

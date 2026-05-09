@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -151,10 +152,23 @@ func runReview(cmd *cobra.Command, args []string) error {
 		}
 		// proxyReviewAsync streams each output line to os.Stdout as it
 		// arrives — no further printing is needed here. The returned string
-		// is the buffered copy used for error context only.
-		_, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag)
+		// is the buffered Ack copy; we parse the group_id from it so that
+		// --wait can poll the group via the host-API probe (issue #1500
+		// review-code feedback: --wait was silently dropped on this proxy
+		// path before this fix).
+		waitFlag, _ := cmd.Flags().GetBool("wait")
+		jsonFlag, _ := cmd.Flags().GetBool("json")
+		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
+		ackOutput, err := proxyReviewAsync(apiURL, prNumber, agentNames, timeoutStr, rebaseFlag)
 		if err != nil {
 			return fmt.Errorf("prism review: host API: %w", err)
+		}
+		if waitFlag {
+			groupID := parseReviewGroupIDFromAck(ackOutput)
+			if groupID == "" {
+				return fmt.Errorf("prism review --wait: could not parse group_id from review acknowledgement; cannot poll for completion")
+			}
+			return waitForReviewTerminal(prNumber, groupID, jsonFlag, waitTimeout)
 		}
 		return nil
 	}
@@ -366,6 +380,27 @@ func runReview(cmd *cobra.Command, args []string) error {
 	fmt.Print(result.Ack)
 	_ = os.Stdout.Sync()
 	return nil
+}
+
+// reviewGroupIDInAck matches the "(group: <uuid>)" segment in the Ack
+// header line emitted by review.RunAsync, e.g.:
+//
+//	Review in progress — PR #1533, round 1 (group: 5103f218-...-2448dac6ab26)
+//
+// We pull the group_id out of the streamed Ack so the in-sandbox --wait
+// path can poll the group via the sidecar's /groups/poll endpoint without
+// the sidecar having to thread the ID back through a side-channel.
+var reviewGroupIDInAck = regexp.MustCompile(`\(group:\s+([0-9a-f-]{36})\)`)
+
+// parseReviewGroupIDFromAck extracts the review group_id from the buffered
+// Ack output. Returns "" when no match is found — the caller surfaces this
+// as an error so --wait does not silently hang on a missing ID.
+func parseReviewGroupIDFromAck(ack string) string {
+	m := reviewGroupIDInAck.FindStringSubmatch(ack)
+	if len(m) != 2 {
+		return ""
+	}
+	return m[1]
 }
 
 // progressLineEager writes and flushes a single progress line to stdout.

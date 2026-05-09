@@ -169,6 +169,12 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		for _, sn := range resp.SessionNames {
 			fmt.Printf("session %q created\n", sn)
 		}
+		// --wait on the abtest path is not supported — there are two
+		// sessions and no single terminal definition. Surface this rather
+		// than silently dropping the flag (issue #1500 review-code feedback).
+		if waitFlag, _ := cmd.Flags().GetBool("wait"); waitFlag {
+			fmt.Fprintln(os.Stderr, "prism spawn --wait: not supported with --abtest (two sessions, no single terminal); skipping wait")
+		}
 		return nil
 	}
 
@@ -209,6 +215,19 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	}
 	if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
 		return err
+	}
+	// --wait: route through waitForSpawnTerminal using the sandbox-aware
+	// probe. Without this the proxy path silently dropped --wait and
+	// returned immediately even though the caller asked for synchronous
+	// behaviour (issue #1500 review-code feedback).
+	waitFlag, _ := cmd.Flags().GetBool("wait")
+	if waitFlag {
+		jsonFlag, _ := cmd.Flags().GetBool("json")
+		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
+		if !jsonFlag {
+			fmt.Printf("session %q spawned; waiting for terminal state...\n", resp.SessionName)
+		}
+		return waitForSpawnTerminal(resp.SessionName, jsonFlag, waitTimeout)
 	}
 	fmt.Printf("session %q created\n", resp.SessionName)
 	return nil

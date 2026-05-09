@@ -323,6 +323,8 @@ Add `--json` to any `prism merges` / `prism merges list` invocation (including w
 
 **Ctrl-C semantic.** Killing a `--wait` invocation (Ctrl-C, SIGTERM) interrupts the **local** wait only — the underlying merge / review / spawn keeps running. To recover the result later, re-run the same command (or `prism merges list` / `prism reviews list` / `prism checkin <session>`).
 
+**Inside a sandbox.** `--wait` works identically inside and outside a bwrap / podman / sandbox-exec sandbox. The CLI auto-detects `PRISM_HOST_API` and routes its terminal-state probes through the sidecar's read-only wait endpoints, so the host's prism.db is the source of truth in either case.
+
 **Exit codes.** `--wait` paths use exit codes that distinguish failure modes:
 
 | Exit | Meaning |

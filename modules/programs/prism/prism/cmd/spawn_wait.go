@@ -63,20 +63,25 @@ var spawnWaitTerminals = map[string]bool{
 // waitForSpawnTerminal polls the prism DB for the named session until its
 // state field reaches a terminal value, the timeout elapses, or the user
 // interrupts.
+//
+// Sandbox-aware via newWaitProbe(): in-sandbox callers route reads through
+// the sidecar's /sessions/status endpoint so the host's agent_status table
+// is visible. Without this, --wait inside a sandbox would poll a tmpfs
+// shadow DB and never observe a terminal (issue #1500 review-code feedback).
 func waitForSpawnTerminal(sessionName string, jsonMode bool, timeout time.Duration) error {
-	d, dbErr := openDB()
-	if dbErr != nil {
-		return fmt.Errorf("prism spawn --wait: open db: %w", dbErr)
+	probe, err := newWaitProbe()
+	if err != nil {
+		return fmt.Errorf("prism spawn --wait: %w", err)
 	}
-	defer d.Close()
+	defer probe.Close()
 
 	var lastState string
 	pollErr := pollWait(context.Background(), timeout,
 		500*time.Millisecond, 5*time.Second,
 		func() (bool, error) {
-			st, qErr := d.CurrentStatus(sessionName)
+			st, qErr := probe.SessionStatus(sessionName)
 			if qErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism spawn --wait] db error: %v (will retry)\n", qErr)
+				fmt.Fprintf(os.Stderr, "[prism spawn --wait] probe error: %v (will retry)\n", qErr)
 				return false, nil
 			}
 			if st == nil {
@@ -102,14 +107,23 @@ func waitForSpawnTerminal(sessionName string, jsonMode bool, timeout time.Durati
 	if pollErr != nil {
 		return pollErr
 	}
-	return emitSpawnWaitTerminal(sessionName, d, jsonMode)
+	// Final state lookup uses the same probe so the path stays sandbox-correct.
+	finalState, _ := probe.SessionStatus(sessionName)
+	return emitSpawnWaitTerminalRow(sessionName, finalState, jsonMode)
 }
 
-// emitSpawnWaitTerminal looks up the session's final state and emits the
-// terminal status. Returns nil on "finished" (exit 0) or
-// waitExitTerminalFail (2) on any other terminal.
+// emitSpawnWaitTerminal is kept as a thin wrapper for tests that pre-date
+// the probe abstraction. Production code calls emitSpawnWaitTerminalRow
+// with a pre-fetched *db.Status.
 func emitSpawnWaitTerminal(sessionName string, d *db.DB, jsonMode bool) error {
 	st, _ := d.CurrentStatus(sessionName)
+	return emitSpawnWaitTerminalRow(sessionName, st, jsonMode)
+}
+
+// emitSpawnWaitTerminalRow emits the terminal status from an already-fetched
+// *db.Status. Returns nil on "finished" (exit 0) or waitExitTerminalFail (2)
+// on any other terminal.
+func emitSpawnWaitTerminalRow(sessionName string, st *db.Status, jsonMode bool) error {
 	if st == nil {
 		// Should not happen — we just polled it. Treat as error.
 		if jsonMode {
