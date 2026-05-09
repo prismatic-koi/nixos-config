@@ -1116,7 +1116,7 @@ func TestProxyReviewAsync_LinesArrivedProgressively(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "")
+		_, callErr = proxyReviewAsync(srv.apiURL(), "123", nil, "", false)
 	})
 
 	if callErr != nil {
@@ -1152,7 +1152,7 @@ func TestProxyReviewAsync_SentinelConsumedNotEchoed(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "")
+		_, callErr = proxyReviewAsync(srv.apiURL(), "42", nil, "", false)
 	})
 
 	if callErr != nil {
@@ -1186,7 +1186,7 @@ func TestProxyReviewAsync_FailedSentinelProducesError(t *testing.T) {
 	var stdout string
 	var callErr error
 	stdout = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "")
+		_, callErr = proxyReviewAsync(srv.apiURL(), "99", nil, "", false)
 	})
 
 	// proxyReviewAsync must return a non-nil error when sentinel says failed.
@@ -1223,7 +1223,7 @@ func TestProxyReviewAsync_MidStreamDisconnectReportsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "")
+		_, callErr = proxyReviewAsync(srv.apiURL(), "77", nil, "", false)
 	})
 
 	if callErr == nil {
@@ -1246,7 +1246,7 @@ func TestProxyReviewAsync_HTTP500BeforeStreamReturnsError(t *testing.T) {
 
 	var callErr error
 	_ = captureStdout(t, func() {
-		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "")
+		_, callErr = proxyReviewAsync(srv.apiURL(), "55", nil, "", false)
 	})
 
 	if callErr == nil {

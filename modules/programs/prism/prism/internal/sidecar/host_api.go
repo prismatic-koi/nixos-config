@@ -1222,6 +1222,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			PRNumber string   `json:"pr_number"`
 			Agents   []string `json:"agents"`
 			Timeout  string   `json:"timeout"`
+			Rebase   bool     `json:"rebase"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1256,6 +1257,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Timeout != "" {
 			args = append(args, "--timeout", req.Timeout)
+		}
+		if req.Rebase {
+			// Forward the inline-rebase request from the container worker so
+			// the host-side subprocess runs the gate with --rebase. The gate
+			// itself runs in the host subprocess (issue #1518).
+			args = append(args, "--rebase")
 		}
 
 		s.logger().Printf("sidecar: host-API /review: prism %s", strings.Join(args, " "))
