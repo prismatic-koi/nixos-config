@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -296,4 +297,103 @@ SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_ag
 FROM agent_status
 WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
 	return d.queryStatuses(q, parentSession)
+}
+
+// GroupMembersForGroup returns all agent_status rows for the given group_id
+// (including rows with non-NULL ended_at). Used by the `prism reviews list`
+// surface to enumerate the agents in a review round even after they have been
+// cleaned up.
+func (d *DB) GroupMembersForGroup(groupID string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE group_id = ?
+ORDER BY session_name ASC`
+	return d.queryStatuses(q, groupID)
+}
+
+// ReviewGroupSummary captures one row of the `prism reviews list` ledger:
+// a session_groups row plus a roll-up of its members. The PRNumber is
+// extracted from the parent session's review session naming convention
+// (`<parent>~review-<N>-<agent>`); when the group has no members yet, PRNumber
+// is left empty and the caller can fall back to other sources.
+type ReviewGroupSummary struct {
+	GroupID       string
+	ParentSession string
+	CreatedAt     time.Time
+	// Members lists the per-agent session names belonging to this group,
+	// sorted by session name. May be empty if the group has not yet had any
+	// members written, or if all members have been cleaned up via
+	// `prism cleanup`.
+	Members []string
+	// AgentStates aligns with Members (same length, same order). Each entry
+	// is the agent_status.state at the time of query: "active", "finished",
+	// "interrupted", "error", or "deleted".
+	AgentStates []string
+	// GroupState is a roll-up of AgentStates:
+	//   - "in-progress" when at least one member is non-terminal
+	//   - "completed"   when all members are terminal (finished/error/deleted)
+	//   - "empty"       when the group has no members
+	GroupState string
+}
+
+// ReviewGroupsList returns every session_groups row, paired with its members
+// and a rolled-up GroupState, ordered by created_at DESC (newest first).
+// limit ≤ 0 returns all rows.
+//
+// Used by `prism reviews list` (issue #1500) as a dedicated review-group
+// ledger. The list is unfiltered — all groups for all parents are returned;
+// the caller filters by parent or repo if desired.
+func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
+	q := `SELECT group_id, parent_session, created_at FROM session_groups
+	            ORDER BY created_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("db: review groups list: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReviewGroupSummary
+	for rows.Next() {
+		var s ReviewGroupSummary
+		if scanErr := rows.Scan(&s.GroupID, &s.ParentSession, &s.CreatedAt); scanErr != nil {
+			return nil, fmt.Errorf("db: review groups list: scan: %w", scanErr)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: review groups list: iterate: %w", err)
+	}
+
+	// Populate members for each group. Doing this as a second per-group
+	// query rather than a single JOIN keeps the row-construction logic in
+	// queryStatuses untouched and the ledger query simple.
+	for i := range out {
+		members, mErr := d.GroupMembersForGroup(out[i].GroupID)
+		if mErr != nil {
+			return nil, fmt.Errorf("db: review groups list: members for %s: %w", out[i].GroupID, mErr)
+		}
+		out[i].Members = make([]string, 0, len(members))
+		out[i].AgentStates = make([]string, 0, len(members))
+		nonTerminal := 0
+		for _, m := range members {
+			out[i].Members = append(out[i].Members, m.SessionName)
+			out[i].AgentStates = append(out[i].AgentStates, m.State)
+			if !isTerminalState(m.State) && m.EndedAt == nil {
+				nonTerminal++
+			}
+		}
+		switch {
+		case len(members) == 0:
+			out[i].GroupState = "empty"
+		case nonTerminal == 0:
+			out[i].GroupState = "completed"
+		default:
+			out[i].GroupState = "in-progress"
+		}
+	}
+	return out, nil
 }
