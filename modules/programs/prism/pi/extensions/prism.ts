@@ -536,6 +536,94 @@ function segmentIsGitPush(segment: string): boolean {
   return tokens[i] === "push"
 }
 
+// ---------------------------------------------------------------------------
+// Pre-tool-call bash deny list (#1528)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry in the bash deny list. Each entry is matched against an
+ * already-tokenised command segment (i.e. after `stripQuotedAndHeredocRegions`
+ * + `splitShellSegments` have run on the raw command).
+ *
+ * The `match` predicate receives a single segment string and returns true
+ * when the segment is a real invocation of the blocked command. The `reason`
+ * surfaces verbatim to the agent via pi's tool-result channel and should
+ * name the recommended alternative.
+ */
+export interface BlockedBashPattern {
+  id: string
+  match: (segment: string) => boolean
+  reason: string
+}
+
+/**
+ * Bash commands that the pi extension blocks before pi executes them.
+ *
+ * Add to this list only when a specific incident motivates a new entry.
+ * The opencode permission block has ~50 entries because it is the primary
+ * enforcement surface for opencode agents; the pi extension grows
+ * incrementally as agent behaviour demands. Keep entries tightly scoped
+ * — they are mandatory blocks with no per-session opt-out.
+ *
+ * Patterns match "real" git invocations after stripping quoted and
+ * heredoc regions and splitting on shell separators — same approach as
+ * `isGitPush`. The leading-flag form mirrors `segmentIsGitPush`: each
+ * regex accepts an optional `git -C <path>` and/or `git --git-dir[=]<path>`
+ * prefix before the subcommand.
+ */
+export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
+  {
+    id: "git-worktree-prune",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+worktree\s+prune\b/.test(
+        segment,
+      ),
+    reason:
+      "blocked by prism extension: `git worktree prune` from inside a " +
+      "sandboxed agent will sever sibling sessions' git trees because " +
+      "their worktrees are not bind-mounted into your view. Use " +
+      "`prism cleanup --yes --session <name>` instead, or escalate " +
+      "to the user if the residual state is from a partial spawn.",
+  },
+  {
+    id: "git-worktree-remove",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+worktree\s+remove\b/.test(
+        segment,
+      ),
+    reason:
+      "blocked by prism extension: `git worktree remove` from inside " +
+      "a sandboxed agent risks removing sibling sessions' worktrees " +
+      "(they are not bind-mounted into your view). Use " +
+      "`prism cleanup --yes --session <name>` instead.",
+  },
+]
+
+/**
+ * Check a raw bash command against the deny list.
+ *
+ * Returns the matching pattern's `{ id, reason }` on the first hit, or
+ * `null` when no pattern matches. The check strips quoted/heredoc regions
+ * and splits on shell separators first, so e.g. `echo "git worktree prune"`
+ * does not fire a block but `cd /repo && git worktree prune` does
+ * (the second segment).
+ *
+ * Exported for unit testing.
+ */
+export function checkBlockedBash(
+  command: string,
+): { id: string; reason: string } | null {
+  const stripped = stripQuotedAndHeredocRegions(command)
+  for (const segment of splitShellSegments(stripped)) {
+    for (const pattern of BLOCKED_BASH_PATTERNS) {
+      if (pattern.match(segment)) {
+        return { id: pattern.id, reason: pattern.reason }
+      }
+    }
+  }
+  return null
+}
+
 /** Per-field byte cap for tool args, tool output, and assistant message deltas. */
 export const TRUNCATION_LIMIT_BYTES = 8 * 1024 // 8 KiB
 
@@ -1625,6 +1713,30 @@ export default function prismExtension(pi: ExtensionAPI): void {
       }
     }
   })
+
+  // Pre-tool-call bash deny list (#1528). Runs on the `tool_call` event
+  // (fires before `tool_execution_start`) so the block is enforced *before*
+  // pi hands the command to the bash tool. Returning `{ block: true,
+  // reason }` causes pi to refuse execution and surface the reason string
+  // to the agent via the tool-result channel.
+  pi.on("tool_call", async (event) => {
+    const toolName =
+      typeof (event as { toolName?: unknown }).toolName === "string"
+        ? (event as { toolName: string }).toolName
+        : ""
+    if (toolName !== "bash") return
+    const input = (event as { input?: unknown }).input
+    const command =
+      typeof input === "object" && input !== null
+        ? (input as Record<string, unknown>).command
+        : undefined
+    if (typeof command !== "string") return
+    const hit = checkBlockedBash(command)
+    if (hit !== null) {
+      return { block: true, reason: hit.reason }
+    }
+  })
+
   pi.on("tool_execution_start", async (event, ctx) => {
     lastCtx = ctx
     if (!writer || !handshakeComplete) return

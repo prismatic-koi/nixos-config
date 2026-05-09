@@ -371,6 +371,8 @@ prism cleanup --yes --session "nixos-config@update-plex"
 
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
+Pi sessions block `git worktree prune` and `git worktree remove` at the extension layer. When recovering from a failed spawn, use `prism cleanup` — do not reach for git plumbing.
+
 ## Querying prism state — prefer `--json` for scripting
 
 Every list-style and lookup-style prism subcommand supports a `--json` flag that emits a single JSON document to stdout — keys are snake_case, timestamps are RFC 3339, empty lists are `[]` (never null, never absent), and any informational/progress text routes to stderr. **When you need to parse prism output programmatically, always pass `--json`.** Screen-scraping tabular human-readable output is fragile and burns tokens.
