@@ -74,6 +74,10 @@ func writeSessionEvent(t *testing.T, d *db.DB, instanceID, sessionName, model st
 // It also clears PRISM_HOST_API so stats commands use the direct-DB path.
 func openIncarnationTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	// Wipe any rootCmd flag values left behind by a previous test (or a
+	// previous iteration under `go test -count=N`) before this test drives
+	// the cobra tree via rootCmd.SetArgs / rootCmd.Execute. See #1521.
+	resetRootCmdFlags(t)
 	// Unset PRISM_HOST_API so stats commands use the direct-DB path.
 	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")

@@ -19,8 +19,14 @@ import (
 // openPromptTestDB opens a temp DB, registers cleanup, and overrides the
 // package-level testDBPath so openDB() uses it. It also unsets PRISM_HOST_API
 // so runPrompt uses the local DB path, not the host-API proxy.
+//
+// As a deflake measure (#1521) it also calls resetRootCmdFlags so any
+// rootCmd flag values left behind by a previous test (or a previous iteration
+// under `go test -count=N`) are wiped before this test drives the cobra tree
+// via rootCmd.SetArgs / rootCmd.Execute.
 func openPromptTestDB(t *testing.T) *db.DB {
 	t.Helper()
+	resetRootCmdFlags(t)
 	// Ensure the host-API proxy is not active for these unit tests.
 	t.Setenv("PRISM_HOST_API", "")
 	path := filepath.Join(t.TempDir(), "prism.db")
