@@ -436,6 +436,70 @@ so they can address it directly.
   (C-f or C-w)                             — switch to the session in tmux
 ```
 
+## Escalating to your coordinator with `prism escalate`
+
+Workers that hit a decision they cannot make alone (3-cycle review-limit reached, AC contradiction, scope ambiguity, infrastructure block) should use `prism escalate` rather than crafting a `prism prompt` to the coordinator by hand and stopping. The command resolves the right coordinator, delivers the message, transitions the calling session into a new `escalated` state, and emits a `session.escalated` bus event — in one step, with no redundant "has finished" notification.
+
+### Surface
+
+```bash
+# Auto-discover the same-repo coordinator and deliver the prompt.
+prism escalate --prompt "3-cycle review limit reached on PR #1234. Agent failing: review-security. Decision needed: option A (relax) or option B (rework)."
+
+# Read the body from stdin for multi-line prompts:
+prism escalate --prompt - <<'EOF'
+PR #1234 cycle 3:
+  - review-goal, review-code, review-qa, review-context: PASS
+  - review-security: FAIL on the same blocker as cycle 2
+
+Proposed resolution: relax permission check to coordinator-only.
+Decision needed: yes / no.
+EOF
+
+# Override discovery and target a specific session by name:
+prism escalate --to nixos-config@main --prompt "..."
+```
+
+### State machine
+
+```
+active ──prism escalate──▶ escalated
+escalated ──any turn_start (from any source)──▶ active
+```
+
+- `escalated` is a new value alongside `active` / `idle` / `finished` / `reviewing`. It surfaces in `prism list-sessions` so a glance shows which workers are paused awaiting guidance.
+- The transition out is triggered by **any** incoming `turn_start`, not specifically `prism prompt`. A human who pokes at the worker via tmux clears the flag too.
+- While in `escalated`, the sidecar suppresses the "has finished" notification. The `session.escalated` bus event is the notification.
+
+### Discovery rules
+
+| Situation | Behaviour |
+|---|---|
+| Exactly one same-repo coordinator candidate | Auto-discover, send to it. |
+| Multiple same-repo coordinator candidates | Refuse without `--to`; list candidates and exit non-zero. **State does NOT transition.** |
+| No coordinator candidate found | Still transition into `escalated`; record `no coordinator found, please wait for a human to come check on you` in the worker's own log. The worker stays paused. |
+| `--to <session>` set but session unknown | Exit non-zero. **State does NOT transition.** |
+
+A same-repo coordinator candidate is any active (ended_at IS NULL) row in the same repo whose `root_agent_name = 'coordinator'`, OR a legacy row literally named `<repo>@main` with NULL `root_agent_name`.
+
+### Bus event
+
+- New event type `session.escalated`, distinct from `session.finished`. Existing handlers that subscribe only to `session.finished` continue to receive nothing for escalations.
+- Payload carries: `source` (calling worker), `target` (coordinator session, empty when none), `prompt` (body), `pr_numbers` (open PRs whose head matches the worker's branch), `branch`, `head_sha`, `verdicts` (last review-cycle verdicts when discoverable), `occurred_at` (RFC3339).
+- The same payload is also written into the calling session's own event log as type `escalation` so `prism checkin <self>` shows the escalation context inline.
+
+### When to use `prism escalate` vs `prism prompt`
+
+- **`prism escalate`** — you are a worker handing a question or decision to the coordinator and pausing your turn until you hear back. Use this whenever you would have otherwise stopped after sending a hand-crafted `prism prompt`.
+- **`prism prompt`** — you are sending an informational follow-up to a running session and either continuing your work (sender keeps going) or expect no response (e.g. delivering a review-complete prompt). Workers prompting their own coordinator should usually be using `prism escalate` instead.
+
+### Out of scope (v1)
+
+- Cross-repo escalation — v1 is single-repo; auto-discovery is repo-scoped.
+- Escalation receipts back to the worker — the worker discovers the coordinator's response by being prompted.
+- Re-escalation timeouts.
+- Dashboard panel for `escalated` sessions — surfaced via `prism list-sessions` and the bus only.
+
 ## Debugging a running or stuck session
 
 Use this decision tree when a session appears stuck, produces no output, or fails unexpectedly.

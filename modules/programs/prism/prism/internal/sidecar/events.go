@@ -172,6 +172,10 @@ func (s *Sidecar) handleServerConnected() {
 			s.logger().Printf("sidecar: recovery timer suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
+		if s.currentDBState() == agent.StateEscalated {
+			s.logger().Printf("sidecar: recovery timer suppressed (cause=escalated — awaiting coordinator guidance)")
+			return
+		}
 		s.logger().Printf("sidecar: recovery timer fired, writing finished (session.idle likely missed on reconnect)")
 		s.logger().Printf("sidecar: transition -> finished (cause=recovery_timer)")
 		s.upsertState(agent.StateFinished, nil, nil)
@@ -279,6 +283,10 @@ func (s *Sidecar) handleSessionFinished() {
 			s.logger().Printf("sidecar: finished debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
+		if currentState == agent.StateEscalated {
+			s.logger().Printf("sidecar: finished debounce suppressed (cause=escalated — awaiting coordinator guidance)")
+			return
+		}
 
 		s.logger().Printf("sidecar: transition -> finished (cause=finished_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
@@ -335,6 +343,10 @@ func (s *Sidecar) handleSessionIdle() {
 		}
 		if s.reviewingInFlight && currentState == agent.StateReviewing {
 			s.logger().Printf("sidecar: idle debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
+			return
+		}
+		if currentState == agent.StateEscalated {
+			s.logger().Printf("sidecar: idle debounce suppressed (cause=escalated — awaiting coordinator guidance)")
 			return
 		}
 
@@ -791,6 +803,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				}
 				if s.reviewingInFlight && s.currentDBState() == agent.StateReviewing {
 					s.logger().Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=reviewing — awaiting review-complete prompt)")
+					return
+				}
+				if currentState == agent.StateEscalated {
+					s.logger().Printf("sidecar: idle debounce (root-agent message path) suppressed (cause=escalated — awaiting coordinator guidance)")
 					return
 				}
 

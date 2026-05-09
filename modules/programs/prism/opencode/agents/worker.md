@@ -37,7 +37,11 @@ predates your branch. Two failure modes to avoid:
   coordinator never learns a problem exists; no tracking issue is filed.
 
 The correct response is to **escalate the discovery** to the coordinator via
-`prism prompt <repo>@main` and then **continue with your assigned work**.
+`prism escalate --prompt "..."` (auto-discovers the same-repo coordinator and
+transitions you into the `escalated` state without a redundant `has finished`
+ping) and then **continue with your assigned work** — informational
+escalations do not require waiting for a reply, so any incoming `turn_start`
+(yours, the coordinator's, or a human's) clears the state.
 
 **What the escalation message must include:**
 
@@ -207,22 +211,29 @@ If you are reading this after already passing the 3-cycle limit — escalate now
 Do not continue because "the damage is already done." Stopping late is still
 correct.
 
-**How to escalate.** The coordinator's session follows the `<repo>@main`
-convention. See the lookup and state-check flow in the prism skill at
-`modules/programs/prism/opencode/skills/prism/SKILL.md:114`.
+**How to escalate.** Use `prism escalate` — it auto-discovers the same-repo
+coordinator, delivers your message, and transitions you into the `escalated`
+state so the sidecar suppresses the redundant "has finished" notification
+that would otherwise fire when your turn ends. The state clears automatically
+on any incoming `turn_start` (the coordinator's reply, a human typing into
+tmux, or any other source). See the prism skill section
+[Escalating to your coordinator with `prism escalate`](../skills/prism/SKILL.md#escalating-to-your-coordinator-with-prism-escalate)
+for the full reference.
 
 ```bash
-# Find the coordinator session
-prism list-sessions | grep '@main'
-
-# Send the escalation (adjust repo name as needed)
-prism prompt nixos-config@main --prompt 'PR #N is stuck at review cycle M.
+prism escalate --prompt 'PR #N is stuck at review cycle M.
 Agents passing: review-code, review-security, review-qa, review-context.
 Agent failing: review-goal.
 Unresolved blocker (verbatim): "<exact text from the agent>"
 My proposed resolution: <one sentence>.
 Decision needed: <specific yes/no or choice>.'
 ```
+
+If auto-discovery finds multiple coordinator candidates in your repo (rare
+but possible during transitions), the command exits non-zero and lists them
+— re-run with `--to <session>` to choose. If no coordinator is running, the
+command still transitions you into `escalated` and writes a "please wait for
+a human" marker into your own log (visible via `prism checkin <self>`).
 
 **What your escalation message must include:**
 

@@ -1696,6 +1696,73 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{})
 	})
 
+	// POST /escalate
+	// Request:  {"prompt":"...","to":"<session>" (optional),"from":"<session>" (optional)}
+	// Response: {} on success, {"error":"..."} otherwise.
+	//
+	// Forwards an escalation request from a worker container to the host's
+	// `prism escalate` CLI. The from field defaults to the calling sidecar's
+	// session name when omitted (the common case from a containerised worker).
+	//
+	// Cross-session integrity: when `from` is set explicitly it must equal the
+	// calling sidecar's own session name (the per-session host-API socket is
+	// the auth boundary), unless the caller is a coordinator. This mirrors
+	// the rule applied by /prompt and /set-model in this same file. Without
+	// the check, a non-coordinator could mutate `agent_status.state`,
+	// emit a `session.escalated` bus event attributed to a victim, and pin
+	// that victim in `escalated` so its legitimate finish notifications are
+	// suppressed.
+	mux.HandleFunc("/escalate", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Prompt string `json:"prompt"`
+			To     string `json:"to,omitempty"`
+			From   string `json:"from,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if strings.TrimSpace(req.Prompt) == "" {
+			writeError(w, http.StatusBadRequest, "prompt is required")
+			return
+		}
+		fromSession := req.From
+		if fromSession == "" {
+			fromSession = s.cfg.SessionName
+		} else if fromSession != s.cfg.SessionName {
+			// Cross-session: only coordinators may escalate on behalf of
+			// another session. The DB-backed coordinator check matches the
+			// pattern used by /prompt's cross-repo branch and /set-model.
+			if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+				writeError(w, http.StatusForbidden,
+					fmt.Sprintf("workers can only escalate from their own session (%s), got from=%q",
+						s.cfg.SessionName, fromSession))
+				return
+			}
+		}
+
+		args := []string{"escalate", "--prompt", req.Prompt}
+		if req.To != "" {
+			args = append(args, "--to", req.To)
+		}
+		s.logger().Printf("sidecar: host-API /escalate: from=%s to=%s", fromSession, req.To)
+		cmd := exec.Command(prismBinary(), args...)
+		// PRISM_SESSION_NAME tells the host-side `prism escalate` which session
+		// is calling, bypassing the CWD walk that would otherwise resolve to
+		// the sidecar's own working directory.
+		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			s.logger().Printf("sidecar: host-API /escalate: %v: %s", err, out)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("escalate failed: %v\n%s", err, strings.TrimSpace(string(out))))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
 	// POST /set-model
 	// Request:  {"session":"<name>","provider":"...","model":"...","thinking":"..."}
 	// Response: {"session":"<name>","status":"applied"|"error:disconnected"|"skipped:opencode"} | {"error":"..."}

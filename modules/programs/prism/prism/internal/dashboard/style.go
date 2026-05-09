@@ -59,6 +59,8 @@ func stateStyle(state string) lipgloss.Style {
 		color = ColorRed
 	case agent.StateReviewing:
 		color = ColorBlue
+	case agent.StateEscalated:
+		color = ColorYellow
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
@@ -73,6 +75,7 @@ func stateLabel(state string) string {
 		agent.StateCompacting:  "compacting",
 		agent.StateError:       "error",
 		agent.StateReviewing:   "reviewing",
+		agent.StateEscalated:   "escalated",
 		"":                     "idle",
 	}
 	if l, ok := labels[agent.AgentState(state)]; ok {

@@ -110,6 +110,29 @@ current thought, then action the oldest pending worker notification before
 continuing with other work. Do not let finished-worker items accumulate — each
 one represents a PR that may be blocking the next piece of work.
 
+### Worker escalations — the `session.escalated` event
+
+Workers that hit a decision they cannot make alone use `prism escalate`, which
+delivers a targeted prompt to you AND emits a `session.escalated` bus event
+distinct from `session.finished`. The calling worker enters a new `escalated`
+state, visible in `prism list-sessions`, and the sidecar **suppresses** the
+"has finished" notification while the worker stays in that state.
+
+Key behavioural rules:
+
+- **Treat the escalation prompt as the signal.** When you receive an escalation
+  prompt from a worker, do not also wait for a separate `has finished` ping —
+  there will not be one. The escalation is the notification.
+- **Do not sense-check the worker's PR yet.** A worker in `escalated` state is
+  paused awaiting your guidance, not done. Their PR may be mid-edit or
+  intentionally not-yet-pushed. Run `prism list-sessions` if you need to
+  confirm: an `escalated` row means "waiting for guidance", not "finished".
+- **Reply via `prism prompt`** (not `prism escalate` — that is a worker-only
+  surface). Your reply's `turn_start` clears the worker's `escalated` state
+  back to `active`, after which a normal finish will notify as usual.
+- **An escalation does not imply task completion.** Treat it as a request for
+  a directive; the worker resumes once you respond.
+
 ---
 
 ## Review gate

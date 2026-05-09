@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
@@ -174,6 +175,18 @@ func (s *Sidecar) notifyCoordinator() {
 	// as noise notifications.
 	if isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 		s.logger().Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
+		return
+	}
+
+	// Escalated guard: while a session is in the escalated state the worker
+	// has already informed the coordinator via `prism escalate` and the
+	// session.escalated bus event. A subsequent `has finished` notification
+	// would be a duplicate, false signal (the worker is paused awaiting
+	// guidance, not done). The state clears back to active on any incoming
+	// turn_start, after which a normal finish will notify as usual.
+	selfStatus, selfStatusErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName)
+	if selfStatusErr == nil && selfStatus != nil && selfStatus.State == string(agent.StateEscalated) {
+		s.logger().Printf("sidecar: notifyCoordinator: suppressed (cause=escalated — session.escalated already informed coordinator)")
 		return
 	}
 
