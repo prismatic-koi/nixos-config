@@ -30,6 +30,9 @@ import {
   similarityKey,
   processDoomLoop,
   isGitPush,
+  // Pre-tool-call bash deny list (#1528)
+  BLOCKED_BASH_PATTERNS,
+  checkBlockedBash,
   newDoomLoopState,
   snapshotGuardState,
   restoreGuardState,
@@ -1302,6 +1305,198 @@ describe("isGitPush", () => {
 
   it("does NOT match a bare 'push' subcommand without git", () => {
     assert.equal(isGitPush("push origin main"), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// BLOCKED_BASH_PATTERNS / checkBlockedBash (#1528)
+// ---------------------------------------------------------------------------
+
+describe("BLOCKED_BASH_PATTERNS", () => {
+  it("contains exactly two entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 2)
+  })
+
+  it("has the git-worktree-prune entry", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("git-worktree-prune"))
+  })
+
+  it("has the git-worktree-remove entry", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("git-worktree-remove"))
+  })
+
+  it("every entry has id, match, and reason fields", () => {
+    for (const p of BLOCKED_BASH_PATTERNS) {
+      assert.equal(typeof p.id, "string")
+      assert.ok(p.id.length > 0)
+      assert.equal(typeof p.match, "function")
+      assert.equal(typeof p.reason, "string")
+      assert.ok(p.reason.length > 0)
+    }
+  })
+
+  it("every entry's reason names the recommended alternative (prism cleanup --yes --session)", () => {
+    for (const p of BLOCKED_BASH_PATTERNS) {
+      assert.ok(
+        p.reason.includes("prism cleanup --yes --session"),
+        `pattern ${p.id} reason should mention 'prism cleanup --yes --session'`,
+      )
+    }
+  })
+})
+
+describe("checkBlockedBash — git worktree prune (positive cases)", () => {
+  it("blocks plain 'git worktree prune'", () => {
+    const hit = checkBlockedBash("git worktree prune")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks 'git worktree prune -v'", () => {
+    const hit = checkBlockedBash("git worktree prune -v")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks 'git -C /path worktree prune'", () => {
+    const hit = checkBlockedBash("git -C /some/path worktree prune")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks 'git -C ../.bare worktree prune -v' (the incident command)", () => {
+    const hit = checkBlockedBash("git -C ../.bare worktree prune -v")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks 'git --git-dir=/p/.git worktree prune'", () => {
+    const hit = checkBlockedBash("git --git-dir=/p/.git worktree prune")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks 'git --git-dir /p/.git worktree prune'", () => {
+    const hit = checkBlockedBash("git --git-dir /p/.git worktree prune")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+
+  it("blocks the second segment of 'cd /repo && git worktree prune'", () => {
+    const hit = checkBlockedBash("cd /repo && git worktree prune")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-prune")
+  })
+})
+
+describe("checkBlockedBash — git worktree remove (positive cases)", () => {
+  it("blocks 'git worktree remove /path/to/wt'", () => {
+    const hit = checkBlockedBash("git worktree remove /path/to/wt")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-remove")
+  })
+
+  it("blocks 'git worktree remove --force /path'", () => {
+    const hit = checkBlockedBash("git worktree remove --force /path")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-remove")
+  })
+
+  it("blocks 'git -C /repo worktree remove --force /path'", () => {
+    const hit = checkBlockedBash("git -C /repo worktree remove --force /path")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-remove")
+  })
+
+  it("blocks 'git --git-dir=/p/.git worktree remove /wt'", () => {
+    const hit = checkBlockedBash("git --git-dir=/p/.git worktree remove /wt")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-worktree-remove")
+  })
+})
+
+describe("checkBlockedBash — negative cases (quoted / heredoc / grep)", () => {
+  it("does NOT block double-quoted 'git worktree prune' inside echo", () => {
+    assert.equal(checkBlockedBash('echo "git worktree prune"'), null)
+  })
+
+  it("does NOT block single-quoted 'git worktree prune' inside echo", () => {
+    assert.equal(checkBlockedBash("echo 'git worktree prune'"), null)
+  })
+
+  it("does NOT block rg searching for 'git worktree remove'", () => {
+    assert.equal(checkBlockedBash('rg "git worktree remove"'), null)
+  })
+
+  it("does NOT block grep searching for 'git worktree prune'", () => {
+    assert.equal(
+      checkBlockedBash('grep -r "git worktree prune" modules/'),
+      null,
+    )
+  })
+
+  it("does NOT block awk pattern containing 'git worktree prune'", () => {
+    assert.equal(
+      checkBlockedBash("awk '/git worktree prune/ { print }'"),
+      null,
+    )
+  })
+
+  it("does NOT block git log --grep with the literal string", () => {
+    assert.equal(
+      checkBlockedBash('git log --grep="git worktree prune"'),
+      null,
+    )
+  })
+
+  it("does NOT block heredoc body containing the literal string", () => {
+    const cmd = "cat <<'EOF'\ngit worktree prune\ngit worktree remove /wt\nEOF"
+    assert.equal(checkBlockedBash(cmd), null)
+  })
+
+  it("does NOT block heredoc body with double-quoted delimiter", () => {
+    const cmd = 'cat <<"EOF"\ngit worktree prune -v\nEOF'
+    assert.equal(checkBlockedBash(cmd), null)
+  })
+
+  it("does NOT match the string embedded in a longer word", () => {
+    assert.equal(checkBlockedBash("git worktree pruner"), null)
+    assert.equal(checkBlockedBash("git worktree removed"), null)
+  })
+
+  it("does NOT match unrelated git subcommands", () => {
+    assert.equal(checkBlockedBash("git worktree list"), null)
+    assert.equal(checkBlockedBash("git worktree add ../wt feature"), null)
+    assert.equal(checkBlockedBash("git status"), null)
+  })
+
+  it("does NOT match when there is no command", () => {
+    assert.equal(checkBlockedBash(""), null)
+  })
+})
+
+describe("checkBlockedBash — reason string content", () => {
+  it("returns the prune-pattern reason on a prune match", () => {
+    const hit = checkBlockedBash("git worktree prune")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("git worktree prune"))
+    assert.ok(hit!.reason.includes("prism cleanup --yes --session"))
+    assert.ok(hit!.reason.includes("sandboxed agent"))
+  })
+
+  it("returns the remove-pattern reason on a remove match", () => {
+    const hit = checkBlockedBash("git worktree remove /wt")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("git worktree remove"))
+    assert.ok(hit!.reason.includes("prism cleanup --yes --session"))
+  })
+
+  it("reason is prefixed with 'blocked by prism extension'", () => {
+    const hit = checkBlockedBash("git worktree prune")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
   })
 })
 
