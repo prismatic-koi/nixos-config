@@ -150,7 +150,8 @@
             anthropic = profileFromTiers {
               primary = slot {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-4-6";
+                model = "anthropic/claude-opus-4-7";
+                thinking = "medium";
               };
               secondary = slot {
                 provider = "anthropic";
@@ -165,6 +166,7 @@
               primary = slot {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
+                thinking = "medium";
               };
               secondary = slot {
                 provider = "anthropic";
@@ -193,6 +195,7 @@
               primary = slot {
                 provider = "github-copilot";
                 model = "github-copilot/claude-sonnet-4.6";
+                thinking = "medium";
               };
               secondary = slot {
                 provider = "github-copilot";
