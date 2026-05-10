@@ -7418,9 +7418,8 @@ exit 0
 
 // TestHostAPI_Review_InfraFailureStreamsSentinelFailed verifies that when
 // `prism review` exits non-zero, the streaming response body contains
-// ReviewSentinelFailed (not ReviewSentinelPassed), and stderr is NOT
-// reflected in the response body (security: avoid leaking internal paths or
-// credentials to container callers).
+// ReviewSentinelFailed (not ReviewSentinelPassed), and stderr IS forwarded
+// to the client before the sentinel so the worker agent can see the error.
 //
 // Note: because HTTP headers are written before streaming begins (HTTP 200
 // is sent as soon as the subprocess starts), the status code is always 200
@@ -7432,9 +7431,9 @@ func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 	d := openTestDB(t)
 
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	// Exit non-zero with no stdout; emit sensitive text on stderr to verify
-	// it is NOT reflected in the HTTP response body.
-	stubScript := "#!/bin/sh\necho 'sensitive: /internal/path/secret' >&2\nexit 2\n"
+	// Exit non-zero with no stdout; emit an error message on stderr to verify
+	// it IS forwarded in the HTTP response body before the sentinel.
+	stubScript := "#!/bin/sh\necho 'error: preflight gate failed' >&2\nexit 2\n"
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
 		t.Fatalf("write stub: %v", err)
 	}
@@ -7467,10 +7466,131 @@ func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 	if strings.Contains(body, ReviewSentinelPassed) {
 		t.Errorf("body %q should not contain ReviewSentinelPassed when subprocess exits non-zero", body)
 	}
-	// Stderr must not be reflected in the response body (security: avoid
-	// leaking internal paths or credentials to container callers).
-	if strings.Contains(body, "sensitive") || strings.Contains(body, "secret") {
-		t.Errorf("response body should not include subprocess stderr; got %q", body)
+	// Stderr must be forwarded to the client so the worker can see the error.
+	if !strings.Contains(body, "preflight gate failed") {
+		t.Errorf("response body should include subprocess stderr; got %q", body)
+	}
+	// The sentinel must be the last non-empty line (stderr lines come before it).
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lastLine := lines[len(lines)-1]
+	if lastLine != ReviewSentinelFailed {
+		t.Errorf("last line of body = %q, want ReviewSentinelFailed %q", lastLine, ReviewSentinelFailed)
+	}
+}
+
+// TestHostAPI_Review_StderrForwardedBeforeSentinel verifies that when the
+// subprocess writes to stderr and exits non-zero, the stderr lines appear in
+// the response body before the ReviewSentinelFailed sentinel. This is the
+// critical behaviour for issue #1541: the worker must see the preflight rebase
+// gate error message, not just __PRISM_REVIEW_FAILED__ with no context.
+func TestHostAPI_Review_StderrForwardedBeforeSentinel(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Emit both stdout progress and multi-line stderr, then exit non-zero.
+	stubScript := `#!/bin/sh
+echo "Review-Goal started"
+printf 'error: branch is not rebased\ngit rebase origin/main\n' >&2
+exit 1
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@feature",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"1541"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+
+	// Stdout progress line must appear.
+	if !strings.Contains(body, "Review-Goal started") {
+		t.Errorf("body %q should contain stdout progress line", body)
+	}
+	// Stderr lines must appear in the body.
+	if !strings.Contains(body, "error: branch is not rebased") {
+		t.Errorf("body %q should contain stderr line 'error: branch is not rebased'", body)
+	}
+	if !strings.Contains(body, "git rebase origin/main") {
+		t.Errorf("body %q should contain stderr line 'git rebase origin/main'", body)
+	}
+	// The sentinel must be the last non-empty line.
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lastLine := lines[len(lines)-1]
+	if lastLine != ReviewSentinelFailed {
+		t.Errorf("last line of body = %q, want ReviewSentinelFailed %q", lastLine, ReviewSentinelFailed)
+	}
+	// ReviewSentinelPassed must NOT appear.
+	if strings.Contains(body, ReviewSentinelPassed) {
+		t.Errorf("body %q must not contain ReviewSentinelPassed when subprocess exits non-zero", body)
+	}
+}
+
+// TestHostAPI_Review_NoSpuriousStderrOnSuccess verifies that when the
+// subprocess exits 0 with no stderr output, no spurious blank lines or stderr
+// artefacts appear in the response body before the sentinel.
+func TestHostAPI_Review_NoSpuriousStderrOnSuccess(t *testing.T) {
+	d := openTestDB(t)
+
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Exit 0 with only stdout; no stderr.
+	stubScript := `#!/bin/sh
+echo "Review in progress — PR #200"
+echo "Spawned 5 review agents."
+exit 0
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "nixos-config@feature",
+		Repo:            "nixos-config",
+		Worktree:        "/tmp/nixos-config@feature",
+		OpencodeURL:     "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"200"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	body := rr.Body.String()
+
+	// ReviewSentinelPassed must be the last non-empty line.
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	lastLine := lines[len(lines)-1]
+	if lastLine != ReviewSentinelPassed {
+		t.Errorf("last line of body = %q, want ReviewSentinelPassed %q", lastLine, ReviewSentinelPassed)
+	}
+	// ReviewSentinelFailed must NOT appear.
+	if strings.Contains(body, ReviewSentinelFailed) {
+		t.Errorf("body %q must not contain ReviewSentinelFailed on exit-0 subprocess", body)
+	}
+	// The body should contain only the two stdout lines and the sentinel —
+	// no spurious blank lines from an empty stderr buffer.
+	if len(lines) != 3 {
+		t.Errorf("expected exactly 3 lines (2 stdout + sentinel), got %d lines: %q", len(lines), lines)
 	}
 }
 

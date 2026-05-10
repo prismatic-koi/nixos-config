@@ -1367,6 +1367,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		waitErr := cmd.Wait()
 		if stderrBuf.Len() > 0 {
 			s.logger().Printf("sidecar: host-API /review: stderr: %s", strings.TrimSpace(stderrBuf.String()))
+			// Forward stderr content to the client so that the worker agent
+			// can see the full error message (e.g. the preflight rebase gate
+			// failure with git commands). Each stderr line is written as an
+			// ordinary output line before the sentinel so that the sentinel
+			// remains the final line of the response as proxyReviewAsync expects.
+			for _, line := range strings.Split(strings.TrimRight(stderrBuf.String(), "\n"), "\n") {
+				_, _ = fmt.Fprintln(w, line)
+			}
+			if canFlush {
+				flusher.Flush()
+			}
 		}
 
 		// Write pass/fail sentinel. The client (proxyReviewAsync) consumes
