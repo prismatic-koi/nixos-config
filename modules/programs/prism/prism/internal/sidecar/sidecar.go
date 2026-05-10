@@ -1956,6 +1956,44 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
+	case "session_status":
+		// Extract the PI session ID from the frame and record it in the DB so
+		// that prism cleanup can locate the correct session directory for
+		// archiving. Bug #1538 fix #1: this frame was previously falling
+		// through to the default case and only stored as a raw event; the
+		// harness_session_id column was never populated for PI sessions.
+		var statusFrame struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(line, &statusFrame); err == nil && statusFrame.SessionID != "" {
+			// Release the lock while calling DB methods (writes) to avoid
+			// holding s.mu across I/O. The lock is re-acquired by the defer
+			// at the top of handlePipeFrame.
+			sessionName := s.cfg.SessionName
+			repo := s.cfg.Repo
+			worktree := s.cfg.Worktree
+			dbConn := s.cfg.DB
+			s.mu.Unlock()
+			// Ensure the agent_status row exists before UpdateHarnessSessionID.
+			// writeStateChange (called at handshake) only writes to agent_events,
+			// not agent_status. If session_status arrives before the first
+			// turn_start or state_change (which call upsertState), the UPDATE
+			// in UpdateHarnessSessionID would affect 0 rows. EnsureStatusRow
+			// guarantees the row is present without clobbering existing values.
+			if err := dbConn.EnsureStatusRow(sessionName, repo, worktree); err != nil {
+				s.logger().Printf("sidecar: session_status: EnsureStatusRow: %v", err)
+			}
+			if err := dbConn.UpdateHarnessSessionID(sessionName, statusFrame.SessionID); err != nil {
+				s.logger().Printf("sidecar: session_status: UpdateHarnessSessionID: %v", err)
+			} else {
+				s.logger().Printf("sidecar: session_status: harness_session_id set to %q", statusFrame.SessionID)
+			}
+			s.mu.Lock()
+		}
+		// Persist the frame as a raw event for forward-compatibility and
+		// diagnostics (P2.WIRE §8.2).
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
 	case "session_shutdown":
 		// Flush any partial accumulator before marking finished.
 		s.flushPipeAccum()

@@ -4,11 +4,24 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/harness/pi"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
+
+// sandboxExecStagingHome returns the expected staging HOME path for a given
+// instanceID, mirroring container.SandboxExecStagingHomePath without importing
+// the container package (avoids circular imports in tests).
+func sandboxExecStagingHome(t *testing.T, instanceID string) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	return filepath.Join(home, ".local", "state", "prism", "sessions", instanceID, "home")
+}
 
 func TestArchiveAdapter_SourcePath_WithHarnessSessionID(t *testing.T) {
 	a := pi.NewArchiveAdapter()
@@ -126,5 +139,88 @@ func TestArchiveAdapter_Export_NoRawSessionJSONL_NoError(t *testing.T) {
 	// No session.jsonl should be written at archive root.
 	if _, err := os.Stat(filepath.Join(archiveDir, "session.jsonl")); !os.IsNotExist(err) {
 		t.Error("expected session.jsonl NOT to be created when raw/session.jsonl is absent")
+	}
+}
+
+// TestArchiveAdapter_SourcePath_SandboxExec verifies that when IsolationMode
+// is "sandbox-exec", SourcePath uses the per-session staging HOME (not the
+// real home directory). This is bug #1538 fix #2: sandbox-exec sessions write
+// PI data to <stagingHome>/.pi/agent/sessions/<sessionID>/, not ~/.pi/.
+func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
+	const instanceID = "test-instance-uuid-1234"
+	const sessionID = "pi-ses-abc-sandbox"
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		IsolationMode:    "sandbox-exec",
+		InstanceID:       instanceID,
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+
+	// Expected path: <stagingHome>/.pi/agent/sessions/<sessionID>
+	stagingHome := sandboxExecStagingHome(t, instanceID)
+	want := filepath.Join(stagingHome, ".pi", "agent", "sessions", sessionID)
+	if got != want {
+		t.Errorf("SourcePath (sandbox-exec): got %q, want %q", got, want)
+	}
+
+	// Must NOT contain the real home directory.
+	home, _ := os.UserHomeDir()
+	if strings.HasPrefix(got, filepath.Join(home, ".pi")) {
+		t.Errorf("SourcePath (sandbox-exec) returned real home path %q; expected staging home", got)
+	}
+}
+
+// TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID verifies that when
+// IsolationMode is "sandbox-exec" but InstanceID is empty (unusual edge case),
+// SourcePath falls back to the real home directory path rather than returning
+// an error that would abort cleanup entirely.
+func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: "some-session",
+		IsolationMode:    "sandbox-exec",
+		InstanceID:       "", // empty — forces fallback
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath with empty InstanceID: %v", err)
+	}
+	// Fallback: uses real home directory.
+	home, _ := os.UserHomeDir()
+	want := filepath.Join(home, ".pi", "agent", "sessions", "some-session")
+	if got != want {
+		t.Errorf("SourcePath (sandbox-exec, empty InstanceID): got %q, want %q", got, want)
+	}
+}
+
+// TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome verifies that
+// non-sandbox-exec isolation modes (podman, bwrap, host) continue to use the
+// real home directory, not the staging HOME.
+func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	const sessionID = "pi-ses-xyz"
+
+	for _, mode := range []string{"podman", "bwrap", "host", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			a := pi.NewArchiveAdapter()
+			p := harnessarchive.SourceParams{
+				HarnessSessionID: sessionID,
+				IsolationMode:    mode,
+				InstanceID:       "some-instance-id",
+			}
+			got, err := a.SourcePath(p)
+			if err != nil {
+				t.Fatalf("SourcePath (mode=%q): %v", mode, err)
+			}
+			want := filepath.Join(home, ".pi", "agent", "sessions", sessionID)
+			if got != want {
+				t.Errorf("SourcePath (mode=%q): got %q, want %q", mode, got, want)
+			}
+		})
 	}
 }

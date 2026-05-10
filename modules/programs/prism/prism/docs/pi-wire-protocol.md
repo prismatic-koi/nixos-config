@@ -550,8 +550,8 @@ start of each turn (`turn_start`), so the sidecar always has an up-to-date
 picture of the session state.
 
 ```json
-{"type":"session_status","role":"worker","branch":"fix-login-redirect","review_cycles":0,"pr_number":""}
-{"type":"session_status","role":"review","branch":"fix-login-redirect","review_cycles":2,"pr_number":"42"}
+{"type":"session_status","role":"worker","branch":"fix-login-redirect","review_cycles":0,"pr_number":"","session_id":"ses_01J..."}
+{"type":"session_status","role":"review","branch":"fix-login-redirect","review_cycles":2,"pr_number":"42","session_id":"ses_01J..."}
 ```
 
 Fields:
@@ -565,10 +565,18 @@ Fields:
   detected PR. Zero when no PR has been detected yet.
 - `pr_number` (string, required) — the PR number most recently detected by
   the review-cycle tracker, or `""` when unknown.
+- `session_id` (string, required) — the PI session ID from
+  `ctx.sessionManager.getSessionId()`. Used by the sidecar to populate
+  `sessions.harness_session_id` so that `prism cleanup` can locate the
+  correct session directory (`~/.pi/agent/sessions/<session_id>/`) for
+  archiving. May be `""` in the post-handshake frame when no turn has
+  started yet; the `turn_start` frame always carries the real ID. Added
+  in #1538 to fix PI archiving.
 
-Sidecar behaviour: store as a harness frame per §8.2 forward-compat rules
-(unknown frames are stored as-is). No active dispatch is required; the
-sidecar may use this frame for monitoring and session metadata.
+Sidecar behaviour: when `session_id` is non-empty, the sidecar calls
+`db.UpdateHarnessSessionID(sessionName, session_id)` to record the PI
+session ID. The frame is also stored as a raw event per §8.2 forward-compat
+rules.
 
 The extension also calls `ctx.ui.setStatus("prism", text)` with a
 human-readable summary at the same points. The status text format is:
