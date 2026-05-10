@@ -561,6 +561,27 @@ func (d *DB) ClearInstanceID(sessionName string) error {
 	return nil
 }
 
+// EnsureStatusRow inserts a minimal agent_status row for sessionName if one
+// does not already exist. When the row already exists, it is left completely
+// untouched (INSERT OR IGNORE semantics). This is used by the sidecar to
+// guarantee that UpdateHarnessSessionID finds a row to UPDATE even when the
+// session_status frame arrives before the first state_change or turn_start
+// that would normally create the row via upsertState.
+//
+// The inserted row uses state="active" as a safe default; it will be
+// overwritten by the next upsertState call.
+func (d *DB) EnsureStatusRow(sessionName, repo, worktree string) error {
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT OR IGNORE INTO agent_status (session_name, repo, worktree, state, last_seen)
+VALUES (?, ?, ?, 'active', ?)`
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, now)
+	if err != nil {
+		return fmt.Errorf("db: ensure status row: %w", err)
+	}
+	return nil
+}
+
 // UpdateHarnessSessionID unconditionally sets harness_session_id for sessionName
 // to the given sid value. Unlike UpsertStatus (which only updates harness_session_id
 // via COALESCE when non-nil), this always overwrites — allowing the sidecar to

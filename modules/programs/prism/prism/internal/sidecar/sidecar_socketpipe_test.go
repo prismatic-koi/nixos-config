@@ -2502,5 +2502,116 @@ func TestSocketPipe_SessionShutdownHook_NextFrameDispatchedNormally(t *testing.T
 	}
 }
 
+// TestSocketPipe_SessionStatus_PopulatesHarnessSessionID verifies that a
+// session_status frame carrying a non-empty session_id causes the sidecar to
+// call UpdateHarnessSessionID and record the PI session ID in the DB.
+//
+// This is the regression test for bug #1538 fix #1: previously session_status
+// fell through to the default case and the harness_session_id column was never
+// populated for PI sessions, causing prism cleanup to log
+// "raw/session.jsonl not found" and produce an empty archive.
+func TestSocketPipe_SessionStatus_PopulatesHarnessSessionID(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a session_status frame with a real PI session ID.
+	const piSessionID = "pi-ses-test-abc-123"
+	sendJSON(t, conn, map[string]any{
+		"type":          "session_status",
+		"role":          "worker",
+		"branch":        "main",
+		"review_cycles": 0,
+		"pr_number":     "",
+		"session_id":    piSessionID,
+	})
+
+	// Poll DB until harness_session_id is populated.
+	deadline := time.Now().Add(2 * time.Second)
+	var gotSID string
+	for {
+		s, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if s != nil && s.HarnessSessionID != nil && *s.HarnessSessionID == piSessionID {
+			gotSID = *s.HarnessSessionID
+			break
+		}
+		if time.Now().After(deadline) {
+			var sid string
+			if s != nil && s.HarnessSessionID != nil {
+				sid = *s.HarnessSessionID
+			}
+			t.Fatalf("harness_session_id never set to %q (got %q)", piSessionID, sid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if gotSID != piSessionID {
+		t.Errorf("harness_session_id = %q, want %q", gotSID, piSessionID)
+	}
+
+	// The session_status frame should also be persisted as a raw event.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var found bool
+	for _, e := range events {
+		if e.Type == "session_status" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected session_status event in agent_events, not found")
+	}
+
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
+// TestSocketPipe_SessionStatus_EmptySessionID_NoOp verifies that a
+// session_status frame with an empty session_id does NOT call
+// UpdateHarnessSessionID (which would overwrite a real ID with an empty string).
+func TestSocketPipe_SessionStatus_EmptySessionID_NoOp(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a session_status frame with no session_id (post-handshake case).
+	sendJSON(t, conn, map[string]any{
+		"type":          "session_status",
+		"role":          "worker",
+		"branch":        "main",
+		"review_cycles": 0,
+		"pr_number":     "",
+		"session_id":    "",
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	// harness_session_id must remain NULL (not set to empty string).
+	s, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s != nil && s.HarnessSessionID != nil && *s.HarnessSessionID != "" {
+		t.Errorf("harness_session_id = %q, want NULL (empty session_id should be a no-op)", *s.HarnessSessionID)
+	}
+
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
 // Ensure db import is used.
 var _ *db.DB

@@ -1489,6 +1489,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
             branch: sessionBranch,
             review_cycles: 0,
             pr_number: "",
+            // session_id: the PI session ID used to locate the session
+            // directory on disk for archiving (bug #1538 fix). Populated
+            // from lastCtx when available; "" when no turn has started yet
+            // (the turn_start session_status will carry the real ID).
+            session_id: lastCtx?.sessionManager?.getSessionId() ?? "",
           })
         }
         return
@@ -1627,6 +1632,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
           branch: sessionBranch,
           review_cycles: 0,
           pr_number: "",
+          // session_id: the PI session ID used by prism cleanup to locate
+          // the session directory for archiving (bug #1538 fix). Sourced
+          // from ctx.sessionManager.getSessionId() which is guaranteed
+          // non-empty on turn_start.
+          session_id: ctx.sessionManager.getSessionId(),
         })
       }
     }

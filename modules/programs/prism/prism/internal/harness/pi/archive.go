@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
 
@@ -52,10 +53,30 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // The harness_session_id is populated at session-create time when PI starts.
 // When HarnessSessionID is empty (PI failed to start), SourcePath returns the
 // sessions root directory; the caller handles the missing-directory case.
+//
+// For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes to the
+// staging HOME instead of the real home directory. The staging HOME path is:
+//   ~/.local/state/prism/sessions/<instance_id>/home/
+// So PI's session directory is <stagingHome>/.pi/agent/sessions/<harness_session_id>.
+// Bug #1538 fix #2: using os.UserHomeDir() for sandbox-exec sessions pointed at
+// the wrong directory — PI never wrote there.
 func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("pi archive: resolve home: %w", err)
+	var home string
+	if p.IsolationMode == "sandbox-exec" && p.InstanceID != "" {
+		// sandbox-exec: PI writes into the per-session staging HOME, not
+		// the real home directory. Use the same path formula as
+		// container.SandboxExecStagingHomePath.
+		stagingHome, err := container.SandboxExecStagingHomePath(p.InstanceID)
+		if err != nil {
+			return "", fmt.Errorf("pi archive: resolve sandbox-exec staging home: %w", err)
+		}
+		home = stagingHome
+	} else {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("pi archive: resolve home: %w", err)
+		}
 	}
 	sessionsRoot := filepath.Join(home, ".pi", "agent", "sessions")
 	if p.HarnessSessionID == "" {

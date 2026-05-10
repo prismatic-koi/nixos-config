@@ -159,16 +159,31 @@ func (a *Adapter) ExtractMessage(_ harness.HarnessEvent) (harness.Message, bool)
 	return harness.Message{}, false
 }
 
-// CreateSession synthesises a prism session ID for the PI session. PI does not
-// have a server-side session API to query, so we derive a stable ID from the
-// configured session name (or return a placeholder).
+// CreateSession returns the PI session ID recorded by SetSessionID, or "" when
+// the real session ID has not been received yet (i.e. the session_status frame
+// has not arrived). Callers should treat "" as "session ID not yet known" and
+// retry after the sidecar has processed the session_status frame from the PI
+// extension.
+//
+// The hardcoded "pi-session" placeholder that was returned here previously is
+// removed (bug #1538 fix #3). The real session ID is now populated by the
+// sidecar's session_status handler via SetSessionID before CreateSession is
+// called from cleanup.
 func (a *Adapter) CreateSession(_ context.Context) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.sessionID == "" {
-		a.sessionID = "pi-session"
-	}
 	return a.sessionID, nil
+}
+
+// SetSessionID records the PI session ID received from the session_status frame.
+// This is called by the sidecar when it processes a session_status frame so
+// that CreateSession can return the real ID instead of a placeholder.
+func (a *Adapter) SetSessionID(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if id != "" {
+		a.sessionID = id
+	}
 }
 
 // SessionID returns the most recently created session ID.
