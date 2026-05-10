@@ -102,7 +102,7 @@ func TestGet_JiraErrorMessages(t *testing.T) {
 
 func TestSearchJira(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/search/jql", func(w http.ResponseWriter, r *http.Request) {
 		jql := r.URL.Query().Get("jql")
 		if jql == "" {
 			t.Error("jql query param missing")
@@ -121,6 +121,30 @@ func TestSearchJira(t *testing.T) {
 	_, err := c.SearchJira("project = FOO", 10, "")
 	if err != nil {
 		t.Fatalf("SearchJira: %v", err)
+	}
+}
+
+func TestSearchConfluence(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search", func(w http.ResponseWriter, r *http.Request) {
+		cql := r.URL.Query().Get("cql")
+		if cql == "" {
+			t.Error("cql query param missing")
+		}
+		limit := r.URL.Query().Get("limit")
+		if limit == "" {
+			t.Error("limit query param missing")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"results": []any{},
+			"size":    0,
+		})
+	})
+	c := newTestClient(t, mux)
+	_, err := c.SearchConfluence("space = ENG", 10)
+	if err != nil {
+		t.Fatalf("SearchConfluence: %v", err)
 	}
 }
 

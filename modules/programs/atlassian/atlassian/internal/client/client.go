@@ -167,7 +167,7 @@ func (c *Client) GetJiraIssue(key string) (any, error) {
 
 // SearchJira performs a Jira JQL search.
 func (c *Client) SearchJira(jql string, maxResults int, fields string) (any, error) {
-	url := fmt.Sprintf("%s/search?jql=%s&maxResults=%d", c.jiraBase(), urlEncode(jql), maxResults)
+	url := fmt.Sprintf("%s/search/jql?jql=%s&maxResults=%d", c.jiraBase(), urlEncode(jql), maxResults)
 	if fields != "" {
 		url += "&fields=" + urlEncode(fields)
 	}
@@ -188,7 +188,7 @@ func (c *Client) GetConfluencePage(id string) (any, error) {
 
 // SearchConfluence performs a Confluence CQL search.
 func (c *Client) SearchConfluence(cql string, limit int) (any, error) {
-	url := fmt.Sprintf("%s/pages?cql=%s&limit=%d", c.confluenceBase(), urlEncode(cql), limit)
+	url := fmt.Sprintf("%s/search?cql=%s&limit=%d", c.confluenceBase(), urlEncode(cql), limit)
 	return c.Get(url)
 }
 
