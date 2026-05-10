@@ -156,6 +156,7 @@
               secondary = slot {
                 provider = "anthropic";
                 model = "anthropic/claude-sonnet-4-6";
+                thinking = "low";
               };
               lightweight = slot {
                 provider = "anthropic";
