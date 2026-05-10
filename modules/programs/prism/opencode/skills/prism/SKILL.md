@@ -5,6 +5,55 @@ description: Spawn isolated agent sessions in their own git worktrees using the 
 
 > **Note:** The prism source code and this skill file live in the `nixos-config` repository under `modules/programs/prism/`. Changes to prism itself — the Go CLI, tmux config, opencode agents, and skills — are made there.
 
+## Introspection layers
+
+Prism provides three introspection layers, ordered from most to least human-readable:
+
+1. **`--help` text** — human-readable usage, intended for humans at a terminal.
+2. **`prism agent-context`** — machine-readable JSON describing the full CLI shape: every command, every flag (with type, enum values, defaults and default sources), available profiles, and cross-cutting precedence rules. **This is the layer-2 surface agents should consult when they need to discover available flags, enum values, or profile names programmatically.** It emits valid JSON to stdout and exits 0.
+3. **This SKILL.md** — workflow prose, decision trees, and context that neither `--help` nor `agent-context` capture.
+
+### Using `prism agent-context`
+
+```bash
+# Full CLI shape as JSON (excludes hidden/internal commands by default)
+prism agent-context
+
+# Include hidden/internal commands (e.g. agent-run, sidecar)
+prism agent-context --include-hidden
+
+# Discover available profiles
+prism agent-context | jq '.available_profiles'
+
+# Inspect spawn's --isolation flag (type, valid values, default source)
+prism agent-context | jq '.commands.spawn.flags["--isolation"]'
+
+# See precedence rules for profile and isolation resolution
+prism agent-context | jq '.precedence'
+
+# List all top-level commands
+prism agent-context | jq '.commands | keys'
+```
+
+The document shape (top-level keys):
+
+| Key | Description |
+|---|---|
+| `schema_version` | Schema version string. Currently `"1"`. Bump on breaking changes. |
+| `prism_version` | Git SHA of the binary (`""` in dev builds). |
+| `commands` | Map of command name → `CommandMeta` (recursive, includes subcommands). |
+| `available_profiles` | Array of profile names from `~/.config/prism/profiles.json`. `[]` if missing. |
+| `precedence` | Map of cross-cutting precedence chains (e.g. `profile`, `isolation`). |
+
+Each `CommandMeta` contains:
+- `description` — short description
+- `flags` — map of `"--flag-name"` → `{type, values?, default?, default_source?, required?, description}`
+- `subcommands` — recursive map (same shape)
+- `positional_args` — array of `{name, required?}`
+- `aliases` — optional array
+
+Flag `type` is one of: `bool`, `string`, `int`, `duration`, `stringArray`, `enum`. When `type == "enum"`, the `values` array lists every valid value — use it instead of parsing help text.
+
 # Spawning Agents with prism
 
 `prism spawn` creates a new git worktree, starts a tmux session in it, and launches opencode. Use it when work should be isolated, long-running, or in a different repo — rather than a subagent, which shares the current session context.
