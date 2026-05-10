@@ -125,8 +125,9 @@ func (m *Manager) CredentialEnvVars() []string {
 func (m *Manager) credentialEnvVars() []string {
 	var vars []string
 
-	// LLM API keys — forwarded for all agent roles.
-	llmKeys := []string{
+	// External-tool credentials — forwarded for all agent roles.
+	// Covers LLM API keys and other CLI credentials (e.g. Atlassian).
+	forwardKeys := []string{
 		"ANTHROPIC_API_KEY",
 		"OPENAI_API_KEY",
 		"GEMINI_API_KEY",
@@ -134,8 +135,11 @@ func (m *Manager) credentialEnvVars() []string {
 		"GITHUB_COPILOT_TOKEN",
 		"DEEPSEEK_API_KEY",
 		"OPENROUTER_API_KEY",
+		"ATLASSIAN_SITE",
+		"ATLASSIAN_EMAIL",
+		"ATLASSIAN_API_TOKEN",
 	}
-	for _, k := range llmKeys {
+	for _, k := range forwardKeys {
 		if v := os.Getenv(k); v != "" {
 			vars = append(vars, k+"="+v)
 		}
