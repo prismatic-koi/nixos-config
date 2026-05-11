@@ -23,18 +23,11 @@ import (
 func addPromptFlags(cmd *cobra.Command) {
 	cmd.Flags().String(
 		"prompt", "",
-		"Text to send to the agent.\n"+
-			"    Wrap values containing shell metacharacters in single quotes:\n"+
-			"      --prompt 'run `gh pr view 42` and review the diff'\n"+
-			"    The literal value \"-\" is reserved: it reads the prompt from stdin.\n"+
-			"      echo 'my prompt' | prism ... --prompt -\n"+
-			"    Use --prompt-file to read from a file (safest for complex prompts).",
+		"Text to send to the agent. Use --prompt-file for complex strings or to avoid shell-escaping issues.",
 	)
 	cmd.Flags().String(
 		"prompt-file", "",
-		"Path to a file containing the prompt text.\n"+
-			"    Mutually exclusive with --prompt.\n"+
-			"    Internal newlines are preserved; a single trailing newline is stripped.",
+		"Path to a file containing the prompt text. Mutually exclusive with --prompt.",
 	)
 	cmd.MarkFlagsMutuallyExclusive("prompt", "prompt-file")
 }

@@ -68,7 +68,7 @@ func TestCheckin_JSONFlag_DirectPath(t *testing.T) {
 		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, out)
 	}
 
-	for _, key := range []string{"session", "state", "events"} {
+	for _, key := range []string{"session", "state", "events", "truncated"} {
 		if _, ok := resp[key]; !ok {
 			t.Errorf("--json output missing key %q; got: %s", key, out)
 		}

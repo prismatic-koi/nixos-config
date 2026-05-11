@@ -129,8 +129,8 @@ func TestRunSessionsList_SinceFilter(t *testing.T) {
 	}
 }
 
-// TestRunSessionsList_JSONOutput verifies that --json emits a JSON array of
-// session-incarnation objects with snake_case keys (issue #1499).
+// TestRunSessionsList_JSONOutput verifies that --json emits a JSON object
+// with a sessions array and truncated bool (issue #1502).
 func TestRunSessionsList_JSONOutput(t *testing.T) {
 	d := openIncarnationTestDB(t)
 	base := time.Now().Truncate(time.Second)
@@ -153,16 +153,31 @@ func TestRunSessionsList_JSONOutput(t *testing.T) {
 		}
 	})
 
-	var rows []map[string]interface{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
-		t.Fatalf("--json output is not a valid JSON array: %v\noutput: %s", err, out)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &obj); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, out)
 	}
-	if len(rows) != 2 {
-		t.Errorf("expected 2 rows in JSON array, got %d\n%s", len(rows), out)
+	if _, ok := obj["truncated"]; !ok {
+		t.Errorf("expected 'truncated' key in output")
+	}
+	rowsVal, ok := obj["sessions"]
+	if !ok {
+		t.Fatalf("expected 'sessions' key in output")
+	}
+	rowsArr, ok := rowsVal.([]interface{})
+	if !ok {
+		t.Fatalf("sessions is not an array")
+	}
+	if len(rowsArr) != 2 {
+		t.Errorf("expected 2 rows in JSON array, got %d\n%s", len(rowsArr), out)
 	}
 	// Required snake_case fields must be present on every row (null is OK
 	// for optional fields, but the keys themselves must be there).
-	for i, row := range rows {
+	for i, r := range rowsArr {
+		row, ok := r.(map[string]interface{})
+		if !ok {
+			t.Fatalf("row %d is not an object", i)
+		}
 		for _, field := range []string{"instance_id", "session_name", "repo", "harness", "started_at", "ended_at", "end_state", "archive_path", "agent_role", "root_agent_name", "harness_session_id", "group_id", "prism_version"} {
 			if _, ok := row[field]; !ok {
 				t.Errorf("row %d missing required snake_case JSON field %q\n%s", i, field, out)
@@ -178,8 +193,7 @@ func TestRunSessionsList_JSONOutput(t *testing.T) {
 }
 
 // TestRunSessionsList_JSONOutput_Empty verifies that --json with no sessions
-// emits an empty JSON array "[]", never null and never absent (AC: empty
-// list is `[]`).
+// emits a JSON object with an empty sessions array and truncated:false.
 func TestRunSessionsList_JSONOutput_Empty(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := renderSessionsListJSON(nil); err != nil {
@@ -187,9 +201,20 @@ func TestRunSessionsList_JSONOutput_Empty(t *testing.T) {
 		}
 	})
 
-	trimmed := strings.TrimSpace(out)
-	if trimmed != "[]" {
-		t.Errorf("expected empty JSON array '[]' for empty sessions list, got: %q", trimmed)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &obj); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
+	}
+	rowsVal, ok := obj["sessions"]
+	if !ok {
+		t.Fatalf("expected 'sessions' key in output")
+	}
+	arr, ok := rowsVal.([]interface{})
+	if !ok || len(arr) != 0 {
+		t.Errorf("expected empty sessions array, got %v", rowsVal)
+	}
+	if truncated, _ := obj["truncated"].(bool); truncated {
+		t.Errorf("expected truncated:false for empty list")
 	}
 }
 

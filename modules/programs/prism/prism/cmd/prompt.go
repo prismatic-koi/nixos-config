@@ -56,7 +56,7 @@ uses prompt_async and does not support delivery modes.`,
 
 func init() {
 	addPromptFlags(promptCmd)
-	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe (PI) sessions: steer, followUp, nextTurn. Default "steer" injects the prompt mid-turn for immediate visibility. No-op for opencode (HTTP) sessions.`)
+	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe (PI) sessions: steer (mid-turn), followUp, or nextTurn. No-op for opencode (HTTP) sessions.`)
 	rootCmd.AddCommand(promptCmd)
 }
 

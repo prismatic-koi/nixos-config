@@ -252,13 +252,13 @@ func init() {
 	spawnCmd.Flags().StringArray("abtest", nil, "A/B test: spawn two sessions with the given profile names (e.g. --abtest profileA --abtest profileB); mutually exclusive with --profile")
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
-	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
+	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
-	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt (state transitions to finished or error). Without --wait, returns immediately and the agent runs in the background.")
-	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. On expiry, exits non-zero with a status payload distinguishable from a real spawn failure. Ignored when --wait is not set.")
-	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait or to script over the spawn output). Suppresses textual output.")
+	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
+	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
+	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
 	spawnCmd.Flags().Bool("reuse", false, "If a healthy session already exists on the requested branch, return its details and exit 0 instead of failing")
 	// --prompt-source is an internal flag used by the host-API /spawn handler
 	// to override the auto-detected prompt source (C.4.SRC, issue #1148).

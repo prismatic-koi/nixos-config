@@ -119,7 +119,14 @@ func renderSessionsListJSON(sessions []db.Session) error {
 		}
 		rows = append(rows, row)
 	}
-	data, err := json.Marshal(rows)
+	out := struct {
+		Sessions  []sessionJSONRow `json:"sessions"`
+		Truncated bool             `json:"truncated"`
+	}{
+		Sessions:  rows,
+		Truncated: false, // sessions list is never implicitly capped
+	}
+	data, err := json.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("sessions list: marshal: %w", err)
 	}
