@@ -277,7 +277,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// Circuit breaker: skip sessions whose sidecar has failed too many times
 	// in a row without a successful run in between. The agent_status row is
 	// intentionally left active (no SetEnded call) so the session remains
-	// visible in `prism list-sessions` and the dashboard, and the user can
+	// visible in `prism sessions list` and the dashboard, and the user can
 	// intervene via `prism restart` or `prism cleanup`.
 	if threshold > 0 {
 		failures, cbErr := d.ConsecutiveSidecarFailures(s.SessionName, threshold)

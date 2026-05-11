@@ -5,7 +5,7 @@ package cmd
 // Mirrors the shape of `prism merges` but for review groups. The
 // session_groups table records every review round prism has spawned; this
 // command exposes that ledger so coordinators and workers don't have to
-// `prism list-sessions | grep '~review-N-'` and reconstruct the metadata.
+// `prism sessions list | grep '~review-N-'` and reconstruct the metadata.
 //
 // Subcommands:
 //
@@ -43,7 +43,7 @@ review's PR number, parent (worker) session, agent sessions, group state,
 and the started-at timestamp.
 
 The session_groups table is the authoritative source. Use this command
-instead of 'prism list-sessions | grep ~review-' — that workaround is
+instead of 'prism sessions list | grep ~review-' — that workaround is
 fragile and lacks group-level metadata.`,
 	Args: cobra.NoArgs,
 	RunE: runReviewsList,

@@ -28,7 +28,7 @@ Run `prism stats --days 7` to get an overview of recent session activity.
 
 ### Step 2: Identify anomalous sessions
 
-Use `prism stats --days 7` output and `prism list-sessions` to surface sessions worth drilling into. Look for all of:
+Use `prism stats --days 7` output and `prism sessions list` to surface sessions worth drilling into. Look for all of:
 
 - Sessions with ≥2 compactions (context pressure — agent is burning through its window)
 - Sessions with high tool-call repetition (potential doom loops — same tool+args called 3+ times)
@@ -146,7 +146,7 @@ Concrete, actionable changes with specific mechanism references (skill, permissi
 
 ---
 
-**Edge case:** If the session name is not found, output: "Session `<name>` not found. Use `prism list-sessions` to see available sessions."
+**Edge case:** If the session name is not found, output: "Session `<name>` not found. Use `prism sessions list` to see available sessions."
 
 ---
 

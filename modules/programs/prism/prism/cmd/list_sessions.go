@@ -1,8 +1,10 @@
 package cmd
 
-// prism list-sessions — print agent sessions (from DB) in a human-readable
-// table. By default shows only sessions for the current repo. Use --all / -A
-// to list sessions across all repos.
+// prism list-sessions — hidden backward-compat alias for `prism sessions list`.
+//
+// The canonical form is `prism sessions list`. This top-level alias is kept
+// for one release cycle so that existing skill manifests, agent prompts, and
+// tmux configs continue to work without modification.
 //
 // Sessions are sorted using db.ParentSessionFor — the single source of truth
 // for parent attribution shared with the dashboard. Depth-2 review sessions
@@ -23,88 +25,93 @@ import (
 )
 
 var listSessionsCmd = &cobra.Command{
-	Use:   "list-sessions",
-	Short: "List agent sessions with their state and title",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		showAll, _ := cmd.Flags().GetBool("all")
-		jsonMode, _ := cmd.Flags().GetBool("json")
-
-		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-			if jsonMode {
-				raw, err := proxyListSessions(apiURL, showAll)
-				if err != nil {
-					return err
-				}
-				return printJSON(raw)
-			}
-			return proxyListSessionsAndRender(apiURL, showAll)
-		}
-
-		// Derive currentRepo from the working directory using the same
-		// normalisation as deriveRepo() so the filter matches the repo column
-		// written at session-start time.
-		currentRepo := ""
-		cwd, err := os.Getwd()
-		if err != nil {
-			cwd = os.Getenv("PRISM_SPAWN_PATH")
-		}
-		if cwd != "" {
-			currentRepo = deriveRepo(cwd)
-		}
-
-		// If repo detection failed and --all was not requested, refuse to
-		// silently show all sessions — that would violate the scoped-by-default
-		// contract. Direct the user to --all instead.
-		if !showAll && currentRepo == "" {
-			if cwd == "" {
-				return fmt.Errorf("list-sessions: CWD unavailable and PRISM_SPAWN_PATH not set; use --all to list all sessions")
-			}
-			return fmt.Errorf("list-sessions: %q is not inside a prism worktree; use --all to list all sessions", cwd)
-		}
-
-		d, err := openDB()
-		if err != nil {
-			return fmt.Errorf("list-sessions: open db: %w", err)
-		}
-		defer d.Close()
-
-		var ss []db.Status
-		if showAll {
-			ss, err = d.AllActiveStatus()
-		} else {
-			ss, err = d.AllActiveStatusForRepo(currentRepo)
-		}
-		if err != nil {
-			return fmt.Errorf("list-sessions: query db: %w", err)
-		}
-
-		// Fetch group parents to apply the same parent-attribution source of
-		// truth as the dashboard (db.ParentSessionFor via AllGroupParents).
-		// Non-fatal: if unavailable, sort falls back to the name heuristic.
-		groupParents, _ := d.AllGroupParents()
-
-		// Fetch abtest pair IDs for the ↔ indicator. Non-fatal.
-		abtestPairs, _ := d.AbtestPairsForSessions()
-
-		if jsonMode {
-			if ss == nil {
-				ss = []db.Status{}
-			}
-			data, merr := json.Marshal(ss)
-			if merr != nil {
-				return fmt.Errorf("list-sessions --json: marshal: %w", merr)
-			}
-			return printJSON(data)
-		}
-
-		return renderSessionTable(ss, groupParents, abtestPairs)
-	},
+	Use:    "list-sessions",
+	Short:  "List agent sessions with their state and title",
+	Hidden: true, // canonical form is `prism sessions list`
+	RunE:   runListSessions,
 }
 
 func init() {
 	listSessionsCmd.Flags().BoolP("all", "A", false, "List all sessions across all repos")
 	listSessionsCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
 	rootCmd.AddCommand(listSessionsCmd)
+}
+
+// runListSessions is the shared RunE for `prism sessions list` and the hidden
+// `prism list-sessions` alias.
+func runListSessions(cmd *cobra.Command, _ []string) error {
+	showAll, _ := cmd.Flags().GetBool("all")
+	jsonMode, _ := cmd.Flags().GetBool("json")
+
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		if jsonMode {
+			raw, err := proxyListSessions(apiURL, showAll)
+			if err != nil {
+				return err
+			}
+			return printJSON(raw)
+		}
+		return proxyListSessionsAndRender(apiURL, showAll)
+	}
+
+	// Derive currentRepo from the working directory using the same
+	// normalisation as deriveRepo() so the filter matches the repo column
+	// written at session-start time.
+	currentRepo := ""
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = os.Getenv("PRISM_SPAWN_PATH")
+	}
+	if cwd != "" {
+		currentRepo = deriveRepo(cwd)
+	}
+
+	// If repo detection failed and --all was not requested, refuse to
+	// silently show all sessions — that would violate the scoped-by-default
+	// contract. Direct the user to --all instead.
+	if !showAll && currentRepo == "" {
+		if cwd == "" {
+			return fmt.Errorf("sessions list: CWD unavailable and PRISM_SPAWN_PATH not set; use --all to list all sessions")
+		}
+		return fmt.Errorf("sessions list: %q is not inside a prism worktree; use --all to list all sessions", cwd)
+	}
+
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("sessions list: open db: %w", err)
+	}
+	defer d.Close()
+
+	var ss []db.Status
+	if showAll {
+		ss, err = d.AllActiveStatus()
+	} else {
+		ss, err = d.AllActiveStatusForRepo(currentRepo)
+	}
+	if err != nil {
+		return fmt.Errorf("sessions list: query db: %w", err)
+	}
+
+	// Fetch group parents to apply the same parent-attribution source of
+	// truth as the dashboard (db.ParentSessionFor via AllGroupParents).
+	// Non-fatal: if unavailable, sort falls back to the name heuristic.
+	groupParents, _ := d.AllGroupParents()
+
+	// Fetch abtest pair IDs for the ↔ indicator. Non-fatal.
+	abtestPairs, _ := d.AbtestPairsForSessions()
+
+	if jsonMode {
+		if ss == nil {
+			ss = []db.Status{}
+		}
+		data, merr := json.Marshal(ss)
+		if merr != nil {
+			return fmt.Errorf("sessions list --json: marshal: %w", merr)
+		}
+		return printJSON(data)
+	}
+
+	return renderSessionTable(ss, groupParents, abtestPairs)
 }
 
 // displayHarness returns the harness display string for a session, falling
@@ -217,9 +224,6 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 
 	// Build an index of session_name → group_id for the sort key helper.
 	// The Status slice already carries the group_id; we map by name for O(1) lookup.
-	type nameAndGID struct {
-		groupID *string
-	}
 	gidByName := make(map[string]*string, len(ss))
 	for i := range ss {
 		gidByName[ss[i].SessionName] = ss[i].GroupID

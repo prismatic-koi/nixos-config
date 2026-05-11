@@ -15,7 +15,7 @@ import (
 // runCheckinSessionLegacy is the old screen-scrape path, kept as a fallback.
 func runCheckinSessionLegacy(session string, height int) error {
 	if !tmux.HasSession(session) {
-		return fmt.Errorf("session %q not found\nrun `prism list-sessions` to see available sessions", session)
+		return fmt.Errorf("session %q not found\nrun `prism sessions list` to see available sessions", session)
 	}
 
 	result, err := tmux.CapturePaneScreen(session, height)

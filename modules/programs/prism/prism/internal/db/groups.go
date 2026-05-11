@@ -250,7 +250,7 @@ func (d *DB) AllGroupParents() (map[string]string, error) {
 // ParentSessionFor returns the authoritative parent session name for the given
 // session. It is the single named source of truth for parent attribution,
 // used by both the dashboard (via AllGroupParents + StatusToAgentSession) and
-// prism list-sessions (via AllGroupParents in the renderSessionTable sort key).
+// prism sessions list (via AllGroupParents in the renderSessionTable sort key).
 //
 // Resolution order:
 //  1. DB-backed (post-migration): looks up session_groups.parent_session via

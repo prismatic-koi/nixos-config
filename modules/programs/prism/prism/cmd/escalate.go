@@ -224,7 +224,7 @@ func resolveEscalationTarget(database *db.DB, repo, explicitTo string) (*db.Stat
 			return nil, fmt.Errorf("prism escalate: look up --to %q: %w", explicitTo, err)
 		}
 		if st == nil {
-			return nil, fmt.Errorf("prism escalate: --to session %q not found in agent_status\nrun `prism list-sessions` to see available sessions", explicitTo)
+			return nil, fmt.Errorf("prism escalate: --to session %q not found in agent_status\nrun `prism sessions list` to see available sessions", explicitTo)
 		}
 		if st.EndedAt != nil {
 			return nil, fmt.Errorf("prism escalate: --to session %q has ended", explicitTo)
