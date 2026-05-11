@@ -147,12 +147,13 @@ func TestSandboxExecPIOAuth_LockDirDeniedWithLiteralOnlyRule(t *testing.T) {
 		//   (allow file-read* file-write* file-test-existence file-read-metadata
 		//     (subpath "<piAgentDir>"))
 		//
-		// Replace the indented (subpath ...) line with a (literal auth.json)
+		// Note the double closing paren on the subpath line: the first closes
+		// (subpath ...) and the second closes the surrounding (allow ...) block.
+		// Replace the indented (subpath ...)) line with a (literal auth.json))
 		// line, replicating the old behaviour. The surrounding (allow ...) line
-		// and the closing "))" remain intact so the profile is syntactically
-		// valid SBPL — only the coverage changes.
-		subpathLine := "  (subpath " + sbplQuoteForTest(piAgentDir2) + ")\n"
-		literalLine := "  (literal " + sbplQuoteForTest(authJSONLiteral) + ")\n"
+		// is left intact so the profile remains syntactically valid SBPL.
+		subpathLine := "  (subpath " + sbplQuoteForTest(piAgentDir2) + "))\n"
+		literalLine := "  (literal " + sbplQuoteForTest(authJSONLiteral) + "))\n"
 		return strings.ReplaceAll(p, subpathLine, literalLine)
 	})
 
