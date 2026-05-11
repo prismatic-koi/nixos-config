@@ -3,7 +3,14 @@
     {
       "content": [
         {
-          "text": "Hello world",
+          "text": "line one",
+          "type": "text"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "text": "line two",
           "type": "text"
         }
       ],

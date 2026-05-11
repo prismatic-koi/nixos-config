@@ -52,9 +52,18 @@ func Build(src []byte) (map[string]any, error) {
 		return nil, fmt.Errorf("empty body: no content to send")
 	}
 
-	// Use goldmark with GFM table extension.
+	// Load all extensions we know about so their AST node types are registered
+	// and the builder can explicitly reject them. Without loading an extension
+	// goldmark cannot identify its constructs — e.g. "- [ ] item" would parse
+	// as a plain bullet rather than a TaskCheckBox node.
 	md := goldmark.New(
-		goldmark.WithExtensions(extension.Table),
+		goldmark.WithExtensions(
+			extension.Table,
+			extension.TaskList,
+			extension.Strikethrough,
+			extension.DefinitionList,
+			extension.Footnote,
+		),
 	)
 
 	reader := text.NewReader(src)
@@ -218,6 +227,26 @@ func (b *builder) blockNode(n ast.Node) ([]any, error) {
 		line := lineOf(n, b.src)
 		return nil, &UnsupportedError{Construct: "raw HTML block", Line: line}
 
+	case extast.KindDefinitionList:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "definition list", Line: line}
+
+	case extast.KindDefinitionTerm:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "definition list", Line: line}
+
+	case extast.KindDefinitionDescription:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "definition list", Line: line}
+
+	case extast.KindFootnoteList:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "footnote", Line: line}
+
+	case extast.KindFootnote:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "footnote", Line: line}
+
 	default:
 		line := lineOf(n, b.src)
 		return nil, &UnsupportedError{Construct: n.Kind().String(), Line: line}
@@ -354,6 +383,22 @@ func (b *builder) inlineNode(n ast.Node) ([]any, error) {
 	case ast.KindImage:
 		line := lineOf(n, b.src)
 		return nil, &UnsupportedError{Construct: "image", Line: line}
+
+	case extast.KindTaskCheckBox:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "task list", Line: line}
+
+	case extast.KindStrikethrough:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "strikethrough", Line: line}
+
+	case extast.KindFootnoteLink:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "footnote", Line: line}
+
+	case extast.KindFootnoteBacklink:
+		line := lineOf(n, b.src)
+		return nil, &UnsupportedError{Construct: "footnote", Line: line}
 
 	case ast.KindString:
 		// goldmark internal string node (e.g. from entity expansion)

@@ -3,7 +3,12 @@
     {
       "content": [
         {
-          "text": "Hello world",
+          "marks": [
+            {
+              "type": "em"
+            }
+          ],
+          "text": "italic text",
           "type": "text"
         }
       ],

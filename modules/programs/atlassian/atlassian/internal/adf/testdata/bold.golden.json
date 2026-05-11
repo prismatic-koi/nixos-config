@@ -3,7 +3,12 @@
     {
       "content": [
         {
-          "text": "Hello world",
+          "marks": [
+            {
+              "type": "strong"
+            }
+          ],
+          "text": "bold text",
           "type": "text"
         }
       ],

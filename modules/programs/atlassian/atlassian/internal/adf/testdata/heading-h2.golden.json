@@ -1,13 +1,16 @@
 {
   "content": [
     {
+      "attrs": {
+        "level": 2
+      },
       "content": [
         {
-          "text": "Hello world",
+          "text": "Subtitle",
           "type": "text"
         }
       ],
-      "type": "paragraph"
+      "type": "heading"
     }
   ],
   "type": "doc",

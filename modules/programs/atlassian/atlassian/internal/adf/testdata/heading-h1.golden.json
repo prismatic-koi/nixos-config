@@ -1,13 +1,16 @@
 {
   "content": [
     {
+      "attrs": {
+        "level": 1
+      },
       "content": [
         {
-          "text": "Hello world",
+          "text": "Title",
           "type": "text"
         }
       ],
-      "type": "paragraph"
+      "type": "heading"
     }
   ],
   "type": "doc",

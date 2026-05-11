@@ -2,6 +2,8 @@ package adf_test
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -389,6 +391,34 @@ func TestBuild_Table(t *testing.T) {
 
 // ---- Unsupported construct tests ----
 
+func TestBuild_RejectedTaskList(t *testing.T) {
+	_, err := adf.Build([]byte("- [ ] unchecked item\n- [x] checked item\n"))
+	if err == nil {
+		t.Fatal("expected error for task list")
+	}
+	unsup, ok := err.(*adf.UnsupportedError)
+	if !ok {
+		t.Fatalf("expected *UnsupportedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(unsup.Construct, "task") && !strings.Contains(unsup.Construct, "Task") {
+		t.Errorf("expected 'task' in construct name, got %q", unsup.Construct)
+	}
+}
+
+func TestBuild_RejectedStrikethrough(t *testing.T) {
+	_, err := adf.Build([]byte("~~strikethrough text~~\n"))
+	if err == nil {
+		t.Fatal("expected error for strikethrough")
+	}
+	unsup, ok := err.(*adf.UnsupportedError)
+	if !ok {
+		t.Fatalf("expected *UnsupportedError, got %T: %v", err, err)
+	}
+	if !strings.Contains(unsup.Construct, "strikethrough") {
+		t.Errorf("expected 'strikethrough' in construct name, got %q", unsup.Construct)
+	}
+}
+
 func TestBuild_RejectedHTMLBlock(t *testing.T) {
 	_, err := adf.Build([]byte("<div>raw html</div>\n"))
 	if err == nil {
@@ -562,36 +592,85 @@ fmt.Println("hello")
 	}
 }
 
-// ---- JSON golden file test ----
+// ---- Golden file tests ----
+//
+// Each golden file in testdata/<name>.golden.json captures the exact ADF JSON
+// that Build() must produce for the corresponding markdown input.
+// Run `go run ./internal/adf/testdata/gen/main.go` to regenerate them after
+// intentional changes to the builder.
 
-// TestBuild_GoldenParagraph verifies the exact ADF JSON for a simple paragraph.
-func TestBuild_GoldenParagraph(t *testing.T) {
-	doc := buildMust(t, "Hello world\n")
-	b, err := json.Marshal(doc)
+// normaliseJSON round-trips through JSON to produce a canonical byte form
+// (sorted keys, consistent spacing) for comparison.
+func normaliseJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("json.Marshal: %v", err)
 	}
-	var got map[string]any
-	json.Unmarshal(b, &got)
+	// Unmarshal back to any to lose type distinctions (int vs float64), then
+	// re-marshal through MarshalIndent for a stable canonical form.
+	var generic any
+	if err := json.Unmarshal(b, &generic); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	out, err := json.MarshalIndent(generic, "", "  ")
+	if err != nil {
+		t.Fatalf("json.MarshalIndent: %v", err)
+	}
+	return out
+}
 
-	// Verify structure matches expected
-	if got["version"].(float64) != 1 {
-		t.Errorf("version: expected 1, got %v", got["version"])
+// readGolden reads testdata/<name>.golden.json relative to this test file.
+func readGolden(t *testing.T, name string) []byte {
+	t.Helper()
+	path := filepath.Join("testdata", name+".golden.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read golden file %s: %v", path, err)
 	}
-	if got["type"] != "doc" {
-		t.Errorf("type: expected doc, got %v", got["type"])
+	// Normalise the golden file through the same JSON round-trip.
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		t.Fatalf("parse golden file %s: %v", path, err)
 	}
-	content := got["content"].([]any)
-	if len(content) != 1 {
-		t.Fatalf("expected 1 top-level node, got %d", len(content))
+	out, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatalf("re-marshal golden %s: %v", path, err)
 	}
-	para := content[0].(map[string]any)
-	if para["type"] != "paragraph" {
-		t.Errorf("expected paragraph, got %v", para["type"])
+	return out
+}
+
+// TestBuild_GoldenFiles verifies the exact ADF JSON for each supported
+// markdown construct by comparing against the golden files in testdata/.
+func TestBuild_GoldenFiles(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"paragraph", "Hello world\n"},
+		{"heading-h1", "# Title\n"},
+		{"heading-h2", "## Subtitle\n"},
+		{"bullet-list", "- item one\n- item two\n"},
+		{"ordered-list", "1. first\n2. second\n"},
+		{"nested-list", "- parent\n  - child one\n  - child two\n"},
+		{"fenced-code-block", "```go\nfmt.Println(\"hi\")\n```\n"},
+		{"inline-code", "Use `foo` here.\n"},
+		{"bold", "**bold text**\n"},
+		{"italic", "_italic text_\n"},
+		{"link", "[click here](https://example.com)\n"},
+		{"hard-break", "line one  \nline two\n"},
+		{"blockquote", "> quoted text\n"},
+		{"table", "| Name | Value |\n|------|-------|\n| foo  | bar   |\n"},
 	}
-	paraContent := para["content"].([]any)
-	textNode := paraContent[0].(map[string]any)
-	if textNode["type"] != "text" || textNode["text"] != "Hello world" {
-		t.Errorf("text node mismatch: %v", textNode)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := buildMust(t, tc.src)
+			got := normaliseJSON(t, doc)
+			want := readGolden(t, tc.name)
+			if string(got) != string(want) {
+				t.Errorf("ADF mismatch for %q:\ngot:\n%s\nwant:\n%s", tc.name, got, want)
+			}
+		})
 	}
 }

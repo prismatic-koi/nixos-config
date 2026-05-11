@@ -1,0 +1,28 @@
+{
+  "content": [
+    {
+      "content": [
+        {
+          "text": "Use ",
+          "type": "text"
+        },
+        {
+          "marks": [
+            {
+              "type": "code"
+            }
+          ],
+          "text": "foo",
+          "type": "text"
+        },
+        {
+          "text": " here.",
+          "type": "text"
+        }
+      ],
+      "type": "paragraph"
+    }
+  ],
+  "type": "doc",
+  "version": 1
+}

@@ -1,13 +1,16 @@
 {
   "content": [
     {
+      "attrs": {
+        "language": "go"
+      },
       "content": [
         {
-          "text": "Hello world",
+          "text": "fmt.Println(\"hi\")",
           "type": "text"
         }
       ],
-      "type": "paragraph"
+      "type": "codeBlock"
     }
   ],
   "type": "doc",
