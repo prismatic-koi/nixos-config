@@ -284,9 +284,15 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 		// Carve-outs: allow sso/ and cli/ subtrees within ~/.aws. These
 		// more-specific allow rules override the broad deny above.
+		// file-write* is required: the aws CLI writes STS token cache entries
+		// to ~/.aws/cli/cache/ and refreshes SSO tokens in ~/.aws/sso/. Without
+		// write access the CLI fails with EPERM (no STS token cache), and kubectl
+		// against EKS also breaks because its exec-credential plugin shells out
+		// to aws and gets EPERM. Mirrors bwrap's --bind (RW) treatment — see the
+		// comment above awsSSOReadOnly/awsCLIReadOnly in mounts.go. (issue #1558).
 		awsSSOPath := filepath.Join(home, ".aws", "sso")
 		awsCLIPath := filepath.Join(home, ".aws", "cli")
-		sb.WriteString("(allow file-read*\n")
+		sb.WriteString("(allow file-read* file-write*\n")
 		sb.WriteString("  (subpath " + quoteSBPL(awsSSOPath) + ")\n")
 		sb.WriteString("  (subpath " + quoteSBPL(awsCLIPath) + "))\n")
 		sb.WriteString("\n")

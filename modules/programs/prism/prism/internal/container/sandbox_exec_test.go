@@ -269,10 +269,11 @@ func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
 }
 
 // TestGenerateProfile_AWSSSOAndCLICarveouts verifies that the profile contains
-// explicit (allow file-read* (subpath ".../.aws/sso")) and
-// (allow file-read* (subpath ".../.aws/cli")) rules after the broad ~/.aws deny.
-// These more-specific allow rules let AWS SSO tokens and kubectl credential
-// files be read through the staging HOME symlinks (issue #1380).
+// explicit (allow file-read* file-write* (subpath ".../.aws/sso")) and
+// (allow file-read* file-write* (subpath ".../.aws/cli")) rules after the
+// broad ~/.aws deny. These more-specific allow rules let AWS SSO tokens and
+// kubectl credential files be read and written through the staging HOME
+// symlinks (issue #1380, #1558).
 func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -326,6 +327,13 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	if ssoAllowStart < 0 || ssoDenyStart > ssoAllowStart {
 		t.Errorf("~/.aws/sso path is not inside an (allow ...) block; full profile:\n%s", profile)
 	}
+	// Verify the allow block for ~/.aws/sso includes file-write* (issue #1558).
+	// The block header is on the line preceding the first subpath entry.
+	ssoAllowHeader := profile[ssoAllowStart:ssoIdx]
+	if !strings.Contains(ssoAllowHeader, "file-write*") {
+		t.Errorf("~/.aws/sso carve-out allow block must include file-write* (needed for aws CLI STS token cache writes, issue #1558); allow header: %q; full profile:\n%s",
+			ssoAllowHeader, profile)
+	}
 
 	cliIdx := strings.Index(profile, awsCLIPath)
 	if cliIdx < 0 {
@@ -340,12 +348,19 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	if cliAllowStart < 0 || cliDenyStart > cliAllowStart {
 		t.Errorf("~/.aws/cli path is not inside an (allow ...) block; full profile:\n%s", profile)
 	}
+	// Verify the allow block for ~/.aws/cli includes file-write* (issue #1558).
+	cliAllowHeader := profile[cliAllowStart:cliIdx]
+	if !strings.Contains(cliAllowHeader, "file-write*") {
+		t.Errorf("~/.aws/cli carve-out allow block must include file-write* (needed for aws CLI STS token cache writes, issue #1558); allow header: %q; full profile:\n%s",
+			cliAllowHeader, profile)
+	}
 }
 
 // TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded verifies that when
 // ~/.aws/sso and ~/.aws/cli symlinks exist in the staging HOME, their resolved
 // targets are included in the collected set (not excluded by the deniedPrefixes
-// logic). This exercises the carve-out in isDenied (issue #1380).
+// logic), and that both targets are classified as Writable=true so that the
+// per-symlink allow block emits file-write* for them (issue #1380, #1558).
 func TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -391,19 +406,28 @@ func TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded(t *testing.T) {
 		awsCLIPath = awsCLIPathRaw
 	}
 	foundSSO, foundCLI := false, false
+	ssoWritable, cliWritable := false, false
 	for _, target := range targets {
 		if target.ResolvedPath == awsSSOPath {
 			foundSSO = true
+			ssoWritable = target.Writable
 		}
 		if target.ResolvedPath == awsCLIPath {
 			foundCLI = true
+			cliWritable = target.Writable
 		}
 	}
 	if !foundSSO {
 		t.Errorf("~/.aws/sso resolved path %q not found in collectStagingHomeSymlinkTargets output; got: %v", awsSSOPath, targets)
+	} else if !ssoWritable {
+		// Both sso and cli must be Writable=true so the per-symlink allow block
+		// emits file-write* for them (issue #1558).
+		t.Errorf("~/.aws/sso target %q must have Writable=true (needed for aws CLI STS token cache writes); got Writable=false", awsSSOPath)
 	}
 	if !foundCLI {
 		t.Errorf("~/.aws/cli resolved path %q not found in collectStagingHomeSymlinkTargets output; got: %v", awsCLIPath, targets)
+	} else if !cliWritable {
+		t.Errorf("~/.aws/cli target %q must have Writable=true (needed for aws CLI STS token cache writes); got Writable=false", awsCLIPath)
 	}
 }
 

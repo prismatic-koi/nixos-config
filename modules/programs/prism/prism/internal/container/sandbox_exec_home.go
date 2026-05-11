@@ -615,6 +615,14 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		".mcp-auth":                     true, // MCP auth token writes
 		".npm":                          true, // npx package cache (mcp-remote et al.)
 		".config/opencode/node_modules": true, // bun may update lockfile entries during plugin load
+		// AWS SSO and CLI cache dirs must be writable so the aws CLI can write
+		// STS token cache entries (~/.aws/cli/cache/) and refresh SSO tokens
+		// (~/.aws/sso/). Without write access the CLI gets EPERM and kubectl
+		// against EKS also fails (its exec-credential plugin shells out to aws).
+		// Mirrors bwrap's --bind (RW) treatment — awsSSOReadOnly/awsCLIReadOnly
+		// are both false in mounts.go (issue #1558).
+		".aws/sso":                      true, // AWS SSO token refresh writes
+		".aws/cli":                      true, // AWS CLI STS token cache writes
 	}
 
 	seen := map[string]bool{}

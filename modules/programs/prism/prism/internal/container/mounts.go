@@ -132,18 +132,23 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		}
 	}
 
-	// Per-mode RO/RW divergence for the AWS SSO/CLI cache directories:
+	// Per-mode RO/RW classification for the AWS SSO/CLI cache directories.
 	//
-	//   - podman mounts them read-only because the container has its own net
-	//     namespace; the SSO token is consumed inside the container but
-	//     refresh happens host-side via `aws sso login`.
-	//   - bwrap mounts them read-write because the bwrap sandbox shares the
-	//     host net namespace and may itself perform an SSO refresh that
-	//     writes to the cache (the original bwrap.go used --bind, not
-	//     --ro-bind).
+	// These mounts are read-write (awsSSOReadOnly = false, awsCLIReadOnly =
+	// false) because the aws CLI must be able to write STS token cache entries
+	// to ~/.aws/cli/cache/ and refresh SSO tokens in ~/.aws/sso/ from inside
+	// the sandbox. Without write access the CLI fails with EPERM, and kubectl
+	// against EKS also breaks (its exec-credential plugin shells out to aws).
 	//
-	// Both bwrap and sandbox-exec accept reads from the cache; mounts are
-	// read-write for both modes.
+	// bwrap uses --bind (RW) for both dirs. sandbox-exec mirrors this by
+	// emitting (allow file-read* file-write* (subpath ~/.aws/sso)) and
+	// (allow file-read* file-write* (subpath ~/.aws/cli)) in generateProfile
+	// (issue #1558) and by listing .aws/sso and .aws/cli as writable in
+	// collectStagingHomeSymlinkTargets.
+	//
+	// Note: podman support was removed in #1327. This slice is only walked by
+	// bwrap (appendBwrapBind). The mode parameter is retained for potential
+	// future per-mode divergences.
 	awsSSOReadOnly := false
 	awsCLIReadOnly := false
 	_ = mode // mode is retained for future per-mode mount tweaks
