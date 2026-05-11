@@ -335,21 +335,30 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6a. PI auth.json targeted allow (pi sessions only) ───────────────
-	// The staging dir contains a symlink <stagingDir>/auth.json →
-	// ~/.pi/agent/auth.json (created by StagePIAgentConfigDir). For the
-	// symlink to resolve inside the sandbox, the real credential file must
-	// also be accessible at its host path. We allow read-write so that OAuth
-	// token refreshes performed inside the session are written back to the
-	// host file. The rule is always emitted for pi sessions even when
-	// ~/.pi/agent/auth.json does not exist — sandbox-exec silently ignores
-	// (literal ...) rules for non-existent paths, so pi simply prompts for
-	// login rather than crashing. The rule is scoped to the specific file
-	// literal (not a subpath) to avoid granting broad ~/.pi/agent/ access.
+	// ── 6a. PI agent dir allow (pi sessions only) ────────────────────────
+	// OAuth token refresh inside pi-coding-agent uses proper-lockfile with
+	// realpath:true, which resolves auth.json through any symlink and then
+	// calls mkdir(<resolved-auth-path>.lock) to acquire the lock. That mkdir
+	// requires write permission on the *parent directory* ~/.pi/agent/, not
+	// just on the auth.json file itself. A (literal ...) rule on auth.json
+	// alone is therefore insufficient — the sandbox denies the mkdir and the
+	// refresh silently fails (EPERM after ~30 s of retries).
+	//
+	// We widen the rule to (subpath ~/.pi/agent) so that:
+	//   - auth.json reads and writes are permitted (token refresh writes back
+	//     to the host file).
+	//   - mkdir auth.json.lock (the proper-lockfile lock dir) is permitted
+	//     because the parent dir is now writable.
+	//
+	// The rule is still gated on Harness == "pi" so non-pi sessions are not
+	// exposed to the pi credential directory. It is always emitted for pi
+	// sessions even when ~/.pi/agent does not yet exist — sandbox-exec
+	// silently ignores (subpath ...) rules for non-existent paths, so pi
+	// simply prompts for /login rather than crashing on a fresh install.
 	if m.cfg.Harness == "pi" && home != "" {
-		piAuthPath := filepath.Join(home, ".pi", "agent", "auth.json")
+		piAgentDir := filepath.Join(home, ".pi", "agent")
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
-		sb.WriteString("  (literal " + quoteSBPL(piAuthPath) + "))\n")
+		sb.WriteString("  (subpath " + quoteSBPL(piAgentDir) + "))\n")
 		sb.WriteString("\n")
 	}
 
