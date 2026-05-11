@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -58,5 +59,33 @@ outside a sandbox.`,
 
 func init() {
 	rootCmd.AddCommand(dbCmd)
+}
+
+// activeSessionNamesForError returns a capped list of active session names
+// suitable for inclusion in enum-shaped error messages (e.g.
+// "session must be one of: A, B (got: \"C\")").
+// cap controls the maximum number of names returned. When the full list is
+// longer, an "...and N more" sentinel is appended.
+// d may be nil or produce an error — in both cases an empty slice is returned
+// so callers can safely handle the no-DB case.
+func activeSessionNamesForError(d *db.DB, cap int) ([]string, error) {
+	if d == nil {
+		return nil, nil
+	}
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		names = append(names, s.SessionName)
+	}
+	if len(names) <= cap {
+		return names, nil
+	}
+	truncated := make([]string, cap+1)
+	copy(truncated, names[:cap])
+	truncated[cap] = fmt.Sprintf("...and %d more", len(names)-cap)
+	return truncated, nil
 }
 

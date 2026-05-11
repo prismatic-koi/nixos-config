@@ -109,9 +109,9 @@ func AgentsByName(agents []Agent, allowedNames []string) ([]Agent, error) {
 		}
 	}
 	if len(unknown) > 0 {
-		return nil, fmt.Errorf("unknown agent name(s): %s\navailable: %s",
-			strings.Join(unknown, ", "),
+		return nil, fmt.Errorf("--only must be one of: %s (got: %q)",
 			strings.Join(agentNames(agents), ", "),
+			strings.Join(unknown, ", "),
 		)
 	}
 	return result, nil

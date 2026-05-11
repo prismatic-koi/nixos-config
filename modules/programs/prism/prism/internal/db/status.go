@@ -715,6 +715,25 @@ WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
 }
 
+// ActiveStatusForRepoBranch returns the active (ended_at IS NULL) agent_status
+// row for the given repo and worktree (branch) name, or nil when no such row
+// exists. This is the natural-key dedupe check used by prism spawn --reuse.
+func (d *DB) ActiveStatusForRepoBranch(repo, branch string) (*Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE ended_at IS NULL AND repo = ? AND worktree = ?
+LIMIT 1`
+	statuses, err := d.queryStatuses(q, repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	return &statuses[0], nil
+}
+
 // AllStatusesWithPrefix returns all agent_status rows (active and ended)
 // whose session_name starts with the given prefix. Used by `prism checkin
 // <parent>~review` to enumerate all review rounds including completed ones.

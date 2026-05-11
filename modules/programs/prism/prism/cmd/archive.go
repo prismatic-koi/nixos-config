@@ -13,6 +13,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -108,7 +109,7 @@ func printArchivePathAllJSON(d *db.DB, sessionName string) error {
 		return fmt.Errorf("archive: %w", err)
 	}
 	if len(sessions) == 0 {
-		return fmt.Errorf("archive: no incarnations found for session %q", sessionName)
+		return archiveNotFoundError(d, sessionName)
 	}
 
 	rows := make([]archiveJSONRow, 0, len(sessions))
@@ -141,6 +142,12 @@ func printArchivePathAllJSON(d *db.DB, sessionName string) error {
 func printArchivePath(d *db.DB, arg string, forceInstance bool) error {
 	sess, err := resolveSessionArg(d, arg, forceInstance)
 	if err != nil {
+		if !forceInstance && len(arg) != 36 {
+			// Not a UUID lookup — enrich with available session names.
+			if enriched := archiveNotFoundError(d, arg); enriched != nil {
+				return enriched
+			}
+		}
 		return fmt.Errorf("archive: %w", err)
 	}
 
@@ -162,7 +169,7 @@ func printArchivePathAll(d *db.DB, sessionName string) error {
 	}
 
 	if len(sessions) == 0 {
-		return fmt.Errorf("archive: no incarnations found for session %q", sessionName)
+		return archiveNotFoundError(d, sessionName)
 	}
 
 	for _, s := range sessions {
@@ -173,4 +180,15 @@ func printArchivePathAll(d *db.DB, sessionName string) error {
 		}
 	}
 	return nil
+}
+
+// archiveNotFoundError builds an enum-shaped error for an unknown session/arg,
+// listing recent session names from the DB to aid recovery.
+func archiveNotFoundError(d *db.DB, arg string) error {
+	names, _ := activeSessionNamesForError(d, 10)
+	if len(names) == 0 {
+		return fmt.Errorf("archive: %q not found — no sessions in DB", arg)
+	}
+	return fmt.Errorf("archive: session must be one of: %s (got: %q)",
+		strings.Join(names, ", "), arg)
 }
