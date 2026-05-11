@@ -106,7 +106,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		sessionNames, _ := activeSessionNamesForError(database, 10)
 		if len(sessionNames) == 0 {
 			return fmt.Errorf(
-				"session %q not found — no active sessions in DB (run `prism list-sessions` to verify)",
+				"session %q not found — no active sessions in DB (run `prism sessions list` to verify)",
 				sessionName,
 			)
 		}
