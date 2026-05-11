@@ -95,44 +95,6 @@ type sessionJSONRow struct {
 	PrismVersion     *string `json:"prism_version"`
 }
 
-func runSessionsList(cmd *cobra.Command, _ []string) error {
-	repoFilter, _ := cmd.Flags().GetString("repo")
-	sinceStr, _ := cmd.Flags().GetString("since")
-	jsonMode, _ := cmd.Flags().GetBool("json")
-
-	sinceMs, err := parseSinceFlag(sinceStr)
-	if err != nil {
-		return err
-	}
-
-	d, err := openDB()
-	if err != nil {
-		return fmt.Errorf("sessions list: %w", err)
-	}
-	defer d.Close()
-
-	var sessions []db.Session
-	switch {
-	case repoFilter != "" && sinceMs > 0:
-		sessions, err = d.SessionsForRepoSince(repoFilter, sinceMs)
-	case repoFilter != "":
-		sessions, err = d.SessionsForRepo(repoFilter)
-	case sinceMs > 0:
-		sessions, err = d.SessionsSince(sinceMs)
-	default:
-		sessions, err = d.AllSessions()
-	}
-	if err != nil {
-		return fmt.Errorf("sessions list: %w", err)
-	}
-
-	if jsonMode {
-		return renderSessionsListJSON(sessions)
-	}
-
-	return renderSessionsListTable(sessions)
-}
-
 func renderSessionsListJSON(sessions []db.Session) error {
 	rows := make([]sessionJSONRow, 0, len(sessions))
 	for _, s := range sessions {
