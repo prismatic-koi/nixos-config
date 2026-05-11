@@ -12,7 +12,7 @@ import (
 )
 
 // TestRenderMergesListJSON_EmptyArray verifies that an empty merge queue
-// renders as a bare JSON array "[]" (never null, never absent — AC #1499).
+// renders as a JSON object with an empty merges array and truncated:false.
 func TestRenderMergesListJSON_EmptyArray(t *testing.T) {
 	out := captureStdout(t, func() {
 		if err := renderMergesListJSON(nil); err != nil {
@@ -20,9 +20,20 @@ func TestRenderMergesListJSON_EmptyArray(t *testing.T) {
 		}
 	})
 
-	trimmed := strings.TrimSpace(out)
-	if trimmed != "[]" {
-		t.Errorf("expected empty JSON array '[]' for empty merges list, got %q", trimmed)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &obj); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
+	}
+	mergesVal, ok := obj["merges"]
+	if !ok {
+		t.Fatalf("expected 'merges' key in output, got %s", out)
+	}
+	arr, ok := mergesVal.([]interface{})
+	if !ok || len(arr) != 0 {
+		t.Errorf("expected empty merges array, got %v", mergesVal)
+	}
+	if truncated, _ := obj["truncated"].(bool); truncated {
+		t.Errorf("expected truncated:false for empty list")
 	}
 }
 
@@ -50,15 +61,23 @@ func TestRenderMergesListJSON_SnakeCaseKeysAndRFC3339(t *testing.T) {
 		}
 	})
 
-	var rows []map[string]interface{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rows); err != nil {
-		t.Fatalf("output is not a valid JSON array: %v\noutput: %s", err, out)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &obj); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("expected 1 row, got %d", len(rows))
+	rowsVal, ok := obj["merges"]
+	if !ok {
+		t.Fatalf("expected 'merges' key in output")
+	}
+	rowsArr, ok := rowsVal.([]interface{})
+	if !ok || len(rowsArr) != 1 {
+		t.Fatalf("expected 1 row in merges array, got %v", rowsVal)
 	}
 
-	row := rows[0]
+	row, ok := rowsArr[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("merges[0] is not an object")
+	}
 
 	// Required snake_case keys.
 	for _, k := range []string{"queue_position", "pr", "title", "status", "error", "enqueued_at", "last_checked_at", "merged_at", "ended_at", "coordinator_session", "instance_id"} {

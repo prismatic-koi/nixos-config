@@ -155,8 +155,9 @@ type mergeJSONRow struct {
 	InstanceID         string  `json:"instance_id"`
 }
 
-// renderMergesListJSON marshals merges to a JSON array (snake_case keys,
-// RFC3339 timestamps) and writes it to stdout. An empty list renders as `[]`.
+// renderMergesListJSON marshals merges to a JSON object with a `merges` array
+// (snake_case keys, RFC3339 timestamps) and a `truncated` bool.
+// An empty list renders with `"merges":[]` and `"truncated":false`.
 func renderMergesListJSON(merges []db.PendingMerge) error {
 	rows := make([]mergeJSONRow, 0, len(merges))
 	for _, m := range merges {
@@ -184,7 +185,14 @@ func renderMergesListJSON(merges []db.PendingMerge) error {
 		}
 		rows = append(rows, row)
 	}
-	data, err := json.Marshal(rows)
+	out := struct {
+		Merges    []mergeJSONRow `json:"merges"`
+		Truncated bool           `json:"truncated"`
+	}{
+		Merges:    rows,
+		Truncated: false, // merge queue is never implicitly capped
+	}
+	data, err := json.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("prism merges list --json: marshal: %w", err)
 	}

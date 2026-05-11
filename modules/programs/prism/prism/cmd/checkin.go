@@ -214,18 +214,23 @@ func runCheckinSessionJSON(session string, limit int, before, after *string, typ
 
 	// Fetch events using the same logic as the host-API /checkin handler.
 	var events []db.Event
+	// assistantCount tracks how many assistant turns were fetched so we can
+	// determine whether the result was truncated at the limit.
+	assistantCount := 0
 	if len(types) > 0 {
 		evts, qerr := d.QueryEvents(session, limit, before, after, types)
 		if qerr != nil {
 			return fmt.Errorf("checkin --json: query events: %w", qerr)
 		}
 		events = evts
+		assistantCount = len(evts)
 	} else {
 		// Default assistant-turn-centric mode: mirror host-API logic.
 		assistantEvents, qerr := d.QueryEvents(session, limit, before, after, []string{"msg_assistant"})
 		if qerr != nil {
 			return fmt.Errorf("checkin --json: query events: %w", qerr)
 		}
+		assistantCount = len(assistantEvents)
 		if len(assistantEvents) > 0 {
 			// Collect messageIds and fetch child events.
 			messageIDs := make([]string, 0, len(assistantEvents))
@@ -273,17 +278,32 @@ func runCheckinSessionJSON(session string, limit int, before, after *string, typ
 	if events == nil {
 		events = []db.Event{}
 	}
+
+	// Truncation: when assistantCount == limit the DB may have more turns.
+	// The agent can page backward via --before=<next_before>.
+	truncated := limit > 0 && assistantCount >= limit
 	out := map[string]any{
-		"session": session,
-		"state":   state,
-		"events":  events,
+		"session":   session,
+		"state":     state,
+		"events":    events,
+		"truncated": truncated,
+	}
+	if truncated && len(events) > 0 {
+		out["hint"] = "more turns may exist — pass --before=<next_before> to page backward"
+		// Find the oldest event ID in the returned window.
+		oldest := events[0]
+		for _, e := range events[1:] {
+			if e.CreatedAt.Before(oldest.CreatedAt) {
+				oldest = e
+			}
+		}
+		out["next_before"] = oldest.ID
 	}
 	data, merr := json.Marshal(out)
 	if merr != nil {
 		return fmt.Errorf("checkin --json: marshal: %w", merr)
 	}
-	fmt.Println(string(data))
-	return nil
+	return printJSON(data)
 }
 
 // runCheckinSessionRaw is the legacy raw-event query path, used when --types

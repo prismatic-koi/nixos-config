@@ -14,7 +14,7 @@ import (
 )
 
 // TestListSessions_JSONFlag_DirectPath verifies that list-sessions --json
-// (no PRISM_HOST_API) emits a valid JSON array of session status objects.
+// (no PRISM_HOST_API) emits a valid JSON object with a sessions array.
 func TestListSessions_JSONFlag_DirectPath(t *testing.T) {
 	d := openStatsTestDB(t) // also unsets PRISM_HOST_API
 
@@ -37,9 +37,24 @@ func TestListSessions_JSONFlag_DirectPath(t *testing.T) {
 	})
 
 	trimmed := strings.TrimSpace(out)
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		t.Fatalf("--json output is not valid JSON: %v\noutput: %s", err, out)
+	}
+	sessionsVal, ok := obj["sessions"]
+	if !ok {
+		t.Fatalf("expected 'sessions' key in output")
+	}
+	_ = sessionsVal // type check not needed here
+	if _, ok := obj["truncated"]; !ok {
+		t.Errorf("expected 'truncated' key in output")
+	}
+
+	// Find our session by re-marshalling.
+	data, _ := json.Marshal(sessionsVal)
 	var sessions []db.Status
-	if err := json.Unmarshal([]byte(trimmed), &sessions); err != nil {
-		t.Fatalf("--json output is not valid JSON array: %v\noutput: %s", err, out)
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		t.Fatalf("sessions is not a valid []db.Status: %v", err)
 	}
 	if len(sessions) == 0 {
 		t.Error("expected at least 1 session")

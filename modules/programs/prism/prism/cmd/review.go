@@ -62,10 +62,10 @@ func init() {
 	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
-	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro); takes precedence over --model for the named role")
-	reviewCmd.Flags().Bool("rebase", false, "Fetch origin/main, rebase HEAD onto it, and force-push before running the review (inline fix for the rebase-gate refusal)")
-	reviewCmd.Flags().Bool("wait", false, "Block until the review group reaches a terminal state (all-PASS, any-FAIL, or no-start). Without --wait, returns immediately and the monitor delivers results later via prism prompt.")
-	reviewCmd.Flags().Duration("wait-timeout", defaultReviewWaitTimeout, "Timeout for --wait. On expiry, exits non-zero with a status payload distinguishable from a real review failure. Ignored when --wait is not set.")
+	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
+	reviewCmd.Flags().Bool("rebase", false, "Fetch origin/main, rebase HEAD onto it, and force-push before running the review")
+	reviewCmd.Flags().Bool("wait", false, "Block until the review group reaches a terminal state (all-PASS, any-FAIL, or no-start)")
+	reviewCmd.Flags().Duration("wait-timeout", defaultReviewWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
 	reviewCmd.Flags().Bool("json", false, "Emit the terminal verdict as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
 	rootCmd.AddCommand(reviewCmd)
 }

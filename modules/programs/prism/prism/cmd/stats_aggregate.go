@@ -43,13 +43,15 @@ func runStatsIncarnations(repoFilter string, sinceMs int64, jsonMode bool) error
 		if sessions == nil {
 			sessions = []db.Session{}
 		}
-		out := map[string]any{"sessions": sessions}
+		out := map[string]any{
+			"sessions":  sessions,
+			"truncated": false,
+		}
 		data, merr := json.Marshal(out)
 		if merr != nil {
 			return fmt.Errorf("stats --json: marshal sessions: %w", merr)
 		}
-		fmt.Println(string(data))
-		return nil
+		return printJSON(data)
 	}
 
 	// Direct-DB path: render with token/cost data from the DB.

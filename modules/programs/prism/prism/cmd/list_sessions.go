@@ -104,7 +104,14 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 		if ss == nil {
 			ss = []db.Status{}
 		}
-		data, merr := json.Marshal(ss)
+		out := struct {
+			Sessions  []db.Status `json:"sessions"`
+			Truncated bool        `json:"truncated"`
+		}{
+			Sessions:  ss,
+			Truncated: false,
+		}
+		data, merr := json.Marshal(out)
 		if merr != nil {
 			return fmt.Errorf("sessions list --json: marshal: %w", merr)
 		}
