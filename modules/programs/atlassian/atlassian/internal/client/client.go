@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"time"
 )
 
 // Client is an authenticated Atlassian API client.
@@ -207,4 +209,121 @@ func (c *Client) GetResources() (any, error) {
 // urlEncode percent-encodes a query parameter value.
 func urlEncode(s string) string {
 	return url.QueryEscape(s)
+}
+
+// Post performs an authenticated POST request with a JSON body and decodes the
+// JSON response. On 5xx it retries once after 1s. On 4xx it returns immediately.
+func (c *Client) Post(endpoint string, body any) (any, error) {
+	return c.doWrite(http.MethodPost, endpoint, body)
+}
+
+// Put performs an authenticated PUT request with a JSON body and decodes the
+// JSON response. On 5xx it retries once after 1s. On 4xx it returns immediately.
+func (c *Client) Put(endpoint string, body any) (any, error) {
+	return c.doWrite(http.MethodPut, endpoint, body)
+}
+
+// doWrite executes a write request (POST or PUT). 5xx triggers one retry after 1s.
+func (c *Client) doWrite(method, endpoint string, body any) (any, error) {
+	result, err := c.doWriteOnce(method, endpoint, body)
+	if err == nil {
+		return result, nil
+	}
+	// Retry once on 5xx.
+	apiErr, is5xx := err.(*APIError)
+	if is5xx && apiErr.StatusCode >= 500 {
+		time.Sleep(1 * time.Second)
+		return c.doWriteOnce(method, endpoint, body)
+	}
+	return nil, err
+}
+
+func (c *Client) doWriteOnce(method, endpoint string, body any) (any, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequest(method, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", c.authHeader())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP %s %s: %w", method, endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		msg := extractErrorMessage(respBody, resp.StatusCode)
+		path := resp.Request.URL.Path
+		// Special message for version conflicts on Confluence update.
+		if resp.StatusCode == 409 {
+			return nil, &APIError{
+				StatusCode: 409,
+				Method:     method,
+				Path:       path,
+				Message:    "page was modified concurrently — refetch and retry",
+			}
+		}
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Method:     method,
+			Path:       path,
+			Message:    msg,
+		}
+	}
+
+	// Some write endpoints return 204 No Content.
+	if len(respBody) == 0 || resp.StatusCode == 204 {
+		return map[string]any{}, nil
+	}
+
+	var v any
+	if err := json.Unmarshal(respBody, &v); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return v, nil
+}
+
+// CreateJiraIssue creates a new Jira issue.
+func (c *Client) CreateJiraIssue(payload map[string]any) (any, error) {
+	return c.Post(c.jiraBase()+"/issue", payload)
+}
+
+// UpdateJiraIssue performs a partial update on an existing Jira issue.
+func (c *Client) UpdateJiraIssue(key string, payload map[string]any) (any, error) {
+	return c.Put(c.jiraBase()+"/issue/"+key, payload)
+}
+
+// AddJiraComment adds a comment to a Jira issue.
+func (c *Client) AddJiraComment(key string, payload map[string]any) (any, error) {
+	return c.Post(c.jiraBase()+"/issue/"+key+"/comment", payload)
+}
+
+// TransitionJiraIssue performs a workflow transition on a Jira issue.
+func (c *Client) TransitionJiraIssue(key string, transitionID string) (any, error) {
+	payload := map[string]any{
+		"transition": map[string]any{"id": transitionID},
+	}
+	return c.Post(c.jiraBase()+"/issue/"+key+"/transitions", payload)
+}
+
+// CreateConfluencePage creates a new Confluence page.
+func (c *Client) CreateConfluencePage(payload map[string]any) (any, error) {
+	return c.Post(c.confluenceBase()+"/pages", payload)
+}
+
+// UpdateConfluencePage updates an existing Confluence page.
+func (c *Client) UpdateConfluencePage(pageID string, payload map[string]any) (any, error) {
+	return c.Put(c.confluenceBase()+"/pages/"+pageID, payload)
 }
