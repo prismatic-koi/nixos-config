@@ -82,7 +82,7 @@ This wastes cycles and interrupts nothing useful. Spawn the agent, then wait for
 
 ### Session overview
 
-Use `prism list-sessions` at any time for a lightweight overview of all active sessions and their state. This is not a check-in and does not involve reading agent output — it is safe to run freely.
+Use `prism sessions list` at any time for a lightweight overview of all active sessions and their state. This is not a check-in and does not involve reading agent output — it is safe to run freely.
 
 ### When check-ins ARE appropriate
 
@@ -115,7 +115,7 @@ one represents a PR that may be blocking the next piece of work.
 Workers that hit a decision they cannot make alone use `prism escalate`, which
 delivers a targeted prompt to you AND emits a `session.escalated` bus event
 distinct from `session.finished`. The calling worker enters a new `escalated`
-state, visible in `prism list-sessions`, and the sidecar **suppresses** the
+state, visible in `prism sessions list`, and the sidecar **suppresses** the
 "has finished" notification while the worker stays in that state.
 
 Key behavioural rules:
@@ -125,7 +125,7 @@ Key behavioural rules:
   there will not be one. The escalation is the notification.
 - **Do not sense-check the worker's PR yet.** A worker in `escalated` state is
   paused awaiting your guidance, not done. Their PR may be mid-edit or
-  intentionally not-yet-pushed. Run `prism list-sessions` if you need to
+  intentionally not-yet-pushed. Run `prism sessions list` if you need to
   confirm: an `escalated` row means "waiting for guidance", not "finished".
 - **Reply via `prism prompt`** (not `prism escalate` — that is a worker-only
   surface). Your reply's `turn_start` clears the worker's `escalated` state

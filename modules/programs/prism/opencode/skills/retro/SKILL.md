@@ -24,7 +24,7 @@ Run these commands to collect the data for analysis. Work through them in order.
 ### 1. Confirm the session exists and discover subsessions
 
 ```bash
-prism list-sessions
+prism sessions list
 ```
 
 Look for the named session and any `~review-N-<agent>` subsessions attached to it. If the session is not present, see [Edge cases](#edge-cases).
@@ -174,8 +174,8 @@ Vague advice does not change agent behaviour. A skill, a permission rule in `ope
 ## Edge cases
 
 **Session name not found**
-If `prism list-sessions` does not show the named session, output:
-> "Session `<name>` not found. Use `prism list-sessions` to see available sessions. If the session was cleaned up, use `prism sessions list --all` to check historical records."
+If `prism sessions list` does not show the named session, output:
+> "Session `<name>` not found. Use `prism sessions list` to see available sessions. If the session was cleaned up, use `prism sessions list --all` to check historical records."
 
 Do not proceed with analysis.
 

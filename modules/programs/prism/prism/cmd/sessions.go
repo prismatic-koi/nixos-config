@@ -1,13 +1,21 @@
 package cmd
 
-// prism sessions — general query surface over the sessions table.
+// prism sessions — subcommand group for session-related queries.
 //
-// Usage:
+// Canonical commands:
 //
-//	prism sessions list                  tabular listing of all sessions rows
-//	prism sessions list --repo <name>    filter by repo
-//	prism sessions list --since <date>   filter by started_at
-//	prism sessions list --json           emit a JSON array of session-incarnation objects (snake_case keys, RFC3339 timestamps)
+//	prism sessions list               active session table (human-readable)
+//	prism sessions list --all         show all repos (default: current repo only)
+//	prism sessions list --json        JSON array of session-status objects
+//	prism sessions status             counts by state
+//	prism sessions status --tmux-format  tmux colour-formatted output
+//	prism sessions status --waiting   only the waiting count
+//	prism sessions status --json      JSON object keyed by state
+//
+// Hidden backward-compat aliases:
+//
+//	prism list-sessions   → prism sessions list
+//	prism status          → prism sessions status
 
 import (
 	"encoding/json"
@@ -23,27 +31,47 @@ import (
 
 var sessionsCmd = &cobra.Command{
 	Use:   "sessions",
-	Short: "Query the sessions table",
-	Long:  `General query surface over the sessions table. Use subcommands to list sessions.`,
+	Short: "Query and inspect agent sessions",
+	Long:  `Subcommand group for session-related queries. Use 'sessions list' for the active session table and 'sessions status' for state counts.`,
 }
 
+// sessionsListCmd is the canonical form of prism list-sessions.
+// It lists active agent sessions with their state and title.
+// prism list-sessions is kept as a hidden top-level alias.
 var sessionsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all session incarnations",
-	Long: `List all rows in the sessions table as a tabular display.
+	Short: "List agent sessions with their state and title",
+	RunE:  runListSessions,
+}
 
-Use --repo to filter by repo name, --since to filter by start date, and
---json to emit a JSON array of session-incarnation objects with snake_case
-keys and RFC3339 timestamps.`,
-	Args: cobra.NoArgs,
-	RunE: runSessionsList,
+// sessionsStatusCmd is the canonical form of prism status.
+// It prints agent session counts by state.
+// prism status is kept as a hidden top-level alias.
+var sessionsStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Print agent session counts",
+	Long: `Print counts of agent sessions by state.
+
+Without flags, prints a human-readable summary of all states.
+Use --waiting to restrict output to the waiting count,
+--tmux-format to emit a tmux-style colour-formatted string
+suitable for embedding in status-right, or --json to emit a
+JSON object keyed by state with integer counts.
+
+--json and --tmux-format are mutually exclusive.`,
+	RunE: runStatus,
 }
 
 func init() {
-	sessionsListCmd.Flags().String("repo", "", "Filter by repo name")
-	sessionsListCmd.Flags().String("since", "", "Filter by started_at >= date (ISO 8601 or YYYY-MM-DD)")
-	sessionsListCmd.Flags().Bool("json", false, "Emit a JSON array of session-incarnation objects to stdout (snake_case keys, RFC3339 timestamps)")
+	sessionsListCmd.Flags().BoolP("all", "A", false, "List all sessions across all repos")
+	sessionsListCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
+
+	sessionsStatusCmd.Flags().Bool("waiting", false, "Only output the waiting count")
+	sessionsStatusCmd.Flags().Bool("tmux-format", false, "Emit tmux #[fg=...] colour-formatted output")
+	sessionsStatusCmd.Flags().Bool("json", false, "Emit a JSON object keyed by state with integer counts (mutually exclusive with --tmux-format)")
+
 	sessionsCmd.AddCommand(sessionsListCmd)
+	sessionsCmd.AddCommand(sessionsStatusCmd)
 	rootCmd.AddCommand(sessionsCmd)
 }
 

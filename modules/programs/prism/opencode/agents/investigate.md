@@ -63,7 +63,7 @@ Via the `bash` tool you may run:
   operations.
 - `gh issue view`, `gh issue list`, `gh pr view`, `gh pr list`, `gh pr diff` —
   read-only GitHub queries.
-- `prism checkin`, `prism logs`, `prism list-sessions` — read-only prism
+- `prism checkin`, `prism logs`, `prism sessions list` — read-only prism
   introspection.
 - Standard Unix utilities for text processing and inspection.
 

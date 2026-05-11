@@ -25,7 +25,7 @@ package cmd
 // Killing this command does NOT cancel the spawned session — the agent
 // continues in its tmux session and (eventually) reaches a terminal state
 // of its own. The user can inspect via `prism checkin <session>` or
-// `prism list-sessions`.
+// `prism sessions list`.
 
 import (
 	"context"

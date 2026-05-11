@@ -615,7 +615,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 
 	// Transition the worker session to "reviewing" so that:
 	//   1. The coordinator does not receive a premature "has finished" notification.
-	//   2. The dashboard and `prism list-sessions` display the worker as awaiting
+	//   2. The dashboard and `prism sessions list` display the worker as awaiting
 	//      review results rather than finished or idle.
 	// This write uses the still-open DB handle (d). The sidecar's upsertState
 	// path is intentionally bypassed here: the sidecar is running in the worker

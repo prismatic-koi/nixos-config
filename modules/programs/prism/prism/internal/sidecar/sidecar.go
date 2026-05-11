@@ -1852,7 +1852,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		if !s.reviewingInFlight {
 			// Gap 4: when resuming from a terminal state (error or interrupted),
 			// clear ended_at so the session reappears in AllActiveStatus and
-			// prism list-sessions. Check lastState (in-memory) first; if it is
+			// prism sessions list. Check lastState (in-memory) first; if it is
 			// still empty (initial turn) also check the DB for robustness.
 			prevState := s.lastState
 			if prevState == "" {

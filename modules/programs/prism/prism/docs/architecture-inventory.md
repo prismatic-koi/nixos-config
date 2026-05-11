@@ -2011,8 +2011,8 @@ For each top-level prism subcommand, the function chain and side-effects.
 - `prism restart` — `cmd/restart.go`, kills+restores the current session [uncertain — verify exact mechanism].
 - `prism switch` — `cmd/switch.go`, switches tmux client to a session, ensuring the session exists (creates via `session.Create` if not).
 - `prism dashboard` — `cmd/dashboard.go`, ensures the `prism-dashboard` tmux session exists and switches the client to it.
-- `prism status` — `cmd/status.go`, prints current session's `agent_status` row.
-- `prism list-sessions` / `prism sessions list` — list `agent_status` and `sessions` rows.
+- `prism sessions status` (canonical; `prism status` is a hidden alias) — `cmd/status.go`, prints current session's `agent_status` row.
+- `prism sessions list` / `prism sessions list` — list `agent_status` and `sessions` rows.
 - `prism logs` — `cmd/logs.go`, streams sidecar log or agent-run log.
 - `prism prompt` — `cmd/prompt.go`, sends a prompt to a session via the host-API.
 - `prism checkin` — `cmd/checkin.go`, renders per-turn event view.

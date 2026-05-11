@@ -142,7 +142,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism list-sessions` and the tmux picker without looking anything up. |
+| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism sessions list` and the tmux picker without looking anything up. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
@@ -163,7 +163,7 @@ When you need to delegate work to a repo you are not the coordinator for, route 
 
 **Flow:**
 
-1. Run `prism list-sessions` and look for `<repo>@main`.
+1. Run `prism sessions list` and look for `<repo>@main`.
 2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
 3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
 4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --branch main` will fail with a git error.
@@ -172,7 +172,7 @@ Spawning directly into a feature branch in another repo (bypassing the coordinat
 
 ```bash
 # Check if the target repo has a coordinator session
-prism list-sessions
+prism sessions list
 
 # If home-ops@main exists and is not waiting:
 prism prompt home-ops@main --prompt 'Please update the plex image to the latest tag and open a PR'
@@ -386,7 +386,7 @@ Add `--json` to any `prism merges` / `prism merges list` invocation (including w
 
 ### Reviews ledger: `prism reviews list`
 
-Reviews now have a dedicated ledger surface analogous to `prism merges`. Use it instead of `prism list-sessions | grep '~review-N-'` (fragile, missing group metadata).
+Reviews now have a dedicated ledger surface analogous to `prism merges`. Use it instead of `prism sessions list | grep '~review-N-'` (fragile, missing group metadata).
 
 ```bash
 prism reviews            # alias for `prism reviews list`
@@ -485,24 +485,24 @@ Every list-style and lookup-style prism subcommand supports a `--json` flag that
 
 | Command | `--json` shape |
 |---|---|
-| `prism list-sessions --json` | array of session-status objects |
-| `prism sessions list --json` | array of session-incarnation objects |
+| `prism sessions list --json` | array of session-status objects |
+| `prism sessions list --all --json` | array of session-status objects across all repos |
 | `prism checkin <session> --json` | session + events object |
 | `prism stats --json` (and `prism stats <id> --json`) | rows mirroring the host-API |
 | `prism merges --json` (and `prism merges list --json`, `--failed --json`, `--abandoned --json`, `--all --json`) | array of merge-queue entries |
 | `prism audit --json` | object with `events` array, `truncated` bool, optional `hint` |
-| `prism status --json` | object keyed by state (`active`, `waiting`, `idle`, `finished`, `error`) with integer counts (mutually exclusive with `--tmux-format`) |
+| `prism sessions status --json` | object keyed by state (`active`, `waiting`, `idle`, `finished`, `error`) with integer counts (mutually exclusive with `--tmux-format`) |
 | `prism profile list --json` | array of profile objects |
 | `prism profile show [name] --json` | single profile object describing the slot table |
 | `prism archive <session> --all --json` | array of archive-entry objects (instance_id, started_at, archive_path) |
 
 ## Checking in on a running session
 
-Use `prism list-sessions` to see all active agent sessions with their state and current task title:
+Use `prism sessions list` to see all active agent sessions with their state and current task title:
 
 ```bash
-prism list-sessions          # human-readable table
-prism list-sessions --json   # JSON array (use this when scripting)
+prism sessions list          # human-readable table
+prism sessions list --json   # JSON array (use this when scripting)
 ```
 
 Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically.
@@ -589,7 +589,7 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 
 The CLI validates the mode client-side before making any network call. An invalid value exits non-zero with a message listing the accepted values.
 
-The prompt is delivered directly via HTTP to the opencode session. The session must exist and have an active opencode port — use `prism list-sessions` to check first.
+The prompt is delivered directly via HTTP to the opencode session. The session must exist and have an active opencode port — use `prism sessions list` to check first.
 
 ### Waiting state guard
 
@@ -639,7 +639,7 @@ active ──prism escalate──▶ escalated
 escalated ──any turn_start (from any source)──▶ active
 ```
 
-- `escalated` is a new value alongside `active` / `idle` / `finished` / `reviewing`. It surfaces in `prism list-sessions` so a glance shows which workers are paused awaiting guidance.
+- `escalated` is a new value alongside `active` / `idle` / `finished` / `reviewing`. It surfaces in `prism sessions list` so a glance shows which workers are paused awaiting guidance.
 - The transition out is triggered by **any** incoming `turn_start`, not specifically `prism prompt`. A human who pokes at the worker via tmux clears the flag too.
 - While in `escalated`, the sidecar suppresses the "has finished" notification. The `session.escalated` bus event is the notification.
 
@@ -670,7 +670,7 @@ A same-repo coordinator candidate is any active (ended_at IS NULL) row in the sa
 - Cross-repo escalation — v1 is single-repo; auto-discovery is repo-scoped.
 - Escalation receipts back to the worker — the worker discovers the coordinator's response by being prompted.
 - Re-escalation timeouts.
-- Dashboard panel for `escalated` sessions — surfaced via `prism list-sessions` and the bus only.
+- Dashboard panel for `escalated` sessions — surfaced via `prism sessions list` and the bus only.
 
 ## Debugging a running or stuck session
 
@@ -679,8 +679,8 @@ Use this decision tree when a session appears stuck, produces no output, or fail
 **Step 1 — Session state check:**
 
 ```bash
-prism list-sessions          # human-readable table
-prism list-sessions --json   # parseable when scripting
+prism sessions list          # human-readable table
+prism sessions list --json   # parseable when scripting
 ```
 
 Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), the port, and the `last_seen` timestamp. If a session has a DB row but no live tmux session, it may be a zombie (DB row without a live process). Proceed to step 2.
@@ -757,11 +757,11 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **`container did not become ready within 120s`** — the container started but the sidecar never reached the ready state. Usual causes: a misconfigured `opencode.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the `podman run` command line and any JSON parse errors.
 
-- **Session rows present in `prism list-sessions` but no events in `prism checkin`** — the container either never started or died immediately after creation. Run `prism logs <session>` to see the full podman command line and its stderr output.
+- **Session rows present in `prism sessions list` but no events in `prism checkin`** — the container either never started or died immediately after creation. Run `prism logs <session>` to see the full podman command line and its stderr output.
 
 - **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value passed to opencode is incorrect. Check the container's `opencode.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
 
-- **Zombie DB rows (session in `prism list-sessions` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to remove the stale row and any dangling port allocation.
+- **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to remove the stale row and any dangling port allocation.
 
 ### Escalation
 

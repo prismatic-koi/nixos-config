@@ -204,7 +204,7 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("prism profile use: look up session %q: %w", sessionTarget, stErr)
 			}
 			if st == nil {
-				return fmt.Errorf("prism profile use: session %q not found — run `prism list-sessions` to see active sessions", sessionTarget)
+				return fmt.Errorf("prism profile use: session %q not found — run `prism sessions list` to see active sessions", sessionTarget)
 			}
 			if st.EndedAt != nil {
 				return fmt.Errorf("prism profile use: session %q is no longer active (ended)", sessionTarget)

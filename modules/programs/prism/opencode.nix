@@ -244,7 +244,7 @@
         # coordinator responsibility. Workers must never spawn new sessions (#557).
         "prism checkin" = "allow";
         "prism checkin *" = "allow";
-        "prism list-sessions" = "allow";
+        "prism sessions list" = "allow";
         "prism prompt *" = "allow";
         # prism review is the primary async review path for workers (#864).
         # It spawns agents, registers a group, and returns immediately.
@@ -272,7 +272,7 @@
         "prism spawn *" = "allow";
         "prism checkin" = "allow";
         "prism checkin *" = "allow";
-        "prism list-sessions" = "allow";
+        "prism sessions list" = "allow";
         "prism prompt *" = "allow";
         "prism cleanup *" = "allow";
         "prism pr *" = "allow";
@@ -875,7 +875,7 @@
         # prism read-only introspection
         "prism checkin" = "allow";
         "prism checkin *" = "allow";
-        "prism list-sessions" = "allow";
+        "prism sessions list" = "allow";
       };
 
       # review-code, review-goal, review-security: read-only bash.
@@ -1045,7 +1045,7 @@
         # prism read-only introspection
         "prism checkin" = "allow";
         "prism checkin *" = "allow";
-        "prism list-sessions" = "allow";
+        "prism sessions list" = "allow";
       };
 
       # review-qa host: adds test-runner commands on top of the read-only base.
@@ -1440,7 +1440,7 @@
                         "prism stats *" = "allow";
                         "prism checkin" = "allow";
                         "prism checkin *" = "allow";
-                        "prism list-sessions" = "allow";
+                        "prism sessions list" = "allow";
                         # prism db — read-only SQL/schema introspection (#1467).
                         # ?mode=ro at the engine level is the safety net.
                         "prism db" = "allow";
