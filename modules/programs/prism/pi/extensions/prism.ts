@@ -1347,6 +1347,34 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // ExtensionContext, so we capture one whenever a turn-active hook fires.
   let lastCtx: ExtensionContext | null = null
 
+  // ── First-connect retry state ─────────────────────────────────────────
+  //
+  // firstConnect starts true and is set to false only after a successful
+  // hello_ack. While true, ECONNREFUSED (TCP) and ENOENT (Unix) errors on
+  // the connect() path are retried with exponential backoff to close the
+  // startup race between sidecar bind and extension dial (issue #1554).
+  //
+  // Retry schedule: 200ms, 400ms, 800ms, 1600ms, 3200ms (5 retries,
+  // ≈6.2s total wall time, well within the 8s budget).
+  // All other error codes are not retried — they fall through to today's
+  // log-and-give-up path regardless of firstConnect.
+  //
+  // PRISM_FIRST_CONNECT_RETRY_DELAYS_MS overrides the schedule for testing
+  // (comma-separated ms values, e.g. "1,2,4,8,16"). Not documented as a
+  // user-facing feature; it exists solely to make the exhaustion test fast.
+  const FIRST_CONNECT_RETRY_DELAYS_MS: readonly number[] = (() => {
+    const override = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+    if (override) {
+      const parsed = override.split(",").map(Number)
+      if (parsed.length > 0 && parsed.every((n) => Number.isFinite(n) && n >= 0)) {
+        return parsed
+      }
+    }
+    return [200, 400, 800, 1600, 3200]
+  })()
+  let firstConnect = true
+  let pendingRetryTimer: ReturnType<typeof setTimeout> | null = null
+
   const sendError = (
     code: string,
     message: string,
@@ -1363,19 +1391,65 @@ export default function prismExtension(pi: ExtensionAPI): void {
   }
 
   // ── Connect to sidecar ────────────────────────────────────────────────
-  const connect = (): void => {
+  //
+  // retryAttempt tracks which retry we are on (0 = initial attempt, 1..5 =
+  // the bounded retry attempts). It is passed through the retry chain so the
+  // error handler can schedule the next attempt or give up.
+  const connect = (retryAttempt: number = 0): void => {
+    // Cancel any pending retry timer — no two connect() calls in flight.
+    if (pendingRetryTimer !== null) {
+      clearTimeout(pendingRetryTimer)
+      pendingRetryTimer = null
+    }
+
+    // Create the socket object first, attach handlers, then call connect()
+    // so the error handler is registered before any synchronous error event
+    // can fire (relevant for ENOENT on Unix sockets in some runtimes).
     try {
-      socket =
-        endpoint.kind === "unix"
-          ? net.createConnection(endpoint.path)
-          : net.createConnection(endpoint.port, endpoint.host)
+      socket = new net.Socket()
     } catch (err) {
-      console.error("[prism-extension] createConnection failed:", err)
+      console.error("[prism-extension] Socket creation failed:", err)
       return
     }
 
     socket.on("error", (err) => {
-      console.error("[prism-extension] socket error:", err)
+      const code = (err as NodeJS.ErrnoException).code
+      const isRetriable = code === "ECONNREFUSED" || code === "ENOENT"
+
+      if (firstConnect && isRetriable && retryAttempt < FIRST_CONNECT_RETRY_DELAYS_MS.length) {
+        // First-connect retry: sidecar may not have bound yet. Schedule the
+        // next attempt with exponential backoff.
+        const delayMs = FIRST_CONNECT_RETRY_DELAYS_MS[retryAttempt]
+        const endpointStr =
+          endpoint.kind === "unix"
+            ? endpoint.path
+            : `${endpoint.host}:${endpoint.port}`
+        console.error(
+          `[prism-extension] first-connect ${code} on ${endpointStr} — retry ${
+            retryAttempt + 1
+          }/${FIRST_CONNECT_RETRY_DELAYS_MS.length} in ${delayMs}ms`,
+        )
+        pendingRetryTimer = setTimeout(() => {
+          pendingRetryTimer = null
+          connect(retryAttempt + 1)
+        }, delayMs)
+        return
+      }
+
+      // Budget exhausted or non-retriable error — give up.
+      if (firstConnect && isRetriable) {
+        const endpointStr =
+          endpoint.kind === "unix"
+            ? endpoint.path
+            : `${endpoint.host}:${endpoint.port}`
+        console.error(
+          `[prism-extension] giving up: sidecar not accepting on ${
+            endpointStr
+          } after ${retryAttempt} retries`,
+        )
+      } else {
+        console.error("[prism-extension] socket error:", err)
+      }
     })
     socket.on("close", () => {
       connected = false
@@ -1387,6 +1461,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
       // loop re-accepts on session_start.
     })
     socket.on("connect", () => {
+      // Cancel any pending retry timer now that we are connected.
+      if (pendingRetryTimer !== null) {
+        clearTimeout(pendingRetryTimer)
+        pendingRetryTimer = null
+      }
       connected = true
       writer = makeFrameWriter(socket!)
 
@@ -1474,6 +1553,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         // empty string, which formatPrismStatus maps to the (host) suffix.
         sessionIsolationMode = typeof f.isolation_mode === "string" ? f.isolation_mode : ""
         handshakeComplete = true
+        // Successful hello_ack: exit the first-connect retry window. Cancel
+        // any lingering retry timer (defensive — should already be null).
+        firstConnect = false
+        if (pendingRetryTimer !== null) {
+          clearTimeout(pendingRetryTimer)
+          pendingRetryTimer = null
+        }
 
         // Set the status bar immediately after handshake.
         // Review-cycle counting now lives in the Go-side monitor (#1512), so
@@ -1550,6 +1636,21 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       void dispatchInboundFrame(f, apiAdapter, sendError)
     })
+
+    // Initiate the connection now that all event handlers are registered.
+    // Doing this after handler registration ensures the error listener is
+    // in place before any synchronous error event fires (e.g. ENOENT on a
+    // Unix socket path that does not exist yet in some runtimes).
+    try {
+      if (endpoint.kind === "unix") {
+        socket.connect(endpoint.path)
+      } else {
+        socket.connect(endpoint.port, endpoint.host)
+      }
+    } catch (err) {
+      console.error("[prism-extension] socket.connect failed:", err)
+      socket = null
+    }
   }
 
   // ── Outbound hooks ────────────────────────────────────────────────────
@@ -1942,6 +2043,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // EOF, leaves the listener open, and waits for a reconnect. Process-exit
     // cleanup of pipe.sock is handled by the sidecar's own Shutdown() path and
     // by the reconnect-timeout path.
+    //
+    // Cancel any pending first-connect retry so it does not race the
+    // session_start-triggered connect() on the next session.
+    if (pendingRetryTimer !== null) {
+      clearTimeout(pendingRetryTimer)
+      pendingRetryTimer = null
+    }
     if (writer) {
       writer.close()
     }

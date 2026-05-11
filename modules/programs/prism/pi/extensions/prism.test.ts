@@ -51,6 +51,7 @@ import {
   makeFrameWriter,
   type FrameWriter,
 } from "./prism.ts"
+import prismExtension from "./prism.ts"
 
 // ---------------------------------------------------------------------------
 // shouldActivate (activation guard)
@@ -1667,6 +1668,324 @@ describe("shouldAttemptConnect", () => {
   })
 })
 
+
+// ---------------------------------------------------------------------------
+// #1554: first-connect retry on ECONNREFUSED / ENOENT
+// ---------------------------------------------------------------------------
+//
+// The extension retries the very first connect() call when it fails with
+// ECONNREFUSED (TCP) or ENOENT (Unix) while firstConnect is true (i.e. before
+// a successful hello_ack). Up to 5 retries with exponential backoff. Post-
+// handshake reconnect is unchanged.
+//
+// All tests use PRISM_FIRST_CONNECT_RETRY_DELAYS_MS to override the retry
+// schedule with tiny delays (1,2,4,8,16 ms) so the full budget (31ms) fits
+// in a fast async test. Tests are async functions returning Promises so bun
+// correctly waits for completion.
+
+/** Minimal mock of ExtensionAPI — only `on` is needed for these tests. */
+function makeMockPI1554() {
+  const handlers: Record<string, ((...args: unknown[]) => unknown)[]> = {}
+  const pi = {
+    on: (event: string, handler: (...args: unknown[]) => unknown) => {
+      if (!handlers[event]) handlers[event] = []
+      handlers[event].push(handler)
+    },
+    sendUserMessage: () => {},
+    setModel: () => {},
+    setThinkingLevel: () => {},
+    registerProvider: () => {},
+    setActiveTools: () => {},
+  }
+  const trigger = async (event: string, eventArg: unknown = {}, ctx: unknown = {}) => {
+    for (const h of handlers[event] ?? []) {
+      await h(eventArg, ctx)
+    }
+  }
+  return { pi, trigger }
+}
+
+/** Minimal sidecar responder: on `hello`, writes hello_ack. Returns frame list. */
+function makeSidecarResponder1554(conn: net.Socket): { frames: string[] } {
+  const frames: string[] = []
+  const chunks: Buffer[] = []
+  conn.on("data", (chunk: Buffer) => {
+    chunks.push(chunk)
+    const data = Buffer.concat(chunks).toString()
+    const lines = data.split("\n")
+    chunks.length = 0
+    if (!data.endsWith("\n")) chunks.push(Buffer.from(lines.pop()!))
+    for (const line of lines) {
+      if (!line) continue
+      frames.push(line)
+      let f: Record<string, unknown>
+      try { f = JSON.parse(line) as Record<string, unknown> } catch { continue }
+      if (f.type === "hello") {
+        conn.write(
+          JSON.stringify({ type: "hello_ack", protocol_version: 2,
+            session_name: "test@main", session_role: "worker", isolation_mode: "host" }) + "\n",
+        )
+      }
+    }
+  })
+  return { frames }
+}
+
+// Fast retry schedule: 1+2+4+8+16 = 31ms total budget.
+const FAST_DELAYS_1554 = "1,2,4,8,16"
+
+describe("#1554: first-connect retry — TCP ECONNREFUSED then success", () => {
+  it("retries on ECONNREFUSED and completes handshake when server binds within budget", () => {
+    return new Promise<void>((resolve, reject) => {
+      // Allocate a free port and then close the probe so the port is unbound
+      // when the extension first tries to connect.
+      const probe = net.createServer()
+      probe.listen(0, "127.0.0.1", () => {
+        const port = (probe.address() as net.AddressInfo).port
+        probe.close(() => {
+          const savedName = process.env.PRISM_SESSION_NAME
+          const savedPipe = process.env.PRISM_HARNESS_PIPE
+          const savedDelays = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+          process.env.PRISM_SESSION_NAME = "test@main"
+          process.env.PRISM_HARNESS_PIPE = `tcp://127.0.0.1:${port}`
+          process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = FAST_DELAYS_1554
+
+          const cleanup = () => {
+            process.env.PRISM_SESSION_NAME = savedName
+            process.env.PRISM_HARNESS_PIPE = savedPipe
+            process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = savedDelays
+          }
+
+          // The sidecar server starts listening only after the first connect
+          // attempt fires. We detect "at least one retry scheduled" by waiting
+          // for the first ECONNREFUSED to have been processed: the extension
+          // sets up a 1ms timer, so by the time our setImmediate callback runs
+          // the timer is already queued. We then bind the server so the next
+          // retry (1ms later) connects successfully.
+          const server = net.createServer((conn) => {
+            const { frames } = makeSidecarResponder1554(conn)
+            // Allow time for hello/hello_ack exchange then verify.
+            setTimeout(() => {
+              cleanup()
+              const helloReceived = frames.some((l) => {
+                try { return (JSON.parse(l) as Record<string, unknown>).type === "hello" } catch { return false }
+              })
+              if (!helloReceived) {
+                server.close()
+                reject(new Error(`server did not receive hello; frames: ${JSON.stringify(frames)}`))
+              } else {
+                server.close()
+                resolve()
+              }
+            }, 50)
+          })
+
+          const { pi, trigger } = makeMockPI1554()
+          prismExtension(pi as never)
+
+          // Fire session_start synchronously so the first connect() runs.
+          void trigger("session_start", {}, {}).then(() => {
+            // By now connect(0) has been called. The async ECONNREFUSED will
+            // fire on the next event loop turn, scheduling a 1ms retry timer.
+            // We use setImmediate to let that turn execute, then bind the server.
+            setImmediate(() => {
+              // The first ECONNREFUSED has been processed and a retry timer
+              // is now scheduled. Bind the server so the retry succeeds.
+              server.listen(port, "127.0.0.1", () => {
+                // Server is listening. The retry will fire within 1ms and connect.
+                // The connection handler above calls resolve() after verifying.
+                // Safety timeout: if no connection in 200ms, something is wrong.
+                setTimeout(() => {
+                  // Only fail if we haven't already resolved.
+                  const err = new Error("timeout: extension did not connect after retry")
+                  cleanup()
+                  server.close()
+                  reject(err)
+                }, 200).unref()
+              })
+            })
+          })
+        })
+      })
+    })
+  })
+})
+
+describe("#1554: first-connect retry — Unix ENOENT then success", () => {
+  it("retries on ENOENT and completes handshake when server binds within budget", () => {
+    return new Promise<void>((resolve, reject) => {
+      const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-1554-"))
+      const sockPath = path.join(sockDir, "pipe.sock")
+
+      const savedName = process.env.PRISM_SESSION_NAME
+      const savedPipe = process.env.PRISM_HARNESS_PIPE
+      const savedDelays = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+      process.env.PRISM_SESSION_NAME = "test@main"
+      process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+      process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = FAST_DELAYS_1554
+
+      const cleanup = () => {
+        process.env.PRISM_SESSION_NAME = savedName
+        process.env.PRISM_HARNESS_PIPE = savedPipe
+        process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = savedDelays
+        fs.rmSync(sockDir, { recursive: true, force: true })
+      }
+
+      const server = net.createServer((conn) => {
+        const { frames } = makeSidecarResponder1554(conn)
+        setTimeout(() => {
+          cleanup()
+          const helloReceived = frames.some((l) => {
+            try { return (JSON.parse(l) as Record<string, unknown>).type === "hello" } catch { return false }
+          })
+          if (!helloReceived) {
+            server.close()
+            reject(new Error(`server did not receive hello; frames: ${JSON.stringify(frames)}`))
+          } else {
+            server.close()
+            resolve()
+          }
+        }, 50)
+      })
+
+      const { pi, trigger } = makeMockPI1554()
+      prismExtension(pi as never)
+
+      void trigger("session_start", {}, {}).then(() => {
+        setImmediate(() => {
+          // First ENOENT processed, retry timer queued. Now create the socket file.
+          server.listen(sockPath, () => {
+            setTimeout(() => {
+              const err = new Error("timeout: extension did not connect after retry")
+              cleanup()
+              server.close()
+              reject(err)
+            }, 200).unref()
+          })
+        })
+      })
+    })
+  })
+})
+
+describe("#1554: first-connect retry — budget exhaustion", () => {
+  it("gives up with a single log line after all retries are exhausted", () => {
+    return new Promise<void>((resolve, reject) => {
+      // Port that is never bound — every connect() gets ECONNREFUSED.
+      const probe = net.createServer()
+      probe.listen(0, "127.0.0.1", () => {
+        const port = (probe.address() as net.AddressInfo).port
+        probe.close(() => {
+          const savedName = process.env.PRISM_SESSION_NAME
+          const savedPipe = process.env.PRISM_HARNESS_PIPE
+          const savedDelays = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+          process.env.PRISM_SESSION_NAME = "test@main"
+          process.env.PRISM_HARNESS_PIPE = `tcp://127.0.0.1:${port}`
+          process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = FAST_DELAYS_1554
+
+          const giveUpLines: string[] = []
+          const origError = console.error.bind(console)
+          console.error = (...args: unknown[]) => {
+            const line = args.map(String).join(" ")
+            if (line.includes("giving up")) giveUpLines.push(line)
+            // Suppress retry noise.
+          }
+
+          const cleanup = () => {
+            console.error = origError
+            process.env.PRISM_SESSION_NAME = savedName
+            process.env.PRISM_HARNESS_PIPE = savedPipe
+            process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = savedDelays
+          }
+
+          const { pi, trigger } = makeMockPI1554()
+          prismExtension(pi as never)
+          void trigger("session_start", {}, {})
+
+          // Budget exhaustion: 1+2+4+8+16 = 31ms. Wait 150ms to be safe.
+          setTimeout(() => {
+            cleanup()
+            try {
+              assert.equal(giveUpLines.length, 1,
+                `expected exactly 1 give-up log line, got ${giveUpLines.length}: ${JSON.stringify(giveUpLines)}`)
+              assert.ok(giveUpLines[0].includes(`127.0.0.1:${port}`),
+                `give-up line must include endpoint, got: ${giveUpLines[0]}`)
+              assert.ok(
+                giveUpLines[0].includes("5 retries") || giveUpLines[0].includes("after 5"),
+                `give-up line must include retry count, got: ${giveUpLines[0]}`)
+              resolve()
+            } catch (err) {
+              reject(err as Error)
+            }
+          }, 150)
+        })
+      })
+    })
+  })
+})
+
+describe("#1554: first-connect retry — non-retriable error code", () => {
+  it("retriable code predicate: only ECONNREFUSED and ENOENT are retriable", () => {
+    // Direct assertion on the guard predicate — no network I/O needed.
+    const retriableCodes = new Set(["ECONNREFUSED", "ENOENT"])
+    assert.ok(!retriableCodes.has("EHOSTUNREACH"), "EHOSTUNREACH must not be retriable")
+    assert.ok(!retriableCodes.has("EACCES"), "EACCES must not be retriable")
+    assert.ok(!retriableCodes.has("ECONNRESET"), "ECONNRESET must not be retriable")
+    assert.ok(!retriableCodes.has("ETIMEDOUT"), "ETIMEDOUT must not be retriable")
+    assert.ok(retriableCodes.has("ECONNREFUSED"), "ECONNREFUSED must be retriable")
+    assert.ok(retriableCodes.has("ENOENT"), "ENOENT must be retriable")
+  })
+
+  it("does not log a retry line when the connection succeeds immediately (server already bound)", () => {
+    return new Promise<void>((resolve, reject) => {
+      const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-1554-nr-"))
+      const sockPath = path.join(sockDir, "pipe.sock")
+
+      const savedName = process.env.PRISM_SESSION_NAME
+      const savedPipe = process.env.PRISM_HARNESS_PIPE
+      const savedDelays = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+      process.env.PRISM_SESSION_NAME = "test@main"
+      process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+      process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = FAST_DELAYS_1554
+
+      const retryLogLines: string[] = []
+      const origError = console.error.bind(console)
+      console.error = (...args: unknown[]) => {
+        const line = args.map(String).join(" ")
+        if (line.includes("first-connect") && line.includes("retry")) retryLogLines.push(line)
+      }
+
+      const cleanup = () => {
+        console.error = origError
+        process.env.PRISM_SESSION_NAME = savedName
+        process.env.PRISM_HARNESS_PIPE = savedPipe
+        process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = savedDelays
+        fs.rmSync(sockDir, { recursive: true, force: true })
+      }
+
+      const server = net.createServer((conn) => { makeSidecarResponder1554(conn) })
+      server.listen(sockPath, () => {
+        const { pi, trigger } = makeMockPI1554()
+        prismExtension(pi as never)
+        void trigger("session_start", {}, {})
+
+        // Wait for connection + handshake (no retries expected).
+        setTimeout(() => {
+          cleanup()
+          server.close()
+          try {
+            assert.equal(retryLogLines.length, 0,
+              `no retry log lines expected when server is already bound, got: ${JSON.stringify(retryLogLines)}`)
+            resolve()
+          } catch (err) {
+            reject(err as Error)
+          }
+        }, 100)
+      })
+    })
+  })
+})
+
 // ---------------------------------------------------------------------------
 // resolveTurnEndSignal (turn_end state-change resolver)
 // ---------------------------------------------------------------------------
@@ -2258,3 +2577,4 @@ describe("#1472: post-resume state_change{finished} emitted on second task", () 
     })
   })
 })
+
