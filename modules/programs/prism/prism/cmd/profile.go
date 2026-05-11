@@ -131,6 +131,15 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate the profile name before any side-effects.
+	if _, ok := pf.Profiles[name]; !ok {
+		availableNames := config.AvailableProfileNames(pf)
+		if len(availableNames) == 0 {
+			return fmt.Errorf("no profiles are configured — run the system rebuild to generate ~/.config/prism/profiles.json")
+		}
+		return fmt.Errorf("--profile must be one of: %s (got: %q)",
+			strings.Join(availableNames, ", "), name)
+	}
 	// Determine scope from flags.
 	scope := profileUseFlags.scope
 	verbose := profileUseFlags.verbose

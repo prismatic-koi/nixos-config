@@ -148,6 +148,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Opencode agent to use (`worker` or `plan`). Defaults to `worker`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
+| `--reuse` | If an active session already exists on the requested branch, return its name/port/agent and exit 0 instead of failing. Without `--reuse`, spawning onto an existing branch exits non-zero and tells you to run `prism cleanup` or pass `--reuse`. |
 
 ## Behaviour
 

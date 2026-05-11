@@ -81,8 +81,8 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !valid {
-		return fmt.Errorf("invalid --deliver-as %q: accepted values are %q",
-			deliverAs, validDeliverAsModes)
+		return fmt.Errorf("--deliver-as must be one of: %s (got: %q)",
+			strings.Join(validDeliverAsModes, ", "), deliverAs)
 	}
 
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
@@ -103,9 +103,16 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	if status == nil {
+		sessionNames, _ := activeSessionNamesForError(database, 10)
+		if len(sessionNames) == 0 {
+			return fmt.Errorf(
+				"session %q not found — no active sessions in DB (run `prism list-sessions` to verify)",
+				sessionName,
+			)
+		}
 		return fmt.Errorf(
-			"session %q not found in DB\nrun `prism list-sessions` to see available sessions",
-			sessionName,
+			"session must be one of: %s (got: %q)",
+			strings.Join(sessionNames, ", "), sessionName,
 		)
 	}
 

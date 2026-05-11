@@ -360,6 +360,20 @@ var cleanupCmd = &cobra.Command{
 		var session string
 		if sessionFlag != "" {
 			session = sessionFlag
+			// Validate the session name early against the DB so a typo produces
+			// a helpful enumerated error instead of a later "worktree not found".
+			if d, dbErr := openDB(); dbErr == nil {
+				defer d.Close()
+				st, stErr := d.CurrentStatus(session)
+				if stErr == nil && st == nil {
+					// Session not in DB — list active sessions to aid recovery.
+					names, _ := activeSessionNamesForError(d, 10)
+					if len(names) == 0 {
+						return fmt.Errorf("--session %q not found — no active sessions in DB", session)
+					}
+					return fmt.Errorf("--session must be one of: %s (got: %q)", strings.Join(names, ", "), session)
+				}
+			}
 		} else {
 			var err error
 			session, err = tmux.CurrentSession()

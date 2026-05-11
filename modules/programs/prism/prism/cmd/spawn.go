@@ -73,6 +73,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	ignoreConcurrencyCapFlag, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 	modelOverrideFlag, _ := cmd.Flags().GetStringArray("model-override")
+	reuseFlag, _ := cmd.Flags().GetBool("reuse")
 
 	isolationChanged := cmd.Flags().Changed("isolation")
 
@@ -189,6 +190,7 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"model":                  modelFlag,
 		"variant":                variantFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
+		"reuse":                  reuseFlag,
 	}
 	if len(modelOverrideFlag) > 0 {
 		modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
@@ -257,6 +259,7 @@ func init() {
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt (state transitions to finished or error). Without --wait, returns immediately and the agent runs in the background.")
 	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. On expiry, exits non-zero with a status payload distinguishable from a real spawn failure. Ignored when --wait is not set.")
 	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait or to script over the spawn output). Suppresses textual output.")
+	spawnCmd.Flags().Bool("reuse", false, "If a healthy session already exists on the requested branch, return its details and exit 0 instead of failing")
 	// --prompt-source is an internal flag used by the host-API /spawn handler
 	// to override the auto-detected prompt source (C.4.SRC, issue #1148).
 	// It is hidden from --help because end users should never pass it directly.
@@ -476,6 +479,52 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	branch, err := resolveBranch(bareRoot, branchFlag, prFlag)
 	if err != nil {
 		return err
+	}
+
+	// Pre-flight dedupe check: refuse (or reuse) when an active session already
+	// exists for this repo+branch. This prevents git/tmux/DB conflicts from
+	// a half-failed retry and gives the caller a structured error pointing at
+	// recovery options. The check is a single DB query — no worktree, no tmux
+	// session, no DB row is created before this point.
+	reuseFlag, _ := cmd.Flags().GetBool("reuse")
+	{
+		d, dbErr := openDB()
+		if dbErr == nil {
+			defer d.Close()
+			repoName := strings.TrimSuffix(filepath.Base(bareRoot), ".git")
+			existing, lookupErr := d.ActiveStatusForRepoBranch(repoName, branch)
+			if lookupErr == nil && existing != nil {
+				// There is an active session for this branch.
+				// Healthy = state not "error" and not "deleted".
+				broken := existing.State == "error" || existing.State == "deleted"
+				if reuseFlag {
+					if broken {
+						return fmt.Errorf(
+							"prism spawn --reuse: existing session %q is in a broken state (%s)\n"+
+							"run: prism cleanup --yes --session %s",
+							existing.SessionName, existing.State, existing.SessionName)
+					}
+					// Healthy session — emit its details and exit 0.
+					agentName := ""
+					if existing.AgentName != nil {
+						agentName = *existing.AgentName
+					}
+					port := 0
+					if existing.HarnessPort != nil {
+						port = *existing.HarnessPort
+					}
+					fmt.Fprintf(cmd.OutOrStdout(), "reuse: existing session %q (agent: %s, port: %d)\n",
+						existing.SessionName, agentName, port)
+					return nil
+				}
+				// No --reuse: refuse with a structured error.
+				return fmt.Errorf(
+					"prism spawn: branch %q already has an active session %q\n"+
+					"to clean it up: prism cleanup --yes --session %s\n"+
+					"to reuse it: prism spawn --branch %s --reuse",
+					branch, existing.SessionName, existing.SessionName, branch)
+			}
+		}
 	}
 
 	// Validate the active profile defines a slot for the session's role

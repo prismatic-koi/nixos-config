@@ -70,8 +70,8 @@ func TestArchive_AllJSON_UnknownSession(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown session, got nil")
 	}
-	if !strings.Contains(err.Error(), "no incarnations found") {
-		t.Errorf("expected 'no incarnations found' in error, got: %v", err)
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %v", err)
 	}
 }
 

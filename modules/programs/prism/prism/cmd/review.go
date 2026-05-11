@@ -111,8 +111,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 		// --only was explicitly set. Validate it produces at least one token.
 		names := splitCSV(onlyFlag)
 		if len(names) == 0 {
-			return fmt.Errorf("prism review: --only flag requires at least one agent name (got empty value %q)\navailable: %s",
-				onlyFlag, strings.Join(agentNameStrings(allAgents), ", "))
+			return fmt.Errorf("prism review: --only must be one of: %s (got: %q)",
+				strings.Join(agentNameStrings(allAgents), ", "), onlyFlag)
 		}
 		var err error
 		agents, err = review.AgentsByName(allAgents, names)
