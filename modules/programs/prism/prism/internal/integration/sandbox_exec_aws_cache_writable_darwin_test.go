@@ -49,6 +49,14 @@ package integration_test
 //     against the carve-out being accidentally widened to cover the entire
 //     ~/.aws subtree.
 //
+//  6. Edge-case: when ~/.aws/cli and ~/.aws/sso do NOT exist on the host
+//     at session-spawn time, PrepareSandboxExecHome creates no symlinks for
+//     them (symlinkIfExists skips missing sources), the generated profile
+//     still loads under /usr/bin/sandbox-exec, and a non-AWS workload exits 0.
+//     This validates that the carve-out rules (which reference non-existent
+//     paths) do not break sandbox initialisation — sandbox-exec silently ignores
+//     (subpath ...) rules for paths that do not exist on the host.
+//
 // Shared helpers (requireSandboxExec, requireNixBash, newProfileManagerWithBareRoot,
 // withMutatedProfile, preparePositiveProfile, writeAugmentedPositiveProfile,
 // realUserHome, prepareSSOSentinel, prepareCLISentinel, sbplQuoteForTest,
@@ -367,4 +375,88 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 	} else {
 		t.Logf("ka pai — write to ~/.aws/<other> correctly denied (exit: %v)", runErr)
 	}
+}
+
+// TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads is the edge-case
+// integration test for issue #1558: when ~/.aws/cli and ~/.aws/sso do NOT
+// exist on the host at session-spawn time, the generated profile still loads
+// under /usr/bin/sandbox-exec and a non-AWS workload exits 0.
+//
+// PrepareSandboxExecHome uses symlinkIfExists for the sso/ and cli/ entries,
+// so when the host directories are absent no symlinks are created — but
+// generateProfile still unconditionally emits the carve-out rules with the
+// host paths (filepath.Join(home, ".aws", "sso") and ".aws", "cli").
+// sandbox-exec silently ignores (subpath ...) rules for paths that do not
+// exist, so the profile must still load and allow a simple non-AWS workload
+// (echo) to succeed.
+//
+// This guards against a regression where the carve-out rules cause sandbox
+// initialisation to fail when the host has no ~/.aws/sso or ~/.aws/cli.
+func TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	home := realUserHome(t)
+	awsSSOPath := filepath.Join(home, ".aws", "sso")
+	awsCLIPath := filepath.Join(home, ".aws", "cli")
+
+	// If either directory exists, temporarily rename it so this test can
+	// simulate a host without ~/.aws/sso and ~/.aws/cli. This is a best-effort
+	// skip rather than a skip-if-absent because the test is specifically about
+	// profile loading when the dirs are absent; we don't want to silently skip
+	// on developer machines where they always exist.
+	for _, p := range []string{awsSSOPath, awsCLIPath} {
+		if _, statErr := os.Stat(p); statErr == nil {
+			// Temporarily rename out of the way.
+			tmp := p + ".prism-1558-absent-test-rename"
+			if renErr := os.Rename(p, tmp); renErr != nil {
+				t.Skipf("cannot temporarily rename %s to simulate absence: %v", p, renErr)
+			}
+			restorePath := p // capture for closure
+			tmpPath := tmp   // capture for closure
+			t.Cleanup(func() { _ = os.Rename(tmpPath, restorePath) })
+		}
+	}
+
+	m := newProfileManagerWithBareRoot(t)
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// Verify that no sso/cli symlinks were created in the staging HOME
+	// (they should be absent since symlinkIfExists skips missing sources).
+	for _, rel := range []string{".aws/sso", ".aws/cli"} {
+		link := filepath.Join(stagingHome, rel)
+		if _, lstatErr := os.Lstat(link); lstatErr == nil {
+			t.Errorf("staging HOME has %s symlink even though host dir is absent — symlinkIfExists should have skipped it", rel)
+		}
+	}
+
+	prepared, _ := preparePositiveProfile(t, m)
+	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	// Run a simple non-AWS workload (echo) to verify the profile loads and
+	// the sandbox initialises without error even when the carve-out paths
+	// do not exist on the host.
+	const echoSentinel = "prism-1558-absent-carveout-ok"
+	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
+		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"echo "+shQuote(echoSentinel))
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("non-AWS workload failed even though ~/.aws/sso and ~/.aws/cli are absent.\n"+
+			"The carve-out rules for non-existent paths must not break profile loading.\n"+
+			"Exit: %v\nOutput: %s\nProfile: %s",
+			runErr, string(out), testProfilePath)
+	}
+	if !strings.Contains(string(out), echoSentinel) {
+		t.Errorf("workload exited 0 but output does not contain expected sentinel.\nOutput: %s", string(out))
+	}
+	t.Logf("ka pai — profile loads correctly when ~/.aws/sso and ~/.aws/cli are absent (exit: %v)", runErr)
 }
