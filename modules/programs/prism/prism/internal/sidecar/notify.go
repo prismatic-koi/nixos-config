@@ -34,9 +34,89 @@ func reviewAgentParentSession(sessionName string) (string, bool) {
 	return sessionName[:idx], true
 }
 
+// investigateAgentInvokerSession derives the invoker session name from an
+// investigate-agent session name. Investigate-agent sessions follow the naming
+// convention:
+//
+//	<invoker>~investigate-<slug>   e.g. nixos-config@main~investigate-abc123
+//
+// The invoker session name is the prefix before "~investigate".
+// Returns ("", false) when the session name does not contain "~investigate".
+func investigateAgentInvokerSession(sessionName string) (string, bool) {
+	idx := strings.Index(sessionName, "~investigate")
+	if idx < 0 {
+		return "", false
+	}
+	return sessionName[:idx], true
+}
+
+// notifyInvestigatorTurnEnd delivers a body-bearing per-turn notification from
+// an investigate-agent session to its recorded invoker session. It is called
+// asynchronously (via go) after each turn_end that carries a non-empty closing
+// assistant text block, so s.mu must NOT be held.
+//
+// Delivery uses promptdelivery.DeliverToSession with deliverAs="followUp" so
+// that the notification queues behind any in-flight invoker turn rather than
+// being dropped.
+//
+// The notification body contains:
+//   - A sender header: "From investigator session: <name>"
+//   - The final assistant text block of the turn, verbatim.
+//   - A steering-channel hint: "Reply with: prism prompt <name> --prompt '...'"
+//
+// When the invoker session has ended, the notification is dropped silently with
+// a structured log line. When delivery fails, the failure is logged with both
+// session names; the investigator keeps running.
+func (s *Sidecar) notifyInvestigatorTurnEnd(text string) {
+	invokerSession, isInvestigate := investigateAgentInvokerSession(s.cfg.SessionName)
+	if !isInvestigate {
+		// Not an investigate-agent session — nothing to do.
+		return
+	}
+
+	// Trim the text block; skip delivery when empty after trim.
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: empty text block — skipping (investigator=%s invoker=%s)",
+			s.cfg.SessionName, invokerSession)
+		return
+	}
+
+	// Look up the invoker session.
+	invokerStatus, err := s.cfg.DB.CurrentStatus(invokerSession)
+	if err != nil {
+		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: DB lookup for invoker %q: %v — skipping (investigator=%s)",
+			invokerSession, err, s.cfg.SessionName)
+		return
+	}
+	if invokerStatus == nil {
+		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: invoker session %q not found in DB — skipping (investigator=%s)",
+			invokerSession, s.cfg.SessionName)
+		return
+	}
+	if invokerStatus.EndedAt != nil {
+		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: invoker session %q has ended — dropping notification (investigator=%s reason=invoker_ended)",
+			invokerSession, s.cfg.SessionName)
+		return
+	}
+
+	// Build the notification body.
+	body := fmt.Sprintf(
+		"From investigator session: %s\n\n%s\n\nReply with: prism prompt %s --prompt '...'",
+		s.cfg.SessionName, trimmed, s.cfg.SessionName,
+	)
+
+	if err := promptdelivery.DeliverToSession(invokerSession, invokerStatus, body, buildNotifyPromptBody, "", "followUp"); err != nil {
+		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: FAILED — investigator=%s invoker=%s reason=%v",
+			s.cfg.SessionName, invokerSession, err)
+		return
+	}
+	s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: delivered to invoker=%s (investigator=%s)",
+		invokerSession, s.cfg.SessionName)
+}
+
 // notifyParentWorkerOnStartupFailure sends a notification to the parent worker
 // when a review-agent container fails to start. It is called asynchronously via
-// go from writeStartupError, so s.mu must NOT be held.
 //
 // If the parent worker session cannot be found or has ended, the failure is
 // logged and the sidecar exits cleanly (the notification failure is not fatal).
@@ -175,6 +255,14 @@ func (s *Sidecar) notifyCoordinator() {
 	// as noise notifications.
 	if isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 		s.logger().Printf("sidecar: notifyCoordinator: suppressed for review-agent session %s", s.cfg.SessionName)
+		return
+	}
+
+	// Investigate-agent guard: investigate-agent sessions deliver per-turn
+	// body-bearing notifications to their invoker (via notifyInvestigatorTurnEnd)
+	// and must not also emit a bare "has finished" notification to the coordinator.
+	if _, isInvestigate := investigateAgentInvokerSession(s.cfg.SessionName); isInvestigate {
+		s.logger().Printf("sidecar: notifyCoordinator: suppressed for investigate-agent session %s (bare_finish suppressed)", s.cfg.SessionName)
 		return
 	}
 

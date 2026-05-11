@@ -905,6 +905,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Isolation             string   `json:"isolation"`
 			Harness               string   `json:"harness"`
 			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
+			Reuse                 bool     `json:"reuse"`
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
 		}
@@ -1034,6 +1035,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.IgnoreConcurrencyCap {
 			args = append(args, "--ignore-concurrency-cap")
 		}
+		if req.Reuse {
+			args = append(args, "--reuse")
+		}
 		// Forward per-role model overrides as repeating --model-override flags.
 		for role, model := range modelsByRole {
 			args = append(args, "--model-override", role+"="+model)
@@ -1069,6 +1073,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.IgnoreConcurrencyCap {
 			logArgs = append(logArgs, "--ignore-concurrency-cap")
+		}
+		if req.Reuse {
+			logArgs = append(logArgs, "--reuse")
 		}
 		for role, model := range modelsByRole {
 			logArgs = append(logArgs, "--model-override", role+"="+model)
