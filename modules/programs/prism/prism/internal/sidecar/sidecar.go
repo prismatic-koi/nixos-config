@@ -1229,9 +1229,16 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 					s.mu.Unlock()
 				case "turn_end":
 					s.mu.Lock()
+					turnText := ""
+					if s.pipeAccum != nil {
+						turnText = *s.pipeAccum
+					}
 					stdioFlushPipeAccum(s, line)
 					s.writeEvent(frame.Type, json.RawMessage(line), nil)
 					s.mu.Unlock()
+					if turnText != "" {
+						go s.notifyInvestigatorTurnEnd(turnText)
+					}
 				}
 				continue
 			}
@@ -1296,9 +1303,16 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 		case "turn_end":
 			s.mu.Lock()
+			turnText := ""
+			if s.pipeAccum != nil {
+				turnText = *s.pipeAccum
+			}
 			stdioFlushPipeAccum(s, line)
 			s.writeEvent(frame.Type, json.RawMessage(line), nil)
 			s.mu.Unlock()
+			if turnText != "" {
+				go s.notifyInvestigatorTurnEnd(turnText)
+			}
 
 		case "state_change":
 			st := agent.AgentState(frame.State)
@@ -1943,6 +1957,11 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.writeEvent("msg_assistant", p, nil)
 		}
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+		// Notify the invoker after the turn_end frame is persisted. Runs async
+		// so that lock-release from handlePipeFrame happens promptly.
+		if text != "" {
+			go s.notifyInvestigatorTurnEnd(text)
+		}
 
 	case "auto_retry_start":
 		// Gap 6: cancel any in-flight finished debounce so the session does not
