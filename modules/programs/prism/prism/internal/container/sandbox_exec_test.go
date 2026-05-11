@@ -1314,13 +1314,25 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_PiAuthJSONLiteralRule verifies that generateProfile
-// emits a targeted SBPL rule for ~/.pi/agent/auth.json when Harness == "pi".
-// The rule must use (literal ...) (not subpath) and must include file-write*
-// so that OAuth token refreshes inside the sandbox persist to the host file.
-// The rule is always emitted for pi sessions even when the file does not exist
-// (sandbox-exec silently ignores literals for non-existent paths).
-func TestGenerateProfile_PiAuthJSONLiteralRule(t *testing.T) {
+// TestGenerateProfile_PiAgentDirSubpathRule verifies that generateProfile
+// emits a (subpath ~/.pi/agent) rule when Harness == "pi".
+//
+// Background: OAuth token refresh inside pi-coding-agent uses
+// proper-lockfile.lock(authPath, {realpath: true}), which resolves any symlink
+// in authPath and then calls mkdir(<resolved>.lock) to acquire the lock. That
+// mkdir requires write permission on the *parent directory* ~/.pi/agent/, not
+// just on auth.json. A (literal ...) rule on auth.json alone is therefore
+// insufficient — the sandbox denies the mkdir (EPERM) and the refresh silently
+// fails after ~30 s of retries.
+//
+// The rule is widened to (subpath ~/.pi/agent) so that:
+//   - auth.json reads and writes are permitted (token refresh writes back).
+//   - mkdir auth.json.lock succeeds because the parent dir is writable.
+//
+// The rule is always emitted even when ~/.pi/agent does not yet exist —
+// sandbox-exec silently ignores (subpath ...) rules for non-existent paths, so
+// pi simply prompts for /login rather than crashing on a fresh install.
+func TestGenerateProfile_PiAgentDirSubpathRule(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
@@ -1330,31 +1342,45 @@ func TestGenerateProfile_PiAuthJSONLiteralRule(t *testing.T) {
 	})
 	profile := generateProfile(m)
 
-	authPath := filepath.Join(fakeHome, ".pi", "agent", "auth.json")
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
 
-	// The auth.json literal must appear in the profile.
-	if !strings.Contains(profile, authPath) {
-		t.Errorf("profile missing ~/.pi/agent/auth.json path %q; full profile:\n%s", authPath, profile)
+	// The ~/.pi/agent subpath must appear in the profile.
+	if !strings.Contains(profile, piAgentDir) {
+		t.Errorf("profile missing ~/.pi/agent path %q; full profile:\n%s", piAgentDir, profile)
 	}
 
-	// It must appear inside an (allow file-read* file-write* ...) clause.
-	authIdx := strings.Index(profile, authPath)
-	if authIdx < 0 {
-		t.Fatalf("auth.json path not found in profile (checked above)")
+	// It must be a (subpath ...) rule — (literal auth.json) alone is
+	// insufficient because proper-lockfile mkdir(<authPath>.lock) requires
+	// write on the parent directory.
+	subpathRule := "(subpath " + quoteSBPL(piAgentDir) + ")"
+	if !strings.Contains(profile, subpathRule) {
+		t.Errorf("~/.pi/agent must appear as (subpath ...), not (literal ...); full profile:\n%s", profile)
 	}
-	clauseStart := strings.LastIndex(profile[:authIdx], "(allow")
+
+	// The subpath rule must appear inside an (allow file-read* file-write* ...)
+	// clause so that proper-lockfile can mkdir auth.json.lock adjacent to
+	// auth.json.
+	subpathIdx := strings.Index(profile, subpathRule)
+	if subpathIdx < 0 {
+		t.Fatalf("subpath rule not found in profile (checked above)")
+	}
+	clauseStart := strings.LastIndex(profile[:subpathIdx], "(allow")
 	if clauseStart < 0 {
-		t.Errorf("auth.json path not inside an (allow ...) clause; full profile:\n%s", profile)
+		t.Errorf("~/.pi/agent subpath not inside an (allow ...) clause; full profile:\n%s", profile)
 	}
-	clause := profile[clauseStart:authIdx]
+	clause := profile[clauseStart:subpathIdx]
 	if !strings.Contains(clause, "file-write*") {
-		t.Errorf("auth.json allow clause must include file-write* for token refresh; clause: %q; full profile:\n%s", clause, profile)
+		t.Errorf("~/.pi/agent allow clause must include file-write* so proper-lockfile can mkdir auth.json.lock; clause: %q; full profile:\n%s", clause, profile)
 	}
 
-	// It must be a (literal ...) rule, not a (subpath ...) rule, to scope it
-	// tightly to the single file.
-	if !strings.Contains(profile, "(literal "+quoteSBPL(authPath)+")") {
-		t.Errorf("auth.json must appear as (literal %q), not as subpath; full profile:\n%s", authPath, profile)
+	// Regression guard: the (subpath ~/.pi/agent) covers both auth.json and
+	// auth.json.lock (the lock dir that proper-lockfile creates). Confirm both
+	// paths are children of piAgentDir (they are, by construction — the test
+	// documents the invariant explicitly).
+	authJSON := filepath.Join(piAgentDir, "auth.json")
+	authLock := filepath.Join(piAgentDir, "auth.json.lock")
+	if !strings.HasPrefix(authJSON, piAgentDir) || !strings.HasPrefix(authLock, piAgentDir) {
+		t.Errorf("auth.json and auth.json.lock are not children of piAgentDir %q — subpath rule does not cover them", piAgentDir)
 	}
 }
 
