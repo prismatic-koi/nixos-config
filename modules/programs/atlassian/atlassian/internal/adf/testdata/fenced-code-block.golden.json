@@ -1,0 +1,18 @@
+{
+  "content": [
+    {
+      "attrs": {
+        "language": "go"
+      },
+      "content": [
+        {
+          "text": "fmt.Println(\"hi\")",
+          "type": "text"
+        }
+      ],
+      "type": "codeBlock"
+    }
+  ],
+  "type": "doc",
+  "version": 1
+}

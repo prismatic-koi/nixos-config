@@ -1,0 +1,15 @@
+{
+  "content": [
+    {
+      "content": [
+        {
+          "text": "Hello world",
+          "type": "text"
+        }
+      ],
+      "type": "paragraph"
+    }
+  ],
+  "type": "doc",
+  "version": 1
+}

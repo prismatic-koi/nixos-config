@@ -148,6 +148,273 @@ func TestSearchConfluence(t *testing.T) {
 	}
 }
 
+// ---- Write method tests ----
+
+func TestCreateJiraIssue(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Error("expected Content-Type: application/json")
+		}
+		// Verify body was not logged (we read it only for assertion)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":  "10001",
+			"key": "FOO-1",
+			"self": "https://example.atlassian.net/rest/api/3/issue/10001",
+		})
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"fields": map[string]any{
+			"project":   map[string]any{"key": "FOO"},
+			"issuetype": map[string]any{"name": "Task"},
+			"summary":   "Test issue",
+		},
+	}
+	v, err := c.CreateJiraIssue(payload)
+	if err != nil {
+		t.Fatalf("CreateJiraIssue: %v", err)
+	}
+	m := v.(map[string]any)
+	if m["key"] != "FOO-1" {
+		t.Errorf("expected key=FOO-1, got %v", m["key"])
+	}
+}
+
+func TestUpdateJiraIssue(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue/FOO-1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"fields": map[string]any{"summary": "Updated summary"},
+	}
+	v, err := c.UpdateJiraIssue("FOO-1", payload)
+	if err != nil {
+		t.Fatalf("UpdateJiraIssue: %v", err)
+	}
+	_ = v
+}
+
+func TestAddJiraComment(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue/FOO-1/comment", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":   "comment-1",
+			"body": map[string]any{"type": "doc"},
+		})
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"body": map[string]any{"type": "doc", "version": 1, "content": []any{}},
+	}
+	v, err := c.AddJiraComment("FOO-1", payload)
+	if err != nil {
+		t.Fatalf("AddJiraComment: %v", err)
+	}
+	m := v.(map[string]any)
+	if m["id"] != "comment-1" {
+		t.Errorf("expected id=comment-1, got %v", m["id"])
+	}
+}
+
+func TestTransitionJiraIssue(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue/FOO-1/transitions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		transition, _ := body["transition"].(map[string]any)
+		if transition["id"] != "21" {
+			t.Errorf("expected transition id=21, got %v", transition["id"])
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	c := newTestClient(t, mux)
+	_, err := c.TransitionJiraIssue("FOO-1", "21")
+	if err != nil {
+		t.Fatalf("TransitionJiraIssue: %v", err)
+	}
+}
+
+func TestCreateConfluencePage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "123456",
+			"title":   "My Page",
+			"version": map[string]any{"number": 1},
+		})
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"spaceId": "ENG",
+		"title":   "My Page",
+		"body": map[string]any{
+			"representation": "atlas_doc_format",
+			"value":          `{"version":1,"type":"doc","content":[]}`,
+		},
+	}
+	v, err := c.CreateConfluencePage(payload)
+	if err != nil {
+		t.Fatalf("CreateConfluencePage: %v", err)
+	}
+	m := v.(map[string]any)
+	if m["id"] != "123456" {
+		t.Errorf("expected id=123456, got %v", m["id"])
+	}
+}
+
+func TestUpdateConfluencePage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pages/123456", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":      "123456",
+			"title":   "Updated Title",
+			"version": map[string]any{"number": 2},
+		})
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"id":      "123456",
+		"title":   "Updated Title",
+		"version": map[string]any{"number": 2},
+		"body": map[string]any{
+			"representation": "atlas_doc_format",
+			"value":          `{"version":1,"type":"doc","content":[]}`,
+		},
+	}
+	v, err := c.UpdateConfluencePage("123456", payload)
+	if err != nil {
+		t.Fatalf("UpdateConfluencePage: %v", err)
+	}
+	m := v.(map[string]any)
+	if m["id"] != "123456" {
+		t.Errorf("expected id=123456, got %v", m["id"])
+	}
+}
+
+func TestWrite_4xx_NoRetry(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"errorMessages":["Invalid project key"]}`))
+	})
+	c := newTestClient(t, mux)
+	_, err := c.CreateJiraIssue(map[string]any{})
+	if err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if callCount != 1 {
+		t.Errorf("expected exactly 1 call (no retry on 4xx), got %d", callCount)
+	}
+	apiErr, ok := err.(*client.APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.StatusCode != 400 {
+		t.Errorf("expected 400, got %d", apiErr.StatusCode)
+	}
+}
+
+func TestWrite_5xx_Retry(t *testing.T) {
+	callCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue", func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"message":"Internal Server Error"}`))
+	})
+	c := newTestClient(t, mux)
+	_, err := c.CreateJiraIssue(map[string]any{})
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+	// Should have been called exactly twice (initial + 1 retry)
+	if callCount != 2 {
+		t.Errorf("expected 2 calls (retry on 5xx), got %d", callCount)
+	}
+}
+
+func TestWrite_409_VersionConflict(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/pages/123456", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"message":"Version conflict"}`))
+	})
+	c := newTestClient(t, mux)
+	_, err := c.UpdateConfluencePage("123456", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error on 409")
+	}
+	apiErr, ok := err.(*client.APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.StatusCode != 409 {
+		t.Errorf("expected 409, got %d", apiErr.StatusCode)
+	}
+	if !contains(apiErr.Message, "concurrently") {
+		t.Errorf("expected concurrent-modification message, got %q", apiErr.Message)
+	}
+}
+
+func TestWrite_BodyNotLogged(t *testing.T) {
+	// Verify that the request body is not included in error output.
+	// We send a body with a fake-secret and verify the error message doesn't contain it.
+	const secretContent = "confidential-ticket-body-do-not-log"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/issue", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"errorMessages":["Bad request"]}`))
+	})
+	c := newTestClient(t, mux)
+	payload := map[string]any{
+		"fields": map[string]any{"summary": secretContent},
+	}
+	_, err := c.CreateJiraIssue(payload)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if contains(err.Error(), secretContent) {
+		t.Errorf("error message must not contain the request body: %q", err.Error())
+	}
+}
+
 func TestGetJiraTransitions(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/issue/FOO-1/transitions", func(w http.ResponseWriter, r *http.Request) {

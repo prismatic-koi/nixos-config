@@ -1,0 +1,22 @@
+{
+  "content": [
+    {
+      "content": [
+        {
+          "text": "line one",
+          "type": "text"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "text": "line two",
+          "type": "text"
+        }
+      ],
+      "type": "paragraph"
+    }
+  ],
+  "type": "doc",
+  "version": 1
+}

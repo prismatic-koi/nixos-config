@@ -11,7 +11,7 @@ buildGoModule {
 
   doCheck = true;
 
-  vendorHash = "sha256-hocnLCzWN8srQcO3BMNkd2lt0m54Qe7sqAhUxVZlz1k=";
+  vendorHash = "sha256-O4WcSqMb26E7KFSMsVykF+M4XKB3EZ2Lwhf6QXyMrNk=";
 
   meta = {
     description = "atlassian — read-only CLI for Jira Cloud and Confluence Cloud";
