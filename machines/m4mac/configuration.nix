@@ -29,7 +29,7 @@ in
         harness.default = "pi";
         agent.isolation.default = "sandbox-exec";
         projects.isolationOverrides = {
-          "~/documents/obsidian" = "host";
+          "~/Documents/obsidian" = "host";
         };
       };
       # Disable programs that default to enabled but aren't needed/available on Darwin
