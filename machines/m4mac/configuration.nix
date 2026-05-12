@@ -70,7 +70,7 @@ in
       _1password-cli
       arping
       gnutar
-      mysql84
+      mariadb
       podman # darwin doesn't use virtualisation.podman
       postgresql
       rustup
@@ -150,6 +150,7 @@ in
       "ripgrep" # for plenary in neovim, it can't find the nix binary
       "python"
       "vfkit"
+      "datadog-labs/pack/pup"
     ];
     casks = [
       "bitwarden"
