@@ -236,22 +236,22 @@
             google = profileFromTiers {
               primary = slot {
                 provider = "google";
-                model = "google/gemini-3-flash-preview";
+                model = "google/gemini-3-flash";
               };
               secondary = slot {
                 provider = "google";
-                model = "google/gemini-3.1-flash-lite-preview";
+                model = "google/gemini-3.1-flash-lite";
               };
               lightweight = slot {
                 provider = "google";
-                model = "google/gemini-3.1-flash-lite-preview";
+                model = "google/gemini-3.1-flash-lite";
               };
             };
           };
 
           quickProfiles = {
             pr = {
-              model = "google/gemini-3.1-flash-lite-preview";
+              model = "google/gemini-3.1-flash-lite";
               providerOrder = [
                 "google"
                 "google-vertex"
