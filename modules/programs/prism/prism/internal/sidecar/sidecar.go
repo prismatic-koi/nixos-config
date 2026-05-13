@@ -369,6 +369,12 @@ type Sidecar struct {
 	// Protected by s.mu.
 	pipeAccum *string
 
+	// lastInvestigatorText holds the most recent completed turn text for an
+	// investigate-agent session. Updated on every turn_end; read at completion
+	// time by notifyInvestigatorCompletion to deliver the final report.
+	// Protected by s.mu.
+	lastInvestigatorText string
+
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
@@ -1235,10 +1241,10 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 					}
 					stdioFlushPipeAccum(s, line)
 					s.writeEvent(frame.Type, json.RawMessage(line), nil)
-					s.mu.Unlock()
 					if turnText != "" {
-						go s.notifyInvestigatorTurnEnd(turnText)
+						s.lastInvestigatorText = turnText
 					}
+					s.mu.Unlock()
 				}
 				continue
 			}
@@ -1309,10 +1315,10 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 			}
 			stdioFlushPipeAccum(s, line)
 			s.writeEvent(frame.Type, json.RawMessage(line), nil)
-			s.mu.Unlock()
 			if turnText != "" {
-				go s.notifyInvestigatorTurnEnd(turnText)
+				s.lastInvestigatorText = turnText
 			}
+			s.mu.Unlock()
 
 		case "state_change":
 			st := agent.AgentState(frame.State)
@@ -1957,10 +1963,9 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.writeEvent("msg_assistant", p, nil)
 		}
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
-		// Notify the invoker after the turn_end frame is persisted. Runs async
-		// so that lock-release from handlePipeFrame happens promptly.
+		// Track the most recent turn text for the final completion notification.
 		if text != "" {
-			go s.notifyInvestigatorTurnEnd(text)
+			s.lastInvestigatorText = text
 		}
 
 	case "auto_retry_start":

@@ -181,6 +181,8 @@ func (s *Sidecar) handleServerConnected() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
+		finalText := s.lastInvestigatorText
+		go s.notifyInvestigatorCompletion(agent.StateFinished, finalText)
 	})
 }
 
@@ -268,6 +270,8 @@ func (s *Sidecar) handleSessionFinished() {
 			s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 			s.upsertState(agent.StateInterrupted, nil, nil)
 			s.writeStateChange(agent.StateInterrupted)
+			finalText := s.lastInvestigatorText
+			go s.notifyInvestigatorCompletion(agent.StateInterrupted, finalText)
 			return
 		}
 
@@ -292,6 +296,8 @@ func (s *Sidecar) handleSessionFinished() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
+		finalText := s.lastInvestigatorText
+		go s.notifyInvestigatorCompletion(agent.StateFinished, finalText)
 	})
 }
 
@@ -330,6 +336,8 @@ func (s *Sidecar) handleSessionIdle() {
 			s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 			s.upsertState(agent.StateInterrupted, nil, nil)
 			s.writeStateChange(agent.StateInterrupted)
+			finalText := s.lastInvestigatorText
+			go s.notifyInvestigatorCompletion(agent.StateInterrupted, finalText)
 			return
 		}
 
@@ -354,6 +362,8 @@ func (s *Sidecar) handleSessionIdle() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		go s.notifyCoordinator()
+		finalText := s.lastInvestigatorText
+		go s.notifyInvestigatorCompletion(agent.StateFinished, finalText)
 	})
 }
 
@@ -511,6 +521,8 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		s.logger().Printf("sidecar: transition -> interrupted (cause=interrupted_by_denial)")
 		s.upsertState(agent.StateInterrupted, nil, nil)
 		s.writeStateChange(agent.StateInterrupted)
+		finalText := s.lastInvestigatorText
+		go s.notifyInvestigatorCompletion(agent.StateInterrupted, finalText)
 	} else {
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
@@ -522,6 +534,8 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		s.upsertState(agent.StateError, nil, nil)
 		s.writeStateChange(agent.StateError)
 		s.writeEvent("error", map[string]string{"name": errorName}, nil)
+		finalText := s.lastInvestigatorText
+		go s.notifyInvestigatorCompletion(agent.StateError, finalText)
 	}
 }
 
@@ -814,6 +828,8 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				s.upsertState(agent.StateFinished, nil, nil)
 				s.writeStateChange(agent.StateFinished)
 				go s.notifyCoordinator()
+				finalText := s.lastInvestigatorText
+				go s.notifyInvestigatorCompletion(agent.StateFinished, finalText)
 			})
 		}
 
