@@ -546,7 +546,7 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 
 	if worktreePath == "" {
 		printLine("worktree path unknown — skipping worktree removal for session %s\n", session)
-	} else {
+	} else if isSafeToRemoveWorktree(worktreePath, bareRoot) {
 		printLine("removing worktree %s...\n", worktreePath)
 		if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
 			// Non-fatal: the path may no longer be a registered git worktree
@@ -557,6 +557,8 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 			wt := worktreePath
 			result.WorktreeRemoved = &wt
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: refusing to remove worktree %s — path matches main worktree or an active session's worktree; skipping filesystem removal\n", worktreePath)
 	}
 
 	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
@@ -1270,6 +1272,53 @@ func removeContainerIfExists(sessionName string) {
 //
 // This function is extracted from cleanupCmd.RunE to allow unit testing of
 // the DB-backed coordinator detection independently of the full cleanup flow.
+// isSafeToRemoveWorktree returns true when worktreePath is safe to remove
+// during headless cleanup. It returns false (with a caller-logged warning) in
+// two cases:
+//
+//  1. The path matches the default branch worktree (e.g. <bareRoot>/main).
+//     Removing the default branch worktree would destroy the coordinator's
+//     working directory and break all subsequent git/gh commands.
+//
+//  2. The path matches the worktree of any currently active session in the DB.
+//     This guards against investigator or other child sessions that inherit
+//     the parent's worktree path and would otherwise clobber a live session.
+//
+// Both checks normalise paths with filepath.Clean before comparing.
+// When bareRoot is empty the path-level checks are skipped (caller already
+// handles the worktreePath=="" fast-path).
+func isSafeToRemoveWorktree(worktreePath, bareRoot string) bool {
+	if worktreePath == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(worktreePath)
+
+	// Guard 1: never remove the default branch worktree.
+	if bareRoot != "" {
+		defaultBr := git.DefaultBranchFromBareRoot(bareRoot)
+		if defaultBr != "" {
+			defaultWorktreePath := filepath.Clean(filepath.Join(bareRoot, defaultBr))
+			if cleanPath == defaultWorktreePath {
+				return false
+			}
+		}
+	}
+
+	// Guard 2: never remove the worktree of any active session.
+	if d, err := openDB(); err == nil {
+		defer d.Close()
+		if statuses, err := d.AllActiveStatus(); err == nil {
+			for _, st := range statuses {
+				if st.Worktree != "" && filepath.Clean(st.Worktree) == cleanPath {
+					return false
+				}
+			}
+		}
+	}
+
+	return true
+}
+
 func isCoordinatorFromDB(session string, isDefaultBranch bool) bool {
 	if d, dbErr := openDB(); dbErr == nil {
 		rootName, rowExists, rootErr := d.RootAgentName(session)
