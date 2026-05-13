@@ -331,6 +331,52 @@ review to pass. If ANY returns `<verdict>FAIL</verdict>`, fix all blocking
 issues, push, and re-run all five. After 3 full cycles without convergence,
 stop and escalate — do not run a 4th cycle.
 
+## Investigator agents
+
+Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. They are denied in the worker deny list — only coordinators can use them.
+
+### Spawning
+
+```bash
+prism investigate --prompt "question"
+prism investigate --prompt-file /tmp/question.txt
+```
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--prompt <text>` | Research question. Mutually exclusive with `--prompt-file`. |
+| `--prompt-file <path>` | Read the question from a file. Mutually exclusive with `--prompt`. |
+
+One of `--prompt` or `--prompt-file` is required. The command returns a session name within ~2 seconds and exits 0. There is no `--wait` flag — `prism investigate` is inherently async.
+
+### Session-naming convention
+
+Spawned sessions are named `<invoker>~investigate-<slug>` where `<slug>` is a short kebab-case slug derived from the prompt.
+
+### Per-turn notification contract
+
+After each investigator turn that produces output, the sidecar delivers a body-bearing notification to the invoking session. Each notification includes:
+
+- **Header:** `From investigator session: <name>` — use this to route the notification to the correct open question when multiple investigators are running concurrently.
+- **Body:** the investigator's findings for that turn.
+- **Steering hint:** `Reply with: prism prompt <name> --prompt '...'` — follow-up steering is done via `prism prompt`.
+
+### Cleanup responsibility
+
+Investigators do not self-terminate. When the investigation is complete and the findings consumed, the coordinator must run:
+
+```bash
+prism cleanup --yes --session <inv-session>
+```
+
+### Constraint
+
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Workers have `prism investigate` in their deny list; only coordinators may use it.
+
+---
+
 ## Merge queue (coordinators only)
 
 > **Coordinators only.** Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` denied in their bash deny lists. If you are not a coordinator agent, skip this section.

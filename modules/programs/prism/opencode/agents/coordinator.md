@@ -61,6 +61,53 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 
 ---
 
+## Investigator agents
+
+Use `prism investigate` for read-only research tasks that would otherwise block the coordinator on grep/read work while the bus is idle: tracing call chains, mapping symptoms to a file:line, surveying the scope of a change before spawning a worker. If the answer requires writing code or opening a PR, spawn a worker instead.
+
+### Spawning
+
+```bash
+prism investigate --prompt "what does the sidecar do when a session enters 'escalated' state?"
+```
+
+The command returns a session name within ~2 seconds (shape: `<invoker>~investigate-<slug>`). Record it in your todo list alongside the open question.
+
+### Handling per-turn notifications
+
+After each investigator turn that produces output, the sidecar delivers a body-bearing notification to you. Treat it as high-priority — the same priority as a worker `has finished` notification. Each notification includes:
+
+- **Header:** `From investigator session: <name>` — use this to route the notification to the correct open question when multiple investigators are running.
+- **Body:** the investigator's findings for that turn.
+- **Steering hint:** `Reply with: prism prompt <name> --prompt '...'`
+
+After reading the body, decide whether to:
+
+1. **Send a steering prompt** — `prism prompt <inv-session> --prompt '...'` — to narrow the question or ask a follow-up.
+2. **Conclude the investigation** — the answer is sufficient; proceed without sending another prompt.
+
+Do not let investigator notifications accumulate unread. Each one may contain the answer you need to unblock the next step.
+
+### Multi-investigator streams
+
+When multiple investigators are running concurrently, notifications from different sessions arrive interleaved on the bus. Use the `From investigator session: <name>` header to route each notification to the correct open question. Keep a record of which session was spawned for which question so you can match them up.
+
+### Cleanup discipline
+
+Investigators do not self-terminate. When the investigation is complete and the report consumed, run:
+
+```bash
+prism cleanup --yes --session <inv-session>
+```
+
+Do not leave finished investigator sessions running. They accumulate worktrees and tmux sessions like any other prism session.
+
+### Workers cannot use `prism investigate`
+
+`prism investigate` is denied in the worker deny list. A worker that needs additional research context must escalate to the coordinator via `prism escalate`. The coordinator then decides whether to spawn an investigator or answer the question directly.
+
+---
+
 ## Monitoring
 
 ### Primary signal: the finish notification
