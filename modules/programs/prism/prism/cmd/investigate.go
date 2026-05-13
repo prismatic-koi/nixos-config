@@ -192,7 +192,8 @@ func investigateSlug(prompt string) string {
 }
 
 // proxyInvestigate forwards the investigate request to the host sidecar via
-// the /spawn endpoint with agent="investigate" and a pre-computed session name.
+// a dedicated /investigate endpoint that shells out to `prism investigate`
+// on the host with PRISM_SESSION_NAME set to the invoker session.
 func proxyInvestigate(apiURL, promptText string) error {
 	invokerSession := os.Getenv("PRISM_SESSION_NAME")
 	if invokerSession == "" {
@@ -206,24 +207,16 @@ func proxyInvestigate(apiURL, promptText string) error {
 		)
 	}
 
-	slug := investigateSlug(promptText)
-	sessionName := invokerSession + "~investigate-" + slug
-
 	var resp struct {
 		SessionName string `json:"session_name"`
 	}
 	body := map[string]any{
-		"prompt":       promptText,
-		"agent":        "investigate",
-		"session_name": sessionName,
+		"prompt": promptText,
+		"from":   invokerSession,
 	}
-	if err := proxyToHostAPI(apiURL, "/spawn", body, &resp); err != nil {
+	if err := proxyToHostAPI(apiURL, "/investigate", body, &resp); err != nil {
 		return err
 	}
-	name := resp.SessionName
-	if name == "" {
-		name = sessionName
-	}
-	fmt.Println(name)
+	fmt.Println(resp.SessionName)
 	return nil
 }

@@ -159,6 +159,8 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /merges        — list merge queue entries (coordinator only)
 //	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
 //	POST /event         — write a lifecycle event to the host DB (all roles)
+//	POST /escalate      — escalate to coordinator (worker sessions)
+//	POST /investigate   — spawn an investigate-agent session (worker sessions)
 //
 // /db/query, /db/schema, /db/tables are coordinator-only because /db/query
 // exposes a strict superset of /checkin: raw cross-session payloads (e.g.
@@ -1941,6 +1943,50 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
+	// POST /investigate
+	// Request:  {"prompt":"...","from":"<session>" (optional)}
+	// Response: {"session_name":"<name>"} on success, {"error":"..."} otherwise.
+	//
+	// Spawns a new investigate-agent session named <invoker>~investigate-<slug>
+	// and returns the session name immediately. Shells out to `prism investigate`
+	// on the host with PRISM_SESSION_NAME set to the invoker session so the
+	// host-side CWD walk is bypassed.
+	mux.HandleFunc("/investigate", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Prompt string `json:"prompt"`
+			From   string `json:"from,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if strings.TrimSpace(req.Prompt) == "" {
+			writeError(w, http.StatusBadRequest, "prompt is required")
+			return
+		}
+		fromSession := req.From
+		if fromSession == "" {
+			fromSession = s.cfg.SessionName
+		}
+		args := []string{"investigate", "--prompt", req.Prompt}
+		s.logger().Printf("sidecar: host-API /investigate: from=%s", fromSession)
+		cmd := exec.Command(prismBinary(), args...)
+		// PRISM_SESSION_NAME tells the host-side `prism investigate` which session
+		// is invoking, bypassing the CWD walk.
+		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
+		out, err := cmd.Output()
+		if err != nil {
+			s.logger().Printf("sidecar: host-API /investigate: %v", err)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("investigate failed: %v", err))
+			return
+		}
+		sessionName := strings.TrimSpace(string(out))
+		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
 	})
 
 	// POST /set-model
