@@ -590,7 +590,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	if layoutErr != nil {
 		startup.log("spawn-session: layout setup FAILED: %v", layoutErr)
-		return layoutErr
+		// Wrap the error with a cleanup hint. The DB row, worktree, and any
+		// sidecar process may have been created before the tmux step failed;
+		// tell the operator how to clean up side effects.
+		return fmt.Errorf("%w — to remove side effects run: prism cleanup --yes --session %s",
+			layoutErr, opts.SessionName)
 	}
 	startup.log("spawn-session: tmux session and sidecar kicked off — handing control to agent pane (further bwrap stderr in agent-run.log)")
 

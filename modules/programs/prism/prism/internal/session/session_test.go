@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -639,5 +640,147 @@ func TestHarnessBinary(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("harnessBinary(%q) = %q, want %q", tc.harness, got, tc.want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tests for sanitiseBranchComponent / worktreeBranchComponent (#1479)
+// ---------------------------------------------------------------------------
+
+// TestSanitiseBranchComponent covers the sanitisation rules: "." → "_",
+// "/" → "--", ":" → "_", and whitespace → "_".
+func TestSanitiseBranchComponent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		// want must not contain ".", "/", ":", " ", or "\t"
+		wantSubstrings []string // substrings that must appear
+		wantAbsent     []string // chars/strings that must NOT appear
+	}{
+		{
+			name:       "dot in branch",
+			input:      "prismatic-bot-traefik-40.x",
+			wantSubstrings: []string{"prismatic-bot-traefik-40_x"},
+			wantAbsent:     []string{"."},
+		},
+		{
+			name:       "slash in branch (regression)",
+			input:      "dependabot/foo/bar",
+			wantSubstrings: []string{"dependabot--foo--bar"},
+			wantAbsent:     []string{"/"},
+		},
+		{
+			name:       "combined slash and dot",
+			input:      "dependabot/foo/v2.3.1",
+			wantSubstrings: []string{"dependabot--foo--v2_3_1"},
+			wantAbsent:     []string{".", "/"},
+		},
+		{
+			name:       "all dots",
+			input:      "...",
+			wantAbsent: []string{"."},
+		},
+		{
+			name:       "colon in branch",
+			input:      "feat:my-feature",
+			wantAbsent: []string{":"},
+		},
+		{
+			name:       "whitespace in branch",
+			input:      "feature branch",
+			wantAbsent: []string{" "},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitiseBranchComponent(tc.input)
+			if got == "" {
+				t.Errorf("sanitiseBranchComponent(%q) returned empty string", tc.input)
+			}
+			for _, want := range tc.wantSubstrings {
+				if !strings.Contains(got, want) {
+					t.Errorf("sanitiseBranchComponent(%q) = %q, want substring %q", tc.input, got, want)
+				}
+			}
+			for _, bad := range tc.wantAbsent {
+				if strings.Contains(got, bad) {
+					t.Errorf("sanitiseBranchComponent(%q) = %q, still contains %q", tc.input, got, bad)
+				}
+			}
+		})
+	}
+}
+
+// TestSanitiseBranchComponent_AllUnsafeNoEmpty asserts that a component made
+// entirely of unsafe characters (e.g. "...") produces a non-empty result
+// without panicking.
+func TestSanitiseBranchComponent_AllUnsafeNoEmpty(t *testing.T) {
+	inputs := []string{"...", ". . .", ":/.", "\t\t"}
+	for _, in := range inputs {
+		got := sanitiseBranchComponent(in)
+		if got == "" {
+			// All dots become underscores, so the result should be non-empty.
+			// (The only way to get "" is if the input is ""; that's not the
+			// case here because the substitutions preserve length.)
+			t.Errorf("sanitiseBranchComponent(%q) returned unexpected empty string", in)
+		}
+		for _, bad := range []string{".", "/", ":"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("sanitiseBranchComponent(%q) = %q still contains %q", in, got, bad)
+			}
+		}
+	}
+}
+
+// TestWorktreeBranchComponent_FilepathFallback_SanitisesDot verifies that the
+// filepath.Base fallback path (used when git is not available) also sanitises
+// dots. We pass a directory whose base name contains a dot and is not a git
+// repo.
+func TestWorktreeBranchComponent_FilepathFallback_SanitisesDot(t *testing.T) {
+	// Create a non-git directory whose base name contains a dot.
+	dir := filepath.Join(t.TempDir(), "branch-40.x")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := worktreeBranchComponent(dir)
+	if strings.Contains(got, ".") {
+		t.Errorf("worktreeBranchComponent(%q) = %q, still contains '.'", dir, got)
+	}
+	if got == "" {
+		t.Errorf("worktreeBranchComponent(%q) returned empty string", dir)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test: tmux new-session failure propagation (#1479 AC #5, AC #6)
+// ---------------------------------------------------------------------------
+
+// failTmuxBin installs a fake tmux binary that always exits non-zero, returning
+// a fixed stderr message. It redirects tmux.TmuxBin for the duration of the
+// test. Only call this from non-parallel tests.
+func failTmuxBin(t *testing.T, stderrMsg string) {
+	t.Helper()
+	wrapperPath := t.TempDir() + "/tmux"
+	script := fmt.Sprintf("#!/bin/sh\necho '%s' >&2\nexit 1\n", stderrMsg)
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failTmuxBin: write wrapper: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+}
+
+// TestCreate_TmuxNewSessionFailure verifies that when tmux new-session fails,
+// session.Create returns a non-nil error.
+func TestCreate_TmuxNewSessionFailure(t *testing.T) {
+	failTmuxBin(t, "duplicate session: test-session")
+	dir := t.TempDir()
+	err := Create("test-session", dir, Opts{ForceFresh: true})
+	if err == nil {
+		t.Fatal("expected non-nil error when tmux new-session fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "test-session") {
+		t.Errorf("error %q does not mention the session name", err.Error())
 	}
 }

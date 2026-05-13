@@ -819,14 +819,34 @@ func NameFor(dir, projectRoot string) string {
 
 // worktreeBranchComponent returns the branch component of a session name for
 // the worktree at dir.
+//
+// Sanitisation: tmux uses "." as the session.window.pane target separator, ":" as
+// another separator, and whitespace as a token boundary. All three are replaced
+// with "_" to produce a safe component. "/" is replaced with "--" to preserve
+// the existing convention for branch hierarchies.
 func worktreeBranchComponent(dir string) string {
 	ref, err := git.SymbolicRef(dir)
 	if err == nil {
 		branch := strings.TrimPrefix(ref, "refs/heads/")
-		return strings.ReplaceAll(branch, "/", "--")
+		return sanitiseBranchComponent(branch)
 	}
 	if hash, err := git.ShortHash(dir); err == nil {
-		return hash
+		return sanitiseBranchComponent(hash)
 	}
-	return filepath.Base(dir)
+	return sanitiseBranchComponent(filepath.Base(dir))
+}
+
+// sanitiseBranchComponent replaces characters that are unsafe in tmux session
+// names with safe substitutes:
+//   - "/" → "--"  (preserve existing convention for branch hierarchies)
+//   - "." → "_"   (tmux uses "." as session.window.pane separator)
+//   - ":" → "_"   (tmux uses ":" as a target separator)
+//   - whitespace → "_"
+func sanitiseBranchComponent(s string) string {
+	s = strings.ReplaceAll(s, "/", "--")
+	s = strings.ReplaceAll(s, ".", "_")
+	s = strings.ReplaceAll(s, ":", "_")
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "\t", "_")
+	return s
 }
