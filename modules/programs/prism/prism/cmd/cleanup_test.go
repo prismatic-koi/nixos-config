@@ -1094,3 +1094,185 @@ func TestHeadlessCloseSession_AlreadyDeadTmux_MarksEnded(t *testing.T) {
 		t.Errorf("ended_at is nil — session was not marked as ended despite tmux session being absent")
 	}
 }
+
+// TestIsSafeToRemoveWorktree_MainGuard verifies that isSafeToRemoveWorktree
+// returns false when the target path matches the default branch worktree, and
+// returns true for a genuine feature branch worktree. This is the regression
+// test for the investigator-session bug: an investigator session resolves to
+// the main worktree path (inherited from the coordinator's DB row), and cleanup
+// must NOT delete that path.
+func TestIsSafeToRemoveWorktree_MainGuard(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping git-dependent test")
+	}
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+
+	bareRoot, worktreePath, _ := setupMinimalBareRepo(t)
+	mainWorktreePath := filepath.Join(bareRoot, "main")
+
+	// Use an isolated DB so AllActiveStatus doesn't see live sessions from the host.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	t.Run("main worktree path is not safe to remove", func(t *testing.T) {
+		safe := isSafeToRemoveWorktree("myrepo@some-session", mainWorktreePath, bareRoot)
+		if safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q) = true, want false — main worktree must be protected",
+				mainWorktreePath, bareRoot)
+		}
+	})
+
+	t.Run("feature worktree path is safe to remove", func(t *testing.T) {
+		safe := isSafeToRemoveWorktree("myrepo@feature", worktreePath, bareRoot)
+		if !safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q) = false, want true — feature worktree should be removable",
+				worktreePath, bareRoot)
+		}
+	})
+
+	t.Run("empty path is not safe to remove", func(t *testing.T) {
+		safe := isSafeToRemoveWorktree("myrepo@some-session", "", bareRoot)
+		if safe {
+			t.Errorf("isSafeToRemoveWorktree(\"\", ...) = true, want false — empty path should not be removable")
+		}
+	})
+}
+
+// TestIsSafeToRemoveWorktree_ActiveSessionGuard verifies that
+// isSafeToRemoveWorktree returns false when the target path matches the
+// worktree of an active session in the DB, even if that path is not the
+// default branch worktree. This guards against shared-worktree edge cases.
+func TestIsSafeToRemoveWorktree_ActiveSessionGuard(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	sharedPath := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Seed an active session whose worktree is sharedPath.
+	if err := d.UpsertStatus("myrepo@other-branch", "myrepo", sharedPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	t.Run("path matching active session is not safe to remove", func(t *testing.T) {
+		// bareRoot is empty — only the DB guard should fire.
+		// Use a different session name than the one that owns sharedPath, to
+		// simulate a second session sharing the same worktree path.
+		safe := isSafeToRemoveWorktree("myrepo@cleaning-up-session", sharedPath, "")
+		if safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = true, want false — path belongs to an active session",
+				"myrepo@cleaning-up-session", sharedPath)
+		}
+	})
+
+	t.Run("own session path is safe to remove (self-exclusion)", func(t *testing.T) {
+		// When cleaning up the session that owns sharedPath, it should be safe.
+		safe := isSafeToRemoveWorktree("myrepo@other-branch", sharedPath, "")
+		if !safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = false, want true — session should be able to remove its own worktree",
+				"myrepo@other-branch", sharedPath)
+		}
+	})
+
+	t.Run("unrelated path is safe to remove", func(t *testing.T) {
+		otherPath := t.TempDir()
+		safe := isSafeToRemoveWorktree("myrepo@some-session", otherPath, "")
+		if !safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = false, want true — unrelated path should be removable",
+				"myrepo@some-session", otherPath)
+		}
+	})
+}
+
+// TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree verifies the
+// full end-to-end bug scenario from issue #1582: an investigator session whose
+// worktree resolves to the main worktree path must NOT have that directory
+// removed by headlessCleanup.
+//
+// The investigator session name is of the form <coordinator>~investigate-<slug>
+// (e.g. "nixos-config@main~investigate-foo"). Its worktree path in the DB is
+// the coordinator's main worktree (inherited from the coordinator's spawn row).
+func TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping git-dependent test")
+	}
+	withNoopTmux(t)
+
+	bareRoot, _, _ := setupMinimalBareRepo(t)
+	mainWorktreePath := filepath.Join(bareRoot, "main")
+
+	// Use an isolated DB.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Coordinator session with the main worktree.
+	coordinatorSession := "nixos-config@main"
+	if err := d.UpsertStatus(coordinatorSession, "nixos-config", mainWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus coordinator: %v", err)
+	}
+
+	// Investigator session: name contains "~investigate-", worktree is the
+	// coordinator's worktree (the bug scenario).
+	investigatorSession := coordinatorSession + "~investigate-some-query"
+	if err := d.UpsertStatus(investigatorSession, "nixos-config", mainWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus investigator: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// The worktreeName extracted by cleanup is the part after "@":
+	// "main~investigate-some-query". Pass it directly along with the main
+	// worktree path and bareRoot — this simulates what the cleanup command
+	// resolves for the investigator session.
+	worktreeName := "main~investigate-some-query"
+	err = headlessCleanup(investigatorSession, worktreeName, mainWorktreePath, bareRoot)
+	if err != nil {
+		t.Errorf("headlessCleanup returned error %v, want nil", err)
+	}
+
+	// The main worktree directory must still exist.
+	if _, statErr := os.Stat(mainWorktreePath); statErr != nil {
+		t.Errorf("main worktree %q was removed by cleanup — this is the #1582 regression: %v",
+			mainWorktreePath, statErr)
+	}
+
+	// The investigator session should be marked as ended.
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(investigatorSession)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — investigator session was not marked as ended")
+	}
+}
