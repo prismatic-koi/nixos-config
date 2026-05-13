@@ -1280,21 +1280,6 @@ func removeContainerIfExists(sessionName string) {
 //     Removing the default branch worktree would destroy the coordinator's
 //     working directory and break all subsequent git/gh commands.
 //
-//  2. The path matches the worktree of any currently active session in the DB.
-//     This guards against investigator or other child sessions that inherit
-//     the parent's worktree path and would otherwise clobber a live session.
-//
-// Both checks normalise paths with filepath.Clean before comparing.
-// When bareRoot is empty the path-level checks are skipped (caller already
-// handles the worktreePath=="" fast-path).
-// isSafeToRemoveWorktree returns true when worktreePath is safe to remove
-// during headless cleanup. It returns false (with a caller-logged warning) in
-// two cases:
-//
-//  1. The path matches the default branch worktree (e.g. <bareRoot>/main).
-//     Removing the default branch worktree would destroy the coordinator's
-//     working directory and break all subsequent git/gh commands.
-//
 //  2. The path matches the worktree of any currently active session in the DB
 //     other than the session being cleaned up. This guards against investigator
 //     or other child sessions that inherit the parent's worktree path and would
