@@ -1123,7 +1123,7 @@ func TestIsSafeToRemoveWorktree_MainGuard(t *testing.T) {
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	t.Run("main worktree path is not safe to remove", func(t *testing.T) {
-		safe := isSafeToRemoveWorktree(mainWorktreePath, bareRoot)
+		safe := isSafeToRemoveWorktree("myrepo@some-session", mainWorktreePath, bareRoot)
 		if safe {
 			t.Errorf("isSafeToRemoveWorktree(%q, %q) = true, want false — main worktree must be protected",
 				mainWorktreePath, bareRoot)
@@ -1131,7 +1131,7 @@ func TestIsSafeToRemoveWorktree_MainGuard(t *testing.T) {
 	})
 
 	t.Run("feature worktree path is safe to remove", func(t *testing.T) {
-		safe := isSafeToRemoveWorktree(worktreePath, bareRoot)
+		safe := isSafeToRemoveWorktree("myrepo@feature", worktreePath, bareRoot)
 		if !safe {
 			t.Errorf("isSafeToRemoveWorktree(%q, %q) = false, want true — feature worktree should be removable",
 				worktreePath, bareRoot)
@@ -1139,7 +1139,7 @@ func TestIsSafeToRemoveWorktree_MainGuard(t *testing.T) {
 	})
 
 	t.Run("empty path is not safe to remove", func(t *testing.T) {
-		safe := isSafeToRemoveWorktree("", bareRoot)
+		safe := isSafeToRemoveWorktree("myrepo@some-session", "", bareRoot)
 		if safe {
 			t.Errorf("isSafeToRemoveWorktree(\"\", ...) = true, want false — empty path should not be removable")
 		}
@@ -1171,19 +1171,30 @@ func TestIsSafeToRemoveWorktree_ActiveSessionGuard(t *testing.T) {
 
 	t.Run("path matching active session is not safe to remove", func(t *testing.T) {
 		// bareRoot is empty — only the DB guard should fire.
-		safe := isSafeToRemoveWorktree(sharedPath, "")
+		// Use a different session name than the one that owns sharedPath, to
+		// simulate a second session sharing the same worktree path.
+		safe := isSafeToRemoveWorktree("myrepo@cleaning-up-session", sharedPath, "")
 		if safe {
-			t.Errorf("isSafeToRemoveWorktree(%q, \"\") = true, want false — path belongs to an active session",
-				sharedPath)
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = true, want false — path belongs to an active session",
+				"myrepo@cleaning-up-session", sharedPath)
+		}
+	})
+
+	t.Run("own session path is safe to remove (self-exclusion)", func(t *testing.T) {
+		// When cleaning up the session that owns sharedPath, it should be safe.
+		safe := isSafeToRemoveWorktree("myrepo@other-branch", sharedPath, "")
+		if !safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = false, want true — session should be able to remove its own worktree",
+				"myrepo@other-branch", sharedPath)
 		}
 	})
 
 	t.Run("unrelated path is safe to remove", func(t *testing.T) {
 		otherPath := t.TempDir()
-		safe := isSafeToRemoveWorktree(otherPath, "")
+		safe := isSafeToRemoveWorktree("myrepo@some-session", otherPath, "")
 		if !safe {
-			t.Errorf("isSafeToRemoveWorktree(%q, \"\") = false, want true — unrelated path should be removable",
-				otherPath)
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = false, want true — unrelated path should be removable",
+				"myrepo@some-session", otherPath)
 		}
 	})
 }
