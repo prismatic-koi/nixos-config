@@ -466,6 +466,8 @@
         # Coordinator-domain operations — deny
         "prism spawn" = "deny";
         "prism spawn *" = "deny";
+        "prism investigate" = "deny";
+        "prism investigate *" = "deny";
         "prism pr" = "deny";
         "prism pr *" = "deny";
         "gh pr merge" = "deny";
@@ -741,6 +743,8 @@
                 # Spawning agents is a coordinator responsibility, never a worker's (#557).
                 "prism spawn" = "deny";
                 "prism spawn *" = "deny";
+                "prism investigate" = "deny";
+                "prism investigate *" = "deny";
                 "prism pr" = "deny";
                 "prism pr *" = "deny";
                 # prism merge — enqueuing is a coordinator responsibility (#783)
@@ -1488,6 +1492,8 @@
                         "gh pr merge *" = "deny";
                         "prism spawn" = "deny";
                         "prism spawn *" = "deny";
+                        "prism investigate" = "deny";
+                        "prism investigate *" = "deny";
                         "prism pr" = "deny";
                         "prism pr *" = "deny";
                         # prism merge — enqueuing is a coordinator responsibility (#783)
