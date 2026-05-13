@@ -131,22 +131,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		}
 	}
 
-	// ── Helper: conditionally create symlink if EvalSymlinks succeeds ────────
-	// Used for paths where symlink resolution is required (e.g. Nix store
-	// paths that are themselves symlinks). The symlink points at the resolved
-	// real path so the SBPL profile can allow that literal path.
-	symlinkIfResolvable := func(src, dst string) (resolvedSrc string) {
-		resolved, err := filepath.EvalSymlinks(src)
-		if err != nil {
-			return "" // source does not resolve — skip
-		}
-		if err := makeSymlink(resolved, dst); err != nil {
-			log.Printf("container: sandbox-exec: symlink %s → %s: %v", dst, resolved, err)
-			return ""
-		}
-		return resolved
-	}
-
 	// ── SSH keys ──────────────────────────────────────────────────────────────
 	// Mirror bwrap.go:369-388: resolve via EvalSymlinks and mount at generic
 	// canonical names under $HOME/.ssh/.
@@ -156,7 +140,26 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	if accessKeyName == "" {
 		accessKeyName = "prismatic-koi-ed25519"
 	}
-	symlinkIfResolvable(
+	// Use symlinkIfExists (not symlinkIfResolvable) for the access key so that
+	// the staging HOME symlink points at the stable intermediate sops symlink
+	// (~/.ssh/<accessKeyName>) rather than the fully-resolved sops temp path
+	// (e.g. /private/var/folders/.../secrets.d/<N>/...).
+	//
+	// On Darwin, the access key is managed by sops-nix and its concrete path
+	// rotates on every darwin-rebuild switch (secrets.d/<N>/ increments).
+	// If the staging HOME symlink points at the fully-resolved concrete path,
+	// it becomes dangling after rotation and SSH breaks inside the session
+	// with "Couldn't load public key … No such file or directory" (issue #1573).
+	//
+	// With symlinkIfExists the chain is:
+	//   <stagingHome>/.ssh/access-key
+	//     → ~/.ssh/<accessKeyName>               (stable sops symlink)
+	//     → /private/var/folders/.../secrets.d/<current>/...  (sops resolves this)
+	//
+	// The SBPL profile already grants (allow file-read* (subpath "/private/var/folders"))
+	// so the sandbox can follow the chain to whatever secrets.d/<N> is current,
+	// even after a rotation that occurred after session spawn.
+	symlinkIfExists(
 		filepath.Join(sshDir, accessKeyName),
 		filepath.Join(stagingHome, ".ssh", "access-key"),
 	)
@@ -184,10 +187,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// so the sandbox can follow the chain to whatever secrets.d/<N> is current,
 	// even after a rotation that occurred after session spawn.
 	//
-	// Note: symlinkIfResolvable is still used for the access key above because
-	// collectStagingHomeSymlinkTargets resolves the access key symlink to emit
-	// a (literal ...) SBPL rule for it — the access key does not go through
-	// sops and its path does not rotate.
 	symlinkIfExists(
 		filepath.Join(sshDir, signingKeyName),
 		filepath.Join(stagingHome, ".ssh", "signing-key"),
@@ -212,14 +211,21 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	}
 
 	// ── AWS ───────────────────────────────────────────────────────────────────
-	// Match bwrap.go pattern: resolve ~/.config/aws/readonly-config and
-	// ~/.config/aws/credentials via EvalSymlinks; mount ~/.aws/sso and
-	// ~/.aws/cli via os.Stat.
-	symlinkIfResolvable(
+	// Use symlinkIfExists (not symlinkIfResolvable) for the config and
+	// credentials files so the staging HOME symlinks point at the stable
+	// intermediate sops symlinks rather than the fully-resolved concrete path
+	// inside secrets.d/<N>/. On Darwin, darwin-rebuild switch rotates
+	// secrets.d/<N>/ → secrets.d/<N+1>/, invalidating any staging symlink
+	// that captured the old concrete path (issue #1573).
+	//
+	// The SBPL profile already grants (allow file-read* (subpath "/private/var/folders"))
+	// so the sandbox can follow the chain through whatever secrets.d/<current>
+	// is live at read time.
+	symlinkIfExists(
 		filepath.Join(home, ".config", "aws", "readonly-config"),
 		filepath.Join(stagingHome, ".aws", "config"),
 	)
-	symlinkIfResolvable(
+	symlinkIfExists(
 		filepath.Join(home, ".config", "aws", "credentials"),
 		filepath.Join(stagingHome, ".aws", "credentials"),
 	)
@@ -233,7 +239,11 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	)
 
 	// ── Kube ──────────────────────────────────────────────────────────────────
-	symlinkIfResolvable(
+	// Use symlinkIfExists (not symlinkIfResolvable) so the staging symlink
+	// points at the stable intermediate (~/.config/kube/agents-config) rather
+	// than the fully-resolved sops concrete path that rotates on each
+	// darwin-rebuild switch (issue #1573).
+	symlinkIfExists(
 		filepath.Join(home, ".config", "kube", "agents-config"),
 		filepath.Join(stagingHome, ".kube", "config"),
 	)
