@@ -673,9 +673,12 @@ func newFakeHome(t *testing.T) string {
 		}
 	}
 
-	// AWS readonly-config (in XDG location, symlinked by the staging builder).
+	// AWS readonly-config and credentials (in XDG location, symlinked by the staging builder).
 	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "aws", "readonly-config"), []byte("dummy-aws-cfg"), 0o644); err != nil {
 		t.Fatalf("write aws config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "aws", "credentials"), []byte("dummy-aws-creds"), 0o600); err != nil {
+		t.Fatalf("write aws credentials: %v", err)
 	}
 	// Kube agents-config.
 	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "kube", "agents-config"), []byte("dummy-kube"), 0o644); err != nil {
@@ -921,8 +924,6 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 // rotations (when secrets.d/<N>/ increments), whereas using the resolved path
 // would produce a dangling symlink after the rotation.
 //
-// The access-key symlink is NOT checked here — it still uses symlinkIfResolvable
-// and is expected to point at the resolved real path.
 func TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1065,34 +1066,42 @@ func TestPrepareSandboxExecHome_SigningKeyAbsentNoDanglingSymlink(t *testing.T) 
 	}
 }
 
-// TestPrepareSandboxExecHome_AccessKeyStillUsesResolvedPath verifies that the
-// access-key symlink in the staging HOME still points at the fully-resolved
-// real path (not an intermediate symlink). This is unchanged from the original
-// behaviour — access-key uses symlinkIfResolvable so that the SBPL profile
-// collectStagingHomeSymlinkTargets can emit a (literal ...) rule for it.
-func TestPrepareSandboxExecHome_AccessKeyStillUsesResolvedPath(t *testing.T) {
+// TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath verifies that the
+// access-key symlink in the staging HOME points at the stable intermediate
+// sops symlink (~/.ssh/<accessKeyName>), not the fully-resolved concrete path
+// inside secrets.d/<N>/. This is the fix for issue #1573: on Darwin the access
+// key is managed by sops-nix and its concrete path rotates on each
+// darwin-rebuild switch, so the staging symlink must anchor to the stable
+// intermediate to survive rotations.
+func TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
-	// Make the access key file a symlink to a "resolved" path, to ensure
-	// symlinkIfResolvable resolves it fully before creating the staging link.
+	// Set up a two-hop chain simulating the sops-managed layout:
+	//   ~/.ssh/prismatic-koi-ed25519  (intermediate)
+	//     → sopsDir1/access-key       (concrete v1)
+	//
+	// After PrepareSandboxExecHome runs, we rotate the intermediate to v2
+	// and verify the staging HOME symlink still resolves.
 	sshDir := filepath.Join(fakeHome, ".ssh")
-	resolvedDir := filepath.Join(fakeHome, "resolved-keys")
-	if err := os.MkdirAll(resolvedDir, 0o700); err != nil {
-		t.Fatalf("create resolved-keys dir: %v", err)
+	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
+	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
+		t.Fatalf("create sops-dir-1: %v", err)
 	}
-	resolvedKey := filepath.Join(resolvedDir, "access-key-real")
-	if err := os.WriteFile(resolvedKey, []byte("access-key-content"), 0o600); err != nil {
-		t.Fatalf("write resolved access key: %v", err)
+	keyPath1 := filepath.Join(sopsDir1, "access-key")
+	if err := os.WriteFile(keyPath1, []byte("access-key-v1"), 0o600); err != nil {
+		t.Fatalf("write access key v1: %v", err)
 	}
-	// Replace the plain access key file with a symlink.
-	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519"))
-	if err := os.Symlink(resolvedKey, filepath.Join(sshDir, "prismatic-koi-ed25519")); err != nil {
-		t.Fatalf("symlink access key: %v", err)
+
+	// Replace the plain key file with a symlink pointing at the v1 concrete path.
+	intermediate := filepath.Join(sshDir, "prismatic-koi-ed25519")
+	_ = os.Remove(intermediate)
+	if err := os.Symlink(keyPath1, intermediate); err != nil {
+		t.Fatalf("symlink intermediate access key: %v", err)
 	}
 
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@access-key-test",
-		InstanceID:  "access-key-resolved-test",
+		InstanceID:  "access-key-intermediate-test",
 	})
 
 	stagingHome, err := m.PrepareSandboxExecHome()
@@ -1101,22 +1110,203 @@ func TestPrepareSandboxExecHome_AccessKeyStillUsesResolvedPath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// The access-key symlink should point at the fully-resolved path
-	// (symlinkIfResolvable resolves through the intermediate).
+	// The access-key symlink must point at the INTERMEDIATE path, not the
+	// fully-resolved sops-dir-1/access-key path (fix for #1573).
 	accessLink := filepath.Join(stagingHome, ".ssh", "access-key")
 	accessTarget, err := os.Readlink(accessLink)
 	if err != nil {
 		t.Fatalf("access-key is not a symlink: %v", err)
 	}
-	// resolvedKey might itself resolve further on macOS (e.g. /tmp → /private/tmp).
-	expectedTarget, _ := filepath.EvalSymlinks(resolvedKey)
-	if expectedTarget == "" {
-		expectedTarget = resolvedKey
+	if accessTarget != intermediate {
+		t.Errorf("access-key symlink points at %q, want intermediate path %q\n"+
+			"(the symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
+			"so it stays valid after a sops rotation — issue #1573)",
+			accessTarget, intermediate)
 	}
-	if accessTarget != expectedTarget {
-		t.Errorf("access-key target = %q, want resolved path %q\n"+
-			"(access-key must use symlinkIfResolvable to expose the real path for the SBPL profile)",
-			accessTarget, expectedTarget)
+
+	// Simulate a sops rotation: update the intermediate to point at v2 and
+	// remove v1. The staging HOME symlink must still resolve.
+	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
+	if err := os.MkdirAll(sopsDir2, 0o700); err != nil {
+		t.Fatalf("create sops-dir-2: %v", err)
+	}
+	keyPath2 := filepath.Join(sopsDir2, "access-key")
+	if err := os.WriteFile(keyPath2, []byte("access-key-v2"), 0o600); err != nil {
+		t.Fatalf("write access key v2: %v", err)
+	}
+	_ = os.Remove(intermediate)
+	if err := os.Symlink(keyPath2, intermediate); err != nil {
+		t.Fatalf("rotate intermediate to v2: %v", err)
+	}
+	_ = os.RemoveAll(sopsDir1) // simulate rotation removing old secrets.d/<N>
+
+	// After rotation, reads through the staging HOME symlink must succeed.
+	content, err := os.ReadFile(accessLink)
+	if err != nil {
+		t.Fatalf("cannot read access-key through staging HOME after rotation: %v\n"+
+			"(this would break SSH inside running sessions — the fix for #1573)", err)
+	}
+	if string(content) != "access-key-v2" {
+		t.Errorf("access-key after rotation: got %q, want %q", string(content), "access-key-v2")
+	}
+}
+
+// TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks verifies that the
+// four staging-HOME symlinks introduced by issue #1573 — access-key,
+// .aws/config, .aws/credentials, and .kube/config — survive a sops
+// secrets.d/<N> → secrets.d/<N+1> rotation after PrepareSandboxExecHome has
+// already run.
+//
+// The test follows the same pattern as
+// TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath (which covers
+// signing-key{,.pub} from issue #1410):
+//  1. Plant v1 concrete files under sopsDir1.
+//  2. Create intermediate symlinks pointing at v1.
+//  3. Run PrepareSandboxExecHome.
+//  4. Verify each staging symlink points at the stable intermediate.
+//  5. Rotate: update the intermediates to point at v2, delete v1.
+//  6. Verify reads through each staging symlink still succeed (resolve to v2).
+func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// ── set up v1 concrete files ───────────────────────────────────────
+	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
+	if err := os.MkdirAll(filepath.Join(sopsDir1, "aws"), 0o700); err != nil {
+		t.Fatalf("create sops-dir-1/aws: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sopsDir1, "kube"), 0o700); err != nil {
+		t.Fatalf("create sops-dir-1/kube: %v", err)
+	}
+
+	v1Files := map[string]string{
+		"ssh/access-key":   "access-key-v1",
+		"aws/config":       "aws-config-v1",
+		"aws/credentials":  "aws-credentials-v1",
+		"kube/config":      "kube-config-v1",
+	}
+	for rel, content := range v1Files {
+		path := filepath.Join(sopsDir1, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	// ── install intermediate symlinks (stable sops intermediates) ────────────
+	// Each intermediate simulates the path that sops-nix keeps stable across
+	// rotations: e.g. ~/.ssh/prismatic-koi-ed25519 → secrets.d/<N>/...
+	intermediates := map[string]string{
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir1, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir1, "aws", "config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir1, "aws", "credentials"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir1, "kube", "config"),
+	}
+	for intermediate, target := range intermediates {
+		_ = os.Remove(intermediate) // remove plain file from newFakeHome
+		if err := os.Symlink(target, intermediate); err != nil {
+			t.Fatalf("symlink intermediate %s → %s: %v", intermediate, target, err)
+		}
+	}
+
+	// ── run PrepareSandboxExecHome ─────────────────────────────────────────
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@sops-rotation-all",
+		InstanceID:  "sops-rotation-all-four-test",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	// ── verify each staging symlink points at the intermediate ──────────────
+	type stagingEntry struct {
+		link         string // path in staging HOME
+		intermediate string // expected symlink target (the stable sops intermediate)
+	}
+	entries := []stagingEntry{
+		{
+			link:         filepath.Join(stagingHome, ".ssh", "access-key"),
+			intermediate: filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
+		},
+		{
+			link:         filepath.Join(stagingHome, ".aws", "config"),
+			intermediate: filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+		},
+		{
+			link:         filepath.Join(stagingHome, ".aws", "credentials"),
+			intermediate: filepath.Join(fakeHome, ".config", "aws", "credentials"),
+		},
+		{
+			link:         filepath.Join(stagingHome, ".kube", "config"),
+			intermediate: filepath.Join(fakeHome, ".config", "kube", "agents-config"),
+		},
+	}
+	for _, e := range entries {
+		target, readErr := os.Readlink(e.link)
+		if readErr != nil {
+			t.Errorf("%s is not a symlink: %v", e.link, readErr)
+			continue
+		}
+		if target != e.intermediate {
+			t.Errorf("%s → %q, want intermediate %q\n"+
+				"(symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
+				"so it stays valid after a sops rotation — issue #1573)",
+				e.link, target, e.intermediate)
+		}
+	}
+
+	// ── rotate: update intermediates to v2, delete v1 ───────────────────────
+	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
+	v2Files := map[string]string{
+		"ssh/access-key":   "access-key-v2",
+		"aws/config":       "aws-config-v2",
+		"aws/credentials":  "aws-credentials-v2",
+		"kube/config":      "kube-config-v2",
+	}
+	for rel, content := range v2Files {
+		path := filepath.Join(sopsDir2, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir for sops-dir-2/%s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write sops-dir-2/%s: %v", rel, err)
+		}
+	}
+	v2Targets := map[string]string{
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir2, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir2, "aws", "config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir2, "aws", "credentials"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir2, "kube", "config"),
+	}
+	for intermediate, newTarget := range v2Targets {
+		_ = os.Remove(intermediate)
+		if err := os.Symlink(newTarget, intermediate); err != nil {
+			t.Fatalf("rotate intermediate %s → %s: %v", intermediate, newTarget, err)
+		}
+	}
+	_ = os.RemoveAll(sopsDir1) // simulate sops deleting the old secrets.d/<N>
+
+	// ── verify reads through staging HOME still succeed after rotation ──────
+	v2Contents := map[string]string{
+		filepath.Join(stagingHome, ".ssh", "access-key"):  "access-key-v2",
+		filepath.Join(stagingHome, ".aws", "config"):       "aws-config-v2",
+		filepath.Join(stagingHome, ".aws", "credentials"):  "aws-credentials-v2",
+		filepath.Join(stagingHome, ".kube", "config"):      "kube-config-v2",
+	}
+	for link, wantContent := range v2Contents {
+		content, readErr := os.ReadFile(link)
+		if readErr != nil {
+			t.Errorf("cannot read %s through staging HOME after rotation: %v\n"+
+				"(this means the staging symlink is dangling after sops rotate — issue #1573)",
+				link, readErr)
+			continue
+		}
+		if string(content) != wantContent {
+			t.Errorf("%s after rotation: got %q, want %q", link, string(content), wantContent)
+		}
 	}
 }
 
