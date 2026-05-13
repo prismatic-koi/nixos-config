@@ -50,69 +50,92 @@ func investigateAgentInvokerSession(sessionName string) (string, bool) {
 	return sessionName[:idx], true
 }
 
-// notifyInvestigatorTurnEnd delivers a body-bearing per-turn notification from
-// an investigate-agent session to its recorded invoker session. It is called
-// asynchronously (via go) after each turn_end that carries a non-empty closing
-// assistant text block, so s.mu must NOT be held.
+// notifyInvestigatorCompletion delivers a single terminal notification from
+// an investigate-agent session to its invoker when the investigation reaches a
+// terminal state (finished, interrupted, or error).
+//
+// It is called asynchronously (via go) from the state-transition points in
+// events.go, so s.mu must NOT be held.
+//
+// The finalText parameter is the text of the last completed turn. When the
+// state is not agent.StateFinished (i.e. interrupted or error), an explicit
+// failure notice is prepended regardless of whether finalText is present.
 //
 // Delivery uses promptdelivery.DeliverToSession with deliverAs="followUp" so
-// that the notification queues behind any in-flight invoker turn rather than
-// being dropped.
+// that the notification queues behind any in-flight invoker turn.
 //
 // The notification body contains:
 //   - A sender header: "From investigator session: <name>"
-//   - The final assistant text block of the turn, verbatim.
+//   - The final assistant text (or a failure notice if state != finished).
 //   - A steering-channel hint: "Reply with: prism prompt <name> --prompt '...'"
 //
-// When the invoker session has ended, the notification is dropped silently with
-// a structured log line. When delivery fails, the failure is logged with both
-// session names; the investigator keeps running.
-func (s *Sidecar) notifyInvestigatorTurnEnd(text string) {
+// When the invoker session has ended, the notification is dropped silently.
+// When delivery fails, the failure is logged; the investigator keeps running.
+func (s *Sidecar) notifyInvestigatorCompletion(state agent.AgentState, finalText string) {
 	invokerSession, isInvestigate := investigateAgentInvokerSession(s.cfg.SessionName)
 	if !isInvestigate {
 		// Not an investigate-agent session — nothing to do.
 		return
 	}
 
-	// Trim the text block; skip delivery when empty after trim.
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: empty text block — skipping (investigator=%s invoker=%s)",
-			s.cfg.SessionName, invokerSession)
-		return
+	// Build the body text.
+	var bodyText string
+	trimmed := strings.TrimSpace(finalText)
+	switch state {
+	case agent.StateFinished:
+		if trimmed == "" {
+			s.logger().Printf("sidecar: notifyInvestigatorCompletion: no final text — delivering empty-completion notice (investigator=%s invoker=%s)",
+				s.cfg.SessionName, invokerSession)
+			bodyText = fmt.Sprintf(
+				"From investigator session: %s\n\nInvestigation complete (no final text recorded).\n\nReply with: prism prompt %s --prompt '...'",
+				s.cfg.SessionName, s.cfg.SessionName,
+			)
+		} else {
+			bodyText = fmt.Sprintf(
+				"From investigator session: %s\n\n%s\n\nReply with: prism prompt %s --prompt '...'",
+				s.cfg.SessionName, trimmed, s.cfg.SessionName,
+			)
+		}
+	default:
+		// Interrupted or error: always notify so the invoker learns of the failure.
+		if trimmed != "" {
+			bodyText = fmt.Sprintf(
+				"From investigator session: %s\n\nInvestigation ended with state %q.\n\nLast output:\n%s\n\nReply with: prism prompt %s --prompt '...'",
+				s.cfg.SessionName, state, trimmed, s.cfg.SessionName,
+			)
+		} else {
+			bodyText = fmt.Sprintf(
+				"From investigator session: %s\n\nInvestigation ended with state %q (no output recorded).\n\nReply with: prism prompt %s --prompt '...'",
+				s.cfg.SessionName, state, s.cfg.SessionName,
+			)
+		}
 	}
 
 	// Look up the invoker session.
 	invokerStatus, err := s.cfg.DB.CurrentStatus(invokerSession)
 	if err != nil {
-		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: DB lookup for invoker %q: %v — skipping (investigator=%s)",
+		s.logger().Printf("sidecar: notifyInvestigatorCompletion: DB lookup for invoker %q: %v — skipping (investigator=%s)",
 			invokerSession, err, s.cfg.SessionName)
 		return
 	}
 	if invokerStatus == nil {
-		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: invoker session %q not found in DB — skipping (investigator=%s)",
+		s.logger().Printf("sidecar: notifyInvestigatorCompletion: invoker session %q not found in DB — skipping (investigator=%s)",
 			invokerSession, s.cfg.SessionName)
 		return
 	}
 	if invokerStatus.EndedAt != nil {
-		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: invoker session %q has ended — dropping notification (investigator=%s reason=invoker_ended)",
+		s.logger().Printf("sidecar: notifyInvestigatorCompletion: invoker session %q has ended — dropping notification (investigator=%s reason=invoker_ended)",
 			invokerSession, s.cfg.SessionName)
 		return
 	}
 
-	// Build the notification body.
-	body := fmt.Sprintf(
-		"From investigator session: %s\n\n%s\n\nReply with: prism prompt %s --prompt '...'",
-		s.cfg.SessionName, trimmed, s.cfg.SessionName,
-	)
-
-	if err := promptdelivery.DeliverToSession(invokerSession, invokerStatus, body, buildNotifyPromptBody, "", "followUp"); err != nil {
-		s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: FAILED — investigator=%s invoker=%s reason=%v",
+	if err := promptdelivery.DeliverToSession(invokerSession, invokerStatus, bodyText, buildNotifyPromptBody, "", "followUp"); err != nil {
+		s.logger().Printf("sidecar: notifyInvestigatorCompletion: FAILED — investigator=%s invoker=%s reason=%v",
 			s.cfg.SessionName, invokerSession, err)
 		return
 	}
-	s.logger().Printf("sidecar: notifyInvestigatorTurnEnd: delivered to invoker=%s (investigator=%s)",
-		invokerSession, s.cfg.SessionName)
+	s.logger().Printf("sidecar: notifyInvestigatorCompletion: delivered state=%s to invoker=%s (investigator=%s)",
+		state, invokerSession, s.cfg.SessionName)
 }
 
 // notifyParentWorkerOnStartupFailure sends a notification to the parent worker
