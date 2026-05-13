@@ -396,6 +396,34 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		}
 	}
 
+	// ── PI atlassian-mcp-oauth.json bind-mount (read-write) ───────────────
+	// The Atlassian MCP extension stores OAuth tokens at
+	// ~/.pi/agent/atlassian-mcp-oauth.json. Inside a bwrap sandbox,
+	// os.UserHomeDir() resolves to the sandbox $HOME, so any token written
+	// by /login-atlassian would be lost when the sandbox exits.
+	// We touch the file (create if absent, mode 0o600) so that bwrap can
+	// bind-mount it. This means the first /login-atlassian inside the sandbox
+	// writes directly to the host path and tokens are persisted across
+	// sessions. The same pattern is used for auth.json above, except we
+	// always create the target here — OAuth logins are the normal first-run
+	// path and a missing file would silently drop tokens on the floor.
+	if home, err := os.UserHomeDir(); err == nil {
+		atlasMCPPath := filepath.Join(home, ".pi", "agent", "atlassian-mcp-oauth.json")
+		// Touch the file (create with mode 0o600 if absent). Best-effort:
+		// if the parent dir does not exist or the write fails we skip the
+		// bind rather than failing the whole container start.
+		if _, statErr := os.Stat(atlasMCPPath); os.IsNotExist(statErr) {
+			// Ensure parent directory exists before creating the file.
+			_ = os.MkdirAll(filepath.Dir(atlasMCPPath), 0o700)
+			if f, createErr := os.OpenFile(atlasMCPPath, os.O_CREATE|os.O_EXCL, 0o600); createErr == nil {
+				_ = f.Close()
+			}
+		}
+		if _, statErr := os.Stat(atlasMCPPath); statErr == nil {
+			args = append(args, "--bind", atlasMCPPath, atlasMCPPath)
+		}
+	}
+
 	// ── Extension directory ──────────────────────────────────────────────────
 	if cfg.PIExtensionHostDir == "" {
 		return nil, fmt.Errorf("pi: PIExtensionHostDir is empty — set the extension directory in the container config")

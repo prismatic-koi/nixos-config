@@ -522,6 +522,98 @@ func TestAppendPIBwrapMounts_NoBindWhenAuthJSONAbsent(t *testing.T) {
 	}
 }
 
+func TestAppendPIBwrapMounts_BindsAtlassianOAuthWhenExists(t *testing.T) {
+	// When ~/.pi/agent/atlassian-mcp-oauth.json already exists on the host,
+	// appendPIBwrapMounts must emit --bind <path> <path> (read-write) so that
+	// OAuth token refreshes inside the bwrap sandbox are persisted to the host.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	atlasPath := filepath.Join(piAgentDir, "atlassian-mcp-oauth.json")
+	if err := os.WriteFile(atlasPath, []byte(`{"accessToken":"tok"}`), 0o600); err != nil {
+		t.Fatalf("write atlassian-mcp-oauth.json: %v", err)
+	}
+
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	// Must contain --bind atlasPath atlasPath (read-write, not --ro-bind).
+	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
+		t.Errorf("expected --bind %q %q in args; got %v", atlasPath, atlasPath, args)
+	}
+	// Must NOT use --ro-bind (OAuth refreshes need write access).
+	if hasTriple(args, "--ro-bind", atlasPath, atlasPath) {
+		t.Errorf("--ro-bind must not be used for atlassian-mcp-oauth.json; got %v", args)
+	}
+}
+
+func TestAppendPIBwrapMounts_CreatesAndBindsAtlassianOAuthWhenAbsent(t *testing.T) {
+	// When ~/.pi/agent/atlassian-mcp-oauth.json does not exist, appendPIBwrapMounts
+	// must create an empty placeholder file (so bwrap can bind-mount it) and
+	// then emit --bind <path> <path>. This ensures that /login-atlassian inside
+	// the bwrap session writes tokens to the host path rather than the ephemeral
+	// sandbox home.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	// Deliberately do NOT create atlassian-mcp-oauth.json.
+
+	extDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(extDir, piExtensionFilename), []byte("// ext"), 0o644); err != nil {
+		t.Fatalf("write ext: %v", err)
+	}
+	fakePI := filepath.Join(t.TempDir(), "pi")
+	if err := os.WriteFile(fakePI, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write fake pi binary: %v", err)
+	}
+
+	cfg := Config{
+		PIBinaryPath:       fakePI,
+		PIExtensionHostDir: extDir,
+	}
+
+	args, err := appendPIBwrapMounts(nil, cfg)
+	if err != nil {
+		t.Fatalf("appendPIBwrapMounts: %v", err)
+	}
+
+	atlasPath := filepath.Join(piAgentDir, "atlassian-mcp-oauth.json")
+
+	// The placeholder file must have been created on the host.
+	if _, statErr := os.Stat(atlasPath); statErr != nil {
+		t.Errorf("expected placeholder atlassian-mcp-oauth.json to be created on host; got stat error: %v", statErr)
+	}
+
+	// Must contain --bind atlasPath atlasPath.
+	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
+		t.Errorf("expected --bind %q %q in args after placeholder creation; got %v", atlasPath, atlasPath, args)
+	}
+}
+
 func TestAppendPIBwrapMounts_NoPiAgentBindMount(t *testing.T) {
 	// ~/.pi/agent is no longer bind-mounted — files are copied into the staging
 	// dir by StagePIAgentConfigDir instead. Verify that even when ~/.pi/agent
