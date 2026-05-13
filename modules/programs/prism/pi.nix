@@ -54,6 +54,14 @@
         cp -r ${./pi/extensions/anthropic-oauth}/* $out/anthropic-oauth/
       '';
 
+      # Atlassian MCP extension for pi — connects to mcp.atlassian.com via
+      # OAuth PKCE, enumerates tools/list at startup, and registers each tool
+      # via pi.registerTool(). See pi/extensions/atlassian/UPSTREAM.md.
+      atlassianExtensionDir = pkgs.runCommand "pi-atlassian-extension" { } ''
+        mkdir -p $out
+        cp -r ${./pi/extensions/atlassian}/* $out/
+      '';
+
       # Prism extension for pi — a single derivation whose root contains
       # prism.ts. This path is wired into config.json via piExtensionDir so
       # prism can locate the extension at spawn time.
@@ -83,7 +91,14 @@
         # files and loaded by pi's jiti-based extension loader at runtime.
         # To port a future upstream fix, see:
         #   modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md
-        extensions = [ "${piExtensionsDir}/anthropic-oauth/index.ts" ];
+        extensions = [
+          "${piExtensionsDir}/anthropic-oauth/index.ts"
+          # Atlassian MCP extension: connects to mcp.atlassian.com via OAuth
+          # PKCE, enumerates tools/list at startup, and registers each tool.
+          # Use /login-atlassian in a pi session to authenticate.
+          # See pi/extensions/atlassian/UPSTREAM.md for auth method rationale.
+          "${atlassianExtensionDir}/index.ts"
+        ];
       };
 
       colourLib = import ../../colour-scheme/lib.nix;
@@ -185,6 +200,9 @@
         # Prism extension — GC-rooted so the store path referenced in
         # config.json is not removed by nix-collect-garbage.
         home.file.".pi/agent/prism-extension".source = prismExtensionDir;
+        # Atlassian MCP extension — GC-rooted so the nix-store path referenced
+        # in settings.json is not removed by nix-collect-garbage.
+        home.file.".pi/agent/atlassian-extension".source = atlassianExtensionDir;
 
         home.persistence."/persist" = {
           directories = [ ".pi" ];
