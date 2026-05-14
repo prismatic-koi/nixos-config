@@ -9,6 +9,21 @@
     nx.programs.prism.pi.enable = lib.mkEnableOption "enables pi coding agent" // {
       default = true;
     };
+    nx.programs.prism.pi.atlassian.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to enable the pi Atlassian MCP extension. When true, an entry
+        pointing into the atlassianExtensionDir nix-store path is added to the
+        extensions list in ~/.pi/agent/settings.json, and a
+        home.file.".pi/agent/atlassian-extension" entry is emitted to GC-root
+        that store path. Authentication is via /login-atlassian inside a pi
+        session.
+
+        This option controls only the pi-side extension and is independent of
+        the opencode atlasian MCP server configured in opencode.nix.
+      '';
+    };
   };
 
   config = lib.mkIf config.nx.programs.prism.pi.enable (
@@ -93,12 +108,14 @@
         #   modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md
         extensions = [
           "${piExtensionsDir}/anthropic-oauth/index.ts"
-          # Atlassian MCP extension: connects to mcp.atlassian.com via OAuth
-          # PKCE, enumerates tools/list at startup, and registers each tool.
-          # Use /login-atlassian in a pi session to authenticate.
-          # See pi/extensions/atlassian/UPSTREAM.md for auth method rationale.
-          "${atlassianExtensionDir}/index.ts"
-        ];
+        ]
+        ++
+          lib.optional config.nx.programs.prism.pi.atlassian.enable
+            # Atlassian MCP extension: connects to mcp.atlassian.com via OAuth
+            # PKCE, enumerates tools/list at startup, and registers each tool.
+            # Use /login-atlassian in a pi session to authenticate.
+            # See pi/extensions/atlassian/UPSTREAM.md for auth method rationale.
+            "${atlassianExtensionDir}/index.ts";
       };
 
       colourLib = import ../../colour-scheme/lib.nix;
@@ -202,7 +219,10 @@
         home.file.".pi/agent/prism-extension".source = prismExtensionDir;
         # Atlassian MCP extension — GC-rooted so the nix-store path referenced
         # in settings.json is not removed by nix-collect-garbage.
-        home.file.".pi/agent/atlassian-extension".source = atlassianExtensionDir;
+        # Only emitted when nx.programs.prism.pi.atlassian.enable is true.
+        home.file.".pi/agent/atlassian-extension" = lib.mkIf config.nx.programs.prism.pi.atlassian.enable {
+          source = atlassianExtensionDir;
+        };
 
         home.persistence."/persist" = {
           directories = [ ".pi" ];

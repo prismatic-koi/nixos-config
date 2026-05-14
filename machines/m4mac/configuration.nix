@@ -28,6 +28,7 @@ in
         profile.default = "anthropic";
         harness.default = "pi";
         agent.isolation.default = "sandbox-exec";
+        pi.atlassian.enable = true;
         projects.isolationOverrides = {
           "~/Documents/obsidian" = "host";
         };
