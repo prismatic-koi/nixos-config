@@ -168,8 +168,6 @@ rec {
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
-      atlassian = final.callPackage ../pkgs/atlassian.nix { };
-
       _macronTypePkg =
         if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;

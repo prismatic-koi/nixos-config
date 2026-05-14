@@ -7,7 +7,6 @@
 }:
 {
   imports = [
-    ./atlassian
     ./anki.nix
     ./aws.nix
     ./bitwarden.nix
