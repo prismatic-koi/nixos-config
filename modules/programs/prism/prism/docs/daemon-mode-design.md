@@ -153,7 +153,7 @@ both the UX improvements and the tighter security boundary achievable.
 │  │               │   │  │  (JSON-lines in/out via stdin/stdout) │  │ │
 │  │               │   │  └──────────────────────────────────────┘  │ │
 │  └───────────────┘   │  tool call dispatcher                      │ │
-│                      │   ├── read/edit/write → worktree subprocess │ │
+│                      │   ├── read/edit/write/grep/find/ls → worktree │ │
 │                      │   ├── bash → restricted subprocess          │ │
 │                      │   └── MCP → restricted subprocess           │ │
 │                      └────────────────────────────────────────────┘ │
@@ -366,36 +366,38 @@ an open question (§11.3).
 
 ## 5. Tool inventory and per-tool sandbox decisions
 
-The following table enumerates every tool pi exposes today, based on the
-opencode configuration in `modules/programs/prism/opencode.nix` and the
-opencode agent definitions in `modules/programs/prism/opencode/agents/`.
+The following table enumerates the built-in tools pi exposes, sourced from the
+[pi README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)
+(`--tools` flag documentation and the "Available built-in tools" list). The pi
+tool set must not be conflated with opencode's tool set — they differ
+substantially. Notably, pi explicitly ships without sub-agents (`task`), without
+a todo tool (`todowrite`), and without `glob`, `webfetch`, or any Atlassian MCP.
+Extensions registered via `pi.registerTool()` can add more, but the
+prism-hooks extension does not register additional tools today.
+
+The seven pi built-in tools are: `read`, `bash`, `edit`, `write`, `grep`,
+`find`, `ls`.
 
 **Sandbox decision key:**
 
-- **Host** — executed directly on the host, no subprocess isolation.
 - **Worktree-scoped subprocess** — executed in a subprocess with its working
-  directory pinned to the session's worktree; the subprocess does not have
-  access to anything outside that tree.
-- **Restricted subprocess** — executed in a subprocess with explicit
-  capability restrictions (bwrap on Linux, sandbox-exec on macOS); the
-  exact profile is described in the Notes column.
-- **Daemon-internal** — implemented entirely inside the daemon, no
-  subprocess.
+  directory and filesystem view restricted to the session's worktree; no access
+  to paths outside that tree.
+- **Restricted subprocess** — executed in a subprocess with explicit capability
+  restrictions (bwrap on Linux, sandbox-exec on macOS); the exact profile is
+  described in the Notes column.
+- **Daemon-internal** — implemented entirely inside the daemon process, no
+  subprocess spawned.
 
 | Tool | Sandbox decision | Mounts / network | Credential plan | Notes |
 |---|---|---|---|---|
-| `read` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Path traversal enforcement: paths are normalised and checked against the worktree root before the subprocess runs. Absolute paths outside the worktree are rejected before execution. |
+| `read` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Path traversal enforcement: the path argument is normalised and validated against the worktree root before execution. Absolute paths outside the worktree are rejected. |
 | `edit` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | Same path enforcement as `read`. The subprocess may write only within the worktree. |
-| `write` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | Same as `edit`. `write` creates files; the path enforcement is identical. |
-| `patch` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | `patch` is an alias for structured edit (apply a unified diff). Identical sandbox profile to `edit`. |
-| `grep` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Pattern search. Read-only bind suffices. |
-| `glob` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | File pattern matching. Read-only bind suffices. |
-| `list` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Directory listing. Read-only bind suffices. |
-| `bash` | Restricted subprocess (bwrap / sandbox-exec) | Worktree directory (RW) + specific credential mounts as needed (see §7) + network (host, scoped by role — see Notes). | LLM API keys, GitHub token (role-scoped), Atlassian credentials injected per-call (§7). | The bash tool has the widest attack surface. The sandbox profile mirrors the current bwrap/sandbox-exec profile but scoped to the tool call, not the entire pi process. Commands are filtered by the opencode permission system before reaching this layer; the subprocess restriction is a defence-in-depth layer. Network access: outbound is permitted for `git push`, `gh`, `aws`, etc. Inbound connections are blocked. |
-| `webfetch` | Restricted subprocess | No filesystem mounts (read-only temp dir only). Outbound network permitted (HTTP/HTTPS only). | None required. | Fetches a URL and returns the body. The subprocess has no write access to the worktree. A content-size cap is enforced by the daemon to prevent large-payload attacks. |
-| `task` | Daemon-internal → triggers `session_spawn` | Inherits the parent session's worktree. | Inherited from parent session. | The `task` tool spawns a subagent session. In daemon mode this becomes a `session_spawn` call on the daemon itself rather than a `prism spawn` shell invocation. The subagent is a full pi RPC child. `task` is disabled for review agents and investigate agents (as today). |
-| `todowrite` | Daemon-internal | No filesystem mounts. No network. | None required. | Manages the model's in-session task list (a structured todo list maintained across turns). All state is held in the pi process's own memory or its session state directory — no worktree I/O is performed. The daemon receives the `tool_call` frame and returns a `tool_result` without spawning any subprocess. Excluded from doom-loop detection in `opencode/plugins/prism-hooks.ts` (housekeeping pattern, not a loop signal). |
-| Atlassian MCP (`atlasian_*`) | Restricted subprocess (MCP proxy) | No filesystem mounts. Outbound network to `https://mcp.atlassian.com/v1/mcp` only. | ATLASSIAN_SITE, ATLASSIAN_EMAIL, ATLASSIAN_API_TOKEN injected at call time (§7). `mcp-atlassian-slim-proxy.mjs` is the current shim; this pattern continues. | The MCP proxy process is started per-call (or kept alive as a sidecar to the daemon — open question §11.4). The daemon injects credentials only for the duration of the call, then zeros the environment. Write operations (`atlasian_create*`, `atlasian_edit*`, etc.) are gated by the role permission table in the daemon (mirrors the current opencode permission config). |
+| `write` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | Same as `edit`. `write` creates new files; path enforcement is identical. |
+| `grep` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Pattern search across files. Read-only bind suffices. |
+| `find` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | File discovery by name/type. Read-only bind suffices. |
+| `ls` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Directory listing. Read-only bind suffices. |
+| `bash` | Restricted subprocess (bwrap on Linux, sandbox-exec on macOS) | Worktree directory (RW) + git config + SSH agent socket (conditional) + outbound network. See Notes. | GitHub token (role-scoped, 4-PAT architecture). LLM API keys are **not** injected — bash subprocesses must not make LLM calls. AWS credentials injected conditionally (open question §11.2). | `bash` has the widest attack surface of any pi tool. The sandbox profile is the same bwrap/sandbox-exec restriction set used today, but applied per-call rather than once at session start. Commands that require outbound network (e.g. `git push`, `gh`, `aws`) are permitted; inbound connections are blocked. |
 
 **Notes on `bash` sandbox profile (bwrap, Linux):**
 
@@ -481,7 +483,7 @@ call.
 
 | Attack class | New defence |
 |---|---|
-| Model reads credentials outside worktree via `read`/`edit`/`write`/`grep`/`glob`/`list` | These tools run in a worktree-scoped subprocess with no access to `~` or any other path. Path traversal is enforced before execution. |
+| Model reads credentials outside worktree via `read`/`edit`/`write`/`grep`/`find`/`ls` | These tools run in a worktree-scoped subprocess with no access to `~` or any other path. Path traversal is enforced before execution. |
 | Model accumulates credentials via early tool calls for later exfiltration | Credentials are injected per-call, not per-session. A `bash` call that reads a GitHub token gets only that token for that call; it cannot access LLM API keys it was not explicitly given. |
 | Model reads pi's own in-memory API keys via filesystem | Pi's environment is not accessible via any tool call (the tool subprocess is a separate process with a different environment). |
 | Model establishes persistent sidecar via `bash` | Bash subprocess lives only for the duration of the tool call. The daemon waits for subprocess exit before returning `tool_result`. Detached processes (background `&`) are killed when the subprocess group is reaped. |
@@ -534,10 +536,10 @@ PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER
 based on the repo's GitHub account (derived from the git remote URL) and
 the session role.
 
-Additional credentials forwarded today:
+Additional credentials forwarded today (for opencode sessions; pi does not
+use Atlassian MCP, which is an opencode-only integration):
 - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`
 - `GITHUB_COPILOT_TOKEN`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`
-- `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`
 
 ### 7.2 Per-tool credential plan in daemon mode
 
@@ -547,11 +549,8 @@ receives only the credentials it needs:
 
 | Tool | Credentials injected at call time |
 |---|---|
-| `read`, `edit`, `write`, `patch`, `grep`, `glob`, `list` | None. These tools do not need credentials. |
-| `bash` | GitHub token (role-scoped, from 4-PAT architecture). LLM API keys are **not** injected — bash subprocesses should not make LLM calls. AWS credentials (optional, injected if the session role requires them). Atlassian credentials are **not** injected into bash — they are only available via the MCP proxy. |
-| `webfetch` | None. HTTP requests use the OS network stack without authentication. (If a future use case requires authenticated fetches, credentials would be injected per-call.) |
-| `task` | The spawned subagent session receives its own credential set via the normal session-spawn path (§3.2, step 3). |
-| Atlassian MCP | `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN`. These are injected into the MCP proxy subprocess environment for the duration of the call, then the environment is zeroed on process exit. |
+| `read`, `edit`, `write`, `grep`, `find`, `ls` | None. These tools do not need credentials. |
+| `bash` | GitHub token (role-scoped, from 4-PAT architecture). LLM API keys are **not** injected — bash subprocesses should not make LLM calls. AWS credentials (optional, injected if the session role requires them). |
 
 ### 7.3 Pi's own credentials
 
@@ -569,15 +568,14 @@ open question (§11.5).
 
 The key improvement over the current model:
 
-- **Atlassian credentials** are no longer visible to pi or to bash
-  subprocesses. They are injected only into the MCP proxy subprocess for
-  the duration of an MCP tool call.
 - **GitHub token** is injected into bash subprocesses on demand, not into
-  pi's environment. A model that uses `bash` to exfiltrate the GitHub token
-  cannot then use it in a subsequent non-bash context.
-- **LLM API keys** remain in pi's environment in v1 (necessary for pi to
-  function). This is the primary remaining credential exposure in the new
-  model and is called out explicitly in the threat model (§6.3).
+  pi's process environment for the entire session. A model that uses `bash`
+  to exfiltrate the GitHub token cannot access it in any other tool call context.
+- **LLM API keys** remain in pi's process environment in v1 (necessary for pi
+  to make provider calls). This is the primary remaining credential exposure
+  in the new model and is called out explicitly in the threat model (§6.3).
+- **No Atlassian credentials** are involved in the pi daemon design. Atlassian
+  MCP is an opencode-specific integration and does not exist in pi's tool set.
 
 ---
 
@@ -807,13 +805,9 @@ web UI connect through a thin proxy that bridges WebSocket to the Unix
 socket? Native HTTP adds complexity to the daemon; a proxy is an extra
 process. Decision deferred to the web UI design phase.
 
-**11.4 MCP proxy lifecycle: per-call vs long-lived.**
-The current `mcp-atlassian-slim-proxy.mjs` is configured as a per-session
-MCP server. In daemon mode, should the MCP proxy be started per-call (clean
-credential injection, no persistent state) or kept alive as a long-lived
-process and handed calls via MCP's own protocol? Per-call is simpler and
-cleaner for credential scoping; long-lived is faster (no Node.js startup
-latency per call).
+**11.4 (reserved)** — Previously referred to MCP proxy lifecycle for Atlassian
+MCP. Atlassian MCP is an opencode-specific integration; pi does not use it.
+This question number is reserved to avoid renumbering downstream references.
 
 **11.5 LLM API keys: env var vs `register_provider` RPC.**
 In v1, LLM API keys are injected into pi's process environment. A v2
@@ -854,10 +848,10 @@ issue may not be started until all its dependencies are merged.
 | **D-1** | Pi `--rpc` mode audit and interface contract | D-0 | Closed when a written interface spec exists for how pi supports daemon-delegated tool execution. May result in upstream pi changes if the mode does not yet exist. |
 | **D-2** | Codename selection and directory skeleton | D-0 | Closed when the codename is chosen and the `iris/` package skeleton (binary entrypoint, config loading, DB open) builds and passes `go test ./...`. |
 | **D-3** | Daemon core: spawn, supervise, JSON-RPC loop | D-1, D-2 | Closed when the daemon can spawn a pi `--rpc` child, receive `tool_call` frames, execute the tool, and return `tool_result`. No sandbox, no IPC socket — bare RPC loop only. |
-| **D-4** | Per-tool sandbox: worktree-scoped subprocesses for read/edit/write/patch/grep/glob/list | D-3 | Closed when these six tools execute in a worktree-scoped subprocess with path traversal enforcement, and a test demonstrates that a path traversal attempt is rejected. |
+| **D-4** | Per-tool sandbox: worktree-scoped subprocesses for read/edit/write/grep/find/ls | D-3 | Closed when these six tools execute in a worktree-scoped subprocess with path traversal enforcement, and a test demonstrates that a path traversal attempt is rejected. |
 | **D-5** | Per-tool sandbox: bash restricted subprocess (bwrap on Linux, sandbox-exec on macOS) | D-4 | Closed when bash tool calls execute in a restricted subprocess with the mount set from §5, and the sandbox-exec testing convention (see `docs/sandbox-exec-testing.md`) is followed on Darwin. |
 | **D-6** | Daemon IPC socket: client connect/subscribe/fan-out | D-3 | Closed when a CLI client can connect to the daemon socket, subscribe to a session, and receive live `session_event` frames. |
-| **D-7** | Per-tool credential brokering: Atlassian MCP subprocess isolation | D-5 | Closed when Atlassian MCP calls inject credentials only into the MCP proxy subprocess and the daemon's main environment does not contain Atlassian credentials. |
+| **D-7** | Per-tool credential brokering: bash subprocess credential injection | D-5 | Closed when the bash tool subprocess receives only the GitHub token (role-scoped) and AWS credentials (when applicable), and a test confirms LLM API keys are absent from the bash subprocess environment. |
 | **D-8** | Bubbletea TUI: session list + subscribe + prompt deliver | D-6 | Closed when a TUI connects to the daemon, shows a session list, allows selection, and shows live output without tmux. |
 | **D-9** | Restore after daemon restart: orphan detection + re-spawn | D-3 | Closed when a daemon restart re-spawns sessions that were `active` in the DB, and orphaned `tool_call` events without `tool_result` receive synthetic failure results. |
 | **D-10** | Parity gate: feature checklist from §10.3 | D-3 through D-9 | Closed when all items in the §10.3 parity checklist pass end-to-end tests. Signals readiness for rename. |
