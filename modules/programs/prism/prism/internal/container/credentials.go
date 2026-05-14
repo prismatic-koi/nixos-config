@@ -126,7 +126,11 @@ func (m *Manager) credentialEnvVars() []string {
 	var vars []string
 
 	// External-tool credentials — forwarded for all agent roles.
-	// Covers LLM API keys and other CLI credentials (e.g. Atlassian).
+	// Covers LLM API keys and other API credentials.
+	// Note: ATLASSIAN_SITE/EMAIL/API_TOKEN are intentionally excluded — the
+	// atlassian CLI has been removed. The pi atlassian-mcp extension uses
+	// OAuth PKCE (tokens stored in ~/.pi/agent/atlassian-mcp-oauth.json)
+	// and does not require these env vars.
 	forwardKeys := []string{
 		"ANTHROPIC_API_KEY",
 		"OPENAI_API_KEY",
@@ -135,9 +139,6 @@ func (m *Manager) credentialEnvVars() []string {
 		"GITHUB_COPILOT_TOKEN",
 		"DEEPSEEK_API_KEY",
 		"OPENROUTER_API_KEY",
-		"ATLASSIAN_SITE",
-		"ATLASSIAN_EMAIL",
-		"ATLASSIAN_API_TOKEN",
 	}
 	for _, k := range forwardKeys {
 		if v := os.Getenv(k); v != "" {

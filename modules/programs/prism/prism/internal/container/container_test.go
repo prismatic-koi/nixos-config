@@ -156,7 +156,10 @@ func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
 	}
 }
 
-func TestCredentialEnvVars_AtlassianKeysForwarded(t *testing.T) {
+func TestCredentialEnvVars_AtlassianKeysNotForwarded(t *testing.T) {
+	// ATLASSIAN_SITE/EMAIL/API_TOKEN are not forwarded — the atlassian CLI has
+	// been removed. The pi atlassian-mcp extension uses OAuth (tokens in
+	// ~/.pi/agent/atlassian-mcp-oauth.json) and does not need these vars.
 	t.Setenv("ATLASSIAN_SITE", "https://myorg.atlassian.net")
 	t.Setenv("ATLASSIAN_EMAIL", "user@example.com")
 	t.Setenv("ATLASSIAN_API_TOKEN", "atl-secret-token")
@@ -164,70 +167,16 @@ func TestCredentialEnvVars_AtlassianKeysForwarded(t *testing.T) {
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
 	vars := m.credentialEnvVars()
 
-	want := map[string]string{
-		"ATLASSIAN_SITE":      "https://myorg.atlassian.net",
-		"ATLASSIAN_EMAIL":     "user@example.com",
-		"ATLASSIAN_API_TOKEN": "atl-secret-token",
-	}
-	for key, val := range want {
-		found := false
-		for _, kv := range vars {
-			if kv == key+"="+val {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("%s not forwarded; vars = %v", key, vars)
-		}
-	}
-}
-
-func TestCredentialEnvVars_AtlassianKeysNotForwardedWhenUnset(t *testing.T) {
-	t.Setenv("ATLASSIAN_SITE", "")
-	t.Setenv("ATLASSIAN_EMAIL", "")
-	t.Setenv("ATLASSIAN_API_TOKEN", "")
-
-	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
-
 	for _, kv := range vars {
 		if strings.HasPrefix(kv, "ATLASSIAN_SITE=") {
-			t.Errorf("ATLASSIAN_SITE should not be forwarded when unset; got %q", kv)
+			t.Errorf("ATLASSIAN_SITE should not be forwarded (CLI removed); got %q", kv)
 		}
 		if strings.HasPrefix(kv, "ATLASSIAN_EMAIL=") {
-			t.Errorf("ATLASSIAN_EMAIL should not be forwarded when unset; got %q", kv)
+			t.Errorf("ATLASSIAN_EMAIL should not be forwarded (CLI removed); got %q", kv)
 		}
 		if strings.HasPrefix(kv, "ATLASSIAN_API_TOKEN=") {
-			t.Errorf("ATLASSIAN_API_TOKEN should not be forwarded when unset; got %q", kv)
+			t.Errorf("ATLASSIAN_API_TOKEN should not be forwarded (CLI removed); got %q", kv)
 		}
-	}
-}
-
-func TestCredentialEnvVars_AtlassianPartialConfig(t *testing.T) {
-	// If only some Atlassian vars are set, forward only those that are set.
-	// The atlassian CLI's own error path handles the missing var.
-	t.Setenv("ATLASSIAN_SITE", "https://myorg.atlassian.net")
-	t.Setenv("ATLASSIAN_EMAIL", "")
-	t.Setenv("ATLASSIAN_API_TOKEN", "")
-
-	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
-
-	foundSite := false
-	for _, kv := range vars {
-		if kv == "ATLASSIAN_SITE=https://myorg.atlassian.net" {
-			foundSite = true
-		}
-		if strings.HasPrefix(kv, "ATLASSIAN_EMAIL=") {
-			t.Errorf("ATLASSIAN_EMAIL should not be forwarded when unset; got %q", kv)
-		}
-		if strings.HasPrefix(kv, "ATLASSIAN_API_TOKEN=") {
-			t.Errorf("ATLASSIAN_API_TOKEN should not be forwarded when unset; got %q", kv)
-		}
-	}
-	if !foundSite {
-		t.Errorf("ATLASSIAN_SITE should be forwarded when set; vars = %v", vars)
 	}
 }
 

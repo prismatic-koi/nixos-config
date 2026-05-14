@@ -150,9 +150,6 @@
         # `nix-build-prism-checked` CI job, which builds prism with
         # `runChecks = true` (see pkgs/prism.nix).
         prism = pkgs.callPackage ./pkgs/prism.nix { };
-        # atlassian CLI — read-only surface for Jira Cloud and Confluence Cloud.
-        # doCheck = true so the test suite always runs in the nix sandbox.
-        atlassian = pkgs.callPackage ./pkgs/atlassian.nix { };
       });
 
       devShells = forEachSystem (pkgs: {
