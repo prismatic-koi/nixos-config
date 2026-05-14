@@ -1199,6 +1199,75 @@ func TestIsSafeToRemoveWorktree_ActiveSessionGuard(t *testing.T) {
 	})
 }
 
+// TestIsSafeToRemoveWorktree_DescendantSessionGuard verifies that
+// isSafeToRemoveWorktree returns true when the only DB rows sharing the
+// target worktree path are descendant sessions of the cleanup target (i.e.
+// sessions whose name starts with "<session>~"). Review and investigator
+// sub-sessions inherit the parent's worktree by design and are torn down
+// by the same cleanup invocation, so they must not block it.
+func TestIsSafeToRemoveWorktree_DescendantSessionGuard(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+
+	sharedPath := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Seed the parent session (cleanup target) and two descendant review
+	// sub-sessions, all with the same worktree path.
+	if err := d.UpsertStatus("myrepo@feature", "myrepo", sharedPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+	if err := d.UpsertStatus("myrepo@feature~review-1-review-code", "myrepo", sharedPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus review-code: %v", err)
+	}
+	if err := d.UpsertStatus("myrepo@feature~review-1-review-goal", "myrepo", sharedPath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus review-goal: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	t.Run("descendant sessions do not block parent worktree removal", func(t *testing.T) {
+		// Only the parent and its ~-prefixed descendants share sharedPath.
+		// The guard must return true so cleanup proceeds.
+		safe := isSafeToRemoveWorktree("myrepo@feature", sharedPath, "")
+		if !safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = false, want true — descendant review sessions must not block parent worktree removal",
+				"myrepo@feature", sharedPath)
+		}
+	})
+
+	t.Run("unrelated session still blocks worktree removal (regression guard)", func(t *testing.T) {
+		// Add an unrelated session (not a descendant of the target) that also
+		// uses sharedPath — the guard must return false to protect it.
+		dbFile2 := filepath.Join(t.TempDir(), "prism.db")
+		d2, err := db.Open(dbFile2)
+		if err != nil {
+			t.Fatalf("open db2: %v", err)
+		}
+		if err := d2.UpsertStatus("myrepo@feature", "myrepo", sharedPath, "running", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus parent: %v", err)
+		}
+		if err := d2.UpsertStatus("myrepo@other", "myrepo", sharedPath, "running", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus unrelated: %v", err)
+		}
+		d2.Close()
+
+		SetTestDBPath(dbFile2)
+		t.Cleanup(func() { SetTestDBPath("") })
+
+		safe := isSafeToRemoveWorktree("myrepo@feature", sharedPath, "")
+		if safe {
+			t.Errorf("isSafeToRemoveWorktree(%q, %q, \"\") = true, want false — unrelated active session %q must still block removal",
+				"myrepo@feature", sharedPath, "myrepo@other")
+		}
+	})
+}
+
 // TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree verifies the
 // full end-to-end bug scenario from issue #1582: an investigator session whose
 // worktree resolves to the main worktree path must NOT have that directory
