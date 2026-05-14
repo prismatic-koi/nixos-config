@@ -440,8 +440,14 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// ── pi config allowlist (read-only, conditional) ───────────────────────
 	// Mount specific files from ~/.config/pi/ so agents and skills are
 	// available inside the sandbox.
+	// agents/ is role-conditional: excluded for review-* containers since
+	// those containers receive their role prompt inline via the system prompt
+	// rather than via the agents/ directory.
 	piConfigDir := filepath.Join(home, ".config", "pi")
-	piConfigAllowlist := []string{"settings.json", "agents", "skills", "AGENTS.md"}
+	piConfigAllowlist := []string{"settings.json", "skills", "AGENTS.md"}
+	if !strings.HasPrefix(cfg.AgentRole, "review-") {
+		piConfigAllowlist = append(piConfigAllowlist, "agents")
+	}
 	for _, entry := range piConfigAllowlist {
 		p := filepath.Join(piConfigDir, entry)
 		if _, err := os.Stat(p); err == nil {

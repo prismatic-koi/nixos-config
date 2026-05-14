@@ -19,7 +19,7 @@ package container
 //     list) can locate the user's login keychain. The SBPL profile grants
 //     file-read* on the resolved path via (literal login.keychain-db) (#1487).
 //
-//  2. .config/opencode/agents/ is role-conditional: included as a symlink for
+//  2. .config/prism/agents/ is role-conditional: included as a symlink for
 //     non-review roles, omitted for review-prefixed roles. Mirrors bwrap.go:447-448.
 //
 //  3. .cache/nix/ is included as an RW symlink to ~/.cache/nix (matches bwrap
@@ -76,7 +76,7 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 //   - Generated regular files (.gitconfig, .ssh/config, opencode.json) are
 //     written as regular files, not symlinks.
 //   - .cache/nix/ is always included as an RW symlink to ~/.cache/nix.
-//   - .config/opencode/agents/ is only included when AgentRole does NOT start
+//   - .config/prism/agents/ is only included when AgentRole does NOT start
 //     with "review-" (mirrors bwrap.go:447-448).
 //   - .claude/ is a symlink to host ~/.claude with a comment explaining the
 //     Darwin write-through behaviour.
@@ -297,12 +297,17 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 
 	// ── .config/pi/ ───────────────────────────────────────────────────────────
 	// Mirror the pi config directory into staging so pi finds its configuration.
+	// agents/ is role-conditional: excluded for review-* agents because those
+	// containers receive their role prompt inline via the system prompt rather
+	// than via the agents/ directory.
 	piConfigDir := filepath.Join(home, ".config", "pi")
 	piAllowlist := []string{
 		"settings.json",
 		"AGENTS.md",
-		"agents",
 		"skills",
+	}
+	if !strings.HasPrefix(m.cfg.AgentRole, "review-") {
+		piAllowlist = append(piAllowlist, "agents")
 	}
 	for _, entry := range piAllowlist {
 		src := filepath.Join(piConfigDir, entry)
@@ -651,15 +656,13 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// path relative to stagingHome (no leading slash). Matches the RW paths
 	// in PrepareSandboxExecHome and the bwrap --bind mounts in bwrap.go.
 	writableStagingPaths := map[string]bool{
-		".cache/opencode":               true, // opencode models.json refresh + bin/ shims
-		".cache/bun":                    true, // bun transpile cache + lockfile
-		".cache/nix":                    true, // nix eval cache (unconditional RW)
-		// .cache/prism/clipboard is intentionally absent: opencode only reads
+		".cache/bun": true, // bun transpile cache + lockfile
+		".cache/nix": true, // nix eval cache (unconditional RW)
+		// .cache/prism/clipboard is intentionally absent: agents only read
 		// images staged there; mirrors bwrap.go's --ro-bind treatment.
-		".claude":                       true, // write-through for .credentials.json
-		".mcp-auth":                     true, // MCP auth token writes
-		".npm":                          true, // npx package cache (mcp-remote et al.)
-		".config/opencode/node_modules": true, // bun may update lockfile entries during plugin load
+		".claude":   true, // write-through for .credentials.json
+		".mcp-auth": true, // MCP auth token writes
+		".npm":      true, // npx package cache (mcp-remote et al.)
 		// AWS SSO and CLI cache dirs must be writable so the aws CLI can write
 		// STS token cache entries (~/.aws/cli/cache/) and refresh SSO tokens
 		// (~/.aws/sso/). Without write access the CLI gets EPERM and kubectl

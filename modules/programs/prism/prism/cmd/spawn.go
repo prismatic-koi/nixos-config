@@ -746,7 +746,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	defer d.Close()
 
 	// C4.SK: compute skills manifest hash before spawn so it is available for
-	// spawn_inputs. Read skills from XDG_CONFIG_HOME/opencode/skills/ (with the
+	// spawn_inputs. Read skills from XDG_CONFIG_HOME/prism/skills/ (with the
 	// standard ~/.config fallback). Errors are non-fatal: a missing or
 	// unreadable skills directory produces an empty hash (caller writes NULL).
 	skillsDir := prismSkillsDir()
@@ -757,7 +757,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	// C4.AP: compute agent role file hash. The role file is resolved from
-	// XDG_CONFIG_HOME/opencode/agents/<role>.md. Errors are non-fatal.
+	// XDG_CONFIG_HOME/prism/agents/<role>.md. Errors are non-fatal.
 	agentRoleFilePath := prismAgentRolePath(agentRole)
 	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
 	if agentHashErr != nil {
