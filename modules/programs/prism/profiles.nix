@@ -72,7 +72,7 @@
           };
 
           # Determine the system prompt file for a given role.
-          # Maps role names to agent files at ~/.config/pi/agents/<file>.md.
+          # Maps role names to agent files at ~/.config/prism/agents/<file>.md.
           roleToSystemPromptFile =
             role:
             let
@@ -95,7 +95,7 @@
                 compaction = "worker";
               };
             in
-            "$HOME/.config/pi/agents/${roleFileMap.${role}}.md";
+            "$HOME/.config/prism/agents/${roleFileMap.${role}}.md";
 
           # Stamp a slot value across the given list of role names, adding
           # role-specific systemPromptPath values for P2.AGENTRUN support.

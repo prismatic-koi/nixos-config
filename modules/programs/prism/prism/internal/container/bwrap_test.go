@@ -1519,11 +1519,6 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 			dst:  filepath.Join(fakeHome, ".gitconfig"),
 		},
 		{
-			name: "harness-config.json → $HOME/.config/pi/harness-config.json",
-			src:  m.harnessConfigFilePath(),
-			dst:  filepath.Join(fakeHome, ".config", "pi", "harness-config.json"),
-		},
-		{
 			name: "kube agents-config → $HOME/.kube/config",
 			src:  filepath.Join(fakeHome, ".config", "kube", "agents-config"),
 			dst:  filepath.Join(fakeHome, ".kube", "config"),
@@ -1724,13 +1719,14 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("-- separator missing from args")
 	}
 
-	// Tail: opencode --port <AllocatedPort> --hostname 127.0.0.1 --agent worker --prompt ...
+	// Tail: pi --extension <extensionPath> <prompt>
+	// PIInvocation emits the prompt as a bare positional arg, not --prompt.
 	n := len(args)
-	if args[n-4] != "--agent" || args[n-3] != "worker" {
-		t.Errorf("expected --agent worker near end, got %q %q", args[n-4], args[n-3])
+	if args[n-1] != "implement the feature" {
+		t.Errorf("expected prompt as last positional arg, got %q", args[n-1])
 	}
-	if args[n-2] != "--prompt" || args[n-1] != "implement the feature" {
-		t.Errorf("expected --prompt 'implement the feature' near end, got %q %q", args[n-2], args[n-1])
+	if args[n-3] != "--extension" {
+		t.Errorf("expected --extension flag near end, got %q", args[n-3])
 	}
 
 	// Kube and AWS ro-binds present with correct remapped destinations.
@@ -1745,12 +1741,6 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		filepath.Join(fakeHome, ".kube", "config"),
 	) {
 		t.Errorf("kube agents-config: want --ro-bind src $HOME/.kube/config")
-	}
-	if !hasROBindSrcDst(args,
-		m.harnessConfigFilePath(),
-		filepath.Join(fakeHome, ".config", "pi", "harness-config.json"),
-	) {
-		t.Errorf("harness-config.json: want --ro-bind src $HOME/.config/pi/harness-config.json")
 	}
 }
 
