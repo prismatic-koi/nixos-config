@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -10,9 +11,11 @@ func TestInvestigateSlug(t *testing.T) {
 		want   string
 	}{
 		{
-			// Issue example — slug is ≤30 chars from the start of the prompt.
+			// Word-boundary truncation: last dash at or before 30 chars is used.
+			// "trace-the-call-chain-for-ssh-auth" = 34 chars; cap at 30 gives
+			// "trace-the-call-chain-for-ssh-a", last dash at index 28 → cut there.
 			prompt: "trace the call chain for SSH auth",
-			want:   "trace-the-call-chain-for-ssh-a",
+			want:   "trace-the-call-chain-for-ssh",
 		},
 		{
 			prompt: "What is happening?",
@@ -35,8 +38,10 @@ func TestInvestigateSlug(t *testing.T) {
 			want:   "punctuation-only",
 		},
 		{
+			// "a-very-long-prompt-that-goes-well-..." → cap at 30 = "a-very-long-prompt-that-goes-w";
+			// last dash at index 28 → cut to "a-very-long-prompt-that-goes".
 			prompt: "a very long prompt that goes well beyond the thirty character limit set for slugs",
-			want:   "a-very-long-prompt-that-goes-w",
+			want:   "a-very-long-prompt-that-goes",
 		},
 		{
 			prompt: "",
@@ -61,6 +66,81 @@ func TestInvestigateSlug(t *testing.T) {
 				t.Errorf("investigateSlug(%q) length %d exceeds 30", tc.prompt, len(got))
 			}
 		})
+	}
+}
+
+// TestInvestigateSlugWordBoundary specifically exercises the word-boundary
+// truncation: a prompt that produces a normalised string of exactly 30 chars
+// with no dash must fall back to the hard cut.
+func TestInvestigateSlugWordBoundary(t *testing.T) {
+	// 31 lowercase letters with no spaces/dashes: must hard-cut at 30.
+	prompt := "abcdefghijklmnopqrstuvwxyzabcde"
+	got := investigateSlug(prompt)
+	if got != "abcdefghijklmnopqrstuvwxyzabcd" {
+		t.Errorf("no-dash fallback: got %q, want %q", got, "abcdefghijklmnopqrstuvwxyzabcd")
+	}
+
+	// A prompt whose normalised form has a dash within the 30-char window:
+	// "hello world-foo-barbarbarbarbarbarbarbar" → "hello-world-foo-barbarbarbarba"[:30]
+	// The last dash in the 30-char cap should determine the cut point.
+	prompt2 := "hello world foo" + strings.Repeat("x", 20)
+	got2 := investigateSlug(prompt2)
+	// normalised: "hello-world-foo" + 20 x's = "hello-world-fooxxxxxxxxxxxxxxxxxxxx"
+	// cap[:30]   = "hello-world-fooxxxxxxxxxxxxxxx"
+	// last dash at index 11 → "hello-world"
+	if got2 != "hello-world" {
+		t.Errorf("word-boundary: got %q, want %q", got2, "hello-world")
+	}
+}
+
+func TestValidateInvestigateName(t *testing.T) {
+	valid := []string{
+		"foo",
+		"foo-bar",
+		"my-analysis",
+		"abc123",
+		"a",
+		"z",
+		// exactly 40 chars
+		strings.Repeat("a", 40),
+		"pi-removal-analysis-2024-deep-dive-v1-ok",
+	}
+	for _, name := range valid {
+		if err := validateInvestigateName(name); err != nil {
+			t.Errorf("validateInvestigateName(%q) unexpected error: %v", name, err)
+		}
+	}
+
+	invalid := []struct {
+		name        string
+		mustContain string // substring expected in error message
+	}{
+		// Too long
+		{strings.Repeat("a", 41), "maximum is 40"},
+		// Leading dash
+		{"-leading", "start or end with a dash"},
+		// Trailing dash
+		{"trailing-", "start or end with a dash"},
+		// Uppercase
+		{"UPPER", "disallowed characters"},
+		// Spaces
+		{"has spaces", "disallowed characters"},
+		// Mixed: uppercase and special
+		{"Has Spaces", "disallowed characters"},
+		// Underscore
+		{"under_score", "disallowed characters"},
+		// Special chars
+		{"foo@bar", "disallowed characters"},
+	}
+	for _, tc := range invalid {
+		err := validateInvestigateName(tc.name)
+		if err == nil {
+			t.Errorf("validateInvestigateName(%q) expected error, got nil", tc.name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.mustContain) {
+			t.Errorf("validateInvestigateName(%q): error %q does not contain %q", tc.name, err.Error(), tc.mustContain)
+		}
 	}
 }
 

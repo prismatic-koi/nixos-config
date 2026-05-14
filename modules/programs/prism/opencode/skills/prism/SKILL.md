@@ -340,6 +340,7 @@ Use `prism investigate` to spawn a read-only research session from within a pris
 ```bash
 prism investigate --prompt "question"
 prism investigate --prompt-file /tmp/question.txt
+prism investigate --name my-analysis --prompt "question"
 ```
 
 ### Flags
@@ -348,12 +349,13 @@ prism investigate --prompt-file /tmp/question.txt
 |---|---|
 | `--prompt <text>` | Research question. Mutually exclusive with `--prompt-file`. |
 | `--prompt-file <path>` | Read the question from a file. Mutually exclusive with `--prompt`. |
+| `--name <slug>` | Human-readable slug for the session name. When provided, the session is named `<invoker>~investigate-<slug>` exactly. Only `[a-z0-9-]` allowed, max 40 chars, no leading/trailing dash. When omitted, the slug is derived automatically from the prompt text. |
 
 One of `--prompt` or `--prompt-file` is required. The command returns a session name within ~2 seconds and exits 0. There is no `--wait` flag — `prism investigate` is inherently async.
 
 ### Session-naming convention
 
-Spawned sessions are named `<invoker>~investigate-<slug>` where `<slug>` is a short kebab-case slug derived from the prompt.
+Spawned sessions are named `<invoker>~investigate-<slug>`. When `--name` is provided, `<slug>` is the supplied name exactly. When `--name` is omitted, `<slug>` is a short kebab-case token derived automatically from the prompt text (word-boundary truncated at 30 chars).
 
 ### Per-turn notification contract
 
