@@ -29,6 +29,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -40,13 +41,27 @@ and return the session name immediately. The agent runs against the invoker's
 worktree in read-only mode.
 
 Per-turn notifications are delivered back to the invoker session automatically
-via the sidecar. No --wait flag is provided — this command is always async.`,
+via the sidecar. No --wait flag is provided — this command is always async.
+
+The --name flag sets the slug portion of the session name directly:
+
+    prism investigate --name my-analysis --prompt "..."
+
+results in a session named <invoker>~investigate-my-analysis.
+
+Validation rules for --name:
+  - Only lowercase alphanumerics and dashes ([a-z0-9-]) are allowed.
+  - Must not start or end with a dash.
+  - Maximum 40 characters.
+
+When --name is omitted, the slug is derived automatically from the prompt text.`,
 	Args: cobra.NoArgs,
 	RunE: runInvestigate,
 }
 
 func init() {
 	addPromptFlags(investigateCmd)
+	investigateCmd.Flags().String("name", "", "Human-readable slug for the session name (only [a-z0-9-], max 40 chars, no leading/trailing dash)")
 	rootCmd.AddCommand(investigateCmd)
 }
 
@@ -58,11 +73,22 @@ func runInvestigate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	suppliedName, err := cmd.Flags().GetString("name")
+	if err != nil {
+		return err
+	}
+	suppliedName = strings.TrimSpace(suppliedName)
+	if suppliedName != "" {
+		if err := validateInvestigateName(suppliedName); err != nil {
+			return err
+		}
+	}
+
 	// Container path: when running inside a sandboxed session, proxy to the
 	// host sidecar's /spawn endpoint with agent set to "investigate" and the
 	// session name pre-computed.
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyInvestigate(apiURL, promptText)
+		return proxyInvestigate(apiURL, promptText, suppliedName)
 	}
 
 	// Resolve the invoker session name.
@@ -78,11 +104,16 @@ func runInvestigate(cmd *cobra.Command, args []string) error {
 		)
 	}
 
-	return spawnInvestigateSession(invokerSession, promptText)
+	return spawnInvestigateSession(invokerSession, promptText, suppliedName)
+}
+
+// validateInvestigateName is a thin wrapper around the shared validation helper.
+func validateInvestigateName(name string) error {
+	return investigatepkg.ValidateName(name)
 }
 
 // spawnInvestigateSession is the testable core of runInvestigate.
-func spawnInvestigateSession(invokerSession, promptText string) error {
+func spawnInvestigateSession(invokerSession, promptText, suppliedName string) error {
 	database, err := openDB()
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
@@ -100,7 +131,12 @@ func spawnInvestigateSession(invokerSession, promptText string) error {
 	repo := status.Repo
 	worktree := status.Worktree
 
-	slug := investigateSlug(promptText)
+	var slug string
+	if suppliedName != "" {
+		slug = suppliedName
+	} else {
+		slug = investigateSlug(promptText)
+	}
 	sessionName := invokerSession + "~investigate-" + slug
 
 	cfg := config.Load()
@@ -177,9 +213,14 @@ func investigateSlug(prompt string) string {
 	// Strip leading dash.
 	s = strings.TrimLeft(s, "-")
 
-	// Truncate to 30 chars.
+	// Truncate to 30 chars at a word boundary (last "-" at or before 30).
 	if len(s) > 30 {
-		s = s[:30]
+		cap := s[:30]
+		if idx := strings.LastIndex(cap, "-"); idx >= 0 {
+			s = s[:idx]
+		} else {
+			s = cap
+		}
 	}
 
 	// Trim trailing dash.
@@ -194,7 +235,7 @@ func investigateSlug(prompt string) string {
 // proxyInvestigate forwards the investigate request to the host sidecar via
 // a dedicated /investigate endpoint that shells out to `prism investigate`
 // on the host with PRISM_SESSION_NAME set to the invoker session.
-func proxyInvestigate(apiURL, promptText string) error {
+func proxyInvestigate(apiURL, promptText, suppliedName string) error {
 	invokerSession := os.Getenv("PRISM_SESSION_NAME")
 	if invokerSession == "" {
 		cwd, _ := os.Getwd()
@@ -213,6 +254,9 @@ func proxyInvestigate(apiURL, promptText string) error {
 	body := map[string]any{
 		"prompt": promptText,
 		"from":   invokerSession,
+	}
+	if suppliedName != "" {
+		body["name"] = suppliedName
 	}
 	if err := proxyToHostAPI(apiURL, "/investigate", body, &resp); err != nil {
 		return err

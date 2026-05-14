@@ -69,7 +69,12 @@ Use `prism investigate` for read-only research tasks that would otherwise block 
 
 ```bash
 prism investigate --prompt "what does the sidecar do when a session enters 'escalated' state?"
+
+# Use --name for a readable slug instead of an auto-derived one:
+prism investigate --name escalated-state-flow --prompt "what does the sidecar do when a session enters 'escalated' state?"
 ```
+
+The `--name` flag sets the slug portion of the session name directly (`<invoker>~investigate-<name>`). Only `[a-z0-9-]` is allowed, max 40 chars, no leading/trailing dash. When omitted, the slug is derived automatically from the prompt.
 
 The command returns a session name within ~2 seconds (shape: `<invoker>~investigate-<slug>`). Record it in your todo list alongside the open question.
 
