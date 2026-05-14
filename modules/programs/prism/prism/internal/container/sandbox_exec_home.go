@@ -384,7 +384,81 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".nix-profile"),
 	)
 
+	// ── PI Atlassian MCP OAuth token persistence (Darwin only) ───────────────
+	// The Atlassian MCP extension stores OAuth tokens at
+	// homedir()/.pi/agent/atlassian-mcp-oauth.json. On Darwin sandbox-exec,
+	// $HOME inside the session is the per-session staging HOME, so writes to
+	// that path land in the staging dir and are destroyed when the session
+	// ends. To persist tokens across sessions we:
+	//
+	//  1. Create <stagingHome>/.pi/agent/ as a real directory (so the
+	//     extension's mkdirSync({ recursive: true }) is a no-op).
+	//  2. Touch ~/.pi/agent/atlassian-mcp-oauth.json on the host with mode
+	//     0600 if absent — bwrap does the same in appendPIBwrapMounts.
+	//  3. Symlink <stagingHome>/.pi/agent/atlassian-mcp-oauth.json to the
+	//     real host path so reads and writes flow through to the host.
+	//
+	// The SBPL profile already emits
+	//   (allow file-read* file-write* ... (subpath ~/.pi/agent))
+	// for Harness == "pi" sessions, so no profile changes are required.
+	//
+	// The change is gated on BOTH runtime.GOOS == "darwin" AND
+	// m.cfg.Harness == "pi" so that non-pi sessions are unaffected.
+	if runtime.GOOS == "darwin" && m.cfg.Harness == "pi" {
+		if err := m.stagePIOAuthToken(home, stagingHome); err != nil {
+			log.Printf("container: sandbox-exec: stage PI OAuth token: %v", err)
+		}
+	}
+
 	return stagingHome, nil
+}
+
+// stagePIOAuthToken creates the staging HOME infrastructure for the
+// Atlassian MCP OAuth token under a pi harness Darwin session:
+//
+//  1. Creates <stagingHome>/.pi/agent/ as a real directory (mode 0700).
+//  2. Ensures ~/.pi/agent/ exists on the host (mode 0700).
+//  3. Touches ~/.pi/agent/atlassian-mcp-oauth.json on the host with
+//     mode 0600 if absent (existing files are never modified).
+//  4. Symlinks <stagingHome>/.pi/agent/atlassian-mcp-oauth.json →
+//     ~/.pi/agent/atlassian-mcp-oauth.json (idempotent).
+//
+// This mirrors the bwrap touch-and-bind pattern in
+// pi_invocation.go::appendPIBwrapMounts.
+func (m *Manager) stagePIOAuthToken(home, stagingHome string) error {
+	// 1. Create <stagingHome>/.pi/agent/ as a real directory.
+	stagingAgentDir := filepath.Join(stagingHome, ".pi", "agent")
+	if err := os.MkdirAll(stagingAgentDir, 0o700); err != nil {
+		return fmt.Errorf("create staging .pi/agent dir %s: %w", stagingAgentDir, err)
+	}
+
+	// 2. Ensure ~/.pi/agent/ exists on the host.
+	hostAgentDir := filepath.Join(home, ".pi", "agent")
+	if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
+		return fmt.Errorf("create host .pi/agent dir %s: %w", hostAgentDir, err)
+	}
+
+	// 3. Touch ~/.pi/agent/atlassian-mcp-oauth.json on the host if absent.
+	// Use O_CREATE|O_EXCL so an existing file is never truncated or modified.
+	hostTokenPath := filepath.Join(hostAgentDir, "atlassian-mcp-oauth.json")
+	if _, statErr := os.Stat(hostTokenPath); os.IsNotExist(statErr) {
+		f, createErr := os.OpenFile(hostTokenPath, os.O_CREATE|os.O_EXCL, 0o600)
+		if createErr == nil {
+			_ = f.Close()
+		} else if !os.IsExist(createErr) {
+			return fmt.Errorf("touch host token file %s: %w", hostTokenPath, createErr)
+		}
+	}
+
+	// 4. Symlink <stagingHome>/.pi/agent/atlassian-mcp-oauth.json → host path.
+	// Remove any existing entry first (file, symlink, or otherwise) so
+	// the operation is idempotent.
+	stagingTokenPath := filepath.Join(stagingAgentDir, "atlassian-mcp-oauth.json")
+	_ = os.Remove(stagingTokenPath)
+	if err := os.Symlink(hostTokenPath, stagingTokenPath); err != nil {
+		return fmt.Errorf("symlink %s → %s: %w", stagingTokenPath, hostTokenPath, err)
+	}
+	return nil
 }
 
 // isWritable returns true when the path exists and is accessible for writing
