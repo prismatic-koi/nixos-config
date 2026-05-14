@@ -793,6 +793,13 @@ phases. They are listed here rather than resolved unilaterally because they
 require empirical data, external input, or design review that is beyond the
 scope of this initial design doc.
 
+**Environmental snapshot note.** The tool inventory in §5 and the coexistence
+checklist in §10 reflect the prism environment as it stands at the time of
+writing. Three concurrent cleanups — opencode removal, atlassian-cli retirement,
+and an audit of speculative env var injections (e.g. an unused `DEEPSEEK_API_KEY`)
+— will land independently of this design and will require revising §5 and §10
+afterwards. Tracking issues will be filed separately.
+
 **11.1 Pi `--rpc` mode: does it exist, and what is the exact interface?**
 This design assumes pi supports a `--rpc` (or equivalent) mode where it
 reads prompts from stdin and writes events and tool call requests to stdout.
