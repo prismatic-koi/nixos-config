@@ -127,17 +127,16 @@ func (m *Manager) credentialEnvVars() []string {
 
 	// External-tool credentials — forwarded for all agent roles.
 	// Covers LLM API keys and other API credentials.
-	// Note: ATLASSIAN_SITE/EMAIL/API_TOKEN are intentionally excluded — the
-	// atlassian CLI has been removed. The pi atlassian-mcp extension uses
-	// OAuth PKCE (tokens stored in ~/.pi/agent/atlassian-mcp-oauth.json)
-	// and does not require these env vars.
+	//
+	// Keys intentionally NOT forwarded:
+	//   ATLASSIAN_SITE/EMAIL/API_TOKEN — atlassian CLI removed; OAuth PKCE used.
+	//   OPENAI_API_KEY    — speculative; no OpenAI provider configured.
+	//   GEMINI_API_KEY    — speculative; Google auth uses opencode-gemini-auth OAuth.
+	//   GOOGLE_API_KEY    — speculative; same as GEMINI_API_KEY.
+	//   GITHUB_COPILOT_TOKEN — speculative; Copilot provider uses its own auth flow.
+	//   DEEPSEEK_API_KEY  — speculative; not populated and no consumer in-repo.
 	forwardKeys := []string{
 		"ANTHROPIC_API_KEY",
-		"OPENAI_API_KEY",
-		"GEMINI_API_KEY",
-		"GOOGLE_API_KEY",
-		"GITHUB_COPILOT_TOKEN",
-		"DEEPSEEK_API_KEY",
 		"OPENROUTER_API_KEY",
 	}
 	for _, k := range forwardKeys {
