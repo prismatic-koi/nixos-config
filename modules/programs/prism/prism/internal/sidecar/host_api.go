@@ -20,6 +20,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -1960,6 +1961,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Prompt string `json:"prompt"`
 			From   string `json:"from,omitempty"`
+			Name   string `json:"name,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1969,11 +1971,21 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "prompt is required")
 			return
 		}
+		req.Name = strings.TrimSpace(req.Name)
+		if req.Name != "" {
+			if err := investigatepkg.ValidateName(req.Name); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 		fromSession := req.From
 		if fromSession == "" {
 			fromSession = s.cfg.SessionName
 		}
 		args := []string{"investigate", "--prompt", req.Prompt}
+		if req.Name != "" {
+			args = append(args, "--name", req.Name)
+		}
 		s.logger().Printf("sidecar: host-API /investigate: from=%s", fromSession)
 		cmd := exec.Command(prismBinary(), args...)
 		// PRISM_SESSION_NAME tells the host-side `prism investigate` which session
