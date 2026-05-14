@@ -42,6 +42,18 @@ const (
 	PollInterval = 45 * time.Second
 )
 
+// requiredChecksCache holds a cached list of required status check names
+// fetched from branch protection, together with an expiry timestamp.
+type requiredChecksCache struct {
+	names   []string
+	fetchAt time.Time
+}
+
+// requiredChecksCacheTTL is how long we reuse a cached branch-protection
+// response before re-fetching. Five minutes is short enough to pick up
+// rule changes but long enough to avoid hammering the API on every tick.
+const requiredChecksCacheTTL = 5 * time.Minute
+
 // Watcher runs the merge-queue polling loop for a single coordinator session.
 type Watcher struct {
 	db          *db.DB
@@ -56,6 +68,15 @@ type Watcher struct {
 	// An empty string means resolution failed — Run() logs and exits cleanly
 	// rather than entering a poll loop that can never succeed.
 	repo string
+
+	// requiredChecks caches the branch-protection required status check names
+	// for the target branch. Populated lazily on the first UNSTABLE tick and
+	// refreshed when the TTL expires.
+	requiredChecks requiredChecksCache
+
+	// nowFunc returns the current time. Tests may override this to control TTL
+	// expiry without sleeping.
+	nowFunc func() time.Time
 
 	// runGHFunc is the function used to invoke the gh CLI. It is configurable
 	// so tests can inject a stub that captures argv. When nil, runGH falls back
@@ -221,7 +242,40 @@ func (w *Watcher) tick(ctx context.Context) {
 			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or review requirement — staying watching", head.PR)
 		}
 
-	case "UNSTABLE", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+	case "UNSTABLE":
+		// UNSTABLE means the PR is mergeable but at least one check is
+		// non-success. We fetch the required branch-protection checks and
+		// merge if all of them are SUCCESS, ignoring optional/slow checks.
+		required, err := w.fetchRequiredChecks(ctx)
+		if err != nil {
+			log.Printf("[mergequeue] PR #%d UNSTABLE — cannot fetch required checks: %v — leaving watching", head.PR, err)
+			return
+		}
+		if requiredChecksAllPassed(prInfo.StatusCheckRollup, required) {
+			log.Printf("[mergequeue] PR #%d UNSTABLE but all required checks passed — proceeding to merge", head.PR)
+			w.tryMerge(ctx, head)
+		} else {
+			// Log which required checks are not yet SUCCESS.
+			var pending []string
+			passed := make(map[string]bool, len(prInfo.StatusCheckRollup))
+			for _, c := range prInfo.StatusCheckRollup {
+				name := checkName(c)
+				if name == "" {
+					continue
+				}
+				ok := strings.EqualFold(c.Conclusion, "SUCCESS") ||
+					strings.EqualFold(c.State, "SUCCESS")
+				passed[name] = ok
+			}
+			for _, req := range required {
+				if ok, found := passed[req]; !found || !ok {
+					pending = append(pending, req)
+				}
+			}
+			log.Printf("[mergequeue] PR #%d UNSTABLE — required checks not yet SUCCESS: %v — staying watching", head.PR, pending)
+		}
+
+	case "UNKNOWN", "HAS_HOOKS", "DRAFT":
 		log.Printf("[mergequeue] PR #%d %s — staying watching", head.PR, prInfo.MergeStateStatus)
 
 	default:
@@ -450,8 +504,17 @@ func (p *prInfo) isMerged() bool {
 }
 
 type checkEntry struct {
+	// Name is the check-run name (e.g. "pr-gate") or the commit-status context.
+	// GitHub's statusCheckRollup uses "name" for check-runs and "context" for
+	// legacy commit statuses; we populate both via the Name field and fall back
+	// to Context when Name is empty.
+	Name       string `json:"name"`
+	Context    string `json:"context"`
 	Conclusion string `json:"conclusion"`
 	Status     string `json:"status"`
+	// State is the legacy commit-status field (e.g. "SUCCESS", "FAILURE").
+	// Modern check-runs use Conclusion instead.
+	State string `json:"state"`
 }
 
 // fetchPRInfo calls `gh pr view <pr> --json` and returns the parsed result.
@@ -477,6 +540,120 @@ func hasCIFailure(rollup []checkEntry) bool {
 		}
 	}
 	return false
+}
+
+// checkName returns the canonical name for a rollup entry, preferring the
+// check-run Name field and falling back to the legacy commit-status Context.
+func checkName(c checkEntry) string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Context
+}
+
+// requiredChecksAllPassed returns true iff every name in required has a
+// corresponding entry in rollup with a successful conclusion.
+//
+// "Success" means:
+//   - modern check-run: Conclusion == "SUCCESS" (case-insensitive)
+//   - legacy commit-status: State == "SUCCESS" (case-insensitive)
+//
+// A required name that is missing from rollup entirely is treated as
+// not-yet-passed and returns false.
+func requiredChecksAllPassed(rollup []checkEntry, required []string) bool {
+	if len(required) == 0 {
+		// No required checks configured — treat as not-gated (conservative:
+		// don't block forever, but callers should detect this upstream).
+		return false
+	}
+	// Build a name→success map from the rollup.
+	passed := make(map[string]bool, len(rollup))
+	for _, c := range rollup {
+		name := checkName(c)
+		if name == "" {
+			continue
+		}
+		// A check is successful if either the modern conclusion or the
+		// legacy state field indicates SUCCESS.
+		ok := strings.EqualFold(c.Conclusion, "SUCCESS") ||
+			strings.EqualFold(c.State, "SUCCESS")
+		passed[name] = ok
+	}
+	for _, req := range required {
+		ok, found := passed[req]
+		if !found || !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// branchProtectionResponse is the subset of the GitHub branch protection API
+// response we care about.
+type branchProtectionResponse struct {
+	RequiredStatusChecks struct {
+		Contexts []string `json:"contexts"` // legacy commit-status names
+		Checks   []struct {
+			Context string `json:"context"`
+		} `json:"checks"` // modern check-run names
+	} `json:"required_status_checks"`
+}
+
+// fetchRequiredChecks returns the list of required status check names for the
+// protected target branch ("main"), using a short-TTL in-memory cache to
+// avoid hammering the API on every polling tick.
+//
+// On any error (network, permissions, rate-limit) it returns nil, err so the
+// caller can take the conservative path of staying watching.
+func (w *Watcher) fetchRequiredChecks(ctx context.Context) ([]string, error) {
+	now := w.now()
+	if len(w.requiredChecks.names) > 0 && now.Before(w.requiredChecks.fetchAt.Add(requiredChecksCacheTTL)) {
+		// Cache hit.
+		return w.requiredChecks.names, nil
+	}
+
+	out, err := w.runGH(ctx, "api", fmt.Sprintf("repos/%s/branches/main/protection", w.repo))
+	if err != nil {
+		return nil, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	var resp branchProtectionResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, fmt.Errorf("parse branch protection response: %w", err)
+	}
+
+	// Collect names from both the legacy contexts list and the modern checks
+	// list, deduplicating.
+	seen := make(map[string]bool)
+	var names []string
+	for _, ctx := range resp.RequiredStatusChecks.Contexts {
+		if ctx != "" && !seen[ctx] {
+			seen[ctx] = true
+			names = append(names, ctx)
+		}
+	}
+	for _, c := range resp.RequiredStatusChecks.Checks {
+		if c.Context != "" && !seen[c.Context] {
+			seen[c.Context] = true
+			names = append(names, c.Context)
+		}
+	}
+
+	w.requiredChecks = requiredChecksCache{
+		names:   names,
+		fetchAt: now,
+	}
+	log.Printf("[mergequeue] fetched required checks for %s: %v", w.repo, names)
+	return names, nil
+}
+
+// now returns the current time. It uses w.nowFunc when set (for tests) and
+// time.Now() otherwise.
+func (w *Watcher) now() time.Time {
+	if w.nowFunc != nil {
+		return w.nowFunc()
+	}
+	return time.Now()
 }
 
 // isBranchMovedRace heuristically detects the GitHub branch-moved race from
