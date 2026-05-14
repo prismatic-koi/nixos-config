@@ -1,18 +1,28 @@
 package cmd
 
-// prism profile — manage the runtime active profile (#1207, #1215).
+// prism profile — manage the runtime active profile (#1207, #1215, #1591).
 //
 // Subcommands:
 //
-//   prism profile use <name>   Set the active profile via the runtime state
-//                              file at $XDG_STATE_HOME/prism/active-profile.
-//                              New sessions spawned afterwards (without an
-//                              explicit --profile flag) pick up the change
-//                              automatically.
+//   prism profile use <name>   By default: update the state file at
+//                              $XDG_STATE_HOME/prism/active-profile AND
+//                              live-swap every PI session in the current
+//                              repo by routing through the auto-discovered
+//                              coordinator (scope=coordinator).
 //
-//                              With --scope the command also (or exclusively)
-//                              swaps live sessions via POST /apply-profile
-//                              on the host-API sidecar:
+//                              Optional flags:
+//
+//                                --no-live               Skip the live-swap;
+//                                                        update the state file
+//                                                        only (old bare behaviour).
+//
+//                                --coordinator <session> Explicit coordinator
+//                                                        session to route through.
+//                                                        Default: auto-discover
+//                                                        from cwd or active
+//                                                        sessions.
+//
+//                              --scope overrides the default live-swap target:
 //
 //                                --scope session=<name>  target one session
 //                                --scope coordinator     all PI sessions in
@@ -21,8 +31,11 @@ package cmd
 //                                --scope global          every live PI session
 //                                                        (coordinator-only)
 //                                --scope all             live swap (coordinator
-//                                                        scope) + future-spawn
-//                                                        default update
+//                                                        scope) + state-file
+//                                                        update (synonym for
+//                                                        the new default)
+//
+//                              --no-live cannot be combined with --scope.
 //
 //   prism profile list         Print every profile defined in profiles.json,
 //                              one per line, with the active profile marked
@@ -53,6 +66,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -60,9 +74,11 @@ import (
 
 // profileUseFlags holds the flags for `prism profile use`.
 var profileUseFlags struct {
-	scope   string
-	yes     bool
-	verbose bool
+	scope       string
+	yes         bool
+	verbose     bool
+	noLive      bool
+	coordinator string
 }
 
 var profileCmd = &cobra.Command{
@@ -83,7 +99,17 @@ default). Add --scope to also swap live sessions via the host-API.`,
 
 var profileUseCmd = &cobra.Command{
 	Use:   "use <name>",
-	Short: "Set the active profile for future spawns (and optionally live sessions)",
+	Short: "Set the active profile (live-swaps running sessions by default)",
+	Long: `Set the active model profile.
+
+Updates the state-file default ($XDG_STATE_HOME/prism/active-profile) AND
+live-swaps running sessions via the auto-discovered coordinator (scope=coordinator).
+Equivalent to the former "prism profile use NAME --scope all".
+
+Use --no-live to update the state file only (no live-swap).
+Use --coordinator <session> to bypass auto-discovery.
+Use --scope to override the live-swap target (session=<name>, coordinator,
+global, or all). --no-live cannot be combined with --scope.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProfileUse,
 }
@@ -113,11 +139,15 @@ func init() {
 
 	profileUseCmd.Flags().StringVar(&profileUseFlags.scope, "scope", "",
 		`Live-session swap scope: session=<name>, coordinator, global, or all.
-Without --scope only the future-spawn default is updated (P1.RUNTIME behaviour).`)
+Without --scope the command live-swaps coordinator scope AND updates the state file.`)
 	profileUseCmd.Flags().BoolVar(&profileUseFlags.yes, "yes", false,
 		"Skip the confirmation prompt for --scope global.")
 	profileUseCmd.Flags().BoolVarP(&profileUseFlags.verbose, "verbose", "v", false,
-		"List each session's individual outcome when --scope is used.")
+		"List each session's individual outcome when a live-swap occurs.")
+	profileUseCmd.Flags().BoolVar(&profileUseFlags.noLive, "no-live", false,
+		"Skip the live-swap. Updates the state-file default only — running sessions keep their current profile.")
+	profileUseCmd.Flags().StringVar(&profileUseFlags.coordinator, "coordinator", "",
+		"Explicit coordinator session to route the live-swap through (e.g. nixos-config@main). Default: auto-discover from cwd or active sessions.")
 }
 
 func runProfileUse(cmd *cobra.Command, args []string) error {
@@ -140,9 +170,16 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--profile must be one of: %s (got: %q)",
 			strings.Join(availableNames, ", "), name)
 	}
-	// Determine scope from flags.
+
+	// Determine flags.
 	scope := profileUseFlags.scope
+	noLive := profileUseFlags.noLive
 	verbose := profileUseFlags.verbose
+
+	// Mutually exclusive: --no-live and --scope cannot be combined.
+	if noLive && scope != "" {
+		return fmt.Errorf("--no-live cannot be combined with --scope")
+	}
 
 	// Validate scope value if provided.
 	var apiScope string      // scope value to send to /apply-profile
@@ -166,65 +203,99 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// When scope is set to a live-swap scope, we need a host-API socket.
+	// When scope is unset and --no-live is not set, we use the new default:
+	// live-swap with coordinator scope (same as --scope all), via auto-discovered
+	// coordinator. Treat this as an implicit "all" that sets apiScope=coordinator.
+	defaultLive := scope == "" && !noLive
+	if defaultLive {
+		apiScope = "coordinator"
+	}
+
 	// Detect whether we are running inside a container or from the host.
 	hostAPIURL := sandboxenv.HostAPISocket()
 
-	// For scopes that target live sessions (anything except ""), check
-	// coordinator-only enforcement and session existence before the API call.
-	if scope != "" {
-		// Enforce coordinator-only for coordinator/global/all scopes.
-		// When PRISM_HOST_API is set the server enforces this, but we also do
-		// a preflight check so the error message is clear and no API call is made.
-		if apiScope == "coordinator" || apiScope == "global" {
-			callerSession := review.LookupParentSession()
-			if callerSession != "" {
-				d, dbErr := openDB()
-				if dbErr == nil {
-					defer d.Close()
-					if !session.IsCoordinatorSession(callerSession, d) {
-						return fmt.Errorf("prism profile use --scope %s: this scope is for coordinator sessions only.\n\nWorkers must not perform %s-scoped profile swaps directly.", scope, scope)
+	// When a live-swap is going to happen (any scope or default live), perform
+	// preflight checks and coordinator resolution.
+	//
+	// Live-swap happens when: defaultLive OR scope != "".
+	willLive := defaultLive || scope != ""
+
+	// resolvedCoordinator is the coordinator session we'll dial (host path only).
+	// We resolve it now for both the preflight guard and the dial step.
+	var resolvedCoordinator string
+
+	if willLive && hostAPIURL == "" {
+		// Enforce worker guard: if PRISM_SESSION_NAME is set and the caller is
+		// NOT a coordinator, reject coordinator/global/all-scoped live swaps.
+		// This guard is specifically about agent authorisation (workers must not
+		// escalate), not human-shell usability.
+		envSession := os.Getenv("PRISM_SESSION_NAME")
+		if envSession != "" && (apiScope == "coordinator" || apiScope == "global") {
+			d, dbErr := openDB()
+			if dbErr == nil {
+				defer d.Close()
+				if !session.IsCoordinatorSession(envSession, d) {
+					displayScope := scope
+					if displayScope == "" {
+						displayScope = "all"
 					}
+					return fmt.Errorf("prism profile use --scope %s: this scope is for coordinator sessions only.\n\nWorkers must not perform %s-scoped profile swaps directly.", displayScope, displayScope)
 				}
-				// If DB open failed we let the server-side enforcement catch it.
+				// Caller is a coordinator — resolve it as our target.
+				resolvedCoordinator = envSession
 			}
+			// If DB open failed we fall through to auto-discovery.
 		}
 
-		// For scope=session=<name>, verify the session exists and is active
-		// before sending any API call.
-		if apiScope == "session" && hostAPIURL == "" {
-			// On the host we can check the DB directly.
+		// For scopes that need a coordinator socket (coordinator/global/default live),
+		// resolve the coordinator session if not already resolved.
+		if resolvedCoordinator == "" && (apiScope == "coordinator" || apiScope == "global") {
 			d, dbErr := openDB()
 			if dbErr != nil {
 				return fmt.Errorf("prism profile use: open db: %w", dbErr)
 			}
 			defer d.Close()
-			st, stErr := d.CurrentStatus(sessionTarget)
-			if stErr != nil {
-				return fmt.Errorf("prism profile use: look up session %q: %w", sessionTarget, stErr)
+			coord, coordErr := resolveCoordinatorSession(d, profileUseFlags.coordinator)
+			if coordErr != nil {
+				return coordErr
 			}
-			if st == nil {
-				return fmt.Errorf("prism profile use: session %q not found — run `prism sessions list` to see active sessions", sessionTarget)
-			}
-			if st.EndedAt != nil {
-				return fmt.Errorf("prism profile use: session %q is no longer active (ended)", sessionTarget)
-			}
-		}
-
-		// Confirmation prompt for --scope global.
-		if apiScope == "global" && !profileUseFlags.yes {
-			fmt.Fprintf(cmd.OutOrStdout(), "This will swap the model profile on EVERY live PI session across all repos.\nType \"yes\" to continue: ")
-			scanner := bufio.NewScanner(os.Stdin)
-			scanner.Scan()
-			if strings.TrimSpace(scanner.Text()) != "yes" {
-				return fmt.Errorf("aborted")
-			}
+			resolvedCoordinator = coord
 		}
 	}
 
-	// For scopes that include the future-spawn default (no scope or "all"),
-	// update the state file.
-	if scope == "" || scope == "all" {
+	// For scope=session=<name>, verify the session exists and is active
+	// before sending any API call.
+	if apiScope == "session" && hostAPIURL == "" {
+		d, dbErr := openDB()
+		if dbErr != nil {
+			return fmt.Errorf("prism profile use: open db: %w", dbErr)
+		}
+		defer d.Close()
+		st, stErr := d.CurrentStatus(sessionTarget)
+		if stErr != nil {
+			return fmt.Errorf("prism profile use: look up session %q: %w", sessionTarget, stErr)
+		}
+		if st == nil {
+			return fmt.Errorf("prism profile use: session %q not found — run `prism sessions list` to see active sessions", sessionTarget)
+		}
+		if st.EndedAt != nil {
+			return fmt.Errorf("prism profile use: session %q is no longer active (ended)", sessionTarget)
+		}
+	}
+
+	// Confirmation prompt for --scope global.
+	if apiScope == "global" && !profileUseFlags.yes {
+		fmt.Fprintf(cmd.OutOrStdout(), "This will swap the model profile on EVERY live PI session across all repos.\nType \"yes\" to continue: ")
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		if strings.TrimSpace(scanner.Text()) != "yes" {
+			return fmt.Errorf("aborted")
+		}
+	}
+
+	// Update the state file for the default live case (implicit "all") or
+	// when scope=all is explicit, or when --no-live is set (state-file only).
+	if defaultLive || scope == "all" || noLive {
 		if err := config.SetActiveProfile(pf, name); err != nil {
 			return err
 		}
@@ -232,8 +303,8 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "active profile set to %q (state file: %s)\n", name, path)
 	}
 
-	// No live-swap needed when scope is empty.
-	if scope == "" {
+	// No live-swap when --no-live is set.
+	if noLive {
 		return nil
 	}
 
@@ -256,21 +327,54 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 
 	if hostAPIURL != "" {
 		if err := proxyToHostAPI(hostAPIURL, "/apply-profile", reqBody, &resp); err != nil {
-			return fmt.Errorf("prism profile use --scope %s: %w", scope, err)
+			displayScope := scope
+			if displayScope == "" {
+				displayScope = "all"
+			}
+			return fmt.Errorf("prism profile use --scope %s: %w", displayScope, err)
 		}
 	} else {
 		// On the host, dial the coordinator's own sidecar socket.
-		callerSession := review.LookupParentSession()
-		if callerSession == "" {
-			return fmt.Errorf("prism profile use --scope %s: cannot determine calling session — run from inside a prism tmux session or set PRISM_SESSION_NAME", scope)
+		// For session= scope, the caller's session can handle it directly;
+		// for coordinator/global, we use the resolved coordinator.
+		var targetSession string
+		if apiScope == "session" {
+			// For single-session scope, route through the caller or any active
+			// coordinator. Use the parent session if available, else auto-discover.
+			callerSession := review.LookupParentSession()
+			if callerSession != "" {
+				targetSession = callerSession
+			} else {
+				// Auto-discover for session scope too.
+				d, dbErr := openDB()
+				if dbErr != nil {
+					return fmt.Errorf("prism profile use: open db: %w", dbErr)
+				}
+				defer d.Close()
+				coord, coordErr := resolveCoordinatorSession(d, profileUseFlags.coordinator)
+				if coordErr != nil {
+					return coordErr
+				}
+				targetSession = coord
+			}
+		} else {
+			targetSession = resolvedCoordinator
 		}
-		sockPath, sockErr := session.SidecarHostAPIPath(callerSession)
+		sockPath, sockErr := session.SidecarHostAPIPath(targetSession)
 		if sockErr != nil {
-			return fmt.Errorf("prism profile use --scope %s: host-API socket: %w", scope, sockErr)
+			displayScope := scope
+			if displayScope == "" {
+				displayScope = "all"
+			}
+			return fmt.Errorf("prism profile use --scope %s: host-API socket: %w", displayScope, sockErr)
 		}
 		apiURL := "unix://" + sockPath
 		if err := proxyToHostAPI(apiURL, "/apply-profile", reqBody, &resp); err != nil {
-			return fmt.Errorf("prism profile use --scope %s: %w", scope, err)
+			displayScope := scope
+			if displayScope == "" {
+				displayScope = "all"
+			}
+			return fmt.Errorf("prism profile use --scope %s: %w", displayScope, err)
 		}
 	}
 
@@ -295,6 +399,95 @@ func runProfileUse(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// resolveCoordinatorSession picks the coordinator session to route the
+// /apply-profile request through. Precedence:
+//
+//  1. --coordinator <name> flag if non-empty.
+//  2. review.LookupParentSession() if it returns a coordinator session
+//     (validated via session.IsCoordinatorSession against the DB).
+//  3. deriveSessionNameFromCWD(cwd) → if it resolves to a "<repo>@main"
+//     session that is active in the DB, return it.
+//  4. d.AllActiveStatus() filtered to names ending in "@main", filtered
+//     to rows with EndedAt == nil. If exactly one, return it. If zero,
+//     return an error suggesting `prism switch`. If multiple, return an
+//     error listing them and pointing at --coordinator.
+//
+// Returns the resolved session name or an actionable error.
+func resolveCoordinatorSession(d *db.DB, coordinatorFlag string) (string, error) {
+	// 1. Explicit --coordinator flag takes highest precedence.
+	if coordinatorFlag != "" {
+		// Validate that the specified session is active.
+		st, err := d.CurrentStatus(coordinatorFlag)
+		if err != nil {
+			return "", fmt.Errorf("prism profile use: look up coordinator session %q: %w", coordinatorFlag, err)
+		}
+		if st == nil || st.EndedAt != nil {
+			return "", fmt.Errorf("prism profile use: coordinator session %q is not active — run `prism sessions list` to see active sessions", coordinatorFlag)
+		}
+		return coordinatorFlag, nil
+	}
+
+	// 2. Check if PRISM_SESSION_NAME or tmux current session is a coordinator.
+	parentSession := review.LookupParentSession()
+	if parentSession != "" && session.IsCoordinatorSession(parentSession, d) {
+		return parentSession, nil
+	}
+
+	// 3. Derive coordinator name from cwd.
+	cwd, err := os.Getwd()
+	if err == nil {
+		candidate := deriveSessionNameFromCWD(cwd)
+		if candidate != "" {
+			// deriveSessionNameFromCWD returns "<repo>@<branch>"; the coordinator
+			// is "<repo>@main". Reconstruct the coordinator name from the repo part.
+			repoName := ""
+			if atIdx := strings.Index(candidate, "@"); atIdx >= 0 {
+				repoName = candidate[:atIdx]
+			}
+			if repoName != "" {
+				coordinatorName := repoName + "@main"
+				st, stErr := d.CurrentStatus(coordinatorName)
+				if stErr == nil && st != nil && st.EndedAt == nil {
+					return coordinatorName, nil
+				}
+			}
+		}
+	}
+
+	// 4. Enumerate all active sessions and filter to @main sessions.
+	all, err := d.AllActiveStatus()
+	if err != nil {
+		return "", fmt.Errorf("prism profile use: enumerate active sessions: %w", err)
+	}
+
+	var coordinators []string
+	for _, st := range all {
+		if strings.HasSuffix(st.SessionName, "@main") && st.EndedAt == nil {
+			coordinators = append(coordinators, st.SessionName)
+		}
+	}
+
+	switch len(coordinators) {
+	case 0:
+		callerName := parentSession
+		if callerName == "" {
+			callerName = "none"
+		}
+		return "", fmt.Errorf(
+			"prism profile use: requires a coordinator session.\nCaller: %s (not a coordinator).\nNo active coordinator session found.\n\nEither:\n  - start a coordinator with: prism switch <repo>\n  - or specify one explicitly: prism profile use <profile> --coordinator <session>",
+			callerName,
+		)
+	case 1:
+		return coordinators[0], nil
+	default:
+		list := "  " + strings.Join(coordinators, "\n  ")
+		return "", fmt.Errorf(
+			"prism profile use: multiple coordinator sessions are active:\n%s\nSpecify which one to route through with --coordinator <session>.",
+			list,
+		)
+	}
 }
 
 // profileSlotJSON is the snake_case JSON shape for a single role slot.
